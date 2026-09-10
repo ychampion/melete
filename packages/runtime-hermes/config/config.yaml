@@ -1,0 +1,32 @@
+# Hermes configuration for the Melete runtime.
+#
+# Nothing here patches Hermes. Everything that makes the engine thin is a
+# setting, so upgrading the pinned tag is a one-line change in the Dockerfile
+# rather than a rebase of a fork.
+
+agent:
+  # SOUL.md is replaced by the identity Melete sends with every run. The
+  # contract caps it at 250 tokens; see packages/runtime-hermes/src/client.ts.
+  skip_context_files: true
+  # Melete owns memory. The knowledge package decides what a job may recall,
+  # and a retracted record has to disappear from retrieval immediately, which
+  # an engine-side memory store would quietly undo.
+  skip_memory: true
+
+tools:
+  # No built-in toolset loads. The Melete plugin registers the broker's tools
+  # and nothing else, so the catalog the model sees is exactly what policy
+  # allows for this job.
+  enabled_toolsets: []
+
+plugins:
+  # One plugin, ours.
+  allow: ["melete"]
+
+gateway:
+  api_server:
+    host: "0.0.0.0"
+    port: 8790
+    # One attempt at a time. A second concurrent run in this container would
+    # share the same fenced epoch, which the broker would refuse anyway.
+    max_concurrent_runs: 1

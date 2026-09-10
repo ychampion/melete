@@ -1,0 +1,192 @@
+import { describe, expect, test } from 'bun:test';
+import { CONTEXT_LIMITS, type AttemptBundle } from '@melete/contracts';
+import {
+  HERMES_APPROVAL_ANSWERS,
+  HERMES_ROUTES,
+  HermesClient,
+  IDENTITY,
+  hermesApprovalRequest,
+  hermesRunStatus,
+  parseSse,
+} from './client.ts';
+import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
+
+const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
+const bundle: AttemptBundle = {
+  attempt: {
+    id: `att_${SUFFIX}`,
+    job_id: `job_${SUFFIX}`,
+    epoch: 3,
+    revision: 1,
+    token: 'capability.jwt.here',
+  },
+  job: {
+    title: 'Chase the lease renewal',
+    objective: 'Get a signed renewal before the end of the month.',
+    constraints: {},
+    progress_summary: 'One message sent on Tuesday.',
+    unresolved_questions: [],
+    deliverable: { kind: 'message_sent' },
+  },
+  inputs: {
+    new_user_messages: [
+      { role: 'user', content: 'any news?', at: '2026-09-11T00:00:00.000Z' },
+    ],
+    approval_results: [{ action_id: `act_${SUFFIX}`, decision: 'denied', note: null }],
+    trigger_events: [],
+  },
+  transcript: [],
+  tools: [],
+  skills: [{ name: 'draft-follow-up', body: 'Four sentences. Ask for a date.' }],
+  knowledge: [
+    {
+      path: 'knowledge/landlord-contact.md',
+      excerpt: 'The landlord answers email but never the phone.',
+      provenance: {
+        id: `k_${SUFFIX}`,
+        asserted_by: 'user',
+        observed_at: '2026-09-10',
+        status: 'active',
+      },
+    },
+  ],
+  workspace: { mount: '/work', files: [] },
+  budget: { max_turns: 8, max_output_tokens: 4000, max_wall_ms: 120000, max_actions: 3 },
+  model: { provider: 'fireworks', model: 'deepseek-v4p1-flash', fallback: null },
+};
+
+const client = new HermesClient({ baseUrl: 'http://runtime:8790/', token: 'surrogate' });
+
+describe('request building', () => {
+  test('start posts to /v1/runs with the surrogate token', () => {
+    const req = client.startRun(bundle);
+    expect(req.method).toBe('POST');
+    expect(req.url).toBe(`http://runtime:8790${HERMES_ROUTES.runs}`);
+    expect(req.headers.authorization).toBe('Bearer surrogate');
+    expect(req.headers['content-type']).toBe('application/json');
+  });
+
+  test('the run body turns every thin-harness switch off', () => {
+    const body = JSON.parse(client.startRun(bundle).body ?? '{}');
+    expect(body.skip_memory).toBe(true);
+    expect(body.skip_context_files).toBe(true);
+    expect(body.toolsets).toEqual([]);
+    expect(body.max_turns).toBe(8);
+    expect(body.provider).toBe('fireworks');
+  });
+
+  test('the run body carries the attempt identity for correlation', () => {
+    const body = JSON.parse(client.startRun(bundle).body ?? '{}');
+    expect(body.metadata.attempt_id).toBe(`att_${SUFFIX}`);
+    expect(body.metadata.epoch).toBe(3);
+  });
+
+  test('status and stop address the run by id', () => {
+    expect(client.status('run_1').url).toBe('http://runtime:8790/v1/runs/run_1');
+    expect(client.stop('run_1').url).toBe('http://runtime:8790/v1/runs/run_1/stop');
+    expect(client.stop('run_1').method).toBe('POST');
+  });
+
+  test('the event request asks for a stream and can resume one', () => {
+    const req = client.events('run_1', '42');
+    expect(req.headers.accept).toBe('text/event-stream');
+    expect(req.headers['last-event-id']).toBe('42');
+  });
+
+  test('an approval answers a request id with once or deny and nothing else', () => {
+    const req = client.approve('run_1', 'req_9', 'once');
+    expect(JSON.parse(req.body ?? '{}')).toEqual({ request_id: 'req_9', answer: 'once' });
+    expect(HERMES_APPROVAL_ANSWERS).toEqual(['once', 'deny']);
+    expect(HERMES_APPROVAL_ANSWERS).not.toContain('always');
+  });
+
+  test('no token means no authorization header, rather than an empty one', () => {
+    const anonymous = new HermesClient({ baseUrl: 'http://runtime:8790' });
+    expect(anonymous.status('run_1').headers.authorization).toBeUndefined();
+  });
+});
+
+describe('context assembly', () => {
+  test('the identity is short enough to be a prefix, not a personality', () => {
+    // A rough four-characters-per-token estimate; the contract caps it at 250.
+    expect(Math.ceil(IDENTITY.length / 4)).toBeLessThan(CONTEXT_LIMITS.identity_tokens);
+  });
+
+  test('the identity tells the model that a claim without a receipt is not allowed', () => {
+    expect(IDENTITY).toContain('receipt');
+  });
+
+  test('the system prompt is identity, then skills, then knowledge', () => {
+    const system = client.renderSystem(bundle);
+    expect(system.indexOf(IDENTITY)).toBe(0);
+    expect(system.indexOf('draft-follow-up')).toBeLessThan(system.indexOf('already knows'));
+  });
+
+  test('the input carries what changed since the last attempt', () => {
+    const input = client.renderInput(bundle);
+    expect(input).toContain('any news?');
+    expect(input).toContain('was denied');
+    expect(input).toContain('One message sent on Tuesday.');
+  });
+});
+
+describe('response schemas', () => {
+  test('a run status parses', () => {
+    expect(hermesRunStatus.parse({ run_id: 'r1', status: 'running' }).status).toBe('running');
+  });
+
+  test('an unknown status is refused rather than passed along', () => {
+    expect(hermesRunStatus.safeParse({ run_id: 'r1', status: 'thinking' }).success).toBe(false);
+  });
+
+  test('an approval notification carries the fields the probe recorded', () => {
+    const parsed = hermesApprovalRequest.parse({
+      request_id: '4ea455eb1c1745bb8761c66d81237bad',
+      command: 'rm -rf ~/Documents',
+      description: 'recursive delete',
+      pattern_key: 'rm -rf',
+      pattern_keys: ['rm -rf'],
+      allow_session: true,
+      allow_permanent: true,
+    });
+    expect(parsed.request_id).toHaveLength(32);
+  });
+
+  test('a notification with no request id is refused, because nothing could answer it', () => {
+    expect(hermesApprovalRequest.safeParse({ command: 'ls' }).success).toBe(false);
+  });
+});
+
+describe('SSE parsing', () => {
+  test('splits complete messages and keeps the remainder', () => {
+    const { messages, rest } = parseSse(
+      'id: 1\nevent: turn_started\ndata: {"turn":0}\n\nid: 2\nevent: text_delta\ndata: partial',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ id: '1', event: 'turn_started', data: '{"turn":0}' });
+    expect(rest).toContain('data: partial');
+  });
+
+  test('joins multi-line data the way the specification says', () => {
+    const { messages } = parseSse('data: one\ndata: two\n\n');
+    expect(messages[0]?.data).toBe('one\ntwo');
+  });
+
+  test('ignores keepalive comments', () => {
+    const { messages } = parseSse(': keepalive\n\ndata: real\n\n');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.data).toBe('real');
+  });
+
+  test('handles carriage returns from a proxy that rewrote the stream', () => {
+    const { messages } = parseSse('id: 5\r\ndata: x\r\n\r\n');
+    expect(messages[0]?.id).toBe('5');
+  });
+});
+
+describe('the pin', () => {
+  test('names the exact release the image is built from', () => {
+    expect(HERMES_PINNED_TAG).toBe('v2026.9.7');
+    expect(RUNTIME_VERSION).toBe('hermes@v2026.9.7');
+  });
+});
