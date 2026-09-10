@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   BUILT_IN_SKILLS,
-  type SkillCandidate,
   normalizeForMatch,
+  type SkillCandidate,
   selectSkills,
   skillFrontmatter,
 } from './skills.ts';

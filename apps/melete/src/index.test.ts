@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { openDatabase, pingDatabase } from './db/client.ts';
 import { schema } from './db/schema.ts';
 import { loadEnv, readEnv } from './env.ts';
-import { VERSION, createApp } from './index.ts';
+import { createApp, VERSION } from './index.ts';
 
 const testApp = (database: 'ok' | 'unreachable' | 'not_configured' = 'not_configured') =>
   createApp({
@@ -85,9 +85,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const describeWithDb = DATABASE_URL ? describe : describe.skip;
 
 if (!DATABASE_URL) {
-  process.stdout.write(
-    'db tests skipped: set DATABASE_URL to run them against a real Postgres\n',
-  );
+  process.stdout.write('db tests skipped: set DATABASE_URL to run them against a real Postgres\n');
 }
 
 describeWithDb('against a real database', () => {

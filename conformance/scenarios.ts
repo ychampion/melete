@@ -37,8 +37,7 @@ export const SCENARIOS: readonly Scenario[] = [
     id: 2,
     slug: 'lease-fencing',
     title: 'A stalled attempt cannot act after its lease expires',
-    text:
-      'Stall attempt A mid-run, let its lease expire, start attempt B, then let A resume and try to work.',
+    text: 'Stall attempt A mid-run, let its lease expire, start attempt B, then let A resume and try to work.',
     assertions: [
       'A cannot admit an action: the broker refuses it with stale_epoch',
       'B runs with the incremented lease_epoch and admits normally',
@@ -122,8 +121,7 @@ export const SCENARIOS: readonly Scenario[] = [
     id: 8,
     slug: 'model-agnostic',
     title: 'The same job produces the same policy outcomes on two providers',
-    text:
-      'Run one scripted job against the fake provider and, when a key is present, against a real one.',
+    text: 'Run one scripted job against the fake provider and, when a key is present, against a real one.',
     assertions: [
       'the sequence of action statuses is identical on both providers',
       'the same approvals are requested for the same payload hashes',

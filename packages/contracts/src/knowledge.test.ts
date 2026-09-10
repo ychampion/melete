@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  type KnowledgeFrontmatter,
   hasLintErrors,
   isRetrievable,
+  type KnowledgeFrontmatter,
   knowledgeFrontmatter,
   lintRecord,
   lintSpaceMatchesDirectory,
@@ -159,7 +159,9 @@ describe('status transitions', () => {
 
 describe('the remaining rules', () => {
   test('a superseded record must name its replacement', () => {
-    expect(hasLintErrors(lintSupersededNeedsPointer({ status: 'superseded', superseded_by: null }))).toBe(true);
+    expect(
+      hasLintErrors(lintSupersededNeedsPointer({ status: 'superseded', superseded_by: null })),
+    ).toBe(true);
     expect(lintSupersededNeedsPointer({ status: 'superseded', superseded_by: ID_B })).toEqual([]);
   });
 

@@ -17,7 +17,9 @@ export const ulid = z
  * stable id across retitling.
  */
 export const prefixedId = (prefix: string) =>
-  z.string().regex(new RegExp(`^${prefix}_[0-7][0-9A-HJKMNP-TV-Z]{25}$`), `must be a ${prefix}_ ULID`);
+  z
+    .string()
+    .regex(new RegExp(`^${prefix}_[0-7][0-9A-HJKMNP-TV-Z]{25}$`), `must be a ${prefix}_ ULID`);
 
 export const ID_PREFIXES = {
   owner: 'own',

@@ -56,318 +56,319 @@ const idParam = (name: string, description: string) => ({
 export const OPENAPI_VERSION = '0.1.0-pre';
 
 export function buildOpenApiDocument() {
-  return createDocument({
-    openapi: '3.1.0',
-    info: {
-      title: 'Melete',
-      version: OPENAPI_VERSION,
-      summary: 'An open-source, self-hosted, model-agnostic personal assistant.',
-      description:
-        'Give Melete a responsibility, close the tab, come back to progress, a result, or one precise question. ' +
-        'This document describes the v0.1 HTTP surface. Nothing here is stable yet: the release is pre-release ' +
-        'and endpoints may change until v0.1.0 is tagged.',
-      license: { name: 'Apache-2.0', identifier: 'Apache-2.0' },
+  return createDocument(
+    {
+      openapi: '3.1.0',
+      info: {
+        title: 'Melete',
+        version: OPENAPI_VERSION,
+        summary: 'An open-source, self-hosted, model-agnostic personal assistant.',
+        description:
+          'Give Melete a responsibility, close the tab, come back to progress, a result, or one precise question. ' +
+          'This document describes the v0.1 HTTP surface. Nothing here is stable yet: the release is pre-release ' +
+          'and endpoints may change until v0.1.0 is tagged.',
+        license: { name: 'Apache-2.0', identifier: 'Apache-2.0' },
+      },
+      servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
+      tags: [
+        { name: 'health' },
+        { name: 'spaces' },
+        { name: 'jobs' },
+        { name: 'attempts' },
+        { name: 'events' },
+        { name: 'actions' },
+        { name: 'approvals' },
+        { name: 'connections' },
+        { name: 'knowledge' },
+        { name: 'skills' },
+      ],
+      paths: {
+        '/health': {
+          get: {
+            tags: ['health'],
+            summary: 'Liveness and dependency check',
+            responses: { '200': jsonResponse('Service is up', healthResponse) },
+          },
+        },
+
+        '/spaces': {
+          get: {
+            tags: ['spaces'],
+            summary: 'List spaces',
+            responses: { '200': jsonResponse('Spaces', spaceListResponse) },
+          },
+          post: {
+            tags: ['spaces'],
+            summary: 'Create a space',
+            requestBody: json(createSpaceRequest),
+            responses: {
+              '201': jsonResponse('Created', spaceListResponse),
+              '400': problem('Invalid request'),
+            },
+          },
+        },
+
+        '/jobs': {
+          get: {
+            tags: ['jobs'],
+            summary: 'List jobs',
+            requestParams: { query: jobListQuery },
+            responses: { '200': jsonResponse('Jobs', jobListResponse) },
+          },
+          post: {
+            tags: ['jobs'],
+            summary: 'Delegate a responsibility',
+            requestBody: json(createJobRequest),
+            responses: {
+              '201': jsonResponse('Created', jobResponse),
+              '400': problem('Invalid request'),
+            },
+          },
+        },
+
+        '/jobs/{jobId}': {
+          get: {
+            tags: ['jobs'],
+            summary: 'Read one job',
+            requestParams: idParam('jobId', 'Job id'),
+            responses: {
+              '200': jsonResponse('Job', jobResponse),
+              '404': problem('No such job'),
+            },
+          },
+        },
+
+        '/jobs/{jobId}/cancel': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Cancel a job',
+            description:
+              'Sets the job to cancelled and bumps the lease epoch. Actions already admitted may still ' +
+              'finish; their disposition is recorded honestly and an unknown action is never hidden.',
+            requestParams: idParam('jobId', 'Job id'),
+            requestBody: json(cancelJobRequest),
+            responses: {
+              '200': jsonResponse('Cancelled', jobResponse),
+              '409': problem('Job is already finished'),
+            },
+          },
+        },
+
+        '/jobs/{jobId}/messages': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Answer a question the job is waiting on',
+            requestParams: idParam('jobId', 'Job id'),
+            requestBody: json(postMessageRequest),
+            responses: {
+              '202': jsonResponse('Accepted; the job is queued for its next attempt', jobResponse),
+              '409': problem('The job is not waiting for input'),
+            },
+          },
+        },
+
+        '/jobs/{jobId}/attempts': {
+          get: {
+            tags: ['attempts'],
+            summary: 'List the attempts of a job',
+            requestParams: idParam('jobId', 'Job id'),
+            responses: { '200': jsonResponse('Attempts', attemptListResponse) },
+          },
+        },
+
+        '/attempts/{attemptId}': {
+          get: {
+            tags: ['attempts'],
+            summary: 'Read one attempt, including the provider and model actually used',
+            requestParams: idParam('attemptId', 'Attempt id'),
+            responses: {
+              '200': jsonResponse('Attempt', attemptResponse),
+              '404': problem('No such attempt'),
+            },
+          },
+        },
+
+        '/jobs/{jobId}/events': {
+          get: {
+            tags: ['events'],
+            summary: 'Replay and follow one job event stream',
+            description:
+              'Returns JSON when Accept is application/json and a Server-Sent Events stream when it is ' +
+              'text/event-stream. Both start after the `after` cursor; `Last-Event-ID` overrides it.',
+            requestParams: { path: z.object({ jobId: z.string() }), query: eventQuery },
+            responses: { '200': jsonResponse('Events', eventPage) },
+          },
+        },
+
+        '/events': {
+          get: {
+            tags: ['events'],
+            summary: 'The global feed that drives the inbox',
+            requestParams: { query: eventQuery },
+            responses: { '200': jsonResponse('Events', eventPage) },
+          },
+        },
+
+        '/actions': {
+          get: {
+            tags: ['actions'],
+            summary: 'The action ledger',
+            requestParams: { query: actionListQuery },
+            responses: { '200': jsonResponse('Actions', actionListResponse) },
+          },
+        },
+
+        '/actions/{actionId}': {
+          get: {
+            tags: ['actions'],
+            summary: 'Read one action with its receipt and reconciliation record',
+            requestParams: idParam('actionId', 'Action id'),
+            responses: {
+              '200': jsonResponse('Action', actionResponse),
+              '404': problem('No such action'),
+            },
+          },
+        },
+
+        '/actions/{actionId}/resolve': {
+          post: {
+            tags: ['actions'],
+            summary: 'Settle an action Melete could not confirm',
+            description:
+              'Used when verify cannot decide. The owner says what really happened; the answer is recorded ' +
+              'as a reconciliation, and the action is never re-dispatched.',
+            requestParams: idParam('actionId', 'Action id'),
+            requestBody: json(resolveActionRequest),
+            responses: {
+              '200': jsonResponse('Resolved', actionResponse),
+              '409': problem('Action is not awaiting reconciliation'),
+            },
+          },
+        },
+
+        '/approvals': {
+          get: {
+            tags: ['approvals'],
+            summary: 'Approvals waiting on the owner',
+            responses: { '200': jsonResponse('Approvals', approvalListResponse) },
+          },
+        },
+
+        '/approvals/{approvalId}': {
+          post: {
+            tags: ['approvals'],
+            summary: 'Approve or deny one action',
+            description:
+              'The decision binds to the payload hash the person was shown. Editing the draft creates a ' +
+              'new action, so an approval can never be spent on different content.',
+            requestParams: idParam('approvalId', 'Approval id'),
+            requestBody: json(approvalDecisionRequest),
+            responses: {
+              '200': jsonResponse('Decided', approvalDecisionResponse),
+              '409': problem('The payload changed since this approval was requested'),
+            },
+          },
+        },
+
+        '/connections': {
+          get: {
+            tags: ['connections'],
+            summary: 'List connections (never includes secrets)',
+            responses: { '200': jsonResponse('Connections', connectionListResponse) },
+          },
+          post: {
+            tags: ['connections'],
+            summary: 'Add a connection',
+            requestBody: json(createConnectionRequest),
+            responses: {
+              '201': jsonResponse('Created', connectionResponse),
+              '400': problem('Invalid request'),
+            },
+          },
+        },
+
+        '/connections/{connectionId}': {
+          get: {
+            tags: ['connections'],
+            summary: 'Read one connection',
+            requestParams: idParam('connectionId', 'Connection id'),
+            responses: {
+              '200': jsonResponse('Connection', connectionResponse),
+              '404': problem('No such connection'),
+            },
+          },
+        },
+
+        '/connections/{connectionId}/health': {
+          post: {
+            tags: ['connections'],
+            summary: 'Check a connection now',
+            requestParams: idParam('connectionId', 'Connection id'),
+            responses: { '200': jsonResponse('Connection', connectionResponse) },
+          },
+        },
+
+        '/knowledge/search': {
+          get: {
+            tags: ['knowledge'],
+            summary: 'Search one space',
+            description:
+              'Retrieval is scoped to exactly one space by the handle the caller holds, not by a filter ' +
+              'argument. Retracted records are never returned.',
+            requestParams: { query: knowledgeSearchQuery },
+            responses: { '200': jsonResponse('Hits', knowledgeSearchResponse) },
+          },
+        },
+
+        '/knowledge/{recordId}': {
+          get: {
+            tags: ['knowledge'],
+            summary: 'Read one record with its provenance',
+            requestParams: idParam('recordId', 'Knowledge record id'),
+            responses: {
+              '200': jsonResponse('Record', knowledgeRecordResponse),
+              '404': problem('No such record'),
+            },
+          },
+          delete: {
+            tags: ['knowledge'],
+            summary: 'Retract or delete a record',
+            requestParams: idParam('recordId', 'Knowledge record id'),
+            requestBody: json(retractKnowledgeRequest),
+            responses: {
+              '200': jsonResponse('Record', knowledgeRecordResponse),
+              '404': problem('No such record'),
+            },
+          },
+        },
+
+        '/knowledge/proposals': {
+          post: {
+            tags: ['knowledge'],
+            summary: 'Propose a knowledge write',
+            description:
+              'The only write path an agent has. The proposal is validated and rendered as a diff the ' +
+              'owner applies or discards; applying is a git commit.',
+            requestBody: json(proposeKnowledgeRequest),
+            responses: {
+              '201': jsonResponse('Proposal', proposeKnowledgeResponse),
+              '400': problem('The record failed lint'),
+            },
+          },
+        },
+
+        '/skills': {
+          get: {
+            tags: ['skills'],
+            summary: 'List built-in and space skills',
+            responses: { '200': jsonResponse('Skills', skillListResponse) },
+          },
+        },
+      },
     },
-    servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
-    tags: [
-      { name: 'health' },
-      { name: 'spaces' },
-      { name: 'jobs' },
-      { name: 'attempts' },
-      { name: 'events' },
-      { name: 'actions' },
-      { name: 'approvals' },
-      { name: 'connections' },
-      { name: 'knowledge' },
-      { name: 'skills' },
-    ],
-    paths: {
-      '/health': {
-        get: {
-          tags: ['health'],
-          summary: 'Liveness and dependency check',
-          responses: { '200': jsonResponse('Service is up', healthResponse) },
-        },
-      },
-
-      '/spaces': {
-        get: {
-          tags: ['spaces'],
-          summary: 'List spaces',
-          responses: { '200': jsonResponse('Spaces', spaceListResponse) },
-        },
-        post: {
-          tags: ['spaces'],
-          summary: 'Create a space',
-          requestBody: json(createSpaceRequest),
-          responses: {
-            '201': jsonResponse('Created', spaceListResponse),
-            '400': problem('Invalid request'),
-          },
-        },
-      },
-
-      '/jobs': {
-        get: {
-          tags: ['jobs'],
-          summary: 'List jobs',
-          requestParams: { query: jobListQuery },
-          responses: { '200': jsonResponse('Jobs', jobListResponse) },
-        },
-        post: {
-          tags: ['jobs'],
-          summary: 'Delegate a responsibility',
-          requestBody: json(createJobRequest),
-          responses: {
-            '201': jsonResponse('Created', jobResponse),
-            '400': problem('Invalid request'),
-          },
-        },
-      },
-
-      '/jobs/{jobId}': {
-        get: {
-          tags: ['jobs'],
-          summary: 'Read one job',
-          requestParams: idParam('jobId', 'Job id'),
-          responses: {
-            '200': jsonResponse('Job', jobResponse),
-            '404': problem('No such job'),
-          },
-        },
-      },
-
-      '/jobs/{jobId}/cancel': {
-        post: {
-          tags: ['jobs'],
-          summary: 'Cancel a job',
-          description:
-            'Sets the job to cancelled and bumps the lease epoch. Actions already admitted may still ' +
-            'finish; their disposition is recorded honestly and an unknown action is never hidden.',
-          requestParams: idParam('jobId', 'Job id'),
-          requestBody: json(cancelJobRequest),
-          responses: {
-            '200': jsonResponse('Cancelled', jobResponse),
-            '409': problem('Job is already finished'),
-          },
-        },
-      },
-
-      '/jobs/{jobId}/messages': {
-        post: {
-          tags: ['jobs'],
-          summary: 'Answer a question the job is waiting on',
-          requestParams: idParam('jobId', 'Job id'),
-          requestBody: json(postMessageRequest),
-          responses: {
-            '202': jsonResponse('Accepted; the job is queued for its next attempt', jobResponse),
-            '409': problem('The job is not waiting for input'),
-          },
-        },
-      },
-
-      '/jobs/{jobId}/attempts': {
-        get: {
-          tags: ['attempts'],
-          summary: 'List the attempts of a job',
-          requestParams: idParam('jobId', 'Job id'),
-          responses: { '200': jsonResponse('Attempts', attemptListResponse) },
-        },
-      },
-
-      '/attempts/{attemptId}': {
-        get: {
-          tags: ['attempts'],
-          summary: 'Read one attempt, including the provider and model actually used',
-          requestParams: idParam('attemptId', 'Attempt id'),
-          responses: {
-            '200': jsonResponse('Attempt', attemptResponse),
-            '404': problem('No such attempt'),
-          },
-        },
-      },
-
-      '/jobs/{jobId}/events': {
-        get: {
-          tags: ['events'],
-          summary: 'Replay and follow one job event stream',
-          description:
-            'Returns JSON when Accept is application/json and a Server-Sent Events stream when it is ' +
-            'text/event-stream. Both start after the `after` cursor; `Last-Event-ID` overrides it.',
-          requestParams: { path: z.object({ jobId: z.string() }), query: eventQuery },
-          responses: { '200': jsonResponse('Events', eventPage) },
-        },
-      },
-
-      '/events': {
-        get: {
-          tags: ['events'],
-          summary: 'The global feed that drives the inbox',
-          requestParams: { query: eventQuery },
-          responses: { '200': jsonResponse('Events', eventPage) },
-        },
-      },
-
-      '/actions': {
-        get: {
-          tags: ['actions'],
-          summary: 'The action ledger',
-          requestParams: { query: actionListQuery },
-          responses: { '200': jsonResponse('Actions', actionListResponse) },
-        },
-      },
-
-      '/actions/{actionId}': {
-        get: {
-          tags: ['actions'],
-          summary: 'Read one action with its receipt and reconciliation record',
-          requestParams: idParam('actionId', 'Action id'),
-          responses: {
-            '200': jsonResponse('Action', actionResponse),
-            '404': problem('No such action'),
-          },
-        },
-      },
-
-      '/actions/{actionId}/resolve': {
-        post: {
-          tags: ['actions'],
-          summary: 'Settle an action Melete could not confirm',
-          description:
-            'Used when verify cannot decide. The owner says what really happened; the answer is recorded ' +
-            'as a reconciliation, and the action is never re-dispatched.',
-          requestParams: idParam('actionId', 'Action id'),
-          requestBody: json(resolveActionRequest),
-          responses: {
-            '200': jsonResponse('Resolved', actionResponse),
-            '409': problem('Action is not awaiting reconciliation'),
-          },
-        },
-      },
-
-      '/approvals': {
-        get: {
-          tags: ['approvals'],
-          summary: 'Approvals waiting on the owner',
-          responses: { '200': jsonResponse('Approvals', approvalListResponse) },
-        },
-      },
-
-      '/approvals/{approvalId}': {
-        post: {
-          tags: ['approvals'],
-          summary: 'Approve or deny one action',
-          description:
-            'The decision binds to the payload hash the person was shown. Editing the draft creates a ' +
-            'new action, so an approval can never be spent on different content.',
-          requestParams: idParam('approvalId', 'Approval id'),
-          requestBody: json(approvalDecisionRequest),
-          responses: {
-            '200': jsonResponse('Decided', approvalDecisionResponse),
-            '409': problem('The payload changed since this approval was requested'),
-          },
-        },
-      },
-
-      '/connections': {
-        get: {
-          tags: ['connections'],
-          summary: 'List connections (never includes secrets)',
-          responses: { '200': jsonResponse('Connections', connectionListResponse) },
-        },
-        post: {
-          tags: ['connections'],
-          summary: 'Add a connection',
-          requestBody: json(createConnectionRequest),
-          responses: {
-            '201': jsonResponse('Created', connectionResponse),
-            '400': problem('Invalid request'),
-          },
-        },
-      },
-
-      '/connections/{connectionId}': {
-        get: {
-          tags: ['connections'],
-          summary: 'Read one connection',
-          requestParams: idParam('connectionId', 'Connection id'),
-          responses: {
-            '200': jsonResponse('Connection', connectionResponse),
-            '404': problem('No such connection'),
-          },
-        },
-      },
-
-      '/connections/{connectionId}/health': {
-        post: {
-          tags: ['connections'],
-          summary: 'Check a connection now',
-          requestParams: idParam('connectionId', 'Connection id'),
-          responses: { '200': jsonResponse('Connection', connectionResponse) },
-        },
-      },
-
-      '/knowledge/search': {
-        get: {
-          tags: ['knowledge'],
-          summary: 'Search one space',
-          description:
-            'Retrieval is scoped to exactly one space by the handle the caller holds, not by a filter ' +
-            'argument. Retracted records are never returned.',
-          requestParams: { query: knowledgeSearchQuery },
-          responses: { '200': jsonResponse('Hits', knowledgeSearchResponse) },
-        },
-      },
-
-      '/knowledge/{recordId}': {
-        get: {
-          tags: ['knowledge'],
-          summary: 'Read one record with its provenance',
-          requestParams: idParam('recordId', 'Knowledge record id'),
-          responses: {
-            '200': jsonResponse('Record', knowledgeRecordResponse),
-            '404': problem('No such record'),
-          },
-        },
-        delete: {
-          tags: ['knowledge'],
-          summary: 'Retract or delete a record',
-          requestParams: idParam('recordId', 'Knowledge record id'),
-          requestBody: json(retractKnowledgeRequest),
-          responses: {
-            '200': jsonResponse('Record', knowledgeRecordResponse),
-            '404': problem('No such record'),
-          },
-        },
-      },
-
-      '/knowledge/proposals': {
-        post: {
-          tags: ['knowledge'],
-          summary: 'Propose a knowledge write',
-          description:
-            'The only write path an agent has. The proposal is validated and rendered as a diff the ' +
-            'owner applies or discards; applying is a git commit.',
-          requestBody: json(proposeKnowledgeRequest),
-          responses: {
-            '201': jsonResponse('Proposal', proposeKnowledgeResponse),
-            '400': problem('The record failed lint'),
-          },
-        },
-      },
-
-      '/skills': {
-        get: {
-          tags: ['skills'],
-          summary: 'List built-in and space skills',
-          responses: { '200': jsonResponse('Skills', skillListResponse) },
-        },
-      },
-    },
-  },
-  // Shared shapes such as `job` appear on many paths; emitting them once under
-  // components keeps the document readable and small enough to review in a PR.
-  { reused: 'ref' },
+    // Shared shapes such as `job` appear on many paths; emitting them once under
+    // components keeps the document readable and small enough to review in a PR.
+    { reused: 'ref' },
   );
 }
 

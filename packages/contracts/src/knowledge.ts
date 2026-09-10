@@ -6,7 +6,7 @@
  * audience that makes a shared directory safe.
  */
 import { z } from 'zod';
-import { ID_PREFIXES, SCHEMA_VERSION, dateOnly, prefixedId } from './common.ts';
+import { dateOnly, ID_PREFIXES, prefixedId, SCHEMA_VERSION } from './common.ts';
 
 export const KNOWLEDGE_TYPES = [
   'fact',
@@ -288,10 +288,7 @@ export type LintContext = {
 };
 
 /** Every rule, in one call. Errors block a write; warnings are shown and allowed. */
-export function lintRecord(
-  frontmatter: KnowledgeFrontmatter,
-  context: LintContext,
-): LintFinding[] {
+export function lintRecord(frontmatter: KnowledgeFrontmatter, context: LintContext): LintFinding[] {
   const findings: LintFinding[] = [
     ...lintSpaceMatchesDirectory(frontmatter, context.filePath, context.spacesRoot),
     ...lintSupersedesResolve(frontmatter, context.knownIds),

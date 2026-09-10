@@ -5,6 +5,10 @@
   "type": "module",
   "license": "Apache-2.0",
   "description": "The conformance suite: eight scenarios that prove Melete's boundary and durability properties.",
-  "scripts": { "test": "bun test" },
-  "dependencies": { "@melete/contracts": "workspace:*" }
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@melete/contracts": "workspace:*"
+  }
 }

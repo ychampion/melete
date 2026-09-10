@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { canonicalizePayload } from './broker.ts';
 import { ID_PREFIXES, isErr, isOk, ok, unwrap } from './common.ts';
 import {
-  TABLES,
   action,
   approval,
   attempt,
@@ -15,6 +14,7 @@ import {
   owner,
   skillRow,
   space,
+  TABLES,
   trigger,
 } from './entities.ts';
 
@@ -121,7 +121,9 @@ describe('job', () => {
   });
 
   test('refuses a budget with no ceiling on wall time', () => {
-    expect(job.safeParse({ ...row, budget: { ...row.budget, max_wall_ms: 0 } }).success).toBe(false);
+    expect(job.safeParse({ ...row, budget: { ...row.budget, max_wall_ms: 0 } }).success).toBe(
+      false,
+    );
   });
 });
 

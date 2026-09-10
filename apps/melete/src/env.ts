@@ -39,9 +39,7 @@ export const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
-export type EnvResult =
-  | { ok: true; env: Env }
-  | { ok: false; issues: string[] };
+export type EnvResult = { ok: true; env: Env } | { ok: false; issues: string[] };
 
 /** Parse without throwing, so the caller decides how loudly to fail. */
 export function readEnv(source: Record<string, string | undefined> = process.env): EnvResult {

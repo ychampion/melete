@@ -105,9 +105,7 @@ export const attemptBundle = z.object({
   model: z.object({
     provider: z.string(),
     model: z.string(),
-    fallback: z
-      .object({ provider: z.string(), model: z.string() })
-      .nullable(),
+    fallback: z.object({ provider: z.string(), model: z.string() }).nullable(),
   }),
 });
 export type AttemptBundle = z.infer<typeof attemptBundle>;
@@ -126,7 +124,11 @@ export const attemptOutcome = z.discriminatedUnion('kind', [
     summary: z.string(),
     evidence: z.array(evidenceRef),
   }),
-  z.object({ kind: z.literal('waiting_for_input'), question: z.string(), draft: z.string().optional() }),
+  z.object({
+    kind: z.literal('waiting_for_input'),
+    question: z.string(),
+    draft: z.string().optional(),
+  }),
   z.object({
     kind: z.literal('waiting_for_approval'),
     action_ids: z.array(prefixedId(ID_PREFIXES.action)).min(1),
@@ -165,7 +167,11 @@ const runtimeEventBase = {
 };
 
 export const runtimeEvent = z.discriminatedUnion('type', [
-  z.object({ ...runtimeEventBase, type: z.literal('turn_started'), turn: z.number().int().nonnegative() }),
+  z.object({
+    ...runtimeEventBase,
+    type: z.literal('turn_started'),
+    turn: z.number().int().nonnegative(),
+  }),
   z.object({ ...runtimeEventBase, type: z.literal('text_delta'), text: z.string() }),
   z.object({
     ...runtimeEventBase,

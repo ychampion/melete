@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { isErr, isOk, unwrap } from './common.ts';
 import {
-  JOB_STATES,
-  LEGAL_EDGES,
-  type JobState,
-  type TransitionInput,
   isTerminal,
   isWaiting,
+  JOB_STATES,
+  type JobState,
+  LEGAL_EDGES,
+  type TransitionInput,
   transition,
 } from './job-state.ts';
 

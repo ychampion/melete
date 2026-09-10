@@ -61,4 +61,5 @@ export function slugify(title: string): string {
   return slug || 'untitled';
 }
 
-export const recordPath = (title: string): string => `${SPACE_LAYOUT.knowledge}/${slugify(title)}.md`;
+export const recordPath = (title: string): string =>
+  `${SPACE_LAYOUT.knowledge}/${slugify(title)}.md`;

@@ -3,10 +3,11 @@
  * Markdown and rebuildable at any time, so isolation is a matter of which file
  * the process opened rather than a filter the model was trusted to pass.
  */
+
+import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { Database } from 'bun:sqlite';
-import { type KnowledgeRecordStatus, isRetrievable } from '@melete/contracts';
+import { isRetrievable, type KnowledgeRecordStatus } from '@melete/contracts';
 
 export type IndexedRecord = {
   id: string;

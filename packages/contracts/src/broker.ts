@@ -6,7 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { ID_PREFIXES, jsonObject, type JsonValue, prefixedId, timestamp } from './common.ts';
+import { ID_PREFIXES, type JsonValue, jsonObject, prefixedId, timestamp } from './common.ts';
 
 /**
  * How much of the world an action can change. The connector manifest declares

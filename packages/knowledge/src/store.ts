@@ -3,12 +3,12 @@
  * report the ones that do not validate, and build the index the space is
  * searched through.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { type ParsedRecord, parseRecord } from './frontmatter.ts';
 import { type IndexedRecord, SpaceIndex } from './fts.ts';
-import { type SpacePaths, resolveInSpace, spacePaths } from './layout.ts';
+import { resolveInSpace, type SpacePaths, spacePaths } from './layout.ts';
 
 export type LoadedRecord = ParsedRecord & {
   /** Relative to the space root, always with forward slashes. */

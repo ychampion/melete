@@ -1,11 +1,11 @@
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { parseRecord, serializeRecord } from './frontmatter.ts';
 import { SpaceIndex, toMatchQuery } from './fts.ts';
-import { recordPath, resolveInSpace, slugify, spacePaths } from './layout.ts';
+import { recordPath, resolveInSpace, slugify, type spacePaths } from './layout.ts';
 import { ProposalStore, renderDiff } from './mediation.ts';
 import { buildIndex, hardDelete, initSpace, knownIds, loadSpace } from './store.ts';
 
@@ -262,7 +262,14 @@ describe('the full-text index', () => {
   test('removing a record takes it out of the index immediately', () => {
     const index = SpaceIndex.open(':memory:');
     try {
-      index.upsert({ id: ID.bun, path: 'a.md', title: 'Bun', tags: [], body: 'bun', status: 'active' });
+      index.upsert({
+        id: ID.bun,
+        path: 'a.md',
+        title: 'Bun',
+        tags: [],
+        body: 'bun',
+        status: 'active',
+      });
       expect(index.search('bun')).toHaveLength(1);
       index.remove(ID.bun);
       expect(index.search('bun')).toEqual([]);
@@ -326,7 +333,11 @@ describe('write mediation', () => {
     if (result.ok) {
       expect(result.diff).toContain('+++ b/knowledge/new-record.md');
       expect(result.diff).toContain('+Something Melete learned today.');
-      expect(store().list().map((p) => p.path)).toContain('knowledge/new-record.md');
+      expect(
+        store()
+          .list()
+          .map((p) => p.path),
+      ).toContain('knowledge/new-record.md');
       expect(store().discard(result.proposal.id)).toBe(true);
     }
   });

@@ -7,8 +7,15 @@
   "description": "Markdown knowledge records: frontmatter parsing, validation, the per-space FTS5 index, and write mediation.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
-  "scripts": { "test": "bun test" },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "bun test"
+  },
   "dependencies": {
     "@melete/contracts": "workspace:*",
     "gray-matter": "4.0.3",

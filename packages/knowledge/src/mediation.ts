@@ -7,11 +7,11 @@
  * Applying is a git commit carrying a `Melete-Proposed-By:` trailer, and lands
  * with the git store in workstream W4.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type LintFinding, type ProposedWrite, hasLintErrors, lintRecord } from '@melete/contracts';
+import { hasLintErrors, type LintFinding, lintRecord, type ProposedWrite } from '@melete/contracts';
 import { serializeRecord } from './frontmatter.ts';
-import { type SpacePaths, resolveInSpace } from './layout.ts';
+import { resolveInSpace, type SpacePaths } from './layout.ts';
 
 export type Proposal = {
   id: string;
@@ -136,7 +136,9 @@ export class ProposalStore {
     if (!existsSync(this.options.paths.proposed)) return [];
     return readdirSync(this.options.paths.proposed)
       .filter((f) => f.endsWith('.json'))
-      .map((f) => JSON.parse(readFileSync(join(this.options.paths.proposed, f), 'utf8')) as Proposal)
+      .map(
+        (f) => JSON.parse(readFileSync(join(this.options.paths.proposed, f), 'utf8')) as Proposal,
+      )
       .sort((a, b) => a.proposedAt.localeCompare(b.proposedAt));
   }
 

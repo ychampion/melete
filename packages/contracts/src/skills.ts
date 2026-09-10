@@ -94,7 +94,7 @@ export function selectSkills<T extends SkillCandidate>(
     if (score > 0) scored.push({ skill: candidate, score, matched, order });
   });
 
-  scored.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+  scored.sort((a, b) => b.score - a.score || a.order - b.order);
 
   return scored.slice(0, max).map(({ skill: s, score, matched }) => ({ skill: s, score, matched }));
 }

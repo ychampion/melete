@@ -7,8 +7,15 @@
   "description": "Runtime adapter for a pinned, unmodified Hermes release: container image, Melete plugin, and typed HTTP client.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": { "types": "./src/index.ts", "default": "./src/index.ts" } },
-  "scripts": { "test": "bun test" },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "bun test"
+  },
   "dependencies": {
     "@melete/contracts": "workspace:*",
     "zod": "4.6.2"

@@ -4,7 +4,7 @@
  * The files are the system of record; everything else here is derived.
  */
 export * from './frontmatter.ts';
-export * from './layout.ts';
 export * from './fts.ts';
+export * from './layout.ts';
 export * from './mediation.ts';
 export * from './store.ts';

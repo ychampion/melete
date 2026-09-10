@@ -73,7 +73,11 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     `runtime.user is ${runtime.user ?? 'unset'}`,
   );
 
-  say('the runtime root filesystem is read only', runtime.read_only === true, 'runtime.read_only must be true');
+  say(
+    'the runtime root filesystem is read only',
+    runtime.read_only === true,
+    'runtime.read_only must be true',
+  );
 
   say(
     'the runtime drops every capability',

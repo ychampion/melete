@@ -1,9 +1,17 @@
 import { describe, expect, test } from 'bun:test';
-import { type ComposeFile, checkCompose, defaultComposePath, loadCompose } from './compose-check.ts';
+import {
+  type ComposeFile,
+  checkCompose,
+  defaultComposePath,
+  loadCompose,
+} from './compose-check.ts';
 
 const compose = loadCompose(defaultComposePath());
 
-const failures = (file: ComposeFile) => checkCompose(file).filter((r) => !r.ok).map((r) => r.name);
+const failures = (file: ComposeFile) =>
+  checkCompose(file)
+    .filter((r) => !r.ok)
+    .map((r) => r.name);
 
 describe('the shipped compose file', () => {
   test('passes every boundary check', () => {

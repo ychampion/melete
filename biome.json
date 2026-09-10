@@ -5,12 +5,12 @@
     "ignoreUnknown": true,
     "includes": [
       "**",
-      "!**/node_modules/**",
-      "!**/dist/**",
+      "!**/node_modules",
+      "!**/dist",
       "!**/*.json.lock",
       "!bun.lock",
       "!packages/contracts/openapi.json",
-      "!apps/melete/drizzle/**"
+      "!apps/melete/drizzle"
     ]
   },
   "formatter": {
@@ -21,7 +21,7 @@
   },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": true }
+    "rules": { "preset": "recommended" }
   },
   "javascript": {
     "formatter": { "quoteStyle": "single", "semicolons": "always", "trailingCommas": "all" }

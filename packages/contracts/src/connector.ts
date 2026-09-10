@@ -54,10 +54,8 @@ export const connectorHealth = z.object({
 export type ConnectorHealth = z.infer<typeof connectorHealth>;
 
 /** Find a tool in a manifest by its fully qualified name. */
-export const findTool = (
-  manifest: ConnectorManifest,
-  name: string,
-): ConnectorTool | undefined => manifest.tools.find((t) => t.name === name);
+export const findTool = (manifest: ConnectorManifest, name: string): ConnectorTool | undefined =>
+  manifest.tools.find((t) => t.name === name);
 
 /**
  * Which tools a job may see, given its scopes. Filtering happens in the service

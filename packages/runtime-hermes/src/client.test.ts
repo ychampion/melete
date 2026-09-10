@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { CONTEXT_LIMITS, type AttemptBundle } from '@melete/contracts';
+import { type AttemptBundle, CONTEXT_LIMITS } from '@melete/contracts';
 import {
   HERMES_APPROVAL_ANSWERS,
   HERMES_ROUTES,
   HermesClient,
-  IDENTITY,
   hermesApprovalRequest,
   hermesRunStatus,
+  IDENTITY,
   parseSse,
 } from './client.ts';
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
@@ -29,9 +29,7 @@ const bundle: AttemptBundle = {
     deliverable: { kind: 'message_sent' },
   },
   inputs: {
-    new_user_messages: [
-      { role: 'user', content: 'any news?', at: '2026-09-11T00:00:00.000Z' },
-    ],
+    new_user_messages: [{ role: 'user', content: 'any news?', at: '2026-09-11T00:00:00.000Z' }],
     approval_results: [{ action_id: `act_${SUFFIX}`, decision: 'denied', note: null }],
     trigger_events: [],
   },

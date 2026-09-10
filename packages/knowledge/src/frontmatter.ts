@@ -5,11 +5,11 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  hasLintErrors,
   type KnowledgeFrontmatter,
+  knowledgeFrontmatter,
   type LintContext,
   type LintFinding,
-  hasLintErrors,
-  knowledgeFrontmatter,
   lintRecord,
 } from '@melete/contracts';
 import matter from 'gray-matter';
@@ -63,7 +63,12 @@ export function parseRecord(source: string): ParseResult {
   // gray-matter returns an empty object for a file with no `---` block at all,
   // which would otherwise fail as fourteen missing fields instead of one clear
   // sentence about the block that is not there.
-  if (!source.replace(/^\uFEFF/, '').trimStart().startsWith('---')) {
+  if (
+    !source
+      .replace(/^\uFEFF/, '')
+      .trimStart()
+      .startsWith('---')
+  ) {
     return { ok: false, issues: ['the file has no frontmatter block'] };
   }
 

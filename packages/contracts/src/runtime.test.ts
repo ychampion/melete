@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { ID_PREFIXES } from './common.ts';
 import {
-  CONTEXT_LIMITS,
-  RUNTIME_EVENT_TYPES,
   attemptBundle,
   attemptOutcome,
+  CONTEXT_LIMITS,
   dedupKey,
   isDurableRuntimeEvent,
+  RUNTIME_EVENT_TYPES,
   runtimeEvent,
 } from './runtime.ts';
 
@@ -77,9 +77,9 @@ describe('attempt outcome', () => {
   });
 
   test('waiting for approval must name at least one action', () => {
-    expect(
-      attemptOutcome.safeParse({ kind: 'waiting_for_approval', action_ids: [] }).success,
-    ).toBe(false);
+    expect(attemptOutcome.safeParse({ kind: 'waiting_for_approval', action_ids: [] }).success).toBe(
+      false,
+    );
   });
 
   test('there is no outcome kind outside the six the contract allows', () => {

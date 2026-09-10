@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   ACTION_STATUSES,
-  canonicalJson,
   canonicalizePayload,
+  canonicalJson,
   isTerminalAction,
   normalizeEmailAddress,
   payloadHash,
