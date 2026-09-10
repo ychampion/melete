@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@melete/contracts": ["./packages/contracts/src/index.ts"],
+      "@melete/contracts/*": ["./packages/contracts/src/*"],
+      "@melete/knowledge": ["./packages/knowledge/src/index.ts"],
+      "@melete/runtime-hermes": ["./packages/runtime-hermes/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/scripts/**/*.ts",
+    "apps/*/src/**/*.ts",
+    "apps/*/*.ts",
+    "deploy/scripts/**/*.ts",
+    "conformance/**/*.ts"
+  ],
+  "exclude": ["node_modules", "**/node_modules", "**/dist"]
+}
