@@ -161,9 +161,7 @@ export class ProposalStore {
    * loudly rather than half-writing a space.
    */
   apply(_id: string): never {
-    throw new Error(
-      'applying a proposal requires the git store, which arrives with the git store',
-    );
+    throw new Error('applying a proposal requires the git store, which is not implemented yet');
   }
 
   private stagePath(id: string): string {
