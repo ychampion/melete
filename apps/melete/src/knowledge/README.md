@@ -8,4 +8,4 @@ Retrieval is scoped by the handle the caller holds, not by a filter argument the
 model supplies. A retracted record leaves the index in the same operation that
 retracts it, and stays gone after a restart.
 
-Owned by workstream W4.
+Not implemented yet.

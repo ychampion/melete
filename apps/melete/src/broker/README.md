@@ -15,4 +15,4 @@ The only path from a runtime to the world.
 - Receipts are persisted before the runtime learns the result. A late receipt
   from a fenced attempt is recorded and marked late.
 
-Owned by workstream W2.
+Not implemented yet.

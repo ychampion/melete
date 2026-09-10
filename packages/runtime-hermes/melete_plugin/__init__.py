@@ -7,7 +7,7 @@ credentials, and no network access of its own live in this process.
 
 Status: v0.1 skeleton. `register` builds the tool set from the catalog the
 broker serves and wires the forwarder; the forwarder itself is completed in the
-runtime workstream, which also owns the approval bridge.
+runtime work that also owns the approval bridge.
 """
 
 from __future__ import annotations

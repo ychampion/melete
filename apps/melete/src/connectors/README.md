@@ -8,4 +8,4 @@ next step.
 
 See `docs/CONNECTORS.md` for the tool tables.
 
-Owned by workstream W2.
+Not implemented yet.

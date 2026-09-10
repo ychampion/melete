@@ -14,4 +14,4 @@ Rules this module keeps:
 - Reads are scoped to one space. A caller that holds a handle to one space
   cannot widen it with a query parameter.
 
-Owned by workstream W1.
+Not implemented yet.

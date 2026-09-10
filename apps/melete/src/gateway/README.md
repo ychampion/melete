@@ -10,4 +10,4 @@ the job's `model.fallback` allows one. OAuth-based providers pass through with
 tokens held in the runtime's own auth store in v0.1, which `docs/THREAT-MODEL.md`
 states plainly.
 
-Owned by workstream W2.
+Not implemented yet.

@@ -14,4 +14,4 @@ responsibility alive across restarts.
 - Every wake runs exactly one bounded attempt and then commits an outcome.
   Waiting never holds a process.
 
-Owned by workstream W1.
+Not implemented yet.

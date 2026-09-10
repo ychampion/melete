@@ -8,4 +8,4 @@ the global `GET /events?after=` both replay from the `event` table, and
 row. Text deltas are best-effort and a gap in them is shown as an ellipsis,
 never as missing history.
 
-Owned by workstream W1.
+Not implemented yet.

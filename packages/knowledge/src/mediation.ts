@@ -5,7 +5,7 @@
  *
  * v0.1 status: proposing, listing, diffing, and discarding are implemented here.
  * Applying is a git commit carrying a `Melete-Proposed-By:` trailer, and lands
- * with the git store in workstream W4.
+ * with the git store.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -157,12 +157,12 @@ export class ProposalStore {
 
   /**
    * Applying is a git apply plus a commit, which is the audit record and the
-   * undo. The git store arrives with workstream W4; until then this refuses
+   * undo. The git store is not implemented yet; until then this refuses
    * loudly rather than half-writing a space.
    */
   apply(_id: string): never {
     throw new Error(
-      'applying a proposal requires the git store, which arrives with the knowledge workstream',
+      'applying a proposal requires the git store, which arrives with the git store',
     );
   }
 
