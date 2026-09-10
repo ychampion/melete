@@ -1,0 +1,3129 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Melete",
+    "version": "0.1.0-pre",
+    "summary": "An open-source, self-hosted, model-agnostic personal assistant.",
+    "description": "Give Melete a responsibility, close the tab, come back to progress, a result, or one precise question. This document describes the v0.1 HTTP surface. Nothing here is stable yet: the release is pre-release and endpoints may change until v0.1.0 is tagged.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8787",
+      "description": "Default self-hosted address"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health"
+    },
+    {
+      "name": "spaces"
+    },
+    {
+      "name": "jobs"
+    },
+    {
+      "name": "attempts"
+    },
+    {
+      "name": "events"
+    },
+    {
+      "name": "actions"
+    },
+    {
+      "name": "approvals"
+    },
+    {
+      "name": "connections"
+    },
+    {
+      "name": "knowledge"
+    },
+    {
+      "name": "skills"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Liveness and dependency check",
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "degraded"
+                      ]
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "database": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "unreachable",
+                        "not_configured"
+                      ]
+                    },
+                    "time": {
+                      "$ref": "#/components/schemas/__schema5"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "version",
+                    "database",
+                    "time"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces": {
+      "get": {
+        "tags": [
+          "spaces"
+        ],
+        "summary": "List spaces",
+        "responses": {
+          "200": {
+            "description": "Spaces",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema6"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "spaces"
+        ],
+        "summary": "Create a space",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema6"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List jobs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "schema": {
+              "type": "string",
+              "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/__schema8"
+                      }
+                    }
+                  },
+                  "required": [
+                    "jobs"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Delegate a responsibility",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "space_id": {
+                    "type": "string",
+                    "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "objective": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "constraints": {
+                    "type": "object",
+                    "properties": {
+                      "deliverable": {
+                        "default": {
+                          "kind": "none"
+                        },
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "none"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "artifact"
+                              },
+                              "path_glob": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "path_glob"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "message_sent"
+                              },
+                              "connection_id": {
+                                "type": "string",
+                                "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "connection_id"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "answer"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ]
+                          }
+                        ],
+                        "type": "object"
+                      },
+                      "allowed_domains": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "public_compartment": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "notes": {
+                        "type": "string",
+                        "maxLength": 4000
+                      }
+                    }
+                  },
+                  "budget": {
+                    "type": "object",
+                    "properties": {
+                      "max_turns": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_output_tokens": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_wall_ms": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_actions": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_attempts": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_usd_est": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "space_id",
+                  "title",
+                  "objective"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema9"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Read one job",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "schema": {
+              "type": "string",
+              "description": "Job id"
+            },
+            "required": true,
+            "description": "Job id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema9"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}/cancel": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Cancel a job",
+        "description": "Sets the job to cancelled and bumps the lease epoch. Actions already admitted may still finish; their disposition is recorded honestly and an unknown action is never hidden.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "schema": {
+              "type": "string",
+              "description": "Job id"
+            },
+            "required": true,
+            "description": "Job id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema9"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Job is already finished",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}/messages": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Answer a question the job is waiting on",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "schema": {
+              "type": "string",
+              "description": "Job id"
+            },
+            "required": true,
+            "description": "Job id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted; the job is queued for its next attempt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema9"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The job is not waiting for input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}/attempts": {
+      "get": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "List the attempts of a job",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "schema": {
+              "type": "string",
+              "description": "Job id"
+            },
+            "required": true,
+            "description": "Job id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "attempts": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/__schema10"
+                      }
+                    }
+                  },
+                  "required": [
+                    "attempts"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/attempts/{attemptId}": {
+      "get": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Read one attempt, including the provider and model actually used",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attemptId",
+            "schema": {
+              "type": "string",
+              "description": "Attempt id"
+            },
+            "required": true,
+            "description": "Attempt id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attempt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "attempt": {
+                      "$ref": "#/components/schemas/__schema10"
+                    }
+                  },
+                  "required": [
+                    "attempt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such attempt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{jobId}/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Replay and follow one job event stream",
+        "description": "Returns JSON when Accept is application/json and a Server-Sent Events stream when it is text/event-stream. Both start after the `after` cursor; `Last-Event-ID` overrides it.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "$ref": "#/components/schemas/__schema0"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "$ref": "#/components/schemas/__schema1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "types",
+            "schema": {
+              "$ref": "#/components/schemas/__schema2"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "The global feed that drives the inbox",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "$ref": "#/components/schemas/__schema0"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "$ref": "#/components/schemas/__schema1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "types",
+            "schema": {
+              "$ref": "#/components/schemas/__schema2"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actions": {
+      "get": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "The action ledger",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "job_id",
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "proposed",
+                "needs_approval",
+                "approved",
+                "denied",
+                "admitted",
+                "dispatched",
+                "succeeded",
+                "failed",
+                "unknown",
+                "unresolved"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "effect_class",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write_reversible",
+                "write_external",
+                "spend"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Actions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/__schema14"
+                      }
+                    }
+                  },
+                  "required": [
+                    "actions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actions/{actionId}": {
+      "get": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Read one action with its receipt and reconciliation record",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "actionId",
+            "schema": {
+              "type": "string",
+              "description": "Action id"
+            },
+            "required": true,
+            "description": "Action id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema17"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actions/{actionId}/resolve": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Settle an action Melete could not confirm",
+        "description": "Used when verify cannot decide. The owner says what really happened; the answer is recorded as a reconciliation, and the action is never re-dispatched.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "actionId",
+            "schema": {
+              "type": "string",
+              "description": "Action id"
+            },
+            "required": true,
+            "description": "Action id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "resolution": {
+                    "type": "string",
+                    "enum": [
+                      "succeeded",
+                      "failed",
+                      "unresolved"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "resolution"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema17"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Action is not awaiting reconciliation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/approvals": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approvals waiting on the owner",
+        "responses": {
+          "200": {
+            "description": "Approvals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approvals": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "approval_id": {
+                            "type": "string",
+                            "pattern": "^apr_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "action_id": {
+                            "type": "string",
+                            "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "job_id": {
+                            "type": "string",
+                            "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "job_revision": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "effect_class": {
+                            "$ref": "#/components/schemas/__schema15"
+                          },
+                          "connection_id": {
+                            "type": "string",
+                            "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "canonical_payload": {
+                            "$ref": "#/components/schemas/__schema11"
+                          },
+                          "payload_hash": {
+                            "$ref": "#/components/schemas/__schema16"
+                          },
+                          "requested_at": {
+                            "$ref": "#/components/schemas/__schema5"
+                          },
+                          "expires_at": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/components/schemas/__schema5"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "approval_id",
+                          "action_id",
+                          "job_id",
+                          "job_revision",
+                          "kind",
+                          "effect_class",
+                          "connection_id",
+                          "canonical_payload",
+                          "payload_hash",
+                          "requested_at",
+                          "expires_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "approvals"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/approvals/{approvalId}": {
+      "post": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Approve or deny one action",
+        "description": "The decision binds to the payload hash the person was shown. Editing the draft creates a new action, so an approval can never be spent on different content.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approvalId",
+            "schema": {
+              "type": "string",
+              "description": "Approval id"
+            },
+            "required": true,
+            "description": "Approval id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approved",
+                      "denied"
+                    ]
+                  },
+                  "payload_hash": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "decision",
+                  "payload_hash"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decided",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approval_id": {
+                      "type": "string",
+                      "pattern": "^apr_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "action_id": {
+                      "type": "string",
+                      "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "approved",
+                        "denied"
+                      ]
+                    },
+                    "payload_hash": {
+                      "$ref": "#/components/schemas/__schema16"
+                    },
+                    "decided_at": {
+                      "$ref": "#/components/schemas/__schema5"
+                    }
+                  },
+                  "required": [
+                    "approval_id",
+                    "action_id",
+                    "decision",
+                    "payload_hash",
+                    "decided_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The payload changed since this approval was requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "List connections (never includes secrets)",
+        "responses": {
+          "200": {
+            "description": "Connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connections": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/__schema18"
+                      }
+                    }
+                  },
+                  "required": [
+                    "connections"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Add a connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "space_id": {
+                    "type": "string",
+                    "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "imap",
+                      "smtp",
+                      "caldav",
+                      "web",
+                      "files",
+                      "test"
+                    ]
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "scopes": {
+                    "default": [],
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "credentials": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "space_id",
+                  "provider",
+                  "label"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema19"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{connectionId}": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Read one connection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionId",
+            "schema": {
+              "type": "string",
+              "description": "Connection id"
+            },
+            "required": true,
+            "description": "Connection id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema19"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{connectionId}/health": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Check a connection now",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionId",
+            "schema": {
+              "type": "string",
+              "description": "Connection id"
+            },
+            "required": true,
+            "description": "Connection id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema19"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/knowledge/search": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Search one space",
+        "description": "Retrieval is scoped to exactly one space by the handle the caller holds, not by a filter argument. Retracted records are never returned.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "schema": {
+              "type": "string",
+              "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 10,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 50
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_retracted",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "excerpt": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "$ref": "#/components/schemas/__schema20"
+                          },
+                          "score": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "path",
+                          "title",
+                          "excerpt",
+                          "status",
+                          "score"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "hits"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/knowledge/{recordId}": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Read one record with its provenance",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recordId",
+            "schema": {
+              "type": "string",
+              "description": "Knowledge record id"
+            },
+            "required": true,
+            "description": "Knowledge record id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema21"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Retract or delete a record",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recordId",
+            "schema": {
+              "type": "string",
+              "description": "Knowledge record id"
+            },
+            "required": true,
+            "description": "Knowledge record id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "hard_delete": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema21"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/knowledge/proposals": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Propose a knowledge write",
+        "description": "The only write path an agent has. The proposal is validated and rendered as a diff the owner applies or discards; applying is a git commit.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "space": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "frontmatter": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/__schema3"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "space": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "audience": {
+                        "type": "string",
+                        "enum": [
+                          "private",
+                          "space",
+                          "public"
+                        ]
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "fact",
+                          "preference",
+                          "decision",
+                          "procedure",
+                          "reference",
+                          "event"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "active",
+                          "superseded",
+                          "retracted",
+                          "disputed"
+                        ]
+                      },
+                      "confidence": {
+                        "type": "string",
+                        "enum": [
+                          "high",
+                          "medium",
+                          "low"
+                        ]
+                      },
+                      "asserted_by": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "agent",
+                          "document",
+                          "tool"
+                        ]
+                      },
+                      "source": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "statement",
+                              "file",
+                              "url",
+                              "tool_output"
+                            ]
+                          },
+                          "ref": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "quote": {
+                            "default": "",
+                            "type": "string"
+                          },
+                          "sha256": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "ref"
+                        ]
+                      },
+                      "observed_at": {
+                        "$ref": "#/components/schemas/__schema4"
+                      },
+                      "valid_from": {
+                        "$ref": "#/components/schemas/__schema4"
+                      },
+                      "valid_until": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/__schema4"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "supersedes": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/__schema3"
+                        }
+                      },
+                      "superseded_by": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/__schema3"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "created": {
+                        "$ref": "#/components/schemas/__schema4"
+                      },
+                      "updated": {
+                        "$ref": "#/components/schemas/__schema4"
+                      },
+                      "tags": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "links": {
+                        "default": [],
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/__schema3"
+                        }
+                      },
+                      "schema_version": {
+                        "type": "number",
+                        "const": 1
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "space",
+                      "audience",
+                      "type",
+                      "status",
+                      "confidence",
+                      "asserted_by",
+                      "source",
+                      "observed_at",
+                      "valid_from",
+                      "created",
+                      "updated",
+                      "schema_version"
+                    ]
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "space",
+                  "path",
+                  "frontmatter",
+                  "body",
+                  "rationale"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Proposal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "proposal_id": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "diff": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "proposal_id",
+                    "path",
+                    "diff"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The record failed lint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema7"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/skills": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "List built-in and space skills",
+        "responses": {
+          "200": {
+            "description": "Skills",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "skills": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^skl_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "space_id": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "frontmatter": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9-]*$"
+                              },
+                              "description": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 300
+                              },
+                              "triggers": {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/components/schemas/__schema24"
+                                }
+                              },
+                              "tools": {
+                                "default": [],
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "max_tokens": {
+                                "default": 400,
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 400
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "description",
+                              "triggers",
+                              "tools",
+                              "max_tokens"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "space_id",
+                          "path",
+                          "enabled",
+                          "frontmatter"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "skills"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "__schema0": {
+        "default": 0,
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema1": {
+        "default": 200,
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "maximum": 1000
+      },
+      "__schema2": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "job_created",
+            "job_state_changed",
+            "attempt_started",
+            "attempt_ended",
+            "turn_started",
+            "text_delta",
+            "tool_call_proposed",
+            "tool_result",
+            "action_requested",
+            "action_status_changed",
+            "approval_requested",
+            "approval_decided",
+            "knowledge_changed",
+            "notice"
+          ]
+        }
+      },
+      "__schema3": {
+        "type": "string",
+        "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+      },
+      "__schema4": {
+        "type": "string",
+        "format": "date",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+      },
+      "__schema5": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+      },
+      "__schema6": {
+        "type": "object",
+        "properties": {
+          "spaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "personal"
+                  ]
+                },
+                "audience": {
+                  "type": "string",
+                  "enum": [
+                    "owner"
+                  ]
+                },
+                "git_path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "created_at": {
+                  "$ref": "#/components/schemas/__schema5"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "kind",
+                "audience",
+                "git_path",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "spaces"
+        ],
+        "additionalProperties": false
+      },
+      "__schema7": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "__schema8": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "space_id": {
+            "type": "string",
+            "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constraints": {
+            "type": "object",
+            "properties": {
+              "deliverable": {
+                "default": {
+                  "kind": "none"
+                },
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "none"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "artifact"
+                      },
+                      "path_glob": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "path_glob"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "message_sent"
+                      },
+                      "connection_id": {
+                        "type": "string",
+                        "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "connection_id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "answer"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  }
+                ],
+                "type": "object"
+              },
+              "allowed_domains": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "public_compartment": {
+                "default": false,
+                "type": "boolean"
+              },
+              "notes": {
+                "type": "string",
+                "maxLength": 4000
+              }
+            },
+            "required": [
+              "deliverable",
+              "allowed_domains",
+              "public_compartment"
+            ],
+            "additionalProperties": false
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "waiting_for_input",
+              "waiting_for_approval",
+              "waiting_for_event_or_time",
+              "needs_reconciliation",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "lease_epoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "next_wake_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema5"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "none"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user_input"
+                  },
+                  "question": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "question"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "approval"
+                  },
+                  "action_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "action_ids"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "timer"
+                  },
+                  "wake_at": {
+                    "$ref": "#/components/schemas/__schema5"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "wake_at"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "event"
+                  },
+                  "trigger_id": {
+                    "type": "string",
+                    "pattern": "^trg_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                  },
+                  "deadline_at": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/__schema5"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "trigger_id",
+                  "deadline_at"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "type": "object"
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "max_turns": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "max_output_tokens": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "max_wall_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "max_actions": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "max_attempts": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "max_usd_est": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "max_turns",
+              "max_output_tokens",
+              "max_wall_ms",
+              "max_actions",
+              "max_attempts",
+              "max_usd_est"
+            ],
+            "additionalProperties": false
+          },
+          "created_by": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "trigger",
+              "system"
+            ]
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema5"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/__schema5"
+          },
+          "state_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "id",
+          "space_id",
+          "title",
+          "objective",
+          "constraints",
+          "state",
+          "revision",
+          "lease_epoch",
+          "next_wake_at",
+          "wait",
+          "budget",
+          "created_by",
+          "created_at",
+          "updated_at",
+          "state_version"
+        ],
+        "additionalProperties": false
+      },
+      "__schema9": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/__schema8"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "__schema10": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "job_id": {
+            "type": "string",
+            "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "runtime_version": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "model_actual": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "output_tokens": {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "cached_input_tokens": {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "requests": {
+                "default": 0,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "usd_est": {
+                "default": 0,
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "input_tokens",
+              "output_tokens",
+              "cached_input_tokens",
+              "requests",
+              "usd_est"
+            ],
+            "additionalProperties": false
+          },
+          "started_at": {
+            "$ref": "#/components/schemas/__schema5"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema5"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "waiting_for_input",
+                  "waiting_for_approval",
+                  "waiting_for_event_or_time",
+                  "failed",
+                  "budget_exhausted",
+                  "fenced"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome_detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema11"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_snapshot_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "job_id",
+          "epoch",
+          "runtime_version",
+          "provider",
+          "model",
+          "model_actual",
+          "usage",
+          "started_at",
+          "ended_at",
+          "outcome",
+          "outcome_detail",
+          "context_snapshot_ref"
+        ],
+        "additionalProperties": false
+      },
+      "__schema11": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "$ref": "#/components/schemas/__schema12"
+        }
+      },
+      "__schema12": {
+        "anyOf": [
+          {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/__schema12"
+            }
+          },
+          {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/__schema12"
+            }
+          }
+        ]
+      },
+      "__schema13": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "seq": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "job_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "attempt_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "job_created",
+                    "job_state_changed",
+                    "attempt_started",
+                    "attempt_ended",
+                    "turn_started",
+                    "text_delta",
+                    "tool_call_proposed",
+                    "tool_result",
+                    "action_requested",
+                    "action_status_changed",
+                    "approval_requested",
+                    "approval_decided",
+                    "knowledge_changed",
+                    "notice"
+                  ]
+                },
+                "payload": {
+                  "$ref": "#/components/schemas/__schema11"
+                },
+                "dedup_key": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "created_at": {
+                  "$ref": "#/components/schemas/__schema5"
+                }
+              },
+              "required": [
+                "seq",
+                "job_id",
+                "attempt_id",
+                "type",
+                "payload",
+                "dedup_key",
+                "created_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "next_cursor": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "events",
+          "next_cursor",
+          "has_more"
+        ],
+        "additionalProperties": false
+      },
+      "__schema14": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "job_id": {
+            "type": "string",
+            "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "connection_id": {
+            "type": "string",
+            "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "effect_class": {
+            "$ref": "#/components/schemas/__schema15"
+          },
+          "canonical_payload": {
+            "$ref": "#/components/schemas/__schema11"
+          },
+          "payload_hash": {
+            "$ref": "#/components/schemas/__schema16"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "needs_approval",
+              "approved",
+              "denied",
+              "admitted",
+              "dispatched",
+              "succeeded",
+              "failed",
+              "unknown",
+              "unresolved"
+            ]
+          },
+          "authorization_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^apr_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget_reservation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^led_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema5"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema11"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema5"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema11"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema5"
+          }
+        },
+        "required": [
+          "id",
+          "job_id",
+          "attempt_id",
+          "connection_id",
+          "kind",
+          "effect_class",
+          "canonical_payload",
+          "payload_hash",
+          "status",
+          "authorization_ref",
+          "budget_reservation",
+          "idempotency_key",
+          "dispatched_at",
+          "receipt",
+          "resolved_at",
+          "reconciliation",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "__schema15": {
+        "type": "string",
+        "enum": [
+          "read",
+          "write_reversible",
+          "write_external",
+          "spend"
+        ]
+      },
+      "__schema16": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "__schema17": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/__schema14"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "__schema18": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "space_id": {
+            "type": "string",
+            "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "imap",
+              "smtp",
+              "caldav",
+              "web",
+              "files",
+              "test"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled",
+              "error"
+            ]
+          },
+          "health": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "ok",
+              "degraded",
+              "failing"
+            ]
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema5"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema5"
+          }
+        },
+        "required": [
+          "id",
+          "space_id",
+          "provider",
+          "label",
+          "scopes",
+          "status",
+          "health",
+          "last_checked_at",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "__schema19": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/__schema18"
+          }
+        },
+        "required": [
+          "connection"
+        ],
+        "additionalProperties": false
+      },
+      "__schema20": {
+        "type": "string",
+        "enum": [
+          "active",
+          "superseded",
+          "retracted",
+          "disputed"
+        ]
+      },
+      "__schema21": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          "path": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/__schema22"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "space": {
+                "type": "string",
+                "minLength": 1
+              },
+              "audience": {
+                "type": "string",
+                "enum": [
+                  "private",
+                  "space",
+                  "public"
+                ]
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "fact",
+                  "preference",
+                  "decision",
+                  "procedure",
+                  "reference",
+                  "event"
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/__schema20"
+              },
+              "confidence": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "asserted_by": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "agent",
+                  "document",
+                  "tool"
+                ]
+              },
+              "source": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "statement",
+                      "file",
+                      "url",
+                      "tool_output"
+                    ]
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "quote": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ref",
+                  "quote",
+                  "sha256"
+                ],
+                "additionalProperties": false
+              },
+              "observed_at": {
+                "$ref": "#/components/schemas/__schema23"
+              },
+              "valid_from": {
+                "$ref": "#/components/schemas/__schema23"
+              },
+              "valid_until": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/__schema23"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "supersedes": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/__schema22"
+                }
+              },
+              "superseded_by": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/__schema22"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created": {
+                "$ref": "#/components/schemas/__schema23"
+              },
+              "updated": {
+                "$ref": "#/components/schemas/__schema23"
+              },
+              "tags": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "links": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/__schema22"
+                }
+              },
+              "schema_version": {
+                "type": "number",
+                "const": 1
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "space",
+              "audience",
+              "type",
+              "status",
+              "confidence",
+              "asserted_by",
+              "source",
+              "observed_at",
+              "valid_from",
+              "valid_until",
+              "supersedes",
+              "superseded_by",
+              "created",
+              "updated",
+              "tags",
+              "links",
+              "schema_version"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "frontmatter",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "__schema22": {
+        "type": "string",
+        "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+      },
+      "__schema23": {
+        "type": "string",
+        "format": "date",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+      },
+      "__schema24": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@melete/service",
+  "version": "0.1.0-pre",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "The Melete service: API, jobs, broker, gateway, connectors, knowledge, and events.",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "db:generate": "drizzle-kit generate",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@melete/contracts": "workspace:*",
+    "@melete/knowledge": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "hono": "4.13.7",
+    "pg-boss": "12.31.0",
+    "postgres": "3.4.9",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10"
+  }
+}

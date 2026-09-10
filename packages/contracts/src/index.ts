@@ -1,0 +1,17 @@
+/**
+ * @melete/contracts is the shared vocabulary of the system. The service, the
+ * runtime adapter, the knowledge package, the conformance suite, and any client
+ * all import their types from here, so a change to a boundary is one edit that
+ * breaks every caller that needs to know about it.
+ */
+export * from './common.ts';
+export * from './job-state.ts';
+export * from './broker.ts';
+export * from './entities.ts';
+export * from './runtime.ts';
+export * from './connector.ts';
+export * from './knowledge.ts';
+export * from './skills.ts';
+export * from './events.ts';
+export * from './api.ts';
+export { buildOpenApiDocument, openApiJson, OPENAPI_VERSION } from './openapi.ts';
