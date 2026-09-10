@@ -1,0 +1,33 @@
+# The Melete service: API, jobs, broker, gateway, connectors, knowledge, events.
+#
+# One process in v0.1 with separate modules and separate database roles. It sits
+# on both networks: `edge` so a person can reach the API, `internal` so it can
+# reach Postgres and be the runtime's only peer.
+
+FROM oven/bun:1.3.13-slim
+
+ENV NODE_ENV=production
+
+WORKDIR /app
+
+# Manifests first, so a source-only change does not re-resolve dependencies.
+COPY package.json bun.lock ./
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/knowledge/package.json packages/knowledge/
+COPY packages/runtime-hermes/package.json packages/runtime-hermes/
+COPY apps/melete/package.json apps/melete/
+COPY conformance/package.json conformance/
+RUN bun install --frozen-lockfile --production
+
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages/ packages/
+COPY apps/ apps/
+
+# Non-root. The service writes only to the mounted volumes.
+RUN useradd --uid 10002 --create-home --home-dir /home/melete melete     && mkdir -p /data/spaces /data/artifacts     && chown -R melete:melete /data /app
+
+USER melete
+
+EXPOSE 8787 8788
+
+CMD ["bun", "run", "apps/melete/src/index.ts"]

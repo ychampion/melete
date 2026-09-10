@@ -1,0 +1,122 @@
+# Melete, self-hosted. `docker compose up` from this directory.
+#
+# The shape of this file is the security boundary. The runtime container is
+# attached only to `internal`, which is declared `internal: true`, so the kernel
+# gives it no default route. The Melete broker is the only peer it can reach.
+# Scenario 6 of the conformance suite asserts exactly that from inside the
+# container: the internet, the Postgres port, the host metadata address, and a
+# sibling path are all unreachable.
+
+name: melete
+
+networks:
+  # Reachable from the host: the web client and the API.
+  edge:
+    driver: bridge
+  # No route out. Everything the runtime can see lives here.
+  internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  pgdata:
+  spaces:
+  artifacts:
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-melete}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-melete}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-melete}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  melete:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.melete
+    restart: unless-stopped
+    # On edge to serve the API, on internal to reach Postgres and to be the
+    # runtime's only peer.
+    networks: [edge, internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?set MELETE_MASTER_KEY in .env}
+      MELETE_SPACES_DIR: /data/spaces
+      MELETE_ARTIFACTS_DIR: /data/artifacts
+      MELETE_BROKER_BIND: 0.0.0.0:8788
+      MELETE_RUNTIME_URL: http://runtime:8790
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
+    volumes:
+      - spaces:/data/spaces
+      - artifacts:/data/artifacts
+    ports:
+      - "${MELETE_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8787/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  runtime:
+    build:
+      context: ../packages/runtime-hermes
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The whole point: internal only. Adding `edge` here would undo the boundary
+    # this release claims, and the compose check refuses it.
+    networks: [internal]
+    depends_on:
+      melete:
+        condition: service_started
+    environment:
+      MELETE_BROKER_URL: http://melete:8788
+      HERMES_EXEC_ASK: "1"
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      # The only writable path, and the only thing from the host side it sees.
+      - spaces:/work
+
+  # The web client is built separately and is not in this repository yet, so it
+  # sits behind a profile: `docker compose up` brings up everything else today,
+  # and `docker compose --profile web up` includes it once apps/web exists.
+  web:
+    profiles: [web]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    networks: [edge]
+    depends_on:
+      melete:
+        condition: service_started
+    environment:
+      MELETE_API_URL: ${MELETE_API_URL:-http://localhost:8787}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
