@@ -93,6 +93,30 @@ async function setup(options: { skills?: Skill[] } = {}) {
   return { ...seed, broker, registry, connector, calls: () => calls, sql: db.sql };
 }
 
+dbTest('a large valid scope manifest remains discoverable and callable', async () => {
+  const s = await setup();
+  const tool = s.connector.manifest.tools.find((item) => item.name === 'test.invoice');
+  if (!tool) throw new Error('fixture tool absent');
+  const extraScopes = Array.from({ length: 32 }, (_, index) => `scope_${index}_${'a'.repeat(125)}`);
+  tool.required_scopes.push(...extraScopes);
+  s.claims.scopes.push(...extraScopes);
+  await s.sql`update connection set scopes = ${JSON.stringify(s.claims.scopes)}::jsonb where id = ${s.connectionId}`;
+  const matches = await s.broker.discovery.search(s.claims, 'invoice');
+  expect(matches.map((entry) => entry.name)).toEqual(['test.invoice']);
+  expect(matches[0]?.required_scopes).toHaveLength(33);
+  const loaded = await s.broker.discovery.load(s.claims, 'test.invoice');
+  expect(
+    (
+      await s.broker.propose(s.claims, {
+        kind: loaded.tool.name,
+        connection_id: s.connectionId,
+        payload: {},
+      })
+    ).status,
+  ).toBe('succeeded');
+  expect(s.calls()).toBe(1);
+});
+
 dbTest(
   'scripted job discovers, loads and calls a tool absent from initial context through the broker',
   async () => {

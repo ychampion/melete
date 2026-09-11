@@ -25,4 +25,13 @@ export class ConnectorRegistry {
       left < right ? -1 : left > right ? 1 : 0,
     );
   }
+
+  async close(): Promise<void> {
+    const results = await Promise.allSettled(
+      [...this.connections.values()].map(async (connector) => connector.close?.()),
+    );
+    this.connections.clear();
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
 }

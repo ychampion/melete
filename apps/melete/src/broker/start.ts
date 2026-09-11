@@ -42,76 +42,86 @@ export async function startEffectBoundary(
     connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
     enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
   });
-  const providers = [
-    ...providersFromEnv({
-      FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
-      OPENAI_API_KEY: env.OPENAI_API_KEY,
-      ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
-      GOOGLE_API_KEY: env.GOOGLE_API_KEY,
-      OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
-      OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
-    }),
-    ...(env.MELETE_ENABLE_FAKE_PROVIDER ? [fakeProvider] : []),
-  ];
-  const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
-  if (env.MELETE_GATEWAY_TLS_DIR) {
-    for (const host of new Set(
-      providers
-        .filter((provider) => !provider.fake)
-        .map((provider) => new URL(provider.baseUrl).hostname),
-    )) {
-      try {
-        certificates.set(host, {
-          key: await readFile(join(env.MELETE_GATEWAY_TLS_DIR, `${host}.key.pem`)),
-          cert: await readFile(join(env.MELETE_GATEWAY_TLS_DIR, `${host}.cert.pem`)),
-        });
-      } catch (error) {
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
+  try {
+    const providers = [
+      ...providersFromEnv({
+        FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
+        OPENAI_API_KEY: env.OPENAI_API_KEY,
+        ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+        GOOGLE_API_KEY: env.GOOGLE_API_KEY,
+        OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+        OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
+      }),
+      ...(env.MELETE_ENABLE_FAKE_PROVIDER ? [fakeProvider] : []),
+    ];
+    const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
+    if (env.MELETE_GATEWAY_TLS_DIR) {
+      for (const host of new Set(
+        providers
+          .filter((provider) => !provider.fake)
+          .map((provider) => new URL(provider.baseUrl).hostname),
+      )) {
+        try {
+          certificates.set(host, {
+            key: await readFile(join(env.MELETE_GATEWAY_TLS_DIR, `${host}.key.pem`)),
+            cert: await readFile(join(env.MELETE_GATEWAY_TLS_DIR, `${host}.cert.pem`)),
+          });
+        } catch (error) {
+          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+        }
       }
     }
-  }
-  const queue = await startQueue(env.DATABASE_URL);
-  const spaces = filesystemSpaces(env.MELETE_SPACES_DIR);
-  queue.boss.on('error', () => process.stderr.write('effect queue error\n'));
-  const internal = createInternalServer({
-    sql: handle.sql,
-    connectors: registry,
-    capabilityKey: env.MELETE_CAPABILITY_KEY,
-    approvalKey: env.MELETE_APPROVAL_KEY,
-    boss: queue.boss,
-    providers,
-    defaultProvider: env.MELETE_DEFAULT_PROVIDER,
-    connectTls: (host) => certificates.get(host),
-    resolveAuthority: dependencies.resolveAuthority,
-    resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
-    catalog: {
-      skills: async (spaceId) =>
-        loadSkills({ spaceSkillsDirectory: (await spaces.byId(spaceId))?.paths.skills }).skills,
-    },
-  });
-  try {
+    queue = await startQueue(env.DATABASE_URL);
+    const activeQueue = queue;
+    const spaces = filesystemSpaces(env.MELETE_SPACES_DIR);
+    queue.boss.on('error', () => process.stderr.write('effect queue error\n'));
+    const internal = createInternalServer({
+      sql: handle.sql,
+      connectors: registry,
+      capabilityKey: env.MELETE_CAPABILITY_KEY,
+      approvalKey: env.MELETE_APPROVAL_KEY,
+      boss: queue.boss,
+      providers,
+      defaultProvider: env.MELETE_DEFAULT_PROVIDER,
+      connectTls: (host) => certificates.get(host),
+      resolveAuthority: dependencies.resolveAuthority,
+      resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
+      catalog: {
+        skills: async (spaceId) =>
+          loadSkills({ spaceSkillsDirectory: (await spaces.byId(spaceId))?.paths.skills }).skills,
+      },
+    });
     await internal.broker.recoverDispatched();
     await new Promise<void>((resolve, reject) => {
       internal.server.once('error', reject);
       internal.server.listen(port, hostname, resolve);
     });
+    const recovery = setInterval(() => {
+      void internal.broker
+        .recoverDispatched()
+        .catch(() => process.stderr.write('action recovery failed\n'));
+    }, 15_000);
+    recovery.unref();
+    return {
+      ...internal,
+      registry,
+      close: async () => {
+        clearInterval(recovery);
+        await new Promise<void>((resolve) => internal.server.close(() => resolve()));
+        try {
+          await activeQueue.stop();
+        } finally {
+          await registry.close();
+        }
+      },
+    };
   } catch (error) {
-    await queue.stop();
+    try {
+      await queue?.stop();
+    } finally {
+      await registry.close();
+    }
     throw error;
   }
-  const recovery = setInterval(() => {
-    void internal.broker
-      .recoverDispatched()
-      .catch(() => process.stderr.write('action recovery failed\n'));
-  }, 15_000);
-  recovery.unref();
-  return {
-    ...internal,
-    registry,
-    close: async () => {
-      clearInterval(recovery);
-      await new Promise<void>((resolve) => internal.server.close(() => resolve()));
-      await queue.stop();
-    },
-  };
 }

@@ -23,4 +23,17 @@ export interface Connector {
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   health(): Promise<ConnectorHealth>;
+  close?(): Promise<void>;
+}
+
+/** An operator's owner-only installation is unavailable to public compartments. */
+export function connectorAllowsAudience(
+  connector: Connector,
+  constraints: JobConstraints,
+  audience: string,
+): boolean {
+  return (
+    !connector.catalog?.audience ||
+    (connector.catalog.audience === audience && !constraints.public_compartment)
+  );
 }

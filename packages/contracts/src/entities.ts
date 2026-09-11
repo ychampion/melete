@@ -51,7 +51,15 @@ export type Space = z.infer<typeof space>;
 // connection
 // --------------------------------------------------------------------------
 
-export const CONNECTION_PROVIDERS = ['imap', 'smtp', 'caldav', 'web', 'files', 'test'] as const;
+export const CONNECTION_PROVIDERS = [
+  'imap',
+  'smtp',
+  'caldav',
+  'web',
+  'files',
+  'test',
+  'mcp',
+] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
 

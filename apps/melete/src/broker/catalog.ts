@@ -9,7 +9,7 @@ import type {
 import { estimateTokens } from '@melete/skills';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import type { Connector } from '../connectors/types.ts';
+import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 
@@ -20,6 +20,7 @@ export type CatalogMetadata = {
   source?: CatalogSource;
   examples?: Record<string, readonly string[]>;
   core?: readonly string[];
+  audience?: 'owner';
 };
 
 export type CatalogEntry = {
@@ -177,8 +178,9 @@ export class ToolCatalog {
     job: LockedJob,
     claims: CapabilityClaims,
   ): Promise<ScopedCatalogItem[]> {
-    const connections = await tx`select id, provider, scopes, health from connection
-      where space_id = ${job.space_id} and status = 'active' order by id`;
+    const connections = await tx`select c.id, c.provider, c.scopes, c.health, s.audience
+      from connection c join space s on s.id = c.space_id
+      where c.space_id = ${job.space_id} and c.status = 'active' order by c.id`;
     const usage = await tx`select a.connection_id, a.kind, count(*)::int as uses from action a
       join job j on j.id = a.job_id where j.space_id = ${job.space_id} and a.status = 'succeeded'
       group by a.connection_id, a.kind`;
@@ -186,6 +188,7 @@ export class ToolCatalog {
     for (const row of connections) {
       const connector = this.options.connectors.get(row.id);
       if (!connector || connector.manifest.provider !== row.provider) continue;
+      if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
         const scopes = [declared.name, ...declared.required_scopes];
         if (!scopes.every((scope) => claims.scopes.includes(scope) && row.scopes.includes(scope)))
@@ -367,7 +370,11 @@ export class ToolCatalog {
       order by ts_rank(document, terms) desc, entry->>'name' collate "C"`;
       const result: CatalogEntry[] = [];
       for (const row of ranked) {
-        if (estimateTokens(JSON.stringify([...result, row.entry])) <= SEARCH_RESULT_TOKENS)
+        // A long, valid scope list must not make the best match undiscoverable.
+        if (
+          result.length === 0 ||
+          estimateTokens(JSON.stringify([...result, row.entry])) <= SEARCH_RESULT_TOKENS
+        )
           result.push(row.entry);
       }
       await appendEvent(tx, claims.job_id, claims.attempt_id, 'notice', {

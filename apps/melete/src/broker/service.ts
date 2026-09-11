@@ -23,10 +23,15 @@ import {
   verifyResult,
 } from '@melete/contracts';
 import { Ajv } from 'ajv';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
-import type { Connector, ConnectorContext } from '../connectors/types.ts';
+import {
+  type Connector,
+  type ConnectorContext,
+  connectorAllowsAudience,
+} from '../connectors/types.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import {
   bindEffect,
@@ -136,6 +141,11 @@ export class BrokerService implements BrokerOperations {
   readonly sql: Sql;
   readonly discovery: ToolCatalog;
   private readonly validator = new Ajv({ strict: false, allErrors: false, addUsedSchema: false });
+  private readonly validator2020 = new Ajv2020({
+    strict: false,
+    allErrors: false,
+    addUsedSchema: false,
+  });
   private readonly dispatchTimeoutMs: number;
 
   constructor(private readonly options: BrokerOptions) {
@@ -167,12 +177,16 @@ export class BrokerService implements BrokerOperations {
     connectionId: string,
     kind: string,
   ) {
-    const [connection] = await tx`select provider, scopes, status from connection
-      where id = ${connectionId} and space_id = ${job.space_id} for share`;
+    const [connection] =
+      await tx`select c.provider, c.scopes, c.status, s.audience from connection c
+      join space s on s.id = c.space_id
+      where c.id = ${connectionId} and c.space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
     const connector = this.options.connectors.get(connectionId);
     if (!connector || connector.manifest.provider !== connection.provider)
       throw new BrokerFault('connector_unavailable');
+    if (!connectorAllowsAudience(connector, job.constraints, connection.audience))
+      throw new BrokerFault('scope_denied');
     const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
     const required = new Set([...tool.required_scopes, tool.name]);
@@ -203,7 +217,11 @@ export class BrokerService implements BrokerOperations {
 
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
     try {
-      const validate = this.validator.compile(tool.input_schema);
+      const validator =
+        tool.input_schema.$schema === 'https://json-schema.org/draft/2020-12/schema'
+          ? this.validator2020
+          : this.validator;
+      const validate = validator.compile(tool.input_schema);
       // Connector schemas are synchronous and self-contained; promises cannot authorize dispatch.
       if (('$async' in validate && validate.$async) || validate(payload) !== true)
         throw new BrokerFault('payload_invalid');
@@ -640,8 +658,10 @@ export class BrokerService implements BrokerOperations {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
       if (action.status !== 'admitted') return { action, context: null };
-      const [connection] = await tx`select status, provider, scopes from connection
-        where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
+      const [connection] =
+        await tx`select c.status, c.provider, c.scopes, s.audience from connection c
+        join space s on s.id = c.space_id
+        where c.id = ${action.connection_id} and c.space_id = ${job.space_id} for share`;
       const stored = await loadBinding(tx, action);
       try {
         const authority = await resolveEffectAuthority(
@@ -664,6 +684,7 @@ export class BrokerService implements BrokerOperations {
         if (
           !connector ||
           connector.manifest.provider !== connection?.provider ||
+          !connectorAllowsAudience(connector, job.constraints, connection.audience) ||
           !tool ||
           tool.effect_class !== action.effect_class ||
           ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))

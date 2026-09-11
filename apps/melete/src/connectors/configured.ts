@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
 import { createFilesConnector } from './files.ts';
+import { mcpServerConfig } from './mcp.ts';
+import { openConfiguredMcpConnector } from './mcp-connector.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
@@ -38,6 +40,7 @@ const configuredConnection = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('ics'), id: z.string(), icsPath: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('mcp'), id: z.string().min(1), server: mcpServerConfig }).strict(),
 ]);
 export type ConfiguredConnection = z.infer<typeof configuredConnection>;
 
@@ -65,42 +68,56 @@ export async function configuredConnectors(options: {
   const connections =
     await options.sql`select id, space_id, provider, secret_ref from connection where status = 'active' order by id`;
   if (options.enableTestConnector) await initializeTestLedger(options.sql);
-  for (const row of connections) {
-    const setting = config.get(row.id);
-    if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
-    else if (row.provider === 'web') registry.register(row.id, createWebConnector());
-    else if (row.provider === 'test' && options.enableTestConnector)
-      registry.register(row.id, createTestConnector(options.sql));
-    else if (row.provider === 'imap' && setting?.kind === 'email' && row.secret_ref) {
-      registry.register(
-        row.id,
-        new EmailConnector(
-          { ...setting, spaceId: row.space_id, secretRef: row.secret_ref },
-          secrets,
-        ),
-      );
-    } else if (row.provider === 'caldav' && setting?.kind === 'caldav' && row.secret_ref) {
-      registry.register(
-        row.id,
-        new CalendarConnector(
-          { ...setting, spaceId: row.space_id, secretRef: row.secret_ref, mode: 'caldav' },
-          secrets,
-        ),
-      );
-    } else if (row.provider === 'caldav' && setting?.kind === 'ics') {
-      registry.register(
-        row.id,
-        new CalendarConnector(
-          {
-            id: row.id,
-            spaceId: row.space_id,
-            mode: 'ics',
-            ics: await readFile(setting.icsPath, 'utf8'),
-          },
-          secrets,
-        ),
-      );
+  try {
+    for (const row of connections) {
+      const setting = config.get(row.id);
+      if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
+      else if (row.provider === 'web') registry.register(row.id, createWebConnector());
+      else if (row.provider === 'test' && options.enableTestConnector)
+        registry.register(row.id, createTestConnector(options.sql));
+      else if (row.provider === 'imap' && setting?.kind === 'email' && row.secret_ref) {
+        registry.register(
+          row.id,
+          new EmailConnector(
+            { ...setting, spaceId: row.space_id, secretRef: row.secret_ref },
+            secrets,
+          ),
+        );
+      } else if (row.provider === 'caldav' && setting?.kind === 'caldav' && row.secret_ref) {
+        registry.register(
+          row.id,
+          new CalendarConnector(
+            { ...setting, spaceId: row.space_id, secretRef: row.secret_ref, mode: 'caldav' },
+            secrets,
+          ),
+        );
+      } else if (row.provider === 'mcp' && setting?.kind === 'mcp') {
+        registry.register(
+          row.id,
+          await openConfiguredMcpConnector(
+            setting.server,
+            { connectionId: row.id, spaceId: row.space_id },
+            options.sql,
+          ),
+        );
+      } else if (row.provider === 'caldav' && setting?.kind === 'ics') {
+        registry.register(
+          row.id,
+          new CalendarConnector(
+            {
+              id: row.id,
+              spaceId: row.space_id,
+              mode: 'ics',
+              ics: await readFile(setting.icsPath, 'utf8'),
+            },
+            secrets,
+          ),
+        );
+      }
     }
+  } catch (error) {
+    await registry.close();
+    throw error;
   }
   return registry;
 }
