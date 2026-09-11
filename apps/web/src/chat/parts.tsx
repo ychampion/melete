@@ -297,13 +297,18 @@ export function ResultCard({
   permission,
   onDecide,
   children,
+  touch = false,
 }: {
   card: ResultCardData;
   permission: PermissionData | null;
   onDecide: (decision: 'allow_once' | 'always' | 'deny') => void;
   children?: ReactNode;
+  touch?: boolean;
 }) {
   const [more, setMore] = useState(false);
+  const [broken, setBroken] = useState(false);
+  const size = touch ? 'xl' : 'sm';
+  const iconSize = touch ? 44 : 32;
   const decided = permission
     ? permission.status !== 'pending' && permission.status !== 'changed'
     : false;
@@ -312,7 +317,18 @@ export function ResultCard({
   return (
     <div className="result-card">
       <div className="result-body">
-        {card.image ? <img src={card.image.src} alt={card.image.alt} loading="lazy" /> : null}
+        {card.image && !broken ? (
+          <img
+            src={card.image.src}
+            alt={card.image.alt}
+            loading="lazy"
+            onError={() => setBroken(true)}
+          />
+        ) : card.image ? (
+          <div className="result-image-missing" aria-label={card.image.alt}>
+            <Icon name="image" size={22} />
+          </div>
+        ) : null}
         <div className="col grow" style={{ gap: 6 }}>
           <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>{card.overline}</span>
@@ -355,15 +371,20 @@ export function ResultCard({
           <div className="card-actions" style={{ paddingTop: 4, position: 'relative' }}>
             {permission ? (
               allowed ? (
-                <Button size="sm" variant="secondary" icon="check" disabled>
+                <Button size={size} variant="secondary" icon="check" disabled block={touch}>
                   {card.primary.done_label ?? 'Done'}
                 </Button>
               ) : permission.status === 'denied' ? (
-                <Button size="sm" variant="secondary" disabled>
+                <Button size={size} variant="secondary" disabled block={touch}>
                   Not added
                 </Button>
               ) : (
-                <Button size="sm" icon={primaryIcon} onClick={() => onDecide('allow_once')}>
+                <Button
+                  size={size}
+                  icon={primaryIcon}
+                  block={touch}
+                  onClick={() => onDecide('allow_once')}
+                >
                   {card.primary.label}
                 </Button>
               )
@@ -381,7 +402,13 @@ export function ResultCard({
                 {card.primary.label}
               </Button>
             )}
-            <IconButton name="mapPin" label="Open in Maps" variant="outline" />
+            <IconButton
+              name="mapPin"
+              label="Open in Maps"
+              variant="outline"
+              size={iconSize}
+              iconSize={touch ? 18 : 16}
+            />
             {permission && !decided ? (
               <div style={{ position: 'relative' }}>
                 <Button

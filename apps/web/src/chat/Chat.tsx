@@ -299,14 +299,17 @@ function TurnView({
           block.card.primary.effect.kind === 'permission'
             ? (permissions.get(block.card.primary.effect.permission_id) ?? null)
             : null;
-        const next = turn.blocks[index + 1];
-        const receipt = next?.kind === 'receipt' ? next.receipt : null;
-        if (receipt) index += 1;
+        const receipt =
+          turn.blocks.find(
+            (b): b is Extract<Block, { kind: 'receipt' }> =>
+              b.kind === 'receipt' && b.receipt.attaches_to === block.card.id,
+          )?.receipt ?? null;
         rendered.push(
           <ResultCard
             key={block.card.id}
             card={block.card}
             permission={permission}
+            touch={touch}
             onDecide={(decision) =>
               permission && decide(permission.id, decision, permission.payload_hash)
             }
@@ -319,6 +322,7 @@ function TurnView({
         break;
       }
       case 'receipt':
+        if (block.receipt.attaches_to) break;
         rendered.push(
           <ReceiptRow
             key={block.receipt.id}

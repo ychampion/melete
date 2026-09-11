@@ -116,6 +116,8 @@ export type ResultCardData = {
 
 export type ReceiptData = {
   id: string;
+  /** The card this receipt confirms, when a card's button was the decision. */
+  attaches_to?: string | null;
   what: string;
   where: string;
   when: string;

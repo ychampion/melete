@@ -709,6 +709,8 @@ export function createExperience(deps: ExperienceDeps) {
   const questionState = new Map<string, { job_id: string; answered: string | null }>();
   const browserState = new Map<string, { job_id: string; status: string }>();
   const unknownState = new Map<string, { job_id: string }>();
+  /** The card whose button decided an action, so its receipt can sit under it. */
+  const cardByAction = new Map<string, string>();
 
   const emit = (
     conversation_id: string,
@@ -909,6 +911,7 @@ export function createExperience(deps: ExperienceDeps) {
           const primary = card.primary as Json;
           const actionId = typeof primary.action_id === 'string' ? primary.action_id : null;
           const approval = actionId ? approvalFor(actionId) : null;
+          if (actionId) cardByAction.set(actionId, String(card.id));
           emit(conversationId, 'block', {
             turn_id: turnId,
             block: {
@@ -1049,6 +1052,7 @@ export function createExperience(deps: ExperienceDeps) {
               kind: 'receipt',
               receipt: {
                 id: `rcpt_${action.id}`,
+                attaches_to: cardByAction.get(action.id) ?? null,
                 what: kind.past,
                 where: kind.where,
                 when: when || 'just now',

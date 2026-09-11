@@ -317,6 +317,27 @@
     min-height: 0;
   }
 }
+.result-image-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 168px;
+  min-height: 144px;
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--control);
+  flex-shrink: 0;
+}
+@media (max-width: 767px) {
+  .result-image-missing {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    min-height: 0;
+  }
+  .card-actions .btn-block {
+    flex: 1;
+  }
+}
 .result-facts {
   display: flex;
   flex-direction: row;

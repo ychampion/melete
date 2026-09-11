@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "screens": "bun run scripts/screens.ts"
+    "screens": "node scripts/screens.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "5.3.0",
