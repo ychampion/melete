@@ -7,6 +7,7 @@ import {
   type JobConstraints,
 } from '@melete/contracts';
 import type { Sql, TransactionSql } from 'postgres';
+import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
 import { BrokerFault } from './errors.ts';
 
 export type Query = Sql | TransactionSql;
@@ -32,7 +33,10 @@ export function recordId(prefix: string): string {
   return `${prefix}_${encoded}`;
 }
 
-export async function lockJob(tx: Query, id: string): Promise<LockedJob> {
+export async function lockJob(tx: TransactionSql, id: string): Promise<LockedJob> {
+  // Acquire before the row lock, just as serviceTransaction does. Otherwise a
+  // later committed event can advance an SSE cursor past this transaction.
+  await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
   const [job] = await tx<LockedJob[]>`select * from job where id = ${id} for update`;
   if (!job) throw new BrokerFault('stale_epoch', 'Job is not available');
   return job;
@@ -92,7 +96,10 @@ export async function appendEvent(
   payload: Record<string, unknown>,
   dedupKey = `broker:${recordId('evt')}`,
 ): Promise<void> {
-  await tx`insert into event (job_id, attempt_id, type, payload, dedup_key)
-    values (${jobId}, ${attemptId}, ${type}, ${JSON.stringify(payload)}::jsonb, ${dedupKey})
-    on conflict (dedup_key) do nothing`;
+  // The caller holds lockJob's transaction guard until this event commits.
+  const [row] = await tx`insert into event (job_id, attempt_id, type, payload, dedup_key, epoch)
+    values (${jobId}, ${attemptId}, ${type}, ${JSON.stringify(payload)}::jsonb, ${dedupKey},
+      (select lease_epoch from job where id = ${jobId}))
+    on conflict (dedup_key) do nothing returning seq`;
+  if (row) await tx`select pg_notify('melete_events', ${String(row.seq)})`;
 }

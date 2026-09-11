@@ -27,7 +27,7 @@ import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
-import { QUEUES } from '../jobs/queue.ts';
+import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import {
   bindEffect,
   type EffectAuthorityResolver,
@@ -236,7 +236,7 @@ export class BrokerService implements BrokerOperations {
     repeated: boolean,
   ): Promise<EffectProposalResponse> {
     const [approval] = await this
-      .sql`select id, origin_warnings from approval where action_id = ${action.id}
+      .sql`select id, decision, origin_warnings from approval where action_id = ${action.id}
       and payload_hash = ${action.payload_hash}`;
     return {
       action_id: action.id,
@@ -244,7 +244,7 @@ export class BrokerService implements BrokerOperations {
       effect_class: action.effect_class,
       payload_hash: action.payload_hash,
       canonical_payload: action.canonical_payload,
-      requires_approval: Boolean(approval) && approval?.decision !== 'approved',
+      requires_approval: action.status === 'needs_approval' && approval?.decision === null,
       approval_id: approval?.id ?? null,
       intent_key: action.intent_key ?? key,
       repeated,
@@ -930,20 +930,26 @@ export class BrokerService implements BrokerOperations {
 
   private async wake(tx: TransactionSql, job: LockedJob, reason: 'approval' | 'recovery') {
     await this.moveJob(tx, job, 'queued', { kind: 'none' });
-    await tx`update job set next_wake_at = now() where id = ${job.id}`;
+    const [current] = await tx`update job set next_wake_at = now() where id = ${job.id}
+      returning lease_epoch, state_version, scheduling_class, next_wake_at`;
+    if (!current) throw new Error('Wake update returned no job');
     if (this.options.boss) {
-      await this.options.boss.send(
-        QUEUES.attempt,
-        { job_id: job.id, expected_epoch: job.lease_epoch, reason },
-        {
-          singletonKey: `${job.id}:${job.lease_epoch}`,
-          db: {
-            executeSql: async (text, values) => ({
-              rows: await tx.unsafe(text, values as ParameterOrJSON<never>[] | undefined),
-            }),
-          },
+      const wake: AttemptWake = {
+        job_id: job.id,
+        expected_epoch: current.lease_epoch,
+        expected_version: current.state_version,
+        reason,
+      };
+      await this.options.boss.send(attemptQueue(current.scheduling_class), wake, {
+        startAfter: current.next_wake_at,
+        retryLimit: 0,
+        expireInSeconds: 1800,
+        db: {
+          executeSql: async (text, values) => ({
+            rows: await tx.unsafe(text, values as ParameterOrJSON<never>[] | undefined),
+          }),
         },
-      );
+      });
     }
   }
 }
