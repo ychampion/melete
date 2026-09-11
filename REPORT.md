@@ -138,3 +138,12 @@
 - Command `bun run conformance`: scenarios 3 and 4 pass 14 tests against Postgres 17, pg-boss and the durable test connector; final full-suite execution repeats the same 14 passing scenarios.
 - Test `conformance 3`: lost acknowledgement, post-destination timeout, broker restart, original logical identity, verification and unsupported verification are implemented.
 - Test `conformance 4`: payload/revision binding, edited draft identity, cancel/admit ordering, truthful final/unknown dispositions, cancelled action listing and late authentic receipt reconciliation are implemented.
+
+## Slice 8 — final delivery, 2026-09-11 09:03 UTC
+
+- SHA `bcd6f1ed42b059865a0031c9119eef28f5432d69`: conformance implementation committed and pushed to origin/lane/w2-broker after the final full-suite run.
+- Command `gh pr create --repo ychampion/melete --base main --head lane/w2-broker --draft`: opened https://github.com/ychampion/melete/pull/3 with working behavior, the retained teardown failure, verification commands and integration limits.
+- Command `gh pr view 3 --repo ychampion/melete --json url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable`: OPEN, draft=true, main <- lane/w2-broker, head bcd6f1ed42b059865a0031c9119eef28f5432d69, MERGEABLE; not merged.
+- Command `git -C C:/Users/gamin/melete-oss-w2 log 65e26f1438cd5c8e95e7bf160f456be07d8cb534..HEAD`: every implementation commit uses ychampion <68075205+ychampion@users.noreply.github.com>; earlier commits preserved.
+- Command `git -C C:/Users/gamin/melete-oss-w2 status --short --branch`: clean at the implementation head and tracking origin/lane/w2-broker before this report-only commit.
+- Log `campaign stop 2026-09-11 09:03 UTC`: within the five-hour cap; one failing check remains under the two-fix-cycle stop rule, so the draft PR is a partial handoff and DONE is not claimed.
