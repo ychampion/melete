@@ -70,9 +70,12 @@ bun run conformance:memory
 The generators update the OpenAPI document and client declarations; generated
 differences must be inspected. The Compose command checks YAML, not live
 networking. The service-scenario command runs scenarios 1–5 and reports 6–8 as todo.
-The timeout gives each test/fixture hook fifteen seconds; it is not a total-suite
-duration. The shorter default can expire during fixture setup or cleanup; see
-the recorded command outcomes before interpreting a nonzero exit.
+The full suite took 454.72 seconds, about seven and a half minutes, on the
+measured host with the documented `--timeout=15000` override. `bunfig.toml`
+sets concurrency to two; the command gives each test/fixture hook fifteen
+seconds, not the whole suite. Several minutes of test output can therefore be
+normal progress. The shorter default produced fixture-hook timeouts in a run
+that took 628.07 seconds; see the recorded results when assessing a nonzero exit.
 The memory runner executes ten scenarios across seven families plus ten
 withheld-memory runs; procedure transfer is **written, not run**. Results and
 command failures are recorded in [REPORT.md](REPORT.md).
