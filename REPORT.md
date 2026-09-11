@@ -41,3 +41,15 @@
 - Test `gateway reserves both requests and tokens before recording a provider result`: request cap under row lock; token reservation before request, settlement to actual usage, duplicate receipt idempotent.
 - Test `gateway retains unknown usage and rejects a principal after the epoch bump`: missing usage remains charged and cancellation remains visible.
 - Command `bun run typecheck`: passed, including budget integration tests; full-suite evidence is 268 pass / 0 fail above.
+
+## Slice 4 — files, test destination, and web
+
+- SHA `fbeab86`: atomic gateway budget adapter and request/token reservation tests pushed.
+- Command `bun test apps/melete/src/connectors --max-concurrency=2`: core files/test/web/registry coverage is 18 pass, 88 assertions, 0 fail (322 ms focused run).
+- Test `destination accepts nested JSON with the SQL client shared by Drizzle`: explicit JSON text binding fixes the captured ERR_INVALID_ARG_TYPE encoder failure.
+- Command `bun test apps/melete/test/integration/test-destination.test.ts --max-concurrency=2`: 3 pass, 9 assertions, 0 fail, 8.48 seconds; durable ledger and separate-handle verification.
+- Test `parallel destination retries retain exactly one durable acceptance`: action.id is the destination primary idempotency key.
+- Test `web SSRF guard`: rejects private/link-local/mapped ranges, mixed DNS answers and private redirects; pins the checked address through the transport.
+- Test `files traversal`: rejects parent segments, absolute/device/stream paths and existing symbolic links; trusted roots define the job and space boundary.
+- Log `files boundary limitation`: portable checks require service-controlled directory structure and do not claim protection against another process racing directory replacement.
+- Command `bun test --max-concurrency=2`: full-suite 268 pass / 0 fail / 36.80 seconds includes the corrected destination integration.
