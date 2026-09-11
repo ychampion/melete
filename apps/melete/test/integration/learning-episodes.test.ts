@@ -5,10 +5,14 @@ import { action, artifact, connection } from '../../src/db/schema.ts';
 import { expireEpisodes } from '../../src/learning/retention.ts';
 import { mountLearning } from '../../src/learning/routes.ts';
 import { episode } from '../../src/learning/schema.ts';
-import { newId } from '../../src/memory/db.ts';
-import { forgetMemory } from '../../src/memory/forget.ts';
+import { publishRevision } from '../../src/memory/claims.ts';
+import { assembleAttemptKnowledge } from '../../src/memory/context.ts';
+import { lockSpace, newId } from '../../src/memory/db.ts';
+import { ingest } from '../../src/memory/evidence.ts';
+import { applyRestriction, forgetMemory } from '../../src/memory/forget.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
-import { learningFixture, rejectsWith, wake } from './learning-fixtures.ts';
+import { buildViews } from '../../src/memory/views.ts';
+import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
 
 const fixture = await learningFixture();
 afterAll(async () => fixture?.close(), 15000);
@@ -17,6 +21,14 @@ afterAll(async () => fixture?.close(), 15000);
     if (!fixture) return;
     const { jobs, runner, episodes, ownerId, spaceId, handle } = fixture;
     const row = await fixture.create();
+    expect(
+      (
+        await episodes.setScope(ownerId, row.id, {
+          scope: learningScope,
+          template_id: 'training-invoices',
+        })
+      ).jobId,
+    ).toBe(row.id);
     const claimed = await runner.claim(wake(row));
     if (!claimed) throw new Error('No attempt');
     const change = {
@@ -174,4 +186,353 @@ afterAll(async () => fixture?.close(), 15000);
       remaining.every((saved) => saved.intervention === null && saved.receipts.length === 0),
     ).toBe(true);
   });
+
+  test('a cleared job cannot recreate evidence on a later completion or correction', async () => {
+    if (!fixture) return;
+    const row = await fixture.create('late-after-clear');
+    const claimed = await fixture.runner.claim(wake(row));
+    if (!claimed) throw new Error('No attempt');
+    await forgetMemory(
+      fixture.handle.sql,
+      {
+        ownerId: fixture.ownerId,
+        spaceId: fixture.spaceId,
+        publisher: 'owner',
+        audience: 'private',
+        role: 'owner',
+      },
+      { all: true },
+      { read: async () => [], append: async () => {} },
+    );
+    const next = await fixture.jobs.get(row.id);
+    const reclaimed = await fixture.runner.claim(wake(next));
+    if (!reclaimed) throw new Error('No resumed attempt');
+    await fixture.runner.commitOutcome(reclaimed.claims, {
+      kind: 'completed',
+      summary: 'Late operational completion',
+      evidence: [],
+    });
+    expect((await fixture.jobs.get(row.id)).state).toBe('completed');
+    expect(
+      (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).filter(
+        (saved) => saved.jobId === row.id,
+      ),
+    ).toHaveLength(0);
+    await rejectsWith(
+      () =>
+        fixture.episodes.intervene(fixture.ownerId, row.id, {
+          idempotency_key: 'after-clear',
+          kind: 'correction',
+          text: 'Do not recover old evidence.',
+        }),
+      'evidence_unavailable',
+    );
+    const fresh = await fixture.create('fresh-after-clear');
+    const freshAttempt = await fixture.runner.claim(wake(fresh));
+    if (!freshAttempt) throw new Error('No fresh attempt');
+    await fixture.runner.commitOutcome(freshAttempt.claims, {
+      kind: 'completed',
+      summary: 'New evidence after the clear',
+      evidence: [],
+    });
+    expect(
+      (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).some(
+        (saved) => saved.jobId === fresh.id,
+      ),
+    ).toBe(true);
+  }, 15000);
+
+  test('forgetting waits for a completing job and erases the episode committed during that wait', async () => {
+    if (!fixture) return;
+    const row = await fixture.create('completion-racing-clear');
+    const claimed = await fixture.runner.claim(wake(row));
+    if (!claimed) throw new Error('No attempt');
+    let release!: () => void;
+    let reached!: () => void;
+    let planned!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const captured = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const plannedRemoval = new Promise<void>((resolve) => {
+      planned = resolve;
+    });
+    const holdCompletion = async () => {
+      reached();
+      await held;
+    };
+    fixture.runner.onFinished.push(holdCompletion);
+    const completion = fixture.runner.commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'An episode is still uncommitted',
+      evidence: [],
+    });
+    let removal: ReturnType<typeof forgetMemory> | undefined;
+    try {
+      await captured;
+      removal = forgetMemory(
+        fixture.handle.sql,
+        {
+          ownerId: fixture.ownerId,
+          spaceId: fixture.spaceId,
+          publisher: 'owner',
+          audience: 'private',
+          role: 'owner',
+        },
+        { all: true },
+        {
+          read: async () => [],
+          append: async () => {
+            planned();
+          },
+        },
+      );
+      await plannedRemoval;
+      let waiting = false;
+      const deadline = Date.now() + 5000;
+      while (!waiting && Date.now() < deadline) {
+        const blocked = await fixture.handle.sql`select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+            and query like '%select j.id from job j%'`;
+        waiting = blocked.length > 0;
+        if (!waiting) await Bun.sleep(10);
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      release();
+      await completion;
+      await removal;
+      fixture.runner.onFinished.splice(fixture.runner.onFinished.indexOf(holdCompletion), 1);
+    }
+    const [saved] = await fixture.handle.db.select().from(episode).where(eq(episode.jobId, row.id));
+    expect(saved).toMatchObject({ restricted: true, versions: [], receipts: [] });
+    expect(
+      (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).some(
+        (value) => value.jobId === row.id,
+      ),
+    ).toBe(false);
+  }, 15000);
+
+  test('a partially forgotten source handle cannot become fresh learning evidence', async () => {
+    if (!fixture) return;
+    const scope = {
+      ownerId: fixture.ownerId,
+      spaceId: fixture.spaceId,
+      publisher: 'owner',
+      audience: 'private' as const,
+      role: 'owner' as const,
+    };
+    const accepted = await ingest(fixture.handle.sql, scope, {
+      stream: 'chat',
+      source_identity: 'partial-learning-source',
+      source_version: '1',
+      source_type: 'message',
+      event_at: new Date().toISOString(),
+      text: 'Retain this introduction. PRIVATE-FRAGMENT. Retain this ending.',
+    });
+    const learning = {
+      scope: learningScope,
+      template_id: 'partial-source',
+      input_refs: [`${accepted.source.source_id}@1`],
+    };
+    const row = await fixture.jobs.create({
+      space_id: fixture.spaceId,
+      title: 'Source-backed job',
+      objective: 'Arrange the records',
+      learning,
+    });
+    const claimed = await fixture.runner.claim(wake(row));
+    if (!claimed) throw new Error('No source-backed attempt');
+    const [generation] = await fixture.handle.sql`select eligibility_generation, access_generation
+      from memory_spaces where space_id = ${fixture.spaceId}`;
+    const record: RestrictionRecord = {
+      id: newId('sup'),
+      owner_id: fixture.ownerId,
+      space_id: fixture.spaceId,
+      operation: 'forget',
+      all: false,
+      claim_ids: [],
+      targets: [
+        {
+          source_id: accepted.source.source_id,
+          publisher: 'owner',
+          stream: 'chat',
+          source_identity: 'partial-learning-source',
+          start: 25,
+          end: 41,
+          suppression_id: newId('sup'),
+        },
+      ],
+      eligibility_cutoff: Number(generation?.eligibility_generation),
+      access_generation: Number(generation?.access_generation) + 1,
+      recorded_at: new Date().toISOString(),
+    };
+    await fixture.handle.sql.begin((tx) => applyRestriction(tx, record));
+    const [source] = await fixture.handle
+      .sql`select state from memory_sources where id = ${accepted.source.source_id}`;
+    expect(source?.state).toBe('active');
+    await rejectsWith(
+      () =>
+        fixture.jobs.create({
+          space_id: fixture.spaceId,
+          title: 'Unavailable source',
+          objective: 'Arrange records',
+          learning,
+        }),
+      'scope_denied',
+    );
+    const next = await fixture.runner.claim(wake(await fixture.jobs.get(row.id)));
+    if (!next) throw new Error('No resumed source-backed attempt');
+    await fixture.runner.commitOutcome(next.claims, {
+      kind: 'completed',
+      summary: 'Operational completion after partial forgetting',
+      evidence: [],
+    });
+    expect(
+      (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).some(
+        (value) => value.jobId === row.id,
+      ),
+    ).toBe(false);
+  }, 15000);
+
+  test('delivered memory handles are captured and forgetting their claim removes the episode', async () => {
+    if (!fixture) return;
+    const scope = {
+      ownerId: fixture.ownerId,
+      spaceId: fixture.spaceId,
+      publisher: 'owner',
+      audience: 'private' as const,
+      role: 'owner' as const,
+    };
+    const text = 'Use typed ordering for my records. PRIVATE-CONTEXT-CLAIM.';
+    const accepted = await ingest(fixture.handle.sql, scope, {
+      stream: 'chat',
+      source_identity: 'delivered-learning-context',
+      source_version: '1',
+      source_type: 'message',
+      event_at: new Date().toISOString(),
+      text,
+    });
+    const claim = await fixture.handle.sql.begin(async (tx) => {
+      await lockSpace(tx, scope);
+      return publishRevision(tx, scope, 'pref.records.ordering', null, {
+        content: 'Use typed ordering for records',
+        kind: 'user_statement',
+        factual_status: 'attributed',
+        protected: false,
+        valid_from: new Date().toISOString(),
+        valid_until: null,
+        sources: [
+          { source_id: accepted.source.source_id, source_version: '1', start: 0, end: text.length },
+        ],
+      });
+    });
+    await buildViews(fixture.handle.sql, scope);
+    const row = await fixture.create('delivered-context');
+    const attempt = await fixture.runner.claim(wake(row));
+    if (!attempt) throw new Error('No context attempt');
+    const delivered = await assembleAttemptKnowledge(
+      fixture.handle.sql,
+      scope,
+      attempt.claims.attempt_id,
+      row.id,
+      'typed ordering records',
+    );
+    expect(delivered.context.items.some((item) => item.claim_id === claim.claim_id)).toBe(true);
+    const saved = await fixture.episodes.intervene(fixture.ownerId, row.id, {
+      idempotency_key: 'consumed-context',
+      kind: 'correction',
+      text: 'Keep the typed record order. PRIVATE-OWNER-CONTEXT.',
+    });
+    expect(saved.inputRefs).toContain(`${claim.claim_id}@1`);
+    expect(saved.inputRefs).toContain(`${accepted.source.source_id}@1`);
+    await forgetMemory(
+      fixture.handle.sql,
+      scope,
+      { claim_id: claim.claim_id },
+      {
+        read: async () => [],
+        append: async () => {},
+      },
+    );
+    const [restricted] = await fixture.handle.db
+      .select()
+      .from(episode)
+      .where(eq(episode.id, saved.id));
+    expect(restricted).toMatchObject({ restricted: true, intervention: null, inputRefs: [] });
+    await rejectsWith(
+      () =>
+        fixture.episodes.intervene(fixture.ownerId, row.id, {
+          idempotency_key: 'forgotten-context',
+          kind: 'correction',
+          text: 'Try the old context again.',
+        }),
+      'scope_denied',
+    );
+  }, 15000);
+
+  test('an opaque source version can complete its job without creating unrepresentable learning evidence', async () => {
+    if (!fixture) return;
+    const scope = {
+      ownerId: fixture.ownerId,
+      spaceId: fixture.spaceId,
+      publisher: 'owner',
+      audience: 'private' as const,
+      role: 'owner' as const,
+    };
+    const version = 'opaque version@1';
+    const text = 'Use typed ordering for opaque source records.';
+    const accepted = await ingest(fixture.handle.sql, scope, {
+      stream: 'chat',
+      source_identity: 'opaque-learning-context',
+      source_version: version,
+      source_type: 'message',
+      event_at: new Date().toISOString(),
+      text,
+    });
+    const claim = await fixture.handle.sql.begin(async (tx) => {
+      await lockSpace(tx, scope);
+      return publishRevision(tx, scope, 'pref.records.opaque', null, {
+        content: 'Use typed ordering for opaque records',
+        kind: 'user_statement',
+        factual_status: 'attributed',
+        protected: false,
+        valid_from: new Date().toISOString(),
+        valid_until: null,
+        sources: [
+          {
+            source_id: accepted.source.source_id,
+            source_version: version,
+            start: 0,
+            end: text.length,
+          },
+        ],
+      });
+    });
+    await buildViews(fixture.handle.sql, scope);
+    const row = await fixture.create('opaque-context');
+    const attempt = await fixture.runner.claim(wake(row));
+    if (!attempt) throw new Error('No opaque-source attempt');
+    const delivered = await assembleAttemptKnowledge(
+      fixture.handle.sql,
+      scope,
+      attempt.claims.attempt_id,
+      row.id,
+      'typed ordering opaque records',
+    );
+    expect(delivered.context.items.some((item) => item.claim_id === claim.claim_id)).toBe(true);
+    await fixture.runner.commitOutcome(attempt.claims, {
+      kind: 'completed',
+      summary: 'Operational completion with an opaque source version',
+      evidence: [],
+    });
+    expect((await fixture.jobs.get(row.id)).state).toBe('completed');
+    expect(
+      (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).some(
+        (value) => value.jobId === row.id,
+      ),
+    ).toBe(false);
+  }, 15000);
 });

@@ -42,6 +42,7 @@ export const episode = pgTable(
     jobId: text('job_id')
       .notNull()
       .references(() => job.id, { onDelete: 'cascade' }),
+    correctiveJobId: text('corrective_job_id').references(() => job.id, { onDelete: 'set null' }),
     segmentKey: text('segment_key').notNull(),
     inputDigest: text('input_digest').notNull(),
     scope: jsonb('scope').$type<ProcedureScope>().notNull(),

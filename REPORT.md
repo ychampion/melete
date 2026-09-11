@@ -57,3 +57,73 @@
 - Test `validation selects before final; one-space canary and one-call rollback fence delivery`: actual scripted jobs pass both held-out phases; mutation after selection is denied; another space receives no skill; one-call rollback removes subsequent delivery.
 - Test `text sorting improves two templates but harms numeric ordering and is kept as rejected history`: validation rejects despite a positive family average, keeps the failed evaluation and transition history, and never opens the sealed final phase.
 - Commands `bun run typecheck`, `bun run lint`, and `bun run compose:check`: passed for slice 3; lint checked 339 files and Compose checked 12 isolation properties. A full run under the shared lock follows before pushing this slice.
+
+## First full run under the shared lock
+
+- SHA `2a56dc5`: held-out evaluation and promotion committed; full-suite source stayed unchanged while its locked snapshot ran.
+- Command `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: acquired the lock at approximately 20:55:56 UTC; the EXIT trap released it after the run. A later lock has another lane's creation time and is not ours to remove.
+- Command `bun run test`, first locked run: 920 pass, 14 existing todo, 1 fail, 3907 assertions, 315.81 seconds across 78 files and two workers. No fixture timeout reproduced under the lock.
+- Test `service startup binds the W2 internal port and runs pg-boss against the fixture`: expected HTTP 200 from the standalone broker catalog but received 500 because that fixture intentionally has no learning tables. Locked fix cycle 1 detects the additive schema before attaching the learning handoff; the existing broker path remains available without learning.
+- Command `bun run test`: the locked duration of 315.81 seconds exceeds the requested 180-second target. This timing requirement remains open; no test was removed, skipped, or weakened to disguise it.
+
+## Slice 4 — three acts and final compatibility checks
+
+- Test `completed job, owner correction, then a different job succeeds with fewer interventions and no private details`: the original job completes, the owner correction creates one idempotently linked corrective job, that job completes correctly, the durable drain generates a scoped candidate, held-out validation/final pass, and a later table succeeds with one intervention reduced to zero.
+- Test `completed job, owner correction, then a different job succeeds with fewer interventions and no private details`: the original terminal state remains intact, the corrective job retains the original completion requirements with `max_actions: 0`, and the later bundle and proposer request omit `PLANTED-PRIVATE-THREE-ACT-482`.
+- Command `bun run db:generate`: generated `0018_calm_forgotten_one.sql` for the additive corrective-job link; the shared episode response already permits this optional field.
+- Command `bun test --max-concurrency=1 --timeout=30000` on gateway, learning episodes, proposals, and three-act tests, initial run: 11 pass and 2 fail. The failures exposed array serialization in catalog-version capture and an unnecessarily strengthened follow-up completion requirement.
+- Test `completed job, owner correction`, fix cycle 1: passed in the focused diagnostic after retaining the original completion requirements. Test `Hermes skill creation` exposed `ERR_INVALID_ARG_TYPE ... Received an instance of Array`; fix cycle 2 serializes the captured version list explicitly before the JSONB update.
+- Command `bun test --max-concurrency=1 --timeout=30000` on the four affected integration files, fix cycle 2: 13 pass, 0 fail, 119 assertions in 75.60 seconds. The standalone broker, exact-one episode capture, model privacy boundary, actual HTTP catalog versions, complete three-act scenario, activation, and rollback all pass.
+- Command `bun run typecheck`: first slice-4 run found a test lookup using `bundle.job.id`; fix cycle 1 uses the existing `bundle.attempt.job_id` contract, and the full typecheck passed.
+- Commands `bun run lint`, `bun run compose:check`, and `git -C C:/Users/gamin/melete-oss-w11 diff --check`: passed; lint checked 340 files and Compose checked 12 properties.
+- Command `discoverTests/partitionTests` verification: 79 files assigned exactly once to two workers; all four learning integration files share one serial worker to avoid racing the fixed conformance ports. Scheduling weights now include the measured evaluation cost.
+
+## Final audit while the full suite waits
+
+- Command `bun run test`, second locked invocation at 21:30 UTC: still waiting for atomic ownership of `C:/Users/gamin/.melete-test.lock`; no test timeout is inferred from time spent in that queue. The source snapshot remains unchanged.
+- Test `a cleared job cannot recreate evidence on a later completion or correction`: prepared after review found that completion capture does not recheck removed input evidence. It will be run after the queued source snapshot finishes.
+- Test `forgetting waits for a completing job and erases the episode committed during that wait`: prepared to verify the ordering between job completion and the existing memory removal transaction; no pass is claimed before execution.
+- Command `Test-Path .agents/w11-locked-suite2.log`: confirmed the full suite had not started both before and after applying the prepared deletion fix at 21:40 UTC. The queued invocation will cover this final source instead of requiring another full queue afterward.
+- Test `a cleared job cannot recreate evidence on a later completion or correction`: completion now rechecks live references and whole-space clear/revoke state; an old job can finish operationally without recreating learning evidence. A new job created after a clear remains eligible.
+- Test `forgetting waits for a completing job and erases the episode committed during that wait`: memory removal now collects episodes after job invalidation has waited for active job transactions, and whole-space removal uses the original job time. This avoids adding an inverted space/job lock order.
+- Commands `bun run lint`, `bun run compose:check`, and `git -C C:/Users/gamin/melete-oss-w11 diff --check`: passed after the deletion changes; lint checked 340 files and Compose checked 12 properties. The new regressions are pending the queued full suite.
+- Test `a partially forgotten source handle cannot become fresh learning evidence`: source-handle admission now checks suppression records as well as source state, because a source with a removed fragment can still be active. The queued suite includes a replayed partial restriction followed by denied admission and a late completion.
+- Command `bun run typecheck`: passed after the late-completion and transaction-race changes; the subsequent partial-source extension also passed lint and is being typechecked before the queued run begins.
+- Command `bun run typecheck`: the partial-source extension exited 0 before the full run; its lint and whitespace checks also passed.
+- Command `bun run test`, second locked run: acquired the shared slot at 21:51:44 UTC and started all 79 files in two serial processes. The source was frozen when the log was created.
+- Tests `a cleared job cannot recreate evidence`, `forgetting waits for a completing job`, and `a partially forgotten source handle`: passed in 375 ms, 328 ms, and 218 ms respectively during the locked run. The final suite result is still pending.
+- Tests `validation selects before final`, `text sorting improves two templates but harms numeric ordering`, and `completed job, owner correction, then a different job succeeds`: passed during the locked run in 13.375 s, 3.984 s, and 11.266 s respectively.
+- Test `delivered memory handles are captured and forgetting their claim removes the episode`: prepared after review found declared handles were captured but delivered memory context derivations were not. Its patch was deferred because the full suite had already started; no running source was changed.
+
+## Second locked full-suite result
+
+- Command `bun run test`: 925 pass, 14 existing todo, 0 fail across all 79 files and exactly two workers; total duration 320.73 seconds. The broker compatibility fix, complete learning loop, and three deletion regressions passed together.
+- Command `bun run test`: the 180-second duration requirement remains unmet under the shared lock. Both earlier scheduling/fixture tuning cycles and the measured locked rerun are recorded; no further test weakening or unrelated baseline tuning is attempted.
+- Command `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: the successful run released its own lock through its EXIT trap before the focused delivered-context regression began.
+
+## Delivered memory evidence follow-up
+
+- Command `bun test --max-concurrency=1 --timeout=30000 apps/melete/test/integration/learning-episodes.test.ts`: the added regression reproduced the missing dependency with 7 pass, 1 fail, 32 assertions, 45.52 seconds; log `Expected to contain: k_...@1; Received: []` at the episode input-handle assertion.
+- Test `delivered memory handles are captured and forgetting their claim removes the episode`, fix cycle 1: capture now unions declared handles with exact claim/source versions from delivered context derivations, including the linked correction's evidence. Live-reference checks use that same union; no private context text is copied.
+- Commands `bun run lint` and `git -C C:/Users/gamin/melete-oss-w11 diff --check`: passed after the delivered-context change; the four learning integration files and typecheck are running before the final full-suite invocation.
+- Command `bun test --max-concurrency=1 --timeout=30000` on the four learning integration files, delivered-context fix cycle 1: 16 pass, 0 fail, 126 assertions in 86.81 seconds. This includes exact delivered memory handles, claim forgetting, all earlier deletion guards, held-out promotion, negative transfer, the three-act scenario, activation, and rollback.
+- Command `bun run typecheck`: passed after the delivered-context fix. The final full-suite invocation will acquire the shared lock and verify this exact functional source before publication.
+
+## Final verification queue
+
+- Command `bun run test`, final invocation at 2026-09-11 22:25:03 UTC: still awaiting the shared lock. The final source remains unchanged since the 16-test learning run, typecheck, lint, and whitespace checks passed; the queue wait is excluded from suite-duration claims.
+- Command `git -C C:/Users/gamin/melete-oss-w11 diff 9484023cabd32b786cb4d336dec818f441cd0cc1 --unified=0` plus the two documentation drafts: new public text passed the brief's vocabulary check before publication.
+- Test `an opaque source version can complete its job without creating unrepresentable learning evidence`: added while the final suite was still queued. The frozen memory ledger accepts opaque versions that its handle grammar cannot represent; learning now returns `evidence_unavailable` for that evidence, which completion capture handles without aborting the operational job.
+- Command `Test-Path .agents/w11-locked-suite3.log`: confirmed the final suite had not started before and after the opaque-version compatibility change. Its new regression is included in that queued run; lint and whitespace checks passed afterward.
+- Command `bun run typecheck`: passed after the opaque-version guard.
+- Command `Get-CimInstance Win32_Process`: confirmed an active test process still held the shared slot. Only W11's verified waiting Bash process was stopped for the targeted compatibility check; the shared lock and other processes were left intact.
+- Command `bun test --max-concurrency=1 --timeout=30000 -t 'an opaque source version' apps/melete/test/integration/learning-episodes.test.ts`: 1 pass, 8 filtered out, 0 fail, 3 assertions in 11.65 seconds. This was a focused check, not a full-suite result; W11 then rejoined the shared queue for final source verification.
+
+## Final locked source verification
+
+- Command `bun run test`: acquired the shared lock at 2026-09-11 23:08:03 UTC and passed the final unchanged source with 927 pass, 14 pre-existing todo, 0 fail, and 3,958 assertions across all 79 files in exactly two serial workers. The measured full-suite duration was 119.85 seconds, meeting the 180-second target; queue time is excluded.
+- Log `Test process 1 exited with 0`: 513 pass, 10 todo, 0 fail across 51 files in 119.73 seconds. Log `Test process 2 exited with 0`: 414 pass, 4 todo, 0 fail across 28 files in 112.28 seconds.
+- Test `completed job, owner correction, then a different job succeeds with fewer interventions and no private details`: passed in 5.968 seconds in the final full run. Test `text sorting improves two templates but harms numeric ordering and is kept as rejected history`: passed in 2.140 seconds; the negative-transfer candidate never reached the sealed final phase or delivery.
+- Test `validation selects before final; one-space canary and one-call rollback fence delivery`: passed in 8.047 seconds. All nine episode tests passed, including delayed completion after forgetting, concurrent removal, partial source suppression, delivered-context references, and opaque source-version compatibility.
+- Commands `bun run typecheck`, `bun run lint`, `bun run compose:check`, and `git -C C:/Users/gamin/melete-oss-w11 diff --cached --check`: passed for the final source; lint checked 340 files and Compose checked 12 properties. Command `bun run test:plugin` passed all 21 tests; its source has not changed since that run.
+- Command `bun run test`: the successful EXIT trap released W11's shared lock; a subsequently created lock belongs to another lane. Earlier duration and unlocked contention observations remain above as history; the final measured run is green and under three minutes.

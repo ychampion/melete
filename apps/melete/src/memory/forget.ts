@@ -119,7 +119,6 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
       where d.space_id = ${record.space_id} and d.input_kind = 'claim' and d.output_kind = 'claim'
   ) select id from affected`;
   for (const descendant of descendants) affected.add(descendant.id);
-  await restrictEpisodes(tx, record, [...affected]);
   await tx`update memory_claims set hidden = true where space_id = ${record.space_id} and id = any(${[...affected]})`;
   const dataRevision = await bumpRevision(tx, record.space_id);
   const [next] =
@@ -136,6 +135,8 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
     audience: 'private',
   };
   await invalidateDependencies(tx, scope, [...affected], dataRevision, record.all);
+  // Invalidation waits for active job transactions; include episodes they committed while removal waited.
+  await restrictEpisodes(tx, record, [...affected]);
   await enqueue(tx, record.space_id, 'cleanup', record.id);
   await enqueue(tx, record.space_id, 'index', String(dataRevision));
   return generation(next ?? {});

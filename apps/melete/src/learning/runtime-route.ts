@@ -1,4 +1,5 @@
-import type { CapabilityClaims, ToolSpec } from '@melete/contracts';
+import { createHash } from 'node:crypto';
+import { type CapabilityClaims, type ToolSpec, toolSpec } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { AuthenticationError, verifyCapability } from '../broker/capability.ts';
@@ -23,16 +24,28 @@ export function learningRuntimeFetch(options: {
   capabilityKey: string;
   broker: Pick<BrokerOperations, 'authorize'>;
   fallback: (request: Request) => Response | Promise<Response>;
+  onError?: (error: unknown) => void;
 }) {
-  async function source(request: Request) {
+  let available: Promise<boolean> | undefined;
+  async function hasLearningSchema() {
+    available ??=
+      options.sql`select to_regclass('public.episode') is not null and to_regclass('public.learning_attempt') is not null as available`.then(
+        (rows) => rows[0]?.available === true,
+      );
+    return available;
+  }
+  async function principal(request: Request) {
     const header = request.headers.get('authorization');
     if (!header?.startsWith('Bearer '))
       throw new AuthenticationError('attempt capability required');
     const claims: CapabilityClaims = verifyCapability(header.slice(7), options.capabilityKey);
     await options.broker.authorize(claims);
+    return claims;
+  }
+  async function source(claims: CapabilityClaims) {
     const [row] = await options.sql`
       select e.id, e.generation_state from episode e
-      where e.job_id = ${claims.job_id} and e.space_id = ${claims.space_id}
+      where (e.job_id = ${claims.job_id} or e.corrective_job_id = ${claims.job_id}) and e.space_id = ${claims.space_id}
         and not e.restricted and e.expires_at > now() and e.intervention is not null
         and e.scope->>'task_family' <> 'unclassified'
         and e.judgement in ('pending','corrected')
@@ -44,12 +57,21 @@ export function learningRuntimeFetch(options: {
     if (path !== '/tools/learning/propose' && !(path === '/tools' && request.method === 'GET'))
       return options.fallback(request);
     try {
+      // Standalone broker deployments can precede the additive learning migration.
+      if (!(await hasLearningSchema())) return options.fallback(request);
       if (path === '/tools' && request.method === 'GET') {
         const response = await options.fallback(request);
         if (!response.ok) return response;
-        const body = (await response.json()) as { tools: ToolSpec[] };
+        const body = z.object({ tools: z.array(toolSpec) }).parse(await response.json());
+        const claims = await principal(request);
         // A full catalog stays intact; explicit owner interventions still drain automatically.
-        if (body.tools.length < 15 && (await source(request))) body.tools.push(LEARNING_TOOL);
+        if (body.tools.length < 15 && (await source(claims))) body.tools.push(LEARNING_TOOL);
+        // Hermes obtains its actual catalog over HTTP after claim; bind those delivered specs too.
+        const versions = body.tools.map((tool) => ({
+          name: tool.name,
+          version: `sha256:${createHash('sha256').update(JSON.stringify(tool)).digest('hex')}`,
+        }));
+        await options.sql`update learning_attempt set versions = jsonb_set(versions, '{tools}', ${JSON.stringify(versions)}::jsonb) where attempt_id = ${claims.attempt_id}`;
         return Response.json(body);
       }
       if (request.method !== 'POST')
@@ -58,7 +80,7 @@ export function learningRuntimeFetch(options: {
       if (raw.length > 1024)
         return Response.json({ error: { code: 'payload_invalid' } }, { status: 413 });
       z.strictObject({}).parse(JSON.parse(raw));
-      const row = await source(request);
+      const row = await source(await principal(request));
       if (!row)
         return Response.json({ error: { code: 'owner_intervention_required' } }, { status: 409 });
       return Response.json({
@@ -75,6 +97,7 @@ export function learningRuntimeFetch(options: {
         return Response.json({ error: { code: error.code } }, { status: 403 });
       if (error instanceof z.ZodError || error instanceof SyntaxError)
         return Response.json({ error: { code: 'payload_invalid' } }, { status: 400 });
+      options.onError?.(error);
       return Response.json({ error: { code: 'learning_unavailable' } }, { status: 500 });
     }
   };

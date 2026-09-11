@@ -24,6 +24,8 @@ const weights: Record<string, number> = {
   'packages/knowledge/src/mediation.test.ts': 15,
   'conformance/memory/breaks.test.ts': 8,
   'apps/melete/test/integration/attention.test.ts': 7,
+  'apps/melete/test/integration/learning-evaluation.test.ts': 45,
+  'apps/melete/test/integration/learning-three-act.test.ts': 25,
   'apps/mock-api/src/app.test.ts': 4,
 };
 
@@ -54,10 +56,17 @@ export function partitionTests(files: readonly string[]): [Group, Group] {
     { files: [], weight: 0 },
     { files: [], weight: 0 },
   ];
-  for (const file of [...files].sort((a, b) => weight(b) - weight(a) || a.localeCompare(b))) {
+  // Learning conformance owns fixed lane ports, so its files share one serial process.
+  const learning = files.filter((file) =>
+    file.startsWith('apps/melete/test/integration/learning-'),
+  );
+  const work = files.filter((file) => !learning.includes(file)).map((file) => [file]);
+  if (learning.length) work.push(learning);
+  const cost = (item: readonly string[]) => item.reduce((total, file) => total + weight(file), 0);
+  for (const item of work.sort((a, b) => cost(b) - cost(a) || a.join().localeCompare(b.join()))) {
     const group = groups[0].weight <= groups[1].weight ? groups[0] : groups[1];
-    group.files.push(file);
-    group.weight += weight(file);
+    group.files.push(...item);
+    group.weight += cost(item);
   }
   return groups;
 }

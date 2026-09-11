@@ -8,7 +8,12 @@ import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
 import { learningModelCall } from '../../src/learning/proposal-schema.ts';
 import { ProcedureProposer } from '../../src/learning/proposer.ts';
 import { learningRuntimeFetch } from '../../src/learning/runtime-route.ts';
-import { episode, procedureCandidate, procedureTransition } from '../../src/learning/schema.ts';
+import {
+  episode,
+  learningAttempt,
+  procedureCandidate,
+  procedureTransition,
+} from '../../src/learning/schema.ts';
 import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
 
 const fixture = await learningFixture();
@@ -72,6 +77,7 @@ async function correction(key: string) {
       capabilityKey: 'learning-tests-capability-key-at-least-32',
       broker: new BrokerService({ sql: fixture.handle.sql, connectors: new ConnectorRegistry() }),
       fallback: () => Response.json({ tools: [] }),
+      onError: (error) => console.error('tool catalogue capture', String(error)),
     });
     const request = (token: string, body: object = {}) =>
       new Request('http://learning.test/tools/learning/propose', {
@@ -108,6 +114,15 @@ async function correction(key: string) {
     );
     expect(await catalog.json()).toMatchObject({
       tools: [{ name: 'learning.propose', connection_id: null }],
+    });
+    const [captured] = await fixture.handle.db
+      .select()
+      .from(learningAttempt)
+      .where(eq(learningAttempt.attemptId, current.claims.attempt_id));
+    expect(captured?.versions.tools).toHaveLength(1);
+    expect(captured?.versions.tools[0]).toMatchObject({
+      name: 'learning.propose',
+      version: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
     const other = await fixture.create('different-runtime-job');
     const otherClaim = await fixture.runner.claim(wake(other));

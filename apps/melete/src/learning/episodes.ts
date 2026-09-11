@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { AttemptBundle, AttemptOutcome } from '@melete/contracts';
-import { and, asc, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import {
+  type AttemptBundle,
+  type AttemptOutcome,
+  jobBudget,
+  jobConstraints,
+  memoryHandle,
+} from '@melete/contracts';
+import { and, asc, desc, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { action, artifact, attempt, job, owner, space } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -103,7 +109,7 @@ async function evidence(tx: Transaction, row: JobRow) {
     .select({ action_id: action.id, status: action.status, receipt: action.receipt })
     .from(action)
     .where(eq(action.jobId, row.id));
-  return { versions, artifacts, receipts };
+  return { versions, artifacts, receipts, inputRefs: await inputReferences(tx, row) };
 }
 
 async function createEpisode(
@@ -125,7 +131,6 @@ async function createEpisode(
       inputDigest: digest(change ?? { job_id: row.id, segment: segmentKey }),
       scope: registration?.scope ?? unknownScope,
       templateId: registration?.templateId ?? 'unclassified',
-      inputRefs: registration?.inputRefs ?? [],
       intervention: change,
       actor,
       judgement,
@@ -145,22 +150,42 @@ export async function captureCompletedEpisode(
   attemptId: string,
 ) {
   if (!['completed', 'failed'].includes(row.state)) return;
+  try {
+    await liveJobEvidence(tx, row);
+  } catch (error) {
+    if (
+      error instanceof ServiceError &&
+      ['scope_denied', 'evidence_unavailable'].includes(error.code)
+    )
+      return;
+    throw error;
+  }
   const pending = await tx
     .select()
     .from(episode)
     .where(
       and(
-        eq(episode.jobId, row.id),
+        or(eq(episode.jobId, row.id), eq(episode.correctiveJobId, row.id)),
         eq(episode.judgement, 'pending'),
         eq(episode.restricted, false),
       ),
     );
   if (pending.length) {
     for (const segment of pending) {
+      const current = await evidence(tx, row);
+      const combined =
+        segment.correctiveJobId === row.id
+          ? {
+              versions: [...segment.versions, ...current.versions],
+              artifacts: [...segment.artifacts, ...current.artifacts],
+              receipts: [...segment.receipts, ...current.receipts],
+              inputRefs: [...new Set([...segment.inputRefs, ...current.inputRefs])],
+            }
+          : current;
       await tx
         .update(episode)
         .set({
-          ...(await evidence(tx, row)),
+          ...combined,
           judgement: row.state === 'completed' ? 'corrected' : 'failed',
           failureClass: row.state === 'failed' ? outcome.kind : segment.failureClass,
         })
@@ -169,7 +194,11 @@ export async function captureCompletedEpisode(
     return;
   }
   // A corrected job already has a segment record. A completion is its judgement, not a second lesson.
-  const [existing] = await tx.select().from(episode).where(eq(episode.jobId, row.id)).limit(1);
+  const [existing] = await tx
+    .select()
+    .from(episode)
+    .where(or(eq(episode.jobId, row.id), eq(episode.correctiveJobId, row.id)))
+    .limit(1);
   if (!existing)
     await createEpisode(tx, row, `completion:${attemptId}`, 'runtime', null, row.state);
 }
@@ -202,8 +231,13 @@ export class EpisodeService {
       const [old] = await tx.select().from(learningJob).where(eq(learningJob.jobId, jobId));
       if (old) {
         if (
-          digest({ scope: old.scope, template_id: old.templateId, input_refs: old.inputRefs }) !==
-          digest(input)
+          digest(
+            jobLearningScope.parse({
+              scope: old.scope,
+              template_id: old.templateId,
+              input_refs: old.inputRefs,
+            }),
+          ) !== digest(input)
         )
           throw new ServiceError('scope_frozen', 'The recorded task scope is immutable.');
         return old;
@@ -239,15 +273,47 @@ export class EpisodeService {
           );
         return old;
       }
-      const saved = await createEpisode(
-        tx,
-        row,
-        `intervention:${key}`,
-        ownerId,
-        change,
-        ['completed', 'failed', 'cancelled'].includes(row.state) ? 'owner_judged' : 'pending',
-      );
+      const registration = await liveJobEvidence(tx, row);
+      const saved = await createEpisode(tx, row, `intervention:${key}`, ownerId, change, 'pending');
       if (!saved) throw new Error('Episode insert returned no row');
+      if (['completed', 'failed', 'cancelled'].includes(row.state)) {
+        // Terminal jobs are immutable. A linked correction cannot replay their effects.
+        const corrective = await this.jobs.createInTransaction(tx, {
+          space_id: row.spaceId,
+          title: `Correction: ${row.title}`.slice(0, 200),
+          objective: row.objective,
+          constraints: jobConstraints.parse(row.constraints),
+          budget: { ...jobBudget.parse(row.budget), max_actions: 0 },
+          ...(registration
+            ? {
+                learning: {
+                  scope: registration.scope,
+                  template_id: registration.templateId,
+                  input_refs: registration.inputRefs,
+                },
+              }
+            : {}),
+        });
+        await appendEvent(tx, {
+          jobId: corrective.id,
+          type: 'notice',
+          payload: { kind: 'user_message', text: change.text },
+          dedupKey: `${saved.id}:input`,
+        });
+        await appendEvent(tx, {
+          jobId: row.id,
+          type: 'notice',
+          payload: { kind: 'corrective_job', job_id: corrective.id, episode_id: saved.id },
+          dedupKey: `${saved.id}:corrective-job`,
+        });
+        const [linked] = await tx
+          .update(episode)
+          .set({ correctiveJobId: corrective.id })
+          .where(eq(episode.id, saved.id))
+          .returning();
+        if (!linked) throw new Error('Corrective episode link failed');
+        return linked;
+      }
       // Every new correction invalidates old payload bindings, including while an approval is parked.
       await tx
         .update(job)
@@ -332,12 +398,60 @@ export class EpisodeService {
   }
 }
 
+/** A late completion or fresh intervention cannot recreate evidence removed from an older job. */
+async function liveJobEvidence(tx: Transaction, row: JobRow) {
+  const state = await tx.execute(
+    sql`select revoked, restore_ready from memory_spaces where space_id = ${row.spaceId}`,
+  );
+  const cleared = await tx.execute(
+    sql`select id from memory_suppressions where space_id = ${row.spaceId}
+      and operation = 'clear' and recorded_at >= ${row.createdAt.toISOString()} limit 1`,
+  );
+  if ((state[0] && (state[0].revoked || !state[0].restore_ready)) || cleared.length)
+    throw new ServiceError('evidence_unavailable', 'The job evidence is no longer available.');
+  const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
+  await validateReferences(tx, row.spaceId, {
+    scope: registration?.scope ?? unknownScope,
+    template_id: registration?.templateId ?? 'unclassified',
+    input_refs: await inputReferences(tx, row, registration?.inputRefs ?? []),
+  });
+  return registration;
+}
+
+/** Context derivations record exact delivered claim/source versions without copying their private text. */
+async function inputReferences(tx: Transaction, row: JobRow, declared?: string[]) {
+  let references = declared;
+  if (!references) {
+    const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
+    references = registration?.inputRefs ?? [];
+  }
+  const observed =
+    await tx.execute(sql`select distinct d.input_id || '@' || d.input_version as handle
+    from memory_contexts c join memory_derivations d
+      on d.space_id = c.space_id and d.output_kind = 'context' and d.output_id = c.id
+    where c.space_id = ${row.spaceId} and c.job_id = ${row.id}
+      and d.input_kind in ('claim', 'source')`);
+  const handles = observed.map((value) => {
+    const parsed = memoryHandle.safeParse(value.handle);
+    if (!parsed.success)
+      throw new ServiceError(
+        'evidence_unavailable',
+        'An input version cannot be represented as learning evidence.',
+      );
+    return parsed.data;
+  });
+  return [...new Set([...references, ...handles])];
+}
+
 async function validateReferences(tx: Transaction, spaceId: string, input: JobLearningScope) {
   for (const handle of input.input_refs) {
     const [id, version] = handle.split('@');
     const rows = id?.startsWith('src_')
       ? await tx.execute(
-          sql`select id from memory_sources where id = ${id} and source_version = ${version} and space_id = ${spaceId} and state = 'active'`,
+          sql`select s.id from memory_sources s where s.id = ${id} and s.source_version = ${version}
+            and s.space_id = ${spaceId} and s.state = 'active' and not exists (
+              select 1 from memory_suppressions r where r.space_id = s.space_id and r.source_id = s.id
+            )`,
         )
       : await tx.execute(
           sql`select c.id from memory_claims c join memory_revisions r on r.claim_id = c.id where c.id = ${id} and r.revision = ${Number(version)} and c.space_id = ${spaceId} and not c.hidden`,

@@ -12,7 +12,8 @@ export async function restrictEpisodes(
     await tx`update episode set restricted = true, intervention = null, versions = '[]',
     artifacts = '[]', receipts = '[]', input_refs = '[]', generation_state = 'restricted'
     where space_id = ${record.space_id} and (
-      (${record.all} and created_at <= ${record.recorded_at}) or exists (
+      (${record.all} and exists (select 1 from job j where j.id = episode.job_id
+        and j.created_at <= ${record.recorded_at})) or exists (
         select 1 from jsonb_array_elements_text(input_refs) ref where split_part(ref, '@', 1) = any(${ids})
       )) returning id`;
   await tx`delete from procedure_candidate where episode_id = any(${removed.map((row) => row.id)})`;
