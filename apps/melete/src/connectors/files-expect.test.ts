@@ -21,7 +21,7 @@ beforeEach(async () => {
     mkdir(path.join(root, 'work', 'job_01'), { recursive: true }),
     mkdir(path.join(root, 'spaces', 'sp_01', 'artifacts'), { recursive: true }),
   ]);
-});
+}, 15_000);
 afterEach(async () => {
   const resolved = path.resolve(root);
   if (
@@ -31,7 +31,7 @@ afterEach(async () => {
     throw new Error('refusing fixture cleanup outside the temp root');
   }
   await rm(resolved, { recursive: true, force: true });
-});
+}, 15_000);
 
 const connector = () =>
   createFilesConnector({

@@ -19,7 +19,7 @@ beforeEach(async () => {
     mkdir(path.join(root, 'work', 'job_other'), { recursive: true }),
     mkdir(path.join(root, 'outside'), { recursive: true }),
   ]);
-});
+}, 15_000);
 afterEach(async () => {
   const resolved = path.resolve(root);
   if (
@@ -29,7 +29,7 @@ afterEach(async () => {
     throw new Error('refusing fixture cleanup outside the temp root');
   }
   await rm(resolved, { recursive: true, force: true });
-});
+}, 15_000);
 
 const connector = () => createExecConnector({ workRoot: path.join(root, 'work') });
 const record = (over: Record<string, unknown> = {}) => ({
