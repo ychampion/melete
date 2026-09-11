@@ -93,3 +93,6 @@
 - `unknown-outcome.json`: review found the fixture uses test.write rather than email.send; the mock now presents its message as a draft and preserves the fixture's unconfirmed outcome after approval.
 - `bun test apps/mock-api/src/experience.test.ts apps/melete/test/integration/experience-signin.test.ts --max-concurrency=2`: 4 passed, 0 failed, 49 assertions in 10.90 seconds, including no second send or event after an uncertain result.
 - `ExperienceSignIn.request`: availability is checked independently of the submitted address; accepted requests do not disclose whether that address matches the owner.
+- `2240b24`: committed the uncertain-send scenario and uniform sign-in responses.
+- `ExperiencePlanning.automation`: run history now checks persisted completion confirmation; an unknown effect is shown as needs_you instead of done. Milestones requiring reconciliation use the same readable attention state.
+- `bun test apps/melete/test/integration/experience.test.ts --max-concurrency=2`: 12 passed, 0 failed, 103 assertions in 13.07 seconds; includes all five card sources from real rows, foreign artifact exclusion, credential-address refusal, and an unconfirmed third routine occurrence.

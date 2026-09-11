@@ -418,25 +418,18 @@ export class AttemptRunner {
         input = { kind: 'attempt_budget_exhausted' };
         break;
     }
-    const chatComplete =
-      row.kind === 'chat' &&
+    const completionVerified =
       outcome.kind === 'completed' &&
       input.kind === 'attempt_completed' &&
       !input.has_unknown_action &&
       input.all_actions_terminal &&
       (!input.deliverable_declared || input.deliverable_satisfied);
+    const chatComplete = row.kind === 'chat' && completionVerified;
     if (chatComplete) {
       input = { kind: 'attempt_waiting_for_input' };
       wait = { kind: 'user_input', question: 'What would you like to do next?' };
     }
-    if (
-      row.kind === 'routine' &&
-      outcome.kind === 'completed' &&
-      input.kind === 'attempt_completed' &&
-      !input.has_unknown_action &&
-      input.all_actions_terminal &&
-      (!input.deliverable_declared || input.deliverable_satisfied)
-    ) {
+    if (row.kind === 'routine' && completionVerified) {
       const [schedule] = await tx
         .select()
         .from(trigger)
@@ -484,7 +477,12 @@ export class AttemptRunner {
       jobId: row.id,
       attemptId,
       type: 'attempt_ended',
-      payload: { outcome, ...(row.kind === 'chat' ? { experience_completed: chatComplete } : {}) },
+      payload: {
+        outcome,
+        ...(['chat', 'routine'].includes(row.kind)
+          ? { experience_completed: completionVerified }
+          : {}),
+      },
       dedupKey: `${attemptId}:ended`,
     });
     if (updated.state === 'waiting_for_event_or_time' && this.onWait)

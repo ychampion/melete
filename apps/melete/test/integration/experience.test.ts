@@ -5,6 +5,7 @@ import {
   automationResponse,
   conversationResponse,
   dedupKey,
+  experienceOperations,
   experienceQuestion,
   experienceSearch,
   homeResponse,
@@ -20,6 +21,7 @@ import { session } from '../../src/db/auth-schema.ts';
 import {
   action,
   agent,
+  artifact,
   connection,
   event,
   experienceTurn,
@@ -249,6 +251,46 @@ withDb('experience rows and authenticated scope', () => {
     const [runs] = await required(handle)
       .sql`select count(*)::int as n from attempt where job_id = ${id} and outcome = 'completed'`;
     expect(runs?.n).toBe(2);
+    expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+    const pending = await required(jobs).get(id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: id,
+        expected_epoch: pending.leaseEpoch,
+        expected_version: pending.stateVersion,
+        reason: 'event',
+      }),
+    );
+    const connectionId = newId('conn');
+    await required(handle)
+      .db.insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Mail', provider: 'imap' });
+    const actionId = newId('act');
+    await required(handle)
+      .db.insert(action)
+      .values({
+        id: actionId,
+        jobId: id,
+        attemptId: claimed.claims.attempt_id,
+        connectionId,
+        kind: 'email.send',
+        effectClass: 'write_external',
+        canonicalPayload: {},
+        payloadHash: 'a'.repeat(64),
+        idempotencyKey: actionId,
+        status: 'unknown',
+      });
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Unconfirmed.',
+      evidence: [],
+    });
+    const list = experienceOperations['GET /automations'].response.parse(
+      await (await request('/automations')).json(),
+    );
+    expect(list.automations.find((row) => row.id === routine.id)?.runs[0]?.status).toBe(
+      'needs_you',
+    );
   });
   test('creates a chat job and projects the agent without identities from the client', async () => {
     const chat = await createConversation();
@@ -636,6 +678,146 @@ withDb('experience rows and authenticated scope', () => {
     expect((await projection.page(foreignSpaceId, 0, chat.id)).events).toEqual([]);
     const response = await request(`/conversations/${chat.id}/events?since=0`);
     expect(response.status).toBe(200);
+  });
+  test('cards project real calendar, draft, file, page and artifact records with safe attribution', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Gather dinner details' });
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const entries = [
+      {
+        provider: 'caldav',
+        kind: 'calendar.list',
+        payload: {},
+        detail: {
+          events: [
+            {
+              uid: 'dinner-event',
+              summary: 'Dinner event',
+              start: '2026-09-12T19:00:00Z',
+              end: '2026-09-12T20:00:00Z',
+              location: 'Home',
+            },
+          ],
+        },
+      },
+      {
+        provider: 'imap',
+        kind: 'email.draft',
+        payload: { to: 'alex@example.test', subject: 'Dinner invitation', body: 'At seven?' },
+        detail: {},
+      },
+      {
+        provider: 'files',
+        kind: 'files.read',
+        payload: { path: 'artifacts/menu.txt' },
+        detail: { path: 'artifacts/menu.txt', content: 'private details stay inside' },
+      },
+      {
+        provider: 'web',
+        kind: 'web.fetch',
+        payload: {},
+        detail: {
+          final_url: 'https://example.test/menu?access_token=private',
+          body: '<title>Dinner menu</title><p>private details stay inside</p>',
+        },
+      },
+    ];
+    const ids: string[] = [];
+    for (const entry of entries) {
+      const connectionId = newId('conn');
+      ids.push(connectionId);
+      await required(handle)
+        .db.insert(connection)
+        .values({ id: connectionId, spaceId, label: 'Connected app', provider: entry.provider });
+      const id = newId('act');
+      await required(handle)
+        .db.insert(action)
+        .values({
+          id,
+          jobId: chat.id,
+          attemptId: claimed.claims.attempt_id,
+          connectionId,
+          kind: entry.kind,
+          effectClass: entry.kind === 'email.draft' ? 'write_reversible' : 'read',
+          canonicalPayload: entry.payload,
+          payloadHash: 'a'.repeat(64),
+          idempotencyKey: id,
+          status: 'succeeded',
+          receipt: { detail: entry.detail },
+          resolvedAt: new Date(),
+        });
+      await required(handle)
+        .db.insert(event)
+        .values({
+          jobId: chat.id,
+          attemptId: claimed.claims.attempt_id,
+          type: 'action_status_changed',
+          payload: { action_id: id, to: 'succeeded' },
+          dedupKey: `card-fixture:${id}`,
+        });
+    }
+    await required(handle)
+      .db.insert(artifact)
+      .values([
+        {
+          id: newId('art'),
+          spaceId,
+          jobId: chat.id,
+          path: 'artifacts/dinner-notes.txt',
+          contentHash: 'a'.repeat(64),
+          mime: 'text/plain',
+          size: 15,
+        },
+        {
+          id: newId('art'),
+          spaceId: foreignSpaceId,
+          jobId: chat.id,
+          path: 'foreign-secret.txt',
+          contentHash: 'b'.repeat(64),
+          mime: 'text/plain',
+          size: 20,
+        },
+      ]);
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'Dinner details are ready.',
+      evidence: [],
+    });
+    const result = experienceOperations['GET /conversations/{id}/cards'].response.parse(
+      await (await request(`/conversations/${chat.id}/cards`)).json(),
+    );
+    expect(result.cards).toHaveLength(5);
+    expect(result.cards.map((card) => card.title).sort()).toEqual(
+      ['Dinner event', 'Dinner invitation', 'Dinner menu', 'dinner-notes.txt', 'menu.txt'].sort(),
+    );
+    expect(
+      result.cards.find((card) => card.title === 'Dinner event')?.facts.map((fact) => fact.label),
+    ).toEqual(['Starts', 'Ends', 'Place']);
+    expect(result.cards.find((card) => card.title === 'Dinner invitation')?.facts).toEqual([
+      { label: 'To', value: 'alex@example.test' },
+    ]);
+    // Credential-bearing source addresses never become clickable links.
+    expect(result.cards.find((card) => card.title === 'Dinner menu')?.primary_action).toBeNull();
+    expect(
+      result.cards
+        .filter((card) => card.source_connection)
+        .map((card) => card.source_connection)
+        .sort(),
+    ).toEqual(ids.sort());
+    expect(JSON.stringify(result)).not.toMatch(BACKEND_VOCABULARY);
+    expect(JSON.stringify(result)).not.toContain('private details stay inside');
+    expect(JSON.stringify(result)).not.toContain('foreign-secret');
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(page.events.filter((event) => event.item.type === 'card')).toHaveLength(5);
+    expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
   });
 });
 

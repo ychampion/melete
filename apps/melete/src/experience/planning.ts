@@ -8,11 +8,19 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { artifact, attempt, experienceProfile, job, planMilestone, trigger } from '../db/schema.ts';
+import {
+  artifact,
+  attempt,
+  event,
+  experienceProfile,
+  job,
+  planMilestone,
+  trigger,
+} from '../db/schema.ts';
 import { newId } from '../ids.ts';
 import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
-import { plainText } from './projectors.ts';
+import { object, plainText } from './projectors.ts';
 import { type ExperienceService, experienceMissing } from './service.ts';
 
 export const stateLabel = (
@@ -23,7 +31,8 @@ export const stateLabel = (
   if (state === 'cancelled') return 'stopped';
   if (state === 'running') return 'working';
   if (state === 'queued') return 'queued';
-  if (state === 'waiting_for_input' || state === 'waiting_for_approval') return 'needs_you';
+  if (['waiting_for_input', 'waiting_for_approval', 'needs_reconciliation'].includes(state))
+    return 'needs_you';
   return 'idle';
 };
 
@@ -205,6 +214,25 @@ export class ExperiencePlanning {
       .where(eq(attempt.jobId, row.jobId))
       .orderBy(desc(attempt.startedAt))
       .limit(20);
+    const endings = runs.length
+      ? await this.db
+          .select({ attemptId: event.attemptId, payload: event.payload })
+          .from(event)
+          .where(
+            and(
+              inArray(
+                event.attemptId,
+                runs.map((run) => run.id),
+              ),
+              eq(event.type, 'attempt_ended'),
+            ),
+          )
+      : [];
+    const incomplete = new Set(
+      endings
+        .filter((entry) => object(entry.payload).experience_completed === false)
+        .map((entry) => entry.attemptId),
+    );
     return experienceAutomation.parse({
       id: row.id,
       title: plainText(title, 'Routine'),
@@ -217,7 +245,9 @@ export class ExperiencePlanning {
         id: run.id,
         status:
           run.outcome === 'completed'
-            ? 'done'
+            ? incomplete.has(run.id)
+              ? 'needs_you'
+              : 'done'
             : run.outcome === 'failed'
               ? 'failed'
               : run.outcome === 'fenced'
