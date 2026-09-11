@@ -20,20 +20,15 @@ import {
   retractKnowledgeRequest,
 } from '@melete/contracts';
 import {
-  applyProposal,
   DEFAULT_POLICY,
   type Finding,
-  getProposal,
   hardDelete,
   knownIds,
   type LoadedRecord,
-  listProposals,
   loadSpace,
   openIndex,
-  proposalType,
   proposeWrite,
   rebuild,
-  requiresApproval,
   retract,
   type SearchHit,
   SpaceIndex,
@@ -186,26 +181,13 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
     return c.json({ hits: hits.map(hitView) });
   });
 
-  app.get('/knowledge/proposals', (c) => {
-    const space = c.get('space');
-    const policy = policyFor(space);
-    return c.json({
-      proposals: listProposals(space.paths).map((proposal) => {
-        // Read from the record itself, never from the metadata beside it: the
-        // staging directory is the one place an agent can write.
-        const type = proposalType(proposal);
-        return {
-          proposal_id: proposal.id,
-          path: proposal.path,
-          rationale: proposal.rationale,
-          type,
-          proposed_by: proposal.proposedBy,
-          proposed_at: proposal.proposedAt,
-          requires_approval: requiresApproval(policy, type),
-        };
-      }),
-    });
-  });
+  /**
+   * Listing what is staged and applying one of them are served by the memory
+   * module, because the Postgres claim store is the authority for both: a pending
+   * proposal is a row there, and applying it revalidates evidence and revisions
+   * that this module cannot see. Staging below is still this module's: the
+   * mediator is what an agent writes through.
+   */
 
   app.post('/knowledge/proposals', async (c) => {
     const space = c.get('space');
@@ -233,41 +215,6 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
       { proposal_id: result.proposal.id, path: result.proposal.path, diff: result.diff },
       201,
     );
-  });
-
-  app.post('/knowledge/proposals/:proposalId/apply', async (c) => {
-    const space = c.get('space');
-    const proposal = getProposal(space.paths, c.req.param('proposalId'));
-    if (!proposal) return c.json(fail('not_found', 'no proposal with that id is staged'), 404);
-
-    const body = (await c.req.json().catch(() => ({}))) as { approved_by?: string };
-    const policy = policyFor(space);
-    const type = proposalType(proposal);
-    const needsPerson = requiresApproval(policy, type);
-    const approvedBy = body.approved_by ?? (needsPerson ? null : 'policy:auto-apply');
-    if (!approvedBy) {
-      return c.json(
-        fail(
-          'approval_required',
-          `a ${type ?? 'record the mediator cannot read'} in this space needs a person`,
-        ),
-        409,
-      );
-    }
-
-    const applied = await applyProposal(contextFor(space), proposal, { approvedBy });
-    if (!applied.ok) {
-      return c.json(
-        fail('apply_failed', 'the proposal was not applied', findingsDetail(applied.findings)),
-        409,
-      );
-    }
-    return c.json({
-      proposal_id: proposal.id,
-      path: applied.path,
-      commit: applied.commit.sha,
-      approved_by: approvedBy,
-    });
   });
 
   app.get('/knowledge', (c) => {
