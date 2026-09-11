@@ -53,11 +53,13 @@ approvals:
 providers:
   # The only endpoint the runtime may reach for inference is Melete's model
   # gateway, which injects the real provider key. The surrogate this container
-  # holds is worth nothing anywhere else. Compose sets MELETE_MODEL_KEY and
-  # keeps base_url in step with the gateway's internal address.
+  # holds is worth nothing anywhere else. The address is the broker bind from
+  # deploy/docker-compose.yml (MELETE_BROKER_BIND=0.0.0.0:8788), which carries
+  # both the broker routes and the metered model paths on one listener.
+  # Compose sets MELETE_MODEL_KEY; the provider segment selects which upstream
+  # the gateway injects a key for.
   melete-gateway:
-    enabled: true
-    base_url: "http://melete:3112/providers/fake/v1"
+    base_url: "http://melete:8788/providers/fireworks/v1"
     key_env: MELETE_MODEL_KEY
 
 gateway:

@@ -303,6 +303,22 @@ def test_the_same_arguments_produce_the_same_client_ref(client, broker):
     assert refs[2] != refs[0]
 
 
+def test_the_handler_takes_the_arguments_as_one_positional_dict(client, broker):
+    # Hermes dispatches as handler(args, **kwargs) with the model's arguments in
+    # one positional dict (tools/registry.py:822). A keyword-only signature
+    # raises TypeError before the broker is called, and the model is told the
+    # tool is broken. The real engine caught this; the fake broker could not.
+    handler = build_handler(client, CATALOG[1])
+    result = handler({"query": "positional"})
+    assert result["status"] == "succeeded"
+    assert broker.requests[0]["body"]["payload"] == {"query": "positional"}
+
+
+def test_the_handler_still_accepts_keyword_arguments(client, broker):
+    build_handler(client, CATALOG[1])(query="keyword")
+    assert broker.requests[0]["body"]["payload"] == {"query": "keyword"}
+
+
 def test_the_client_opens_no_socket_without_configuration():
     with pytest.raises(BrokerError) as caught:
         BrokerClient(base_url="", token="t").tools()

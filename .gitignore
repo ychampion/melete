@@ -13,3 +13,6 @@ artifacts/
 deploy/config/gateway-tls/
 .hermes-src/
 .hermes-venv/
+__pycache__/
+*.pyc
+.pytest_cache/

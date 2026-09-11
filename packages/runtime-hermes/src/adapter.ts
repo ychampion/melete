@@ -320,7 +320,9 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
   private async json(request: HermesRequest): Promise<unknown> {
     const response = await this.send(request);
     if (!response.ok) {
-      throw new Error(`${request.method} ${new URL(request.url).pathname} answered ${response.status}`);
+      throw new Error(
+        `${request.method} ${new URL(request.url).pathname} answered ${response.status}`,
+      );
     }
     return response.json();
   }
@@ -411,10 +413,7 @@ function safeParseEvent(data: string): Record<string, unknown> | null {
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`no frame for ${Math.round(ms / 1000)}s`)),
-      ms,
-    );
+    const timer = setTimeout(() => reject(new Error(`no frame for ${Math.round(ms / 1000)}s`)), ms);
     promise.then(
       (value) => {
         clearTimeout(timer);
@@ -442,7 +441,8 @@ export function brokerParkedActions(options: {
   spaceId: string;
   fetch?: FetchLike;
 }): ParkedActions {
-  const call = options.fetch ?? ((input: string, init?: RequestInit) => globalThis.fetch(input, init));
+  const call =
+    options.fetch ?? ((input: string, init?: RequestInit) => globalThis.fetch(input, init));
   return async (bundle) => {
     const url = `${options.brokerUrl.replace(/\/+$/, '')}/actions?job_id=${encodeURIComponent(bundle.attempt.job_id)}&status=needs_approval`;
     const response = await call(url, {

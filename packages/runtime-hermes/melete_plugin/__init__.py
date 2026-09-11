@@ -31,9 +31,15 @@ logger = logging.getLogger("melete.plugin")
 #: entire catalog is what the broker served for this job.
 TOOLSET = "melete"
 
-#: Set by the service on the run request. Lets a proposal that was sent twice --
-#: a socket that died after the write, a process that restarted -- resolve to the
-#: same action instead of a second effect.
+#: The job this container is working on. It scopes the proposal reference, and
+#: it is the JOB and not the attempt on purpose: an action that parked for
+#: approval is dispatched when the NEXT attempt proposes the same thing again,
+#: and an attempt-scoped reference would make that a second action with the
+#: approval still sitting on the first. See _client_ref.
+JOB_ID_ENV = "MELETE_JOB_ID"
+
+#: Carried for correlation in logs and for a fallback reference when the job id
+#: is absent. Not the idempotency scope.
 ATTEMPT_ID_ENV = "MELETE_ATTEMPT_ID"
 
 __all__ = ["register", "TOOLSET", "build_handler", "tool_schema"]
@@ -64,7 +70,13 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
 
-    def handler(**arguments: Any) -> Dict[str, Any]:
+    def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
+        # Hermes dispatches as `handler(args, **kwargs)` with the model's
+        # arguments in one positional dict (`tools/registry.py:822`), not as
+        # keyword arguments. A `**kwargs`-only signature raises TypeError before
+        # the broker is ever called, and the model is told the tool is broken.
+        arguments: Dict[str, Any] = dict(args or {})
+        arguments.update(extra)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
@@ -99,18 +111,28 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
 
 
 def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
-    """A stable name for this proposal within this attempt.
+    """A stable name for this proposal within this job.
 
-    The broker hashes it and refuses a second proposal under the same ref whose
-    content differs, so a resent request resolves to the action it already
-    created. Scoped to the attempt because that is the only window in which a
-    resend can be the same intent.
+    The broker keys a proposal on this and refuses a second one under the same
+    reference whose content differs, so a resent request resolves to the action
+    it already created rather than making another.
+
+    Scoped to the JOB, not the attempt. An action that parked for approval is
+    carried out when the next attempt proposes the same thing again: the broker
+    finds the approved action under this reference and dispatches it. An
+    attempt-scoped reference makes that a brand new action instead, and the
+    approval the owner gave stays attached to one nobody will ever execute.
+
+    The cost is that two genuinely separate but byte-identical effects in one
+    job collapse into one. That is the safer direction: an approval binds to a
+    payload hash, so a second identical send is indistinguishable from a retry,
+    and sending twice is the failure that cannot be taken back.
     """
-    attempt = os.environ.get(ATTEMPT_ID_ENV, "attempt")
+    scope = os.environ.get(JOB_ID_ENV) or os.environ.get(ATTEMPT_ID_ENV, "job")
     digest = hashlib.sha256(
         json.dumps(arguments, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:32]
-    return f"{attempt}:{name}:{digest}"
+    return f"{scope}:{name}:{digest}"
 
 
 def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:

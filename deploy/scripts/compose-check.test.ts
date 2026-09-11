@@ -47,8 +47,22 @@ describe('the check catches the mistakes that would matter', () => {
   test('mounting the host into the runtime', () => {
     const broken: ComposeFile = structuredClone(compose);
     const runtime = broken.services?.runtime;
-    if (runtime) runtime.volumes = ['spaces:/work', '/var/run/docker.sock:/var/run/docker.sock'];
-    expect(failures(broken)).toContain('the runtime mounts nothing but /work');
+    if (runtime)
+      runtime.volumes = [
+        'spaces:/work',
+        'runtime-home:/var/lib/hermes',
+        '/var/run/docker.sock:/var/run/docker.sock',
+      ];
+    expect(failures(broken)).toContain('the runtime mounts nothing but /work and /var/lib/hermes');
+  });
+
+  test('taking away the runtime writable Hermes home', () => {
+    // Without it the run-idempotency store degrades to process memory,
+    // /v1/capabilities reports durable=false, and the adapter refuses to start.
+    const broken: ComposeFile = structuredClone(compose);
+    const runtime = broken.services?.runtime;
+    if (runtime) runtime.volumes = ['work:/work'];
+    expect(failures(broken)).toContain('the runtime has a writable Hermes home');
   });
 
   test('letting the runtime keep its capabilities', () => {

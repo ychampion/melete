@@ -103,12 +103,30 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     'runtime.mem_limit must be set',
   );
 
+  // Two writable paths and no others. /work is the shared workspace. The Hermes
+  // home exists because the API server's run-idempotency reservations are a
+  // SQLite file under it, and on a read-only root that store degrades to process
+  // memory, reports durable=false, and the adapter refuses to start. Anything
+  // else mounted here is a hole in a boundary the release claims.
+  const ALLOWED_MOUNTS = ['/work', '/var/lib/hermes'];
   const mounts = runtime.volumes ?? [];
-  const nonWork = mounts.filter((m) => !m.split(':')[1]?.startsWith('/work'));
+  const unexpected = mounts.filter((m) => {
+    const target = m.split(':')[1] ?? '';
+    return !ALLOWED_MOUNTS.some(
+      (allowed) => target === allowed || target.startsWith(`${allowed}/`),
+    );
+  });
   say(
-    'the runtime mounts nothing but /work',
-    nonWork.length === 0,
-    `unexpected mounts: ${nonWork.join(', ')}`,
+    `the runtime mounts nothing but ${ALLOWED_MOUNTS.join(' and ')}`,
+    unexpected.length === 0,
+    `unexpected mounts: ${unexpected.join(', ')}`,
+  );
+
+  const hermesHome = mounts.find((m) => (m.split(':')[1] ?? '') === '/var/lib/hermes');
+  say(
+    'the runtime has a writable Hermes home',
+    hermesHome !== undefined && !hermesHome.endsWith(':ro'),
+    'without it the run-idempotency store is in-memory and the adapter refuses to start',
   );
 
   // Postgres must never be reachable from outside the machine, and the runtime

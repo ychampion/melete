@@ -1,6 +1,6 @@
+import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, test } from 'bun:test';
 import type { AttemptBundle, RuntimeEvent } from '@melete/contracts';
 import { brokerParkedActions, type FetchLike, HermesRuntimeAdapter } from './adapter.ts';
 
@@ -69,12 +69,7 @@ function streamOf(text: string, chunks = 5): ReadableStream<Uint8Array> {
 type Call = { url: string; init?: RequestInit };
 
 function harness(
-  options: {
-    sse?: string;
-    durable?: boolean;
-    startStatus?: number;
-    eventsStatus?: number;
-  } = {},
+  options: { sse?: string; durable?: boolean; startStatus?: number; eventsStatus?: number } = {},
 ) {
   const calls: Call[] = [];
   const fetch: FetchLike = async (url, init) => {
@@ -87,7 +82,10 @@ function harness(
       if (options.startStatus && options.startStatus >= 400) {
         return new Response('no', { status: options.startStatus });
       }
-      return Response.json({ run_id: 'run_fixture_1', status: 'started', replayed: false }, { status: 202 });
+      return Response.json(
+        { run_id: 'run_fixture_1', status: 'started', replayed: false },
+        { status: 202 },
+      );
     }
     if (path.endsWith('/events')) {
       if (options.eventsStatus && options.eventsStatus >= 400) {
@@ -102,10 +100,7 @@ function harness(
   return { calls, fetch };
 }
 
-const adapterWith = (
-  fetch: FetchLike,
-  parked: string[] | Error = [],
-): HermesRuntimeAdapter =>
+const adapterWith = (fetch: FetchLike, parked: string[] | Error = []): HermesRuntimeAdapter =>
   new HermesRuntimeAdapter({
     baseUrl: 'http://runtime:8790',
     parkedActions: async () => {
@@ -195,7 +190,9 @@ describe('a recorded run', () => {
     const { fetch } = harness({ sse: ': keepalive\n\n: stream closed\n\n' });
     const sink = new Collector();
     await adapterWith(fetch).start(bundle, sink, new AbortController().signal);
-    expect(sink.events.filter((e) => e.type !== 'turn_started' && e.type !== 'attempt_outcome')).toEqual([]);
+    expect(
+      sink.events.filter((e) => e.type !== 'turn_started' && e.type !== 'attempt_outcome'),
+    ).toEqual([]);
   });
 });
 
@@ -305,7 +302,7 @@ describe('control', () => {
     expect(calls.some((c) => c.url.endsWith('/stop'))).toBe(true);
   });
 
-  test("a shell-command approval is denied, never allowed for the session", async () => {
+  test('a shell-command approval is denied, never allowed for the session', async () => {
     const { calls, fetch } = harness({
       sse:
         'data: {"event":"approval.request","request_id":"req_9","command":"rm -rf /work","allow_session":true}\n\n' +

@@ -60,6 +60,22 @@ The catalog is fetched at registration and is already filtered by the job's
 scopes, so an out-of-scope tool never appears in the model's context rather than
 being refused after the model has spent a turn on it.
 
+Two details that the local end-to-end settled and that are easy to get wrong.
+
+A handler is called as `handler(args, **kwargs)` with the model's arguments in
+one positional dict, not as keyword arguments. A `**kwargs`-only signature
+raises `TypeError` before the broker is reached, and the model is told the tool
+is broken.
+
+The proposal reference is scoped to the **job**, not the attempt. An action that
+parks for approval is carried out when the next attempt proposes the same thing
+again: the broker finds the approved action under that reference and dispatches
+it. An attempt-scoped reference makes that a brand new action and leaves the
+owner's approval attached to one nobody will ever execute. The cost is that two
+genuinely separate but byte-identical effects in one job collapse into one,
+which is the safer direction: an approval binds to a payload hash, so a second
+identical send is indistinguishable from a retry.
+
 ## Melete does not use Hermes's approval gate
 
 `api_server` is in `_UNATTENDED_APPROVAL_PLATFORMS`, so an approval escalated
@@ -120,6 +136,28 @@ one job continue one Hermes session.
 Melete consumes the event stream once and persists every event before fanning it
 out. An interrupted run is a dead attempt and is never resumed; the job survives
 in Postgres and the next wake starts a fresh attempt.
+
+## Starting the container
+
+Four values are per attempt and are not in the image. The entrypoint refuses to
+start without the first two.
+
+| | |
+|---|---|
+| `MELETE_ATTEMPT_TOKEN` | the capability. Written into the provider's `extra_headers` at boot, because the model gateway meters per attempt and needs it on every inference request, not only the surrogate. |
+| `MELETE_JOB_ID` | scopes the proposal reference, so an approved action resumes rather than duplicating. |
+| `MELETE_ATTEMPT_ID` | correlation. |
+| `MELETE_MODEL_KEY` | the surrogate, which must match `melete-surrogate-<label>`. It is a label, not the capability: a JWT's dots fail that pattern. |
+
+`API_SERVER_KEY` is also required, and its absence is silent: without a usable
+key the `api_server` platform is never enabled, so the container starts, logs
+nothing alarming, and never listens.
+
+`HERMES_HOME` is a writable volume rather than part of the read-only root. The
+API server's run-idempotency reservations are a SQLite file under it; with
+nowhere to write, the store falls back to process memory, `/v1/capabilities`
+reports `runs_idempotency.durable: false`, and the adapter refuses to start
+rather than let a retried start become a second run.
 
 ## Building
 
