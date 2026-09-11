@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  BUILT_IN_SKILLS,
   buildOpenApiDocument,
   type KnowledgeFrontmatter,
   knowledgeRecordResponse,
@@ -294,7 +295,7 @@ describe('reading a space', () => {
   test('skills list the built-ins and the space has none of its own', async () => {
     const res = await app().request('/skills', { headers: headers() });
     const body = (await res.json()) as { skills: Array<{ space_id: string | null }> };
-    expect(body.skills).toHaveLength(6);
+    expect(body.skills).toHaveLength(BUILT_IN_SKILLS.length);
     expect(body.skills.every((s) => s.space_id === null)).toBe(true);
   });
 });

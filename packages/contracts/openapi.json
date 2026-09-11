@@ -3990,7 +3990,8 @@
                       "caldav",
                       "web",
                       "files",
-                      "test"
+                      "test",
+                      "generation"
                     ]
                   },
                   "label": {
@@ -7524,7 +7525,8 @@
               "caldav",
               "web",
               "files",
-              "test"
+              "test",
+              "generation"
             ]
           },
           "label": {

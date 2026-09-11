@@ -7,6 +7,7 @@
 
 export * from './api.ts';
 export * from './broker.ts';
+export * from './capabilities.ts';
 export * from './common.ts';
 export * from './connector.ts';
 export * from './effects.ts';
@@ -22,3 +23,4 @@ export * from './responsibility.ts';
 export * from './runtime.ts';
 export * from './skills.ts';
 export * from './style.ts';
+export * from './watch.ts';

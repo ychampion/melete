@@ -295,6 +295,11 @@ export const trigger = pgTable(
     cursor: text('cursor'),
     enabled: boolean('enabled').notNull().default(true),
     substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
+    // The last observation this trigger looked at, so a `changed` clause has
+    // something to compare against. Null until the first one arrives, which is
+    // why `changed` is false on a feed's first observation: there is no
+    // evidence of a change, only evidence of a first sighting.
+    lastObservation: jsonb('last_observation'),
     createdAt: created(),
   },
   (t) => [index('trigger_job_idx').on(t.jobId)],

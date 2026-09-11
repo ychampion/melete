@@ -375,7 +375,7 @@ export interface paths {
                         };
                         label: string;
                         /** @enum {string} */
-                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test";
+                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "generation";
                         /** @default [] */
                         scopes?: string[];
                         space_id: string;
@@ -4065,7 +4065,7 @@ export interface components {
             label: string;
             last_checked_at: components["schemas"]["__schema41"] | null;
             /** @enum {string} */
-            provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test";
+            provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "generation";
             scopes: string[];
             space_id: string;
             /** @enum {string} */

@@ -27,7 +27,7 @@ beside them. `bun run conformance/style/check.ts` prints the table.
 `apps/melete/src/runtime/style.ts` wraps any runtime adapter, reads the text the
 attempt committed, and hands the violations to a recorder. It never blocks: a
 recorder that throws changes nothing about the outcome. `withMemoryRuntime`
-wires it to `memory_contexts.style_violations` (migration 0014), so how an
+wires it to `memory_contexts.style_violations` (migration 0015), so how an
 attempt talked is recorded beside what it was given.
 
 ```
@@ -135,3 +135,87 @@ names the old and new values.
 Also: `packages/contracts/src/since-last.test.ts` "an action with no receipt is
 not described as though it had one", "a first wake has no prior work to name",
 "the brief is bounded, so one busy job cannot crowd out the rest of the prompt".
+
+## 4. Watch predicates
+
+Trigger kind `watch`: a connection, an event name, and a predicate the service
+evaluates against the observation when it arrives. No match, no wake. The
+language is dotted field paths into the observation, at most five clauses all of
+which must hold, and six operators: `eq`, `contains`, `matches`, `lt`, `gt`,
+`changed`. There is no `or`, because two reasons to wake are two watches, and
+that keeps every wake traceable to one predicate a person can read.
+
+Everything unclear is false: a missing field, a comparison between things that
+are not comparable, a pattern that does not compile, a first sighting under
+`changed`. A pattern that does not compile is refused when the watch is made
+rather than silently never matching. `changed` compares against the last
+observation this watch looked at, kept on the trigger row (migration 0016), so
+observations that do not match still advance the cursor and are never tested
+twice.
+
+When one matches, the job wakes with the observation as its evidence and the
+consumed-event notice carries `because: ["event:<seq>"]`. `docs/CONNECTORS.md`
+gains "Watching a feed without spending on it".
+
+Falsifier test: `apps/melete/test/integration/watch.test.ts` "a hundred
+observations that do not match wake nothing; the one that matches wakes exactly
+once" — after 100 non-matching observations the job's state and state version
+are unchanged, there is no `trigger_event` row and exactly one attempt exists;
+the next, matching, observation wakes it once, `because` names that
+observation's seq, and the following attempt's bundle carries it as a trigger
+event.
+
+Also: "a changed clause is quiet on a first sighting and wakes on the second,
+different one", "a pattern that does not compile is refused when the watch is
+made, not silently never matched", "the cursor moves past observations that were
+tested, so none is tested twice", and fourteen unit tests in
+`packages/contracts/src/watch.test.ts`.
+
+## 5. Capability manifests and the podcast skill
+
+A connector reaches something that already exists; a capability makes something
+that did not. The difference that matters is that generation costs money and
+produces a file, so a capability is implemented behind the connector interface:
+one action of effect class `spend`, an approval bound to the payload hash, a
+budget reservation, an idempotency key, a receipt persisted before the runtime
+hears anything, and a verify that reads the file back off disk. Cost and effect
+class come from trusted configuration, never from a tool argument. Adding a
+second path to the world would mean a second place to get approval, fencing and
+idempotency right.
+
+`packages/contracts/src/capabilities.ts` carries the enum (`audio.synthesize`,
+`audio.transcribe`, `image.generate`, `code.execute`, only the first
+implemented), the manifest, `buildToolCatalog` (connectors ∪ capabilities
+filtered by grants) and `skillsWithToolsAvailable` (a skill is offered only when
+every tool it names is in the catalog). Connections gain a `generation`
+provider, and `configuredConnectors` registers the capability connector for one.
+
+The fake provider gains a text-to-speech adapter that writes a valid RIFF/WAVE
+file of silence with the script in a LIST/INFO comment chunk, so the whole path
+runs with no key and no network and "the episode says what the script said" is a
+real read of a real file. The real adapter posts to an OpenAI-compatible speech
+endpoint, is advertised only when `OPENAI_API_KEY` or an OpenAI-compatible base
+URL is configured, and its test is skipped without one.
+
+`packages/skills/builtin/make-a-podcast/SKILL.md` is 381 tokens by the loader's
+estimate, inside its 400 cap. The reference app renders an audio artifact with a
+player, built from the receipt's artifact detail.
+
+Falsifier test: `packages/skills/src/capability-skills.test.ts` "is offered when
+the speech capability is configured" and "is absent when it is not, and the
+other skills are unaffected" — with the capability in the catalog the skill is
+offered and trigger selection picks it; without it the skill is not offered at
+all, selection returns nothing, and the other built-ins are untouched.
+
+Also: `apps/melete/src/connectors/tts.test.ts` "writes a playable artifact and
+returns a receipt naming its hash" (reads the script back out of the file that
+was written), "verify reads the file back, so an unknown dispatch has an
+answer", "a path that is not a simple file name is refused", "with no adapter it
+fails honestly instead of writing an empty file";
+`packages/contracts/src/capabilities.test.ts` "an unavailable capability is
+absent rather than advertised and refused".
+
+Deliverables 4 and 5 land in one commit. They share three contract files
+(`index.ts`, `entities.ts` and the generated `openapi.json`), so splitting them
+would have produced a first commit that does not typecheck, which is a worse
+thing to put in the history than a commit that does two things.

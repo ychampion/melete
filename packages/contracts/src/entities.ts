@@ -9,6 +9,7 @@ import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { originWarnings, sha256Hex } from './effects.ts';
 import { jobState } from './job-state.ts';
 import { knowledgeRecordStatus } from './knowledge.ts';
+import { watchPredicate } from './watch.ts';
 
 // --------------------------------------------------------------------------
 // owner, space
@@ -51,7 +52,16 @@ export type Space = z.infer<typeof space>;
 // connection
 // --------------------------------------------------------------------------
 
-export const CONNECTION_PROVIDERS = ['imap', 'smtp', 'caldav', 'web', 'files', 'test'] as const;
+export const CONNECTION_PROVIDERS = [
+  'imap',
+  'smtp',
+  'caldav',
+  'web',
+  'files',
+  'test',
+  /** Generative capabilities: they make a file rather than reaching one. */
+  'generation',
+] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
 
@@ -324,7 +334,7 @@ export type KnowledgeRecordRow = z.infer<typeof knowledgeRecordRow>;
 // trigger
 // --------------------------------------------------------------------------
 
-export const TRIGGER_KINDS = ['schedule', 'event'] as const;
+export const TRIGGER_KINDS = ['schedule', 'event', 'watch'] as const;
 export const triggerKind = z.enum(TRIGGER_KINDS);
 export type TriggerKind = z.infer<typeof triggerKind>;
 
@@ -335,6 +345,18 @@ export const triggerSpec = z.discriminatedUnion('kind', [
     connection_id: prefixedId(ID_PREFIXES.connection),
     /** For example `mail.new`, polled with a cursor in v0.1. */
     event_name: z.string().min(1),
+    poll_seconds: z.number().int().positive().default(300),
+  }),
+  /**
+   * Like an event trigger, but the service tests the observation before waking
+   * anything. A monitor that wakes a model to look at an unchanged feed is not
+   * watching, it is spending; a watch that does not match writes no attempt.
+   */
+  z.object({
+    kind: z.literal('watch'),
+    connection_id: prefixedId(ID_PREFIXES.connection),
+    event_name: z.string().min(1),
+    predicate: watchPredicate,
     poll_seconds: z.number().int().positive().default(300),
   }),
 ]);

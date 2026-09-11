@@ -757,3 +757,9 @@ dialog::backdrop {
   border-color: var(--line);
   background: var(--surface-soft);
 }
+
+/* An audio artifact is something to listen to, not a path to read. */
+.artifact-audio {
+  width: 100%;
+  max-width: 420px;
+}

@@ -1,12 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
 import { createFilesConnector } from './files.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
+import { createCapabilityConnector } from './tts.ts';
 import { createWebConnector } from './web.ts';
 
 const endpoint = z
@@ -53,6 +55,8 @@ export async function configuredConnectors(options: {
   masterKey?: string;
   connections?: ConfiguredConnection[];
   enableTestConnector?: boolean;
+  /** Reads the same environment the gateway does, so one key configures both. */
+  env?: Record<string, string | undefined>;
 }) {
   const registry = new ConnectorRegistry();
   const secrets = new SealedSecretStore(
@@ -67,7 +71,22 @@ export async function configuredConnectors(options: {
   if (options.enableTestConnector) await initializeTestLedger(options.sql);
   for (const row of connections) {
     const setting = config.get(row.id);
-    if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
+    if (row.provider === 'generation') {
+      // A capability is registered like any other connector, so a generation
+      // call takes the path approval, fencing, budget and idempotency already
+      // hold. A second path to the world would be a second place to get those
+      // right.
+      const configured = capabilitiesFromEnv(options.env ?? process.env);
+      registry.register(
+        row.id,
+        createCapabilityConnector({
+          spacesRoot: options.spacesRoot,
+          adapter: configured.speech,
+          provider: configured.provider,
+          unitCostUsd: configured.unitCostUsd,
+        }),
+      );
+    } else if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
     else if (row.provider === 'web') registry.register(row.id, createWebConnector());
     else if (row.provider === 'test' && options.enableTestConnector)
       registry.register(row.id, createTestConnector(options.sql));
