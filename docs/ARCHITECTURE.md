@@ -193,6 +193,21 @@ class, required scopes, and whether `verify` can decide; plus `execute`, `verify
 `health`, and its credential requirements. They run inside the Melete process as
 trusted code in v0.1. See [CONNECTORS.md](CONNECTORS.md).
 
+A connector that fails says what kind of failure it was: a typed
+`ConnectorFault` with a class, a `may_have_committed` flag, and an optional
+`retry_after`. The broker repairs the cause rather than retrying blindly. It
+retries what did not leave, parks what was rate-limited, refreshes a stale token
+once, stops dead on a revoked grant, re-discovers a drifted schema and proposes
+a mapping with a test, takes one equivalent authorized route for the same
+operation, and reconciles an uncertain outcome through `verify`. A repair may
+change a selector, a route or a field's name; it may never change a recipient,
+an amount, a resource, or what the person asked for, and the action's payload
+hash and approval are the same on every attempt. `completed` is the only
+disposition that means the effect happened; every other one is a safe stop,
+counted apart and never summed with a completion. Connectors may also offer
+`describe`, `refreshCredential` and `routes`; one that offers none simply stops.
+See `.agents/notes/0015-typed-repair.md`.
+
 ## 8. Knowledge and skills
 
 One space is one git repository and one SQLite full-text index:

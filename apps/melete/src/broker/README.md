@@ -58,6 +58,36 @@ state, with uncertain actions ordered first. On the internal listener,
 mount the same read adapter behind its owner authentication. Cancellation stays
 visible alongside any unconfirmed send.
 
+## Typed faults and the repair policy
+
+`repair.ts` is the policy: one pure decision function and a driver that performs
+only what the decision chose. A connector raises a typed `ConnectorFault`; the
+policy reads the class and repairs the cause. It retries a transient failure
+with jittered backoff inside the dispatch deadline, parks a rate limit on a
+timer and releases the worker, refreshes an expired credential once and rechecks
+the grant, stops dead on a revoked one, re-discovers a drifted schema and
+proposes a mapping, takes one equivalent authorized route for the same
+operation, reconciles an uncertain outcome through `verify`, and escalates one
+diagnosis when nothing else applies.
+
+A repair may change a selector, a wrapper, the route, the credential, or a
+field's name under a mapping whose every value survives unchanged. It may never
+change a recipient, an amount, a resource, or the business intent. The action
+row is not rewritten: the id, the `payload_hash`, the `intent_key` and the
+approval are the same on every attempt, and only the payload handed to the
+connector differs. Each line of `action.repair_trace` carries the hash of the
+bytes that attempt sent, so the record shows exactly when and why the wire form
+changed.
+
+`repair_candidate` holds a drift mapping as a proposal with the test it must
+pass. It becomes `applied` only after that test passed and after the send it
+carried landed; anything ambiguous is `rejected` and the action stops.
+
+Per-class counters and the disposition live on the action row, and
+`GET /jobs/{id}/repairs` reports them with the trace and the candidates.
+`completed` is the only disposition that means the effect happened; every other
+one is a safe stop and is never summed with a completion.
+
 ## Effect identity across attempts
 
 At proposal the broker derives

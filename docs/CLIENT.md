@@ -14,6 +14,7 @@ bug.
 - [The event stream and the resume rule](#the-event-stream-and-the-resume-rule)
 - [The approval-card rule](#the-approval-card-rule)
 - [The unknown-outcome rule](#the-unknown-outcome-rule)
+- [The safe-stop rule](#the-safe-stop-rule)
 - [The inbox rule](#the-inbox-rule)
 - [The five states a job can wait in](#the-five-states-a-job-can-wait-in)
 - [Developing against the mock](#developing-against-the-mock)
@@ -154,6 +155,47 @@ await client.api.POST('/actions/{actionId}/resolve', {
 answer and a legitimate resting place; do not hide it or make it hard to pick.
 Whatever the person says is recorded as a reconciliation, and the action is not
 dispatched again either way.
+
+## The safe-stop rule
+
+**Show a safe stop as its own state, never as a failure.**
+
+When a connector fails, the broker classifies the fault and repairs the cause
+rather than retrying blindly. `GET /jobs/{id}/repairs` reports what it did: the
+fault classes the action met, the decisions the policy took, and the
+`disposition` the action came to rest at.
+
+`completed` is the only disposition that means the effect happened. Every other
+one sets `safe_stop: true`, and a safe stop is not a failure: nothing was sent
+twice, nothing was changed to make a call go through, and in most cases the
+responsibility is still going.
+
+| Disposition | What to draw |
+|---|---|
+| `completed` | done, with its receipt |
+| `parked_until_retry` | waiting until `retry_after_at`, in the same weight as any other wait |
+| `needs_reconciliation` | the unknown-outcome rule above; a person says what they found |
+| `needs_reconnect` | one action: reconnect the account. Never a generic error |
+| `needs_input` | the question in the inbox is the interface; do not restate it as an error |
+| `repair_exhausted` | stopped after trying, with the diagnosis in the inbox |
+
+Never sum completions and safe stops into one "processed" figure, and never
+badge a safe stop red. A run that stopped safely eleven times out of eleven
+delivered nothing, and a screen that reports eleven successes is lying; a screen
+that reports eleven failures is scaring someone about a system that behaved
+correctly. Count them apart, and use the plain words:
+
+> The destination asked me to wait an hour, so I will try again at 14:20. I have
+> not sent anything yet.
+
+`counters` gives the fault classes an action met, and `trace` gives the ordered
+decisions with the hash of the bytes each attempt put on the wire. That hash is
+the action's own approved hash throughout, because a repair may change a
+selector, a route or a field's name and may never change a recipient, an amount,
+a resource, or what the person asked for. A schema-drift mapping appears under
+`candidates` as the proposal it is, with the test it had to pass; a candidate in
+`candidate` or `rejected` state changed nothing and should be shown as a note,
+not as an action taken.
 
 ## The inbox rule
 
