@@ -9,6 +9,7 @@ export * from './api.ts';
 export * from './broker.ts';
 export * from './common.ts';
 export * from './connector.ts';
+export * from './delta.ts';
 export * from './effects.ts';
 export * from './entities.ts';
 export * from './events.ts';

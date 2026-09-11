@@ -1,21 +1,25 @@
+import { join } from 'node:path';
 import {
   type AttemptBundle,
   type AttemptOutcome,
   attemptBundle,
   attemptOutcome,
   type CanonicalMessage,
+  CONTEXT_LIMITS,
   type ContextGenerations,
   type Deliverable,
   jobBudget,
   jobConstraints,
   jsonObject,
   QUESTION_GUIDANCE,
+  type RecallResult,
   type ResponsibilityAttemptBundle,
   receipt,
   responsibilityAttemptBundle,
   TERMINAL_ACTION_STATUSES,
   waitSpec,
 } from '@melete/contracts';
+import { chooseSkills, loadSkills } from '@melete/skills';
 import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
@@ -26,8 +30,12 @@ import {
   event,
   knowledgeRecord,
   question,
+  space,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import type { MemoryScope, MemorySql } from '../memory/db.ts';
+import { pendingRepairBriefs } from '../memory/outputs.ts';
+import { asKnowledge, recall } from '../memory/recall.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -187,7 +195,8 @@ export function assembleHistory(
   return { inputs, transcript: boundTranscript(transcript), progressSummary };
 }
 
-export async function buildBundle(
+/** Reserve the durable attempt first; its capability is usable only after commit. */
+export async function buildAttemptSkeleton(
   tx: Transaction,
   row: JobRow,
   attemptIdentity: { id: string; epoch: number; revision: number; token: string },
@@ -275,6 +284,19 @@ export async function buildBundle(
     .from(question)
     .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
     .limit(1);
+  const [jobSpace] = await tx
+    .select({ path: space.gitPath })
+    .from(space)
+    .where(eq(space.id, row.spaceId));
+  // This schema has one owner and no memberships. Only this space's skills can
+  // override the built-ins; no directory supplied by the model is consulted.
+  const selected = chooseSkills(
+    row.objective,
+    [...history.transcript].reverse().find((message) => message.role === 'user')?.content ?? '',
+    loadSkills({ spaceSkillsDirectory: jobSpace ? join(jobSpace.path, 'skills') : undefined })
+      .skills,
+    CONTEXT_LIMITS.max_skills,
+  );
   return responsibilityAttemptBundle.parse({
     ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
@@ -289,7 +311,7 @@ export async function buildBundle(
     inputs: history.inputs,
     transcript: history.transcript,
     tools: [],
-    skills: [],
+    skills: selected.map(({ skill }) => ({ name: skill.frontmatter.name, body: skill.body })),
     knowledge: [],
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
@@ -302,6 +324,85 @@ export async function buildBundle(
     budget: jobBudget.parse(row.budget),
     model,
   });
+}
+
+export type BundleAssembly = {
+  sql: MemorySql;
+  scope: MemoryScope;
+  catalog: (bundle: AttemptBundle) => Promise<AttemptBundle['tools']>;
+};
+
+/** Complete the bundle after the lease commits, before any model request. */
+export async function buildBundle(
+  skeleton: AttemptBundle,
+  options: BundleAssembly,
+): Promise<{ bundle: AttemptBundle; recall: RecallResult }> {
+  const { sql, scope } = options;
+  const jobId = skeleton.attempt.job_id;
+  const result = await recall(
+    sql,
+    scope,
+    {
+      job_id: jobId,
+      query: skeleton.job.objective.slice(0, 2000),
+      mode: 'current',
+      max_tokens: CONTEXT_LIMITS.knowledge_tokens,
+    },
+    { includeProfile: true },
+  );
+  const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
+  const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
+  const [previous] = await sql`select id, started_at from attempt
+    where job_id = ${jobId} and epoch < ${skeleton.attempt.epoch} order by epoch desc limit 1`;
+  // Handles reveal identity, not old claim text. Every join stays within the job's
+  // space, and the current recall gate remains the authority on usable knowledge.
+  const evidence = await sql`select s.id, s.source_version from memory_sources s
+    where s.space_id = ${scope.spaceId} and s.state = 'active'
+      and s.audience = any(${scope.role === 'owner' ? ['private', 'space', 'public'] : ['space', 'public']})
+      and ${skeleton.job.constraints.public_compartment !== true}
+      and (${previous?.started_at ?? null}::timestamptz is null
+      or s.ingested_at > ${previous?.started_at ?? null}::timestamptz) order by s.ingested_at, s.id limit 50`;
+  const actions =
+    await sql`select a.id, a.status, a.receipt->>'action_id' as receipt_id from action a
+    join job j on j.id = a.job_id where j.id = ${jobId} and j.space_id = ${scope.spaceId}
+    order by a.created_at desc, a.id limit 50`;
+  const questions =
+    await sql`select q.id, q.text as prompt from question q join job j on j.id = q.job_id
+    where j.id = ${jobId} and j.space_id = ${scope.spaceId} and q.state = 'open' order by q.created_at, q.id limit 20`;
+  const approvals =
+    await sql`select p.id, p.action_id from approval p join action a on a.id = p.action_id
+    join job j on j.id = a.job_id where j.id = ${jobId} and j.space_id = ${scope.spaceId}
+    and p.decision is null and a.status = 'needs_approval' and p.job_revision = j.revision
+    and (p.expires_at is null or p.expires_at > now()) order by p.requested_at, p.id limit 20`;
+  return {
+    recall: result,
+    bundle: {
+      ...skeleton,
+      tools,
+      knowledge: result.items.map(asKnowledge),
+      inputs: {
+        ...skeleton.inputs,
+        repair_briefs: repairBriefs,
+        since_last: {
+          previous_attempt_id: (previous?.id as string) ?? null,
+          evidence_handles: evidence.map((entry) => `${entry.id}@${entry.source_version}`),
+          actions: actions.map((entry) => ({
+            action_id: entry.id as string,
+            status: entry.status as string,
+            receipt_id: (entry.receipt_id as string) ?? null,
+          })),
+          pending_questions: questions.map((entry) => ({
+            id: entry.id as string,
+            prompt: entry.prompt as string,
+          })),
+          pending_approvals: approvals.map((entry) => ({
+            approval_id: entry.id as string,
+            action_id: entry.action_id as string,
+          })),
+        },
+      },
+    },
+  };
 }
 
 type CompletedOutcome = Extract<AttemptOutcome, { kind: 'completed' }>;

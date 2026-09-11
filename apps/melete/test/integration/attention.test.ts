@@ -14,7 +14,7 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { AttentionService } from '../../src/jobs/attention.ts';
-import { buildBundle } from '../../src/jobs/bundle.ts';
+import { buildAttemptSkeleton as buildBundle } from '../../src/jobs/bundle.ts';
 import { QuestionService } from '../../src/jobs/questions.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { notificationView, ReplyService } from '../../src/jobs/replies.ts';

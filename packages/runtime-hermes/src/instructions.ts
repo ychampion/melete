@@ -42,7 +42,7 @@ export function renderInstructions(bundle: AttemptBundle): string {
       `# What Melete already knows\n\nEach line is a record, not a belief. Cite the path when you use one.\n\n${bundle.knowledge
         .map(
           (entry) =>
-            `- ${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
+            `- ${entry.handle ? `[${entry.handle}] ` : ''}${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
         )
         .join('\n')}`,
     );
@@ -70,6 +70,15 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle): string =>
 /** The volatile half: the job, and what changed since the last attempt. */
 export function renderInput(bundle: AttemptBundle): string {
   const lines = [`# ${bundle.job.title}`, '', bundle.job.objective];
+  lines.push('', '## Accepted constraints', '', JSON.stringify(bundle.job.constraints));
+  // Disposable engines have no session history. The service's bounded ledger
+  // is the source of prior messages and completed tool-call identities.
+  if (bundle.transcript.length)
+    lines.push('', '## Prior conversation and tool results', '', JSON.stringify(bundle.transcript));
+  if (bundle.inputs.since_last)
+    lines.push('', '## Since last attempt', '', JSON.stringify(bundle.inputs.since_last));
+  for (const brief of bundle.inputs.repair_briefs)
+    lines.push('', '## Repair required', '', JSON.stringify(brief));
 
   if (bundle.job.progress_summary) {
     lines.push('', '## Where this got to', '', bundle.job.progress_summary);

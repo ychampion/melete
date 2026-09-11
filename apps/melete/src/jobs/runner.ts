@@ -31,7 +31,7 @@ import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
-import { buildBundle, completionFacts } from './bundle.ts';
+import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
@@ -54,6 +54,7 @@ export type RunnerOptions = {
   provider?: string;
   model?: string;
   scopes?: string[];
+  scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   heartbeatMs?: number;
   leaseMs?: number;
 };
@@ -139,7 +140,7 @@ export class AttemptRunner {
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
-        scopes: this.options.scopes ?? [],
+        scopes: this.options.scopes ?? (await this.options.scopesForJob?.(tx, row)) ?? [],
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
@@ -153,7 +154,7 @@ export class AttemptRunner {
         fallback: null,
       };
       const generations = await readGenerations(tx, row.spaceId);
-      const bundle = await buildBundle(
+      const bundle = await buildAttemptSkeleton(
         tx,
         row,
         {
