@@ -14,13 +14,12 @@ because a file tree cannot hold the revision checks, leases and serving
 restrictions that make a correction stick. Delete the Markdown space and memory
 survives; delete the Postgres rows and it does not.
 
-This branch implements the memory core, its authenticated route adapter, and a
-background worker. The default service entry point still serves health only.
-The authentication, attempt-worker, gateway and broker modules in the starting
-checkout are stubs. Their remaining integration points are listed in
-[the integration note](../.agents/notes/proposed/2026-09-11-memory-integration-hooks.md).
-The tests exercise memory with real Postgres and pg-boss, a scripted HTTP gateway,
-and temporary space repositories.
+The service entry point starts the memory core and background worker, mounts
+the authenticated routes, and wraps real Hermes attempts with context recording
+and invalidation. The tests exercise real Postgres, pg-boss and the local pinned
+Hermes engine with a scripted provider and temporary space repositories.
+[The wiring note](../.agents/notes/0022-wired-assistant.md) records the verified
+path and the remaining Docker and diagnostic limits.
 
 ## What is remembered
 
@@ -339,9 +338,12 @@ Provision a memory space from authenticated server state, initialize a new
 `FileRestrictionJournal` only for a new installation, then call
 `startMemoryService` with the Postgres handle, pg-boss, retained journal, and
 gateway adapter. Start accepting memory traffic only after that call completes.
-Attach `createMemoryRouter` through `createApp`'s optional memory dependency and
-wrap the attempt runtime with `withMemoryRuntime` when the missing service
-modules are integrated. Never derive a scope from an unverified request header.
+`bootstrap()` attaches `createMemoryRouter` through `createApp`'s memory
+dependency and wraps the configured runtime with `withMemoryRuntime`. Session
+cookies authenticate the owner; `x-melete-space` selects a verified space and
+does not authenticate the request. Each context row contains the exact recalled
+items and a `style_violations` array. It is empty until a style checker is
+configured; its presence does not claim that generated prose was checked.
 
 The startup check gates all spaces, validates and replays the independently
 retained restriction journal, then opens eligible spaces. A missing, malformed,

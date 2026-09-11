@@ -112,15 +112,56 @@ bun run lint
 bun test
 bun run openapi          # regenerate packages/contracts/openapi.json
 bun run client:generate  # regenerate the client's types from openapi.json
-bun run compose:check    # assert the runtime container really has no route out
+bun run compose:check    # check the declared runtime boundary without Docker
 bun run conformance        # list the eight scenarios and what each will assert
 bun run conformance:memory # run the eight memory families, counterfactual arm included
 ```
 
-There is no `docker compose up` yet worth running: the service serves `/health`
-and nothing else.
+The service starts Postgres migrations, pg-boss workers, memory and the broker.
+An HTTP job reserves an attempt, selects up to three skills from its space,
+recalls knowledge with versioned handles, and records the context. The service
+then asks a supervisor to start one pinned Hermes engine for that attempt.
+Hermes reaches tools and models through the broker; the service removes the
+engine when the attempt finishes. A correction fences old context and queues a
+replacement with a delta and a repair brief.
 
-The client surface is further along than the service, and does not wait for it:
+On a Docker host, fill in `deploy/.env.example` as `deploy/.env`, set `DOCKER_GID`
+to the group owning the local Docker socket, then run `docker compose up --build`
+from `deploy`. Docker 27 or later is required for per-job volume subpaths. The
+Compose builds the runtime image and the service launches attempts; the `runtime-dev` profile adds
+only an idle inspection container. This wiring has static checks here; image
+builds and the container network boundary still need verification on a Docker
+host. See [the wiring note](.agents/notes/0022-wired-assistant.md).
+
+For local development, install the pinned engine and select the process supervisor:
+
+```bash
+git clone --depth 1 --branch v2026.9.7 https://github.com/NousResearch/hermes-agent.git .hermes-src
+uv venv .hermes-venv --python 3.12
+# Windows: replace .hermes-venv/bin/python with .hermes-venv/Scripts/python.exe.
+uv pip install --python .hermes-venv/bin/python -e ./.hermes-src aiohttp==3.14.3
+export MELETE_RUNTIME_ADAPTER=hermes MELETE_RUNTIME_SUPERVISOR=process
+export MELETE_SPACES_DIR="$PWD/spaces" MELETE_WORK_DIR="$PWD/work"
+export MELETE_BROKER_BIND=127.0.0.1:3172 MELETE_BROKER_URL=http://127.0.0.1:3172 PORT=3170
+# Configure DATABASE_URL, MELETE_CAPABILITY_KEY, MELETE_APPROVAL_KEY and a provider key.
+bun run apps/melete/src/index.ts
+```
+
+The process supervisor is a development launcher with the current user's OS
+access. Container isolation requires the Docker supervisor. The scripted HTTP
+proof uses no provider key:
+
+```bash
+bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=2
+```
+
+The current gateway reserves input bytes and output together against
+`budget.max_output_tokens`. The Hermes proof explicitly supplies `200000`; the
+default `8000` can reject the engine prompt with `token_cap_exceeded`. Choose a
+bounded budget when creating a real-engine job; the service does not enlarge it
+after admission.
+
+The reference client can also run against the scripted mock:
 
 ```bash
 bun run dev:mock   # the whole API in memory on :3190, with scripted jobs

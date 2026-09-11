@@ -130,8 +130,9 @@ never reached the ledger is the untracked side channel the broker exists to
 prevent.
 
 `Idempotency-Key` is the attempt id and the session key is the job id, so a
-resent start resolves to the run that already exists and consecutive attempts on
-one job continue one Hermes session.
+resent start resolves to the run that already exists within an attempt. The
+supervisor gives each new attempt a fresh Hermes home; the service supplies the
+bounded transcript and approval results needed to continue the job.
 
 Melete consumes the event stream once and persists every event before fanning it
 out. An interrupted run is a dead attempt and is never resumed; the job survives
@@ -139,8 +140,8 @@ in Postgres and the next wake starts a fresh attempt.
 
 ## Starting the container
 
-Four values are per attempt and are not in the image. The entrypoint refuses to
-start without the first two.
+The service supervisor supplies these values per attempt. They are not static
+Compose settings. The entrypoint refuses to start without the first two.
 
 | | |
 |---|---|
@@ -148,13 +149,15 @@ start without the first two.
 | `MELETE_JOB_ID` | scopes the proposal reference, so an approved action resumes rather than duplicating. |
 | `MELETE_ATTEMPT_ID` | correlation. |
 | `MELETE_MODEL_KEY` | the surrogate, which must match `melete-surrogate-<label>`. It is a label, not the capability: a JWT's dots fail that pattern. |
+| `MELETE_MODEL_PROVIDER`, `MELETE_MODEL_NAME`, `MELETE_MODEL_API_MODE` | the job's selected provider, model and transport, applied to the gateway-only provider configuration. |
+| `MELETE_BROKER_URL` | the internal service listener. |
 
 `API_SERVER_KEY` is also required, and its absence is silent: without a usable
 key the `api_server` platform is never enabled, so the container starts, logs
 nothing alarming, and never listens.
 
-`HERMES_HOME` is a writable volume rather than part of the read-only root. The
-API server's run-idempotency reservations are a SQLite file under it; with
+`HERMES_HOME` is a per-attempt writable temporary mount rather than part of the
+read-only root. The API server's run-idempotency reservations are a SQLite file under it; with
 nowhere to write, the store falls back to process memory, `/v1/capabilities`
 reports `runs_idempotency.durable: false`, and the adapter refuses to start
 rather than let a retried start become a second run.

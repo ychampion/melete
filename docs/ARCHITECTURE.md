@@ -144,9 +144,39 @@ durable.
 
 ## 6. The broker and the action protocol
 
+`bootstrap()` starts memory behind the retained restriction-journal restore
+gate, mounts authenticated memory routes, and selects `hermes` by default
+(`stub` is explicit). The public health response names the adapter. A committed
+attempt lease provides the capability used by both bundle assembly and the
+runtime plugin to read the same bounded broker catalog. Space skills are loaded
+and selected before launch; current recall supplies up to 2,000 tokens of
+knowledge with claim handles. `withMemoryRuntime` records exactly that recall,
+including `style_violations` (currently an empty diagnostic array), and rejects
+events or outcomes whose context has been invalidated.
+
+The execution path is service → supervisor → per-attempt Hermes → broker. The
+local process supervisor verifies the pinned checkout, creates an isolated
+Hermes home, passes only platform variables and the attempt's credentials, and
+kills the owned process tree on completion or cancellation. The Docker
+supervisor checks the image pin and internal network, mounts only the named work
+volume's job subdirectory at `/work`, and removes the container after the
+attempt. No attempt token is configured in Compose. The static `runtime`
+service belongs to the `runtime-dev` inspection profile; ordinary startup builds
+the runtime image and lets the service supervise attempts. The service alone
+receives the Docker socket. Process mode is not an OS sandbox; Docker execution
+and network isolation must be checked on a Docker host.
+
+Each new engine receives the service's bounded transcript rather than relying
+on a previous engine session. `since_last` reads previous-attempt identity,
+new evidence handles, action statuses and receipt identities, and pending
+questions and approvals from durable rows. Corrections invalidate dependent
+contexts and produce repair briefs naming the changed handle and affected
+outputs. A durable outbox queues the replacement attempt; acknowledging the
+outbox follows the queue commit so a restart cannot silently lose that wake.
+
 The runtime talks to the broker over HTTP on the internal network with its
 attempt token. The tool catalog is generated from connector manifests filtered by
-the job's scopes.
+the job's scopes and capped at fifteen entries in deterministic order.
 
 ```
 proposed -> (needs_approval -> approved | denied) -> admitted -> dispatched
