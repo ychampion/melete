@@ -28,6 +28,23 @@ const unknownScope: ProcedureScope = {
 };
 export type EpisodeRow = typeof episode.$inferSelect;
 
+/** Admission calls this before enqueueing the first wake; optional metadata never grants authority. */
+export async function registerJobLearning(tx: Transaction, row: JobRow, input: JobLearningScope) {
+  await validateReferences(tx, row.spaceId, input);
+  const [saved] = await tx
+    .insert(learningJob)
+    .values({
+      jobId: row.id,
+      spaceId: row.spaceId,
+      scope: input.scope,
+      templateId: input.template_id,
+      inputRefs: input.input_refs,
+    })
+    .returning();
+  if (!saved) throw new Error('Learning scope insert returned no row');
+  return saved;
+}
+
 /** Capture hashes of the exact delivered bodies/catalog, without retaining model deliberation. */
 export async function captureAttemptVersions(
   tx: Transaction,
@@ -193,18 +210,14 @@ export class EpisodeService {
       }
       if (row.state !== 'queued')
         throw new ServiceError('scope_frozen', 'Set task scope before the first attempt.');
-      await validateReferences(tx, row.spaceId, input);
-      const [saved] = await tx
-        .insert(learningJob)
-        .values({
-          jobId,
-          spaceId: row.spaceId,
-          scope: input.scope,
-          templateId: input.template_id,
-          inputRefs: input.input_refs,
-        })
-        .returning();
-      return saved;
+      const [previous] = await tx
+        .select({ id: attempt.id })
+        .from(attempt)
+        .where(eq(attempt.jobId, jobId))
+        .limit(1);
+      if (previous)
+        throw new ServiceError('scope_frozen', 'Set task scope before the first attempt.');
+      return registerJobLearning(tx, row, input);
     });
   }
 

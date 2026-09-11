@@ -166,6 +166,7 @@ export class AttemptRunner {
         model,
         previous?.inputCursor ?? 0,
         generations,
+        capabilities.version,
       );
       await tx.insert(attempt).values({
         id: attemptId,

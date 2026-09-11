@@ -37,3 +37,23 @@
 - Test `skill_creation_goes_to_learning_without_writing_live_skills`: configuration keeps only the Melete toolset; the narrowly added plugin forwarder refers owner evidence and never publishes a skill. No Hermes source patch is required.
 - Command `bun run typecheck`, first wiring run: one `Promise<boolean | void>` error from a logging callback; fix cycle 1 uses a void callback and the subsequent typecheck passed.
 - Commands `bun run typecheck`, `bun run lint`, and `bun run compose:check`: passed after final candidate wiring; Compose reported 12 checks. The earlier full-suite timing/fixture failures remain open and are not represented as green.
+
+## Updated assumptions from orchestration
+
+- Log `2026-09-11 full-suite lock steering`: seven lanes share this laptop; every future full suite acquires `C:/Users/gamin/.melete-test.lock` atomically, waits in 15-second increments, and releases its own lock on success or failure. Focused checks require no lock.
+- Command `bun run test`: the earlier unlocked timeout entries are contention observations, not confirmed failures; report a timeout as a failure only if it reproduces under the shared lock. The next full run will verify the completed changes under that lock.
+- Log `2026-09-11 additive-contract steering`: new contract files, optional fields, and OpenAPI paths are permitted with regenerated OpenAPI/client types and a proposed-note record; only breaking changes require stopping. This supersedes the initial frozen-contract assumption above.
+- SHA `9cfc5f4`: candidate generation committed and `git -C C:/Users/gamin/melete-oss-w11 push -u origin lane/w11-learning` published both completed slices; no merge or force push.
+
+## Slice 3 implementation and defensive checks
+
+- Command `bun run openapi` and `bun run client:generate`: regenerated additive learning schemas, optional atomic job learning scope, and the twelve episode/procedure API paths under the updated contract authorization.
+- Test `held-out procedure gate`: validation precedes sealed final selection, family gains cannot compensate for template regression, and critical-family, scope, time, template, and space violations reject promotion.
+- Test `the candidate and gate schemas refuse all six forbidden targets`: strict data-only input refuses authorizer, credential, space boundary, operation identity, grader, and sealed-task edit targets.
+- Command `bun test --max-concurrency=1 --timeout=30000 apps/melete/src/learning/gate.test.ts apps/melete/test/integration/learning-evaluation.test.ts`, first run: 6 pass and 3 fail in 33.42 seconds; repeated Bun bundling failed after the first successful gate process and one test expected the wrong error code. Fix cycle 1 caches the immutable trusted bundle and corrects that expectation; rerun is in progress.
+- Test `the same process boundary denies opening every forbidden target for writing`: the rerun uses verified existing source paths and append-only open probes; all six return `ERR_ACCESS_DENIED` with `FileSystemWrite` under the same Node permission flags as the promoter.
+- Command `bun run typecheck`, first slice-3 run: four unknown-JSON typing errors; fix cycle 1 parses usage and constraints through their existing contract schemas before use. Rerun is in progress.
+- Command `bun test --max-concurrency=1 --timeout=30000 apps/melete/src/learning/gate.test.ts apps/melete/test/integration/learning-evaluation.test.ts`, fix cycle 2: 9 pass, 0 fail, 65 assertions in 53.42 seconds. Cycle 1 had only a history-prefix assertion mismatch; the gate had correctly rejected the harmful template.
+- Test `validation selects before final; one-space canary and one-call rollback fence delivery`: actual scripted jobs pass both held-out phases; mutation after selection is denied; another space receives no skill; one-call rollback removes subsequent delivery.
+- Test `text sorting improves two templates but harms numeric ordering and is kept as rejected history`: validation rejects despite a positive family average, keeps the failed evaluation and transition history, and never opens the sealed final phase.
+- Commands `bun run typecheck`, `bun run lint`, and `bun run compose:check`: passed for slice 3; lint checked 339 files and Compose checked 12 isolation properties. A full run under the shared lock follows before pushing this slice.

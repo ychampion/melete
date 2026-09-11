@@ -13,6 +13,7 @@ export default defineConfig({
     './src/memory/schema.ts',
     './src/learning/schema.ts',
     './src/learning/proposal-schema.ts',
+    './src/learning/evaluation-schema.ts',
   ],
   out: './drizzle',
   strict: true,

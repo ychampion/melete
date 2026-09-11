@@ -40,6 +40,20 @@ import {
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
 import {
+  episodeListResponse,
+  interventionRequest,
+  interventionResponse,
+  jobLearningScope,
+  learningDeletionResponse,
+  learningScopeResponse,
+  learningSpaceQuery,
+  learningSpaceRequest,
+  procedureInspection,
+  procedureListResponse,
+  procedureReasonRequest,
+  procedureResponse,
+} from './learning.ts';
+import {
   claimHistoryResponse,
   claimListResponse,
   claimRevision,
@@ -139,8 +153,113 @@ export function buildOpenApiDocument() {
         { name: 'knowledge' },
         { name: 'skills' },
         { name: 'memory' },
+        { name: 'learning' },
       ],
       paths: {
+        '/episodes': {
+          get: {
+            tags: ['learning'],
+            summary: 'List unexpired episode evidence in one owned space',
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Episodes', episodeListResponse) },
+          },
+        },
+        '/episodes/{id}': {
+          delete: {
+            tags: ['learning'],
+            summary: 'Remove episode evidence and dependent procedures',
+            requestParams: { ...idParam('id', 'Episode id'), query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Deleted', learningDeletionResponse) },
+          },
+        },
+        '/jobs/{id}/learning-scope': {
+          put: {
+            tags: ['learning'],
+            summary: 'Register procedure scope before a job attempt begins',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(jobLearningScope),
+            responses: { '200': jsonResponse('Scope', learningScopeResponse) },
+          },
+        },
+        '/jobs/{id}/interventions': {
+          post: {
+            tags: ['learning'],
+            summary: 'Record and apply an owner correction or demonstration',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(interventionRequest),
+            responses: { '201': jsonResponse('Intervention episode', interventionResponse) },
+          },
+        },
+        '/episodes/{id}/propose': {
+          post: {
+            tags: ['learning'],
+            summary: 'Generate one bounded candidate from corrected evidence',
+            requestParams: idParam('id', 'Episode id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '201': jsonResponse('Candidate', procedureResponse) },
+          },
+        },
+        '/procedures': {
+          get: {
+            tags: ['learning'],
+            summary: 'List scoped procedures including qualified rejection history',
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Procedures', procedureListResponse) },
+          },
+        },
+        '/procedures/{id}': {
+          get: {
+            tags: ['learning'],
+            summary: 'Inspect procedure history and evaluation costs',
+            requestParams: { ...idParam('id', 'Procedure id'), query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Procedure evidence summary', procedureInspection) },
+          },
+        },
+        '/procedures/{id}/evaluate': {
+          post: {
+            tags: ['learning'],
+            summary: 'Run bounded validation and then sealed final evaluation',
+            requestParams: idParam('id', 'Procedure id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Evaluation result', procedureInspection) },
+          },
+        },
+        '/procedures/{id}/canary': {
+          post: {
+            tags: ['learning'],
+            summary: 'Enable a passing procedure in its origin space',
+            requestParams: idParam('id', 'Procedure id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Canary procedure', procedureResponse) },
+          },
+        },
+        '/procedures/{id}/activate': {
+          post: {
+            tags: ['learning'],
+            summary: 'Activate after a completed canary job',
+            requestParams: idParam('id', 'Procedure id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Active procedure', procedureResponse) },
+          },
+        },
+        '/procedures/{id}/reject': {
+          post: {
+            tags: ['learning'],
+            summary: 'Keep a candidate as rejected history with an owner reason',
+            requestParams: idParam('id', 'Procedure id'),
+            requestBody: json(procedureReasonRequest),
+            responses: { '200': jsonResponse('Rejected history', procedureResponse) },
+          },
+        },
+        '/procedures/{id}/rollback': {
+          post: {
+            tags: ['learning'],
+            summary: 'Revert delivery of a canary or active procedure',
+            requestParams: idParam('id', 'Procedure id'),
+            requestBody: json(procedureReasonRequest),
+            responses: { '200': jsonResponse('Reverted procedure', procedureResponse) },
+          },
+        },
         '/responsibilities': {
           post: {
             tags: ['jobs'],

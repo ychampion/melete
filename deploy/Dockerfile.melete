@@ -4,7 +4,11 @@
 # on both networks: `edge` so a person can reach the API, `internal` so it can
 # reach Postgres and be the runtime's only peer.
 
+FROM node:24.14.0-bookworm-slim AS promoter-node
 FROM oven/bun:1.3.13-slim
+
+# The trusted promoter uses Node's process permission boundary without file write grants.
+COPY --from=promoter-node /usr/local/bin/node /usr/local/bin/node
 
 ENV NODE_ENV=production
 
@@ -23,6 +27,7 @@ RUN bun install --frozen-lockfile --production
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/ packages/
 COPY apps/ apps/
+COPY conformance/ conformance/
 
 # Non-root. The service writes only to the mounted volumes.
 RUN useradd --uid 10002 --create-home --home-dir /home/melete melete     && mkdir -p /data/spaces /data/artifacts     && chown -R melete:melete /data /app

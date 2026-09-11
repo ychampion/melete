@@ -114,17 +114,21 @@ export const procedureTransition = pgTable('procedure_transition', {
   reason: text('reason').notNull(),
   createdAt: created(),
 });
-export const procedureEvaluation = pgTable('procedure_evaluation', {
-  id: text('id').primaryKey(),
-  candidateId: text('candidate_id')
-    .notNull()
-    .references(() => procedureCandidate.id, { onDelete: 'cascade' }),
-  bodyHash: text('body_hash').notNull(),
-  phase: text('phase').notNull(),
-  suiteHash: text('suite_hash').notNull(),
-  evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull(),
-  budget: jsonb('budget').$type<Record<string, unknown>>().notNull(),
-  passed: boolean('passed').notNull(),
-  selectedAt: timestamp('selected_at', { withTimezone: true }),
-  createdAt: created(),
-});
+export const procedureEvaluation = pgTable(
+  'procedure_evaluation',
+  {
+    id: text('id').primaryKey(),
+    candidateId: text('candidate_id')
+      .notNull()
+      .references(() => procedureCandidate.id, { onDelete: 'cascade' }),
+    bodyHash: text('body_hash').notNull(),
+    phase: text('phase').notNull(),
+    suiteHash: text('suite_hash').notNull(),
+    evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull(),
+    budget: jsonb('budget').$type<Record<string, unknown>>().notNull(),
+    passed: boolean('passed').notNull(),
+    selectedAt: timestamp('selected_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [uniqueIndex('procedure_evaluation_once_idx').on(t.candidateId, t.bodyHash, t.phase)],
+);

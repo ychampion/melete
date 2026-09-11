@@ -23,6 +23,7 @@ import {
   knowledgeType,
   proposedWrite,
 } from './knowledge.ts';
+import { jobLearningScope } from './learning.ts';
 import { skillFrontmatter } from './skills.ts';
 
 export const healthResponse = z.object({
@@ -62,6 +63,8 @@ export const createJobRequest = z.object({
   objective: z.string().min(1),
   constraints: jobConstraints.partial().optional(),
   budget: jobBudget.partial().optional(),
+  /** Optional procedure scope is registered atomically before any attempt can claim the job. */
+  learning: jobLearningScope.optional(),
 });
 export type CreateJobRequest = z.infer<typeof createJobRequest>;
 
