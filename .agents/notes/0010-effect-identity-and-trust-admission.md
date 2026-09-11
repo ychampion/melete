@@ -103,7 +103,7 @@ mechanism exists so the rule can be proved rather than asserted.
 - If the origins stop being in doubt after an approval was taken with warnings,
   the approval is also set aside. Strict equality on the warnings hash is the
   rule; the person answered a different question either way.
-- The integration fixture now applies migration 0010 on top of the frozen initial
+- The integration fixture now applies migration 0011 on top of the frozen initial
   schema. A fixture that stops at 0000 cannot exercise an index added later, and
   a test that cannot exercise the index is not evidence.
 

@@ -27,19 +27,6 @@ CREATE TABLE "memory_contexts" (
 	CONSTRAINT "memory_contexts_attempt_id_unique" UNIQUE("attempt_id")
 );
 --> statement-breakpoint
-CREATE TABLE "memory_dense_entries" (
-	"space_id" text NOT NULL,
-	"generation" integer NOT NULL,
-	"claim_id" text NOT NULL,
-	"revision" integer NOT NULL,
-	"model" text NOT NULL,
-	"version" text NOT NULL,
-	"dimensions" integer NOT NULL,
-	"recipe" text NOT NULL,
-	"vector" jsonb NOT NULL,
-	CONSTRAINT "memory_dense_entries_space_id_generation_claim_id_revision_pk" PRIMARY KEY("space_id","generation","claim_id","revision")
-);
---> statement-breakpoint
 CREATE TABLE "memory_derivations" (
 	"space_id" text NOT NULL,
 	"input_kind" text NOT NULL,
@@ -232,7 +219,6 @@ CREATE TABLE "memory_work" (
 --> statement-breakpoint
 ALTER TABLE "memory_claims" ADD CONSTRAINT "memory_claims_space_id_memory_spaces_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."memory_spaces"("space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_contexts" ADD CONSTRAINT "memory_contexts_space_id_memory_spaces_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."memory_spaces"("space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "memory_dense_entries" ADD CONSTRAINT "memory_dense_entries_space_id_memory_spaces_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."memory_spaces"("space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_derivations" ADD CONSTRAINT "memory_derivations_space_id_memory_spaces_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."memory_spaces"("space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_index_entries" ADD CONSTRAINT "memory_index_entries_space_id_memory_spaces_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."memory_spaces"("space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_invalidations" ADD CONSTRAINT "memory_invalidations_space_id_memory_spaces_space_id_fk" FOREIGN KEY ("space_id") REFERENCES "public"."memory_spaces"("space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

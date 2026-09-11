@@ -120,3 +120,54 @@
 
 - File `docs/ARCHITECTURE.md`: left unchanged because the brief freezes it. Its files principle and the Postgres authority are reconciled in `docs/MEMORY.md` instead of by editing the frozen file.
 - File `docs/MEMORY.md`: the curl examples use the default `PORT` of 8787 from `apps/melete/src/env.ts` and a claim ID in the `k_` ULID form the contracts require. They are illustrative; no authentication header is shown because this checkout's authentication module is still a stub.
+
+## Integration note: migrations renumbered on merge
+
+Added by the integration pass, not by the lane.
+
+W1 landed on `integration` first and owns migrations `0001_auth` through
+`0008_scheduling_attention`. This lane authored its two migrations against
+`0000_initial_schema`, so both indexes collided on merge.
+
+The two migrations were renumbered to follow W1 rather than rebased in the lane:
+
+| Lane | On `integration` |
+|---|---|
+| `0001_ancient_impossible_man` | `0009_ancient_impossible_man` |
+| `0002_mysterious_silverclaw` | `0010_mysterious_silverclaw` |
+
+Both `.sql` files are byte-identical to the lane's originals; only their
+filenames changed. Their journal entries keep the lane's original `when`
+timestamps and were reindexed to 9 and 10.
+
+The snapshots could not simply be renamed, because a drizzle snapshot is
+cumulative: this lane's `0002_snapshot.json` describes the baseline plus memory
+and knows nothing of W1's eight migrations. `0009_snapshot.json` and
+`0010_snapshot.json` were therefore rebuilt as W1's `0008_snapshot.json` plus
+the nineteen tables this lane's first migration adds, then plus
+`memory_dense_entries` from its second, with the `id`/`prevId` chain relinked.
+`bun run --cwd apps/melete db:generate` reports `No schema changes, nothing to
+migrate` against the rebuilt chain.
+
+The journal `when` values had to be raised as well, and this is the one part of
+the renumbering that is not cosmetic. `drizzle-orm`'s migrator reads the single
+newest `created_at` from `drizzle.__drizzle_migrations` and then applies a
+migration only when that value is strictly less than the migration's `when`
+(`pg-core/dialect.js`). This lane authored its migrations before W1 authored
+`0003` through `0008`, so leaving the original timestamps in place at indexes 9
+and 10 would have left them permanently below the newest applied row: a
+database that already had `0000` through `0008` would skip both memory
+migrations silently and never create the twenty memory tables. A fresh database
+is unaffected, because the table starts empty, which is why no test would have
+caught it.
+
+The two entries therefore carry timestamps one minute after `0008`, keeping the
+lane's own interval between them:
+
+| Migration | Lane `when` | On `integration` |
+|---|---|---|
+| first | 1789116510570 | 1789122489858 |
+| second | 1789118161849 | 1789124141137 |
+
+Neither migration had been applied to any database, so no deployment is
+affected by the renumbering.
