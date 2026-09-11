@@ -51,6 +51,7 @@ import {
   ownerKnowledgeEdit,
   recallRequest,
   recallResult,
+  sourceEvidenceResponse,
 } from './memory.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
@@ -144,6 +145,15 @@ export function buildOpenApiDocument() {
           },
         },
         '/memory/sources/{id}': {
+          get: {
+            tags: ['memory'],
+            summary: 'Inspect accessible source evidence with suppressed spans masked',
+            requestParams: idParam('id', 'Source id'),
+            responses: {
+              '200': jsonResponse('Source evidence', sourceEvidenceResponse),
+              '404': problem('No accessible source'),
+            },
+          },
           delete: {
             tags: ['memory'],
             summary: 'Delete an imported source and invalidate its descendants',

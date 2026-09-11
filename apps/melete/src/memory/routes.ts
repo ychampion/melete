@@ -3,7 +3,7 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { ZodError } from 'zod';
 import { claimHistory, correctClaim, listClaims } from './claims.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
-import { ingest } from './evidence.ts';
+import { ingest, loadEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
 import { type RecallOptions, recall } from './recall.ts';
@@ -84,6 +84,15 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
       ),
     ),
   );
+  app.get('/memory/sources/:id', async (c) => {
+    const result = await loadEvidence(
+      options.sql,
+      c.get('memoryScope'),
+      sourceId.parse(c.req.param('id')),
+    );
+    if (!result) throw new MemoryError('source_not_found');
+    return c.json(result);
+  });
   app.get('/memory/claims', async (c) =>
     c.json(await listClaims(options.sql, c.get('memoryScope'))),
   );

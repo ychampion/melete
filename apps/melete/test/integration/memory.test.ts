@@ -12,14 +12,22 @@ import { proposeExtraction } from '../../src/memory/extract.ts';
 import { recall } from '../../src/memory/recall.ts';
 import { buildViews, type EmbeddingProvider } from '../../src/memory/views.ts';
 import { claimWork, MEMORY_EXTRACT_QUEUE, repairQueue } from '../../src/memory/work.ts';
+import { registerComparisonTests } from './comparison-tests.ts';
+import { registerFailureTests } from './failure-tests.ts';
 import { fakeProvider, tripProposal } from './fake-provider.ts';
 import { registerLifecycleTests } from './lifecycle-tests.ts';
 import { registerMarkdownTests } from './markdown-tests.ts';
 import { createScope, createTestDatabase } from './postgres.ts';
+import { registerServiceTests } from './service-tests.ts';
+import { registerTripTests } from './trip-tests.ts';
 
 const db = await createTestDatabase();
 registerLifecycleTests(db);
 registerMarkdownTests(db);
+registerTripTests(db);
+registerFailureTests(db);
+registerComparisonTests(db);
+registerServiceTests(db);
 afterAll(async () => {
   await db?.close();
 });

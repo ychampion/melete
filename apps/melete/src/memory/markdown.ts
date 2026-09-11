@@ -27,12 +27,6 @@ import {
 import { type ExtractionBatch, finishWork } from './work.ts';
 
 const exec = promisify(execFile);
-const identity = [
-  '-c',
-  'user.name=ychampion',
-  '-c',
-  'user.email=68075205+ychampion@users.noreply.github.com',
-];
 const pathFor = (id: string) => `knowledge/${id}.md`;
 type ReviewPayload = { batch: ExtractionBatch; proposals: ExtractionProposal[] };
 
@@ -74,6 +68,7 @@ export function claimFrontmatter(head: ClaimHead) {
     links: [],
     schema_version: 1,
     memory_revision: revision.revision,
+    protected: revision.protected,
     recorded_at: revision.recorded_at,
     exact_valid_from: revision.valid_from,
     exact_valid_until: revision.valid_until,
@@ -88,6 +83,7 @@ export class MarkdownViews {
   constructor(
     readonly sql: MemorySql,
     readonly spacesRoot: string,
+    private readonly gitIdentity: { name: string; email: string },
   ) {}
 
   private async paths(spaceId: string) {
@@ -130,7 +126,10 @@ export class MarkdownViews {
     if (!(await this.git(root, ['diff', '--cached', '--name-only', '--', ...paths])).trim()) return;
     // --only preserves unrelated staged work in an owner's space repository.
     await this.git(root, [
-      ...identity,
+      '-c',
+      `user.name=${this.gitIdentity.name}`,
+      '-c',
+      `user.email=${this.gitIdentity.email}`,
       'commit',
       '--only',
       '-m',
@@ -144,6 +143,13 @@ export class MarkdownViews {
     const paths = await this.paths(scope.spaceId);
     return this.sql.begin(async (tx) => {
       await lockSpace(tx, scope);
+      const hidden =
+        await tx`select id from memory_claims where space_id = ${scope.spaceId} and hidden`;
+      if (hidden.length)
+        await this.cleanup(
+          scope.spaceId,
+          hidden.map((row) => row.id as string),
+        );
       const rows =
         await tx`select id from memory_claims where space_id = ${scope.spaceId} and not hidden order by id`;
       const changed: string[] = [];

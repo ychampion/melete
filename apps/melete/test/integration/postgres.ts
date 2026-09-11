@@ -9,10 +9,10 @@ import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
 /** One disposable database per integration file; never migrate the caller's existing database. */
-export async function createTestDatabase() {
+export async function createTestDatabase(databaseUrl = process.env.DATABASE_URL) {
   let embedded: { stop(): Promise<void> } | undefined;
   let directory: string | undefined;
-  let baseUrl = process.env.DATABASE_URL;
+  let baseUrl = databaseUrl;
   if (!baseUrl) {
     try {
       const { default: EmbeddedPostgres } = await import('embedded-postgres');
@@ -46,7 +46,10 @@ export async function createTestDatabase() {
   }
   const admin = postgres(baseUrl, { max: 1, onnotice: () => {} });
   const name = `w7_${newId('test').toLowerCase()}`;
-  await admin.unsafe(`create database "${name}"`);
+  // Windows initdb can inherit WIN1252. Exact source spans require a Unicode database.
+  await admin.unsafe(
+    `create database "${name}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
+  );
   const url = new URL(baseUrl);
   url.pathname = `/${name}`;
   const connectionString = url.toString();

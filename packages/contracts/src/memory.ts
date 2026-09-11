@@ -30,6 +30,7 @@ export type SourceRef = z.infer<typeof sourceRef>;
 /** Additional provenance for the derived Markdown surface; legacy fields remain compatible. */
 export const memoryKnowledgeFrontmatter = knowledgeFrontmatter.extend({
   memory_revision: positive,
+  protected: z.boolean(),
   recorded_at: timestamp,
   exact_valid_from: timestamp,
   exact_valid_until: timestamp.nullable(),
@@ -56,6 +57,7 @@ export const sourceEvent = z.strictObject({
   eligibility_generation: counter,
 });
 export type SourceEvent = z.infer<typeof sourceEvent>;
+export const sourceEvidenceResponse = z.strictObject({ source: sourceEvent, text: z.string() });
 
 export const claimKind = z.enum([
   'user_statement',

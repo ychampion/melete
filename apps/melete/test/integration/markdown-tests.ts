@@ -10,6 +10,7 @@ import {
   knowledgeProposalList,
   knowledgeProposalView,
   memoryKnowledgeFrontmatter,
+  sourceEvidenceResponse,
 } from '@melete/contracts';
 import { parseRecord, serializeRecord } from '@melete/knowledge';
 import { listClaims } from '../../src/memory/claims.ts';
@@ -40,7 +41,10 @@ async function fixture(db: TestDatabase) {
   await mkdir(space);
   await exec('git', ['-C', space, 'init', '-b', 'memory-view'], { windowsHide: true });
   const journal = await createJournal();
-  const markdown = new MarkdownViews(db.sql, root);
+  const markdown = new MarkdownViews(db.sql, root, {
+    name: 'ychampion',
+    email: '68075205+ychampion@users.noreply.github.com',
+  });
   const readers = new Map<string, MemoryScope>([
     ['owner', scope],
     ['reader', { ...scope, role: 'reader' }],
@@ -107,7 +111,20 @@ export function registerMarkdownTests(db: TestDatabase | null) {
         expect((await f.request('/memory/sources', 'POST', source(), 'reader')).status).toBe(403);
         const admitted = await f.request('/memory/sources', 'POST', source());
         expect(admitted.status).toBe(201);
-        expect(ingestSourceResponse.parse(await admitted.json()).committed_sequence).toBe(1);
+        const accepted = ingestSourceResponse.parse(await admitted.json());
+        expect(accepted.committed_sequence).toBe(1);
+        const support = await f.request(`/memory/sources/${accepted.source.source_id}`);
+        expect(sourceEvidenceResponse.parse(await support.json()).text).toBe(source().text);
+        expect(
+          (
+            await f.request(
+              `/memory/sources/${accepted.source.source_id}`,
+              'GET',
+              undefined,
+              'reader',
+            )
+          ).status,
+        ).toBe(404);
         const batch = await claimWork(db.sql, f.scope);
         if (!batch) throw new Error('missing work');
         const published = await commitExtraction(db.sql, f.scope, batch, {
@@ -116,6 +133,16 @@ export function registerMarkdownTests(db: TestDatabase | null) {
         const id = published.claim_ids[0];
         expect((await f.request(`/memory/claims/${id}/history`)).status).toBe(200);
         f.readers.set('foreign', await createScope(db));
+        expect(
+          (
+            await f.request(
+              `/memory/sources/${accepted.source.source_id}`,
+              'GET',
+              undefined,
+              'foreign',
+            )
+          ).status,
+        ).toBe(404);
         expect(
           (await f.request(`/memory/claims/${id}/history`, 'GET', undefined, 'foreign')).status,
         ).toBe(404);

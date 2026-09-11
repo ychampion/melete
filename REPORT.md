@@ -84,3 +84,19 @@
 
 - Test `Markdown round trips support, preserves local edits, and owner edits become protected revisions`: disposable space repositories under the test-created temp root exercise the required Git view builder; they are independent fixtures, not another Melete worktree.
 - Log `Markdown retention`: cleanup removes generated working files, pending previews and SQLite entries; Git history and copied exports remain retained copies and are not rewritten by memory cleanup.
+
+## Slice 8 at 15:55 +05:30
+
+- SHA `7283e20`: Markdown projections, protected owner edits and review routes pushed to `origin/lane/w7-memory`.
+- Test `July to August survives sessions, an old import, correction races, process kills, scope, forget, and restore`: pass; one integrated scenario covers the full trip acceptance sequence, including real OS kills after proposal and publication, dated July support, protected August, fresh October evidence after forgetting, and independently journaled suppression replay.
+- Tests `process killed after-input`, `after-claim`, `after-proposal`, `before-publication`, and `after-publication`: pass against the same live Postgres server after each worker is killed; cursors advance only for committed terminal work and obsolete fences cannot release or publish over a replacement lease.
+- Test `duplicate delivery and reversed extraction order preserve contiguous cursors and event-time meaning`: pass; reversed processing leaves the cursor at zero until the missing earlier work commits, then advances to two while August remains current.
+- Test `kill during cleanup and restore from a pre-deletion backup never reopen serving`: pass; unfinished cleanup stays retryable, its source content remains unservable, and replay closes a restored old snapshot before extraction resumes.
+- Tests `extraction calls and source segments are bounded before inference`, `database timeout is unavailable and a successful empty search is complete`, and `failed index publication keeps its old manifest and retries after a correction`: pass.
+- Log `22P05 WIN1252`: failure-schedule fix cycle 1 creates the disposable database from template0 with UTF8 and C locale, because Windows initdb inherited WIN1252. Test `Unicode spans and partial suppression retain only independently supported text` now passes with exact UTF-16 offsets and a retained independent food preference.
+- Tests `runtime adapter discards delivered context and rejects events after an owner correction` and `automatic retraction invalidates attempts that already received its text`: pass; stale events/outcomes do not reach the sink, and extraction retractions now emit the same durable invalidations as direct corrections.
+- Test `startup gates serving, pg-boss derives scope from work, and background indexing catches up`: pass in a separate disposable database on the embedded server; a forged queue space is ignored, one scripted extraction runs, and the asynchronous index reaches complete coverage.
+- Test `authenticated routes reject body scope, foreign claim IDs, and reader writes`: now also verifies the additive source-inspection GET route and source text denial for a reader or foreign space.
+- Log `memory comparison`: six scripted fixture outcomes pass for each strategy; compact profile/source baseline p50 3.74 ms, p95 6.08 ms, max 295 context bytes; lexical p50 5.14 ms, p95 6.07 ms, max 866 bytes; pinned dense union p50 9.89 ms, p95 13.87 ms, max 866 bytes. One gateway call reserves USD 0.01; scripted charged cost is USD 0. These six samples do not establish an answer-quality or performance advantage.
+- Command `bun run typecheck`: pass; command `bun run lint`: pass (91 files); command `bun test --max-concurrency 2`: 242 pass, 1 baseline DB skip, 36 baseline conformance todos, 0 fail, 930 assertions in 16.91 s.
+- Command `git -C C:/Users/gamin/melete-oss-w7 diff --check`: pass; command `bun run openapi`: regenerated after the additive source-inspection route.

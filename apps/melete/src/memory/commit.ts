@@ -22,6 +22,7 @@ import {
   stableEntityId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
+import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
 import { checkLease, type ExtractionBatch, finishWork, retryWork } from './work.ts';
 
@@ -118,6 +119,8 @@ export type CommitResult = {
   claim_ids: string[];
   reason?: string;
 };
+/** Internal failure-schedule seam; no request, model, or queue payload can install a hook. */
+export type PublicationHooks = { beforePublication?: () => Promise<void> };
 /** Validate every operation before publishing any revision, edge, cursor or invalidation. */
 export async function commitExtraction(
   sql: MemorySql,
@@ -125,10 +128,11 @@ export async function commitExtraction(
   batch: ExtractionBatch,
   raw: unknown,
   reviewed = false,
+  hooks: PublicationHooks = {},
 ): Promise<CommitResult> {
   try {
     const { proposals } = extractionChangeSet.parse(raw);
-    return await sql.begin(async (tx) => {
+    const result = await sql.begin(async (tx) => {
       const space = await lockSpace(tx, scope);
       const [prior] =
         await tx`select status, fence from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}`;
@@ -167,6 +171,7 @@ export async function commitExtraction(
         return { status: 'review', claim_ids: [] } as CommitResult;
       }
       const claimIds: string[] = [];
+      await hooks.beforePublication?.();
       for (const { proposal, head, sources, refs } of validated) {
         if (proposal.op === 'no-op') continue;
         if (proposal.op === 'retract') {
@@ -176,6 +181,8 @@ export async function commitExtraction(
           await tx`update memory_revisions set status = 'retracted', superseded_at = clock_timestamp() where claim_id = ${head.id} and revision = ${head.head_revision}`;
           await enqueue(tx, scope.spaceId, 'invalidate', `${head.id}:${dataRevision}`);
           await enqueue(tx, scope.spaceId, 'index', String(dataRevision));
+          await enqueue(tx, scope.spaceId, 'markdown', String(dataRevision));
+          await invalidateDependencies(tx, scope, [head.id], dataRevision);
           claimIds.push(head.id);
           continue;
         }
@@ -239,10 +246,14 @@ export async function commitExtraction(
           stableEntityId('k', batch.work.id, domain),
         );
         claimIds.push(revision.claim_id);
+        if (head && !historical && !exception)
+          await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
       }
       await finishWork(tx, batch);
       return { status: 'committed', claim_ids: [...new Set(claimIds)] } as CommitResult;
     });
+    await notifyInvalidated(sql, scope.spaceId);
+    return result;
   } catch (error) {
     const code =
       error instanceof MemoryError
