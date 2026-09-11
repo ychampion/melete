@@ -36,9 +36,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import signal
 import subprocess  # noqa: S404 - running a command is this module's whole purpose
 import sys
 import time
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -143,7 +145,6 @@ def _limits() -> Optional[Any]:
     def apply() -> None:  # pragma: no cover - runs in the forked child
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_CAPTURE_BYTES, MAX_CAPTURE_BYTES))
         resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIMEOUT_MS // 1000, MAX_TIMEOUT_MS // 1000))
-        os.setsid()
 
     return apply
 
@@ -167,7 +168,25 @@ def _argv(language: str, command: str, root: Path, relative_cwd: str) -> Tuple[l
     return ["/bin/sh", "-c", command], None
 
 
-def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Terminate the command's descendants before reaping their parent."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.kill()
+    process.wait()
+
+
+def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
     """Run one command and return both the record and what to show the model.
 
     Returns ``{"record": ..., "display": ...}``. The record is the action payload
@@ -206,29 +225,42 @@ def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     started = time.monotonic()
     timed_out = False
     signal_name = None
+    process = None
     try:
-        completed = subprocess.run(  # noqa: S603 - argv is built here, never shell-interpolated
+        process = subprocess.Popen(  # noqa: S603 - argv is built here, never shell-interpolated
             argv,
             cwd=str(cwd),
             env=child_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=timeout_ms / 1000,
             preexec_fn=_limits() if os.name != "nt" else None,  # noqa: PLW1509
-            check=False,
+            start_new_session=os.name != "nt",
         )
-        captured = completed.stdout or b""
-        exit_code: Optional[int] = completed.returncode
+        while True:
+            remaining = timeout_ms / 1000 - (time.monotonic() - started)
+            if remaining <= 0 or (cancel_event is not None and cancel_event.is_set()):
+                timed_out = remaining <= 0
+                signal_name = "SIGKILL"
+                _kill_tree(process)
+                captured, _ = process.communicate()
+                exit_code = None
+                break
+            try:
+                captured, _ = process.communicate(timeout=min(remaining, 0.1))
+                exit_code = process.returncode
+                break
+            except subprocess.TimeoutExpired:
+                continue
         if exit_code is not None and exit_code < 0:
             signal_name = f"SIG{-exit_code}"
-    except subprocess.TimeoutExpired as expired:
-        timed_out = True
-        exit_code = None
-        signal_name = "SIGKILL"
-        captured = expired.output or b""
-        if isinstance(captured, str):
-            captured = captured.encode("utf-8", errors="replace")
+    except BaseException:
+        # KeyboardInterrupt and cooperative cancellation must not strand a
+        # command merely because no ordinary result will be returned.
+        if process is not None:
+            _kill_tree(process)
+            process.communicate()
+        raise
     finally:
         duration_ms = int((time.monotonic() - started) * 1000)
         if scratch is not None:

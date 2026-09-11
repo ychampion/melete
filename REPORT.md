@@ -20,3 +20,11 @@
 - Test plugin_output_path_escape: red before the fix in both pre-existing and command-created Windows junction cases; log excerpt DID NOT RAISE ExecRefused.
 - Test test_execution_boundaries.py retained from the prior draft; findings 3 and 4 draft tests are held for their later commits to keep each commit focused.
 - Command python -m pytest packages/runtime-hermes/tests/test_execution_boundaries.py packages/runtime-hermes/tests/test_execution.py -q: 14 passed in 2.57s; outside directory stayed empty; all plugin scratch/output creation and cleanup use resolve_in_workspace and realpath.
+
+## Finding 3
+
+- SHA af73539: finding 8 committed and pushed.
+- Test timeout_descendant: red with log excerpt a descendant outlived its command; prior draft reproduction preserved with shorter waits.
+- Test cancellation_descendant: red because cancellation was unsupported; green uses the same process-tree shutdown as timeout.
+- Command python -m pytest packages/runtime-hermes/tests/test_execution_boundaries.py packages/runtime-hermes/tests/test_execution.py -q: tree termination uses Windows taskkill /T /F and POSIX killpg in a new session; parent is reaped.
+- Command python -m pytest packages/runtime-hermes/tests/test_execution_boundaries.py packages/runtime-hermes/tests/test_execution.py -q: 16 passed in 7.76s.

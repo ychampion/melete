@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+import threading
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,32 @@ from melete_plugin.execution import (  # noqa: E402
 )
 
 NL = chr(10)
+
+
+def test_timeout_descendant(workspace):
+    child = "import time; time.sleep(1.3); open('descendant-marker', 'w').write('alive')"
+    parent = f"import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', {child!r}]); print('spawned',flush=True); time.sleep(30)"
+    outcome = run_in_cell("python", {"code": parent, "timeout_ms": 350})
+    assert outcome["record"]["timed_out"] is True
+    assert outcome["record"]["exit_code"] is None
+    time.sleep(1.5)
+    assert not (workspace / "descendant-marker").exists(), "a descendant outlived its command"
+
+
+def test_cancellation_descendant(workspace):
+    child = "import time; time.sleep(1.3); open('cancel-marker', 'w').write('alive')"
+    parent = f"import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', {child!r}]); print('spawned',flush=True); time.sleep(30)"
+    cancel = threading.Event()
+    timer = threading.Timer(0.35, cancel.set)
+    timer.start()
+    try:
+        outcome = run_in_cell("python", {"code": parent}, cancel_event=cancel)
+    finally:
+        timer.cancel()
+    assert outcome["record"]["exit_code"] is None
+    assert outcome["record"]["signal"] == "SIGKILL"
+    time.sleep(1.5)
+    assert not (workspace / "cancel-marker").exists(), "a cancelled descendant survived"
 
 
 @pytest.fixture()
