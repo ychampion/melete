@@ -3,12 +3,12 @@
  * report the ones that do not validate, and build the index the space is
  * searched through.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { type ParsedRecord, parseRecord } from './frontmatter.ts';
 import { type IndexedRecord, SpaceIndex } from './fts.ts';
-import { resolveInSpace, type SpacePaths, spacePaths } from './layout.ts';
+import { type SpacePaths, spacePaths } from './layout.ts';
 
 export type LoadedRecord = ParsedRecord & {
   /** Relative to the space root, always with forward slashes. */
@@ -65,6 +65,7 @@ export const toIndexed = (record: LoadedRecord): IndexedRecord => ({
   tags: record.frontmatter.tags,
   body: record.body,
   status: record.frontmatter.status,
+  type: record.frontmatter.type,
 });
 
 /**
@@ -73,26 +74,27 @@ export const toIndexed = (record: LoadedRecord): IndexedRecord => ({
  */
 export function buildIndex(paths: SpacePaths): { index: SpaceIndex; contents: SpaceContents } {
   const contents = loadSpace(paths);
-  const index = SpaceIndex.open(paths.indexDb);
+  const index = SpaceIndex.open(paths);
   index.rebuild(contents.records.map(toIndexed));
   return { index, contents };
 }
 
 /**
- * Hard deletion: remove the file and drop the row in the same operation, so the
- * text is gone from the only derived copy as well as from the working tree.
- * Retraction is a different thing and keeps both.
+ * Rebuild an index a caller already holds open. The job that is running keeps
+ * its handle; what it can see changes underneath it.
  */
-export function hardDelete(paths: SpacePaths, index: SpaceIndex, record: LoadedRecord): boolean {
-  const target = resolveInSpace(paths, record.path);
-  if (!target) return false;
-  index.remove(record.frontmatter.id);
-  if (existsSync(target)) rmSync(target);
-  return true;
+export function rebuild(paths: SpacePaths, index: SpaceIndex): SpaceContents {
+  const contents = loadSpace(paths);
+  index.rebuild(contents.records.map(toIndexed));
+  return contents;
 }
 
-/** Create the directories a new space needs. */
-export function initSpace(spacesRoot: string, space: string): SpacePaths {
+/**
+ * Create the directories a new space needs. This is the filesystem half only;
+ * `initSpace` in space.ts adds the generated files and the git repository, and
+ * is what a caller outside this package should use.
+ */
+export function ensureSpaceDirs(spacesRoot: string, space: string): SpacePaths {
   const paths = spacePaths(spacesRoot, space);
   for (const dir of [paths.root, paths.knowledge, paths.raw, paths.artifacts, paths.skills]) {
     mkdirSync(dir, { recursive: true });
