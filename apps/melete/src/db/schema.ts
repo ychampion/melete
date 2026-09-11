@@ -3,11 +3,13 @@
  * migration SQL under apps/melete/drizzle is generated from this file and
  * committed, so a fresh install applies exactly the schema that was reviewed.
  */
+import type { DeferredQuestion } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
   boolean,
+  check,
   doublePrecision,
   index,
   integer,
@@ -105,6 +107,11 @@ export const job = pgTable(
     scheduleSkipRemaining: integer('schedule_skip_remaining').notNull().default(0),
     lastResultHash: text('last_result_hash'),
     lastAttentionAttemptId: text('last_attention_attempt_id'),
+    // Questions this job wanted to ask but did not, because a wake asks one.
+    deferredQuestions: jsonb('deferred_questions')
+      .$type<DeferredQuestion[]>()
+      .notNull()
+      .default([]),
     budget: jsonb('budget').notNull().default({}),
     createdBy: text('created_by').notNull().default('owner'),
     createdAt: created(),
@@ -368,6 +375,10 @@ export const notification = pgTable(
     obligationIds: jsonb('obligation_ids').notNull(),
     content: jsonb('content'),
     contentHash: text('content_hash').notNull(),
+    // Why this had to be sent, and what happens if it is ignored. Both required:
+    // a notification nobody can trace back to a record is noise with authority.
+    because: jsonb('because').$type<string[]>().notNull().default([]),
+    ifIgnored: text('if_ignored').notNull().default('This message has not been delivered yet.'),
     deliveryAttempt: integer('delivery_attempt').notNull(),
     state: text('state').notNull().default('pending'),
     substrateDisposition: text('substrate_disposition').notNull().default('external_uncertain'),
@@ -378,6 +389,37 @@ export const notification = pgTable(
   (t) => [
     uniqueIndex('notification_attempt_idx').on(t.deliveryKey, t.deliveryAttempt),
     index('notification_pending_idx').on(t.state),
+    check('notification_because_not_empty', sql`jsonb_array_length(${t.because}) > 0`),
+  ],
+);
+
+/**
+ * The owner's question queue. One open row per job, enforced in the database, so
+ * a talkative responsibility cannot turn one queue into its own inbox.
+ */
+export const question = pgTable(
+  'question',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    attemptId: text('attempt_id').references(() => attempt.id, { onDelete: 'set null' }),
+    text: text('text').notNull(),
+    because: jsonb('because').$type<string[]>().notNull(),
+    ifIgnored: text('if_ignored').notNull(),
+    blocksExternalEffect: boolean('blocks_external_effect').notNull().default(false),
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+    state: text('state').notNull().default('open'),
+    answer: text('answer'),
+    answerSubmissionId: text('answer_submission_id'),
+    answeredAt: timestamp('answered_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex('question_open_job_idx').on(t.jobId).where(sql`state = 'open'`),
+    index('question_queue_idx').on(t.state, t.blocksExternalEffect, t.deadlineAt, t.createdAt),
+    check('question_because_not_empty', sql`jsonb_array_length(${t.because}) > 0`),
   ],
 );
 
@@ -436,6 +478,7 @@ export const schema = {
   acceptanceJournal,
   replyObligation,
   notification,
+  question,
   backgroundOperation,
   eventRetention,
 };

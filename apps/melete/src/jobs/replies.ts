@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   type AttemptOutcome,
   attemptOutcome,
+  attentionHandle,
   notification as notificationContract,
   replyObligation as obligationContract,
   type ReplyContent,
@@ -11,10 +12,11 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { attempt, notification, replyObligation } from '../db/schema.ts';
+import { attempt, event, notification, replyObligation } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { type AttemptResult, attemptResult } from './attention.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobRow, JobService } from './service.ts';
 import { canonicalSubmissionInput, type SubmissionService } from './submissions.ts';
@@ -51,6 +53,8 @@ export function notificationView(row: NotificationRow) {
     obligation_ids: row.obligationIds,
     content: row.content,
     content_hash: row.contentHash,
+    because: row.because,
+    if_ignored: row.ifIgnored,
     delivery_attempt: row.deliveryAttempt,
     state: row.state,
     attempted_at: row.attemptedAt?.toISOString() ?? null,
@@ -104,6 +108,44 @@ function responseContent(
   return { job_id: row.id, attempt_id: attemptId, kind, text };
 }
 
+/**
+ * What happens if nobody reads this, in plain language, carrying a real date
+ * whenever the service knows one. Nothing here is invented: every branch reads a
+ * fact already on the job row.
+ */
+function consequence(row: JobRow, content: ReplyContent): string {
+  const unread = `The result stays unread, and after ${row.unreadThreshold} unread results this responsibility checks less often.`;
+  if (row.state === 'needs_reconciliation')
+    return 'The external action stays unconfirmed, and nothing checks it again until you say what you found.';
+  if (content.kind === 'question')
+    return 'This responsibility stays waiting for your answer and makes no further progress until you reply.';
+  switch (row.state) {
+    case 'waiting_for_approval':
+      return 'Nothing is sent until you decide.';
+    case 'waiting_for_event_or_time':
+      return row.nextWakeAt
+        ? `Nothing happens until ${row.nextWakeAt.toISOString()}, when this checks again.`
+        : 'Nothing happens until the event this responsibility is waiting for arrives.';
+    case 'failed':
+      return 'This responsibility has stopped, and it stays stopped until you look at it.';
+    default:
+      return unread;
+  }
+}
+
+export type NotificationDraft = {
+  jobId: string | null;
+  coalesceKey: string;
+  deliveryKey: string;
+  obligationIds: string[];
+  content: ReplyContent | null;
+  contentHash: string;
+  /** Non-empty, or the outbox refuses the row. */
+  because: readonly string[];
+  ifIgnored: string;
+  deliveryAttempt: number;
+};
+
 /** Acceptance, response content, attempted delivery and confirmed delivery are separate facts. */
 export class ReplyService {
   constructor(
@@ -111,10 +153,10 @@ export class ReplyService {
     submissions: SubmissionService,
     runner?: AttemptRunner,
   ) {
-    submissions.onAccepted = (tx, receipt, row) => this.register(tx, receipt, row);
+    submissions.onAccepted = (tx, receipt, row, kind) => this.register(tx, receipt, row, kind);
     if (runner) {
-      runner.onFinished.push((tx, row, outcome, attemptId) =>
-        this.publish(tx, row, outcome, attemptId),
+      runner.onFinished.push((tx, row, outcome, attemptId, context) =>
+        this.publish(tx, row, outcome, attemptId, context?.result),
       );
       const previous = runner.afterRecovery;
       runner.afterRecovery = async () => {
@@ -124,12 +166,19 @@ export class ReplyService {
     }
   }
 
+  /**
+   * Creating a quiet monitor owes no reply: the owner asked to be left alone
+   * until something changes. Sending it a message still does, because that is a
+   * person asking a question.
+   */
   async register(
     tx: Transaction,
     receipt: SubmissionReceipt,
     row: JobRow,
-    kind: 'direct' | 'quiet' = 'direct',
+    submission: 'create' | 'input' = 'input',
   ): Promise<void> {
+    const kind: 'direct' | 'quiet' =
+      submission === 'create' && row.schedulingClass === 'quiet' ? 'quiet' : 'direct';
     if (kind === 'quiet') return;
     if (receipt.state !== 'accepted' || receipt.event_cursor === null)
       throw new Error('A reply obligation requires a durable acceptance receipt');
@@ -159,14 +208,53 @@ export class ReplyService {
       });
   }
 
+  /** Every handle that made this necessary, so the outbox never sends unexplained mail. */
+  private async reasons(
+    tx: Transaction,
+    attemptId: string,
+    obligationIds: readonly string[],
+  ): Promise<string[]> {
+    const handles = obligationIds.map((id) => `obligation:${id}`);
+    const [ended] = await tx
+      .select({ seq: event.seq })
+      .from(event)
+      .where(eq(event.dedupKey, `${attemptId}:ended`))
+      .limit(1);
+    if (ended) handles.push(`event:${ended.seq}`);
+    else if (!handles.length) handles.push(`attempt:${attemptId}`);
+    return handles;
+  }
+
+  /** The one way a row reaches the outbox. A notification citing nothing is refused. */
+  async enqueue(tx: Transaction, draft: NotificationDraft): Promise<NotificationRow> {
+    const because = attentionHandle.array().min(1).safeParse(draft.because);
+    if (!because.success)
+      throw new ServiceError(
+        'notification_without_because',
+        'A notification must cite the event or claim handles that made it necessary.',
+        422,
+      );
+    if (!draft.ifIgnored.trim())
+      throw new ServiceError(
+        'notification_without_consequence',
+        'A notification must say plainly what happens if it is ignored.',
+        422,
+      );
+    const [pending] = await tx
+      .insert(notification)
+      .values({ ...draft, id: newId('ntf'), because: because.data })
+      .returning();
+    if (!pending) throw new Error('Notification insert returned no row');
+    return pending;
+  }
+
   async publish(
     tx: Transaction,
     row: JobRow,
     outcome: AttemptOutcome,
     attemptId: string,
+    result?: AttemptResult | null,
   ): Promise<void> {
-    const content = responseContent(row, outcome, attemptId);
-    if (!content) return;
     const [execution] = await tx.select().from(attempt).where(eq(attempt.id, attemptId));
     if (!execution) return;
     const owed = await tx
@@ -179,7 +267,14 @@ export class ReplyService {
           lte(replyObligation.eventCursor, execution.inputCursor),
         ),
       );
-    if (!owed.length) return;
+    const delta = result === undefined ? await attemptResult(tx, row, outcome, attemptId) : result;
+    // Nothing owed and nothing new: a quiet check with no delta has no handle to
+    // cite, so it sends nothing rather than sending an empty reassurance.
+    if (!owed.length && !delta?.changed) return;
+    const content = owed.length
+      ? responseContent(row, outcome, attemptId)
+      : { job_id: row.id, attempt_id: attemptId, kind: 'status' as const, text: delta?.text ?? '' };
+    if (!content?.text.trim()) return;
     const ids = owed.map((item) => item.id).sort();
     const contentHash = digest(content);
     const deliveryKey = digest({
@@ -216,20 +311,17 @@ export class ReplyService {
           ne(notification.state, 'superseded'),
         ),
       );
-    const [pending] = await tx
-      .insert(notification)
-      .values({
-        id: newId('ntf'),
-        jobId: row.id,
-        coalesceKey: row.id,
-        deliveryKey,
-        obligationIds: ids,
-        content,
-        contentHash,
-        deliveryAttempt: (existing?.deliveryAttempt ?? 0) + 1,
-      })
-      .returning();
-    if (!pending) throw new Error('Notification insert returned no row');
+    const pending = await this.enqueue(tx, {
+      jobId: row.id,
+      coalesceKey: row.id,
+      deliveryKey,
+      obligationIds: ids,
+      content,
+      contentHash,
+      because: await this.reasons(tx, attemptId, ids),
+      ifIgnored: consequence(row, content),
+      deliveryAttempt: (existing?.deliveryAttempt ?? 0) + 1,
+    });
     for (const item of owed)
       await tx
         .update(replyObligation)
@@ -402,14 +494,15 @@ export class ReplyService {
           .where(eq(notification.deliveryKey, delivery.deliveryKey))
           .orderBy(desc(notification.deliveryAttempt))
           .limit(1);
-        await tx.insert(notification).values({
-          id: newId('ntf'),
+        await this.enqueue(tx, {
           jobId: delivery.jobId,
           coalesceKey: delivery.coalesceKey,
           deliveryKey: delivery.deliveryKey,
-          obligationIds: delivery.obligationIds,
-          content: delivery.content,
+          obligationIds: idsFor(delivery),
+          content: replyContent.parse(delivery.content),
           contentHash: delivery.contentHash,
+          because: delivery.because,
+          ifIgnored: delivery.ifIgnored,
           deliveryAttempt: (last?.deliveryAttempt ?? 0) + 1,
         });
       }

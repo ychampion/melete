@@ -53,6 +53,7 @@ export function jobView(row: JobRow) {
     cadence_multiplier: row.cadenceMultiplier,
     attention_status: row.attentionStatus,
     visible_status: row.attentionStatus === 'normal' ? row.state : row.attentionStatus,
+    deferred_questions: row.deferredQuestions,
     budget: row.budget,
     created_by: row.createdBy,
     created_at: row.createdAt.toISOString(),

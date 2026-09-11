@@ -20,6 +20,7 @@ import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
+import { mountQuestions } from './api/questions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
@@ -31,6 +32,7 @@ import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
+import { QuestionService } from './jobs/questions.ts';
 import { startQueue } from './jobs/queue.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
@@ -56,6 +58,7 @@ export type AppDeps = {
   operations?: OperationService;
   policy?: PolicyService;
   attention?: AttentionService;
+  questions?: QuestionService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -89,6 +92,7 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
   if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
+  if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -141,6 +145,7 @@ export async function bootstrap(
   let operations: OperationService | undefined;
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
+  let questions: QuestionService | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
@@ -180,6 +185,7 @@ export async function bootstrap(
       operations = new OperationService(jobs, runner);
       policy = new PolicyService(jobs, runner);
       attention = new AttentionService(jobs, runner);
+      questions = new QuestionService(jobs, submissions);
       if (options.workers !== false) {
         await operations.start();
         await triggers.start();
@@ -205,6 +211,7 @@ export async function bootstrap(
     operations,
     policy,
     attention,
+    questions,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -226,6 +233,7 @@ export async function bootstrap(
     operations,
     policy,
     attention,
+    questions,
     close,
   };
 }

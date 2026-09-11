@@ -70,6 +70,9 @@ import {
   operationVersion,
   policyChange,
   policyGeneration,
+  questionAnswerRequest,
+  questionAnswerResponse,
+  questionList,
   replyObligation,
   replyObligationList,
   responsibilityJob,
@@ -158,6 +161,29 @@ export function buildOpenApiDocument() {
             summary: 'Mark results read and restore the normal checking frequency',
             requestParams: idParam('id', 'Job id'),
             responses: { '200': jsonResponse('Read', responsibilityJob) },
+          },
+        },
+        '/questions': {
+          get: {
+            tags: ['jobs'],
+            summary: 'Read the one owner question queue across every responsibility',
+            description:
+              'One entry per responsibility, ordered by what blocks an external effect, then ' +
+              'the nearest deadline, then the oldest. Each entry carries why it is being asked ' +
+              'and what happens if it is ignored.',
+            responses: { '200': jsonResponse('Open questions', questionList) },
+          },
+        },
+        '/questions/{id}/answer': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Answer one question and wake the responsibility that asked it',
+            requestParams: idParam('id', 'Question id'),
+            requestBody: json(questionAnswerRequest),
+            responses: {
+              '200': jsonResponse('Answer delivered as input', questionAnswerResponse),
+              '409': problem('The question is no longer open'),
+            },
           },
         },
         '/connections/{id}/lifecycle': {

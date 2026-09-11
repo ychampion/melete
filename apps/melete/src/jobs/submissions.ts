@@ -57,7 +57,14 @@ export type SubmissionFaults = {
 };
 
 export class SubmissionService {
-  onAccepted?: (tx: Transaction, receipt: SubmissionReceipt, row: JobRow) => Promise<void>;
+  /** Chained by the reply and question services; `kind` separates a new
+   * responsibility from an input to one that already exists. */
+  onAccepted?: (
+    tx: Transaction,
+    receipt: SubmissionReceipt,
+    row: JobRow,
+    kind: 'create' | 'input',
+  ) => Promise<void>;
   constructor(
     readonly jobs: JobService,
     readonly faults: SubmissionFaults = {},
@@ -304,7 +311,7 @@ export class SubmissionService {
       await tx
         .insert(acceptanceJournal)
         .values({ submissionId: id, jobId: receipt.job_id, receipt, receiptHash: hash(receipt) });
-      if (accepted && current) await this.onAccepted?.(tx, receipt, current);
+      if (accepted && current) await this.onAccepted?.(tx, receipt, current, kind);
       return {
         receipt,
         job: current,

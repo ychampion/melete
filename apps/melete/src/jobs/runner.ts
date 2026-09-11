@@ -3,14 +3,21 @@ import {
   attemptOutcome,
   attemptUsage,
   type CapabilityClaims,
+  type CommittedOutcome,
   type ContextAwareRuntimeAdapter,
   type ContextInvalidated,
   dedupKey,
+  isOutcomeEnvelope,
+  isTerminal,
+  type JobState,
   type JsonObject,
   jobBudget,
+  type QuestioningRuntimeAdapter,
+  type QuestionSpec,
   type ResponsibilityAttemptBundle,
   type RuntimeAdapter,
   type RuntimeEvent,
+  responsibilityAttemptOutcome,
   runtimeEvent,
   type SchedulingClass,
   type TransitionInput,
@@ -23,11 +30,13 @@ import { attempt, event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildBundle, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { persistQuestions, resolveQuestions } from './questions.ts';
 import {
   ATTEMPT_QUEUES,
   type AttemptWake,
@@ -49,6 +58,11 @@ export type RunnerOptions = {
   leaseMs?: number;
 };
 export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
+/** What the attempt raised besides its outcome, handed to every finish handler. */
+export type OutcomeContext = {
+  questions: readonly QuestionSpec[];
+  result: AttemptResult | null;
+};
 
 class AttemptBudgetExceeded extends Error {}
 
@@ -67,12 +81,18 @@ export class AttemptRunner {
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   afterRecovery?: () => Promise<void>;
   readonly onFinished: Array<
-    (tx: Transaction, row: JobRow, outcome: AttemptOutcome, attemptId: string) => Promise<void>
+    (
+      tx: Transaction,
+      row: JobRow,
+      outcome: AttemptOutcome,
+      attemptId: string,
+      context: OutcomeContext,
+    ) => Promise<void>
   > = [];
 
   constructor(
     readonly jobs: JobService,
-    readonly runtime: RuntimeAdapter,
+    readonly runtime: RuntimeAdapter | QuestioningRuntimeAdapter,
     readonly options: RunnerOptions,
   ) {
     if (Buffer.byteLength(options.key) < 32)
@@ -304,11 +324,18 @@ export class AttemptRunner {
     });
   }
 
-  async commitOutcome(claims: CapabilityClaims, input: AttemptOutcome): Promise<JobRow> {
-    const outcome = attemptOutcome.parse(input);
+  /**
+   * An outcome alone, or an outcome with the questions the attempt wanted to
+   * ask. A runtime that knows nothing about questions commits exactly what it
+   * always did.
+   */
+  async commitOutcome(claims: CapabilityClaims, input: CommittedOutcome): Promise<JobRow> {
+    const envelope = isOutcomeEnvelope(input)
+      ? responsibilityAttemptOutcome.parse(input)
+      : { outcome: attemptOutcome.parse(input), questions: [] as QuestionSpec[] };
     return this.jobs.transaction(async (tx) => {
       const active = await requireCurrentAttempt(tx, claims);
-      return this.finish(tx, active.job, claims.attempt_id, outcome);
+      return this.finish(tx, active.job, claims.attempt_id, envelope.outcome, envelope.questions);
     });
   }
 
@@ -317,6 +344,7 @@ export class AttemptRunner {
     row: JobRow,
     attemptId: string,
     original: AttemptOutcome,
+    carried: readonly QuestionSpec[] = [],
   ): Promise<JobRow> {
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
@@ -372,12 +400,21 @@ export class AttemptRunner {
         kind: 'user_input',
         question: 'The declared deliverable has no verified evidence. What should happen next?',
       };
+    // Deciding the question before the move lets the wait name the one asked.
+    const resolution = await resolveQuestions(tx, row, {
+      attemptId,
+      carried,
+      askable: wait.kind === 'user_input',
+      fallback: wait.kind === 'user_input' ? wait.question : undefined,
+    });
+    if (resolution.asked && wait.kind === 'user_input')
+      wait = { kind: 'user_input', question: resolution.asked.text };
     let updated = await this.jobs.move(tx, row, input, { attemptId, wait, payload: { outcome } });
     await tx
       .update(attempt)
       .set({
         outcome: outcome.kind,
-        outcomeDetail: outcome,
+        outcomeDetail: carried.length ? { ...outcome, questions: carried } : outcome,
         endedAt: new Date(),
         leaseStatus: 'ended',
         leaseExpiresAt: null,
@@ -394,7 +431,15 @@ export class AttemptRunner {
       updated = await this.onWait(tx, updated);
     if (updated.state === 'waiting_for_approval' && this.onApprovalWait)
       updated = await this.onApprovalWait(tx, updated);
-    for (const handler of this.onFinished) await handler(tx, updated, outcome, attemptId);
+    await persistQuestions(tx, updated, resolution, attemptId);
+    updated = {
+      ...updated,
+      deferredQuestions: isTerminal(updated.state as JobState) ? [] : resolution.deferred,
+    };
+    // One reading of "is this news", shared by the attention counters and the outbox.
+    const result = await attemptResult(tx, row, outcome, attemptId);
+    for (const handler of this.onFinished)
+      await handler(tx, updated, outcome, attemptId, { questions: carried, result });
     return updated;
   }
 
