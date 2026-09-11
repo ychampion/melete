@@ -114,3 +114,19 @@
 - `bun test` on the affected fixture suites: 126 passed and 40 failed after the initial row reset; failures exposed detached reply/outbox and global-event records. The reset now derives the same dependent table set from foreign keys, clears children first under the original exclusive-lock boundary, and refuses non-disposable databases.
 - `bun test` on attention, events, replies, waits, responsibility, submissions, and runner integration suites: 96 passed, 0 failed, 684 assertions in 48.81 seconds after the reset correction.
 - `bun run typecheck` and `bun run lint`: passed after the fixture changes; the full duration check is next under the shared lock.
+
+## Final
+
+- `31da644`: final source revision verified by the full suite; fixture changes retain separate disposable databases, foreign-key enforcement, and durable Postgres settings.
+- `bun test --max-concurrency=2`: acquired the shared lock at 2026-09-11 23:33:10 UTC; 936 passed, 0 failed, 14 existing todos, 4060 assertions across 80 files in 177.18 seconds. The exit trap released the lock. This meets the three-minute target.
+- `/tmp/w16a-fixture-full-tests.log`: complete final full-suite output; runtime improved from 264.02 seconds to 177.18 seconds.
+- `bun run typecheck`: passed. `bun run lint`: passed, 332 files. `bun run test:plugin`: 20 passed. `bun run compose:check`: all 12 checks passed.
+- `packages/contracts/src/experience.ts`: all 56 experience operations have additive schemas, OpenAPI paths, regenerated client types, real implementations or explicit typed unavailable responses, and matching scenario responses.
+- `docs/CLIENT.md` and `.agents/notes/0023-experience-adapter.md`: document the experience contract, private implementation boundary, supported controls, and unavailable capabilities.
+- `POST /conversations/{id}/pause`: running pause remains unavailable without runtime checkpoint support; queued pause/resume and immediate stop are verified.
+- `POST /receipts/{id}/undo`: conditional calendar reversal is verified; irreversible sending and unsupported draft/file reversals remain unavailable.
+- `POST /signin/magic-link`: requires the configured personal mailbox and public address. Google/Apple sign-in, plan sharing, browser controls, music, and live data remain typed unavailable capabilities.
+- `bun test`: 14 pre-existing conformance todos remain unchanged; container-network execution needs the separate Linux environment. All tests in this lane used scripted providers; no external-provider smoke was specified.
+- `git -C C:/Users/gamin/melete-oss-w16a push -u origin lane/w16a-experience`: pushed the verified source branch.
+- `gh pr create --repo ychampion/melete --base integration --head lane/w16a-experience`: opened https://github.com/ychampion/melete/pull/22; no merge was performed.
+- `2026-09-11 23:36:48 UTC`: implementation, full verification, and PR creation completed within the five-hour campaign cap.
