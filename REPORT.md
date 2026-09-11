@@ -101,3 +101,16 @@
 - Command `bun test --dots`: first full run found the old exact-table-list assertion; one fix lets the original entity assertion accept additive tables. Final run: `363 pass`, `24 todo`, `0 fail`, `1402 expect() calls`, `Ran 387 tests across 28 files. [138.98s]`.
 - Command `bun run lint`: passed (`Checked 96 files in 371ms. No fixes applied.`); command `bun run openapi`: regenerated the new receipt lookup and input paths.
 - Test `global database preload`: suites clone one migrated template into separate disposable databases; tests assert `fsync=on` and `synchronous_commit=on`.
+
+## Slice 9: reply obligations and outbox
+
+- SHA `6636c24`: idempotent submission receipts committed and pushed to `origin/lane/w1-service`.
+- Command `bun run --cwd apps/melete db:generate --name=reply_obligations`: generated `0004_reply_obligations.sql` with separate reply-obligation and notification-attempt records.
+- Test `a direct request creates one obligation`: admission records an owed reply in the receipt transaction; assistant text and acceptance acknowledgement do not claim delivery.
+- Test `interrupted direct admission` and test `interrupted quiet unchanged check`: actual child exits recover the direct obligation with an explicit retransmission state; the quiet check creates no obligation or notification.
+- Test `delivery attempts recover separately`: retries retain their delivery key and attempt history; an exact content-hash acknowledgement, including a late acknowledgement, fulfills the recorded obligations once.
+- Test `coalescing`: pending content may be replaced while every direct obligation remains owed; missing content is reconstructed only from durable response data.
+- Test `spent attempt budget`: an exhausted job rejects another input without accepting an obligation it cannot run; the original deliverable-without-evidence wait remains intact.
+- Command `bun test apps/melete/test/integration/replies.test.ts`: `8 pass`, `0 fail`, `48 expect() calls`, `40.03s`.
+- Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: one formatting fix, then `Checked 100 files in 361ms. No fixes applied.`.
+- Command `bun test --dots`: `371 pass`, `24 todo`, `0 fail`, `1450 expect() calls`, `Ran 395 tests across 29 files. [151.74s]`.

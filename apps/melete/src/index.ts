@@ -13,6 +13,7 @@ import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
+import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
@@ -20,6 +21,7 @@ import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { startQueue } from './jobs/queue.ts';
+import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
@@ -36,6 +38,7 @@ export type AppDeps = {
   approvals?: ApprovalService;
   events?: EventStream;
   submissions?: SubmissionService;
+  replies?: ReplyService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -56,7 +59,13 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
-  if (deps.jobs) mountJobs(app, deps.jobs, deps.submissions);
+  const submissions =
+    deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
+  const replies =
+    deps.replies ??
+    (deps.jobs && submissions ? new ReplyService(deps.jobs, submissions) : undefined);
+  if (deps.jobs) mountJobs(app, deps.jobs, submissions);
+  if (replies) mountReplies(app, replies);
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -99,6 +108,7 @@ export async function bootstrap(
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
+  let replies: ReplyService | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop()]);
@@ -134,10 +144,12 @@ export async function bootstrap(
       });
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
+      if (submissions) replies = new ReplyService(jobs, submissions, runner);
       if (options.workers !== false) {
         await triggers.start();
         await runner.start();
       }
+      if (options.workers === false) await replies?.recover();
     }
   } catch (error) {
     await close();
@@ -152,6 +164,7 @@ export async function bootstrap(
     approvals,
     events,
     submissions,
+    replies,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -169,6 +182,7 @@ export async function bootstrap(
     approvals,
     events,
     submissions,
+    replies,
     close,
   };
 }

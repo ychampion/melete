@@ -312,6 +312,48 @@ export const acceptanceJournal = pgTable('acceptance_journal', {
   createdAt: created(),
 });
 
+export const replyObligation = pgTable(
+  'reply_obligation',
+  {
+    id: text('id').primaryKey(),
+    submissionId: text('submission_id').notNull().unique(),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    kind: text('kind').notNull(),
+    state: text('state').notNull().default('owed'),
+    coalesceKey: text('coalesce_key').notNull(),
+    eventCursor: bigint('event_cursor', { mode: 'number' }).notNull(),
+    content: jsonb('content'),
+    contentHash: text('content_hash'),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+    message: text('message'),
+    createdAt: created(),
+  },
+  (t) => [index('reply_owed_idx').on(t.state, t.jobId)],
+);
+
+export const notification = pgTable(
+  'notification',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    coalesceKey: text('coalesce_key').notNull(),
+    deliveryKey: text('delivery_key').notNull(),
+    obligationIds: jsonb('obligation_ids').notNull(),
+    content: jsonb('content'),
+    contentHash: text('content_hash').notNull(),
+    deliveryAttempt: integer('delivery_attempt').notNull(),
+    state: text('state').notNull().default('pending'),
+    attemptedAt: timestamp('attempted_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex('notification_attempt_idx').on(t.deliveryKey, t.deliveryAttempt),
+    index('notification_pending_idx').on(t.state),
+  ],
+);
+
 export const schema = {
   owner,
   space,
@@ -329,4 +371,6 @@ export const schema = {
   skill,
   submission,
   acceptanceJournal,
+  replyObligation,
+  notification,
 };

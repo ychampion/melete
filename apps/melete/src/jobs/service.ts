@@ -13,7 +13,7 @@ import {
   transition,
   type WaitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
@@ -166,6 +166,14 @@ export class JobService {
   ): Promise<JobRow> {
     const result = transition(row.state as JobState, input);
     if (!result.ok) throw new ServiceError(result.error.code, result.error.message);
+    if (result.value === 'queued' && row.state !== 'running') {
+      const [used] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(attempt)
+        .where(eq(attempt.jobId, row.id));
+      if (Number(used?.count ?? 0) >= jobBudget.parse(row.budget).max_attempts)
+        throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
+    }
     const wait = options.wait ?? { kind: 'none' };
     const nextWakeAt =
       result.value === 'queued'

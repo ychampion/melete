@@ -37,7 +37,15 @@ import {
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
-import { jobSubmissionResponse, submissionResponse } from './responsibility.ts';
+import {
+  jobSubmissionResponse,
+  notification,
+  notificationDelivery,
+  notificationList,
+  replyObligation,
+  replyObligationList,
+  submissionResponse,
+} from './responsibility.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -84,6 +92,47 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/reply-obligations': {
+          get: {
+            tags: ['jobs'],
+            summary: 'List replies still owed to the owner',
+            responses: {
+              '200': jsonResponse('Outstanding reply obligations', replyObligationList),
+            },
+          },
+        },
+        '/reply-obligations/{id}/acknowledge': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Acknowledge acceptance without claiming reply delivery',
+            requestParams: idParam('id', 'Reply obligation ID'),
+            responses: { '200': jsonResponse('Acknowledged obligation', replyObligation) },
+          },
+        },
+        '/notifications': {
+          get: {
+            tags: ['events'],
+            summary: 'Read the pending notification outbox',
+            responses: { '200': jsonResponse('Pending deliveries', notificationList) },
+          },
+        },
+        '/notifications/{id}/attempt': {
+          post: {
+            tags: ['events'],
+            summary: 'Record a notification delivery attempt',
+            requestParams: idParam('id', 'Notification ID'),
+            responses: { '200': jsonResponse('Delivery attempt', notification) },
+          },
+        },
+        '/notifications/{id}/delivered': {
+          post: {
+            tags: ['events'],
+            summary: 'Acknowledge delivery of the exact notification content',
+            requestParams: idParam('id', 'Notification ID'),
+            requestBody: json(notificationDelivery),
+            responses: { '200': jsonResponse('Delivered notification', notification) },
+          },
+        },
         '/submissions/{id}': {
           get: {
             tags: ['jobs'],

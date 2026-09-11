@@ -52,6 +52,9 @@ export class AttemptRunner {
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   afterRecovery?: () => Promise<void>;
+  readonly onFinished: Array<
+    (tx: Transaction, row: JobRow, outcome: AttemptOutcome, attemptId: string) => Promise<void>
+  > = [];
 
   constructor(
     readonly jobs: JobService,
@@ -373,6 +376,7 @@ export class AttemptRunner {
       updated = await this.onWait(tx, updated);
     if (updated.state === 'waiting_for_approval' && this.onApprovalWait)
       updated = await this.onApprovalWait(tx, updated);
+    for (const handler of this.onFinished) await handler(tx, updated, outcome, attemptId);
     return updated;
   }
 
