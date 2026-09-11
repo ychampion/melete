@@ -3,6 +3,7 @@ import { commitExtraction } from './commit.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { type ExtractionGateway, proposeExtraction } from './extract.ts';
 import { cleanupMemory, type DerivedCleanup } from './forget.ts';
+import type { MarkdownViews } from './markdown.ts';
 import { type RestrictionJournal, restoreMemory } from './restore.ts';
 import { type EmbeddingProvider, runViewWork } from './views.ts';
 import {
@@ -22,6 +23,7 @@ export type MemoryServiceOptions = {
   gateway?: ExtractionGateway;
   embedding?: EmbeddingProvider;
   cleanupFiles?: DerivedCleanup;
+  markdown?: MarkdownViews;
   onError?: (code: string) => void;
 };
 /** Derive a worker's scope from durable state, never from the queue message's claimed space. */
@@ -60,11 +62,17 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
   }
 }
 export async function runDerivedWork(options: MemoryServiceOptions) {
+  const markdown = options.markdown;
   const spaces =
     await options.sql`select distinct p.* from memory_spaces p join memory_outbox o on o.space_id = p.space_id
-    where o.completed_at is null and o.kind in ('index','cleanup') order by p.space_id limit 100`;
+    where o.completed_at is null and o.kind in ('index','cleanup','markdown','proposal') order by p.space_id limit 100`;
   for (const space of spaces) {
-    await cleanupMemory(options.sql, space.space_id, options.cleanupFiles);
+    await cleanupMemory(
+      options.sql,
+      space.space_id,
+      options.cleanupFiles ??
+        (markdown ? (spaceId, claimIds) => markdown.cleanup(spaceId, claimIds) : undefined),
+    );
     if (!space.restore_ready || space.revoked) continue;
     const scope: MemoryScope = {
       ownerId: space.owner_id,
@@ -74,6 +82,8 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
       role: 'owner',
     };
     await runViewWork(options.sql, scope, options.embedding);
+    await options.markdown?.build(scope);
+    await options.markdown?.proposals(scope);
   }
 }
 /** The restore check precedes queue delivery, inference, derived work, and accepting memory traffic. */

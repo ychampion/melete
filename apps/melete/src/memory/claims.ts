@@ -170,9 +170,10 @@ export async function publishRevision(
   head: ClaimHead | null,
   draft: RevisionDraft,
   status: ClaimRevision['status'] = 'active',
+  identity?: string,
 ) {
   assertMemoryDomain(domainKey);
-  const id = head?.id ?? newId('k');
+  const id = head?.id ?? identity ?? newId('k');
   if (!head)
     await tx`insert into memory_claims (id, space_id, domain_key, audience) values (${id}, ${scope.spaceId}, ${domainKey}, ${scope.audience})`;
   const [next] =
@@ -200,6 +201,7 @@ export async function publishRevision(
   }
   await tx`update memory_profile set stale = true where space_id = ${scope.spaceId}`;
   await enqueue(tx, scope.spaceId, 'index', String(dataRevision));
+  await enqueue(tx, scope.spaceId, 'markdown', String(dataRevision));
   return revisionFromRow(tx, { ...row, content: draft.content });
 }
 

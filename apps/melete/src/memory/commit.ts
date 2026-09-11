@@ -19,6 +19,7 @@ import {
   type MemoryScope,
   type MemorySql,
   type MemoryTx,
+  stableEntityId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
@@ -235,6 +236,7 @@ export async function commitExtraction(
           exception ? null : head,
           draft,
           historical ? 'historical' : 'active',
+          stableEntityId('k', batch.work.id, domain),
         );
         claimIds.push(revision.claim_id);
       }

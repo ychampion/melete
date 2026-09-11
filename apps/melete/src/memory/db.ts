@@ -21,6 +21,17 @@ export class MemoryError extends Error {
 export const newId = (prefix: string) => `${prefix}_${ulid()}`;
 export const stableId = (...parts: (string | number)[]) =>
   createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+/** A proposal and its eventual publication share one stable, contract-shaped identity. */
+export function stableEntityId(prefix: string, ...parts: (string | number)[]) {
+  let number = BigInt(`0x${stableId(...parts).slice(0, 32)}`);
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let encoded = '';
+  for (let i = 0; i < 26; i++) {
+    encoded = alphabet[Number(number & 31n)] + encoded;
+    number >>= 5n;
+  }
+  return `${prefix}_${encoded}`;
+}
 export const iso = (value: string | Date) => new Date(value).toISOString();
 export const generation = (row: Record<string, unknown>): SpaceGeneration =>
   spaceGeneration.parse({

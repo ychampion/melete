@@ -8,6 +8,7 @@
 import { Hono } from 'hono';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { type Env, loadEnv } from './env.ts';
+import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -15,10 +16,12 @@ export type AppDeps = {
   env: Env;
   db: Database | null;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
+  memory?: MemoryRouteOptions;
 };
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
+  if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();

@@ -27,6 +27,17 @@ export const sourceRef = z.strictObject({
 });
 export const supportingSpan = sourceRef.extend({ quote: z.string().min(1).max(16000) });
 export type SourceRef = z.infer<typeof sourceRef>;
+/** Additional provenance for the derived Markdown surface; legacy fields remain compatible. */
+export const memoryKnowledgeFrontmatter = knowledgeFrontmatter.extend({
+  memory_revision: positive,
+  recorded_at: timestamp,
+  exact_valid_from: timestamp,
+  exact_valid_until: timestamp.nullable(),
+  superseded_at: timestamp.nullable(),
+  source_refs: z.array(sourceRef).min(1),
+  supersedes_revisions: z.array(positive),
+});
+export type MemoryKnowledgeFrontmatter = z.infer<typeof memoryKnowledgeFrontmatter>;
 export const sourceEvent = z.strictObject({
   source_id: sourceId,
   source_version: boundedIdentity,

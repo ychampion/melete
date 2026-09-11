@@ -68,3 +68,19 @@
 - Log `frozen EventType`: memory invalidation events are stored in `memory_invalidations` and bridged through the existing `notice` event payload. The missing W1/W2 admission/worker integration remains described in `.agents/notes/proposed/2026-09-11-memory-integration-hooks.md`.
 - Command `bun run typecheck`: pass; command `bun run lint`: pass (82 files); command `bun test --max-concurrency 2`: 222 pass, 1 baseline skip, 36 baseline todos, 0 fail in 29.51 s before the slice 6 push.
 - Test `source excerpts`: publication/indexing and supplemental retrieval now use exact UTF-16 source offsets; partial suppression masks text without moving those offsets.
+
+## Slice 7 at 15:39 +05:30
+
+- SHA `ca30974`: correction, forgetting, revocation and restore adapters pushed to `origin/lane/w7-memory`.
+- Test `authenticated routes reject body scope, foreign claim IDs, and reader writes`: pass; server-injected scope is required and missing authentication returns 401.
+- Test `Markdown round trips support, preserves local edits, and owner edits become protected revisions`: pass; exact source spans and revision timestamps survive frontmatter parsing, owner edits produce protected `owner_edit` evidence, and unrelated staged files survive derived Git commits.
+- Test `review mediation stages diffs and revalidates apply against authoritative evidence`: pass; `.proposed/` previews share eventual stable claim IDs, approval rechecks expected revisions, stale approval returns 409, and discard terminates durable work.
+- Test `view paths reject directory links before any claim content is written`: pass; no content reaches the redirected directory.
+- Log `slice 7 fix cycles`: typecheck cycle 1 removed an unused import; cycle 2 parsed HTTP test responses through their schemas. Integration cycle 1 scoped the Markdown fixture to its own temporary space rather than scanning unrelated test spaces.
+- Command `bun run openapi`: regenerated; command `bun run typecheck`: pass; command `bun run lint`: pass (85 files); command `bun test --max-concurrency 2`: 226 pass, 1 baseline skip, 36 baseline todos, 0 fail in 10.61 s.
+- Command `rg -n PENDING_CONTRACT .`: W4's list remains absent, so no existing list can be emptied; the three implemented operations are list, apply, and discard as recorded in the proposed integration note.
+
+## Assumptions continued for slice 7
+
+- Test `Markdown round trips support, preserves local edits, and owner edits become protected revisions`: disposable space repositories under the test-created temp root exercise the required Git view builder; they are independent fixtures, not another Melete worktree.
+- Log `Markdown retention`: cleanup removes generated working files, pending previews and SQLite entries; Git history and copied exports remain retained copies and are not rewritten by memory cleanup.
