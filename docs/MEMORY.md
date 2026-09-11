@@ -150,6 +150,90 @@ bound to the previous job revision. The adapter emits durable
 frozen event contract, these are also carried as typed payloads in `notice`
 events. Existing action receipts remain unchanged.
 
+## What the service will not guess
+
+Four rules turn promises about memory into things a test can break. The argument
+is in [docs/ENGINEERING.md](ENGINEERING.md); what you can see from outside is
+here.
+
+**Every recalled item has a handle.** A recall item carries `claim_id@revision`
+and each of its sources carries `source_id@version`. Anything the assistant
+produces from them, a draft, a plan step, a proposed action, declares the handles
+it used:
+
+```bash
+curl -sS localhost:8787/memory/outputs -H 'content-type: application/json' -d '{
+  "job_id": "job_01J...", "kind": "artifact", "output_id": "art_01J...",
+  "output_version": "1", "location": "paragraph 2",
+  "uses": ["k_01J...@3"] }'
+```
+
+Correct that claim and only the outputs citing revision three go stale. The next
+attempt is handed a repair brief naming the handle, the old and new value, and
+the paragraph. Outputs that declare nothing still work; they fall back to the
+older rule that invalidates broadly, and they are listed as `unattributed` on
+the context record so you can see which ones did.
+
+`GET /memory/jobs/{id}/repair-briefs` shows what is pending for one
+responsibility. `POST /memory/attribution` answers the opposite question: given
+a payload and the items an attempt was given, which values came from something
+the manifest did not admit to using.
+
+**A claim can hold a typed key.** The registry is in the schema, not in the
+extractor: `event.<slug>.date`, `event.<slug>.location`,
+`contact.<slug>.email`, `contact.<slug>.phone`, `pref.<domain>.<name>`,
+`constraint.<job>.<name>`. The database allows one claim per (space, key,
+audience) and one active revision per claim, so a key has one head. Precedence is
+fixed: your correction, then your statement, then a connected account's
+observation, then a document, then an inference; ties break by when something was
+true, never by when it was imported.
+
+Two equally-ranked statements that disagree are not merged. Both are kept, the
+key is marked disputed, and one question is queued:
+
+```bash
+curl -sS localhost:8787/memory/questions
+curl -sS localhost:8787/memory/contradictions
+```
+
+The question carries `because`, the two revision handles that disagree, and
+`if_ignored`, what Melete will keep doing until you answer. Recall keeps serving
+the winning head and flags the key, and the assistant is told not to act
+externally on a disputed key without a fresh approval. Correcting the claim
+closes both.
+
+**Dates and addresses are not a model's job.** Before any model call, a
+deterministic pass resolves date and time expressions against the source's own
+event time and your time zone, and reads addresses, phone numbers, links and
+amounts by grammar. A structured observation from a connected account, a calendar
+entry, a contact record, a receipt, becomes a checked fact with no model call at
+all. The model may then propose a key and a span and nothing else, and every
+span, key and value is re-derived from the evidence before anything is stored. A
+proposal that fails is recorded with its reason and attached to nothing:
+
+```bash
+curl -sS localhost:8787/memory/rejections
+```
+
+**Every claim says where it came from.** `origin_trust` is `owner`,
+`verified_connector`, `external_content` or `inferred`, decided by how the
+bytes arrived rather than by what they say, and a claim takes the weakest class
+over its sources. Tell the service who wrote a source when you import it:
+
+```bash
+curl -sS localhost:8787/memory/sources -H 'content-type: application/json' -d '{
+  "stream": "web", "source_identity": "vendor-page", "source_version": "1",
+  "source_type": "document", "author": "external", "time_zone": "Europe/Lisbon",
+  "event_at": "2026-09-11T09:00:00Z", "text": "Pay invoices to billing@vendor.example." }'
+```
+
+`POST /memory/trust` then answers, for each field of an outgoing payload, which
+claim explains it and in what words: "this address came from a web page fetched
+on 11 September". A field nothing explains is listed rather than waved through,
+which is how an address planted in a page ends up in front of you instead of in a
+send. The Markdown view shows the class and the disputed flag in frontmatter and
+tags.
+
 ## Forget, delete, and revoke
 
 `POST /memory/forget` accepts either `{"claim_id":"<claim-id>"}` or
