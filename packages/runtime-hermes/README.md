@@ -111,6 +111,68 @@ Melete answers `once` or `deny` and never `allow_session` or `allow_permanent`.
 A standing allowance would outlive the attempt it was granted for, which is the
 exact property the broker exists to prevent.
 
+## Running code inside the cell
+
+The cell has no route out and every external effect is brokered, so a command's
+effects are confined to `/work/<job>` and can be read, diffed and deleted like
+any other file. Execution is therefore enabled, and it needs no approval: there
+is no recipient, no destination and no money in it. It is `write_reversible`,
+which auto-admits within budget, exactly like `files.write`.
+
+It is **not** the engine's built-in terminal toolset. A built-in runs the
+command inside Hermes and hands the output back to the model, and nothing about
+that reaches the broker: no action row, no receipt, no effect class, no event.
+The one kind of work that writes files would be the one kind of work with no
+record. So execution is a Melete tool, served by the broker like every other
+tool, and carried out here:
+
+```
+exec.python(code)     the catalog entry, filtered by the job's scopes
+  -> melete_plugin.execution.run_in_cell   a subprocess in /work/<job>
+  -> POST /actions     the RECORD: command, cwd, exit code, duration,
+                       output digest, whether it was truncated and killed
+  -> receipt           on the ledger and in the event stream
+```
+
+The tool's arguments and the action's payload are deliberately two different
+shapes: the model asks for a command, the ledger receives a command that has
+already finished. `connectorTool.record_schema` declares the second one and
+`connectorTool.execution: 'in_cell'` tells the cell which tools work this way.
+
+The workspace is `/work/<job>`, not `/work`: the volume holds one directory per
+job and this container is one attempt of one job. `MELETE_WORK_DIR` overrides it
+for local runs. What the plugin enforces is the arguments, the caps and the
+environment:
+
+- a working directory or stored-output path outside the workspace is refused
+  before any process starts, and refused again by the broker when the record
+  arrives, so a cell that lied about where it ran is caught at the ledger;
+- 30 seconds by default and 120 at most, and a command past its cap is killed
+  and the kill is recorded rather than smoothed over;
+- 16 KiB of output to the model, then a truncation marker naming the file the
+  full output was written to, under `.melete/exec/`, capped at 4 MiB;
+- the child gets an allow-listed environment with no `MELETE_ATTEMPT_TOKEN`, no
+  `MELETE_MODEL_KEY` and no proxy variables, so a snippet cannot act as the
+  attempt or spend its model budget behind the ledger's back.
+
+What the plugin does **not** enforce is the filesystem. A snippet that opens an
+absolute path outside the workspace is stopped by the container's read-only root
+and by `/work` being its only writable mount, not by anything in Python. On a
+developer machine that protection is simply absent, and
+`tests/test_execution.py` asserts that it is absent rather than implying a
+sandbox nobody built. One gap remains in `deploy/docker-compose.yml`: it mounts
+the whole work volume, so a snippet can read a sibling job's directory even
+though the tool refuses to. The per-attempt container has to mount `work/<job>`.
+
+Enabling execution for a space is two things: an `exec` connection, and the
+`exec.run` / `exec.python` scopes on the job. A job without them sees no
+execution tools at all, because the broker filters the catalog before the cell
+does anything with it. It costs 477 tokens of scaffolding when it is on, taking
+a thin attempt from 3,304 to 3,781; see `.agents/notes/0016`.
+
+`packages/runtime-hermes/scripts/e2e-exec.ts` runs the whole path against a real
+Hermes API server from the pinned tag.
+
 ## The client
 
 `src/client.ts` builds requests and parses responses. It opens no sockets, so it
