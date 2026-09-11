@@ -3,7 +3,7 @@
  * migration SQL under apps/melete/drizzle is generated from this file and
  * committed, so a fresh install applies exactly the schema that was reviewed.
  */
-import type { DeferredQuestion } from '@melete/contracts';
+import type { DeferredQuestion, RepairTraceEntry } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -190,6 +190,18 @@ export const action = pgTable(
     receipt: jsonb('receipt'),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
     reconciliation: jsonb('reconciliation'),
+    // What the repair policy did, in order, with the hash of the bytes each
+    // attempt put on the wire. Empty for an action that never met a fault.
+    repairTrace: jsonb('repair_trace').$type<RepairTraceEntry[]>().notNull().default([]),
+    // One counter per fault class met, so a class that keeps recurring is
+    // visible without reading a log.
+    repairCounters: jsonb('repair_counters').$type<Record<string, number>>().notNull().default({}),
+    // Where the last dispatch came to rest. `completed` is the only value that
+    // means the effect happened; every other one is a safe stop.
+    repairDisposition: text('repair_disposition'),
+    // Set when a destination asked to be left alone. The job then waits on a
+    // timer rather than on a worker, so nothing spins against a rate limit.
+    retryAfterAt: timestamp('retry_after_at', { withTimezone: true }),
     createdAt: created(),
   },
   (t) => [
@@ -198,6 +210,51 @@ export const action = pgTable(
     // Postgres lets a unique index hold many nulls, so pre-existing rows are
     // untouched while every new proposal is one effect exactly once.
     uniqueIndex('action_intent_key_idx').on(t.intentKey),
+  ],
+);
+
+/**
+ * A drift mapping is a proposal, never a live change.
+ *
+ * When a destination renames a field under a working call, re-discovery writes
+ * a row here with the mapping it would use and the test that mapping must pass.
+ * A candidate becomes `applied` only after its test passes and only for the
+ * action that raised it; anything ambiguous becomes `rejected` and the action
+ * stops instead. Nothing reads this table to change behaviour on its own.
+ */
+export const repairCandidate = pgTable(
+  'repair_candidate',
+  {
+    id: text('id').primaryKey(),
+    actionId: text('action_id')
+      .notNull()
+      .references(() => action.id, { onDelete: 'cascade' }),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id').notNull(),
+    kind: text('kind').notNull(),
+    faultKind: text('fault_kind').notNull(),
+    state: text('state').notNull().default('candidate'),
+    observedSchema: jsonb('observed_schema'),
+    /** Old field name to new field name. Nothing else is expressible. */
+    proposedMapping: jsonb('proposed_mapping')
+      .$type<Record<string, string>>()
+      .notNull()
+      .default({}),
+    test: jsonb('test').notNull(),
+    evaluation: jsonb('evaluation'),
+    /** True only for a rename whose every value survives unchanged. */
+    safe: boolean('safe').notNull().default(false),
+    createdAt: created(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('repair_candidate_action_idx').on(t.actionId, t.state),
+    index('repair_candidate_job_idx').on(t.jobId),
+    // One candidate per action and mapping: re-running discovery updates the
+    // proposal it already made instead of stacking near-identical guesses.
+    uniqueIndex('repair_candidate_mapping_idx').on(t.actionId, t.proposedMapping),
   ],
 );
 
@@ -485,6 +542,7 @@ export const schema = {
   job,
   attempt,
   action,
+  repairCandidate,
   approval,
   event,
   artifact,

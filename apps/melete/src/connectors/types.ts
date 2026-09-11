@@ -6,6 +6,7 @@ import type {
   JobConstraints,
   VerifyResult,
 } from '@melete/contracts';
+import type { ConnectorDescription, RepairAttemptContext } from './faults.ts';
 
 /** Trusted service context, assembled from persisted job state, never tool arguments. */
 export type ConnectorContext = {
@@ -14,6 +15,11 @@ export type ConnectorContext = {
   idempotency_key: string;
   constraints: JobConstraints;
   signal?: AbortSignal;
+  /**
+   * Present only on a repaired re-execution. A connector may read it to take
+   * the route the policy authorized; it is never a way to change what is sent.
+   */
+  repair?: RepairAttemptContext;
 };
 
 export interface Connector {
@@ -21,4 +27,21 @@ export interface Connector {
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   health(): Promise<ConnectorHealth>;
+  /**
+   * The shape the destination wants now. Answered after a `schema_drift` fault
+   * so the policy can compare it with what was sent and propose a mapping. A
+   * connector without one simply cannot be repaired that way.
+   */
+  describe?(action: Action, ctx: ConnectorContext): Promise<ConnectorDescription>;
+  /**
+   * Refresh a stale credential through the credential store. True when a fresh
+   * credential is in hand; false when the grant is gone and nothing was
+   * refreshed. It never substitutes a different identity.
+   */
+  refreshCredential?(action: Action, ctx: ConnectorContext): Promise<boolean>;
+  /**
+   * Equivalent authorized routes for the SAME operation, best first. Consulted
+   * only after a route said definitively that it did not execute.
+   */
+  routes?(action: Action, ctx: ConnectorContext): Promise<string[]>;
 }

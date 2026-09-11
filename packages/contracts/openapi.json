@@ -7234,6 +7234,162 @@
               }
             ]
           },
+          "repair_trace": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "$ref": "#/components/schemas/__schema41"
+                },
+                "attempt": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "fault_kind": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "transient_before_dispatch",
+                        "rate_limited",
+                        "expired_credential",
+                        "revoked_credential",
+                        "schema_drift",
+                        "unsupported_route",
+                        "uncertain_outcome",
+                        "bad_output",
+                        "unclassified"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "decision": {
+                  "type": "string",
+                  "enum": [
+                    "verified_completion",
+                    "retry_with_backoff",
+                    "park_until_retry_after",
+                    "refresh_credential_once",
+                    "stop_connection_revoked",
+                    "rediscover_schema",
+                    "record_repair_candidate",
+                    "apply_safe_mapping",
+                    "change_route",
+                    "reconcile_by_verify",
+                    "revise_and_revalidate",
+                    "stop_needs_input",
+                    "escalate_diagnosis"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "delay_ms": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "retry_after": {
+                  "default": null,
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema41"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "candidate_id": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "route": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "payload_hash": {
+                  "$ref": "#/components/schemas/__schema102"
+                }
+              },
+              "required": [
+                "at",
+                "attempt",
+                "fault_kind",
+                "decision",
+                "detail",
+                "delay_ms",
+                "retry_after",
+                "candidate_id",
+                "route",
+                "payload_hash"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "repair_counters": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "repair_disposition": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "completed",
+                  "parked_until_retry",
+                  "needs_reconciliation",
+                  "needs_reconnect",
+                  "needs_input",
+                  "repair_exhausted"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry_after_at": {
+            "default": null,
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema41"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "$ref": "#/components/schemas/__schema41"
           }
@@ -7256,6 +7412,10 @@
           "receipt",
           "resolved_at",
           "reconciliation",
+          "repair_trace",
+          "repair_counters",
+          "repair_disposition",
+          "retry_after_at",
           "created_at"
         ],
         "additionalProperties": false

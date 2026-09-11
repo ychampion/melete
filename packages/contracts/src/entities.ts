@@ -9,6 +9,7 @@ import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { originWarnings, sha256Hex } from './effects.ts';
 import { jobState } from './job-state.ts';
 import { knowledgeRecordStatus } from './knowledge.ts';
+import { repairCounters, repairDisposition, repairTrace } from './repair.ts';
 
 // --------------------------------------------------------------------------
 // owner, space
@@ -226,6 +227,22 @@ export const action = z.object({
   receipt: jsonObject.nullable(),
   resolved_at: timestamp.nullable(),
   reconciliation: jsonObject.nullable(),
+  /**
+   * What the repair policy did about this action's faults, in order. Rows
+   * written before the column existed read as an empty trace rather than
+   * failing, so an older producer still parses.
+   */
+  repair_trace: repairTrace.default([]),
+  /** One counter per fault class met. Absent keys are zero. */
+  repair_counters: repairCounters.default({}),
+  /**
+   * Where the last dispatch came to rest. `completed` is the only value that
+   * means the effect happened; every other one is a safe stop and a client
+   * shows it as its own state rather than as a failure.
+   */
+  repair_disposition: repairDisposition.nullable().default(null),
+  /** When a rate-limited destination may be approached again. */
+  retry_after_at: timestamp.nullable().default(null),
   created_at: timestamp,
 });
 export type Action = z.infer<typeof action>;

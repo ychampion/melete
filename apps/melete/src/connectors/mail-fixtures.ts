@@ -28,6 +28,10 @@ export function mailAction(
     receipt: null,
     resolved_at: null,
     reconciliation: null,
+    repair_trace: [],
+    repair_counters: {},
+    repair_disposition: null,
+    retry_after_at: null,
     created_at: '2026-09-11T08:00:00.000Z',
   };
 }

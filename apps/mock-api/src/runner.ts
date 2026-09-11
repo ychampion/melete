@@ -379,6 +379,10 @@ export class Runner {
       receipt: null,
       resolved_at: null,
       reconciliation: null,
+      repair_trace: [],
+      repair_counters: {},
+      repair_disposition: null,
+      retry_after_at: null,
       created_at: now,
     });
     run.refs.set(step.ref, actionId);

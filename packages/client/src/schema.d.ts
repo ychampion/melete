@@ -3900,7 +3900,34 @@ export interface components {
             payload_hash: components["schemas"]["__schema102"];
             receipt: components["schemas"]["__schema61"] | null;
             reconciliation: components["schemas"]["__schema61"] | null;
+            /** @default {} */
+            repair_counters: {
+                [key: string]: number;
+            };
+            /** @default null */
+            repair_disposition: ("completed" | "parked_until_retry" | "needs_reconciliation" | "needs_reconnect" | "needs_input" | "repair_exhausted") | null;
+            /** @default [] */
+            repair_trace: {
+                at: components["schemas"]["__schema41"];
+                attempt: number;
+                /** @default null */
+                candidate_id: string | null;
+                /** @enum {string} */
+                decision: "verified_completion" | "retry_with_backoff" | "park_until_retry_after" | "refresh_credential_once" | "stop_connection_revoked" | "rediscover_schema" | "record_repair_candidate" | "apply_safe_mapping" | "change_route" | "reconcile_by_verify" | "revise_and_revalidate" | "stop_needs_input" | "escalate_diagnosis";
+                /** @default null */
+                delay_ms: number | null;
+                detail: string;
+                /** @default null */
+                fault_kind: ("transient_before_dispatch" | "rate_limited" | "expired_credential" | "revoked_credential" | "schema_drift" | "unsupported_route" | "uncertain_outcome" | "bad_output" | "unclassified") | null;
+                payload_hash: components["schemas"]["__schema102"];
+                /** @default null */
+                retry_after: components["schemas"]["__schema41"] | null;
+                /** @default null */
+                route: string | null;
+            }[];
             resolved_at: components["schemas"]["__schema41"] | null;
+            /** @default null */
+            retry_after_at: components["schemas"]["__schema41"] | null;
             /** @enum {string} */
             status: "proposed" | "needs_approval" | "approved" | "denied" | "admitted" | "dispatched" | "succeeded" | "failed" | "unknown" | "unresolved";
         };

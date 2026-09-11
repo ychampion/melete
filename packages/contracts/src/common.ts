@@ -35,6 +35,8 @@ export const ID_PREFIXES = {
   trigger: 'trg',
   ledger: 'led',
   skill: 'skl',
+  question: 'qst',
+  repair_candidate: 'rpc',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];
