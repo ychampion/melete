@@ -13,3 +13,10 @@
 - Command bun run test:plugin with later draft boundary tests deselected: 34 passed in 14.67s; test admission_reserves_stable_intent_then_settles proves one-use execution.
 - Command bun run openapi and command bun run client:generate passed; command bun run typecheck passed before final formatting.
 - Test execution-admission.test.ts initially had a syntax error in an optional SQL tag; corrected to the non-null fixture SQL handle and rerun green.
+
+## Finding 8
+
+- SHA 73c2b1f: finding 2 committed and pushed to lane/w10a-execution.
+- Test plugin_output_path_escape: red before the fix in both pre-existing and command-created Windows junction cases; log excerpt DID NOT RAISE ExecRefused.
+- Test test_execution_boundaries.py retained from the prior draft; findings 3 and 4 draft tests are held for their later commits to keep each commit focused.
+- Command python -m pytest packages/runtime-hermes/tests/test_execution_boundaries.py packages/runtime-hermes/tests/test_execution.py -q: 14 passed in 2.57s; outside directory stayed empty; all plugin scratch/output creation and cleanup use resolve_in_workspace and realpath.

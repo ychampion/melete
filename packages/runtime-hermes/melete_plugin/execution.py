@@ -39,6 +39,7 @@ import re
 import subprocess  # noqa: S404 - running a command is this module's whole purpose
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -93,7 +94,7 @@ def resolve_in_workspace(root: Path, relative: str) -> Path:
     so a link planted earlier in the same job cannot widen the next command.
     """
     if not relative or relative == ".":
-        return root.resolve()
+        return Path(os.path.realpath(root))
     if "\x00" in relative:
         raise ExecRefused("a path may not contain a null byte")
     candidate = Path(relative)
@@ -102,8 +103,8 @@ def resolve_in_workspace(root: Path, relative: str) -> Path:
     for part in candidate.parts:
         if part in ("..", "") or not _SAFE_SEGMENT.match(part):
             raise ExecRefused(f"path traversal is not allowed: {relative}")
-    base = root.resolve()
-    resolved = (base / candidate).resolve()
+    base = Path(os.path.realpath(root))
+    resolved = Path(os.path.realpath(base / candidate))
     if resolved != base and base not in resolved.parents:
         raise ExecRefused(f"path resolves outside the job workspace: {relative}")
     return resolved
@@ -147,7 +148,7 @@ def _limits() -> Optional[Any]:
     return apply
 
 
-def _argv(language: str, command: str, cwd: Path) -> Tuple[list, Optional[Path]]:
+def _argv(language: str, command: str, root: Path, relative_cwd: str) -> Tuple[list, Optional[str]]:
     """The process to start, and the scratch file to remove afterwards.
 
     A Python snippet is written to a file rather than passed with `-c`, because
@@ -155,9 +156,12 @@ def _argv(language: str, command: str, cwd: Path) -> Tuple[list, Optional[Path]]
     the one thing a model cannot guess its way out of.
     """
     if language == "python":
-        script = cwd / f".melete-exec-{os.getpid()}-{int(time.time() * 1000)}.py"
-        script.write_text(command, encoding="utf-8")
-        return [sys.executable, str(script)], script
+        relative = (Path(relative_cwd) / f".melete-exec-{uuid.uuid4().hex}.py").as_posix()
+        script = resolve_in_workspace(root, relative)
+        # Exclusive creation prevents a pre-existing link from being followed.
+        with script.open("x", encoding="utf-8") as handle:
+            handle.write(command)
+        return [sys.executable, str(script)], relative
     if os.name == "nt":
         return ["cmd.exe", "/d", "/c", command], None
     return ["/bin/sh", "-c", command], None
@@ -180,7 +184,7 @@ def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if len(command) > 20_000:
         raise ExecRefused("the command is longer than the cell will run")
 
-    root = workspace_root()
+    root = Path(os.path.realpath(workspace_root()))
     if not root.is_dir():
         raise ExecRefused(f"the job workspace is not present at {root}")
     relative_cwd = arguments.get("cwd") or "."
@@ -195,7 +199,10 @@ def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         raise ExecRefused("timeout_ms must be a positive integer")
     timeout_ms = min(requested, MAX_TIMEOUT_MS)
 
-    argv, scratch = _argv(language, command, cwd)
+    # Validate even when output is small: storage is a plugin-owned operation,
+    # and an already redirected directory must refuse before code is started.
+    resolve_in_workspace(root, OUTPUT_DIR)
+    argv, scratch = _argv(language, command, root, relative_cwd)
     started = time.monotonic()
     timed_out = False
     signal_name = None
@@ -226,7 +233,7 @@ def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         duration_ms = int((time.monotonic() - started) * 1000)
         if scratch is not None:
             try:
-                scratch.unlink()
+                resolve_in_workspace(root, scratch).unlink()
             except OSError:
                 pass
 
@@ -239,13 +246,12 @@ def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         # The full output is a file in the workspace, which makes it readable,
         # citable, and deletable by the same means as anything else the job
         # produced. The model is shown the head and told where the rest is.
-        directory = cwd if relative_cwd != "." else root.resolve()
-        store = (root.resolve() / OUTPUT_DIR)
+        store = resolve_in_workspace(root, OUTPUT_DIR)
         store.mkdir(parents=True, exist_ok=True)
-        name = f"{int(time.time() * 1000)}-{digest[:12]}.log"
-        (store / name).write_bytes(captured)
+        name = f"{uuid.uuid4().hex}-{digest[:12]}.log"
         output_path = f"{OUTPUT_DIR}/{name}"
-        del directory
+        with resolve_in_workspace(root, output_path).open("xb") as handle:
+            handle.write(captured)
 
     shown = captured[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
     if truncated:
