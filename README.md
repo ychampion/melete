@@ -77,8 +77,9 @@ tools you already have.
 
 ## Out of scope for v0.1
 
-- **Multi-user accounts, shared spaces, invitations.** The schema carries
-  `space.audience` so this can come later; the client shows one owner.
+- **An invitation UI.** Not in v0.1. Shared-space and membership-revocation
+  primitives are planned but remain unimplemented in this revision; see the
+  [capability matrix](docs/CAPABILITIES.md) for the contract blockers and proof status.
 - **Google and Microsoft OAuth.** Restricted scopes need weeks of verification.
   IMAP, SMTP, and CalDAV instead.
 - **Virtual-machine isolation.** A Firecracker microVM is the target and gVisor

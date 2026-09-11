@@ -1,0 +1,269 @@
+# 0021 - Hermes capabilities at the pin and the Melete boundary
+
+Status: recorded (source audit; implementation status is separate)
+Date: 2026-09-12
+
+## Evidence and scope
+
+Melete revision `9484023cabd32b786cb4d336dec818f441cd0cc1` was inspected in
+`lane/w14-capabilities`. A fresh `.hermes-src` checkout of `v2026.9.7` resolves to
+`2237be355906fbe6065ce1815711eee52b2d646e`. Every upstream `file:line` below refers
+to that commit, not current upstream HEAD. Source inspection establishes an
+offered interface; only an executed Melete test establishes a Melete capability.
+
+Reproduce the source inventory from the W14 worktree:
+
+```powershell
+git -C C:/Users/gamin/melete-oss-w14 --git-dir=C:/Users/gamin/melete-oss-w14/.hermes-src/.git --work-tree=C:/Users/gamin/melete-oss-w14/.hermes-src rev-parse HEAD
+python packages/runtime-hermes/scripts/audit-pin.py .hermes-src
+```
+
+The AST probe reports **37** `VALID_HOOKS` names and their literal dispatch sites.
+It imports no upstream modules, opens no provider connections, and does not claim
+that every conditional dispatch runs on the HTTP surface. Its locations can be
+read at `https://github.com/NousResearch/hermes-agent/blob/2237be355906fbe6065ce1815711eee52b2d646e/<file>#L<line>`.
+
+## Plugin loader and every registered hook name
+
+`PluginContext.register_hook` is at `hermes_cli/plugins.py:893`; unknown names
+warn but are stored. Registering a made-up `on_compaction` therefore succeeds
+without making it fire. `VALID_HOOKS` is at `hermes_cli/plugins.py:107`.
+`hermes_cli/lifecycle.py:26` fans into first-party observers and plugin dispatch.
+
+| Hook name | Producer at the pin |
+|---|---|
+| `pre_tool_call` | `hermes_cli/plugins.py:1785`, called by `model_tools.py:710` |
+| `post_tool_call` | `model_tools.py:632`; terminal executor forwarding at `agent/inline_tool_executors.py:29` |
+| `transform_terminal_output` | `tools/terminal_tool_result.py:129` |
+| `transform_tool_result` | `model_tools.py:788` |
+| `transform_llm_output` | `agent/turn_finalizer.py:408` |
+| `pre_llm_call` | `agent/turn_context.py:617` |
+| `post_llm_call` | `agent/turn_finalizer.py:419` |
+| `on_stream_start` | `agent/stream_delivery.py:280` |
+| `on_stream_delta` | `agent/stream_delivery.py:314` and `:334` |
+| `on_stream_end` | `agent/stream_delivery.py:283` |
+| `on_interim_message` | `agent/stream_delivery.py:202` |
+| `pre_verify` | `hermes_cli/plugins.py:1892` |
+| `pre_api_request` | `agent/turn_api_request.py:64` |
+| `post_api_request` | `agent/turn_response_intake.py:64` |
+| `api_request_error` | `agent/api_request_hooks.py:174` |
+| `transform_api_error_classification` | `hermes_cli/plugins.py:1927` |
+| `on_session_start` | `agent/conversation_loop.py:733` |
+| `on_session_end` | `agent/turn_finalizer.py:625`; interrupted CLI turn at `cli.py:866` |
+| `on_session_finalize` | `hermes_cli/lifecycle.py:63`; real session finalization helper |
+| `on_session_reset` | `gateway/slash_commands_session.py:210`; CLI also dispatches its session event dynamically |
+| `on_skill_lifecycle` | `tools/skill_usage.py:444` |
+| `subagent_start` | `tools/delegate_tool.py:286` |
+| `subagent_stop` | `tools/delegate_tool_results.py:365` |
+| `pre_gateway_dispatch` | `gateway/run_inbound.py:49` |
+| `pre_approval_request` | `tools/approval.py:774`, `tools/approval_gateway_wait.py:87`, `tools/approval_prompt.py:210`, `tools/approval_smart.py:141` |
+| `post_approval_response` | `tools/approval.py:777`, `tools/approval_gateway_wait.py:73`, `tools/approval_prompt.py:218`, `tools/approval_smart.py:144` |
+| `pre_transcription` | `tools/transcription_command.py:228` |
+| `kanban_task_claimed` | `hermes_cli/kanban_db.py:2156` |
+| `kanban_task_completed` | `hermes_cli/kanban_db.py:2610`; also `hermes_cli/kanban_swarm.py:154` |
+| `kanban_task_blocked` | `hermes_cli/kanban_db.py:2944` and `:2946` |
+| `on_kanban_worker_spawned` | `hermes_cli/kanban_db.py:187` |
+| `on_kanban_worker_exited` | `hermes_cli/kanban_db_dispatch.py:961` |
+| `on_kanban_worker_stale_claim` | `hermes_cli/kanban_db.py:2350` |
+| `on_kanban_task_updated` | `hermes_cli/kanban_db.py:209` |
+| `on_kanban_dispatch_tick` | `hermes_cli/kanban_db.py:254` |
+| `gateway_platform_event` | `gateway/run_adapters.py:1362` |
+| `pre_command` | `hermes_cli/plugins.py:1735` |
+
+### Lifecycle semantics that affect capture
+
+- `on_session_start` fires for a new conversation, not each continuation
+  (`agent/conversation_loop.py:730`). In contrast, `on_session_end` is emitted
+  by `finalize_turn` after a message's conversation loop. The comment at
+  `agent/turn_finalizer.py:623` explicitly separates it from true memory-provider
+  shutdown. Store the original hook name; do not label it proof of process exit.
+- There are no literal `pre_turn` or `post_turn` names. `pre_llm_call` and
+  `post_llm_call` are the per-turn seams; the latter follows the tool loop
+  (`agent/turn_finalizer.py:399`). `pre_api_request`/`post_api_request` surround
+  provider requests within that turn. They must not be conflated.
+- `api_request_error` observes provider failures. There is no general `on_error`
+  hook. Tool errors have terminal `post_tool_call` outcomes, while outer HTTP
+  exceptions become `run.failed` (`gateway/platforms/api_server_runs.py:587-595`).
+- Approval hooks observe Hermes command approvals; their returns are ignored
+  (`hermes_cli/plugins.py:133-138`). They do not report a Melete broker approval.
+  Melete's park-and-resume ledger remains the approval authority.
+- Delegation, skill lifecycle, transcription, Kanban, slash-command and messaging
+  hooks are conditional on those features. The thin Melete toolset does not
+  enable those tools. Their presence in the loader does not prove a Melete run
+  uses them.
+
+### Compaction is a different surface
+
+There is no compaction hook in `VALID_HOOKS`. Successful compression calls
+`agent.event_callback("session:compress", ...)` in
+`agent/conversation_compression.py:3091-3102`, carrying session identity,
+`in_place`, and the compression count. It also notifies the context engine and
+memory manager (`:3055-3076`). This is not `ctx.register_hook` delivery.
+
+The HTTP constructor in `gateway/platforms/api_server.py:2134-2151` passes
+stream and tool callbacks, but no `event_callback`. The HTTP event forwarder
+at `gateway/platforms/api_server_runs.py:147-178` accepts tool start/completion,
+reasoning, and delegation boundaries. Registering a plugin callback alone
+cannot capture compaction on `/v1/runs`.
+
+**Decision: needs a narrow patch** exposing a genuine compaction observer on
+the HTTP/plugin path, or an explicitly reviewed adapter for the existing
+context-engine boundary. Do not monkeypatch the agent or infer compaction from
+text. The upstream source is unmodified in this lane.
+
+### Failure isolation and durability
+
+`hermes_cli/plugins_dispatch.py:166-199` isolates callback exceptions and logs
+them. It does not emit a durable `hook_error`. Bounded callbacks normally have a
+30-second timeout (`:138`); a timed-out `pre_tool_call` returns a block directive
+(`:187-190`). A Melete observer must therefore do bounded capture, catch its own
+failures, and never return a veto, modified arguments, injected context, or
+replacement output. Hook capture cannot be an enforcement gate.
+
+**Decision: reusable as-is** for the offered observer dispatch; **needs a narrow
+Melete bridge** for redaction, error records, ordering, persistence and replay.
+The broker continues to enforce authentication, scope, generations, approval,
+budgets, admission and dispatch even when every hook is disabled or fails.
+
+The HTTP run stream is an in-memory queue, consumed once, not a durable hook
+log (`gateway/platforms/api_server_runs.py:87-98`, `:688`). Melete currently
+numbers mapped events at `attempt_id:local_seq` in its adapter. Neither a
+successful plugin registration nor upstream logging supplies the requested
+dedup/replay guarantee. The frozen contract blocks that bridge in slice 2.
+
+## MCP transport, live discovery, reconnect and credentials
+
+The client uses the optional Python MCP SDK, one background event loop and one
+long-lived task per server (`tools/mcp_tool.py:1-10`). It supports stdio
+(`tools/mcp_tool_transport.py:204`), SSE (`:339`) and Streamable HTTP (`:363`).
+Session initialization/discovery publishes readiness at `:116`; transport
+negotiation supports SDK-dependent legacy and newer protocol paths (`:78-112`).
+These source branches have not been live-tested by W14.
+
+Live discovery exists: `tools/mcp_tool_discovery.py:406` loads configured
+servers, and `tools/mcp_tool_agent.py:82-123` rebuilds an already constructed
+agent's tool snapshot from the live registry, with generation ordering and a
+prefix-preserving mode. The agent initially snapshots its tools. The existence
+of this helper does not establish an operator route or a running Melete job's
+ability to discover a new server. Melete's plugin currently reads its broker
+catalog once in `packages/runtime-hermes/melete_plugin/__init__.py:145`.
+
+The reconnect loop is substantive, but has different authority semantics:
+
+- `tools/mcp_tool_server_run.py:52-109` watches shutdown/reconnect and performs
+  keepalive probes, avoiding probes during an active RPC. Failed probes cause a
+  reconnect. Defaults are 180-second keepalive, five reconnect retries, three
+  initial retries, a 60-second backoff ceiling and a 300-second parked self-probe
+  (`tools/mcp_tool.py:234-245`).
+- `tools/mcp_tool_server_run.py:125-145` removes a parked server's tools but
+  keeps its lifecycle task alive. `:194-325` applies backoff and distinguishes a
+  proven healthy session from a handshake that immediately drops.
+- `tools/mcp_tool_handlers.py:140-184` handles auth recovery and session expiry
+  with reconnect plus one retried RPC. `:191-226` respawns a dead stdio child
+  and retries the call once. `:443-449` installs these recoverers on tool calls.
+  Transport recovery alone does not prove that an earlier effect did not happen.
+- `tools/mcp_oauth_manager.py:1-6` describes disk token reload, shared provider
+  state, deduplicated 401 recovery and reconnect. `:74-95` seeds expiry and
+  restores token-endpoint metadata; `:378` implements `handle_401`.
+  `tools/mcp_tool_transport.py:327-337` reuses this manager across reconnects.
+  A noninteractive server without cached credentials is refused (`mcp_oauth_manager.py:312-317`).
+- MCP sampling and elicitation are enabled by default when the SDK supports
+  them (`tools/mcp_tool_server_run.py:155-165`). These are additional model and
+  approval channels, not permission granted by a Melete connection.
+
+**Decision: must be replaced on the runtime side by broker-owned connectors**
+(W10c), with typed reconnect/auth repair policy (W12). SDK transport behavior
+may inform those connectors, but Melete owns installation, sealed credentials,
+grants, effect identity, uncertain outcomes and revocation. Reconnect may restore
+a transport; it must not silently redispatch an uncertain effect. Runtime-side
+MCP credentials, sampling or elicitation cannot bypass the broker/gateway.
+
+## Tool search and progressive disclosure
+
+`tools/tool_search.py:1-7` defines `tool_search`, `tool_describe`, `tool_call`.
+It reconstructs a live catalog; any deferrable tool activates the bridge.
+`model_tools.py:465-480` performs schema collapse, and `:642-675` dispatches
+against the current filtered catalog. These names are not Melete's requested
+`search_tools` and `load_tool`.
+
+Melete explicitly disables this bridge in
+`packages/runtime-hermes/config/config.yaml:27-31`. Its plugin exposes the
+broker's startup catalog directly. **Decision: must be replaced by Melete's
+authority-aware discovery/load interface** (W10c). Search results are not grants;
+both loading and use must recheck current authorization and generation.
+
+## Skills, automatic creation, curator and rollback
+
+Hermes lists skills and loads `SKILL.md` plus linked files through `skills_list`
+and `skill_view` (`tools/skills_tool.py:519`, `:600-617`). The prompt gets a skill
+index only when skills tools are enabled (`agent/system_prompt.py:298-311`).
+This is model/slash-command selection, not Melete's deterministic trigger rule.
+
+There is a real automatic skill-creation path. After enough tool iterations,
+`agent/turn_finalizer.py:593-620` spawns background review if `skill_manage` is
+available and background review is not disabled. The skill-review prompt at
+`agent/background_review.py:368` explicitly uses owner corrections to update
+or create skills. Mutation implementation is `tools/skill_manager_tool.py:392`
+(create) and `:432` (patch). This is direct skill mutation, not an evaluated
+Melete candidate promotion.
+
+The curator exists and is enabled by default (`agent/curator.py:103`). It
+transitions skills based on activity (`:191`); an optional model consolidation
+pass is off by default (`:128`). Mutation history has before/after backups and
+single-entry rollback (`tools/skill_ledger.py:1-8`, `:338-402`); normal ledger
+capture failures do not block mutations (`:265-302`). These lifecycle states,
+backups and ownership rules are not Melete's evaluation or audience authority.
+
+**Decision: must be replaced** by Melete selection and W11's
+correction-to-candidate-to-evaluation-to-promotion-to-rollback pipeline. The
+thin toolset excludes `skill_manage`, so the foreground review trigger above
+does not activate for Melete broker tools. Do not enable it as an implementation
+of Melete learning. The thin config also does not explicitly disable the
+independent curator; a future runtime-hardening change should do so.
+
+Melete already implements and tests short-file loading and deterministic
+selection in `packages/skills/src/loader.ts:162-201` and
+`packages/contracts/src/skills.ts:69`. However, the actual service bundle at
+`apps/melete/src/jobs/bundle.ts:291-293` still sets `tools`, `skills` and
+`knowledge` to empty arrays. `skillsForObjective` in
+`apps/melete/src/knowledge/routes.ts:303` is not called by that builder. Automatic
+skill selection in the running job is therefore missing, even though the
+selector is tested.
+
+## Memory and context provider surfaces
+
+`agent/memory_provider.py:77-140` offers initialization, a static prompt block,
+prefetch, queued prefetch, turn synchronization, tool schemas/dispatch, shutdown,
+session boundaries and pre-compression hooks. `agent/memory_manager.py:597-772`
+fans out lifecycle work, including compression and delegation. A provider is
+selected through `memory.provider` and `plugins/memory/__init__.py:181`;
+`PluginContext.register_memory_provider` alone is inert
+(`hermes_cli/plugins.py:728-737`).
+
+`PluginContext.register_context_engine` replaces the built-in compressor and
+admits only one engine (`hermes_cli/plugins.py:691-709`). The `ContextEngine`
+surface has compression, per-request context selection, turn completion,
+session boundaries and optional tools (`agent/context_engine.py:97-207`). Its
+`select_context` result is request-only, not persisted transcript state (`:120`),
+and its `on_session_end` is a true session boundary (`:183`), unlike the general
+hook of the same name. Registered system-prompt sections (`plugins.py:917`) and
+`@prefix:` reference providers (`:712`) are additional context entry points.
+Built-in context files are loaded at `agent/system_prompt.py:585-596` unless
+disabled through the constructor or absent from the runtime filesystem.
+
+**Decision: must be replaced for knowledge authority** by Melete's scoped,
+generation-checked memory and bounded bundle excerpts. The built-in compressor
+is **reusable as-is for transient context reduction**, subject to the separate
+compaction-observation gap above. New providers, reference expansion, prompt
+sections or engine tools must not introduce knowledge outside a current Melete
+bundle. The thin runtime keeps memory off and contextual files absent; do not
+treat upstream provider availability as a delivered Melete memory feature.
+
+## W14 implementation boundaries
+
+The requested durable hook types are absent from the frozen runtime and event
+contracts. Shared space kinds, a second principal and membership authority are
+also absent. The brief requires proposals and a stop of the affected slices;
+W14 does not widen the types, cast around them, or hide hook events as notices.
+The capability matrix in [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md) records
+the actual Melete delivery status and the remaining integration proof.
