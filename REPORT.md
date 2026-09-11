@@ -158,3 +158,28 @@ a registry.
 resolver and the attribution check; refusing an admission with
 `untrusted_recipient_origin` is the effects lane's work against the seam this one
 provides.
+
+## Slice 5: kept mergeable after integration renumbered the migrations
+
+`origin/integration` moved to `67f93b9`, which renamed `0009_memory.sql` and
+added `0010_mysterious_silverclaw.sql`, colliding with this branch's own `0010`.
+Rather than hand the integrator a branch that cannot merge, `origin/integration`
+is merged in here and the collision is resolved in the lane:
+
+- Integration's migration chain is taken whole. This branch's migration is
+  regenerated from its schema on top of it and named
+  `0011_memory_provenance.sql`, with a matching `meta/0011_snapshot.json` and
+  journal entry. Its contents are unchanged: the same six tables, the same
+  columns, the same two partial unique indexes.
+- `apps/melete/src/knowledge/routes.test.ts` conflicted on its import block only.
+  Both sides are kept: integration's `testDatabase` helper and this branch's
+  mediator imports.
+
+Checks after the merge, at `C:/Users/gamin/melete-oss-w8b`:
+
+- Command `bun run typecheck`: pass.
+- Command `bun run lint`: pass, 274 files checked.
+- Command `bun test --max-concurrency=2`: 836 pass, 14 todo, 0 fail, 3475
+  assertions, 850 tests across 67 files, 250.10 s.
+- Command `bun run openapi` and `bun run client:generate`: regenerated, no drift.
+- Command `bun run compose:check`: pass, 11 checks.

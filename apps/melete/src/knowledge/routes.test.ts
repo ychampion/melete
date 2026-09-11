@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +24,7 @@ import {
   type SpacePaths,
   serializeRecord,
 } from '@melete/knowledge';
+import { testDatabase } from '../../test/helpers/database.ts';
 import { loadEnv } from '../env.ts';
 import { createApp, VERSION } from '../index.ts';
 import { knowledgeRoutes, SPACE_HEADER } from './routes.ts';
@@ -68,6 +69,17 @@ type HealthBody = { version: string };
 let root: string;
 let paths: SpacePaths;
 let spaceId: string;
+
+const handle = await testDatabase();
+const serviceTest = handle ? test : test.skip;
+const database = () => {
+  if (!handle) throw new Error('Postgres is unavailable');
+  return handle;
+};
+
+afterAll(async () => {
+  await handle?.close();
+});
 
 const app = () => knowledgeRoutes({ spaces: filesystemSpaces(root) });
 const headers = () => ({ [SPACE_HEADER]: spaceId, 'content-type': 'application/json' });
@@ -435,35 +447,48 @@ describe('retracting and deleting', () => {
 // --------------------------------------------------------------------------
 
 describe('the knowledge module inside the service', () => {
-  test('health still answers, and the knowledge routes sit behind the session gate', async () => {
-    const service = createApp({
+  const service = () =>
+    createApp({
       env: loadEnv({ MELETE_SPACES_DIR: root }),
-      db: null,
-      checkDatabase: async () => 'not_configured',
+      db: database().db,
+      checkDatabase: async () => 'ok',
       knowledge: { spaces: filesystemSpaces(root) },
     });
 
-    const health = await service.request('/health');
+  /**
+   * W1 puts everything but /health and /setup|/login behind a single-owner
+   * session. These tests ask what the service does for the owner, so they sign
+   * in first rather than assert the gate, which auth.test.ts already covers.
+   */
+  async function signIn(api: ReturnType<typeof createApp>): Promise<string> {
+    await database().sql`truncate "owner", "space" cascade`;
+    const response = await api.request('/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'owner@example.test', password: 'my-test-password' }),
+    });
+    const value = response.headers.get('set-cookie')?.split(';')[0];
+    if (!value) throw new Error(`setup issued no session cookie (${response.status})`);
+    return value;
+  }
+
+  serviceTest('health still answers, and the knowledge routes are mounted', async () => {
+    const api = service();
+    const session = await signIn(api);
+
+    const health = await api.request('/health');
     expect(((await health.json()) as HealthBody).version).toBe(VERSION);
 
-    // The knowledge routes are mounted, but W1's auth runs ahead of them, so
-    // reaching them needs a session. The route behaviour itself is covered
-    // above, against knowledgeRoutes() directly.
-    const search = await service.request(`/knowledge/search?space_id=${spaceId}&q=bun`, {
-      headers: headers(),
+    const search = await api.request(`/knowledge/search?space_id=${spaceId}&q=bun`, {
+      headers: { ...headers(), Cookie: session },
     });
-    expect(search.status).toBe(401);
-    expect(((await search.json()) as ErrorBody).error.code).toBe('unauthorized');
+    expect(search.status).toBe(200);
   });
 
-  test('a module that is still a README is gated like every other protected path', async () => {
-    const service = createApp({
-      env: loadEnv({ MELETE_SPACES_DIR: root }),
-      db: null,
-      checkDatabase: async () => 'not_configured',
-    });
-    const res = await service.request('/jobs');
-    expect(res.status).toBe(401);
-    expect(((await res.json()) as ErrorBody).error.code).toBe('unauthorized');
+  serviceTest('a module that is still a README says so instead of pretending', async () => {
+    const api = service();
+    const session = await signIn(api);
+    const res = await api.request('/jobs', { headers: { Cookie: session } });
+    expect(res.status).toBe(404);
   });
 });
