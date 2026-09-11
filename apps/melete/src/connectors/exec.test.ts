@@ -72,6 +72,31 @@ test('an ordinary execution is recorded, and says the digest was not re-read', a
   expect(result.receipt.external_ref).toBe(digest('ok\n'));
 });
 
+test('capture_above_limit retains explicit loss in the receipt', async () => {
+  const result = await run(
+    record({
+      output_bytes: 4,
+      captured_bytes: 4,
+      total_bytes: 8,
+      capture_limited: true,
+      truncated: true,
+    }),
+  );
+  if (result.outcome !== 'succeeded') throw new Error('expected a recorded capture');
+  expect(result.receipt.detail).toMatchObject({
+    captured_bytes: 4,
+    total_bytes: 8,
+    capture_limited: true,
+  });
+  expect(
+    (
+      await run(
+        record({ output_bytes: 4, captured_bytes: 4, total_bytes: 8, capture_limited: false }),
+      )
+    ).outcome,
+  ).toBe('failed');
+});
+
 test('a stored output is re-hashed, and a mismatch is refused', async () => {
   const content = 'a lot of output\n';
   await writeFile(path.join(root, 'work', 'job_01', '.melete', 'exec', 'out.log'), content);

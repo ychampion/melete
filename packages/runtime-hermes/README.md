@@ -150,7 +150,9 @@ environment:
 - 30 seconds by default and 120 at most, and a command past its cap is killed
   and the kill is recorded rather than smoothed over;
 - 16 KiB of output to the model, then a truncation marker naming the file the
-  full output was written to, under `.melete/exec/`, capped at 4 MiB;
+  retained output was written to, under `.melete/exec/`, capped at 4 MiB. The
+  record gives `captured_bytes`, `total_bytes` and `capture_limited`; output
+  beyond that cap is discarded and the stored prefix is labeled accordingly;
 - the child gets an allow-listed environment with no `MELETE_ATTEMPT_TOKEN`, no
   `MELETE_MODEL_KEY` and no proxy variables, so a snippet cannot act as the
   attempt or spend its model budget behind the ledger's back.

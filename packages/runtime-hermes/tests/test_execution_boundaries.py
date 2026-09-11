@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import threading
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,44 @@ from melete_plugin.execution import (  # noqa: E402
 )
 
 NL = chr(10)
+
+
+def test_capture_above_limit(workspace):
+    total = MAX_CAPTURE_BYTES + 1024
+    outcome = run_in_cell("python", {"code": f"import sys; sys.stdout.buffer.write(b'x' * {total})", "timeout_ms": 30_000})
+    record = outcome["record"]
+    assert record["captured_bytes"] == MAX_CAPTURE_BYTES
+    assert record["total_bytes"] == total
+    assert record["capture_limited"] is True
+    assert record["truncated"] is True
+    stored = (workspace / record["output_path"]).read_bytes()
+    assert len(stored) == record["output_bytes"] == record["captured_bytes"]
+    assert hashlib.sha256(stored).hexdigest() == record["output_digest"]
+    assert "capture limit" in outcome["display"]
+    assert "full output" not in outcome["display"]
+    assert len(outcome["display"].encode()) < MAX_OUTPUT_BYTES + 512
+
+
+def test_capture_memory_is_bounded_while_draining_both_streams(workspace):
+    tracemalloc.start()
+    try:
+        outcome = run_in_cell("python", {"code": "import sys\nfor _ in range(128):\n sys.stdout.buffer.write(b'x' * 65536)\n sys.stderr.buffer.write(b'y' * 65536)", "timeout_ms": 30_000})
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 2_000_000, "pipe capture grew with emitted output"
+    assert outcome["record"]["total_bytes"] == 2 * 128 * 65536
+    assert outcome["record"]["captured_bytes"] == MAX_CAPTURE_BYTES
+
+
+def test_a_command_within_the_cap_stores_nothing_and_still_reports_no_limit(workspace):
+    outcome = run_in_cell("python", {"code": "print('small')"})
+    record = outcome["record"]
+    assert record["capture_limited"] is False
+    assert record["total_bytes"] == record["captured_bytes"]
+    assert record["truncated"] is False
+    assert record["output_path"] is None
+    assert list(workspace.glob(".melete-exec-*.py")) == []
 
 
 def test_timeout_descendant(workspace):

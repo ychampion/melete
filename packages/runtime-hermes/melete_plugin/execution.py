@@ -186,6 +186,47 @@ def _kill_tree(process: subprocess.Popen) -> None:
     process.wait()
 
 
+class _Capture:
+    """Drain the pipe with a bounded preview and a capped spill file."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.preview = bytearray()
+        self.captured_bytes = 0
+        self.total_bytes = 0
+        self.digest = hashlib.sha256()
+        self.output_path = None
+        self.error = None
+        self.done = threading.Event()
+
+    def drain(self, pipe) -> None:
+        store = None
+        try:
+            while chunk := pipe.read(65536):
+                self.total_bytes += len(chunk)
+                retained = chunk[:max(0, MAX_CAPTURE_BYTES - self.captured_bytes)]
+                if not retained:
+                    continue
+                if store is None and self.captured_bytes + len(retained) > MAX_OUTPUT_BYTES:
+                    resolve_in_workspace(self.root, OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+                    self.output_path = f"{OUTPUT_DIR}/{uuid.uuid4().hex}.log"
+                    store = resolve_in_workspace(self.root, self.output_path).open("xb")
+                    store.write(self.preview)
+                if store is not None:
+                    resolve_in_workspace(self.root, self.output_path)
+                    store.write(retained)
+                self.preview.extend(retained[:max(0, MAX_OUTPUT_BYTES - len(self.preview))])
+                self.digest.update(retained)
+                self.captured_bytes += len(retained)
+        except BaseException as error:
+            self.error = error
+        finally:
+            if store is not None:
+                store.close()
+            pipe.close()
+            self.done.set()
+
+
 def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
     """Run one command and return both the record and what to show the model.
 
@@ -226,6 +267,8 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
     timed_out = False
     signal_name = None
     process = None
+    capture = _Capture(root)
+    reader = None
     try:
         process = subprocess.Popen(  # noqa: S603 - argv is built here, never shell-interpolated
             argv,
@@ -237,21 +280,27 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
             preexec_fn=_limits() if os.name != "nt" else None,  # noqa: PLW1509
             start_new_session=os.name != "nt",
         )
+        reader = threading.Thread(target=capture.drain, args=(process.stdout,), daemon=True)
+        reader.start()
         while True:
+            if capture.error is not None:
+                raise capture.error
+            if capture.done.is_set() and process.poll() is not None:
+                exit_code = process.returncode
+                break
             remaining = timeout_ms / 1000 - (time.monotonic() - started)
             if remaining <= 0 or (cancel_event is not None and cancel_event.is_set()):
                 timed_out = remaining <= 0
                 signal_name = "SIGKILL"
                 _kill_tree(process)
-                captured, _ = process.communicate()
                 exit_code = None
                 break
-            try:
-                captured, _ = process.communicate(timeout=min(remaining, 0.1))
-                exit_code = process.returncode
-                break
-            except subprocess.TimeoutExpired:
-                continue
+            time.sleep(min(remaining, 0.02))
+        reader.join(timeout=5)
+        if not capture.done.is_set():
+            raise ExecRefused("command output pipe did not close after process-tree termination")
+        if capture.error is not None:
+            raise capture.error
         if exit_code is not None and exit_code < 0:
             signal_name = f"SIG{-exit_code}"
     except BaseException:
@@ -259,7 +308,8 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
         # command merely because no ordinary result will be returned.
         if process is not None:
             _kill_tree(process)
-            process.communicate()
+        if reader is not None:
+            reader.join(timeout=5)
         raise
     finally:
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -269,27 +319,17 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
             except OSError:
                 pass
 
-    if len(captured) > MAX_CAPTURE_BYTES:
-        captured = captured[:MAX_CAPTURE_BYTES]
-    digest = hashlib.sha256(captured).hexdigest()
-    truncated = len(captured) > MAX_OUTPUT_BYTES
-    output_path = None
+    digest = capture.digest.hexdigest()
+    capture_limited = capture.total_bytes > capture.captured_bytes
+    truncated = capture.total_bytes > MAX_OUTPUT_BYTES
+    output_path = capture.output_path
+    shown = capture.preview.decode("utf-8", errors="replace")
     if truncated:
-        # The full output is a file in the workspace, which makes it readable,
-        # citable, and deletable by the same means as anything else the job
-        # produced. The model is shown the head and told where the rest is.
-        store = resolve_in_workspace(root, OUTPUT_DIR)
-        store.mkdir(parents=True, exist_ok=True)
-        name = f"{uuid.uuid4().hex}-{digest[:12]}.log"
-        output_path = f"{OUTPUT_DIR}/{name}"
-        with resolve_in_workspace(root, output_path).open("xb") as handle:
-            handle.write(captured)
-
-    shown = captured[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
-    if truncated:
+        label = "captured prefix" if capture_limited else "full output"
+        loss = f", capture limit enforced; {capture.total_bytes} bytes emitted" if capture_limited else ""
         shown += (
-            f"\n[melete: output truncated, {len(captured)} bytes captured"
-            f"{', full output at ' + output_path if output_path else ''}]\n"
+            f"\n[melete: output truncated, {capture.captured_bytes} bytes captured{loss}"
+            f"{', ' + label + ' at ' + output_path if output_path else ''}]\n"
         )
 
     record = {
@@ -301,7 +341,10 @@ def run_in_cell(language: str, arguments: Dict[str, Any], cancel_event: Optional
         "timed_out": timed_out,
         "duration_ms": duration_ms,
         "output_digest": digest,
-        "output_bytes": len(captured),
+        "output_bytes": capture.captured_bytes,
+        "captured_bytes": capture.captured_bytes,
+        "total_bytes": capture.total_bytes,
+        "capture_limited": capture_limited,
         "truncated": truncated,
         "output_path": output_path,
     }

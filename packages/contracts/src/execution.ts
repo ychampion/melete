@@ -33,7 +33,7 @@ export const EXEC_LIMITS = {
   max_output_bytes: 16_384,
   /** How much output is captured at all. Past this the tail is dropped. */
   max_capture_bytes: 4_194_304,
-  /** Where a truncated command's full output is stored, under the workspace. */
+  /** Where retained command output is stored, under the workspace. */
   output_dir: '.melete/exec',
 } as const;
 
@@ -59,9 +59,15 @@ export const execRecord = z.object({
   /** sha256 of the captured combined output, before truncation. */
   output_digest: z.string().regex(/^[0-9a-f]{64}$/),
   output_bytes: z.number().int().nonnegative(),
+  /** Retained bytes. Optional for records from an older plugin. */
+  captured_bytes: z.number().int().nonnegative().optional(),
+  /** All bytes drained from the command, including discarded bytes. */
+  total_bytes: z.number().int().nonnegative().optional(),
+  /** True when the capture cap discarded output; distinct from the display cap. */
+  capture_limited: z.boolean().optional(),
   truncated: z.boolean().default(false),
   /**
-   * Where the full output was stored when it did not fit, relative to the
+   * Where retained output was stored when it did not fit, relative to the
    * workspace root. Null when the output fit and nothing was written.
    */
   output_path: z.string().max(1024).nullable().default(null),
@@ -70,7 +76,7 @@ export type ExecRecord = z.infer<typeof execRecord>;
 
 /** The marker the cell leaves in place of the bytes it did not show the model. */
 export const execTruncationMarker = (bytes: number, path: string | null): string =>
-  `\n[melete: output truncated, ${bytes} bytes captured${path ? `, full output at ${path}` : ''}]\n`;
+  `\n[melete: output truncated, ${bytes} bytes captured${path ? `, captured output at ${path}` : ''}]\n`;
 
 /**
  * A JSON Schema for the record above, for `connectorTool.record_schema`. The
@@ -99,6 +105,9 @@ export const EXEC_RECORD_JSON_SCHEMA = {
     duration_ms: { type: 'integer', minimum: 0 },
     output_digest: { type: 'string', pattern: '^[0-9a-f]{64}$' },
     output_bytes: { type: 'integer', minimum: 0 },
+    captured_bytes: { type: 'integer', minimum: 0 },
+    total_bytes: { type: 'integer', minimum: 0 },
+    capture_limited: { type: 'boolean' },
     truncated: { type: 'boolean' },
     output_path: { type: ['string', 'null'], maxLength: 1024 },
   },

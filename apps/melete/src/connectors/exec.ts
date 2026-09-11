@@ -155,6 +155,14 @@ export function createExecConnector(options: ExecOptions): Connector {
    */
   const check = async (action: Action, ctx: ConnectorContext) => {
     const record = execRecord.parse(action.canonical_payload);
+    if (record.captured_bytes !== undefined && record.captured_bytes !== record.output_bytes)
+      throw new Error('captured bytes do not match output bytes');
+    if (
+      record.total_bytes !== undefined &&
+      (record.total_bytes < record.output_bytes ||
+        record.capture_limited !== record.total_bytes > record.output_bytes)
+    )
+      throw new Error('capture loss is not recorded consistently');
     // `.` is the workspace root itself; anything else must resolve inside it.
     if (record.cwd !== '.') {
       await resolveInWorkspace(ctx, record.cwd).catch(() => {
@@ -177,6 +185,8 @@ export function createExecConnector(options: ExecOptions): Connector {
       await lstat(target);
       stored = await readStored(target);
       storedBytes = stored.byteLength;
+      if (storedBytes !== record.output_bytes)
+        throw new Error('stored output size does not match the captured bytes');
       if (digest(stored) !== record.output_digest)
         throw new Error('the stored output does not hash to the recorded digest');
       verified = true;
@@ -197,6 +207,9 @@ export function createExecConnector(options: ExecOptions): Connector {
       // False means the output was small enough that nothing was stored, so the
       // digest is the cell's word. It is said rather than implied.
       digest_verified: verified,
+      captured_bytes: record.captured_bytes ?? record.output_bytes,
+      total_bytes: record.total_bytes ?? null,
+      capture_limited: record.capture_limited ?? null,
     };
     // Output that did not fit is not a loose file in a hidden directory: it is
     // an artifact of this job, with a handle a later attempt can cite and a

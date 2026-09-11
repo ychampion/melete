@@ -119,6 +119,8 @@ export interface paths {
                 content: {
                     "application/json": {
                         record: {
+                            capture_limited?: boolean;
+                            captured_bytes?: number;
                             command: string;
                             cwd: string;
                             duration_ms: number;
@@ -133,6 +135,7 @@ export interface paths {
                             signal?: string | null;
                             /** @default false */
                             timed_out?: boolean;
+                            total_bytes?: number;
                             /** @default false */
                             truncated?: boolean;
                         };

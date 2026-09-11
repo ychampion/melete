@@ -164,8 +164,8 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
 def _execution_view(outcome: Dict[str, Any]) -> Dict[str, Any]:
     """What the model reads about a command it ran.
 
-    The output it is shown is the truncated one; the record names the file the
-    rest was written to, so nothing is lost and nothing is silently elided.
+    The record distinguishes emitted and retained bytes. A capped capture names
+    a stored prefix and explicitly reports that the rest was discarded.
     """
     record = outcome["record"]
     return {
@@ -175,6 +175,9 @@ def _execution_view(outcome: Dict[str, Any]) -> Dict[str, Any]:
         "truncated": record["truncated"],
         "output_path": record["output_path"],
         "output": outcome["display"],
+        "captured_bytes": record.get("captured_bytes", record["output_bytes"]),
+        "total_bytes": record.get("total_bytes"),
+        "capture_limited": record.get("capture_limited"),
     }
 
 
