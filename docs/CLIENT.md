@@ -14,6 +14,7 @@ bug.
 - [The event stream and the resume rule](#the-event-stream-and-the-resume-rule)
 - [The approval-card rule](#the-approval-card-rule)
 - [The unknown-outcome rule](#the-unknown-outcome-rule)
+- [The inbox rule](#the-inbox-rule)
 - [The five states a job can wait in](#the-five-states-a-job-can-wait-in)
 - [Developing against the mock](#developing-against-the-mock)
 
@@ -154,6 +155,47 @@ answer and a legitimate resting place; do not hide it or make it hard to pick.
 Whatever the person says is recorded as a reconciliation, and the action is not
 dispatched again either way.
 
+## The inbox rule
+
+**Render `because` and `if_ignored`, and nothing else. One question at a time.**
+
+`GET /questions` is the whole inbox. It is one queue across every
+responsibility, not one queue per job: a job contributes at most one entry, and
+the service keeps whatever else it wanted to ask for a later wake. Entries come
+back in the order a person should deal with them, which is what blocks an
+external effect first, then the nearest deadline, then the oldest. Render the
+list in the order it was given and do not re-sort it.
+
+Every entry, and every row in `GET /notifications`, carries two fields:
+
+| Field | What it is | What to draw |
+|---|---|---|
+| `because` | handles of the records that made this necessary, such as `event:4821` or `claim:k_01J...` | the reason, resolvable back to the record |
+| `if_ignored` | one plain sentence about what happens if nobody acts, carrying a date when one exists | under the reason, in the same weight as the rest |
+
+Those two fields are the interface. Do not add urgency the service did not
+claim: no invented severity, no red badge on a question whose `if_ignored` says
+nothing breaks, no unread count that turns a queue into a backlog to clear.
+
+Answering is one call, and the answer reaches the job as input:
+
+```ts
+await client.api.POST('/questions/{id}/answer', {
+  params: { path: { id: question.id } },
+  body: { text: 'Send it to the flat, not the office.' },
+});
+```
+
+That job wakes and no other job moves. Resending the same answer replays the
+original receipt instead of waking the job twice, so a retry after a dropped
+connection is safe. A question the person has already moved past answers with
+`409 question_closed`; refresh the queue rather than retrying.
+
+A notification without a `because` does not exist. The outbox refuses it with
+`notification_without_because`, and a quiet monitor whose check found nothing
+new writes no row at all, because there is no handle to cite. An empty inbox
+means nothing needs a person, not that something went missing.
+
 ## The five states a job can wait in
 
 A job that is not moving is waiting for exactly one thing, and the interface's
@@ -174,9 +216,12 @@ The other four states need no sentence. `queued` and `running` are motion,
 `completed` is a result, `cancelled` is over.
 
 Two things to get right whatever the state. A job outlives the tab, so never
-imply the person has to stay and watch. And there is only ever one question at a
-time: if you find yourself building a queue of things to ask, the interface has
-drifted from what the service actually does.
+imply the person has to stay and watch. And one job asks one question at a time:
+`job.wait.question` is the only thing it is waiting to hear, and anything else it
+wanted to ask is held on `job.deferred_questions` until a later wake. If you find
+yourself building a per-job list of prompts, the interface has drifted from what
+the service actually does; the one list that does exist is
+[the inbox](#the-inbox-rule), across jobs rather than within one.
 
 ## Developing against the mock
 

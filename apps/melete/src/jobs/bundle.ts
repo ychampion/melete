@@ -9,6 +9,7 @@ import {
   jobBudget,
   jobConstraints,
   jsonObject,
+  QUESTION_GUIDANCE,
   type ResponsibilityAttemptBundle,
   receipt,
   responsibilityAttemptBundle,
@@ -17,9 +18,18 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { action, artifact, attempt, connection, event, knowledgeRecord } from '../db/schema.ts';
+import {
+  action,
+  artifact,
+  attempt,
+  connection,
+  event,
+  knowledgeRecord,
+  question,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
+import { questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
 
 export const TRANSCRIPT_MAX_MESSAGES = 100;
@@ -259,6 +269,11 @@ export async function buildBundle(
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
   const constraints = jobConstraints.parse(row.constraints);
   const wait = waitSpec.parse(row.wait);
+  const [open] = await tx
+    .select()
+    .from(question)
+    .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
+    .limit(1);
   return responsibilityAttemptBundle.parse({
     ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
@@ -276,6 +291,13 @@ export async function buildBundle(
     skills: [],
     knowledge: [],
     workspace: { mount: '/work', files: [] },
+    // The budget is one question per wake, stated rather than implied.
+    attention: {
+      questions_allowed: open ? 0 : 1,
+      guidance: QUESTION_GUIDANCE,
+      open_question: open ? questionView(open, row.title) : null,
+      deferred_questions: readDeferred(row),
+    },
     budget: jobBudget.parse(row.budget),
     model,
   });

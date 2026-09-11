@@ -24,13 +24,56 @@ function attention(
     : { attentionStatus: 'frequency_reduced', cadenceMultiplier: REDUCED_CADENCE_MULTIPLIER };
 }
 
+/**
+ * What this attempt would show the owner, and whether that differs from the last
+ * result recorded. The attention counters and the notification outbox read the
+ * same answer, so "nothing changed" means the same thing to both.
+ */
+export type AttemptResult = {
+  text: string;
+  hash: string;
+  /** The first result a job ever records: a baseline, not news. */
+  baseline: boolean;
+  /** Different from the last result recorded, and not the baseline. */
+  changed: boolean;
+};
+
+export async function attemptResult(
+  tx: Transaction,
+  row: Pick<JobRow, 'lastResultHash'>,
+  outcome: AttemptOutcome,
+  attemptId: string,
+): Promise<AttemptResult | null> {
+  const deltas = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(and(eq(event.attemptId, attemptId), eq(event.type, 'text_delta')))
+    .orderBy(asc(event.seq));
+  const text =
+    'summary' in outcome
+      ? outcome.summary
+      : 'question' in outcome
+        ? outcome.question
+        : deltas.map((entry) => (entry.payload as { text?: string }).text ?? '').join('');
+  if (!text.trim()) return null;
+  const hash = createHash('sha256').update(text).digest('hex');
+  return {
+    text,
+    hash,
+    baseline: row.lastResultHash === null,
+    changed: row.lastResultHash !== null && row.lastResultHash !== hash,
+  };
+}
+
 /** Delivery and reading are distinct: only an explicit read clears the attention count. */
 export class AttentionService {
   constructor(
     readonly jobs: JobService,
     runner?: AttemptRunner,
   ) {
-    runner?.onFinished.push((tx, row, outcome, id) => this.record(tx, row, outcome, id));
+    runner?.onFinished.push((tx, row, outcome, id, context) =>
+      this.record(tx, row, outcome, id, context?.result),
+    );
   }
   private async update(
     tx: Transaction,
@@ -84,25 +127,15 @@ export class AttentionService {
     row: JobRow,
     outcome: AttemptOutcome,
     attemptId: string,
+    result?: AttemptResult | null,
   ): Promise<void> {
     if (row.schedulingClass === 'interactive' || row.lastAttentionAttemptId === attemptId) return;
-    const deltas = await tx
-      .select({ payload: event.payload })
-      .from(event)
-      .where(and(eq(event.attemptId, attemptId), eq(event.type, 'text_delta')))
-      .orderBy(asc(event.seq));
-    const text =
-      'summary' in outcome
-        ? outcome.summary
-        : 'question' in outcome
-          ? outcome.question
-          : deltas.map((entry) => (entry.payload as { text?: string }).text ?? '').join('');
-    if (!text.trim()) return;
-    const hash = createHash('sha256').update(text).digest('hex');
-    if (hash === row.lastResultHash) return;
+    const current =
+      result === undefined ? await attemptResult(tx, row, outcome, attemptId) : result;
+    if (!current || (!current.changed && !current.baseline)) return;
     // A quiet monitor's first observation establishes its baseline; unchanged checks stay quiet.
     const unreadResults =
-      row.unreadResults + (row.schedulingClass === 'quiet' && row.lastResultHash === null ? 0 : 1);
+      row.unreadResults + (row.schedulingClass === 'quiet' && current.baseline ? 0 : 1);
     const state = attention({ ...row, unreadResults });
     await this.update(
       tx,
@@ -110,7 +143,7 @@ export class AttentionService {
       {
         unreadResults,
         ...state,
-        lastResultHash: hash,
+        lastResultHash: current.hash,
         lastAttentionAttemptId: attemptId,
         scheduleSkipRemaining: state.cadenceMultiplier - 1,
       },
