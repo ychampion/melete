@@ -248,12 +248,16 @@ export class ExperienceMock {
         this.finish(chat, 'Connect the app to continue.');
         return;
       }
-      if (step.kind === 'email.send' || step.kind === 'email.draft') {
+      if (
+        step.kind === 'email.send' ||
+        step.kind === 'email.draft' ||
+        (step.kind === 'test.write' && typeof step.payload.body === 'string')
+      ) {
         const to = step.payload.to;
         const draft = C.experienceDraft.parse({
           id: newId('draft'),
           recipient: Array.isArray(to) ? to.join(', ') : plainText(to, 'Recipient'),
-          channel: 'email',
+          channel: step.kind === 'test.write' ? 'message' : 'email',
           body: plainText(step.payload.body, ''),
           subject: plainText(step.payload.subject, 'Draft'),
           connection_id: source.id,

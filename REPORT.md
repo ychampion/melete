@@ -86,3 +86,10 @@
 - `bun run openapi` and `bun run client:generate`: regenerated complete send-review fields and the additive turn identity input.
 - `bun run lint`: passed, 332 files. `bun run compose:check`: passed all 12 checks.
 - `until mkdir C:/Users/gamin/.melete-test.lock`: the previous wait was cancelled before acquisition to apply the completed mock and review fixes; the next full-suite request uses the stable tested source.
+
+## Final focused verification
+
+- `be4fd3c`: committed scenario parity, complete send previews, agent review enforcement, and per-turn intent identities.
+- `unknown-outcome.json`: review found the fixture uses test.write rather than email.send; the mock now presents its message as a draft and preserves the fixture's unconfirmed outcome after approval.
+- `bun test apps/mock-api/src/experience.test.ts apps/melete/test/integration/experience-signin.test.ts --max-concurrency=2`: 4 passed, 0 failed, 49 assertions in 10.90 seconds, including no second send or event after an uncertain result.
+- `ExperienceSignIn.request`: availability is checked independently of the submitted address; accepted requests do not disclose whether that address matches the owner.

@@ -210,3 +210,46 @@ test('mock task, plan, profile and saved-detail changes conform to the experienc
     'idempotency-key',
   );
 });
+
+test('the uncertain scenario leaves a reviewed send unconfirmed without repeating it', async () => {
+  const { mock, chat } = await chatFixture('Try the flaky destination');
+  const { drafts } = C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
+    (await call(mock, `/conversations/${chat.id}/drafts`)).body,
+  );
+  const draft = drafts[0];
+  if (!draft) throw new Error('Expected scenario draft');
+  const send = C.experienceOperations['POST /drafts/{id}/send'].response.parse(
+    (await call(mock, `/drafts/${draft.id}/send`, 'POST')).body,
+  );
+  const permission = C.permissionCard.parse(send.permission);
+  expect(permission.options).not.toContain('always');
+  expect(
+    (
+      await call(mock, `/permissions/${permission.id}`, 'POST', {
+        option: 'allow_once',
+        version: permission.version,
+      })
+    ).response.status,
+  ).toBe(200);
+  const page = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events`)).body,
+  );
+  const notices = page.events.filter((event) => event.item.type === 'note');
+  expect(notices).toHaveLength(1);
+  expect(
+    C.notAvailable.parse((await call(mock, `/drafts/${draft.id}/send`, 'POST')).body).status,
+  ).toBe('not_available');
+  const after = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events?since=${page.next_cursor}`)).body,
+  );
+  expect(after.events).toHaveLength(0);
+  expect(
+    C.experienceOperations['GET /conversations/{id}/receipts'].response.parse(
+      (await call(mock, `/conversations/${chat.id}/receipts`)).body,
+    ).receipts,
+  ).toHaveLength(0);
+  expect(
+    C.conversationResponse.parse((await call(mock, `/conversations/${chat.id}`)).body).conversation
+      .status,
+  ).toBe('needs_you');
+});

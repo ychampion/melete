@@ -16,10 +16,8 @@ export class ExperienceSignIn {
   ) {}
   async request(email: string) {
     if (!this.publicUrl) return unavailable('Set your public address before using email sign-in.');
-    const [owner] = await this
-      .sql`select id, email from owner where lower(email) = ${email.toLowerCase()}`;
-    // The response never tells an unauthenticated caller whether an address is registered.
-    if (!owner) return { status: 'ok' as const };
+    const [owner] = await this.sql`select id, email from owner order by created_at limit 1`;
+    if (!owner) return unavailable('Set up your personal account before using email sign-in.');
     const [space] = await this
       .sql`select id from space where kind = 'personal' order by created_at, id limit 1`;
     if (!space) return unavailable('Your personal space is not ready yet.');
@@ -34,6 +32,8 @@ export class ExperienceSignIn {
       );
     if (!selected || !(selected.connector instanceof EmailConnector))
       return unavailable('Connect your own mailbox to use email sign-in.');
+    // Availability is global; an unrelated address receives the same accepted response without mail.
+    if (String(owner.email).toLowerCase() !== email.toLowerCase()) return { status: 'ok' as const };
     const token = randomBytes(32).toString('base64url');
     const tokenHash = hash(token);
     const saved = await this.sql.begin(async (tx) => {
@@ -56,7 +56,7 @@ export class ExperienceSignIn {
         await selected.connector.sendSignInLink(String(space.id), String(owner.email), url.href);
       } catch {
         await this.sql`update magic_link set used_at = now() where token_hash = ${tokenHash}`;
-        return unavailable('The sign-in email could not be confirmed. Try your password.');
+        return { status: 'ok' as const };
       }
     }
     return { status: 'ok' as const };
