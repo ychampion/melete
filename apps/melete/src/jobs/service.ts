@@ -13,11 +13,11 @@ import {
   transition,
   type WaitSpec,
 } from '@melete/contracts';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { job, space } from '../db/schema.ts';
+import { attempt, job, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -229,7 +229,32 @@ export class JobService {
     const cancelled = await this.transaction(async (tx) => {
       const row = await this.lock(tx, id);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
-      return this.move(tx, row, { kind: 'cancelled' }, { payload: { reason: reason ?? null } });
+      const updated = await this.move(
+        tx,
+        row,
+        { kind: 'cancelled' },
+        { payload: { reason: reason ?? null } },
+      );
+      const interrupted = await tx
+        .update(attempt)
+        .set({
+          outcome: 'fenced',
+          outcomeDetail: { kind: 'cancelled', reason: reason ?? null },
+          endedAt: new Date(),
+          leaseExpiresAt: null,
+          leaseStatus: 'ended',
+        })
+        .where(and(eq(attempt.jobId, id), isNull(attempt.endedAt)))
+        .returning({ id: attempt.id });
+      for (const execution of interrupted)
+        await appendEvent(tx, {
+          jobId: id,
+          attemptId: execution.id,
+          type: 'attempt_ended',
+          payload: { kind: 'cancelled', reason: reason ?? null },
+          dedupKey: `${execution.id}:ended`,
+        });
+      return updated;
     });
     // The fence commits before a potentially slow runtime is signalled.
     this.onCancelled?.(id);

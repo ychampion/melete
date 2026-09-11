@@ -4,6 +4,8 @@
  *
  * Modules register their API surfaces against injected durable dependencies.
  */
+
+import type { RuntimeAdapter } from '@melete/contracts';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountAuth } from './api/auth.ts';
@@ -13,7 +15,9 @@ import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
 import { startQueue } from './jobs/queue.ts';
+import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
+import { StubRuntimeAdapter } from './runtime/stub.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -69,12 +73,48 @@ export function createApp(deps: AppDeps) {
 }
 
 /** Wire the real dependencies. Called only when this file is the entry point. */
-export async function bootstrap() {
-  const env = loadEnv();
+export async function bootstrap(
+  options: { env?: Env; runtime?: RuntimeAdapter; workers?: boolean } = {},
+) {
+  const env = options.env ?? loadEnv();
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
-  if (handle) await migrateDatabase(handle);
-  const queue = env.DATABASE_URL ? await startQueue(env.DATABASE_URL) : null;
-  const jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
+  let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
+  let jobs: JobService | undefined;
+  let runner: AttemptRunner | undefined;
+  const close = async () => {
+    try {
+      await runner?.stop();
+    } finally {
+      try {
+        await queue?.stop();
+      } finally {
+        await handle?.close();
+      }
+    }
+  };
+  try {
+    if (handle) await migrateDatabase(handle);
+    if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
+    jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
+    if (jobs) {
+      const runtime =
+        options.runtime ??
+        (env.MELETE_RUNTIME_ADAPTER === 'stub' ? new StubRuntimeAdapter() : undefined);
+      if (!runtime || !env.MELETE_CAPABILITY_KEY)
+        throw new Error(
+          'Configure MELETE_CAPABILITY_KEY and provide a RuntimeAdapter (or MELETE_RUNTIME_ADAPTER=stub for scripted local runs).',
+        );
+      runner = new AttemptRunner(jobs, runtime, {
+        key: env.MELETE_CAPABILITY_KEY,
+        provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
+        model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
+      });
+      if (options.workers !== false) await runner.start();
+    }
+  } catch (error) {
+    await close();
+    throw error;
+  }
 
   const app = createApp({
     env,
@@ -92,15 +132,27 @@ export async function bootstrap() {
     handle,
     jobs,
     queue,
-    close: async () => {
-      await queue?.stop();
-      await handle?.close();
-    },
+    runner,
+    close,
   };
 }
 
 if (import.meta.main) {
-  const { app, env } = await bootstrap();
+  const service = await bootstrap();
+  const { app, env } = service;
   process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
-  Bun.serve({ port: env.PORT, fetch: app.fetch });
+  const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 0 });
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    await server.stop(true);
+    await service.close();
+  };
+  process.once('SIGINT', () => {
+    void stop();
+  });
+  process.once('SIGTERM', () => {
+    void stop();
+  });
 }

@@ -5,6 +5,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   doublePrecision,
@@ -122,6 +123,11 @@ export const attempt = pgTable(
     outcome: text('outcome'),
     outcomeDetail: jsonb('outcome_detail'),
     contextSnapshotRef: text('context_snapshot_ref'),
+    revision: integer('revision').notNull().default(0),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    leaseStatus: text('lease_status').notNull().default('active'),
+    runtimeCursor: integer('runtime_cursor').notNull().default(-1),
+    inputCursor: bigint('input_cursor', { mode: 'number' }).notNull().default(0),
   },
   (t) => [uniqueIndex('attempt_job_epoch_idx').on(t.jobId, t.epoch)],
 );

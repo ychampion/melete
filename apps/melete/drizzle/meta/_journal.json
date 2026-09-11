@@ -15,6 +15,13 @@
       "when": 1789113557258,
       "tag": "0001_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789113823076,
+      "tag": "0002_attempt_leases",
+      "breakpoints": true
     }
   ]
 }

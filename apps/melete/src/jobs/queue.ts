@@ -16,6 +16,8 @@ export const QUEUES = {
   recoveryScan: 'melete.recovery-scan',
   /** Polls connectors that carry a cursor instead of a webhook. */
   triggerPoll: 'melete.trigger-poll',
+  /** A persisted schedule occurrence, converted to a job wake after matching the wait. */
+  triggerSchedule: 'job.trigger',
   /** Retries verify for actions that came back unknown. */
   reconcile: 'melete.reconcile',
 } as const;
@@ -45,9 +47,14 @@ export type QueueHandle = {
 export async function startQueue(connectionString: string): Promise<QueueHandle> {
   const boss = new PgBoss({ connectionString, schema: 'pgboss', max: 4 });
   boss.on('error', (error) => process.stderr.write(`pg-boss: ${error.message}\n`));
-  await boss.start();
-  for (const queue of Object.values(QUEUES)) {
-    await boss.createQueue(queue);
+  try {
+    await boss.start();
+    for (const queue of Object.values(QUEUES)) {
+      await boss.createQueue(queue);
+    }
+  } catch (error) {
+    await boss.stop({ graceful: false });
+    throw error;
   }
   return { boss, stop: () => boss.stop({ graceful: true, timeout: 1000 }) };
 }
