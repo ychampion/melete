@@ -173,6 +173,7 @@ export const ATTEMPT_OUTCOMES = [
   'failed',
   'budget_exhausted',
   'fenced',
+  'unknown_check',
 ] as const;
 export const attemptOutcomeKind = z.enum(ATTEMPT_OUTCOMES);
 export type AttemptOutcomeKind = z.infer<typeof attemptOutcomeKind>;

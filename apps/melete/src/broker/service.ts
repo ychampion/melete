@@ -3,6 +3,7 @@ import {
   type Action,
   type ActionStatus,
   type ApprovalDecisionRequest,
+  BROKER_TIMEOUT_MS,
   type CapabilityClaims,
   type ConnectorTool,
   canonicalizePayload,
@@ -167,7 +168,7 @@ export class BrokerService implements BrokerOperations {
         executor: options.composeExecutor,
       });
     }
-    this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
+    this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? BROKER_TIMEOUT_MS;
     if (
       options.approvalTtlMs !== undefined &&
       (!Number.isSafeInteger(options.approvalTtlMs) || options.approvalTtlMs <= 0)

@@ -55,9 +55,12 @@ key, one shared wall/turn/output allowance and one continuous runtime event
 sequence. There is one public attempt outcome. The first input includes the
 broker's prior transcript. Subsequent runs use native session hydration because
 the pinned API's explicit `conversation_history` parser drops tool-call fields.
-After execution ends, a separately bounded one-second ledger lookup preserves
+After execution ends, a ledger lookup bounded by the broker client's timeout (30 seconds by default) preserves
 pending approvals when the model's wall allowance is exhausted. It cannot start
-new runtime work and aborts a stalled lookup.
+new runtime work and aborts a stalled lookup. Timeout or unavailability emits
+`unknown_check`, preserving uncertainty; the service holds the job for input
+without scheduling an automatic retry. Configure `brokerParkedActions.timeoutMs`
+to match a customized broker timeout.
 
 `packages/runtime-hermes/scripts/discovery-e2e.ts` checks the relevant pinned
 source hashes, starts the actual local server on 3140 with the broker on 3142,

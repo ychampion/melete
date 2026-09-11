@@ -81,9 +81,12 @@ drains the current run, then starts a continuation with the extended catalog.
 Use `brokerCatalogState` when constructing the adapter. Model text cannot
 authorize a continuation. The attempt, capability, budgets and event sequence
 are shared, and there is exactly one public attempt outcome.
-After execution ends, a separate one-second ledger check preserves pending
+After execution ends, a ledger check bounded by the broker client's timeout (30 seconds by default) preserves pending
 approvals even when the model's wall allowance has expired. It permits no new
-model run or tool execution and aborts the lookup if the service stalls.
+model run or tool execution and aborts the lookup if the service stalls. The
+`unknown_check` outcome explicitly records timeout or unavailability and holds
+the job for input without automatic retry. Set `brokerParkedActions.timeoutMs`
+to match a customized broker timeout.
 
 Continuations keep the native Hermes session history, including complete tool
 call and result metadata. They do not reconstruct `conversation_history`, which

@@ -3850,7 +3850,7 @@ export interface components {
             job_id: string;
             model: string;
             model_actual: string | null;
-            outcome: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced") | null;
+            outcome: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced" | "unknown_check") | null;
             outcome_detail: components["schemas"]["__schema61"] | null;
             provider: string;
             runtime_version: string;

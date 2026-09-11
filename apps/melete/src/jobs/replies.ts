@@ -99,6 +99,9 @@ function responseContent(
     case 'budget_exhausted':
       text = outcome.summary;
       break;
+    case 'unknown_check':
+      text = outcome.message;
+      break;
     case 'failed':
       if (row.state !== 'failed') return null;
       text = outcome.reason;
@@ -117,7 +120,7 @@ function consequence(row: JobRow, content: ReplyContent): string {
   const unread = `The result stays unread, and after ${row.unreadThreshold} unread results this responsibility checks less often.`;
   if (row.state === 'needs_reconciliation')
     return 'The external action stays unconfirmed, and nothing checks it again until you say what you found.';
-  if (content.kind === 'question')
+  if (content.kind === 'question' || row.state === 'waiting_for_input')
     return 'This responsibility stays waiting for your answer and makes no further progress until you reply.';
   switch (row.state) {
     case 'waiting_for_approval':

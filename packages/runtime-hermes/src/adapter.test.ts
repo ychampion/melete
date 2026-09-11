@@ -214,15 +214,19 @@ describe('the ledger has the last word', () => {
     expect(last.outcome.kind).toBe('waiting_for_approval');
   });
 
-  test('an unreadable ledger fails retryably rather than closing the job', async () => {
+  test('an unreadable ledger reports an unknown check without inventing failure', async () => {
     const { fetch } = harness();
     const outcome = await adapterWith(fetch, new Error('ledger down')).start(
       bundle,
       new Collector(),
       new AbortController().signal,
     );
-    expect(outcome).toMatchObject({ kind: 'failed', retryable: true });
-    expect((outcome as { reason: string }).reason).toContain('parked-action check failed');
+    expect(outcome).toMatchObject({
+      kind: 'unknown_check',
+      check: 'parked_actions',
+      reason: 'unavailable',
+    });
+    expect((outcome as { message: string }).message).toContain('ledger down');
   });
 });
 

@@ -378,6 +378,11 @@ export class AttemptRunner {
         if (wait.kind !== 'timer' && wait.kind !== 'event')
           throw new ServiceError('invalid_wait', 'Event/time waits must name a timer or trigger.');
         break;
+      case 'unknown_check':
+        // An unreadable ledger cannot justify a replay or a completed job.
+        input = { kind: 'attempt_waiting_for_input' };
+        wait = { kind: 'user_input', question: outcome.message };
+        break;
       case 'failed':
         input = {
           kind: 'attempt_failed',

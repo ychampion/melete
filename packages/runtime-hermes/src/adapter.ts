@@ -11,6 +11,7 @@
 import {
   type AttemptBundle,
   type AttemptOutcome,
+  BROKER_TIMEOUT_MS,
   dedupKey,
   type EventSink,
   type RuntimeAdapter,
@@ -40,7 +41,10 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
  * approval key one refactor away from the runtime's side of the boundary. The
  * service knows both and passes a closure.
  */
-export type ParkedActions = (bundle: AttemptBundle, signal?: AbortSignal) => Promise<string[]>;
+export type ParkedActions = ((bundle: AttemptBundle, signal?: AbortSignal) => Promise<string[]>) & {
+  /** Supplied by the service's broker client; defaults to the shared broker timeout. */
+  readonly timeoutMs?: number;
+};
 
 /** Read through the service's authenticated broker client, never from model output. */
 export type CatalogState = (bundle: AttemptBundle, signal?: AbortSignal) => Promise<ToolSpec[]>;
@@ -430,11 +434,12 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     outcome: AttemptOutcome,
   ): Promise<AttemptOutcome> {
     let settled = outcome;
-    // Execution has ended. Give the service one bounded second to preserve
-    // approval truth even when the model has exhausted its wall allowance.
+    // Execution has ended. The service owns the lookup timeout independently
+    // of the exhausted model budget; a slow broker is not an attempt failure.
     const finalization = new AbortController();
-    const deadline = Date.now() + 1_000;
-    const timer = setTimeout(() => finalization.abort(), 1_000);
+    const timeoutMs = this.options.parkedActions.timeoutMs ?? BROKER_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    const timer = setTimeout(() => finalization.abort(), timeoutMs);
     try {
       const parked = await beforeDeadline(
         this.options.parkedActions(bundle, finalization.signal),
@@ -447,13 +452,17 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         settled = { kind: 'waiting_for_approval', action_ids: parked as [string, ...string[]] };
       }
     } catch (error) {
-      // The ledger could not be read, so it is not known whether anything
-      // parked. Reporting the engine's outcome unchanged could close a job that
-      // is actually waiting on a person, so this fails retryably instead.
+      const timedOut =
+        finalization.signal.aborted ||
+        Date.now() >= deadline ||
+        (error instanceof Error && error.name === 'TimeoutError');
       settled = {
-        kind: 'failed',
-        reason: `the parked-action check failed: ${message(error)}`,
-        retryable: true,
+        kind: 'unknown_check',
+        check: 'parked_actions',
+        reason: timedOut ? 'timed_out' : 'unavailable',
+        message: timedOut
+          ? `The parked-action check timed out after ${timeoutMs} ms; approval state is unknown.`
+          : `The parked-action check is unavailable; approval state is unknown: ${message(error)}`,
       };
     } finally {
       clearTimeout(timer);
@@ -601,13 +610,19 @@ export function brokerParkedActions(options: {
   serviceKey: string;
   spaceId: string;
   fetch?: FetchLike;
+  timeoutMs?: number;
 }): ParkedActions {
+  const timeoutMs = options.timeoutMs ?? BROKER_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+    throw new RangeError('Invalid broker timeout');
   const call =
     options.fetch ?? ((input: string, init?: RequestInit) => globalThis.fetch(input, init));
-  return async (bundle, signal) => {
+  const lookup: ParkedActions = async (bundle, signal) => {
     const url = `${options.brokerUrl.replace(/\/+$/, '')}/actions?job_id=${encodeURIComponent(bundle.attempt.job_id)}&status=needs_approval`;
     const response = await call(url, {
-      ...(signal ? { signal } : {}),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
       headers: {
         authorization: `Bearer ${options.serviceKey}`,
         'x-melete-space-id': options.spaceId,
@@ -620,6 +635,7 @@ export function brokerParkedActions(options: {
       .filter((action) => action.attempt_id === bundle.attempt.id)
       .map((action) => action.id);
   };
+  return Object.assign(lookup, { timeoutMs });
 }
 
 /** Catalog discovery never receives the service's approval credential. */

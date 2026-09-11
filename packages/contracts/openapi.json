@@ -6975,7 +6975,8 @@
                   "waiting_for_event_or_time",
                   "failed",
                   "budget_exhausted",
-                  "fenced"
+                  "fenced",
+                  "unknown_check"
                 ]
               },
               {

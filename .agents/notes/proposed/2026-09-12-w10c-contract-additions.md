@@ -21,3 +21,15 @@ The OS isolation requirement remains: production stdio launch is refused before
 spawning a process, while an operator-configured HTTP endpoint can be registered.
 No worker receives vault, database, broker or inference credentials. The
 in-process stdio fixture is limited to tests and does not establish OS isolation.
+
+
+## PR 15 review: unknown closing check
+
+The `unknown_check` attempt outcome is additive, with `check: parked_actions`,
+`reason: timed_out | unavailable` and a message. It records uncertainty without
+claiming model failure or permitting an automatic replay. The service stores
+it unchanged and holds the job in the existing `waiting_for_input` state.
+Attempt outcomes are database text, so no migration is required. The exported
+`BROKER_TIMEOUT_MS` default is shared by service dispatch and the ledger client;
+a configured ledger timeout is propagated to adapter finalization. Regenerated
+OpenAPI and client types include the additional outcome.

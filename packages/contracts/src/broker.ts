@@ -8,6 +8,9 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ID_PREFIXES, type JsonValue, jsonObject, prefixedId, timestamp } from './common.ts';
 
+/** Shared default for broker requests and the closing ledger check. */
+export const BROKER_TIMEOUT_MS = 30_000;
+
 /**
  * How much of the world an action can change. The connector manifest declares
  * the class; policy, not the model, decides what each class costs.

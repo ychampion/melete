@@ -100,6 +100,22 @@ withDb('reply obligations and notification outbox', () => {
     await handle?.close();
   }, 15_000);
 
+  test('an unknown ledger check produces an explicit paused reply without failure', async () => {
+    const message = 'The parked-action check timed out; approval state is unknown.';
+    const row = await direct([
+      {
+        type: 'outcome',
+        outcome: { kind: 'unknown_check', check: 'parked_actions', reason: 'timed_out', message },
+      },
+    ]);
+    await run(row);
+    const updated = await fixture().jobs.get(row.id);
+    expect(updated.state).toBe('waiting_for_input');
+    const [pending] = await replies.outbox();
+    expect(pending?.content).toMatchObject({ kind: 'status', text: message });
+    expect(pending?.ifIgnored).toContain('waiting');
+  });
+
   test('a direct request creates one obligation and assistant text never marks it delivered', async () => {
     const row = await direct([
       { type: 'text_delta', text: 'Visible text alone is not an acknowledgement' },

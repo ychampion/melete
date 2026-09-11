@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { AttemptBundle, RuntimeEvent, ToolSpec } from '@melete/contracts';
-import { brokerCatalogState, type FetchLike, HermesRuntimeAdapter } from './adapter.ts';
+import {
+  brokerCatalogState,
+  brokerParkedActions,
+  type FetchLike,
+  HermesRuntimeAdapter,
+} from './adapter.ts';
 
 const suffix = '01J8ZP3QWABCDEFGHJKMNPQRST';
 const load: ToolSpec = {
@@ -222,10 +227,16 @@ describe('broker-verified tool continuation', () => {
     let ledgerSignal: AbortSignal | undefined;
     const adapter = new HermesRuntimeAdapter({
       baseUrl: 'http://hermes',
-      parkedActions: (_attempt, signal) => {
-        ledgerSignal = signal;
-        return new Promise(() => {});
-      },
+      parkedActions: brokerParkedActions({
+        brokerUrl: 'http://broker',
+        serviceKey: 'service',
+        spaceId: 'sp_test',
+        timeoutMs: 40,
+        fetch: async (_url, init) => {
+          ledgerSignal = init?.signal ?? undefined;
+          return new Promise(() => {});
+        },
+      }),
       fetch: async (url) =>
         url.endsWith('/events')
           ? new Response('data: {"event":"run.completed","output":"Finished"}\n\n')
@@ -236,7 +247,11 @@ describe('broker-verified tool continuation', () => {
       { emit: async () => {} },
       new AbortController().signal,
     );
-    expect(outcome).toMatchObject({ kind: 'failed', retryable: true });
+    expect(outcome).toMatchObject({
+      kind: 'unknown_check',
+      check: 'parked_actions',
+      reason: 'timed_out',
+    });
     expect(ledgerSignal?.aborted).toBe(true);
   }, 3_000);
 });
@@ -252,4 +267,30 @@ test('the default catalog lookup uses only the attempt capability and validates 
   });
   expect(await lookup(bundle)).toEqual([load]);
   expect(authorization).toBe(`Bearer ${bundle.attempt.token}`);
+});
+
+test('closing ledger check honors a broker timeout longer than one second', async () => {
+  const adapter = new HermesRuntimeAdapter({
+    baseUrl: 'http://hermes',
+    parkedActions: brokerParkedActions({
+      brokerUrl: 'http://broker',
+      serviceKey: 'service',
+      spaceId: 'sp_test',
+      timeoutMs: 1800,
+      fetch: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+        return Response.json({ actions: [{ id: `act_${suffix}`, attempt_id: bundle.attempt.id }] });
+      },
+    }),
+    fetch: async (url) =>
+      url.endsWith('/events')
+        ? new Response('data: {"event":"run.completed","output":"Finished"}\n\n')
+        : Response.json({ run_id: 'slow-ledger', status: 'started' }),
+  });
+  const outcome = await adapter.start(
+    bundle,
+    { emit: async () => {} },
+    new AbortController().signal,
+  );
+  expect(outcome).toEqual({ kind: 'waiting_for_approval', action_ids: [`act_${suffix}`] });
 });
