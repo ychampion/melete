@@ -325,7 +325,7 @@ export function ResultCard({
             onError={() => setBroken(true)}
           />
         ) : card.image ? (
-          <div className="result-image-missing" aria-label={card.image.alt}>
+          <div className="result-image-missing" role="img" aria-label={card.image.alt}>
             <Icon name="image" size={22} />
           </div>
         ) : null}

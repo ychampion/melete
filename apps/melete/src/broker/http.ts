@@ -9,7 +9,7 @@ import {
   type ToolSpec,
 } from '@melete/contracts';
 import { Hono } from 'hono';
-import { ZodError } from 'zod';
+import { ZodError, z } from 'zod';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
 
@@ -19,6 +19,7 @@ export interface BrokerOperations {
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
   decide(id: string, request: ApprovalDecisionRequest): Promise<unknown>;
+  say?(claims: CapabilityClaims, text: string, ref: string): Promise<void>;
 }
 
 export function createBrokerApp(options: {
@@ -53,7 +54,7 @@ export function createBrokerApp(options: {
     const decision = /^\/actions\/[^/]+\/(approve|deny)$/.test(path) && c.req.method === 'POST';
     const runtime =
       (c.req.method === 'GET' && (path === '/tools' || /^\/actions\/[^/]+$/.test(path))) ||
-      (c.req.method === 'POST' && path === '/actions');
+      (c.req.method === 'POST' && (path === '/actions' || path === '/say'));
     if (!decision && !runtime) return c.json({ error: { code: 'not_found' } }, 404);
     if (Number(c.req.header('content-length') ?? '0') > 1_048_576) {
       return c.json({ error: { code: 'payload_invalid' } }, 413);
@@ -82,6 +83,14 @@ export function createBrokerApp(options: {
           : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
     );
     return c.json({ tools });
+  });
+  app.post('/say', async (c) => {
+    const input = z
+      .strictObject({ text: z.string().min(1).max(600), ref: z.string().min(1).max(200) })
+      .parse(await c.req.json());
+    if (!options.broker.say) return c.json({ error: { code: 'not_available' } }, 404);
+    await options.broker.say(c.get('claims'), input.text, input.ref);
+    return c.json({ status: 'ok' });
   });
   app.post('/actions', async (c) =>
     c.json(

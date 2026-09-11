@@ -4,6 +4,7 @@ import { createJobRequest, errorResponse } from './api.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { job } from './entities.ts';
 import { apiEvent } from './events.ts';
+import { quickOptions } from './experience.ts';
 import {
   type AttemptBundle,
   type AttemptOutcome,
@@ -67,6 +68,7 @@ export const questionSpec = z.object({
   /** True when an external effect cannot happen until this is answered. */
   blocks_external_effect: z.boolean().default(false),
   deadline_at: timestamp.nullable().default(null),
+  options: quickOptions.optional(),
 });
 export type QuestionSpec = z.infer<typeof questionSpec>;
 /** What a caller may hand in: the two ranking fields have defaults. */

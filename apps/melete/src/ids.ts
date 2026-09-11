@@ -4,7 +4,21 @@ import type { IdPrefix } from '@melete/contracts';
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 /** ULIDs retain their timestamp prefix without sharing a process-local counter. */
-export function newId(prefix: IdPrefix | 'obl' | 'ntf' | 'op' | 'qst'): string {
+export function newId(
+  prefix:
+    | IdPrefix
+    | 'obl'
+    | 'ntf'
+    | 'op'
+    | 'qst'
+    | 'agent'
+    | 'turn'
+    | 'pause'
+    | 'task'
+    | 'mile'
+    | 'rule'
+    | 'undo',
+): string {
   let value = (BigInt(Date.now()) << 80n) | BigInt(`0x${randomBytes(10).toString('hex')}`);
   let encoded = '';
   for (let i = 0; i < 26; i++) {

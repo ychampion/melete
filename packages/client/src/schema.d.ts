@@ -33,7 +33,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            actions: components["schemas"]["__schema100"][];
+                            actions: components["schemas"]["__schema151"][];
                         };
                     };
                 };
@@ -73,7 +73,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema103"];
+                        "application/json": components["schemas"]["__schema154"];
                     };
                 };
                 /** @description No such action */
@@ -82,7 +82,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -134,7 +134,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema103"];
+                        "application/json": components["schemas"]["__schema154"];
                     };
                 };
                 /** @description Action is not awaiting reconciliation */
@@ -143,11 +143,180 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /agents
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            agents: components["schemas"]["__schema61"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * POST /agents
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["__schema4"];
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema72"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /agents/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["__schema4"];
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema72"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/agents/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /agents/templates
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            templates: {
+                                agent: {
+                                    allowed_connection_ids: components["schemas"]["__schema69"];
+                                    asks_before_acting: components["schemas"]["__schema70"];
+                                    colour: components["schemas"]["__schema64"];
+                                    eye_colour: components["schemas"]["__schema66"];
+                                    face_image?: components["schemas"]["__schema71"];
+                                    name: components["schemas"]["__schema62"];
+                                    role: components["schemas"]["__schema63"];
+                                    standing_instruction: components["schemas"]["__schema68"];
+                                    surface: components["schemas"]["__schema65"];
+                                    tone: components["schemas"]["__schema67"];
+                                };
+                                id: components["schemas"]["__schema40"];
+                                title: components["schemas"]["__schema41"];
+                            }[];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -181,10 +350,10 @@ export interface paths {
                             approvals: {
                                 action_id: string;
                                 approval_id: string;
-                                canonical_payload: components["schemas"]["__schema61"];
+                                canonical_payload: components["schemas"]["__schema112"];
                                 connection_id: string;
-                                effect_class: components["schemas"]["__schema101"];
-                                expires_at: components["schemas"]["__schema41"] | null;
+                                effect_class: components["schemas"]["__schema152"];
+                                expires_at: components["schemas"]["__schema91"] | null;
                                 job_id: string;
                                 job_revision: number;
                                 kind: string;
@@ -193,10 +362,10 @@ export interface paths {
                                     description: string;
                                     field: string;
                                     handle: string | null;
-                                    origin_trust: components["schemas"]["__schema74"];
+                                    origin_trust: components["schemas"]["__schema125"];
                                 }[];
-                                payload_hash: components["schemas"]["__schema102"];
-                                requested_at: components["schemas"]["__schema41"];
+                                payload_hash: components["schemas"]["__schema153"];
+                                requested_at: components["schemas"]["__schema91"];
                             }[];
                         };
                     };
@@ -254,10 +423,10 @@ export interface paths {
                         "application/json": {
                             action_id: string;
                             approval_id: string;
-                            decided_at: components["schemas"]["__schema41"];
+                            decided_at: components["schemas"]["__schema91"];
                             /** @enum {string} */
                             decision: "approved" | "denied";
-                            payload_hash: components["schemas"]["__schema102"];
+                            payload_hash: components["schemas"]["__schema153"];
                         };
                     };
                 };
@@ -267,7 +436,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -305,7 +474,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            attempt: components["schemas"]["__schema98"];
+                            attempt: components["schemas"]["__schema149"];
                         };
                     };
                 };
@@ -315,13 +484,263 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /automations
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            automations: components["schemas"]["__schema78"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * POST /automations
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        agent_id: components["schemas"]["__schema1"];
+                        at: string;
+                        instruction: components["schemas"]["__schema0"];
+                        title: components["schemas"]["__schema0"];
+                        weekdays: components["schemas"]["__schema7"][];
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema79"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /automations/{id}/test
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations/morning-brief": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /automations/morning-brief
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        agent_id: components["schemas"]["__schema1"];
+                        at: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema79"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/browser/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /browser/sessions/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema80"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/browser/sessions/{id}/control": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /browser/sessions/{id}/control
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        control: "take_control" | "resume" | "stop";
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema80"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -352,7 +771,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            connections: components["schemas"]["__schema104"][];
+                            connections: components["schemas"]["__schema155"][];
                         };
                     };
                 };
@@ -389,7 +808,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema105"];
+                        "application/json": components["schemas"]["__schema156"];
                     };
                 };
                 /** @description Invalid request */
@@ -398,7 +817,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -435,7 +854,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema105"];
+                        "application/json": components["schemas"]["__schema156"];
                     };
                 };
                 /** @description No such connection */
@@ -444,7 +863,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -485,7 +904,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema105"];
+                        "application/json": components["schemas"]["__schema156"];
                     };
                 };
             };
@@ -551,7 +970,668 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            conversations: components["schemas"]["__schema39"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * POST /conversations
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        agent_id: components["schemas"]["__schema1"];
+                        plan_id?: components["schemas"]["__schema1"];
+                        title: components["schemas"]["__schema0"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /conversations/{id}/agent
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["__schema2"];
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/conversations/{id}/cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations/{id}/cards
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            cards: components["schemas"]["__schema49"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations/{id}/drafts
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            drafts: components["schemas"]["__schema55"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations/{id}/events
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                    since?: number;
+                };
+                header?: {
+                    "Last-Event-ID"?: string;
+                };
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            events: {
+                                conversation_id: components["schemas"]["__schema40"];
+                                created_at: components["schemas"]["__schema44"];
+                                item: ({
+                                    text: string;
+                                    /** @constant */
+                                    type: "say";
+                                } | {
+                                    label: components["schemas"]["__schema41"];
+                                    meta: string;
+                                    sources: {
+                                        app: components["schemas"]["__schema41"];
+                                        connection_id: components["schemas"]["__schema40"];
+                                        /** @enum {string} */
+                                        kind: "event" | "message" | "draft" | "file" | "page" | "task";
+                                        title: components["schemas"]["__schema41"];
+                                        url?: components["schemas"]["__schema48"];
+                                    }[];
+                                    /** @constant */
+                                    type: "action";
+                                } | {
+                                    text: components["schemas"]["__schema41"];
+                                    /** @constant */
+                                    type: "note";
+                                } | {
+                                    apps: components["schemas"]["__schema41"][];
+                                    elapsed_ms: components["schemas"]["__schema47"];
+                                    source_count: components["schemas"]["__schema47"];
+                                    summary: components["schemas"]["__schema41"];
+                                    /** @constant */
+                                    type: "done";
+                                }) | {
+                                    text: string;
+                                    /** @constant */
+                                    type: "text_delta";
+                                } | {
+                                    card: components["schemas"]["__schema49"];
+                                    /** @constant */
+                                    type: "card";
+                                } | {
+                                    receipt: components["schemas"]["__schema52"];
+                                    /** @constant */
+                                    type: "receipt";
+                                } | {
+                                    permission: components["schemas"]["__schema53"];
+                                    /** @constant */
+                                    type: "permission";
+                                } | {
+                                    question: components["schemas"]["__schema56"];
+                                    /** @constant */
+                                    type: "question";
+                                } | {
+                                    composer: components["schemas"]["__schema43"];
+                                    status: components["schemas"]["__schema42"];
+                                    /** @constant */
+                                    type: "status";
+                                };
+                                seq: components["schemas"]["__schema47"];
+                                turn_id: components["schemas"]["__schema40"] | null;
+                            }[];
+                            has_more: boolean;
+                            next_cursor: components["schemas"]["__schema47"];
+                        } | components["schemas"]["__schema45"];
+                        /**
+                         * @example id: 42
+                         *     event: say
+                         *     data: {"seq":42}
+                         */
+                        "text/event-stream": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations/{id}/messages
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            turns: {
+                                agent_id: components["schemas"]["__schema40"];
+                                answer: string;
+                                conversation_id: components["schemas"]["__schema40"];
+                                created_at: components["schemas"]["__schema44"];
+                                delivery: ("sending" | "queued_offline" | "failed_retry") | null;
+                                id: components["schemas"]["__schema40"];
+                                status: components["schemas"]["__schema42"];
+                                text: string;
+                            }[];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * POST /conversations/{id}/messages
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        text: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            receipt: {
+                                id: components["schemas"]["__schema40"];
+                                received_at: components["schemas"]["__schema44"];
+                                /** @enum {string} */
+                                status: "accepted" | "failed_retry";
+                            };
+                            turn_id: components["schemas"]["__schema40"];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conversations/{id}/pause
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /conversations/{id}/receipts
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            receipts: components["schemas"]["__schema52"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conversations/{id}/resume
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /conversations/{id}/stop
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/drafts/{id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /drafts/{id}/send
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            draft: components["schemas"]["__schema55"];
+                            permission: components["schemas"]["__schema53"] | null;
+                            receipt: components["schemas"]["__schema52"] | null;
+                        } | components["schemas"]["__schema45"];
                     };
                 };
             };
@@ -573,9 +1653,9 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    after?: components["schemas"]["__schema28"];
-                    limit?: components["schemas"]["__schema29"];
-                    types?: components["schemas"]["__schema30"];
+                    after?: components["schemas"]["__schema36"];
+                    limit?: components["schemas"]["__schema37"];
+                    types?: components["schemas"]["__schema38"];
                 };
                 header?: never;
                 path?: never;
@@ -589,7 +1669,145 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema99"];
+                        "application/json": components["schemas"]["__schema150"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/experience/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /experience/connections
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            connections: {
+                                /** @enum {string} */
+                                access: "read_only" | "draft_only" | "asks_before_acting";
+                                app: components["schemas"]["__schema41"];
+                                id: components["schemas"]["__schema40"];
+                                label: components["schemas"]["__schema41"];
+                                /** @enum {string} */
+                                status: "available" | "connecting" | "connected" | "error";
+                            }[];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/experience/live-data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /experience/live-data
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            source_connection: components["schemas"]["__schema40"];
+                            title: components["schemas"]["__schema41"];
+                            updated_at: components["schemas"]["__schema44"];
+                            value: components["schemas"]["__schema41"];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/experience/now-playing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /experience/now-playing
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            artist: components["schemas"]["__schema41"];
+                            image?: components["schemas"]["__schema48"];
+                            playing: boolean;
+                            source_connection: components["schemas"]["__schema40"];
+                            title: components["schemas"]["__schema41"];
+                        } | components["schemas"]["__schema45"];
                     };
                 };
             };
@@ -630,9 +1848,63 @@ export interface paths {
                             database: "ok" | "unreachable" | "not_configured";
                             /** @enum {string} */
                             status: "ok" | "degraded";
-                            time: components["schemas"]["__schema41"];
+                            time: components["schemas"]["__schema91"];
                             version: string;
                         };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /home
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            date: components["schemas"]["__schema41"];
+                            greeting: components["schemas"]["__schema41"];
+                            open_task_count: components["schemas"]["__schema47"];
+                            tasks: components["schemas"]["__schema76"][];
+                            time_zone: components["schemas"]["__schema41"];
+                            upcoming: {
+                                connection_id: components["schemas"]["__schema40"];
+                                ends_at: components["schemas"]["__schema44"];
+                                id: components["schemas"]["__schema40"];
+                                starts_at: components["schemas"]["__schema44"];
+                                title: components["schemas"]["__schema41"];
+                                url?: components["schemas"]["__schema48"];
+                            }[] | components["schemas"]["__schema45"];
+                            within_day_hours: boolean;
+                        } | components["schemas"]["__schema45"];
                     };
                 };
             };
@@ -673,7 +1945,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            jobs: components["schemas"]["__schema67"][];
+                            jobs: components["schemas"]["__schema118"][];
                         };
                     };
                 };
@@ -691,11 +1963,11 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        budget?: components["schemas"]["__schema4"];
-                        constraints?: components["schemas"]["__schema3"];
-                        objective: components["schemas"]["__schema2"];
-                        space_id: components["schemas"]["__schema0"];
-                        title: components["schemas"]["__schema1"];
+                        budget?: components["schemas"]["__schema12"];
+                        constraints?: components["schemas"]["__schema11"];
+                        objective: components["schemas"]["__schema10"];
+                        space_id: components["schemas"]["__schema8"];
+                        title: components["schemas"]["__schema9"];
                     };
                 };
             };
@@ -706,7 +1978,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema97"];
+                        "application/json": components["schemas"]["__schema148"];
                     };
                 };
                 /** @description Invalid request */
@@ -715,7 +1987,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -748,7 +2020,7 @@ export interface paths {
             };
             requestBody?: {
                 content: {
-                    "application/json": components["schemas"]["__schema15"];
+                    "application/json": components["schemas"]["__schema23"];
                 };
             };
             responses: {
@@ -758,7 +2030,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema66"];
+                        "application/json": components["schemas"]["__schema117"];
                     };
                 };
                 /** @description Submission conflict or rejected transition */
@@ -767,7 +2039,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema66"];
+                        "application/json": components["schemas"]["__schema117"];
                     };
                 };
             };
@@ -801,7 +2073,7 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        due_at?: components["schemas"]["__schema11"];
+                        due_at?: components["schemas"]["__schema19"];
                         /** @enum {string} */
                         kind: "timer" | "remote_task" | "local_process";
                         operation_key: string;
@@ -817,7 +2089,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema63"];
+                        "application/json": components["schemas"]["__schema114"];
                     };
                 };
                 /** @description Operation key conflict */
@@ -826,7 +2098,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -865,7 +2137,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema31"];
+                        "application/json": components["schemas"]["__schema81"];
                     };
                 };
             };
@@ -902,7 +2174,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema31"];
+                        "application/json": components["schemas"]["__schema81"];
                     };
                 };
             };
@@ -938,9 +2210,9 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        importance?: components["schemas"]["__schema9"];
-                        scheduling_class?: components["schemas"]["__schema8"];
-                        unread_threshold?: components["schemas"]["__schema10"];
+                        importance?: components["schemas"]["__schema17"];
+                        scheduling_class?: components["schemas"]["__schema16"];
+                        unread_threshold?: components["schemas"]["__schema18"];
                     };
                 };
             };
@@ -951,7 +2223,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema31"];
+                        "application/json": components["schemas"]["__schema81"];
                     };
                 };
             };
@@ -988,7 +2260,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema60"];
+                        "application/json": components["schemas"]["__schema111"];
                     };
                 };
             };
@@ -1027,7 +2299,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema97"];
+                        "application/json": components["schemas"]["__schema148"];
                     };
                 };
                 /** @description No such job */
@@ -1036,7 +2308,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1076,7 +2348,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            attempts: components["schemas"]["__schema98"][];
+                            attempts: components["schemas"]["__schema149"][];
                         };
                     };
                 };
@@ -1127,7 +2399,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema97"];
+                        "application/json": components["schemas"]["__schema148"];
                     };
                 };
                 /** @description Job is already finished */
@@ -1136,7 +2408,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1161,9 +2433,9 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    after?: components["schemas"]["__schema28"];
-                    limit?: components["schemas"]["__schema29"];
-                    types?: components["schemas"]["__schema30"];
+                    after?: components["schemas"]["__schema36"];
+                    limit?: components["schemas"]["__schema37"];
+                    types?: components["schemas"]["__schema38"];
                 };
                 header?: never;
                 path: {
@@ -1179,7 +2451,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema99"];
+                        "application/json": components["schemas"]["__schema150"];
                     };
                 };
             };
@@ -1214,7 +2486,7 @@ export interface paths {
             };
             requestBody?: {
                 content: {
-                    "application/json": components["schemas"]["__schema15"];
+                    "application/json": components["schemas"]["__schema23"];
                 };
             };
             responses: {
@@ -1224,7 +2496,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema97"];
+                        "application/json": components["schemas"]["__schema148"];
                     };
                 };
                 /** @description The job is not waiting for input */
@@ -1233,7 +2505,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1276,10 +2548,10 @@ export interface paths {
                             records: {
                                 id: string;
                                 path: string;
-                                status: components["schemas"]["__schema107"];
+                                status: components["schemas"]["__schema158"];
                                 tags: string[];
                                 title: string;
-                                type: components["schemas"]["__schema106"];
+                                type: components["schemas"]["__schema157"];
                                 updated: string;
                             }[];
                         };
@@ -1291,7 +2563,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1330,7 +2602,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema108"];
+                        "application/json": components["schemas"]["__schema159"];
                     };
                 };
                 /** @description No such record */
@@ -1339,7 +2611,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1373,7 +2645,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema108"];
+                        "application/json": components["schemas"]["__schema159"];
                     };
                 };
                 /** @description No such record */
@@ -1382,7 +2654,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1416,9 +2688,9 @@ export interface paths {
                 content: {
                     "application/json": {
                         body: string;
-                        expected_revision: components["schemas"]["__schema17"];
-                        frontmatter: components["schemas"]["__schema25"];
-                        idempotency_key: components["schemas"]["__schema16"];
+                        expected_revision: components["schemas"]["__schema25"];
+                        frontmatter: components["schemas"]["__schema33"];
+                        idempotency_key: components["schemas"]["__schema24"];
                     };
                 };
             };
@@ -1429,7 +2701,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema83"];
+                        "application/json": components["schemas"]["__schema134"];
                     };
                 };
                 /** @description Stale revision */
@@ -1438,7 +2710,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1473,7 +2745,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            proposals: components["schemas"]["__schema95"][];
+                            proposals: components["schemas"]["__schema146"][];
                         };
                     };
                 };
@@ -1495,7 +2767,7 @@ export interface paths {
                 content: {
                     "application/json": {
                         body: string;
-                        frontmatter: components["schemas"]["__schema25"];
+                        frontmatter: components["schemas"]["__schema33"];
                         path: string;
                         rationale: string;
                         space: string;
@@ -1522,7 +2794,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1562,7 +2834,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema95"];
+                        "application/json": components["schemas"]["__schema146"];
                     };
                 };
             };
@@ -1600,7 +2872,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema95"];
+                        "application/json": components["schemas"]["__schema146"];
                     };
                 };
                 /** @description Proposal is stale */
@@ -1609,7 +2881,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1657,7 +2929,7 @@ export interface paths {
                                 id: string;
                                 path: string;
                                 score: number;
-                                status: components["schemas"]["__schema107"];
+                                status: components["schemas"]["__schema158"];
                                 title: string;
                             }[];
                         };
@@ -1696,9 +2968,9 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        delivered: components["schemas"]["__schema23"][];
-                        payload: components["schemas"]["__schema13"];
-                        uses: components["schemas"]["__schema20"];
+                        delivered: components["schemas"]["__schema31"][];
+                        payload: components["schemas"]["__schema21"];
+                        uses: components["schemas"]["__schema28"];
                     };
                 };
             };
@@ -1711,7 +2983,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             attributed: boolean;
-                            findings: components["schemas"]["__schema90"][];
+                            findings: components["schemas"]["__schema141"][];
                         };
                     };
                 };
@@ -1748,14 +3020,14 @@ export interface paths {
                     content: {
                         "application/json": {
                             claims: {
-                                audience: components["schemas"]["__schema72"];
-                                current: components["schemas"]["__schema83"];
-                                domain_key: components["schemas"]["__schema70"];
-                                head_revision: components["schemas"]["__schema71"];
-                                hidden: components["schemas"]["__schema87"];
-                                id: components["schemas"]["__schema76"];
-                                key: components["schemas"]["__schema86"];
-                                space_id: components["schemas"]["__schema85"];
+                                audience: components["schemas"]["__schema123"];
+                                current: components["schemas"]["__schema134"];
+                                domain_key: components["schemas"]["__schema121"];
+                                head_revision: components["schemas"]["__schema122"];
+                                hidden: components["schemas"]["__schema138"];
+                                id: components["schemas"]["__schema127"];
+                                key: components["schemas"]["__schema137"];
+                                space_id: components["schemas"]["__schema136"];
                             }[];
                         };
                     };
@@ -1798,15 +3070,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             claim: {
-                                audience: components["schemas"]["__schema72"];
-                                domain_key: components["schemas"]["__schema70"];
-                                head_revision: components["schemas"]["__schema71"];
-                                hidden: components["schemas"]["__schema87"];
-                                id: components["schemas"]["__schema76"];
-                                key: components["schemas"]["__schema86"];
-                                space_id: components["schemas"]["__schema85"];
+                                audience: components["schemas"]["__schema123"];
+                                domain_key: components["schemas"]["__schema121"];
+                                head_revision: components["schemas"]["__schema122"];
+                                hidden: components["schemas"]["__schema138"];
+                                id: components["schemas"]["__schema127"];
+                                key: components["schemas"]["__schema137"];
+                                space_id: components["schemas"]["__schema136"];
                             };
-                            revisions: components["schemas"]["__schema83"][];
+                            revisions: components["schemas"]["__schema134"][];
                         };
                     };
                 };
@@ -1816,7 +3088,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1854,15 +3126,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             contradictions: {
-                                alternative: components["schemas"]["__schema77"];
+                                alternative: components["schemas"]["__schema128"];
                                 /** @enum {string} */
                                 audience: "private" | "space" | "public";
                                 claim_id: string;
-                                head: components["schemas"]["__schema77"];
-                                id: components["schemas"]["__schema88"];
-                                key: components["schemas"]["__schema78"];
-                                question_id: components["schemas"]["__schema88"] | null;
-                                recorded_at: components["schemas"]["__schema41"];
+                                head: components["schemas"]["__schema128"];
+                                id: components["schemas"]["__schema139"];
+                                key: components["schemas"]["__schema129"];
+                                question_id: components["schemas"]["__schema139"] | null;
+                                recorded_at: components["schemas"]["__schema91"];
                                 space_id: string;
                                 /** @enum {string} */
                                 state: "open" | "resolved";
@@ -1900,14 +3172,14 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        claim_id: components["schemas"]["__schema18"];
+                        claim_id: components["schemas"]["__schema26"];
                         content: string;
-                        expected_revision: components["schemas"]["__schema17"];
-                        idempotency_key: components["schemas"]["__schema16"];
+                        expected_revision: components["schemas"]["__schema25"];
+                        idempotency_key: components["schemas"]["__schema24"];
                         text: string;
-                        valid_from: components["schemas"]["__schema11"];
+                        valid_from: components["schemas"]["__schema19"];
                         /** @default null */
-                        valid_until?: components["schemas"]["__schema11"] | null;
+                        valid_until?: components["schemas"]["__schema19"] | null;
                     };
                 };
             };
@@ -1918,7 +3190,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema83"];
+                        "application/json": components["schemas"]["__schema134"];
                     };
                 };
                 /** @description Stale revision */
@@ -1927,7 +3199,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -1960,7 +3232,7 @@ export interface paths {
                     "application/json": {
                         /** @constant */
                         all?: true;
-                        claim_id?: components["schemas"]["__schema18"];
+                        claim_id?: components["schemas"]["__schema26"];
                     };
                 };
             };
@@ -1971,11 +3243,180 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema84"];
+                        "application/json": components["schemas"]["__schema135"];
                     };
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /memory/items
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                created: components["schemas"]["__schema44"];
+                                editable: boolean;
+                                id: components["schemas"]["__schema40"];
+                                key: components["schemas"]["__schema41"];
+                                last_used: components["schemas"]["__schema44"] | null;
+                                /** @enum {string} */
+                                source: "onboarding" | "conversation" | "inferred";
+                                value: string;
+                                version: components["schemas"]["__schema40"];
+                            }[];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/items/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /memory/items/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /memory/items/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        value: string;
+                        version: components["schemas"]["__schema1"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/memory/items/{id}/why": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /memory/items/{id}/why
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            output: string | null;
+                            reasons: components["schemas"]["__schema41"][];
+                            used_at: components["schemas"]["__schema44"] | null;
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2010,15 +3451,15 @@ export interface paths {
                     content: {
                         "application/json": {
                             repair_briefs: {
-                                affected: components["schemas"]["__schema94"][];
-                                changed_handle: components["schemas"]["__schema77"];
-                                created_at: components["schemas"]["__schema41"];
-                                id: components["schemas"]["__schema88"];
+                                affected: components["schemas"]["__schema145"][];
+                                changed_handle: components["schemas"]["__schema128"];
+                                created_at: components["schemas"]["__schema91"];
+                                id: components["schemas"]["__schema139"];
                                 job_id: string;
-                                key: components["schemas"]["__schema78"] | null;
-                                new_value: components["schemas"]["__schema93"];
-                                old_value: components["schemas"]["__schema93"];
-                                replacement_handle: components["schemas"]["__schema77"] | null;
+                                key: components["schemas"]["__schema129"] | null;
+                                new_value: components["schemas"]["__schema144"];
+                                old_value: components["schemas"]["__schema144"];
+                                replacement_handle: components["schemas"]["__schema128"] | null;
                             }[];
                         };
                     };
@@ -2063,9 +3504,9 @@ export interface paths {
                         kind: "artifact" | "plan_step" | "action";
                         /** @default null */
                         location?: string | null;
-                        output_id: components["schemas"]["__schema19"];
-                        output_version: components["schemas"]["__schema19"];
-                        uses: components["schemas"]["__schema20"];
+                        output_id: components["schemas"]["__schema27"];
+                        output_version: components["schemas"]["__schema27"];
+                        uses: components["schemas"]["__schema28"];
                     };
                 };
             };
@@ -2078,9 +3519,9 @@ export interface paths {
                     content: {
                         "application/json": {
                             attributed: boolean;
-                            output_id: components["schemas"]["__schema88"];
-                            output_version: components["schemas"]["__schema88"];
-                            unknown_handles: components["schemas"]["__schema89"][];
+                            output_id: components["schemas"]["__schema139"];
+                            output_version: components["schemas"]["__schema139"];
+                            unknown_handles: components["schemas"]["__schema140"][];
                         };
                     };
                 };
@@ -2090,7 +3531,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2126,11 +3567,11 @@ export interface paths {
                     content: {
                         "application/json": {
                             questions: {
-                                because: components["schemas"]["__schema77"][];
-                                created_at: components["schemas"]["__schema41"];
-                                id: components["schemas"]["__schema88"];
+                                because: components["schemas"]["__schema128"][];
+                                created_at: components["schemas"]["__schema91"];
+                                id: components["schemas"]["__schema139"];
                                 if_ignored: string;
-                                key: components["schemas"]["__schema78"];
+                                key: components["schemas"]["__schema129"];
                                 question: string;
                                 space_id: string;
                                 /** @enum {string} */
@@ -2169,12 +3610,12 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        at?: components["schemas"]["__schema11"];
+                        at?: components["schemas"]["__schema19"];
                         job_id?: string;
                         /** @default 10 */
-                        limit?: components["schemas"]["__schema17"];
+                        limit?: components["schemas"]["__schema25"];
                         /** @default 2000 */
-                        max_tokens?: components["schemas"]["__schema17"];
+                        max_tokens?: components["schemas"]["__schema25"];
                         /**
                          * @default current
                          * @enum {string}
@@ -2198,47 +3639,47 @@ export interface paths {
                     content: {
                         "application/json": {
                             coverage: {
-                                authoritative_revision: components["schemas"]["__schema73"];
-                                indexed_revision: components["schemas"]["__schema73"];
+                                authoritative_revision: components["schemas"]["__schema124"];
+                                indexed_revision: components["schemas"]["__schema124"];
                                 /** @enum {string} */
                                 reason: "ready" | "index_lag" | "budget" | "timeout" | "index_failure" | "restore_pending" | "public_compartment";
-                                supplemented: components["schemas"]["__schema73"];
+                                supplemented: components["schemas"]["__schema124"];
                                 truncated: boolean;
                             };
                             /** @default [] */
-                            disputed_keys: components["schemas"]["__schema78"][];
-                            index_generation: components["schemas"]["__schema73"] | null;
+                            disputed_keys: components["schemas"]["__schema129"][];
+                            index_generation: components["schemas"]["__schema124"] | null;
                             items: {
-                                claim_id: components["schemas"]["__schema76"];
+                                claim_id: components["schemas"]["__schema127"];
                                 content: string;
                                 /** @default false */
                                 disputed: boolean;
-                                domain_key: components["schemas"]["__schema70"];
+                                domain_key: components["schemas"]["__schema121"];
                                 excerpts: string[];
-                                factual_status: components["schemas"]["__schema80"];
-                                handle: components["schemas"]["__schema77"];
+                                factual_status: components["schemas"]["__schema131"];
+                                handle: components["schemas"]["__schema128"];
                                 /** @default null */
-                                key: components["schemas"]["__schema78"] | null;
-                                kind: components["schemas"]["__schema79"];
+                                key: components["schemas"]["__schema129"] | null;
+                                kind: components["schemas"]["__schema130"];
                                 /** @default inferred */
-                                origin_trust: components["schemas"]["__schema74"];
-                                recorded_at: components["schemas"]["__schema41"];
-                                revision: components["schemas"]["__schema71"];
-                                sources: components["schemas"]["__schema82"][];
-                                status: components["schemas"]["__schema81"];
-                                superseded_at: components["schemas"]["__schema41"] | null;
-                                valid_from: components["schemas"]["__schema41"];
-                                valid_until: components["schemas"]["__schema41"] | null;
+                                origin_trust: components["schemas"]["__schema125"];
+                                recorded_at: components["schemas"]["__schema91"];
+                                revision: components["schemas"]["__schema122"];
+                                sources: components["schemas"]["__schema133"][];
+                                status: components["schemas"]["__schema132"];
+                                superseded_at: components["schemas"]["__schema91"] | null;
+                                valid_from: components["schemas"]["__schema91"];
+                                valid_until: components["schemas"]["__schema91"] | null;
                             }[];
-                            recipe: components["schemas"]["__schema70"];
-                            snapshot: components["schemas"]["__schema75"] | null;
+                            recipe: components["schemas"]["__schema121"];
+                            snapshot: components["schemas"]["__schema126"] | null;
                             /** @enum {string} */
                             status: "complete" | "degraded" | "unavailable";
                             token_budget: {
                                 /** @constant */
                                 counter: "utf8-bytes-upper-bound-v1";
-                                limit: components["schemas"]["__schema71"];
-                                used: components["schemas"]["__schema73"];
+                                limit: components["schemas"]["__schema122"];
+                                used: components["schemas"]["__schema124"];
                             };
                         };
                     };
@@ -2249,7 +3690,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2290,8 +3731,8 @@ export interface paths {
                                 key: string | null;
                                 /** @enum {string} */
                                 reason: "key_not_in_registry" | "span_not_verbatim" | "span_outside_segment" | "value_not_in_evidence" | "date_not_parseable" | "value_not_well_formed" | "confidence_is_not_a_status" | "checked_status_requires_tier0";
-                                recorded_at: components["schemas"]["__schema41"];
-                                work_id: components["schemas"]["__schema88"];
+                                recorded_at: components["schemas"]["__schema91"];
+                                work_id: components["schemas"]["__schema139"];
                             }[];
                         };
                     };
@@ -2331,12 +3772,12 @@ export interface paths {
                          * @enum {string}
                          */
                         author?: "owner" | "external";
-                        event_at: components["schemas"]["__schema11"];
-                        source_identity: components["schemas"]["__schema16"];
+                        event_at: components["schemas"]["__schema19"];
+                        source_identity: components["schemas"]["__schema24"];
                         /** @enum {string} */
                         source_type: "message" | "document" | "observation" | "receipt" | "assistant";
-                        source_version: components["schemas"]["__schema16"];
-                        stream: components["schemas"]["__schema16"];
+                        source_version: components["schemas"]["__schema24"];
+                        stream: components["schemas"]["__schema24"];
                         text: string;
                         time_zone?: string;
                     };
@@ -2350,9 +3791,9 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            committed_sequence: components["schemas"]["__schema71"];
+                            committed_sequence: components["schemas"]["__schema122"];
                             duplicate: boolean;
-                            source: components["schemas"]["__schema68"];
+                            source: components["schemas"]["__schema119"];
                         };
                     };
                 };
@@ -2362,7 +3803,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
                 /** @description Scope denied */
@@ -2371,7 +3812,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2409,7 +3850,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            source: components["schemas"]["__schema68"];
+                            source: components["schemas"]["__schema119"];
                             text: string;
                         };
                     };
@@ -2420,7 +3861,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2446,7 +3887,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema84"];
+                        "application/json": components["schemas"]["__schema135"];
                     };
                 };
                 /** @description No such source */
@@ -2455,7 +3896,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2485,8 +3926,8 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        handles: components["schemas"]["__schema20"];
-                        payload: components["schemas"]["__schema13"];
+                        handles: components["schemas"]["__schema28"];
+                        payload: components["schemas"]["__schema21"];
                     };
                 };
             };
@@ -2499,9 +3940,9 @@ export interface paths {
                     content: {
                         "application/json": {
                             actionable: boolean;
-                            fields: components["schemas"]["__schema91"][];
-                            minimum_trust: components["schemas"]["__schema74"];
-                            unresolved: components["schemas"]["__schema92"][];
+                            fields: components["schemas"]["__schema142"][];
+                            minimum_trust: components["schemas"]["__schema125"];
+                            unresolved: components["schemas"]["__schema143"][];
                         };
                     };
                 };
@@ -2537,7 +3978,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            notifications: components["schemas"]["__schema65"][];
+                            notifications: components["schemas"]["__schema116"][];
                         };
                     };
                 };
@@ -2579,7 +4020,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema65"];
+                        "application/json": components["schemas"]["__schema116"];
                     };
                 };
             };
@@ -2624,7 +4065,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema65"];
+                        "application/json": components["schemas"]["__schema116"];
                     };
                 };
             };
@@ -2659,7 +4100,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            operations: components["schemas"]["__schema63"][];
+                            operations: components["schemas"]["__schema114"][];
                         };
                     };
                 };
@@ -2696,7 +4137,7 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        version: components["schemas"]["__schema12"];
+                        version: components["schemas"]["__schema20"];
                     };
                 };
             };
@@ -2707,7 +4148,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema63"];
+                        "application/json": components["schemas"]["__schema114"];
                     };
                 };
                 /** @description Stale operation */
@@ -2716,7 +4157,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2750,8 +4191,8 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        due_at: components["schemas"]["__schema11"];
-                        version: components["schemas"]["__schema12"];
+                        due_at: components["schemas"]["__schema19"];
+                        version: components["schemas"]["__schema20"];
                     };
                 };
             };
@@ -2762,7 +4203,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema63"];
+                        "application/json": components["schemas"]["__schema114"];
                     };
                 };
                 /** @description Stale operation */
@@ -2771,7 +4212,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2805,8 +4246,8 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        result: components["schemas"]["__schema13"];
-                        version: components["schemas"]["__schema12"];
+                        result: components["schemas"]["__schema21"];
+                        version: components["schemas"]["__schema20"];
                     };
                 };
             };
@@ -2817,7 +4258,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema63"];
+                        "application/json": components["schemas"]["__schema114"];
                     };
                 };
                 /** @description Stale operation */
@@ -2826,7 +4267,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -2835,6 +4276,435 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /permissions
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            permissions: components["schemas"]["__schema53"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/permissions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /permissions/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        option: "allow_once";
+                        version: components["schemas"]["__schema1"];
+                    } | {
+                        bounds: {
+                            count_cap: number;
+                            expires_at: components["schemas"]["__schema3"];
+                            reconsent_after_days: number;
+                        };
+                        /** @constant */
+                        option: "always";
+                        version: components["schemas"]["__schema1"];
+                    } | {
+                        /** @constant */
+                        option: "deny";
+                        version: components["schemas"]["__schema1"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            option: "allow_once" | "always" | "deny";
+                            rule: components["schemas"]["__schema59"] | null;
+                            /** @constant */
+                            status: "ok";
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /plans
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            plans: components["schemas"]["__schema73"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * POST /plans
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        category: components["schemas"]["__schema0"];
+                        milestones: components["schemas"]["__schema5"][];
+                        title: components["schemas"]["__schema0"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema74"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plans/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /plans/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema74"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plans/{id}/conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /plans/{id}/conversation
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["__schema2"];
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema46"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plans/{id}/milestones/{milestoneId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /plans/{id}/milestones/{milestoneId}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                    milestoneId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        done: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema74"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/plans/{id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /plans/{id}/share
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema45"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /profile
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema75"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /profile
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        day_hours: {
+                            end: string;
+                            start: string;
+                        };
+                        name: string;
+                        time_zone: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema75"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/questions": {
@@ -2864,7 +4734,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            questions: components["schemas"]["__schema59"][];
+                            questions: components["schemas"]["__schema110"][];
                         };
                     };
                 };
@@ -2914,10 +4784,10 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            error?: components["schemas"]["__schema57"];
-                            job: components["schemas"]["__schema31"] | null;
-                            question: components["schemas"]["__schema59"];
-                            receipt: components["schemas"]["__schema53"] | null;
+                            error?: components["schemas"]["__schema108"];
+                            job: components["schemas"]["__schema81"] | null;
+                            question: components["schemas"]["__schema110"];
+                            receipt: components["schemas"]["__schema104"] | null;
                         };
                     };
                 };
@@ -2927,7 +4797,138 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/quick-answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /quick-answers
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            questions: components["schemas"]["__schema56"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/quick-answers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /quick-answers/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        option_id: components["schemas"]["__schema1"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/receipts/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /receipts/{id}/undo
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            receipt: components["schemas"]["__schema52"];
+                        } | components["schemas"]["__schema45"];
                     };
                 };
             };
@@ -2962,7 +4963,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            obligations: components["schemas"]["__schema64"][];
+                            obligations: components["schemas"]["__schema115"][];
                         };
                     };
                 };
@@ -3004,7 +5005,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema64"];
+                        "application/json": components["schemas"]["__schema115"];
                     };
                 };
             };
@@ -3035,17 +5036,17 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        budget?: components["schemas"]["__schema4"];
-                        constraints?: components["schemas"]["__schema3"];
+                        budget?: components["schemas"]["__schema12"];
+                        constraints?: components["schemas"]["__schema11"];
                         /** @default routine */
-                        importance?: components["schemas"]["__schema6"];
-                        objective: components["schemas"]["__schema2"];
+                        importance?: components["schemas"]["__schema14"];
+                        objective: components["schemas"]["__schema10"];
                         /** @default interactive */
-                        scheduling_class?: components["schemas"]["__schema5"];
-                        space_id: components["schemas"]["__schema0"];
-                        title: components["schemas"]["__schema1"];
+                        scheduling_class?: components["schemas"]["__schema13"];
+                        space_id: components["schemas"]["__schema8"];
+                        title: components["schemas"]["__schema9"];
                         /** @default 3 */
-                        unread_threshold?: components["schemas"]["__schema7"];
+                        unread_threshold?: components["schemas"]["__schema15"];
                     };
                 };
             };
@@ -3057,9 +5058,9 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            error?: components["schemas"]["__schema56"];
-                            job: components["schemas"]["__schema31"] | null;
-                            receipt: components["schemas"]["__schema53"];
+                            error?: components["schemas"]["__schema107"];
+                            job: components["schemas"]["__schema81"] | null;
+                            receipt: components["schemas"]["__schema104"];
                         };
                     };
                 };
@@ -3069,7 +5070,308 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /rules
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            rules: components["schemas"]["__schema59"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /rules/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /search
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query: {
+                    q: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            results: {
+                                conversation_id: components["schemas"]["__schema40"] | null;
+                                id: components["schemas"]["__schema40"];
+                                /** @enum {string} */
+                                kind: "conversation" | "plan" | "task" | "event" | "connection" | "action";
+                                meta: string;
+                                title: components["schemas"]["__schema41"];
+                            }[];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/apple": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /signin/apple
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema45"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/google": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /signin/google
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema45"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/magic-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /signin/magic-link
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: email */
+                        email: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signin/magic-link/consume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /signin/magic-link/consume
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
                     };
                 };
             };
@@ -3113,7 +5415,7 @@ export interface paths {
                                     name: string;
                                     /** @default [] */
                                     tools: string[];
-                                    triggers: components["schemas"]["__schema111"][];
+                                    triggers: components["schemas"]["__schema162"][];
                                 };
                                 id: string;
                                 path: string;
@@ -3155,7 +5457,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema60"];
+                        "application/json": components["schemas"]["__schema111"];
                     };
                 };
             };
@@ -3191,7 +5493,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema96"];
+                        "application/json": components["schemas"]["__schema147"];
                     };
                 };
             };
@@ -3219,7 +5521,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema96"];
+                        "application/json": components["schemas"]["__schema147"];
                     };
                 };
                 /** @description Invalid request */
@@ -3228,7 +5530,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -3285,7 +5587,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema58"];
+                        "application/json": components["schemas"]["__schema109"];
                     };
                 };
             };
@@ -3323,7 +5625,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            receipt: components["schemas"]["__schema53"];
+                            receipt: components["schemas"]["__schema104"];
                         };
                     };
                 };
@@ -3337,14 +5639,192 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /tasks
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            tasks: components["schemas"]["__schema76"][];
+                        } | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * POST /tasks
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["__schema6"];
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema77"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /tasks/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema60"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /tasks/{id}
+         * @description Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["__schema6"];
+                };
+            };
+            responses: {
+                /** @description Outcome or unavailable capability */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema77"] | components["schemas"]["__schema45"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         __schema0: string;
         __schema1: string;
-        __schema2: string;
-        __schema3: {
+        __schema2: {
+            agent_id: components["schemas"]["__schema1"];
+        };
+        /** Format: date-time */
+        __schema3: string;
+        __schema4: {
+            allowed_connection_ids: components["schemas"]["__schema1"][];
+            asks_before_acting: boolean;
+            colour: string;
+            eye_colour: string;
+            /** Format: uri */
+            face_image?: string;
+            name: string;
+            role: string;
+            standing_instruction: string;
+            /** @enum {string} */
+            surface: "rounded" | "blob" | "diamond" | "octagon" | "gear";
+            tone: string;
+        };
+        __schema5: {
+            assignee: {
+                /** @constant */
+                kind: "person";
+            } | {
+                agent_id: components["schemas"]["__schema1"];
+                /** @constant */
+                kind: "agent";
+            };
+            schedule_at?: components["schemas"]["__schema3"];
+            title: components["schemas"]["__schema0"];
+        };
+        __schema6: {
+            /** @default false */
+            done: boolean;
+            due_at: components["schemas"]["__schema3"] | null;
+            title: components["schemas"]["__schema0"];
+        };
+        __schema7: number;
+        __schema8: string;
+        __schema9: string;
+        __schema10: string;
+        __schema11: {
             /** @default [] */
             allowed_domains: string[];
             /**
@@ -3371,7 +5851,7 @@ export interface components {
             /** @default false */
             public_compartment: boolean;
         };
-        __schema4: {
+        __schema12: {
             max_actions?: number;
             max_attempts?: number;
             max_output_tokens?: number;
@@ -3380,53 +5860,53 @@ export interface components {
             max_wall_ms?: number;
         };
         /** @enum {string} */
-        __schema5: "interactive" | "background" | "quiet";
+        __schema13: "interactive" | "background" | "quiet";
         /** @enum {string} */
-        __schema6: "routine" | "important";
-        __schema7: number;
-        __schema8: components["schemas"]["__schema5"];
-        __schema9: components["schemas"]["__schema6"];
-        __schema10: components["schemas"]["__schema7"];
+        __schema14: "routine" | "important";
+        __schema15: number;
+        __schema16: components["schemas"]["__schema13"];
+        __schema17: components["schemas"]["__schema14"];
+        __schema18: components["schemas"]["__schema15"];
         /** Format: date-time */
-        __schema11: string;
-        __schema12: number;
-        __schema13: {
-            [key: string]: components["schemas"]["__schema14"];
+        __schema19: string;
+        __schema20: number;
+        __schema21: {
+            [key: string]: components["schemas"]["__schema22"];
         };
-        __schema14: (string | number | boolean | null) | components["schemas"]["__schema14"][] | {
-            [key: string]: components["schemas"]["__schema14"];
+        __schema22: (string | number | boolean | null) | components["schemas"]["__schema22"][] | {
+            [key: string]: components["schemas"]["__schema22"];
         };
-        __schema15: {
+        __schema23: {
             text: string;
         };
-        __schema16: string;
-        __schema17: number;
-        __schema18: string;
-        __schema19: string;
-        __schema20: components["schemas"]["__schema21"][];
-        __schema21: components["schemas"]["__schema22"] | string;
-        __schema22: string;
-        __schema23: {
+        __schema24: string;
+        __schema25: number;
+        __schema26: string;
+        __schema27: string;
+        __schema28: components["schemas"]["__schema29"][];
+        __schema29: components["schemas"]["__schema30"] | string;
+        __schema30: string;
+        __schema31: {
             content: string;
             /** @default [] */
-            excerpts: components["schemas"]["__schema24"][];
-            handle: components["schemas"]["__schema22"];
+            excerpts: components["schemas"]["__schema32"][];
+            handle: components["schemas"]["__schema30"];
             /** @default null */
             key: string | null;
         };
-        __schema24: string;
-        __schema25: {
+        __schema32: string;
+        __schema33: {
             /** @enum {string} */
             asserted_by: "user" | "agent" | "document" | "tool";
             /** @enum {string} */
             audience: "private" | "space" | "public";
             /** @enum {string} */
             confidence: "high" | "medium" | "low";
-            created: components["schemas"]["__schema27"];
-            id: components["schemas"]["__schema26"];
+            created: components["schemas"]["__schema35"];
+            id: components["schemas"]["__schema34"];
             /** @default [] */
-            links: components["schemas"]["__schema26"][];
-            observed_at: components["schemas"]["__schema27"];
+            links: components["schemas"]["__schema34"][];
+            observed_at: components["schemas"]["__schema35"];
             /** @constant */
             schema_version: 1;
             source: {
@@ -3442,69 +5922,294 @@ export interface components {
             /** @enum {string} */
             status: "active" | "superseded" | "retracted" | "disputed";
             /** @default null */
-            superseded_by: components["schemas"]["__schema26"] | null;
+            superseded_by: components["schemas"]["__schema34"] | null;
             /** @default [] */
-            supersedes: components["schemas"]["__schema26"][];
+            supersedes: components["schemas"]["__schema34"][];
             /** @default [] */
             tags: string[];
             title: string;
             /** @enum {string} */
             type: "fact" | "preference" | "decision" | "procedure" | "reference" | "event";
-            updated: components["schemas"]["__schema27"];
-            valid_from: components["schemas"]["__schema27"];
+            updated: components["schemas"]["__schema35"];
+            valid_from: components["schemas"]["__schema35"];
             /** @default null */
-            valid_until: components["schemas"]["__schema27"] | null;
+            valid_until: components["schemas"]["__schema35"] | null;
         };
-        __schema26: string;
+        __schema34: string;
         /** Format: date */
-        __schema27: string;
+        __schema35: string;
         /** @default 0 */
-        __schema28: number;
+        __schema36: number;
         /** @default 200 */
-        __schema29: number;
-        __schema30: ("job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice")[];
-        __schema31: {
+        __schema37: number;
+        __schema38: ("job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice")[];
+        __schema39: {
+            agent_id: components["schemas"]["__schema40"];
+            composer: components["schemas"]["__schema43"];
+            created_at: components["schemas"]["__schema44"];
+            id: components["schemas"]["__schema40"];
+            plan_id: components["schemas"]["__schema40"] | null;
+            status: components["schemas"]["__schema42"];
+            title: components["schemas"]["__schema41"];
+            updated_at: components["schemas"]["__schema44"];
+        };
+        __schema40: string;
+        __schema41: string;
+        /** @enum {string} */
+        __schema42: "idle" | "queued" | "working" | "streaming" | "needs_you" | "paused" | "done" | "failed" | "stopped";
+        /** @enum {string} */
+        __schema43: "send" | "pause" | "resume" | "stop";
+        /** Format: date-time */
+        __schema44: string;
+        __schema45: {
+            reason: components["schemas"]["__schema41"];
+            /** @constant */
+            status: "not_available";
+        };
+        __schema46: {
+            conversation: components["schemas"]["__schema39"];
+        };
+        __schema47: number;
+        /** Format: uri */
+        __schema48: string;
+        __schema49: {
+            facts: components["schemas"]["__schema50"][];
+            id: components["schemas"]["__schema40"];
+            image?: components["schemas"]["__schema48"];
+            meta: string;
+            primary_action: components["schemas"]["__schema51"] | null;
+            secondary_actions: components["schemas"]["__schema51"][];
+            source_connection: components["schemas"]["__schema40"] | null;
+            title: components["schemas"]["__schema41"];
+        };
+        __schema50: {
+            label: components["schemas"]["__schema41"];
+            value: components["schemas"]["__schema41"];
+        };
+        __schema51: {
+            handle: components["schemas"]["__schema40"];
+            /** @enum {string} */
+            kind: "open" | "download" | "send" | "undo";
+            label: components["schemas"]["__schema41"];
+            url?: components["schemas"]["__schema48"];
+        };
+        __schema52: {
+            id: components["schemas"]["__schema40"];
+            undo?: {
+                handle: components["schemas"]["__schema40"];
+                valid_until: components["schemas"]["__schema44"];
+            };
+            what: components["schemas"]["__schema41"];
+            when: components["schemas"]["__schema44"];
+            where: components["schemas"]["__schema41"];
+        };
+        __schema53: {
+            conversation_id: components["schemas"]["__schema40"];
+            draft?: components["schemas"]["__schema55"];
+            id: components["schemas"]["__schema40"];
+            options: components["schemas"]["__schema54"][];
+            preview: components["schemas"]["__schema49"] | null;
+            version: components["schemas"]["__schema40"];
+            what: components["schemas"]["__schema41"];
+            why: components["schemas"]["__schema41"][];
+        };
+        /** @enum {string} */
+        __schema54: "allow_once" | "always" | "deny";
+        __schema55: {
+            bcc?: components["schemas"]["__schema41"][];
+            body: string;
+            cc?: components["schemas"]["__schema41"][];
+            /** @enum {string} */
+            channel: "email" | "message";
+            connection_id: components["schemas"]["__schema40"];
+            id: components["schemas"]["__schema40"];
+            recipient: components["schemas"]["__schema41"];
+            /** @enum {string} */
+            status: "draft" | "awaiting_permission" | "sent" | "discarded";
+            subject?: string;
+        };
+        __schema56: {
+            conversation_id: components["schemas"]["__schema40"] | null;
+            id: components["schemas"]["__schema40"];
+            if_ignored: components["schemas"]["__schema41"];
+            options: components["schemas"]["__schema57"];
+            text: components["schemas"]["__schema41"];
+            why: components["schemas"]["__schema41"][];
+        };
+        __schema57: components["schemas"]["__schema58"][];
+        __schema58: {
+            id: components["schemas"]["__schema40"];
+            label: components["schemas"]["__schema41"];
+        };
+        __schema59: {
+            bounds: {
+                count_cap: number;
+                expires_at: components["schemas"]["__schema44"];
+                reconsent_after_days: number;
+            };
+            connection_id: components["schemas"]["__schema40"];
+            created_at: components["schemas"]["__schema44"];
+            id: components["schemas"]["__schema40"];
+            /** @enum {string} */
+            kind: "send_message" | "create_event" | "change_event" | "delete_event" | "save_file" | "restore_file" | "discard_draft";
+            recipient_class: components["schemas"]["__schema41"];
+            text: components["schemas"]["__schema41"];
+            used: components["schemas"]["__schema47"];
+        };
+        __schema60: {
+            /** @constant */
+            status: "ok";
+        };
+        __schema61: {
+            allowed_connection_ids: components["schemas"]["__schema69"];
+            asks_before_acting: components["schemas"]["__schema70"];
+            colour: components["schemas"]["__schema64"];
+            eye_colour: components["schemas"]["__schema66"];
+            face_image?: components["schemas"]["__schema71"];
+            id: components["schemas"]["__schema40"];
+            name: components["schemas"]["__schema62"];
+            role: components["schemas"]["__schema63"];
+            space_id: components["schemas"]["__schema40"];
+            standing_instruction: components["schemas"]["__schema68"];
+            surface: components["schemas"]["__schema65"];
+            tone: components["schemas"]["__schema67"];
+            usage: {
+                conversations: components["schemas"]["__schema47"];
+                last_used: components["schemas"]["__schema44"] | null;
+            };
+        };
+        __schema62: string;
+        __schema63: string;
+        __schema64: string;
+        /** @enum {string} */
+        __schema65: "rounded" | "blob" | "diamond" | "octagon" | "gear";
+        __schema66: string;
+        __schema67: string;
+        __schema68: string;
+        __schema69: components["schemas"]["__schema40"][];
+        __schema70: boolean;
+        __schema71: components["schemas"]["__schema48"];
+        __schema72: {
+            agent: components["schemas"]["__schema61"];
+        };
+        __schema73: {
+            category: components["schemas"]["__schema41"];
+            conversation_ids: components["schemas"]["__schema40"][];
+            file_ids: components["schemas"]["__schema40"][];
+            id: components["schemas"]["__schema40"];
+            milestones: {
+                assignee: {
+                    /** @constant */
+                    kind: "person";
+                } | {
+                    agent_id: components["schemas"]["__schema40"];
+                    /** @constant */
+                    kind: "agent";
+                };
+                done: boolean;
+                id: components["schemas"]["__schema40"];
+                schedule_at?: components["schemas"]["__schema44"];
+                status: components["schemas"]["__schema42"];
+                title: components["schemas"]["__schema41"];
+            }[];
+            next_step: components["schemas"]["__schema41"] | null;
+            progress_percent: number;
+            title: components["schemas"]["__schema41"];
+            updated_at: components["schemas"]["__schema44"];
+        };
+        __schema74: {
+            plan: components["schemas"]["__schema73"];
+        };
+        __schema75: {
+            profile: {
+                day_hours: {
+                    end: string;
+                    start: string;
+                };
+                name: string;
+                time_zone: string;
+            };
+        };
+        __schema76: {
+            created_at: components["schemas"]["__schema44"];
+            /** @default false */
+            done: boolean;
+            due_at: components["schemas"]["__schema44"] | null;
+            id: components["schemas"]["__schema40"];
+            title: components["schemas"]["__schema41"];
+            updated_at: components["schemas"]["__schema44"];
+        };
+        __schema77: {
+            task: components["schemas"]["__schema76"];
+        };
+        __schema78: {
+            enabled: boolean;
+            id: components["schemas"]["__schema40"];
+            runs: {
+                finished_at: components["schemas"]["__schema44"] | null;
+                id: components["schemas"]["__schema40"];
+                started_at: components["schemas"]["__schema44"];
+                status: components["schemas"]["__schema42"];
+            }[];
+            schedule: components["schemas"]["__schema41"];
+            title: components["schemas"]["__schema41"];
+        };
+        __schema79: {
+            automation: components["schemas"]["__schema78"];
+        };
+        __schema80: {
+            session: {
+                id: components["schemas"]["__schema40"];
+                preview_frame: components["schemas"]["__schema48"] | null;
+                /** @enum {string} */
+                status: "working" | "needs_you" | "done" | "stopped";
+                task_label: components["schemas"]["__schema41"];
+                url: components["schemas"]["__schema48"];
+            };
+        };
+        __schema81: {
             /** @enum {string} */
             attention_status: "normal" | "frequency_reduced" | "needs_attention";
-            budget: components["schemas"]["__schema43"];
+            budget: components["schemas"]["__schema93"];
             cadence_multiplier: number;
-            constraints: components["schemas"]["__schema36"];
-            created_at: components["schemas"]["__schema41"];
-            created_by: components["schemas"]["__schema44"];
+            constraints: components["schemas"]["__schema86"];
+            created_at: components["schemas"]["__schema91"];
+            created_by: components["schemas"]["__schema94"];
             /** @default [] */
             deferred_questions: {
-                because: components["schemas"]["__schema48"];
-                blocks_external_effect: components["schemas"]["__schema51"];
-                created_at: components["schemas"]["__schema41"];
-                deadline_at: components["schemas"]["__schema52"];
-                if_ignored: components["schemas"]["__schema50"];
-                text: components["schemas"]["__schema47"];
+                because: components["schemas"]["__schema98"];
+                blocks_external_effect: components["schemas"]["__schema101"];
+                created_at: components["schemas"]["__schema91"];
+                deadline_at: components["schemas"]["__schema102"];
+                if_ignored: components["schemas"]["__schema100"];
+                options?: components["schemas"]["__schema103"];
+                text: components["schemas"]["__schema97"];
             }[];
-            id: components["schemas"]["__schema32"];
+            id: components["schemas"]["__schema82"];
             /** @enum {string} */
             importance: "routine" | "important";
-            lease_epoch: components["schemas"]["__schema39"];
-            next_wake_at: components["schemas"]["__schema40"];
-            objective: components["schemas"]["__schema35"];
-            revision: components["schemas"]["__schema38"];
+            lease_epoch: components["schemas"]["__schema89"];
+            next_wake_at: components["schemas"]["__schema90"];
+            objective: components["schemas"]["__schema85"];
+            revision: components["schemas"]["__schema88"];
             /** @enum {string} */
             scheduling_class: "interactive" | "background" | "quiet";
-            space_id: components["schemas"]["__schema33"];
-            state: components["schemas"]["__schema37"];
-            state_version: components["schemas"]["__schema45"];
-            substrate_disposition: components["schemas"]["__schema46"];
-            title: components["schemas"]["__schema34"];
+            space_id: components["schemas"]["__schema83"];
+            state: components["schemas"]["__schema87"];
+            state_version: components["schemas"]["__schema95"];
+            substrate_disposition: components["schemas"]["__schema96"];
+            title: components["schemas"]["__schema84"];
             unread_results: number;
             unread_threshold: number;
-            updated_at: components["schemas"]["__schema41"];
-            visible_status: components["schemas"]["__schema37"] | ("frequency_reduced" | "needs_attention");
-            wait: components["schemas"]["__schema42"];
+            updated_at: components["schemas"]["__schema91"];
+            visible_status: components["schemas"]["__schema87"] | ("frequency_reduced" | "needs_attention");
+            wait: components["schemas"]["__schema92"];
         };
-        __schema32: string;
-        __schema33: string;
-        __schema34: string;
-        __schema35: string;
-        __schema36: {
+        __schema82: string;
+        __schema83: string;
+        __schema84: string;
+        __schema85: string;
+        __schema86: {
             /** @default [] */
             allowed_domains: string[];
             /**
@@ -3532,13 +6237,13 @@ export interface components {
             public_compartment: boolean;
         };
         /** @enum {string} */
-        __schema37: "queued" | "running" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "needs_reconciliation" | "completed" | "failed" | "cancelled";
-        __schema38: number;
-        __schema39: number;
-        __schema40: components["schemas"]["__schema41"] | null;
+        __schema87: "queued" | "running" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "needs_reconciliation" | "completed" | "failed" | "cancelled";
+        __schema88: number;
+        __schema89: number;
+        __schema90: components["schemas"]["__schema91"] | null;
         /** Format: date-time */
-        __schema41: string;
-        __schema42: {
+        __schema91: string;
+        __schema92: {
             /** @constant */
             kind: "none";
         } | {
@@ -3552,14 +6257,14 @@ export interface components {
         } | {
             /** @constant */
             kind: "timer";
-            wake_at: components["schemas"]["__schema41"];
+            wake_at: components["schemas"]["__schema91"];
         } | {
-            deadline_at: components["schemas"]["__schema41"] | null;
+            deadline_at: components["schemas"]["__schema91"] | null;
             /** @constant */
             kind: "event";
             trigger_id: string;
         };
-        __schema43: {
+        __schema93: {
             max_actions: number;
             max_attempts: number;
             max_output_tokens: number;
@@ -3568,97 +6273,99 @@ export interface components {
             max_wall_ms: number;
         };
         /** @enum {string} */
-        __schema44: "owner" | "trigger" | "system";
-        __schema45: number;
+        __schema94: "owner" | "trigger" | "system";
+        __schema95: number;
         /** @enum {string} */
-        __schema46: "remote_recoverable" | "timer_or_event" | "local_process_interrupted" | "external_uncertain";
-        __schema47: string;
-        __schema48: components["schemas"]["__schema49"][];
-        __schema49: string;
-        __schema50: string;
+        __schema96: "remote_recoverable" | "timer_or_event" | "local_process_interrupted" | "external_uncertain";
+        __schema97: string;
+        __schema98: components["schemas"]["__schema99"][];
+        __schema99: string;
+        __schema100: string;
         /** @default false */
-        __schema51: boolean;
+        __schema101: boolean;
         /** @default null */
-        __schema52: components["schemas"]["__schema41"] | null;
-        __schema53: {
+        __schema102: components["schemas"]["__schema91"] | null;
+        __schema103: components["schemas"]["__schema57"];
+        __schema104: {
             event_cursor: number | null;
-            input_digest: components["schemas"]["__schema55"] | null;
+            input_digest: components["schemas"]["__schema106"] | null;
             job_id: string | null;
             job_revision: number | null;
             /** @enum {string} */
             state: "accepted" | "rejected" | "unknown_durability";
-            submission_id: components["schemas"]["__schema54"];
+            submission_id: components["schemas"]["__schema105"];
         };
-        __schema54: string;
-        __schema55: string;
-        __schema56: components["schemas"]["__schema57"];
-        __schema57: {
+        __schema105: string;
+        __schema106: string;
+        __schema107: components["schemas"]["__schema108"];
+        __schema108: {
             code: string;
             detail?: {
                 [key: string]: unknown;
             };
             message: string;
         };
-        __schema58: {
-            error: components["schemas"]["__schema57"];
+        __schema109: {
+            error: components["schemas"]["__schema108"];
         };
-        __schema59: {
+        __schema110: {
             answer: string | null;
-            answered_at: components["schemas"]["__schema41"] | null;
+            answered_at: components["schemas"]["__schema91"] | null;
             attempt_id: string | null;
-            because: components["schemas"]["__schema48"];
-            blocks_external_effect: components["schemas"]["__schema51"];
-            created_at: components["schemas"]["__schema41"];
-            deadline_at: components["schemas"]["__schema52"];
+            because: components["schemas"]["__schema98"];
+            blocks_external_effect: components["schemas"]["__schema101"];
+            created_at: components["schemas"]["__schema91"];
+            deadline_at: components["schemas"]["__schema102"];
             id: string;
-            if_ignored: components["schemas"]["__schema50"];
+            if_ignored: components["schemas"]["__schema100"];
             job_id: string | null;
             job_title: string | null;
             key: string | null;
+            options?: components["schemas"]["__schema103"];
             /** @enum {string} */
             source: "job" | "memory";
             space_id: string | null;
             /** @enum {string} */
             state: "open" | "answered" | "withdrawn";
-            text: components["schemas"]["__schema47"];
+            text: components["schemas"]["__schema97"];
         };
-        __schema60: {
+        __schema111: {
             actions: {
-                dispatched_at: components["schemas"]["__schema41"] | null;
+                dispatched_at: components["schemas"]["__schema91"] | null;
                 id: string;
                 job_id: string;
-                receipt: components["schemas"]["__schema61"] | null;
+                receipt: components["schemas"]["__schema112"] | null;
                 status: string;
             }[];
             cursor: number;
             epoch: number | null;
-            jobs: components["schemas"]["__schema31"][];
+            jobs: components["schemas"]["__schema81"][];
         };
-        __schema61: {
-            [key: string]: components["schemas"]["__schema62"];
+        __schema112: {
+            [key: string]: components["schemas"]["__schema113"];
         };
-        __schema62: (string | number | boolean | null) | components["schemas"]["__schema62"][] | {
-            [key: string]: components["schemas"]["__schema62"];
+        __schema113: (string | number | boolean | null) | components["schemas"]["__schema113"][] | {
+            [key: string]: components["schemas"]["__schema113"];
         };
-        __schema63: {
-            due_at: components["schemas"]["__schema41"];
+        __schema114: {
+            due_at: components["schemas"]["__schema91"];
             id: string;
             job_id: string;
             /** @enum {string} */
             kind: "timer" | "remote_task" | "local_process";
-            operation_key: components["schemas"]["__schema54"];
+            operation_key: components["schemas"]["__schema105"];
             remote_ref: string | null;
-            result: components["schemas"]["__schema61"] | null;
+            result: components["schemas"]["__schema112"] | null;
             /** @enum {string} */
             state: "registered" | "ready" | "claimed" | "settled" | "interrupted" | "unknown";
-            substrate_disposition: components["schemas"]["__schema46"];
+            substrate_disposition: components["schemas"]["__schema96"];
             version: number;
         };
-        __schema64: {
-            acknowledged_at: components["schemas"]["__schema41"] | null;
+        __schema115: {
+            acknowledged_at: components["schemas"]["__schema91"] | null;
             coalesce_key: string;
-            created_at: components["schemas"]["__schema41"];
-            fulfilled_at: components["schemas"]["__schema41"] | null;
+            created_at: components["schemas"]["__schema91"];
+            fulfilled_at: components["schemas"]["__schema91"] | null;
             id: string;
             job_id: string | null;
             /** @enum {string} */
@@ -3666,11 +6373,11 @@ export interface components {
             message: string | null;
             /** @enum {string} */
             state: "owed" | "acknowledged" | "fulfilled" | "needs_retransmission";
-            submission_id: components["schemas"]["__schema54"];
+            submission_id: components["schemas"]["__schema105"];
         };
-        __schema65: {
-            attempted_at: components["schemas"]["__schema41"] | null;
-            because: components["schemas"]["__schema49"][];
+        __schema116: {
+            attempted_at: components["schemas"]["__schema91"] | null;
+            because: components["schemas"]["__schema99"][];
             coalesce_key: string;
             content: {
                 attempt_id: string;
@@ -3679,159 +6386,159 @@ export interface components {
                 kind: "answer" | "question" | "status";
                 text: string;
             } | null;
-            content_hash: components["schemas"]["__schema55"];
-            created_at: components["schemas"]["__schema41"];
-            delivered_at: components["schemas"]["__schema41"] | null;
+            content_hash: components["schemas"]["__schema106"];
+            created_at: components["schemas"]["__schema91"];
+            delivered_at: components["schemas"]["__schema91"] | null;
             delivery_attempt: number;
             delivery_key: string;
             id: string;
-            if_ignored: components["schemas"]["__schema50"];
+            if_ignored: components["schemas"]["__schema100"];
             obligation_ids: string[];
             /** @enum {string} */
             state: "pending" | "attempted" | "delivered" | "superseded";
         };
-        __schema66: {
-            error?: components["schemas"]["__schema56"];
-            job: components["schemas"]["__schema67"] | null;
-            receipt: components["schemas"]["__schema53"];
+        __schema117: {
+            error?: components["schemas"]["__schema107"];
+            job: components["schemas"]["__schema118"] | null;
+            receipt: components["schemas"]["__schema104"];
         };
-        __schema67: {
-            budget: components["schemas"]["__schema43"];
-            constraints: components["schemas"]["__schema36"];
-            created_at: components["schemas"]["__schema41"];
-            created_by: components["schemas"]["__schema44"];
-            id: components["schemas"]["__schema32"];
-            lease_epoch: components["schemas"]["__schema39"];
-            next_wake_at: components["schemas"]["__schema40"];
-            objective: components["schemas"]["__schema35"];
-            revision: components["schemas"]["__schema38"];
-            space_id: components["schemas"]["__schema33"];
-            state: components["schemas"]["__schema37"];
-            state_version: components["schemas"]["__schema45"];
-            title: components["schemas"]["__schema34"];
-            updated_at: components["schemas"]["__schema41"];
-            wait: components["schemas"]["__schema42"];
+        __schema118: {
+            budget: components["schemas"]["__schema93"];
+            constraints: components["schemas"]["__schema86"];
+            created_at: components["schemas"]["__schema91"];
+            created_by: components["schemas"]["__schema94"];
+            id: components["schemas"]["__schema82"];
+            lease_epoch: components["schemas"]["__schema89"];
+            next_wake_at: components["schemas"]["__schema90"];
+            objective: components["schemas"]["__schema85"];
+            revision: components["schemas"]["__schema88"];
+            space_id: components["schemas"]["__schema83"];
+            state: components["schemas"]["__schema87"];
+            state_version: components["schemas"]["__schema95"];
+            title: components["schemas"]["__schema84"];
+            updated_at: components["schemas"]["__schema91"];
+            wait: components["schemas"]["__schema92"];
         };
-        __schema68: {
-            audience: components["schemas"]["__schema72"];
+        __schema119: {
+            audience: components["schemas"]["__schema123"];
             /**
              * @default owner
              * @enum {string}
              */
             author: "owner" | "external";
             content_ref: string | null;
-            eligibility_generation: components["schemas"]["__schema73"];
-            event_at: components["schemas"]["__schema41"];
-            ingested_at: components["schemas"]["__schema41"];
-            origin_trust: components["schemas"]["__schema74"];
+            eligibility_generation: components["schemas"]["__schema124"];
+            event_at: components["schemas"]["__schema91"];
+            ingested_at: components["schemas"]["__schema91"];
+            origin_trust: components["schemas"]["__schema125"];
             owner_id: string;
-            publisher: components["schemas"]["__schema70"];
-            source_id: components["schemas"]["__schema69"];
-            source_identity: components["schemas"]["__schema70"];
+            publisher: components["schemas"]["__schema121"];
+            source_id: components["schemas"]["__schema120"];
+            source_identity: components["schemas"]["__schema121"];
             /** @enum {string} */
             source_type: "message" | "document" | "observation" | "receipt" | "assistant" | "owner_edit";
-            source_version: components["schemas"]["__schema70"];
+            source_version: components["schemas"]["__schema121"];
             space_id: string;
             /** @enum {string} */
             state: "active" | "suppressed" | "deleted" | "revoked";
-            stream: components["schemas"]["__schema70"];
-            stream_sequence: components["schemas"]["__schema71"];
+            stream: components["schemas"]["__schema121"];
+            stream_sequence: components["schemas"]["__schema122"];
         };
-        __schema69: string;
-        __schema70: string;
-        __schema71: number;
+        __schema120: string;
+        __schema121: string;
+        __schema122: number;
         /** @enum {string} */
-        __schema72: "private" | "space" | "public";
-        __schema73: number;
+        __schema123: "private" | "space" | "public";
+        __schema124: number;
         /** @enum {string} */
-        __schema74: "owner" | "verified_connector" | "external_content" | "inferred" | "unknown";
-        __schema75: {
-            access_generation: components["schemas"]["__schema73"];
-            data_revision: components["schemas"]["__schema73"];
-            eligibility_generation: components["schemas"]["__schema73"];
-            policy_generation: components["schemas"]["__schema73"];
+        __schema125: "owner" | "verified_connector" | "external_content" | "inferred" | "unknown";
+        __schema126: {
+            access_generation: components["schemas"]["__schema124"];
+            data_revision: components["schemas"]["__schema124"];
+            eligibility_generation: components["schemas"]["__schema124"];
+            policy_generation: components["schemas"]["__schema124"];
             restore_ready: boolean;
             space_id: string;
         };
-        __schema76: string;
-        __schema77: string;
-        __schema78: string;
+        __schema127: string;
+        __schema128: string;
+        __schema129: string;
         /** @enum {string} */
-        __schema79: "user_statement" | "document_assertion" | "checked_fact" | "inferred" | "preference" | "exception" | "historical";
+        __schema130: "user_statement" | "document_assertion" | "checked_fact" | "inferred" | "preference" | "exception" | "historical";
         /** @enum {string} */
-        __schema80: "attributed" | "checked" | "tentative" | "disputed";
+        __schema131: "attributed" | "checked" | "tentative" | "disputed";
         /** @enum {string} */
-        __schema81: "active" | "superseded" | "historical" | "retracted" | "disputed";
-        __schema82: {
-            end: components["schemas"]["__schema71"];
-            source_id: components["schemas"]["__schema69"];
-            source_version: components["schemas"]["__schema70"];
-            start: components["schemas"]["__schema73"];
+        __schema132: "active" | "superseded" | "historical" | "retracted" | "disputed";
+        __schema133: {
+            end: components["schemas"]["__schema122"];
+            source_id: components["schemas"]["__schema120"];
+            source_version: components["schemas"]["__schema121"];
+            start: components["schemas"]["__schema124"];
         };
-        __schema83: {
-            claim_id: components["schemas"]["__schema76"];
+        __schema134: {
+            claim_id: components["schemas"]["__schema127"];
             content: string | null;
-            data_revision: components["schemas"]["__schema71"];
-            factual_status: components["schemas"]["__schema80"];
-            kind: components["schemas"]["__schema79"];
+            data_revision: components["schemas"]["__schema122"];
+            factual_status: components["schemas"]["__schema131"];
+            kind: components["schemas"]["__schema130"];
             /** @default inferred */
-            origin_trust: components["schemas"]["__schema74"];
+            origin_trust: components["schemas"]["__schema125"];
             protected: boolean;
-            recorded_at: components["schemas"]["__schema41"];
-            revision: components["schemas"]["__schema71"];
-            sources: components["schemas"]["__schema82"][];
-            status: components["schemas"]["__schema81"];
-            superseded_at: components["schemas"]["__schema41"] | null;
-            valid_from: components["schemas"]["__schema41"];
-            valid_until: components["schemas"]["__schema41"] | null;
+            recorded_at: components["schemas"]["__schema91"];
+            revision: components["schemas"]["__schema122"];
+            sources: components["schemas"]["__schema133"][];
+            status: components["schemas"]["__schema132"];
+            superseded_at: components["schemas"]["__schema91"] | null;
+            valid_from: components["schemas"]["__schema91"];
+            valid_until: components["schemas"]["__schema91"] | null;
         };
-        __schema84: {
+        __schema135: {
             /** @enum {string} */
             cleanup: "pending" | "complete";
-            generation: components["schemas"]["__schema75"];
+            generation: components["schemas"]["__schema126"];
         };
-        __schema85: string;
+        __schema136: string;
         /** @default null */
-        __schema86: components["schemas"]["__schema78"] | null;
-        __schema87: boolean;
-        __schema88: string;
-        __schema89: string;
-        __schema90: {
+        __schema137: components["schemas"]["__schema129"] | null;
+        __schema138: boolean;
+        __schema139: string;
+        __schema140: string;
+        __schema141: {
             field: string;
-            handle: components["schemas"]["__schema77"];
-            key: components["schemas"]["__schema78"] | null;
+            handle: components["schemas"]["__schema128"];
+            key: components["schemas"]["__schema129"] | null;
             /** @enum {string} */
             kind: "recipient" | "date" | "amount" | "identifier";
             value: string;
         };
-        __schema91: {
+        __schema142: {
             description: string;
             field: string;
-            handle: (components["schemas"]["__schema77"] | string) | null;
-            origin_trust: components["schemas"]["__schema74"];
+            handle: (components["schemas"]["__schema128"] | string) | null;
+            origin_trust: components["schemas"]["__schema125"];
             value: string;
         };
-        __schema92: string;
-        __schema93: string;
-        __schema94: {
+        __schema143: string;
+        __schema144: string;
+        __schema145: {
             /** @enum {string} */
             kind: "artifact" | "plan_step" | "action";
             location: string | null;
-            output_id: components["schemas"]["__schema88"];
-            output_version: components["schemas"]["__schema88"];
+            output_id: components["schemas"]["__schema139"];
+            output_version: components["schemas"]["__schema139"];
         };
-        __schema95: {
+        __schema146: {
             diff: string;
-            id: components["schemas"]["__schema70"];
+            id: components["schemas"]["__schema121"];
             path: string;
             /** @enum {string} */
             status: "pending" | "applied" | "discarded";
         };
-        __schema96: {
+        __schema147: {
             spaces: {
                 /** @enum {string} */
                 audience: "owner";
-                created_at: components["schemas"]["__schema41"];
+                created_at: components["schemas"]["__schema91"];
                 git_path: string;
                 id: string;
                 /** @enum {string} */
@@ -3839,22 +6546,22 @@ export interface components {
                 name: string;
             }[];
         };
-        __schema97: {
-            job: components["schemas"]["__schema67"];
+        __schema148: {
+            job: components["schemas"]["__schema118"];
         };
-        __schema98: {
+        __schema149: {
             context_snapshot_ref: string | null;
-            ended_at: components["schemas"]["__schema41"] | null;
+            ended_at: components["schemas"]["__schema91"] | null;
             epoch: number;
             id: string;
             job_id: string;
             model: string;
             model_actual: string | null;
             outcome: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced") | null;
-            outcome_detail: components["schemas"]["__schema61"] | null;
+            outcome_detail: components["schemas"]["__schema112"] | null;
             provider: string;
             runtime_version: string;
-            started_at: components["schemas"]["__schema41"];
+            started_at: components["schemas"]["__schema91"];
             usage: {
                 /** @default 0 */
                 cached_input_tokens: number;
@@ -3868,13 +6575,13 @@ export interface components {
                 usd_est: number;
             };
         };
-        __schema99: {
+        __schema150: {
             events: {
                 attempt_id: string | null;
-                created_at: components["schemas"]["__schema41"];
+                created_at: components["schemas"]["__schema91"];
                 dedup_key: string;
                 job_id: string | null;
-                payload: components["schemas"]["__schema61"];
+                payload: components["schemas"]["__schema112"];
                 seq: number;
                 /** @enum {string} */
                 type: "job_created" | "job_state_changed" | "attempt_started" | "attempt_ended" | "turn_started" | "text_delta" | "tool_call_proposed" | "tool_result" | "action_requested" | "action_status_changed" | "approval_requested" | "approval_decided" | "knowledge_changed" | "notice";
@@ -3882,41 +6589,41 @@ export interface components {
             has_more: boolean;
             next_cursor: number;
         };
-        __schema100: {
+        __schema151: {
             attempt_id: string;
             authorization_ref: string | null;
             budget_reservation: string | null;
-            canonical_payload: components["schemas"]["__schema61"];
+            canonical_payload: components["schemas"]["__schema112"];
             connection_id: string;
-            created_at: components["schemas"]["__schema41"];
-            dispatched_at: components["schemas"]["__schema41"] | null;
-            effect_class: components["schemas"]["__schema101"];
+            created_at: components["schemas"]["__schema91"];
+            dispatched_at: components["schemas"]["__schema91"] | null;
+            effect_class: components["schemas"]["__schema152"];
             id: string;
             idempotency_key: string;
             /** @default null */
             intent_key: string | null;
             job_id: string;
             kind: string;
-            payload_hash: components["schemas"]["__schema102"];
-            receipt: components["schemas"]["__schema61"] | null;
-            reconciliation: components["schemas"]["__schema61"] | null;
-            resolved_at: components["schemas"]["__schema41"] | null;
+            payload_hash: components["schemas"]["__schema153"];
+            receipt: components["schemas"]["__schema112"] | null;
+            reconciliation: components["schemas"]["__schema112"] | null;
+            resolved_at: components["schemas"]["__schema91"] | null;
             /** @enum {string} */
             status: "proposed" | "needs_approval" | "approved" | "denied" | "admitted" | "dispatched" | "succeeded" | "failed" | "unknown" | "unresolved";
         };
         /** @enum {string} */
-        __schema101: "read" | "write_reversible" | "write_external" | "spend";
-        __schema102: string;
-        __schema103: {
-            action: components["schemas"]["__schema100"];
+        __schema152: "read" | "write_reversible" | "write_external" | "spend";
+        __schema153: string;
+        __schema154: {
+            action: components["schemas"]["__schema151"];
         };
-        __schema104: {
-            created_at: components["schemas"]["__schema41"];
+        __schema155: {
+            created_at: components["schemas"]["__schema91"];
             /** @enum {string} */
             health: "unknown" | "ok" | "degraded" | "failing";
             id: string;
             label: string;
-            last_checked_at: components["schemas"]["__schema41"] | null;
+            last_checked_at: components["schemas"]["__schema91"] | null;
             /** @enum {string} */
             provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test";
             scopes: string[];
@@ -3924,14 +6631,14 @@ export interface components {
             /** @enum {string} */
             status: "active" | "disabled" | "error";
         };
-        __schema105: {
-            connection: components["schemas"]["__schema104"];
+        __schema156: {
+            connection: components["schemas"]["__schema155"];
         };
         /** @enum {string} */
-        __schema106: "fact" | "preference" | "decision" | "procedure" | "reference" | "event";
+        __schema157: "fact" | "preference" | "decision" | "procedure" | "reference" | "event";
         /** @enum {string} */
-        __schema107: "active" | "superseded" | "retracted" | "disputed";
-        __schema108: {
+        __schema158: "active" | "superseded" | "retracted" | "disputed";
+        __schema159: {
             body: string;
             frontmatter: {
                 /** @enum {string} */
@@ -3940,11 +6647,11 @@ export interface components {
                 audience: "private" | "space" | "public";
                 /** @enum {string} */
                 confidence: "high" | "medium" | "low";
-                created: components["schemas"]["__schema110"];
-                id: components["schemas"]["__schema109"];
+                created: components["schemas"]["__schema161"];
+                id: components["schemas"]["__schema160"];
                 /** @default [] */
-                links: components["schemas"]["__schema109"][];
-                observed_at: components["schemas"]["__schema110"];
+                links: components["schemas"]["__schema160"][];
+                observed_at: components["schemas"]["__schema161"];
                 /** @constant */
                 schema_version: 1;
                 source: {
@@ -3957,27 +6664,27 @@ export interface components {
                     sha256: string | null;
                 };
                 space: string;
-                status: components["schemas"]["__schema107"];
+                status: components["schemas"]["__schema158"];
                 /** @default null */
-                superseded_by: components["schemas"]["__schema109"] | null;
+                superseded_by: components["schemas"]["__schema160"] | null;
                 /** @default [] */
-                supersedes: components["schemas"]["__schema109"][];
+                supersedes: components["schemas"]["__schema160"][];
                 /** @default [] */
                 tags: string[];
                 title: string;
-                type: components["schemas"]["__schema106"];
-                updated: components["schemas"]["__schema110"];
-                valid_from: components["schemas"]["__schema110"];
+                type: components["schemas"]["__schema157"];
+                updated: components["schemas"]["__schema161"];
+                valid_from: components["schemas"]["__schema161"];
                 /** @default null */
-                valid_until: components["schemas"]["__schema110"] | null;
+                valid_until: components["schemas"]["__schema161"] | null;
             };
             id: string;
             path: string;
         };
-        __schema109: string;
+        __schema160: string;
         /** Format: date */
-        __schema110: string;
-        __schema111: string;
+        __schema161: string;
+        __schema162: string;
     };
     responses: never;
     parameters: never;

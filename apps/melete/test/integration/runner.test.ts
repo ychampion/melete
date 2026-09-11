@@ -19,7 +19,7 @@ import { type AttemptWake, QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, type ClaimedAttempt, type RunnerOptions } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { StubRuntimeAdapter, type StubStep } from '../../src/runtime/stub.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
@@ -146,7 +146,7 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     const { handle, queue } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
     await queue.boss.deleteAllJobs(QUEUES.recoveryScan);
-    await handle.sql`truncate "owner", "space" cascade`;
+    await resetTestRows(handle.sql);
     spaceId = newId('sp');
     await handle.db
       .insert(space)

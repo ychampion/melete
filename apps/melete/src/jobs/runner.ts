@@ -21,12 +21,13 @@ import {
   runtimeEvent,
   type SchedulingClass,
   type TransitionInput,
+  unavailable,
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { attempt, event, job } from '../db/schema.ts';
+import { attempt, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -110,6 +111,8 @@ export class AttemptRunner {
       let row = await this.jobs.lock(tx, wake.job_id, true);
       if (
         !row ||
+        row.paused ||
+        row.kind === 'command' ||
         row.leaseEpoch !== wake.expected_epoch ||
         row.stateVersion !== wake.expected_version ||
         !row.nextWakeAt ||
@@ -133,13 +136,20 @@ export class AttemptRunner {
         .where(eq(event.jobId, row.id));
       const attemptId = newId('att');
       const epoch = row.leaseEpoch + 1;
+      const available =
+        this.options.scopes === undefined
+          ? await tx
+              .select({ scopes: connection.scopes })
+              .from(connection)
+              .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')))
+          : [];
       const claims: CapabilityClaims = {
         job_id: row.id,
         attempt_id: attemptId,
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
-        scopes: this.options.scopes ?? [],
+        scopes: this.options.scopes ?? [...new Set(available.flatMap((item) => item.scopes))],
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
@@ -170,6 +180,7 @@ export class AttemptRunner {
         id: attemptId,
         jobId: row.id,
         epoch,
+        turnId: row.currentTurnId,
         revision: row.revision,
         policyGeneration: generations.policy_generation,
         connectionGenerations: generations.connection_generations,
@@ -193,6 +204,11 @@ export class AttemptRunner {
         payload: { epoch, revision: row.revision },
         dedupKey: `${attemptId}:started`,
       });
+      if (row.currentTurnId)
+        await tx
+          .update(experienceTurn)
+          .set({ status: 'working' })
+          .where(eq(experienceTurn.id, row.currentTurnId));
       return { bundle, claims };
     });
   }
@@ -287,6 +303,12 @@ export class AttemptRunner {
       )
         throw new AttemptBudgetExceeded('The attempt output-token budget is exhausted.');
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
+      if (current && row.currentTurnId && value.type === 'text_delta') {
+        await tx
+          .update(experienceTurn)
+          .set({ answer: sql`${experienceTurn.answer} || ${value.text}`, status: 'streaming' })
+          .where(eq(experienceTurn.id, row.currentTurnId));
+      }
       const payload: JsonObject =
         value.type === 'attempt_outcome'
           ? { ...value, kind: 'attempt_outcome' }
@@ -349,7 +371,14 @@ export class AttemptRunner {
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)
-      .where(eq(attempt.jobId, row.id));
+      .where(
+        and(
+          eq(attempt.jobId, row.id),
+          ['chat', 'routine'].includes(row.kind) && row.currentTurnId
+            ? eq(attempt.turnId, row.currentTurnId)
+            : undefined,
+        ),
+      );
     const remaining = Math.max(
       0,
       jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
@@ -389,6 +418,30 @@ export class AttemptRunner {
         input = { kind: 'attempt_budget_exhausted' };
         break;
     }
+    const completionVerified =
+      outcome.kind === 'completed' &&
+      input.kind === 'attempt_completed' &&
+      !input.has_unknown_action &&
+      input.all_actions_terminal &&
+      (!input.deliverable_declared || input.deliverable_satisfied);
+    const chatComplete = row.kind === 'chat' && completionVerified;
+    if (chatComplete) {
+      input = { kind: 'attempt_waiting_for_input' };
+      wait = { kind: 'user_input', question: 'What would you like to do next?' };
+    }
+    if (row.kind === 'routine' && completionVerified) {
+      const [schedule] = await tx
+        .select()
+        .from(trigger)
+        .where(
+          and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule'), eq(trigger.enabled, true)),
+        )
+        .limit(1);
+      if (schedule) {
+        input = { kind: 'attempt_waiting_for_event_or_time' };
+        wait = { kind: 'event', trigger_id: schedule.id, deadline_at: null };
+      }
+    }
     if (
       outcome.kind === 'completed' &&
       input.kind === 'attempt_completed' &&
@@ -404,8 +457,8 @@ export class AttemptRunner {
     const resolution = await resolveQuestions(tx, row, {
       attemptId,
       carried,
-      askable: wait.kind === 'user_input',
-      fallback: wait.kind === 'user_input' ? wait.question : undefined,
+      askable: wait.kind === 'user_input' && !chatComplete,
+      fallback: wait.kind === 'user_input' && !chatComplete ? wait.question : undefined,
     });
     if (resolution.asked && wait.kind === 'user_input')
       wait = { kind: 'user_input', question: resolution.asked.text };
@@ -424,7 +477,12 @@ export class AttemptRunner {
       jobId: row.id,
       attemptId,
       type: 'attempt_ended',
-      payload: { outcome },
+      payload: {
+        outcome,
+        ...(['chat', 'routine'].includes(row.kind)
+          ? { experience_completed: completionVerified }
+          : {}),
+      },
       dedupKey: `${attemptId}:ended`,
     });
     if (updated.state === 'waiting_for_event_or_time' && this.onWait)
@@ -440,7 +498,119 @@ export class AttemptRunner {
     const result = await attemptResult(tx, row, outcome, attemptId);
     for (const handler of this.onFinished)
       await handler(tx, updated, outcome, attemptId, { questions: carried, result });
+    if (row.currentTurnId)
+      await tx
+        .update(experienceTurn)
+        .set({
+          status:
+            outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
+              ? 'done'
+              : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
+                ? 'failed'
+                : 'needs_you',
+          ...('summary' in outcome
+            ? { answer: outcome.summary }
+            : outcome.kind === 'waiting_for_input' && outcome.draft
+              ? { answer: outcome.draft }
+              : {}),
+          finishedAt: new Date(),
+        })
+        .where(eq(experienceTurn.id, row.currentTurnId));
     return updated;
+  }
+
+  /** Stop fences new effects before signalling the adapter, and retains each streamed byte. */
+  async stopConversation(jobId: string): Promise<void> {
+    await this.jobs.transaction(async (tx) => {
+      const row = await this.jobs.lock(tx, jobId);
+      if (row?.kind !== 'chat') throw new ServiceError('not_found', 'Conversation not found.', 404);
+      if (!row.currentTurnId) return;
+      const [turn] = await tx
+        .select()
+        .from(experienceTurn)
+        .where(eq(experienceTurn.id, row.currentTurnId));
+      if (!turn || ['done', 'stopped', 'failed'].includes(turn.status)) return;
+      await tx
+        .update(job)
+        .set({
+          state: 'waiting_for_input',
+          wait: { kind: 'user_input', question: 'What would you like to do next?' },
+          leaseEpoch: row.leaseEpoch + 1,
+          stateVersion: row.stateVersion + 1,
+          nextWakeAt: null,
+          paused: false,
+          pauseRequested: false,
+        })
+        .where(eq(job.id, row.id));
+      await tx
+        .update(experienceTurn)
+        .set({ status: 'stopped', finishedAt: new Date() })
+        .where(eq(experienceTurn.id, turn.id));
+      await tx
+        .update(attempt)
+        .set({
+          outcome: 'fenced',
+          outcomeDetail: { kind: 'cancelled' },
+          endedAt: new Date(),
+          leaseExpiresAt: null,
+          leaseStatus: 'ended',
+        })
+        .where(and(eq(attempt.jobId, jobId), isNull(attempt.endedAt)));
+      await appendEvent(tx, {
+        jobId,
+        type: 'notice',
+        payload: { kind: 'experience_stopped', turn_id: turn.id },
+        dedupKey: `${turn.id}:stopped`,
+      });
+    });
+    this.interrupt(jobId);
+  }
+
+  async pauseConversation(jobId: string, resume: boolean) {
+    const row = await this.jobs.get(jobId);
+    if (row.kind !== 'chat') throw new ServiceError('not_found', 'Conversation not found.', 404);
+    const controls = this.runtime as RuntimeAdapter & {
+      pause?: (id: string) => Promise<boolean>;
+      resume?: (id: string) => Promise<boolean>;
+    };
+    if (row.state === 'running' && (!controls.pause || !controls.resume))
+      return unavailable(
+        'This assistant cannot pause and keep its place yet. You can stop this turn.',
+      );
+    if (!['queued', 'running'].includes(row.state))
+      return unavailable('There is no active task to pause.');
+    const [active] = await this.jobs.db
+      .select()
+      .from(attempt)
+      .where(and(eq(attempt.jobId, jobId), isNull(attempt.endedAt)))
+      .limit(1);
+    if (active) {
+      const accepted = resume
+        ? await controls.resume?.(active.id)
+        : await controls.pause?.(active.id);
+      if (!accepted) return unavailable('The assistant could not keep its place.');
+    }
+    await this.jobs.transaction(async (tx) => {
+      const current = await this.jobs.lock(tx, jobId);
+      if (!current || current.leaseEpoch !== row.leaseEpoch)
+        throw new ServiceError('state_changed', 'This turn has changed. Refresh it.', 409);
+      const [updated] = await tx
+        .update(job)
+        .set({ paused: !resume, pauseRequested: !resume })
+        .where(eq(job.id, jobId))
+        .returning();
+      await appendEvent(tx, {
+        jobId,
+        type: 'notice',
+        payload: {
+          kind: resume ? 'experience_resumed' : 'experience_paused',
+          turn_id: row.currentTurnId,
+        },
+        dedupKey: newId('pause'),
+      });
+      if (resume && updated?.state === 'queued') await this.jobs.enqueue(tx, updated, 'input');
+    });
+    return null;
   }
 
   async loseAttempt(attemptId: string, reason: string): Promise<boolean> {
@@ -462,7 +632,14 @@ export class AttemptRunner {
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)
-      .where(eq(attempt.jobId, row.id));
+      .where(
+        and(
+          eq(attempt.jobId, row.id),
+          ['chat', 'routine'].includes(row.kind) && row.currentTurnId
+            ? eq(attempt.turnId, row.currentTurnId)
+            : undefined,
+        ),
+      );
     await tx
       .update(attempt)
       .set({

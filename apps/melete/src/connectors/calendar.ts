@@ -55,6 +55,14 @@ const updatePayload = z
   })
   .strict()
   .refine((v) => Date.parse(v.end) > Date.parse(v.start));
+const deletePayload = z.strictObject({
+  uid: z.string().regex(/^act_[A-Za-z0-9_-]+$/),
+  etag: z
+    .string()
+    .min(1)
+    .max(500)
+    .regex(/^"[^"\r\n]+"$/),
+});
 const properties = {
   summary: { type: 'string', minLength: 1, maxLength: 1000 },
   start: { type: 'string', format: 'date-time' },
@@ -77,6 +85,23 @@ export const calendarManifest: ConnectorManifest = {
   ],
   health: true,
   tools: [
+    {
+      name: 'calendar.delete',
+      description: 'Remove a Melete-created event only if its observed ETag still matches.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['uid', 'etag'],
+        properties: {
+          uid: { type: 'string', pattern: '^act_[A-Za-z0-9_-]+$' },
+          etag: { type: 'string', maxLength: 500 },
+        },
+      },
+      effect_class: 'write_external',
+      required_scopes: ['calendar.delete'],
+      verify: true,
+      requires_approval: true,
+    },
     {
       name: 'calendar.list',
       description: 'List calendar event series, including recurrence rules.',
@@ -347,6 +372,23 @@ export class CalendarConnector implements Connector {
           reason: 'Imported ICS calendars are read-only.',
           retryable: false,
         };
+      if (action.kind === 'calendar.delete') {
+        const payload = deletePayload.parse(action.canonical_payload);
+        dispatched = true;
+        const response = await this.request('DELETE', payload.uid, null, ctx, {
+          'if-match': payload.etag,
+        });
+        await response.body?.cancel();
+        if (response.status >= 200 && response.status < 300)
+          return this.success(action, { uid: payload.uid, removed: true }, payload.uid);
+        return [401, 403, 404, 409, 412].includes(response.status)
+          ? {
+              outcome: 'failed',
+              reason: 'The event changed or could not be removed.',
+              retryable: false,
+            }
+          : { outcome: 'unknown', reason: 'Removal was not confirmed. Check the calendar.' };
+      }
       if (action.kind !== 'calendar.create' && action.kind !== 'calendar.update')
         return { outcome: 'failed', reason: 'Unknown calendar tool.', retryable: false };
       const update =
@@ -394,6 +436,24 @@ export class CalendarConnector implements Connector {
   }
 
   async verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult> {
+    if (this.config.mode === 'caldav' && action.kind === 'calendar.delete') {
+      try {
+        this.assertContext(action, ctx);
+        const payload = deletePayload.parse(action.canonical_payload);
+        const response = await this.request('GET', payload.uid, null, ctx);
+        await response.body?.cancel();
+        // Absence proves the desired state, but cannot attribute an uncertain deletion.
+        return {
+          decision: 'undecided',
+          reason:
+            response.status === 404
+              ? 'The event is absent, but this removal has no acknowledgement.'
+              : 'The event removal could not be confirmed.',
+        };
+      } catch {
+        return { decision: 'undecided', reason: 'Calendar verification unavailable.' };
+      }
+    }
     if (this.config.mode === 'ics' || !['calendar.create', 'calendar.update'].includes(action.kind))
       return {
         decision: 'unsupported',

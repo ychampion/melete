@@ -27,6 +27,8 @@ import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
+import { agentAccess, directSend } from '../experience/access.ts';
+import { plainText } from '../experience/projectors.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import {
   bindEffect,
@@ -49,7 +51,12 @@ import {
   type Query,
   recordId,
 } from './records.ts';
-import { collectOriginFields, resolveOriginWarnings, type TrustResolver } from './trust.ts';
+import {
+  collectOriginFields,
+  createTableTrustResolver,
+  resolveOriginWarnings,
+  type TrustResolver,
+} from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
 export type BrokerOptions = {
@@ -77,7 +84,12 @@ export type BrokerOptions = {
   approvalTtlMs?: number;
 };
 
-export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
+export type StandingGrantInput = {
+  job: LockedJob;
+  action: Action;
+  tool: ConnectorTool;
+  phase: 'proposal' | 'admission' | 'execution';
+};
 export type StandingGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<boolean>;
 
 /** What admission decided about one action before it reserved anything. */
@@ -152,6 +164,19 @@ export class BrokerService implements BrokerOperations {
     });
   }
 
+  /** The owner adapter asks the same origin resolver as admission, inside its decision lock. */
+  async origins(tx: Query, job: LockedJob, action: Action) {
+    return resolveOriginWarnings(tx, this.options.resolveTrust ?? createTableTrustResolver({}), {
+      space_id: job.space_id,
+      job_id: job.id,
+      connection_id: action.connection_id,
+      kind: action.kind,
+      effect_class: action.effect_class,
+      canonical_payload: action.canonical_payload,
+      fields: collectOriginFields(action.canonical_payload),
+    });
+  }
+
   private async tool(
     tx: Query,
     job: LockedJob,
@@ -159,6 +184,14 @@ export class BrokerService implements BrokerOperations {
     connectionId: string,
     kind: string,
   ) {
+    const access = await agentAccess(tx, job.id);
+    if (
+      access.paused ||
+      (access.allowed && !access.allowed.includes(connectionId)) ||
+      access.missingAgent ||
+      (access.chat && !access.agentId)
+    )
+      throw new BrokerFault('scope_denied');
     const [connection] = await tx`select provider, scopes, status from connection
       where id = ${connectionId} and space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
@@ -185,10 +218,18 @@ export class BrokerService implements BrokerOperations {
       const connections = await tx`select id, provider, scopes from connection
         where space_id = ${job.space_id} and status = 'active' order by id`;
       const tools: ToolSpec[] = [];
+      const access = await agentAccess(tx, job.id);
       for (const connection of connections) {
+        if (
+          access.missingAgent ||
+          (access.chat && !access.agentId) ||
+          (access.allowed && !access.allowed.includes(connection.id))
+        )
+          continue;
         const connector = this.options.connectors.get(connection.id);
         if (!connector || connector.manifest.provider !== connection.provider) continue;
         for (const tool of connector.manifest.tools) {
+          if (access.chat && directSend(tool.name)) continue;
           if (
             ![tool.name, ...tool.required_scopes].every(
               (s) => claims.scopes.includes(s) && connection.scopes.includes(s),
@@ -204,6 +245,20 @@ export class BrokerService implements BrokerOperations {
           });
         }
       }
+      if (access.chat)
+        tools.push({
+          name: 'say',
+          description:
+            'Tell the person in one or two first-person sentences what you will do next. Do not include reasoning, internal names, or technical details. This narration has no action cost and needs no approval.',
+          input_schema: {
+            type: 'object',
+            properties: { text: { type: 'string', minLength: 1, maxLength: 600 } },
+            required: ['text'],
+            additionalProperties: false,
+          },
+          effect_class: 'read',
+          connection_id: null,
+        });
       return tools.sort((a, b) =>
         a.name < b.name
           ? -1
@@ -264,12 +319,25 @@ export class BrokerService implements BrokerOperations {
     job: LockedJob,
     action: Action,
     tool: ConnectorTool,
+    phase: StandingGrantInput['phase'] = 'proposal',
   ): Promise<Admissibility> {
+    const access = await agentAccess(tx, job.id);
+    const requiresApproval =
+      needsApproval(tool) ||
+      Boolean(
+        access.agentId &&
+          access.asksBeforeActing &&
+          tool.effect_class !== 'read' &&
+          tool.name !== 'email.draft',
+      );
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? collectOriginFields(action.canonical_payload) : [];
     const warnings = await resolveOriginWarnings(
       tx,
-      gated ? this.options.resolveTrust : undefined,
+      gated
+        ? (this.options.resolveTrust ??
+            (this.options.resolveStandingGrant ? createTableTrustResolver({}) : undefined))
+        : undefined,
       {
         space_id: job.space_id,
         job_id: job.id,
@@ -283,14 +351,14 @@ export class BrokerService implements BrokerOperations {
     // A grant is only ever a shortcut past a question nobody needs to ask. It
     // never covers a value whose origin Melete cannot vouch for.
     const granted =
-      warnings.length === 0 && needsApproval(tool) && this.options.resolveStandingGrant
-        ? await this.options.resolveStandingGrant(tx, { job, action, tool })
+      warnings.length === 0 && requiresApproval && this.options.resolveStandingGrant
+        ? await this.options.resolveStandingGrant(tx, { job, action, tool, phase })
         : false;
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
-      requires_approval: needsApproval(tool) && !granted,
+      requires_approval: requiresApproval && !granted,
     };
   }
 
@@ -380,6 +448,9 @@ export class BrokerService implements BrokerOperations {
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
+      const access = await agentAccess(tx, job.id);
+      if (access.chat && directSend(request.kind))
+        throw new BrokerFault('scope_denied', 'Review the draft and use its send control.');
       const { tool } = await this.tool(tx, job, claims, request.connection_id, request.kind);
       this.validatePayload(tool, canonical.canonical);
       // The identity of the effect itself, independent of which attempt is
@@ -391,11 +462,14 @@ export class BrokerService implements BrokerOperations {
         connection_id: request.connection_id,
         kind: request.kind,
         payload_hash: canonical.hash,
+        ...(access.turnId ? { turn_id: access.turnId } : {}),
       });
       const ref =
         request.client_ref === undefined
           ? null
-          : `broker:proposal:${job.id}:${createHash('sha256').update(request.client_ref).digest('hex')}`;
+          : `broker:proposal:${job.id}:${createHash('sha256')
+              .update(access.turnId ? `${access.turnId}:${request.client_ref}` : request.client_ref)
+              .digest('hex')}`;
       if (ref) {
         const [event] = await tx`select payload from event where dedup_key = ${ref}`;
         if (event) {
@@ -465,7 +539,39 @@ export class BrokerService implements BrokerOperations {
     return this.proposalView(action, key, repeated);
   }
 
-  async decide(id: string, request: ApprovalDecisionRequest) {
+  async say(claims: CapabilityClaims, text: string, ref: string): Promise<void> {
+    const safe = plainText(text, '', 600);
+    if (
+      !safe ||
+      safe !== text.trim() ||
+      !/^(I\b|I['â€™]m\b|I['â€™]ll\b)/i.test(safe) ||
+      (safe.match(/[.!?](?:\s|$)/g)?.length ?? 0) > 2
+    )
+      throw new BrokerFault('payload_invalid', 'Use one or two plain first-person sentences.');
+    await this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, claims.job_id);
+      await checkAttempt(tx, job, claims);
+      await appendEvent(
+        tx,
+        job.id,
+        claims.attempt_id,
+        'notice',
+        { kind: 'experience_say', text: safe },
+        `say:${claims.attempt_id}:${createHash('sha256').update(ref).digest('hex')}`,
+      );
+    });
+  }
+
+  async decide(
+    id: string,
+    request: ApprovalDecisionRequest,
+    guard?: (
+      tx: Query,
+      job: LockedJob,
+      action: Action,
+      approval: Record<string, unknown>,
+    ) => Promise<void>,
+  ) {
     const original = await loadAction(this.sql, id);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
@@ -498,6 +604,7 @@ export class BrokerService implements BrokerOperations {
       );
       if (['cancelled', 'completed', 'failed'].includes(job.state))
         throw new BrokerFault('stale_epoch');
+      await guard?.(tx, job, action, approval);
       if (approval.decision) {
         if (approval.decision !== request.decision) throw new BrokerFault('action_not_admissible');
         return {
@@ -547,7 +654,7 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
-        const classified = await this.classify(tx, job, action, tool);
+        const classified = await this.classify(tx, job, action, tool, 'admission');
         let authorization: string | null = null;
         let expiresAt: string | null = null;
         if (classified.requires_approval) {
@@ -649,6 +756,14 @@ export class BrokerService implements BrokerOperations {
         where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
       const stored = await loadBinding(tx, action);
       try {
+        const access = await agentAccess(tx, job.id);
+        if (
+          access.paused ||
+          (access.allowed && !access.allowed.includes(action.connection_id)) ||
+          access.missingAgent ||
+          (access.chat && (!access.agentId || directSend(action.kind)))
+        )
+          throw new BrokerFault('scope_denied');
         const authority = await resolveEffectAuthority(
           tx,
           { job, action, phase: 'execution' },
@@ -679,7 +794,12 @@ export class BrokerService implements BrokerOperations {
         );
         // Admission authorized these origins. If the world has since learned
         // that one of them came from somewhere else, nothing leaves.
-        const classified = await this.classify(tx, job, action, tool);
+        const classified = await this.classify(tx, job, action, tool, 'execution');
+        if (classified.requires_approval && !action.authorization_ref)
+          throw new BrokerFault(
+            'approval_required',
+            'The standing permission no longer covers this action.',
+          );
         const [authorizing] = action.authorization_ref
           ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
           : [];

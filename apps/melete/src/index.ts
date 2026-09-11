@@ -11,6 +11,7 @@
 
 import type { RuntimeAdapter } from '@melete/contracts';
 import { Hono } from 'hono';
+import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
 import { mountAttention } from './api/attention.ts';
@@ -23,11 +24,16 @@ import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
+import { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { configuredConnectors, readConnectionConfig } from './connectors/configured.ts';
+import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { mountExperience } from './experience/routes.ts';
+import { resolveExperienceGrant } from './experience/rules.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -41,7 +47,7 @@ import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { filesystemSpaces } from './knowledge/spaces.ts';
-import { memoryScopeForSpace } from './memory/broker-trust.ts';
+import { createMemoryTrustResolver, memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
@@ -65,6 +71,10 @@ export type AppDeps = {
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
+  runner?: AttemptRunner;
+  broker?: BrokerService;
+  registry?: ConnectorRegistry;
+  sql?: Sql;
 };
 
 export function createApp(deps: AppDeps) {
@@ -94,9 +104,24 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
   if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
-  if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
+  const questions =
+    deps.questions ?? (deps.jobs ? new QuestionService(deps.jobs, submissions) : undefined);
+  if (questions) mountQuestions(app, questions);
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  if (deps.db)
+    mountExperience(app, {
+      db: deps.db,
+      jobs: deps.jobs,
+      submissions,
+      runner: deps.runner,
+      sql: deps.sql,
+      broker: deps.broker,
+      registry: deps.registry,
+      questions,
+      memoryJournal: deps.memory?.journal,
+      triggers: deps.triggers,
+    });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
 
@@ -148,6 +173,8 @@ export async function bootstrap(
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
+  let broker: BrokerService | undefined;
+  let registry: ConnectorRegistry | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
@@ -162,10 +189,28 @@ export async function bootstrap(
   try {
     if (handle) await migrateDatabase(handle);
     if (handle) {
+      registry = await configuredConnectors({
+        sql: handle.sql,
+        workRoot: env.MELETE_WORK_DIR,
+        spacesRoot: env.MELETE_SPACES_DIR,
+        masterKey: env.MELETE_MASTER_KEY,
+        connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
+        enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
+      });
+    }
+    if (handle) {
       events = new EventStream(handle);
       await events.start();
     }
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
+    if (handle && registry)
+      broker = new BrokerService({
+        sql: handle.sql,
+        connectors: registry,
+        boss: queue?.boss,
+        resolveTrust: createMemoryTrustResolver(),
+        resolveStandingGrant: resolveExperienceGrant,
+      });
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
     if (jobs) {
       submissions = new SubmissionService(jobs);
@@ -226,6 +271,10 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    runner,
+    broker,
+    registry,
+    sql: handle?.sql,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -248,6 +297,8 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    broker,
+    registry,
     close,
   };
 }
@@ -255,7 +306,9 @@ export async function bootstrap(
 if (import.meta.main) {
   const service = await bootstrap();
   const { app, env, handle } = service;
-  const boundary = handle ? await startEffectBoundary(handle, env) : null;
+  const boundary = handle
+    ? await startEffectBoundary(handle, env, { broker: service.broker, registry: service.registry })
+    : null;
   process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
   const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 0 });
   if (boundary) process.stdout.write(`effect boundary listening on ${env.MELETE_BROKER_BIND}\n`);

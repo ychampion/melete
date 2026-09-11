@@ -2,13 +2,16 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
 import { configuredConnectors, readConnectionConfig } from '../connectors/configured.ts';
+import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
+import { resolveExperienceGrant } from '../experience/rules.ts';
 import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import { createInternalServer } from './internal-server.ts';
+import type { BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
 /** Start only the effect listener; the API keeps its own port and authentication surface. */
@@ -19,6 +22,8 @@ export async function startEffectBoundary(
     resolveAuthority?: EffectAuthorityResolver;
     /** Left out, memory answers. Pass one to isolate the broker in a test. */
     resolveTrust?: TrustResolver;
+    broker?: BrokerService;
+    registry?: ConnectorRegistry;
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -32,14 +37,16 @@ export async function startEffectBoundary(
   }
   const hostname = binding[1].replace(/^\[|\]$/g, '');
   const port = Number(binding[2]);
-  const registry = await configuredConnectors({
-    sql: handle.sql,
-    workRoot: env.MELETE_WORK_DIR,
-    spacesRoot: env.MELETE_SPACES_DIR,
-    masterKey: env.MELETE_MASTER_KEY,
-    connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
-    enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
-  });
+  const registry =
+    dependencies.registry ??
+    (await configuredConnectors({
+      sql: handle.sql,
+      workRoot: env.MELETE_WORK_DIR,
+      spacesRoot: env.MELETE_SPACES_DIR,
+      masterKey: env.MELETE_MASTER_KEY,
+      connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
+      enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
+    }));
   const providers = [
     ...providersFromEnv({
       FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
@@ -81,6 +88,8 @@ export async function startEffectBoundary(
     connectTls: (host) => certificates.get(host),
     resolveAuthority: dependencies.resolveAuthority,
     resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
+    resolveStandingGrant: resolveExperienceGrant,
+    broker: dependencies.broker,
   });
   try {
     await internal.broker.recoverDispatched();

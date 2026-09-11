@@ -5,7 +5,7 @@ import { session } from '../../src/db/auth-schema.ts';
 import { pingDatabase } from '../../src/db/client.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const describeWithDb = handle ? describe : describe.skip;
@@ -44,7 +44,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
     expect(await pingDatabase(database())).toBe(true);
   });
   beforeEach(async () => {
-    await database().sql`truncate "owner", "space" cascade`;
+    await resetTestRows(database().sql);
   });
 
   afterAll(async () => {
