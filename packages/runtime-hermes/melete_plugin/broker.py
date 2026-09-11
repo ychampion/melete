@@ -125,6 +125,10 @@ class BrokerClient:
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
 
+    def say(self, text: str, ref: str) -> Dict[str, Any]:
+        """Publish user-facing narration without proposing an effect."""
+        return self._call("POST", "/say", {"text": text, "ref": ref})
+
 
 def _error_from_body(error: "urllib.error.HTTPError") -> tuple:
     """Pull the broker's own error code out of a non-2xx body.

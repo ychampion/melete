@@ -28,6 +28,7 @@ import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { mountExperience } from './experience/routes.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -65,6 +66,7 @@ export type AppDeps = {
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
+  runner?: AttemptRunner;
 };
 
 export function createApp(deps: AppDeps) {
@@ -97,6 +99,8 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  if (deps.db)
+    mountExperience(app, { db: deps.db, jobs: deps.jobs, submissions, runner: deps.runner });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
 
@@ -226,6 +230,7 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    runner,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

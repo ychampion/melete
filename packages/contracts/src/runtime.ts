@@ -72,6 +72,8 @@ export type KnowledgeExcerpt = z.infer<typeof knowledgeExcerpt>;
  * prompt caching: stable prefix first, volatile inputs last.
  */
 export const attemptBundle = z.object({
+  /** Optional personalized identity, still bounded separately from working context. */
+  identity: z.string().max(1000).optional(),
   attempt: z.object({
     id: prefixedId(ID_PREFIXES.attempt),
     job_id: prefixedId(ID_PREFIXES.job),

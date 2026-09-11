@@ -20,14 +20,17 @@ import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   action,
+  agent,
   artifact,
   attempt,
   connection,
   event,
+  experienceTurn,
   knowledgeRecord,
   question,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { agentIdentity, agentView } from '../experience/agents.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -275,7 +278,18 @@ export async function buildBundle(
     .from(question)
     .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
     .limit(1);
+  const [activeTurn] = row.currentTurnId
+    ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
+    : [];
+  const personaId = activeTurn?.agentId ?? row.agentId;
+  const [persona] = personaId
+    ? await tx
+        .select()
+        .from(agent)
+        .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
+    : [];
   return responsibilityAttemptBundle.parse({
+    ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
     ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {

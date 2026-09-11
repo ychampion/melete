@@ -79,6 +79,24 @@ export const connection = pgTable(
   (t) => [index('connection_space_idx').on(t.spaceId)],
 );
 
+export const agent = pgTable('agent', {
+  id: text('id').primaryKey(),
+  spaceId: text('space_id')
+    .notNull()
+    .references(() => space.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  role: text('role').notNull(),
+  colour: text('colour').notNull(),
+  surface: text('surface').notNull(),
+  eyeColour: text('eye_colour').notNull(),
+  tone: text('tone').notNull(),
+  standingInstruction: text('standing_instruction').notNull(),
+  allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[]>().notNull().default([]),
+  asksBeforeActing: boolean('asks_before_acting').notNull().default(true),
+  faceImage: text('face_image'),
+  createdAt: created(),
+});
+
 export const job = pgTable(
   'job',
   {
@@ -88,6 +106,14 @@ export const job = pgTable(
       .references(() => space.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     objective: text('objective').notNull(),
+    kind: text('kind').notNull().default('responsibility'),
+    agentId: text('agent_id').references(() => agent.id, { onDelete: 'restrict' }),
+    currentTurnId: text('current_turn_id'),
+    planId: text('plan_id'),
+    pauseRequested: boolean('pause_requested').notNull().default(false),
+    paused: boolean('paused').notNull().default(false),
+    experienceCursor: bigint('experience_cursor', { mode: 'number' }).notNull().default(0),
+    experienceGroup: jsonb('experience_group').$type<string[]>().notNull().default([]),
     constraints: jsonb('constraints').notNull().default({}),
     state: text('state').notNull().default('queued'),
     revision: integer('revision').notNull().default(0),
@@ -133,6 +159,7 @@ export const attempt = pgTable(
       .notNull()
       .references(() => job.id, { onDelete: 'cascade' }),
     epoch: integer('epoch').notNull(),
+    turnId: text('turn_id'),
     runtimeVersion: text('runtime_version').notNull(),
     provider: text('provider').notNull(),
     model: text('model').notNull(),
@@ -426,6 +453,7 @@ export const question = pgTable(
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),
     state: text('state').notNull().default('open'),
     answer: text('answer'),
+    options: jsonb('options').$type<Array<{ id: string; label: string }>>().notNull().default([]),
     answerSubmissionId: text('answer_submission_id'),
     answeredAt: timestamp('answered_at', { withTimezone: true }),
     createdAt: created(),
@@ -477,6 +505,113 @@ export const eventRetention = pgTable('event_retention', {
   retainedAfter: bigint('retained_after', { mode: 'number' }).notNull().default(0),
 });
 
+export const experienceTurn = pgTable('experience_turn', {
+  id: text('id').primaryKey(),
+  jobId: text('job_id')
+    .notNull()
+    .references(() => job.id, { onDelete: 'cascade' }),
+  agentId: text('agent_id')
+    .notNull()
+    .references(() => agent.id),
+  submissionId: text('submission_id').notNull().unique(),
+  text: text('text').notNull(),
+  answer: text('answer').notNull().default(''),
+  status: text('status').notNull().default('queued'),
+  createdAt: created(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+});
+
+export const experienceProfile = pgTable('experience_profile', {
+  spaceId: text('space_id')
+    .primaryKey()
+    .references(() => space.id, { onDelete: 'cascade' }),
+  name: text('name').notNull().default(''),
+  timeZone: text('time_zone').notNull().default('UTC'),
+  dayStart: text('day_start').notNull().default('08:00'),
+  dayEnd: text('day_end').notNull().default('22:00'),
+});
+
+export const task = pgTable('task', {
+  id: text('id').primaryKey(),
+  spaceId: text('space_id')
+    .notNull()
+    .references(() => space.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  dueAt: timestamp('due_at', { withTimezone: true }),
+  done: boolean('done').notNull().default(false),
+  createdAt: created(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const planMilestone = pgTable('plan_milestone', {
+  id: text('id').primaryKey(),
+  planId: text('plan_id')
+    .notNull()
+    .references(() => job.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  ordinal: integer('ordinal').notNull(),
+  agentId: text('agent_id').references(() => agent.id),
+  childJobId: text('child_job_id').references(() => job.id),
+  done: boolean('done').notNull().default(false),
+  scheduleAt: timestamp('schedule_at', { withTimezone: true }),
+});
+
+export const experienceRule = pgTable(
+  'experience_rule',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    connectionId: text('connection_id')
+      .notNull()
+      .references(() => connection.id),
+    toolKind: text('tool_kind').notNull(),
+    recipient: jsonb('recipient').notNull(),
+    recipientClass: text('recipient_class').notNull(),
+    originTrust: text('origin_trust').notNull(),
+    countCap: integer('count_cap').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    reconsentAfterDays: integer('reconsent_after_days').notNull(),
+    used: integer('used').notNull().default(0),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    check(
+      'experience_rule_bounds',
+      sql`${t.countCap} between 1 and 100 and ${t.reconsentAfterDays} between 1 and 30 and ${t.used} between 0 and ${t.countCap}`,
+    ),
+  ],
+);
+
+export const experienceRuleUse = pgTable('experience_rule_use', {
+  actionId: text('action_id')
+    .primaryKey()
+    .references(() => action.id, { onDelete: 'cascade' }),
+  ruleId: text('rule_id')
+    .notNull()
+    .references(() => experienceRule.id),
+});
+
+export const experienceUndo = pgTable('experience_undo', {
+  actionId: text('action_id')
+    .primaryKey()
+    .references(() => action.id, { onDelete: 'cascade' }),
+  handle: text('handle').notNull().unique(),
+  validUntil: timestamp('valid_until', { withTimezone: true }).notNull(),
+  reversalActionId: text('reversal_action_id').references(() => action.id),
+});
+
+export const experienceDraftSend = pgTable('experience_draft_send', {
+  draftActionId: text('draft_action_id')
+    .primaryKey()
+    .references(() => action.id, { onDelete: 'cascade' }),
+  sendActionId: text('send_action_id').references(() => action.id),
+  requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+  discardedAt: timestamp('discarded_at', { withTimezone: true }),
+});
+
 export const schema = {
   owner,
   space,
@@ -499,4 +634,13 @@ export const schema = {
   question,
   backgroundOperation,
   eventRetention,
+  agent,
+  experienceTurn,
+  experienceProfile,
+  task,
+  planMilestone,
+  experienceRule,
+  experienceRuleUse,
+  experienceUndo,
+  experienceDraftSend,
 };

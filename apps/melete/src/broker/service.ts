@@ -27,6 +27,8 @@ import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
+import { agentAccess, directSend } from '../experience/access.ts';
+import { plainText } from '../experience/projectors.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import {
   bindEffect,
@@ -159,6 +161,13 @@ export class BrokerService implements BrokerOperations {
     connectionId: string,
     kind: string,
   ) {
+    const access = await agentAccess(tx, job.id);
+    if (
+      access.paused ||
+      (access.allowed && !access.allowed.includes(connectionId)) ||
+      (access.chat && !access.agentId)
+    )
+      throw new BrokerFault('scope_denied');
     const [connection] = await tx`select provider, scopes, status from connection
       where id = ${connectionId} and space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
@@ -185,10 +194,17 @@ export class BrokerService implements BrokerOperations {
       const connections = await tx`select id, provider, scopes from connection
         where space_id = ${job.space_id} and status = 'active' order by id`;
       const tools: ToolSpec[] = [];
+      const access = await agentAccess(tx, job.id);
       for (const connection of connections) {
+        if (
+          (access.chat && !access.agentId) ||
+          (access.allowed && !access.allowed.includes(connection.id))
+        )
+          continue;
         const connector = this.options.connectors.get(connection.id);
         if (!connector || connector.manifest.provider !== connection.provider) continue;
         for (const tool of connector.manifest.tools) {
+          if (access.chat && directSend(tool.name)) continue;
           if (
             ![tool.name, ...tool.required_scopes].every(
               (s) => claims.scopes.includes(s) && connection.scopes.includes(s),
@@ -204,6 +220,20 @@ export class BrokerService implements BrokerOperations {
           });
         }
       }
+      if (access.chat)
+        tools.push({
+          name: 'say',
+          description:
+            'Tell the person in one or two first-person sentences what you will do next. Do not include reasoning, internal names, or technical details. This narration has no action cost and needs no approval.',
+          input_schema: {
+            type: 'object',
+            properties: { text: { type: 'string', minLength: 1, maxLength: 600 } },
+            required: ['text'],
+            additionalProperties: false,
+          },
+          effect_class: 'read',
+          connection_id: null,
+        });
       return tools.sort((a, b) =>
         a.name < b.name
           ? -1
@@ -380,6 +410,9 @@ export class BrokerService implements BrokerOperations {
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
+      const access = await agentAccess(tx, job.id);
+      if (access.chat && directSend(request.kind))
+        throw new BrokerFault('scope_denied', 'Review the draft and use its send control.');
       const { tool } = await this.tool(tx, job, claims, request.connection_id, request.kind);
       this.validatePayload(tool, canonical.canonical);
       // The identity of the effect itself, independent of which attempt is
@@ -463,6 +496,29 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  async say(claims: CapabilityClaims, text: string, ref: string): Promise<void> {
+    const safe = plainText(text, '', 600);
+    if (
+      !safe ||
+      safe !== text.trim() ||
+      !/^(I\b|I['’]m\b|I['’]ll\b)/i.test(safe) ||
+      (safe.match(/[.!?](?:\s|$)/g)?.length ?? 0) > 2
+    )
+      throw new BrokerFault('payload_invalid', 'Use one or two plain first-person sentences.');
+    await this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, claims.job_id);
+      await checkAttempt(tx, job, claims);
+      await appendEvent(
+        tx,
+        job.id,
+        claims.attempt_id,
+        'notice',
+        { kind: 'experience_say', text: safe },
+        `say:${claims.attempt_id}:${createHash('sha256').update(ref).digest('hex')}`,
+      );
+    });
   }
 
   async decide(id: string, request: ApprovalDecisionRequest) {
@@ -649,6 +705,13 @@ export class BrokerService implements BrokerOperations {
         where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
       const stored = await loadBinding(tx, action);
       try {
+        const access = await agentAccess(tx, job.id);
+        if (
+          access.paused ||
+          (access.allowed && !access.allowed.includes(action.connection_id)) ||
+          (access.chat && (!access.agentId || directSend(action.kind)))
+        )
+          throw new BrokerFault('scope_denied');
         const authority = await resolveEffectAuthority(
           tx,
           { job, action, phase: 'execution' },

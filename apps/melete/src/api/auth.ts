@@ -26,6 +26,7 @@ export type SessionOwner = { id: string; email: string; created_at: string };
 declare module 'hono' {
   interface ContextVariableMap {
     owner: SessionOwner;
+    experienceSpaceId: string;
   }
 }
 
@@ -97,7 +98,7 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
       );
     }
     const [active] = await db
-      .select({ owner })
+      .select({ owner, spaceId: session.spaceId })
       .from(session)
       .innerJoin(owner, eq(session.ownerId, owner.id))
       .where(and(eq(session.tokenHash, tokenHash(token)), gt(session.expiresAt, new Date())))
@@ -106,6 +107,17 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
+    const selected =
+      active.spaceId ??
+      (
+        await db
+          .select({ id: space.id })
+          .from(space)
+          .where(eq(space.kind, 'personal'))
+          .orderBy(space.createdAt, space.id)
+          .limit(1)
+      )[0]?.id;
+    if (selected) c.set('experienceSpaceId', selected);
     return next();
   });
 

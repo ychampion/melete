@@ -1,11 +1,12 @@
 import { index, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
-import { owner } from './schema.ts';
+import { owner, space } from './schema.ts';
 
 /** Only a digest is stored, so a database read cannot recover a session cookie. */
 export const session = pgTable(
   'session',
   {
     tokenHash: text('token_hash').primaryKey(),
+    spaceId: text('space_id').references(() => space.id, { onDelete: 'cascade' }),
     ownerId: text('owner_id')
       .notNull()
       .references(() => owner.id, { onDelete: 'cascade' }),
