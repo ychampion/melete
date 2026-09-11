@@ -1,0 +1,132 @@
+{
+  "id": "two-anas-and-two-spaces",
+  "family": "relationships",
+  "title": "Two people with the same first name, their constraints joined, and a second space kept out",
+  "narrative": "Two connector contact records and two participant constraints must join correctly, the two Anas must stay apart, and a second space's version of the same person must never leak in.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "observe",
+      "name": "lopez-contact",
+      "event_time": "2026-07-05T09:00:00Z",
+      "observation": {
+        "kind": "contact",
+        "slug": "lopez",
+        "name": "Ana Lopez",
+        "email": "ana.lopez@example.com"
+      },
+      "expect_keys": ["contact.lopez.email"]
+    },
+    {
+      "step": "observe",
+      "name": "ruiz-contact",
+      "event_time": "2026-07-05T09:10:00Z",
+      "observation": {
+        "kind": "contact",
+        "slug": "ruiz",
+        "name": "Ana Ruiz",
+        "email": "ana.ruiz@example.com"
+      },
+      "expect_keys": ["contact.ruiz.email"]
+    },
+    {
+      "step": "say",
+      "name": "lopez-constraint",
+      "event_time": "2026-07-06T09:00:00Z",
+      "text": "Ana Lopez cannot travel before 10 August 2026.",
+      "claim": {
+        "key": "constraint.offsite.lopez",
+        "content": "cannot travel before 10 August 2026",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "ruiz-constraint",
+      "event_time": "2026-07-06T09:05:00Z",
+      "text": "Ana Ruiz needs a vegetarian menu.",
+      "claim": {
+        "key": "constraint.offsite.ruiz",
+        "content": "needs a vegetarian menu",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "other-space-lopez",
+      "event_time": "2026-07-06T09:10:00Z",
+      "text": "Ana Lopez uses ana.lopez@other.example.",
+      "space": "other",
+      "claim": {
+        "key": "contact.lopez.email",
+        "content": "ana.lopez@other.example",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "other-space-pref",
+      "event_time": "2026-07-06T09:15:00Z",
+      "text": "I prefer long-form reading.",
+      "space": "other",
+      "claim": {
+        "key": "pref.reading.format",
+        "content": "long-form reading",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "lopez-email",
+      "query": "lopez email",
+      "key": "contact.lopez.email",
+      "expect": {
+        "kind": "answer",
+        "content": "ana.lopez@example.com",
+        "origin_trust": "verified_connector"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "ruiz-email",
+      "query": "ruiz email",
+      "key": "contact.ruiz.email",
+      "expect": {
+        "kind": "answer",
+        "content": "ana.ruiz@example.com",
+        "origin_trust": "verified_connector"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "join",
+      "query": "offsite",
+      "key": "constraint.offsite.lopez",
+      "expect": {
+        "kind": "answer",
+        "content": "cannot travel before 10 August 2026",
+        "also_delivered": ["constraint.offsite.ruiz"]
+      }
+    },
+    {
+      "step": "ask",
+      "name": "other-space-answer",
+      "query": "lopez email",
+      "key": "contact.lopez.email",
+      "expect": {
+        "kind": "answer",
+        "content": "ana.lopez@other.example"
+      },
+      "space": "other"
+    },
+    {
+      "step": "ask",
+      "name": "no-space-mixing",
+      "query": "reading format",
+      "key": "pref.reading.format",
+      "expect": {
+        "kind": "absent"
+      }
+    }
+  ]
+}

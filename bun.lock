@@ -73,6 +73,7 @@
       "version": "0.1.0-pre",
       "dependencies": {
         "@melete/contracts": "workspace:*",
+        "zod": "4.6.2",
       },
       "devDependencies": {
         "drizzle-orm": "0.45.2",

@@ -18,7 +18,8 @@
       "!bun.lock",
       "!packages/contracts/openapi.json",
       "!apps/melete/drizzle",
-      "!packages/client/src/schema.d.ts"
+      "!packages/client/src/schema.d.ts",
+      "!conformance/memory/report.json"
     ]
   },
   "formatter": {

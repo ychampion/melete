@@ -1,0 +1,80 @@
+{
+  "id": "document-paraphrase-dispute",
+  "family": "source-authority",
+  "title": "A page's address keeps its origin, a paraphrase does not verify it, and the owner overrides it",
+  "narrative": "A fetched page asserts a billing address, the assistant repeats it, and the owner disputes it: attribution survives the repetition and the owner's version wins.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "import",
+      "name": "vendor-page",
+      "event_time": "2026-07-08T09:00:00Z",
+      "text": "Pay invoices to billing@vendor.example.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "contact.vendor.email",
+        "content": "billing@vendor.example",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "document-answer",
+      "query": "vendor email",
+      "key": "contact.vendor.email",
+      "expect": {
+        "kind": "answer",
+        "content": "billing@vendor.example",
+        "origin_trust": "external_content"
+      }
+    },
+    {
+      "step": "import",
+      "name": "assistant-paraphrase",
+      "event_time": "2026-07-09T09:00:00Z",
+      "text": "As noted, invoices go to billing@vendor.example.",
+      "source_type": "assistant",
+      "author": "owner",
+      "claim": {
+        "key": "contact.vendor.email",
+        "content": "billing@vendor.example",
+        "kind": "document_assertion",
+        "expect_rejected": true
+      }
+    },
+    {
+      "step": "ask",
+      "name": "repetition-does-not-verify",
+      "query": "vendor email",
+      "key": "contact.vendor.email",
+      "expect": {
+        "kind": "answer",
+        "content": "billing@vendor.example",
+        "origin_trust": "external_content"
+      }
+    },
+    {
+      "step": "say",
+      "name": "owner-disputes",
+      "event_time": "2026-07-10T09:00:00Z",
+      "text": "No, send invoices to accounts@vendor.example.",
+      "claim": {
+        "key": "contact.vendor.email",
+        "content": "accounts@vendor.example",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "owner-wins",
+      "query": "vendor email",
+      "key": "contact.vendor.email",
+      "expect": {
+        "kind": "answer",
+        "content": "accounts@vendor.example",
+        "origin_trust": "owner"
+      }
+    }
+  ]
+}

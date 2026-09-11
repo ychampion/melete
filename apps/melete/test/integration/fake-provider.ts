@@ -34,10 +34,13 @@ export function tripProposal(batch: ExtractionBatch, content = 'July'): Extracti
     : { op: 'add', expected_revision: null, ...proposed };
 }
 /** The HTTP boundary is real; responses are scripted and no external provider is contacted. */
-export function fakeProvider(reply: () => Promise<ExtractionProposal[]> | ExtractionProposal[]) {
+export function fakeProvider(
+  reply: () => Promise<ExtractionProposal[]> | ExtractionProposal[],
+  port = 3120,
+) {
   const requests: unknown[] = [];
   const server = Bun.serve({
-    port: 3120,
+    port,
     hostname: '127.0.0.1',
     async fetch(request) {
       if (
@@ -56,7 +59,7 @@ export function fakeProvider(reply: () => Promise<ExtractionProposal[]> | Extrac
   });
   return {
     gateway: gatewayChatClient(
-      'http://127.0.0.1:3120/v1/chat/completions',
+      `http://127.0.0.1:${port}/v1/chat/completions`,
       'scripted-test',
       'scripted-memory-v1',
     ),

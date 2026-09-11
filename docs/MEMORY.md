@@ -394,6 +394,23 @@ inference/indexing, Unicode spans, scoped delivery, and restore from before
 forgetting/deletion. A real pg-boss worker test verifies startup gating and
 asynchronous catch-up. Existing unrelated conformance placeholders remain todo.
 
+```sh
+bun run conformance:memory  # the eight memory scenario families, counterfactual arm included
+```
+
+That runner is the scenario half of E6, and it is separate from the integration
+suite above. It executes JSON scenario files against this service on its own
+disposable Postgres 17 on port 3126, with a scripted extractor and a scripted
+assistant on port 3124, and prints one row per family: stable personalization,
+corrections and time, continuing work, relationships, source authority,
+forgetting and access, low-value memory, and procedure transfer. Each scenario
+that declares `memory_required` runs twice, the second time with recall
+withheld, and one that still passes without memory fails the suite instead of
+adding a green row. Procedure transfer is listed with its assertion and marked
+todo, because promotion is not enabled here.
+[conformance/memory/README.md](../conformance/memory/README.md) says how to run
+it against your own instance, how to add a scenario, and what each column means.
+
 The scripted comparison covers six small fixtures: initial plan, correction,
 late old import, unrelated query, another space, and forgetting. It compares a
 compact profile plus source lookup, lexical retrieval, and lexical plus a pinned

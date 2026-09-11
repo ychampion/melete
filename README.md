@@ -30,8 +30,9 @@ about:
    a container on a network with no route out. That is not a virtual machine,
    and [the threat model](docs/THREAT-MODEL.md) says so in those words.
 
-The last point is why there is a [conformance suite](conformance/). Anyone can
-run it and check the claims rather than believe them.
+The last point is why there is a [conformance suite](conformance/), and a
+[memory conformance runner](conformance/memory/README.md) beside it. Anyone can
+run them and check the claims rather than believe them.
 
 ## The shape of it
 
@@ -96,7 +97,7 @@ tools you already have.
 | `apps/mock-api` | Every operation in `openapi.json`, in memory, driven by scripted scenarios |
 | `apps/web` | A small reference client, to show the API is enough to build one |
 | `deploy` | `docker-compose.yml`, `.env.example`, and the check that the sandbox is really a sandbox |
-| `conformance` | Eight scenarios that prove the durability and boundary claims |
+| `conformance` | Eight scenarios that prove the durability and boundary claims, and [eight memory scenario families](conformance/memory/README.md) that prove the memory ones |
 | `docs` | [Architecture](docs/ARCHITECTURE.md), [memory](docs/MEMORY.md), [what the service proves](docs/ENGINEERING.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [building a client](docs/CLIENT.md) |
 | `.agents/notes` | Why things are the way they are, one decision per file |
 
@@ -112,7 +113,8 @@ bun test
 bun run openapi          # regenerate packages/contracts/openapi.json
 bun run client:generate  # regenerate the client's types from openapi.json
 bun run compose:check    # assert the runtime container really has no route out
-bun run conformance      # list the eight scenarios and what each will assert
+bun run conformance        # list the eight scenarios and what each will assert
+bun run conformance:memory # run the eight memory families, counterfactual arm included
 ```
 
 There is no `docker compose up` yet worth running: the service serves `/health`
