@@ -12,6 +12,8 @@
       "!**/node_modules",
       "!**/dist",
       "!**/.omx",
+      "!**/.hermes-src",
+      "!**/.hermes-venv",
       "!**/*.json.lock",
       "!bun.lock",
       "!packages/contracts/openapi.json",
