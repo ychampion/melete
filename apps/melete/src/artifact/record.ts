@@ -22,6 +22,8 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { type Query, recordId } from '../broker/records.ts';
+import { type ArtifactRoots, defaultArtifactRoots, readArtifactContent } from './content.ts';
+import { validateArtifact } from './validate.ts';
 
 export type ArtifactCritique = {
   status: 'passed' | 'failed' | 'unavailable';
@@ -132,9 +134,9 @@ export async function recordArtifactFromReceipt(
   }
   for (const result of resolved) {
     await tx`insert into artifact_validation
-      (artifact_id, class, name, status, detail, evidence, advisory, checked_at)
+      (artifact_id, class, name, status, detail, evidence, advisory, checked_at, validated_content_hash)
       values (${id}, ${result.class}, ${result.name}, ${result.status}, ${result.detail},
-        ${JSON.stringify(result.evidence)}::jsonb, ${result.advisory}, ${result.checked_at})
+        ${JSON.stringify(result.evidence)}::jsonb, ${result.advisory}, ${result.checked_at}, ${result.validated_content_hash ?? artifact.content_hash})
       on conflict (artifact_id, name) do update set status = excluded.status,
         detail = excluded.detail, evidence = excluded.evidence, checked_at = excluded.checked_at`;
   }
@@ -160,7 +162,10 @@ export async function recordPublication(
  * shapes reach it: a write that declared an artifact, and a publish that says
  * where an artifact went. Anything else passes through untouched.
  */
-export function createArtifactRecorder(critic?: ArtifactCritic) {
+export function createArtifactRecorder(
+  critic?: ArtifactCritic,
+  roots: ArtifactRoots = defaultArtifactRoots(),
+) {
   return async (
     tx: Query,
     input: {
@@ -170,6 +175,40 @@ export function createArtifactRecorder(critic?: ArtifactCritic) {
     },
   ): Promise<void> => {
     await recordArtifactFromReceipt(tx, input, critic);
+    // A write without expect and an in-cell execution can both change an
+    // existing deliverable. Preserve its declaration and its historical rows,
+    // then record a fresh set of checks for the changed bytes.
+    if (['files.write', 'files.move', 'exec.run', 'exec.python'].includes(input.action.kind)) {
+      const rows = await tx`select distinct on (area, path) * from artifact
+        where job_id = ${input.job.id} and space_id = ${input.job.space_id} and expectation is not null
+        order by area, path, created_at desc, id desc`;
+      for (const row of rows) {
+        const content = await readArtifactContent(roots, {
+          jobId: input.job.id,
+          spaceId: input.job.space_id,
+          area: row.area,
+          path: row.path,
+        }).catch(() => null);
+        // Missing/unreadable files fail the live gate; no fabricated validation.
+        if (!content || content.hash === row.content_hash) continue;
+        const expectation = artifactExpectation.parse(row.expectation);
+        await recordArtifactFromReceipt(
+          tx,
+          {
+            ...input,
+            receipt: {
+              action_id: input.action.id,
+              detail: {
+                artifact: { ...row, content_hash: content.hash, size: content.bytes.byteLength },
+                expectation,
+                validations: validateArtifact(expectation, content.bytes),
+              },
+            },
+          },
+          critic,
+        );
+      }
+    }
     const detail = input.receipt.detail as Record<string, unknown>;
     const publication = detail?.publication;
     const artifactId = detail?.artifact_id;
@@ -187,14 +226,17 @@ export async function acceptArtifact(
   sql: Sql,
   input: { artifact_id: string; decision: 'accepted' | 'rejected'; note?: string },
 ): Promise<ArtifactValidation> {
+  const [artifact] = await sql`select content_hash from artifact where id = ${input.artifact_id}`;
+  if (!artifact) throw new Error('artifact is unavailable');
   const [row] = await sql`insert into artifact_validation
-    (artifact_id, class, name, status, detail, evidence, advisory, checked_at)
+    (artifact_id, class, name, status, detail, evidence, advisory, checked_at, validated_content_hash)
     values (${input.artifact_id}, 'human', 'human',
       ${input.decision === 'accepted' ? 'passed' : 'failed'},
       ${input.note ?? (input.decision === 'accepted' ? 'accepted by the owner' : 'rejected by the owner')},
-      ${JSON.stringify({ decision: input.decision })}::jsonb, false, now())
+      ${JSON.stringify({ decision: input.decision })}::jsonb, false, now(), ${artifact.content_hash})
     on conflict (artifact_id, name) do update set status = excluded.status,
-      detail = excluded.detail, evidence = excluded.evidence, checked_at = excluded.checked_at
+      detail = excluded.detail, evidence = excluded.evidence, checked_at = excluded.checked_at,
+      validated_content_hash = excluded.validated_content_hash
     returning *`;
   if (!row) throw new Error('the acceptance was not recorded');
   return {
@@ -206,6 +248,7 @@ export async function acceptArtifact(
     evidence: row.evidence,
     advisory: false,
     checked_at: new Date(row.checked_at).toISOString(),
+    validated_content_hash: row.validated_content_hash,
   };
 }
 

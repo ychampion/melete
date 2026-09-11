@@ -26,6 +26,7 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import type { ArtifactRoots } from '../artifact/content.ts';
 import { attempt, event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -56,6 +57,7 @@ export type RunnerOptions = {
   scopes?: string[];
   heartbeatMs?: number;
   leaseMs?: number;
+  artifactRoots?: ArtifactRoots;
 };
 export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
 /** What the attempt raised besides its outcome, handed to every finish handler. */
@@ -363,7 +365,7 @@ export class AttemptRunner {
     let artifactFailures: string[] = [];
     switch (outcome.kind) {
       case 'completed': {
-        const facts = await completionFacts(tx, row, outcome);
+        const facts = await completionFacts(tx, row, outcome, this.options.artifactRoots);
         artifactFailures = facts.artifact_failures;
         input = {
           kind: 'attempt_completed',

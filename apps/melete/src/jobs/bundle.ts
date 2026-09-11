@@ -18,6 +18,7 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
+import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
 import {
   action,
@@ -436,6 +437,7 @@ export async function completionFacts(
   tx: Transaction,
   row: JobRow,
   outcomeCompleted: CompletedOutcome,
+  artifactRoots?: ArtifactRoots,
 ): Promise<CompletionFacts> {
   const actions = await tx
     .select({
@@ -480,7 +482,7 @@ export async function completionFacts(
   const facts = evaluateCompletion(row, outcomeCompleted, { actions, artifacts, knowledge });
   // A declared check that failed outranks a confident summary: the file is not
   // the thing it was promised to be, whatever the attempt said about it.
-  const gate = await artifactGate(tx, row.id);
+  const gate = await artifactGate(tx, row.id, artifactRoots);
   return {
     ...facts,
     artifact_validations_passed: gate.passed,

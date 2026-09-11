@@ -303,6 +303,7 @@ export const artifactValidation = pgTable(
     /** Advisory results are recorded and shown; they never block a completion. */
     advisory: boolean('advisory').notNull().default(false),
     checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+    validatedContentHash: text('validated_content_hash'),
   },
   (t) => [
     index('artifact_validation_artifact_idx').on(t.artifactId),

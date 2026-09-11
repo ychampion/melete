@@ -1,0 +1,1 @@
+ALTER TABLE "artifact_validation" ADD COLUMN "validated_content_hash" text;

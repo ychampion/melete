@@ -558,5 +558,10 @@ export function validateArtifact(
     if (seen.has(result.name)) throw new Error(`two validations named ${result.name}`);
     seen.add(result.name);
   }
-  return results.map((result) => ({ ...result, checked_at: checkedAt }));
+  const hash = new Bun.CryptoHasher('sha256').update(bytes).digest('hex');
+  return results.map((result) => ({
+    ...result,
+    checked_at: checkedAt,
+    validated_content_hash: hash,
+  }));
 }

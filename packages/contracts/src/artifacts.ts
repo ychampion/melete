@@ -175,6 +175,11 @@ export const artifactValidation = z.object({
   /** True for classes that never block a completion. */
   advisory: z.boolean().default(false),
   checked_at: timestamp,
+  /** Digest of the bytes checked; absent on records produced before digest binding. */
+  validated_content_hash: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
 });
 export type ArtifactValidation = z.infer<typeof artifactValidation>;
 

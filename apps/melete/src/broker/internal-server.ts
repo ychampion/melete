@@ -3,6 +3,7 @@ import { ID_PREFIXES, prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import type { Sql } from 'postgres';
 import { createActionReadApi } from '../api/actions.ts';
+import type { ArtifactRoots } from '../artifact/content.ts';
 import { type ArtifactCritic, createArtifactRecorder } from '../artifact/record.ts';
 import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
 import { matchesServiceKey } from './capability.ts';
@@ -28,6 +29,7 @@ export function createInternalServer(options: {
   fake?: GatewayOptions['fake'];
   /** Advisory model review of a written artifact. Unset means none is run. */
   artifactCritic?: ArtifactCritic;
+  artifactRoots?: ArtifactRoots;
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
 }) {
   const broker = new BrokerService({
@@ -40,7 +42,7 @@ export function createInternalServer(options: {
     approvalTtlMs: options.approvalTtlMs,
     // A declared write becomes an artifact row with its checks beside it, in
     // the same transaction that persists the receipt.
-    recordArtifact: createArtifactRecorder(options.artifactCritic),
+    recordArtifact: createArtifactRecorder(options.artifactCritic, options.artifactRoots),
   });
   const app = createBrokerApp({
     broker,

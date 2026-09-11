@@ -103,7 +103,7 @@ async function setup() {
   const broker = new BrokerService({
     sql,
     connectors: registry,
-    recordArtifact: createArtifactRecorder(),
+    recordArtifact: createArtifactRecorder(undefined, { workRoot, spacesRoot }),
   });
   return {
     ...seed,
@@ -127,6 +127,89 @@ const totalsExpectation: JsonValue = {
     { kind: 'required_columns', columns: ['item', 'amount'] },
   ],
 };
+
+databaseTest(
+  'validation digest must match the current artifact digest',
+  async () => {
+    const ctx = await setup();
+    await ctx.broker.propose(ctx.claims, {
+      kind: 'files.write',
+      connection_id: ctx.connectionId,
+      payload: { path: 'digest.csv', content: csv('40.00'), expect: totalsExpectation },
+    });
+    const [row] =
+      await ctx.sql`select a.content_hash, v.validated_content_hash from artifact a join artifact_validation v on v.artifact_id = a.id where a.job_id = ${ctx.claims.job_id} limit 1`;
+    expect(row?.validated_content_hash).toBe(row?.content_hash);
+    await ctx.sql`update artifact_validation set validated_content_hash = ${'0'.repeat(64)} where artifact_id in (select id from artifact where job_id = ${ctx.claims.job_id})`;
+    expect((await facts(ctx.claims.job_id, ctx)).artifact_validations_passed).toBe(false);
+  },
+  SLOW,
+);
+
+for (const mode of ['write', 'execution', 'raw']) {
+  databaseTest(
+    mode === 'write'
+      ? 'incorrect CSV overwrite retains passing totals validation'
+      : `${mode} mutation invalidates historical totals validation`,
+    async () => {
+      const ctx = await setup();
+      await ctx.broker.propose(ctx.claims, {
+        kind: 'files.write',
+        connection_id: ctx.connectionId,
+        payload: { path: 'mutation.csv', content: csv('40.00'), expect: totalsExpectation },
+      });
+      const [original] =
+        await ctx.sql`select id, content_hash from artifact where job_id = ${ctx.claims.job_id}`;
+      if (mode === 'write') {
+        await ctx.broker.propose(ctx.claims, {
+          kind: 'files.write',
+          connection_id: ctx.connectionId,
+          payload: { path: 'mutation.csv', content: csv('31.50') },
+        });
+      } else if (mode === 'raw') {
+        await Bun.write(path.join(ctx.workRoot, ctx.claims.job_id, 'mutation.csv'), csv('31.50'));
+      } else {
+        const code = `open('mutation.csv', 'w').write(${JSON.stringify(csv('31.50'))})`;
+        const proposal = await ctx.broker.propose(ctx.claims, {
+          kind: 'exec.python',
+          connection_id: ctx.execConnection,
+          payload: { intent: { code } },
+        });
+        expect((await ctx.broker.startExecution(ctx.claims, proposal.action_id)).execute).toBe(
+          true,
+        );
+        const child = Bun.spawn(['python', '-c', code], {
+          cwd: path.join(ctx.workRoot, ctx.claims.job_id),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        expect(await child.exited).toBe(0);
+        await ctx.broker.settleExecution(ctx.claims, proposal.action_id, {
+          record: {
+            language: 'python',
+            command: code,
+            cwd: '.',
+            exit_code: 0,
+            signal: null,
+            timed_out: false,
+            duration_ms: 10,
+            output_digest: new Bun.CryptoHasher('sha256').update('').digest('hex'),
+            output_bytes: 0,
+            output_path: null,
+            truncated: false,
+          },
+        });
+      }
+      const gate = await artifactGate(fixture?.db as never, ctx.claims.job_id, ctx);
+      expect(gate.passed).toBe(false);
+      if (mode !== 'raw') expect(gate.failures.join(' ')).toContain('91.5');
+      const [history] =
+        await ctx.sql`select status from artifact_validation where artifact_id = ${original?.id} and name = 'totals:amount'`;
+      expect(history?.status).toBe('passed');
+    },
+    SLOW,
+  );
+}
 
 databaseTest(
   'an approval for version A publishes recorded version B',
@@ -312,14 +395,14 @@ databaseTest(
     expect(rows[0]?.area).toBe('work');
     expect(rows[0]?.source_job_id).toBe(context.claims.job_id);
 
-    const failing = await artifactGate(fixture?.db as never, context.claims.job_id);
+    const failing = await artifactGate(fixture?.db as never, context.claims.job_id, context);
     expect(failing.passed).toBe(false);
     expect(failing.failures.join(' ')).toContain('totals:amount');
     expect(failing.failures.join(' ')).toContain('91.5');
 
     // The job asks to complete, and the state machine sends it to the owner with
     // the arithmetic named rather than recording a deliverable that is wrong.
-    const before = await facts(context.claims.job_id);
+    const before = await facts(context.claims.job_id, context);
     expect(before.artifact_validations_passed).toBe(false);
     expect(before.artifact_failures.join(' ')).toContain('totals:amount');
 
@@ -331,7 +414,7 @@ databaseTest(
       client_ref: 'write-2',
     });
     expect(right.status).toBe('succeeded');
-    const after = await facts(context.claims.job_id);
+    const after = await facts(context.claims.job_id, context);
     expect(after.artifact_validations_passed).toBe(true);
     expect(after.artifact_failures).toEqual([]);
     const both = await context.sql`select id from artifact where job_id = ${context.claims.job_id}`;
@@ -340,7 +423,7 @@ databaseTest(
   SLOW,
 );
 
-async function facts(jobId: string) {
+async function facts(jobId: string, roots: { workRoot: string; spacesRoot: string }) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   return fixture.db.transaction(async (tx) => {
     const [row] = await tx
@@ -348,11 +431,16 @@ async function facts(jobId: string) {
       .from(jobTable)
       .where(eq(jobTable.id, jobId));
     if (!row) throw new Error('no job row');
-    return completionFacts(tx, row as never, {
-      kind: 'completed',
-      summary: 'done',
-      evidence: [],
-    });
+    return completionFacts(
+      tx,
+      row as never,
+      {
+        kind: 'completed',
+        summary: 'done',
+        evidence: [],
+      },
+      roots,
+    );
   });
 }
 
@@ -370,7 +458,7 @@ databaseTest(
       },
       client_ref: 'write-human',
     });
-    const waiting = await artifactGate(fixture?.db as never, context.claims.job_id);
+    const waiting = await artifactGate(fixture?.db as never, context.claims.job_id, context);
     expect(waiting.passed).toBe(false);
     expect(waiting.failures.join(' ')).toContain('human is still waiting');
 
@@ -381,7 +469,7 @@ databaseTest(
       decision: 'accepted',
     });
     expect(accepted.status).toBe('passed');
-    const done = await artifactGate(fixture?.db as never, context.claims.job_id);
+    const done = await artifactGate(fixture?.db as never, context.claims.job_id, context);
     expect(done.passed).toBe(true);
   },
   SLOW,
@@ -407,7 +495,9 @@ databaseTest(
     expect(critique?.status).toBe('unavailable');
     expect(critique?.advisory).toBe(true);
     // Advisory results never block, whatever they say.
-    expect((await artifactGate(fixture?.db as never, context.claims.job_id)).passed).toBe(true);
+    expect((await artifactGate(fixture?.db as never, context.claims.job_id, context)).passed).toBe(
+      true,
+    );
   },
   SLOW,
 );
@@ -481,7 +571,9 @@ databaseTest(
     expect(row?.source_job_id).toBe(context.claims.job_id);
     // Nothing was promised about the contents of an arbitrary command's output,
     // so recording it cannot be what stops the job from finishing.
-    expect((await artifactGate(fixture?.db as never, context.claims.job_id)).passed).toBe(true);
+    expect((await artifactGate(fixture?.db as never, context.claims.job_id, context)).passed).toBe(
+      true,
+    );
   },
   SLOW,
 );

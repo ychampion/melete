@@ -55,3 +55,13 @@
 - Command bun test apps/melete/test/integration/artifacts.test.ts --max-concurrency=2: 14 passed in 36.47s.
 - Command bun run typecheck, command bun run openapi and command bun run client:generate passed.
 - Test raw file drift now rejects during admission as payload_invalid; an undeclared file rejects before approval. Frozen note 0016's approved-content claim is corrected by the immutable payload binding.
+
+## Finding 6
+
+- SHA fca7633: finding 5 committed and pushed.
+- Test incorrect CSV overwrite retains passing totals validation: red (Expected false; Received true), then green with inherited totals checks reporting 91.5.
+- Tests execution mutation invalidates historical totals validation and raw mutation invalidates historical totals validation: both red, then green; historical passing rows remain intact.
+- Test validation digest must match the current artifact digest: completion refuses a digest-mismatched validation row.
+- Command bun run --cwd apps/melete db:generate --name artifact_content_digest produced migration 0016 after 0015, adding only validated_content_hash to artifact_validation.
+- Command bun test apps/melete/src/artifact/validate.test.ts apps/melete/src/connectors/files-expect.test.ts apps/melete/src/connectors/exec.test.ts apps/melete/test/integration/artifacts.test.ts --max-concurrency=2: 45 passed in 14.60s.
+- Command bun run typecheck, command bun run openapi and command bun run client:generate passed; artifact roots reach both receipt revalidation and the completion gate.

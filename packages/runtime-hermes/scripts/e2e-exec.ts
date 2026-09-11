@@ -186,6 +186,7 @@ async function main() {
   });
 
   const internal = createInternalServer({
+    artifactRoots: { workRoot, spacesRoot },
     sql: db.sql,
     connectors: registry,
     capabilityKey: CAPABILITY_KEY,
