@@ -13,9 +13,11 @@ import { recall } from '../../src/memory/recall.ts';
 import { buildViews, type EmbeddingProvider } from '../../src/memory/views.ts';
 import { claimWork, MEMORY_EXTRACT_QUEUE, repairQueue } from '../../src/memory/work.ts';
 import { fakeProvider, tripProposal } from './fake-provider.ts';
+import { registerLifecycleTests } from './lifecycle-tests.ts';
 import { createScope, createTestDatabase } from './postgres.ts';
 
 const db = await createTestDatabase();
+registerLifecycleTests(db);
 afterAll(async () => {
   await db?.close();
 });

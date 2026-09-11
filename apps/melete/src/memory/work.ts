@@ -15,7 +15,7 @@ import {
   type MemorySql,
   type MemoryTx,
 } from './db.ts';
-import { stageSegment, toSource } from './evidence.ts';
+import { stageSegment, toSource, visibleSourceText } from './evidence.ts';
 
 export const EXTRACTION_LIMITS = {
   messages: 1,
@@ -71,7 +71,9 @@ export async function claimWork(
     const [evidence] =
       await tx`select s.*, b.content from memory_sources s join memory_source_content b on b.source_id = s.id where s.id = ${row.source_id}`;
     if (!evidence) throw new MemoryError('source_unavailable');
-    const text = (evidence.content as string).slice(row.segment_start, row.segment_end);
+    const text = (
+      await visibleSourceText(tx, toSource(evidence), evidence.content as string)
+    ).slice(row.segment_start, row.segment_end);
     const candidates =
       await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${evidence.audience} and not hidden order by id desc limit ${EXTRACTION_LIMITS.claims}`;
     const claims: ClaimHead[] = [];

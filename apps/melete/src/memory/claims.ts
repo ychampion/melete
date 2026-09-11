@@ -18,6 +18,7 @@ import {
   newId,
 } from './db.ts';
 import { persistEvidence } from './evidence.ts';
+import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
 import { assertMemoryDomain } from './resolve.ts';
 
 export type ClaimHead = Claim & { current: ClaimRevision };
@@ -25,6 +26,17 @@ export async function references(tx: MemoryTx, id: string, revision: number): Pr
   const rows =
     await tx`select source_id, source_version, start, "end" from memory_references where claim_id = ${id} and revision = ${revision} order by source_id, start`;
   return rows as unknown as SourceRef[];
+}
+export async function sourceExcerpts(tx: MemoryTx, id: string, revision: number) {
+  const excerpts: string[] = [];
+  for (const ref of await references(tx, id, revision)) {
+    const [source] =
+      await tx`select content from memory_source_content where source_id = ${ref.source_id}`;
+    if (!source) throw new MemoryError('source_unavailable');
+    // PostgreSQL substring counts code points; contract spans use JavaScript UTF-16 offsets.
+    excerpts.push((source.content as string).slice(ref.start, ref.end));
+  }
+  return excerpts;
 }
 export async function revisionFromRow(
   tx: MemoryTx,
@@ -199,7 +211,7 @@ export async function correctClaim(
   ownerEdit = false,
 ) {
   const input = correctionRequest.parse(raw);
-  return sql.begin(async (tx) => {
+  const result = await sql.begin(async (tx) => {
     await lockSpace(tx, scope);
     const head = await getHead(tx, scope, input.claim_id);
     if (!head) throw new MemoryError('claim_not_found');
@@ -250,8 +262,10 @@ export async function correctClaim(
     );
     await tx`update memory_work set status = 'done' where source_id = ${evidence.source.source_id}`;
     await tx`update memory_streams set consumed_sequence = committed_sequence where space_id = ${scope.spaceId} and publisher = ${scope.publisher} and stream = 'owner-corrections'`;
-    await tx`update memory_prepared set stale = true where space_id = ${scope.spaceId}`;
+    await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
     await enqueue(tx, scope.spaceId, 'invalidate', `${head.id}:${revision.revision}`);
     return revision;
   });
+  await notifyInvalidated(sql, scope.spaceId);
+  return result;
 }

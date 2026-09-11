@@ -55,3 +55,16 @@
 - Log `TypeError: The string argument must be of type string ... Received an instance of Array`: slice 5 fix cycle 1 uses explicit text-to-jsonb parameters because the installed Drizzle driver changes JSON serializers on the shared postgres.js handle; the TypeScript callback-narrowing error was fixed in the same cycle.
 - Command `bun run typecheck`: pass; targeted command `bun test apps/melete/src/memory apps/melete/test/integration/memory.test.ts --max-concurrency 2 --timeout 20000`: 22 pass, 0 fail in 28.62 s.
 - Command `bun run lint`: pass (75 files); command `bun test --max-concurrency 2`: 217 pass, 1 baseline skip, 36 baseline todos, 0 fail in 28.88 s before the slice 5 push.
+
+## Slice 6 progress at 15:14 +05:30
+
+- SHA `93ffb03`: published indexes and scoped recall pushed to `origin/lane/w7-memory`.
+- Test `correction fences dependent attempts, clears drafts, and preserves action receipts`: pass; invalidation events persist, callback discards delivered context, job revision/epoch advance, previous approval binding is stale, and the succeeded action receipt remains unchanged.
+- Test `approved shared context and public compartments are assembled before delivery`: pass; the companion receives shared August only and public research receives no private memory.
+- Test `forget suppresses old replay, allows fresh explicit evidence, and survives an old database snapshot`: pass against a real Postgres table snapshot and an independently fsynced restriction journal.
+- Test `deletion hides synchronously, cleanup failures retry, and startup refuses a missing journal`: pass; serving restrictions precede physical cleanup, and a failed startup replay leaves recall and extraction gated.
+- Test `source and space revocation invalidate delivered context and block stale serving`: pass across replay.
+- Command `bun run typecheck`: pass; targeted memory tests: 27 pass, 0 fail in 30.19 s; lint fix cycle 1 removed unsafe optional indexing in a test assertion.
+- Log `frozen EventType`: memory invalidation events are stored in `memory_invalidations` and bridged through the existing `notice` event payload. The missing W1/W2 admission/worker integration remains described in `.agents/notes/proposed/2026-09-11-memory-integration-hooks.md`.
+- Command `bun run typecheck`: pass; command `bun run lint`: pass (82 files); command `bun test --max-concurrency 2`: 222 pass, 1 baseline skip, 36 baseline todos, 0 fail in 29.51 s before the slice 6 push.
+- Test `source excerpts`: publication/indexing and supplemental retrieval now use exact UTF-16 source offsets; partial suppression masks text without moving those offsets.

@@ -196,6 +196,7 @@ export async function commitExtraction(
         if (resolution.decision === 'attach' && head && resolution.revision) {
           await addReferences(tx, scope.spaceId, head.id, resolution.revision, refs);
           const dataRevision = await bumpRevision(tx, scope.spaceId);
+          await tx`update memory_revisions set data_revision = ${dataRevision} where claim_id = ${head.id} and revision = ${resolution.revision}`;
           await enqueue(tx, scope.spaceId, 'index', String(dataRevision));
           claimIds.push(head.id);
           continue;

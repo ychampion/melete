@@ -1,5 +1,5 @@
 import type { IndexManifest } from '@melete/contracts';
-import { eligibleRevision } from './claims.ts';
+import { eligibleRevision, sourceExcerpts } from './claims.ts';
 import {
   generation,
   lockSpace,
@@ -48,9 +48,7 @@ export async function indexableRows(
   scope: MemoryScope,
 ): Promise<IndexableRevision[]> {
   const rows =
-    await tx`select c.id as claim_id, r.revision, c.domain_key, r.kind, r.status, b.content,
-    coalesce((select string_agg(substring(sb.content from ref.start + 1 for ref."end" - ref.start), ' ')
-      from memory_references ref join memory_source_content sb on sb.source_id = ref.source_id where ref.claim_id = r.claim_id and ref.revision = r.revision), '') as excerpts
+    await tx`select c.id as claim_id, r.revision, c.domain_key, r.kind, r.status, b.content
     from memory_claims c join memory_revisions r on r.claim_id = c.id join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${scope.spaceId} and not c.hidden and r.status <> 'retracted' order by c.id, r.revision limit ${MAX_INDEX_ROWS + 1}`;
   if (rows.length > MAX_INDEX_ROWS) throw new MemoryError('index_build_budget');
@@ -60,7 +58,7 @@ export async function indexableRows(
     eligible.push({
       claim_id: row.claim_id,
       revision: row.revision,
-      text: `${(row.domain_key as string).replace(/[.:]/g, ' ')} ${row.content} ${row.excerpts}`,
+      text: `${(row.domain_key as string).replace(/[.:]/g, ' ')} ${row.content} ${(await sourceExcerpts(tx, row.claim_id, row.revision)).join(' ')}`,
       kind: row.kind,
       status: row.status,
     });

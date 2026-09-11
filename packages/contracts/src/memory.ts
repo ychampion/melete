@@ -278,6 +278,7 @@ export const memoryOperationResponse = z.strictObject({
   generation: spaceGeneration,
   cleanup: z.enum(['pending', 'complete']),
 });
+export type MemoryOperationResponse = z.infer<typeof memoryOperationResponse>;
 export const memoryInvalidationEvent = z.strictObject({
   type: z.enum(['context_invalidated', 'dependencies_invalidated']),
   job_id: prefixedId('job'),

@@ -7,7 +7,7 @@ import {
   recallRequest,
   type SpaceGeneration,
 } from '@melete/contracts';
-import { eligibleRevision, references, revisionFromRow } from './claims.ts';
+import { eligibleRevision, references, revisionFromRow, sourceExcerpts } from './claims.ts';
 import {
   generation,
   lockSpace,
@@ -157,15 +157,25 @@ async function supplementalCandidates(
   audience: ReadAudience,
 ): Promise<Candidate[]> {
   const at = request.at ?? new Date().toISOString();
-  const rows = await tx`select c.id as claim_id, r.revision, 0.5 as score
+  const rows = await tx`select c.id as claim_id, r.revision, c.domain_key, b.content
     from memory_claims c join memory_revisions r on r.claim_id = c.id join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${scope.spaceId} and not c.hidden and c.audience = any(${audience.audiences}) and r.status <> 'retracted' and r.data_revision > ${coverage}
       and (${request.mode === 'historical'} or (c.head_revision = r.revision and r.status in ('active','disputed') and r.kind <> 'historical' and r.valid_from <= ${at} and (r.valid_until is null or r.valid_until > ${at})))
       and (${request.mode !== 'historical' || !request.at} or (r.valid_from <= ${at} and (r.valid_until is null or r.valid_until > ${at})))
-      and to_tsvector('simple', replace(c.domain_key, '.', ' ') || ' ' || b.content || ' ' || coalesce((select string_agg(substring(sb.content from ref.start + 1 for ref."end" - ref.start), ' ')
-        from memory_references ref join memory_source_content sb on sb.source_id = ref.source_id where ref.claim_id = r.claim_id and ref.revision = r.revision), '')) @@ plainto_tsquery('simple', ${request.query})
     order by r.data_revision desc limit ${request.path === 'investigative' ? 201 : 101}`;
-  return rows.map((row) => ({
+  const fresh: { claim_id: string; revision: number; text: string }[] = [];
+  let characters = 0;
+  for (const row of rows) {
+    if (!(await eligibleRevision(tx, scope, row.claim_id, row.revision))) continue;
+    const text = `${(row.domain_key as string).replace(/[.:]/g, ' ')} ${row.content} ${(await sourceExcerpts(tx, row.claim_id, row.revision)).join(' ')}`;
+    characters += text.length;
+    if (characters > 200000) break;
+    fresh.push({ claim_id: row.claim_id, revision: row.revision, text });
+  }
+  const matches =
+    await tx`select claim_id, revision, 0.5 as score from jsonb_to_recordset(${JSON.stringify(fresh)}::text::jsonb) as fresh(claim_id text, revision integer, text text)
+    where to_tsvector('simple', text) @@ plainto_tsquery('simple', ${request.query})`;
+  return matches.map((row) => ({
     claim_id: row.claim_id,
     revision: row.revision,
     score: Number(row.score),

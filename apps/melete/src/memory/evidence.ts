@@ -107,6 +107,21 @@ export async function loadEvidence(sql: MemorySql, scope: MemoryScope, sourceId:
       where s.id = ${sourceId} and s.space_id = ${scope.spaceId} and s.state = 'active'
       and (${scope.role === 'owner'} or s.audience in ('space','public'))`;
     if (!row) return null;
-    return { source: toSource(row), text: row.content as string };
+    const source = toSource(row);
+    return { source, text: await visibleSourceText(tx, source, row.content as string) };
   });
+}
+
+/** Mask suppressed spans without moving UTF-16 offsets used by exact source references. */
+export async function visibleSourceText(tx: MemoryTx, source: SourceEvent, text: string) {
+  const suppressed =
+    await tx`select start, "end", operation from memory_suppressions where space_id = ${source.space_id}
+    and (source_id = ${source.source_id} or (operation = 'clear' and eligibility_cutoff >= ${source.eligibility_generation}))`;
+  if (!suppressed.length) return text;
+  const characters = text.split('');
+  for (const span of suppressed) {
+    if (span.start === null || span.end === null) return ' '.repeat(text.length);
+    characters.fill(' ', span.start, span.end);
+  }
+  return characters.join('');
 }
