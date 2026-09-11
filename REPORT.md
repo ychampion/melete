@@ -113,3 +113,4 @@
 - `git -C C:/Users/gamin/melete-oss-w10c push -u origin lane/w10c-discovery`: pushed runtime slice `ca3cb06` after the final 982-pass full suite and static checks.
 - `7296813` (`Broker operator-installed MCP tools with scoped authority`): committed the additive provider, operator HTTP registration, audience/schema gates, defensive stdio refusal and associated tests; pushed to `origin/lane/w10c-discovery`.
 - `bun test --max-concurrency=2 > .agents/w10c-full-tests-marked-lock.log`: the same final source run includes the completed composition HTTP path and all composition tests; no composition source changed afterward.
+- `ca1cb88` (`Compose scoped reads behind a cell execution seam`): committed and pushed the executor injection, broker HTTP route, read-only preflight, evidence handling and 32 focused composition tests. Production cell execution remains the W10a follow-up specified by the brief.

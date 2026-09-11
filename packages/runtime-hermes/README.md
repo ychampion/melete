@@ -140,9 +140,9 @@ recorded the behaviour:
   resolve correctly through `resolve_gateway_approval`.
 - If nobody answers, the call blocks until the 300 second approval timeout.
 
-Melete answers `once` or `deny` and never `allow_session` or `allow_permanent`.
-A standing allowance would outlive the attempt it was granted for, which is the
-exact property the broker exists to prevent.
+The adapter answers `deny` to shell-approval notifications. Broker approvals
+use the ledger flow above. It never grants `allow_session` or `allow_permanent`,
+which would outlive the attempt they were granted for.
 
 ## The client
 

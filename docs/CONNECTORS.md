@@ -5,7 +5,7 @@ manifest, and the manifest is what policy reads: the tools, their arguments, wha
 class of effect each has, which scopes it needs, and whether it can answer the
 question that matters after a timeout.
 
-The frozen manifest schema and effect classes are in `packages/contracts`.
+The shared manifest schema and effect classes are in `packages/contracts`.
 Implementations and boundary tests live in `apps/melete/src/connectors`; the
 broker persists the canonical action and reserves budget before calling them.
 
@@ -15,7 +15,7 @@ broker persists the canonical action and reserves budget before calling them.
 type ConnectorManifest = {
   name: string;
   version: string;
-  provider: 'imap' | 'smtp' | 'caldav' | 'web' | 'files' | 'test';
+  provider: 'imap' | 'smtp' | 'caldav' | 'web' | 'files' | 'test' | 'mcp';
   description: string;
   tools: ConnectorTool[];
   credentials: CredentialRequirement[];
@@ -141,3 +141,115 @@ Two rules that will not change:
    approval defeats the only mechanism protecting the person running this.
 2. **Implement `verify` if you possibly can.** A connector without it leaves its
    users with unresolved actions and a question they have to answer by hand.
+
+## Discovering tools without loading every schema
+
+The broker serves a small core plus `search_tools(query)` and `load_tool(name)`.
+The core prioritizes granted files, knowledge and react tools when those
+producers are registered, then the most-used verbs on granted connections.
+Selection budgets serialized schemas rather than counting tools. The default
+core allowance is 750 estimated tokens, including the two discovery tools.
+The pinned engine's scaffolding uses the rest of the 4,000-token tripwire.
+
+`Connector.catalog` supplies trusted source metadata: `connector`, `capability`,
+`skill` or `mcp`, up to two examples per verb, and optional core priorities.
+Each compact entry carries its name, one-line description, schema fingerprint,
+effect class, required scopes, connection and health. Provider capability
+producers can use this seam without changing discovery. W9 producers are not
+present in this revision.
+
+`POST /tools/search` accepts `{ "query": "archived invoices" }`. Postgres ranks
+the already scoped entries with `tsvector`, weighting names above descriptions
+and examples; no model is involved. Results target a 1,000-token allowance while
+always returning the highest-ranked match, so a long scope list cannot hide a
+capability. Results omit full schemas and tools already
+loaded in this attempt. `POST /tools/load` accepts the exact result name. Two
+accounts exposing the same verb receive stable account aliases, which the
+broker resolves back to the original verb before deriving the action's intent
+key. An alias cannot select another account.
+
+Loads are recorded in `attempt_tool_context` and the event ledger. They survive
+a service restart for the same attempt, expire with that attempt's authority,
+and do not carry into a replacement attempt. A changed schema is not silently
+substituted. Every search, load and use rechecks the current job, space, epoch,
+revision and scopes. Loading a schema never grants a scope or changes an effect
+class; ordinary execution still uses `POST /actions`.
+
+Installed skills enter discovery as `skills.<name>` read tools. Their content
+is read through `POST /tools/call` after loading; their frontmatter tool list
+cannot grant access. Space skills are withheld in the public compartment.
+The existing deterministic initial skill selection remains available.
+
+Hermes v2026.9.7 snapshots tools when an HTTP run starts. The plugin registers
+the newly loaded schema, and the adapter verifies the broker's catalog change,
+ends that run, then starts a continuation with the same attempt authority and
+shared budgets. There is one public attempt outcome; model-written
+`tools_loaded` text does not authorize a continuation.
+
+## Operator-installed MCP servers
+
+The worker in `apps/melete/src/connectors/mcp.ts` supports an
+operator-owned JSON config with a stdio command/arguments or an HTTP URL,
+allowed scopes, an `owner` audience, and an explicit list of exposed tools.
+For each tool the operator chooses a local alias, required scopes and an effect
+class. The default is `write_external`. Server annotations such as
+`readOnlyHint` never determine policy, and unconfigured server tools are ignored.
+
+The worker runs outside the runtime cell. Its stdio transport uses a filtered
+environment and its own temporary working directory. It receives neither vault
+credentials nor database, broker or provider keys. It offers the server no
+roots, sampling or other client capabilities. HTTP redirects, automatic call
+replay and unbounded responses are refused. Results retain external-content
+provenance and action evidence handles. A lost acknowledgement remains unknown;
+generic MCP verification cannot prove that an effect happened.
+
+Create a connection with provider `mcp` and the exact granted tool scopes, then
+add its transport and policy to the owner-controlled `MELETE_CONNECTIONS_FILE`:
+
+```json
+[
+  {
+    "kind": "mcp",
+    "id": "conn_REPLACE_WITH_CONNECTION_ID",
+    "server": {
+      "id": "notes",
+      "endpoint": { "transport": "http", "url": "http://127.0.0.1:8080/mcp" },
+      "allowed_scopes": ["mcp_notes.search"],
+      "audience": "owner",
+      "tools": [
+        { "name": "search", "alias": "search", "required_scopes": ["mcp_notes.search"], "effect_class": "read" }
+      ]
+    }
+  }
+]
+```
+
+Service startup registers configured HTTP servers against their persisted
+connection and space. Owner-only tools disappear from public compartments, and
+the audience and persisted scopes are checked again before dispatch. Server
+schemas default to JSON Schema 2020-12; draft-07 schemas can declare their
+dialect explicitly. Unsupported dialects or unresolved references fail validation.
+Shutdown disposes HTTP sessions. This implementation does not configure server
+authentication or resume disconnected sessions; it sends no service secrets.
+
+**Production stdio launch is refused before spawning.** A filtered environment
+does not isolate a same-account process from service-readable files or host
+networking. A dedicated OS launcher remains required. The real stdio integration
+fixture uses the same `mcp` provider and broker adapter, with process launch
+limited to tests. The [boundary proposal](../.agents/notes/proposed/2026-09-12-mcp-provider.md)
+records the remaining isolation work.
+
+## Composing read results
+
+`compose` accepts a list of named reads and a JavaScript function body operating
+on their JSON results. It preflights the complete list, then performs each read
+as an individual broker action with its own budget reservation and receipt.
+The script receives only JSON data; it cannot call tools, select connections or
+grant itself authority. The broker returns bounded JSON plus the underlying
+action evidence handles, and derived output retains inferred provenance.
+
+The execution interface is ready for the W10a cell executor. Without an injected
+executor the service does not expose `compose`. The in-process fallback is
+restricted to tests; `node:vm` is not a production security boundary and does not
+provide a memory limit. Connecting and verifying the cell executor remains
+required when W10a lands.

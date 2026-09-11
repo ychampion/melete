@@ -1,7 +1,7 @@
 # Threat model
 
 Melete reads your email, fetches web pages, and acts on your behalf. This
-document names four attackers and says, for each one, what v0.1 actually
+document names the attackers and says, for each one, what v0.1 actually
 contains and what it does not. Where a boundary is weaker than it sounds, that
 is stated rather than implied away.
 
@@ -79,8 +79,10 @@ What contains it:
 - **Skills are short and readable.** The token cap is 400 and the format is plain
   Markdown with frontmatter. A malicious skill is a document you can read in under
   a minute, unlike a compiled dependency.
-- **Selection is deterministic.** Triggers are matched by string, so a skill
-  cannot arrange to be loaded by talking the model into loading it.
+- **Initial selection is deterministic.** Triggers are matched by string.
+  On-demand discovery can load a skill the model requests, but the broker filters
+  it by the current job's scopes and withholds space skills in the public
+  compartment. A requested skill never supplies its own authority.
 
 What is not contained:
 
@@ -184,6 +186,53 @@ What is not contained:
   shipped.
 
 ---
+
+## Attacker 5: a hostile operator-installed MCP server or generated wrapper
+
+MCP workers belong outside the runtime cell. A server can lie in its description,
+annotations or results, including calling a write read-only. The operator's
+config supplies the exposed tools, effect classes, scopes and audience. The
+default effect is `write_external`; `readOnlyHint` cannot remove an approval.
+The broker still checks every action's scope, intent identity, approval hash and
+trust origin. A server result cannot install a tool, load a schema or approve
+an action. The stdio fixture verifies that a dishonest write does not reach the
+server until the owner approves its canonical payload.
+
+Discovery is also inside this boundary. Postgres ranks only the scoped catalog;
+the model cannot supply schemas or scope declarations to `load_tool`. Loaded
+schemas are context, not grants. Revoked scopes and stale epochs are rejected
+again on use. A tool whose effect class changes between admission and dispatch
+is refused before its connector executes.
+
+Composition preflights only trusted read tools, and the broker checks the read
+classification again inside its proposal transaction. The script receives JSON
+data without a broker client or credentials. Each underlying read has its own
+action and receipt; generated result fields claiming owner origin do not change
+the enclosing inferred provenance or the original evidence handles.
+
+**Production stdio is refused at the launch boundary.** The test MCP launcher filters
+environment variables, redirects profile paths to its temporary directory and
+grants no client roots or sampling capability. That prevents automatic credential
+inheritance; it does not stop a same-identity process reading service-accessible
+files, inspecting other processes where the OS permits it, or using the host's
+network routes. An HTTP MCP endpoint can reach whatever its remote host permits.
+Neither worker is inside the cell's `internal: true` network boundary.
+
+Configured HTTP installations register with the `mcp` provider. They receive
+only protocol messages and admitted tool arguments, with no service credentials,
+vault paths, database connection strings or client-side capabilities. Their
+own host's filesystem and network policy remain the operator's responsibility.
+Owner-only tools are hidden in public compartments and the broker checks the
+persisted audience again at dispatch, including after approval.
+
+The [isolation proposal](../.agents/notes/proposed/2026-09-12-mcp-provider.md)
+requires a separate OS identity or sandbox, no vault/database mounts or
+credentials, and a verified network policy before the service can launch local
+untrusted installations. Both the production adapter and raw stdio transport
+reject an unisolated launch; tests prove rejection before spawning. Docker
+isolation was not tested on the Windows host.
+Composition likewise requires the cell executor; its test-only `node:vm`
+fallback is not an OS or memory boundary.
 
 ## Things that are nobody's fault and still your problem
 
