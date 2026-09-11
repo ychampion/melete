@@ -1,0 +1,46 @@
+{
+  "id": "unknown-outcome",
+  "title": "The send is approved and the connector never answers",
+  "summary": "The job stops at needs_reconciliation with an action resting at unknown. Nothing is sent twice; a person says what happened.",
+  "match": ["unknown", "unconfirmed", "timeout", "reconcile", "flaky"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-reply-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    { "step": "text", "delay_ms": 500, "text": "Preparing the message for the test destination." },
+    {
+      "step": "propose",
+      "delay_ms": 500,
+      "ref": "send",
+      "kind": "test.write",
+      "connection": "test-destination",
+      "effect_class": "write_external",
+      "payload": {
+        "to": ["ledger@test.invalid"],
+        "subject": "Ledger entry",
+        "body": "One line, written once."
+      }
+    },
+    { "step": "await_approval", "delay_ms": 200, "ref": "send", "on_denied": null },
+    { "step": "text", "delay_ms": 400, "text": "Approved. Dispatching once, under the action id." },
+    {
+      "step": "dispatch",
+      "delay_ms": 900,
+      "ref": "send",
+      "outcome": "unknown",
+      "reason": "The connector accepted the connection and then timed out before acknowledging."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "I cannot tell you whether that was written."
+    },
+    { "step": "text", "delay_ms": 400, "text": "Thank you. Recording what you told me." },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Settled by hand. The action carries your decision, not a guess."
+    }
+  ]
+}

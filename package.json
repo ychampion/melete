@@ -15,7 +15,7 @@
     "bun": ">=1.3.0"
   },
   "scripts": {
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p apps/web/tsconfig.json --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
@@ -24,7 +24,10 @@
     "compose:check": "bun run deploy/scripts/compose-check.ts",
     "conformance": "bun run conformance/run.ts",
     "knowledge:lint": "bun run packages/knowledge/src/cli/lint.ts",
-    "db:generate": "bun run --cwd apps/melete db:generate"
+    "db:generate": "bun run --cwd apps/melete db:generate",
+    "client:generate": "bun run packages/client/scripts/generate.ts",
+    "dev:mock": "bun run --cwd apps/mock-api dev",
+    "dev:web": "bun run --cwd apps/web dev"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",

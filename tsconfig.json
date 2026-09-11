@@ -7,7 +7,9 @@
       "@melete/contracts/*": ["./packages/contracts/src/*"],
       "@melete/knowledge": ["./packages/knowledge/src/index.ts"],
       "@melete/skills": ["./packages/skills/src/index.ts"],
-      "@melete/runtime-hermes": ["./packages/runtime-hermes/src/index.ts"]
+      "@melete/runtime-hermes": ["./packages/runtime-hermes/src/index.ts"],
+      "@melete/client": ["./packages/client/src/index.ts"],
+      "@melete/client/*": ["./packages/client/src/*"]
     }
   },
   "include": [
@@ -18,5 +20,5 @@
     "deploy/scripts/**/*.ts",
     "conformance/**/*.ts"
   ],
-  "exclude": ["node_modules", "**/node_modules", "**/dist"]
+  "exclude": ["node_modules", "**/node_modules", "**/dist", "apps/web"]
 }

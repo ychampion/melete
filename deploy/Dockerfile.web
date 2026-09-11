@@ -1,14 +1,27 @@
-# The web client.
+# The reference web client.
 #
-# The owner builds the client separately; `apps/web` is not in this repository
-# yet, which is why the `web` service in docker-compose.yml sits behind a
-# profile. When it lands, this builds it and serves the static output.
+# `apps/web` is a small client for the API, not the product interface: the owner
+# builds that separately. It stays behind the compose `web` profile so
+# `docker compose up` is still just the service, and `docker compose --profile
+# web up` adds a browsable client on top of it.
+#
+# The API address is baked in at build time, because Vite inlines
+# `import.meta.env` into the bundle. Pass it as a build argument:
+#
+#   docker compose --profile web build --build-arg VITE_MELETE_API=https://melete.example
+#
+# Changing it later means rebuilding the image. A static bundle has nothing left
+# to read an environment variable from.
 
 FROM oven/bun:1.3.13-slim AS build
+
+ARG VITE_MELETE_API=http://localhost:8787
+ENV VITE_MELETE_API=${VITE_MELETE_API}
 
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/
+COPY packages/client/package.json packages/client/
 COPY packages/contracts/package.json packages/contracts/
 RUN bun install --frozen-lockfile
 
@@ -19,10 +32,14 @@ FROM oven/bun:1.3.13-slim
 
 WORKDIR /app
 COPY --from=build /app/apps/web/dist ./dist
+COPY deploy/scripts/serve-static.ts ./serve-static.ts
 
 RUN useradd --uid 10003 --create-home --home-dir /home/web web
 USER web
 
 EXPOSE 3000
 
-CMD ["bunx", "serve", "-s", "dist", "-l", "3000"]
+# A committed file server rather than `bunx serve`, which would reach the
+# registry on every container start. A client that cannot boot without the
+# network is not self-hosted.
+CMD ["bun", "run", "serve-static.ts"]

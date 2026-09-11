@@ -1,0 +1,214 @@
+/**
+ * The file server is only allowed to read the bundle it was pointed at.
+ *
+ * Two layers, because either alone would prove less than it looks. The unit
+ * tests exercise the guard directly, since `fetch` and `new URL` collapse dot
+ * segments before a server ever sees them and would quietly pass a server that
+ * had no guard at all. The HTTP tests write the request line onto a socket
+ * themselves, which is the only way to send what an attacker actually sends.
+ *
+ * The invariant every hostile case asserts is the same one: a file outside the
+ * bundle never reaches the response body.
+ */
+
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { connect } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
+import { createStaticServer, resolveInside } from './serve-static.ts';
+
+/** Appears only in files outside the bundle. Any response carrying it is a leak. */
+const SENTINEL = 'melete-outside-the-bundle-4f9c2a';
+const INDEX_HTML = '<!doctype html><title>Melete</title><div id="root"></div>';
+const ASSET_JS = 'export const ok = true;\n';
+
+let base = '';
+let server: ReturnType<typeof createStaticServer> | null = null;
+
+beforeAll(async () => {
+  base = await mkdtemp(join(tmpdir(), 'melete-serve-'));
+  // Two decoys beside the bundle, which is where a climb of one level lands.
+  await writeFile(join(base, 'package.json'), `{"name":"${SENTINEL}"}`, 'utf8');
+  await writeFile(join(base, 'secret.txt'), SENTINEL, 'utf8');
+  await mkdir(join(base, 'dist', 'assets'), { recursive: true });
+  await writeFile(join(base, 'dist', 'index.html'), INDEX_HTML, 'utf8');
+  await writeFile(join(base, 'dist', 'assets', 'app.js'), ASSET_JS, 'utf8');
+
+  server = createStaticServer({ root: join(base, 'dist'), port: 0, hostname: '127.0.0.1' });
+});
+
+afterAll(async () => {
+  server?.stop(true);
+  if (base) await rm(base, { recursive: true, force: true });
+});
+
+type RawResponse = { status: number; body: string };
+
+/**
+ * Send a request line verbatim. `fetch` would normalise `/../` and `%2e%2e`
+ * out of the path first, so it cannot test what this server is guarding.
+ */
+const raw = (path: string): Promise<RawResponse> =>
+  new Promise((settle, fail) => {
+    const port = server?.port;
+    if (!port) {
+      fail(new Error('the server is not listening'));
+      return;
+    }
+    const socket = connect(port, '127.0.0.1', () => {
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
+    });
+    let text = '';
+    socket.setTimeout(5000, () => {
+      socket.destroy();
+      fail(new Error(`no answer for ${path}`));
+    });
+    socket.on('data', (chunk) => {
+      text += chunk.toString('utf8');
+    });
+    socket.on('error', fail);
+    socket.on('end', () => {
+      const split = text.indexOf('\r\n\r\n');
+      const head = split === -1 ? text : text.slice(0, split);
+      const body = split === -1 ? '' : text.slice(split + 4);
+      settle({ status: Number(head.split(' ')[1] ?? 0), body });
+    });
+  });
+
+/** Resolved late, because the port is only known once the server is listening. */
+const origin = () => `http://127.0.0.1:${server?.port}`;
+
+/** Refused, or handed the client's own index. Never anything from outside. */
+const expectConfined = (response: RawResponse, path: string) => {
+  expect(response.body, `${path} leaked a file from outside the bundle`).not.toContain(SENTINEL);
+  const refused = response.status === 404;
+  const servedIndex = response.status === 200 && response.body.includes('id="root"');
+  expect(
+    refused || servedIndex,
+    `${path} answered ${response.status} with unexpected content`,
+  ).toBe(true);
+};
+
+describe('resolveInside', () => {
+  const root = resolve(sep === '\\' ? 'C:\\app\\dist' : '/app/dist');
+  const inside = (relative: string) => resolve(root, relative);
+
+  test('accepts a file in the bundle', () => {
+    expect(resolveInside(root, '/assets/app.js')).toBe(inside('assets/app.js'));
+  });
+
+  test('accepts the bundle root itself', () => {
+    expect(resolveInside(root, '/')).toBe(root);
+  });
+
+  test('percent-encoded dot segments do not climb out', () => {
+    for (const pathname of [
+      '/../package.json',
+      '/%2e%2e/package.json',
+      '/%2E%2E%2Fpackage.json',
+      '/%2e%2e%2f%2e%2e%2fsecret.txt',
+      '/assets/../../package.json',
+    ]) {
+      expect(resolveInside(root, pathname), pathname).toBeNull();
+    }
+  });
+
+  test('a backslash is a separator on Windows, so it is refused everywhere', () => {
+    for (const pathname of ['/..%5cpackage.json', '/%2e%2e%5cpackage.json', '/a%5cb']) {
+      expect(resolveInside(root, pathname), pathname).toBeNull();
+    }
+  });
+
+  test('a colon opens a drive letter and a URL scheme, so it is refused', () => {
+    for (const pathname of [
+      '/C:/Windows/win.ini',
+      '/file:///etc/passwd',
+      '/http://example.com/x',
+      '/%43%3a/Windows/win.ini',
+    ]) {
+      expect(resolveInside(root, pathname), pathname).toBeNull();
+    }
+  });
+
+  test('an absolute-looking path is still resolved inside the bundle', () => {
+    expect(resolveInside(root, '//etc/passwd')).toBe(inside('etc/passwd'));
+    expect(resolveInside(root, '/etc/passwd')).toBe(inside('etc/passwd'));
+  });
+
+  test('a NUL byte is refused, because the kernel would read a shorter name', () => {
+    expect(resolveInside(root, '/app.js%00.txt')).toBeNull();
+  });
+
+  test('a malformed percent sequence is refused rather than guessed at', () => {
+    expect(resolveInside(root, '/%zz')).toBeNull();
+    expect(resolveInside(root, '/%')).toBeNull();
+  });
+
+  test('a sibling directory sharing the prefix is not inside it', () => {
+    // `dist-backup` starts with `dist`, which is why the check ends at a separator.
+    expect(resolveInside(root, '/../dist-backup/secret.txt')).toBeNull();
+  });
+});
+
+describe('the server over a socket', () => {
+  test('serves the index at the root', async () => {
+    const response = await raw('/');
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="root"');
+  });
+
+  test('serves an asset out of the bundle', async () => {
+    const response = await raw('/assets/app.js');
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('export const ok = true;');
+  });
+
+  test('falls back to the index for a deep link with no file behind it', async () => {
+    const response = await raw('/jobs/job_01J');
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('id="root"');
+  });
+
+  test('reads an asset with HEAD, headers only', async () => {
+    const response = await fetch(`${origin()}/assets/app.js`, { method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('');
+  });
+
+  test('answers a write verb with 405 and says what it allows', async () => {
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+      const response = await fetch(`${origin()}/assets/app.js`, { method });
+      expect(response.status, `${method} on an asset`).toBe(405);
+      expect(response.headers.get('allow'), `${method} allow header`).toBe('GET, HEAD');
+      expect(await response.text()).not.toContain('export const ok = true;');
+    }
+  });
+
+  test('a write verb cannot reach outside the bundle either', async () => {
+    const response = await fetch(`${origin()}/../secret.txt`, { method: 'POST' });
+    expect(response.status).toBe(405);
+    expect(await response.text()).not.toContain(SENTINEL);
+  });
+
+  test('never answers a traversal with a file from outside the bundle', async () => {
+    for (const path of [
+      '/../package.json',
+      '/../secret.txt',
+      '/%2e%2e/package.json',
+      '/%2E%2E%2Fpackage.json',
+      '/%2e%2e%2f%2e%2e%2fsecret.txt',
+      '/C:/Windows/win.ini',
+      '/file:///etc/passwd',
+      '//etc/passwd',
+      '/..%5cpackage.json',
+      '/%2e%2e%5cpackage.json',
+      '/assets/../../secret.txt',
+      '/app.js%00.txt',
+      '/%00',
+      '/%zz',
+    ]) {
+      expectConfined(await raw(path), path);
+    }
+  });
+});
