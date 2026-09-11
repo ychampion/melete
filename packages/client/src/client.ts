@@ -59,15 +59,25 @@ export function createMeleteClient(options: MeleteClientOptions): MeleteClient {
   return { api, options: resolved };
 }
 
-/** Absolute URL for a path, used by the event stream and by download links. */
+export type QueryValue = string | number | boolean | undefined | null | readonly string[];
+
+/**
+ * Absolute URL for a path, used by the event stream and by download links.
+ * Arrays are repeated (`types=a&types=b`), which is what the document means by
+ * leaving a query parameter at the OpenAPI default of form style, exploded.
+ */
 export function meleteUrl(
   client: MeleteClient,
   path: string,
-  query?: Record<string, string | number | boolean | undefined | null>,
+  query?: Record<string, QueryValue>,
 ): string {
   const url = new URL(`${client.options.baseUrl}${path}`);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) url.searchParams.append(key, String(item));
+      continue;
+    }
     url.searchParams.set(key, String(value));
   }
   return url.toString();

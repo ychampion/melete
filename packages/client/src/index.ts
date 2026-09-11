@@ -12,6 +12,7 @@ export {
   type MeleteClient,
   type MeleteClientOptions,
   meleteUrl,
+  type QueryValue,
   type ResolvedClientOptions,
 } from './client.ts';
 export {

@@ -121,7 +121,7 @@ export async function* subscribeEvents(
 
     const url = meleteUrl(client, path, {
       after: cursor,
-      ...(options.types?.length ? { types: options.types.join(',') } : {}),
+      ...(options.types?.length ? { types: options.types } : {}),
     });
 
     let body: ReadableStream<Uint8Array> | null = null;

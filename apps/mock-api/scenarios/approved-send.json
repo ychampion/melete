@@ -1,0 +1,78 @@
+{
+  "id": "approved-send",
+  "title": "Chase the repair and send the reply",
+  "summary": "The job drafts an email, stops for approval, sends it once approved, and finishes with a receipt.",
+  "match": ["repair", "heating", "landlord", "reply", "email", "chase"],
+  "fallback": true,
+  "provider": "test",
+  "model": "scripted-reply-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    { "step": "text", "delay_ms": 500, "text": "Reading the thread with the building manager." },
+    {
+      "step": "tool",
+      "delay_ms": 400,
+      "name": "email.search",
+      "arguments": { "query": "HT-4471", "connection": "inbox" },
+      "result": { "matches": 3, "latest": "2026-08-28T09:14:00.000Z" }
+    },
+    { "step": "text", "delay_ms": 500, "text": "Last contact was 28 August. Nothing since." },
+    {
+      "step": "text",
+      "delay_ms": 600,
+      "text": "Drafting a five-line reply with the reference and the date."
+    },
+    {
+      "step": "propose",
+      "delay_ms": 500,
+      "ref": "reply",
+      "kind": "email.send",
+      "connection": "outbox",
+      "effect_class": "write_external",
+      "payload": {
+        "to": ["Building Manager <Manager@Example.COM>", "manager@example.com"],
+        "subject": "HT-4471 heating, still open",
+        "body": "Hello,\n\nReference HT-4471, reported 12 August. The heating in the front room is still off and I have had no update since 28 August.\n\nCould you tell me the date an engineer is booked for?\n\nThank you."
+      }
+    },
+    {
+      "step": "await_approval",
+      "delay_ms": 200,
+      "ref": "reply",
+      "on_denied": "after-denial"
+    },
+    { "step": "text", "delay_ms": 400, "text": "Approved. Sending." },
+    {
+      "step": "dispatch",
+      "delay_ms": 700,
+      "ref": "reply",
+      "outcome": "succeeded",
+      "external_ref": "<20260911.ht4471@example.com>",
+      "detail": { "accepted": 1, "server": "smtp.example.com" }
+    },
+    {
+      "step": "complete",
+      "delay_ms": 400,
+      "answer": "Sent to manager@example.com. Message id <20260911.ht4471@example.com>."
+    },
+    {
+      "label": "after-denial",
+      "step": "notice",
+      "delay_ms": 200,
+      "level": "attention",
+      "title": "The send was denied",
+      "body": "Nothing left the machine. Tell me what to change and I will draft it again."
+    },
+    {
+      "step": "await_input",
+      "delay_ms": 200,
+      "question": "You denied the send. What should the reply say instead?"
+    },
+    { "step": "text", "delay_ms": 500, "text": "Understood. I will redraft rather than resend." },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Stopped at your instruction. Nothing was sent."
+    }
+  ]
+}
