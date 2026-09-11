@@ -23,6 +23,14 @@ volumes:
   spaces:
   artifacts:
   work:
+  # HERMES_HOME. The root filesystem is read-only, but the API server's
+  # run-idempotency reservations are a SQLite file under HERMES_HOME: without a
+  # writable path the store falls back to process memory, /v1/capabilities
+  # reports runs_idempotency.durable=false, and the adapter refuses to start
+  # rather than risk a retried start becoming a second run. The entrypoint syncs
+  # the image's config and plugin into this volume on every boot, so an upgraded
+  # image wins over whatever an older container left here.
+  runtime-home:
 
 services:
   postgres:
@@ -66,6 +74,7 @@ services:
       MELETE_CONNECTIONS_FILE: /etc/melete/connections.json
       MELETE_GATEWAY_TLS_DIR: /etc/melete/gateway-tls
       MELETE_RUNTIME_URL: http://runtime:8790
+      MELETE_RUNTIME_KEY: ${MELETE_RUNTIME_KEY:?set MELETE_RUNTIME_KEY in .env}
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -102,6 +111,23 @@ services:
       HTTPS_PROXY: http://melete:8788
       NO_PROXY: melete,localhost,127.0.0.1
       HERMES_EXEC_ASK: "1"
+      HERMES_HOME: /var/lib/hermes
+      API_SERVER_ENABLED: "1"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8790"
+      # Not optional. Without a usable key the api_server platform is never
+      # enabled at all (gateway/config_env.py:_api_server returns early), so the
+      # container starts, logs nothing alarming, and never listens.
+      API_SERVER_KEY: ${MELETE_RUNTIME_KEY:?set MELETE_RUNTIME_KEY in .env}
+      # The surrogate the gateway swaps for a real provider key.
+      MELETE_MODEL_KEY: ${MELETE_RUNTIME_MODEL_KEY:?set MELETE_RUNTIME_MODEL_KEY in .env}
+      # Per attempt, and required: the entrypoint refuses to start without them.
+      # A long-lived container is a placeholder for the per-attempt container the
+      # service will start once W1 owns the lifecycle; these are the values it
+      # will pass, and the ones the local end-to-end passes today.
+      MELETE_ATTEMPT_TOKEN: ${MELETE_ATTEMPT_TOKEN:-}
+      MELETE_ATTEMPT_ID: ${MELETE_ATTEMPT_ID:-}
+      MELETE_JOB_ID: ${MELETE_JOB_ID:-}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
@@ -112,8 +138,10 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     volumes:
-      # The only writable path, and the only thing from the host side it sees.
+      # The only writable paths. /work is shared with the service; the Hermes
+      # home holds the idempotency reservations and nothing else that matters.
       - work:/work
+      - runtime-home:/var/lib/hermes
 
   # apps/web is a small reference client for the API, not the product interface,
   # so it sits behind a profile: `docker compose up` brings up the service, and

@@ -12,3 +12,8 @@ artifacts/
 .agents/w2-tests.log
 deploy/config/gateway-tls/
 .agents/w7-tests.log
+.hermes-src/
+.hermes-venv/
+__pycache__/
+*.pyc
+.pytest_cache/

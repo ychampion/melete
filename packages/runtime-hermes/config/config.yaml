@@ -2,31 +2,69 @@
 #
 # Nothing here patches Hermes. Everything that makes the engine thin is a
 # setting, so upgrading the pinned tag is a one-line change in the Dockerfile
-# rather than a rebase of a fork.
+# rather than a rebase of a fork. Every key was checked against the pinned
+# source; the citations are in .agents/notes/0009-hermes-surface.md.
 
-agent:
-  # SOUL.md is replaced by the identity Melete sends with every run. The
-  # contract caps it at 250 tokens; see packages/runtime-hermes/src/client.ts.
-  skip_context_files: true
-  # Melete owns memory. The knowledge package decides what a job may recall,
-  # and a retracted record has to disappear from retrieval immediately, which
-  # an engine-side memory store would quietly undo.
-  skip_memory: true
-
-tools:
-  # No built-in toolset loads. The Melete plugin registers the broker's tools
-  # and nothing else, so the catalog the model sees is exactly what policy
-  # allows for this job.
-  enabled_toolsets: []
+# The API server agent is built with exactly these toolsets
+# (gateway/platforms/api_server.py:2122 -> hermes_cli/tools_config.py:550). An
+# explicit list replaces the hermes-api-server default, so naming only the
+# plugin's toolset is what turns every built-in off. There is no separate
+# "enabled_toolsets: []" key; that was a guess in the skeleton.
+platform_toolsets:
+  api_server: [melete]
 
 plugins:
-  # One plugin, ours.
-  allow: ["melete"]
+  # An ALLOW-LIST of registry keys, not a boolean and not "allow"
+  # (hermes_cli/plugins_discovery.py:91). `plugins.enabled: true` loads nothing
+  # at all, silently. The key is the directory name under $HERMES_HOME/plugins/.
+  enabled: [melete]
+  # The compatibility import paths are removed on 2026-09-14. The Melete plugin
+  # imports nothing from Hermes beyond `ctx`, so this stays false and a plugin
+  # that ever did reach past `ctx` would stop loading rather than drift.
+  allow_deprecated_imports: false
+
+tools:
+  tool_search:
+    # Plugin tools are "deferrable" and are collapsed behind a
+    # tool_search/tool_describe/tool_call bridge by default
+    # (hermes_cli/config_defaults.py:1792). Melete's catalog is already filtered
+    # by the job's scopes and capped at fifteen tools, so the bridge buys
+    # nothing and costs a round trip before the model can call anything.
+    enabled: "off"
+
+memory:
+  # Melete owns memory. The knowledge package decides what a job may recall, and
+  # a retracted record has to disappear from retrieval at once, which an
+  # engine-side store would quietly undo. The `memory` toolset is absent from
+  # platform_toolsets above, which is the other half of this.
+  enabled: false
+
+approvals:
+  # Melete does not use Hermes's approval gate: api_server is in
+  # _UNATTENDED_APPROVAL_PLATFORMS (tools/approval_context.py:134), so a
+  # plugin-escalated approval hard-denies with nobody to ask. Broker tools
+  # return a structured needs_approval result instead and the job parks on
+  # Melete's ledger. These two keys make the shell-command guard's behaviour
+  # explicit rather than inherited: deny rather than block, and if something
+  # ever does block, not for longer than five minutes.
+  unattended_mode: deny
+  timeout: 300
+
+providers:
+  # The only endpoint the runtime may reach for inference is Melete's model
+  # gateway, which injects the real provider key. The surrogate this container
+  # holds is worth nothing anywhere else. The address is the broker bind from
+  # deploy/docker-compose.yml (MELETE_BROKER_BIND=0.0.0.0:8788), which carries
+  # both the broker routes and the metered model paths on one listener.
+  # Compose sets MELETE_MODEL_KEY; the provider segment selects which upstream
+  # the gateway injects a key for.
+  melete-gateway:
+    base_url: "http://melete:8788/providers/fireworks/v1"
+    key_env: MELETE_MODEL_KEY
 
 gateway:
-  api_server:
-    host: "0.0.0.0"
-    port: 8790
-    # One attempt at a time. A second concurrent run in this container would
-    # share the same fenced epoch, which the broker would refuse anyway.
-    max_concurrent_runs: 1
+  platforms:
+    api_server:
+      # One attempt at a time. A second concurrent run in this container would
+      # share the same fenced epoch, which the broker would refuse anyway.
+      max_concurrent_runs: 1

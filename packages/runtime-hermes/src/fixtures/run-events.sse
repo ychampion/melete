@@ -1,0 +1,18 @@
+data: {"event": "tool.started", "run_id": "run_fixture_1", "timestamp": 1789000000.1, "tool": "email.search", "preview": "query=lease renewal"}
+
+data: {"event": "tool.completed", "run_id": "run_fixture_1", "timestamp": 1789000001.4, "tool": "email.search", "duration": 1.312, "error": false}
+
+: keepalive
+
+data: {"event": "message.delta", "run_id": "run_fixture_1", "timestamp": 1789000001.9, "delta": "I found the thread. "}
+
+data: {"event": "message.delta", "run_id": "run_fixture_1", "timestamp": 1789000002.0, "delta": "Drafting a reply."}
+
+data: {"event": "tool.started", "run_id": "run_fixture_1", "timestamp": 1789000002.2, "tool": "email.send", "preview": "to=landlord@example.com"}
+
+data: {"event": "tool.completed", "run_id": "run_fixture_1", "timestamp": 1789000002.9, "tool": "email.send", "duration": 0.704, "error": false}
+
+data: {"event": "run.completed", "run_id": "run_fixture_1", "timestamp": 1789000003.2, "output": "Asked the landlord for a signed date and parked the send for approval.", "usage": {"input_tokens": 3310, "output_tokens": 118, "total_tokens": 3428}}
+
+: stream closed
+
