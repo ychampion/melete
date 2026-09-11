@@ -76,6 +76,9 @@ const raw = (path: string): Promise<RawResponse> =>
     });
   });
 
+/** Resolved late, because the port is only known once the server is listening. */
+const origin = () => `http://127.0.0.1:${server?.port}`;
+
 /** Refused, or handed the client's own index. Never anything from outside. */
 const expectConfined = (response: RawResponse, path: string) => {
   expect(response.body, `${path} leaked a file from outside the bundle`).not.toContain(SENTINEL);
@@ -167,13 +170,25 @@ describe('the server over a socket', () => {
     expect(response.body).toContain('id="root"');
   });
 
-  test('answers anything but GET with a refusal, index fallback included', async () => {
-    const origin = `http://127.0.0.1:${server?.port}`;
-    for (const method of ['POST', 'PUT', 'DELETE']) {
-      const response = await fetch(`${origin}/assets/app.js`, { method });
-      expect(response.status, `${method} on an asset`).toBe(404);
+  test('reads an asset with HEAD, headers only', async () => {
+    const response = await fetch(`${origin()}/assets/app.js`, { method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('');
+  });
+
+  test('answers a write verb with 405 and says what it allows', async () => {
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+      const response = await fetch(`${origin()}/assets/app.js`, { method });
+      expect(response.status, `${method} on an asset`).toBe(405);
+      expect(response.headers.get('allow'), `${method} allow header`).toBe('GET, HEAD');
       expect(await response.text()).not.toContain('export const ok = true;');
     }
+  });
+
+  test('a write verb cannot reach outside the bundle either', async () => {
+    const response = await fetch(`${origin()}/../secret.txt`, { method: 'POST' });
+    expect(response.status).toBe(405);
+    expect(await response.text()).not.toContain(SENTINEL);
   });
 
   test('never answers a traversal with a file from outside the bundle', async () => {
@@ -190,6 +205,7 @@ describe('the server over a socket', () => {
       '/%2e%2e%5cpackage.json',
       '/assets/../../secret.txt',
       '/app.js%00.txt',
+      '/%00',
       '/%zz',
     ]) {
       expectConfined(await raw(path), path);

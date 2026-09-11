@@ -81,9 +81,16 @@ export function createStaticServer(options: StaticServerOptions) {
     ...(options.hostname ? { hostname: options.hostname } : {}),
     idleTimeout: 60,
     async fetch(request) {
-      // A built bundle is read only, so GET is the whole vocabulary. Answering a
-      // POST with the index would report a 200 for a write that never happened.
-      if (request.method !== 'GET') return new Response('Not found\n', { status: 404 });
+      // A built bundle is read only, so reading it is the whole vocabulary.
+      // Anything else is 405 rather than 404: the path may well exist, the verb
+      // is what does not, and answering a POST with the index would report a 200
+      // for a write that never happened. A 405 has to say what it does allow.
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response('Method not allowed\n', {
+          status: 405,
+          headers: { allow: 'GET, HEAD' },
+        });
+      }
 
       const { pathname } = new URL(request.url);
       const target = resolveInside(root, pathname);
