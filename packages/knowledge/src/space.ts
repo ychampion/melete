@@ -15,7 +15,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import {
   defaultGitignore,
   defaultLog,
@@ -186,11 +186,54 @@ async function stageCatalog(paths: SpacePaths, note: string, at: Date): Promise<
 }
 
 /**
+ * One write at a time per space.
+ *
+ * A git repository has a single index, and staging a file and then committing
+ * it is a read-modify-write across it. Two overlapping writes do not merely
+ * collide on the lock file: whichever commit runs first sweeps up everything
+ * the others have staged, so their records land inside someone else's commit,
+ * under someone else's message and someone else's trailer, while their callers
+ * are told the write failed. The commit is the audit record here, so it has to
+ * describe exactly the write that produced it, and a caller has to be told the
+ * truth about whether its write landed.
+ *
+ * This serializes within one process, which is what v0.1 is. Two processes
+ * writing one space would still need a lock in the filesystem.
+ */
+const writeQueues = new Map<string, Promise<unknown>>();
+
+function withSpaceLock<T>(paths: SpacePaths, work: () => Promise<T>): Promise<T> {
+  const key = resolve(paths.root);
+  const previous = writeQueues.get(key) ?? Promise.resolve();
+  // The queue continues whether the previous write succeeded or failed: one
+  // caller's error must not strand every write behind it.
+  const result = previous.then(work, work);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  writeQueues.set(key, settled);
+  void settled.then(() => {
+    if (writeQueues.get(key) === settled) writeQueues.delete(key);
+  });
+  return result;
+}
+
+/**
  * Write a record and commit it, with the catalog and the chronicle in the same
  * commit so the space is never half-updated. An identical write commits
  * nothing and says so rather than making an empty commit.
  */
-export async function commitRecord(
+export function commitRecord(
+  paths: SpacePaths,
+  relativePath: string,
+  content: string,
+  attribution: CommitAttribution,
+): Promise<SpaceCommit> {
+  return withSpaceLock(paths, () => commitRecordAlone(paths, relativePath, content, attribution));
+}
+
+async function commitRecordAlone(
   paths: SpacePaths,
   relativePath: string,
   content: string,
@@ -221,7 +264,15 @@ export async function commitRecord(
  * text is gone from the working tree, and the caller drops the index row in the
  * same operation so it is gone from the only derived copy too.
  */
-export async function commitRemoval(
+export function commitRemoval(
+  paths: SpacePaths,
+  relativePath: string,
+  attribution: CommitAttribution,
+): Promise<SpaceCommit> {
+  return withSpaceLock(paths, () => commitRemovalAlone(paths, relativePath, attribution));
+}
+
+async function commitRemovalAlone(
   paths: SpacePaths,
   relativePath: string,
   attribution: CommitAttribution,
@@ -245,10 +296,18 @@ export async function commitRemoval(
  * Undo one commit by making another. History is not rewritten: what happened
  * stays visible, and the reversal is itself attributable.
  */
-export async function revert(
+export function revert(
   paths: SpacePaths,
   sha: string,
   attribution: CommitAttribution = { proposedBy: 'user' },
+): Promise<SpaceCommit> {
+  return withSpaceLock(paths, () => revertAlone(paths, sha, attribution));
+}
+
+async function revertAlone(
+  paths: SpacePaths,
+  sha: string,
+  attribution: CommitAttribution,
 ): Promise<SpaceCommit> {
   const run = await runGit(paths.root, ['revert', '--no-edit', '--no-commit', sha]);
   if (run.code !== 0) {
@@ -266,16 +325,20 @@ export async function revert(
   return commitStaged(paths, subject, attribution);
 }
 
-/** Every commit that touched one record, newest first, with who asked for it. */
+/**
+ * Every commit that touched one record, newest first, with who asked for it.
+ *
+ * Deliberately without `--follow`. Following renames sounds right for a record
+ * that was retitled into a new filename, but git decides what a rename is by
+ * how similar two files are, and knowledge records are similar to each other:
+ * asked to follow one record it happily returns commits belonging to other
+ * records that merely look like it. History that quietly attributes somebody
+ * else's write to this record is worse than history that starts at the rename,
+ * so a retitled record's earlier life is found through its stable id instead.
+ */
 export async function history(paths: SpacePaths, relativePath: string): Promise<HistoryEntry[]> {
   const posix = toPosix(relativePath);
-  const run = await runGit(paths.root, [
-    'log',
-    '--follow',
-    `--format=${HISTORY_FORMAT}${RECORD}`,
-    '--',
-    posix,
-  ]);
+  const run = await runGit(paths.root, ['log', `--format=${HISTORY_FORMAT}${RECORD}`, '--', posix]);
   if (run.code !== 0) return [];
 
   return run.stdout
