@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import postgres from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
+import { migrateDatabase } from '../../src/db/migrate.ts';
 import { acquireTestServer } from './database.ts';
 
 export type PostgresFixture = DatabaseHandle & {
@@ -10,21 +11,9 @@ export type PostgresFixture = DatabaseHandle & {
 };
 
 export type PostgresFixtureOptions = {
-  /** The initial frozen schema always runs before these additional migrations. */
+  /** The complete journal always runs before these additional fixture migrations. */
   migrations?: Array<string | URL>;
 };
-
-const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
-/**
- * The frozen initial schema, plus the later migrations the broker's own
- * invariants live in. A fixture that stops at 0000 cannot exercise a unique
- * index that was added in 0009, and a test that cannot exercise the index is
- * not evidence of anything.
- */
-const brokerMigrations = [
-  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
-  new URL('../../drizzle/0018_tool_catalog.sql', import.meta.url),
-];
 
 /**
  * Every fixture owns a newly created database, including when DATABASE_URL is
@@ -66,11 +55,8 @@ export async function createPostgresFixture(
     const url = new URL(adminUrl);
     url.pathname = `/${databaseName}`;
     handle = openDatabase(url.toString(), 2);
-    for (const migration of [
-      initialMigration,
-      ...brokerMigrations,
-      ...(options.migrations ?? []),
-    ]) {
+    await migrateDatabase(handle);
+    for (const migration of options.migrations ?? []) {
       await handle.sql.unsafe(await readFile(migration, 'utf8'));
     }
     return {
