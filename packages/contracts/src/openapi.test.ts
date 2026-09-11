@@ -33,6 +33,8 @@ describe('the OpenAPI document', () => {
       '/connections',
       '/knowledge/search',
       '/skills',
+      '/browser/sessions/{id}/takeover',
+      '/browser/sessions/{id}/handback',
     ]) {
       expect(paths).toContain(expected);
     }

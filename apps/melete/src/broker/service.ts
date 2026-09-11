@@ -266,7 +266,7 @@ export class BrokerService implements BrokerOperations {
     tool: ConnectorTool,
   ): Promise<Admissibility> {
     const gated = isTrustGatedEffect(tool.effect_class);
-    const fields = gated ? collectOriginFields(action.canonical_payload) : [];
+    const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
     const warnings = await resolveOriginWarnings(
       tx,
       gated ? this.options.resolveTrust : undefined,

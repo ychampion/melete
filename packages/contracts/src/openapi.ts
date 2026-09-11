@@ -38,6 +38,7 @@ import {
   spaceListResponse,
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
+import { browserControlResponse } from './browser.ts';
 import { eventPage, eventQuery } from './events.ts';
 import {
   claimHistoryResponse,
@@ -139,6 +140,7 @@ export function buildOpenApiDocument() {
         { name: 'knowledge' },
         { name: 'skills' },
         { name: 'memory' },
+        { name: 'browser' },
       ],
       paths: {
         '/responsibilities': {
@@ -839,6 +841,43 @@ export function buildOpenApiDocument() {
             tags: ['skills'],
             summary: 'List built-in and space skills',
             responses: { '200': jsonResponse('Skills', skillListResponse) },
+          },
+        },
+        '/browser/sessions/{id}/takeover': {
+          post: {
+            tags: ['browser'],
+            summary: 'Take human control of a browser session',
+            description:
+              'Requires the owner session and same-origin protection. The controller increments ' +
+              'its epoch before the service parks the job. Already planned inputs are refused.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            responses: {
+              '200': jsonResponse(
+                'Human control fenced against automation',
+                browserControlResponse,
+              ),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such browser session'),
+              '409': problem('Browser control could not change'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/handback': {
+          post: {
+            tags: ['browser'],
+            summary: 'Return browser control to automation',
+            description:
+              'Requires the owner session and same-origin protection. Increments the control ' +
+              'epoch and requires a fresh observation. The job stays parked until owner input.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            responses: {
+              '200': jsonResponse('Automation requires fresh observation', browserControlResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such browser session'),
+              '409': problem('Browser control could not change'),
+            },
           },
         },
       },

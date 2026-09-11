@@ -1,12 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
-import { configuredConnectors, readConnectionConfig } from '../connectors/configured.ts';
+import {
+  type ConfiguredConnection,
+  configuredBrowserSessions,
+  configuredConnectors,
+  readConnectionConfig,
+} from '../connectors/configured.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
+import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import { createInternalServer } from './internal-server.ts';
 import type { TrustResolver } from './trust.ts';
@@ -19,6 +25,8 @@ export async function startEffectBoundary(
     resolveAuthority?: EffectAuthorityResolver;
     /** Left out, memory answers. Pass one to isolate the broker in a test. */
     resolveTrust?: TrustResolver;
+    browserSessions?: BrowserSessionService;
+    connections?: ConfiguredConnection[];
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -32,13 +40,19 @@ export async function startEffectBoundary(
   }
   const hostname = binding[1].replace(/^\[|\]$/g, '');
   const port = Number(binding[2]);
+  const connections =
+    dependencies.connections ?? (await readConnectionConfig(env.MELETE_CONNECTIONS_FILE));
+  const browser = dependencies.browserSessions
+    ? undefined
+    : await configuredBrowserSessions({ sql: handle.sql, env, connections });
   const registry = await configuredConnectors({
     sql: handle.sql,
     workRoot: env.MELETE_WORK_DIR,
     spacesRoot: env.MELETE_SPACES_DIR,
     masterKey: env.MELETE_MASTER_KEY,
-    connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
+    connections,
     enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
+    browserSessions: dependencies.browserSessions ?? browser?.sessions,
   });
   const providers = [
     ...providersFromEnv({
@@ -90,6 +104,7 @@ export async function startEffectBoundary(
     });
   } catch (error) {
     await queue.stop();
+    await browser?.pool.close();
     throw error;
   }
   const recovery = setInterval(() => {
@@ -105,6 +120,7 @@ export async function startEffectBoundary(
       clearInterval(recovery);
       await new Promise<void>((resolve) => internal.server.close(() => resolve()));
       await queue.stop();
+      await browser?.pool.close();
     },
   };
 }

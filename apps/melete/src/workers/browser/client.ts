@@ -17,6 +17,8 @@ export class BrowserWorkerClient {
       signal: AbortSignal.timeout(30_000),
     });
     const value = (await response.json()) as T & { error?: string };
+    if (response.status >= 500)
+      throw new Error('Browser worker operation failed without a confirmed result');
     if (!response.ok) throw new BrowserFault(value.error ?? 'worker_unavailable');
     return value;
   }
@@ -59,6 +61,9 @@ export class BrowserWorkerPool {
       idleMs?: number;
       endpoints?: BrowserWorkerEndpoint[];
       allowLocalProcess?: boolean;
+      /** Tests supply their own entry that injects a fixed local fixture; never owner/model configuration. */
+      workerEntry?: URL;
+      headless?: boolean;
     },
   ) {}
 
@@ -94,7 +99,7 @@ export class BrowserWorkerPool {
         'node',
         '--experimental-transform-types',
         '--disable-warning=ExperimentalWarning',
-        fileURLToPath(new URL('./entry.ts', import.meta.url)),
+        fileURLToPath(this.options.workerEntry ?? new URL('./entry.ts', import.meta.url)),
       ],
       {
         cwd: spaceRoot,
@@ -104,6 +109,7 @@ export class BrowserWorkerPool {
           MELETE_BROWSER_ROOT: spaceRoot,
           MELETE_BROWSER_TOKEN: token,
           MELETE_BROWSER_IDLE_MS: String(this.options.idleMs ?? 300_000),
+          MELETE_BROWSER_HEADLESS: String(this.options.headless ?? true),
         },
         stdin: 'ignore',
         stdout: 'pipe',

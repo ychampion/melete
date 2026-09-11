@@ -24,6 +24,11 @@ import { mountQuestions } from './api/questions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import {
+  type ConfiguredConnection,
+  configuredBrowserSessions,
+  readConnectionConfig,
+} from './connectors/configured.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
@@ -45,6 +50,7 @@ import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
+import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -65,6 +71,7 @@ export type AppDeps = {
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
+  browserSessions?: BrowserSessionService;
 };
 
 export function createApp(deps: AppDeps) {
@@ -99,6 +106,7 @@ export function createApp(deps: AppDeps) {
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
+  if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -148,9 +156,17 @@ export async function bootstrap(
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
+  let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
+  let connections: ConfiguredConnection[] = [];
   const close = async () => {
     try {
-      await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
+      await Promise.all([
+        events?.close(),
+        triggers?.stop(),
+        runner?.stop(),
+        operations?.stop(),
+        browser?.pool.close(),
+      ]);
     } finally {
       try {
         await queue?.stop();
@@ -161,6 +177,10 @@ export async function bootstrap(
   };
   try {
     if (handle) await migrateDatabase(handle);
+    if (handle) {
+      connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
+      browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
+    }
     if (handle) {
       events = new EventStream(handle);
       await events.start();
@@ -181,6 +201,10 @@ export async function bootstrap(
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
       });
+      if (browser)
+        browser.sessions.onPark = (jobId, attemptIds) => {
+          for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
+        };
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -226,6 +250,7 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    browserSessions: browser?.sessions,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -248,6 +273,8 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    browserSessions: browser?.sessions,
+    connections,
     close,
   };
 }
@@ -255,7 +282,12 @@ export async function bootstrap(
 if (import.meta.main) {
   const service = await bootstrap();
   const { app, env, handle } = service;
-  const boundary = handle ? await startEffectBoundary(handle, env) : null;
+  const boundary = handle
+    ? await startEffectBoundary(handle, env, {
+        browserSessions: service.browserSessions,
+        connections: service.connections,
+      })
+    : null;
   process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
   const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 0 });
   if (boundary) process.stdout.write(`effect boundary listening on ${env.MELETE_BROKER_BIND}\n`);

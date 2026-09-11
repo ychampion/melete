@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readFile, realpath, rename } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { type BrowserContext, chromium, type Page } from 'playwright';
 
@@ -35,6 +36,10 @@ export async function confinedProfile(spaceRoot: string): Promise<string> {
   const profile = join(canonical, 'browser');
   await mkdir(profile, { recursive: true });
   if ((await lstat(profile)).isSymbolicLink() || (await realpath(profile)) !== profile)
+    throw new BrowserFault('profile_outside_space');
+  const data = join(profile, 'chromium');
+  await mkdir(data, { recursive: true });
+  if ((await lstat(data)).isSymbolicLink() || (await realpath(data)) !== data)
     throw new BrowserFault('profile_outside_space');
   return profile;
 }
@@ -85,6 +90,8 @@ export class BrowserSessions {
       this.recordPath = join(profile, 'session.json');
       let previousEpoch = -1;
       try {
+        if ((await lstat(this.recordPath)).isSymbolicLink())
+          throw new BrowserFault('profile_symlink');
         const previous: unknown = JSON.parse(await readFile(this.recordPath, 'utf8'));
         if (
           previous &&
@@ -153,12 +160,16 @@ export class BrowserSessions {
 
   /** This check is immediately adjacent to every physical dispatch, including after locator waits. */
   dispatchInput<T>(id: string, epoch: number, operation: () => Promise<T>): Promise<T> {
+    this.checkInput(id, epoch);
+    this.touch();
+    return operation();
+  }
+
+  checkInput(id: string, epoch: number): void {
     const session = this.requireSession(id);
     if (epoch !== session.control_epoch) throw new BrowserFault('stale_control_epoch');
     if (session.control !== 'automation') throw new BrowserFault('human_control');
     if (this.observedEpoch !== epoch) throw new BrowserFault('fresh_observation_required');
-    this.touch();
-    return operation();
   }
 
   observed(id: string, epoch: number): void {
@@ -205,8 +216,18 @@ export class BrowserSessions {
     const path = this.recordPath;
     this.persistQueue = this.persistQueue.then(async () => {
       if (!path) return;
-      await writeFile(`${path}.tmp`, record, { mode: 0o600 });
-      await rename(`${path}.tmp`, path);
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      const file = await open(
+        temporary,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+        0o600,
+      );
+      try {
+        await file.writeFile(record);
+      } finally {
+        await file.close();
+      }
+      await rename(temporary, path);
     });
     return this.persistQueue;
   }

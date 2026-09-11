@@ -7,6 +7,7 @@
 
 export * from './api.ts';
 export * from './broker.ts';
+export * from './browser.ts';
 export * from './common.ts';
 export * from './connector.ts';
 export * from './effects.ts';

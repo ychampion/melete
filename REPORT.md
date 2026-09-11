@@ -25,3 +25,71 @@
 - Command `bun run typecheck` after slice 1 typing fixes: exit 0.
 - Command `bun test apps/melete/src/workers/browser/sessions.test.ts --max-concurrency=2` after graceful worker release: 4 pass, 0 fail, 18.20 seconds.
 - Command `bunx biome check --write` on the six slice 1 worker files: passed; no frozen contract types changed.
+
+## Slice 2 progress
+
+- SHA `3d27af7`: worker/session slice committed and pushed to `origin/lane/w10b-browser`.
+- Test `Chromium controller > semantic fills, read, downscaled artifacts and a bound native POST produce one effect`: real Chromium produced one destination ledger row; screenshot decoded to 512 by 384 pixels.
+- Test `Chromium controller > controller refuses the second fill after takeover, and handback requires fresh observation`: second HTTP fill returned `stale_control_epoch`; rejected value absent from fresh tree, zero submitted effects; handback fill returned `fresh_observation_required`.
+- Command `bun test --max-concurrency=2 apps/melete/test/integration/browser-controller.test.ts`: 3 pass, 0 fail, 13 assertions, 8.83 seconds including Node/Chromium launch.
+- Command `bun test --max-concurrency=2 apps/melete/src/workers/browser/egress.test.ts`: 27 passing unit tests include denied SSRF, DNS rebinding, unauthorized mutation, changed POST bytes, WebSockets, and takeover during DNS before transport.
+- Log `BrowserRedirect`: Node Chromium probe preserved redirect cookies with a fresh page; direct Playwright redirect replay hit the blocked proxy, so the controller follows only checked document redirects as a new fenced input.
+- Command `bun run typecheck`: a module-level DOM reference initially conflicted with Bun stream types; controller-local browser types removed that global change. Remaining connector test diagnostics are being fixed in their slice.
+
+## Integrated verification at 20:05 UTC
+
+- Command `git -C C:/Users/gamin/melete-oss-w10b log -8 --oneline`: preserved SHA `3d27af7` and all worktree edits after owner steering; continuing sequentially without agents.
+- Command `bun test --max-concurrency=2 apps/melete/test/integration/browser-matrix.test.ts`: 13 pass, 0 fail, 170 assertions; all six variants passed in both modes against Chromium, Postgres and pg-boss; 77.92 seconds including setup and teardown.
+- Log `.agents/w10b-measurements.json`: completed checked-recipe runs used 5 observations versus 8; unknown required fields, ambiguous controls and takeover each produced zero destination effects.
+- Command `bun run typecheck`: fix cycle 1 typed the fixture refresh object and narrowed two receipt-detail reads; rerun exit 0.
+- Command `bun run lint`: fix cycle 1 formatted the controller, guarded an optional test result, and excluded the generated measurement file; rerun exit 0.
+- Test `Chromium controller`: all 6 behavioral tests passed, including blocked scripted POST, changed approved POST bytes, and refused credential captures; teardown exceeded its 15-second hook, and a bounded shutdown timing probe is running before any timeout change.
+- Log `release.start 16330 / release.done 34880 / pool.done 34907`: shutdown delay was inside Chromium session release, not worker termination; two Playwright debug probes exited Chromium cleanly in 374 and 326 milliseconds, showing variable Windows shutdown time. Fix cycle 1 gives the real-browser teardown 25 seconds.
+
+## Owner steering and review at 20:20 UTC
+
+- Command `mkdir C:/Users/gamin/.melete-test.lock`: every subsequent full suite acquires this shared lock and removes it on success or failure; focused runs remain unlocked. Earlier unlocked timing observations are not confirmed failures under the owner's updated rule.
+- Command `bun run openapi` / `bun run client:generate`: additive browser control response and paths are now authorized; `.agents/notes/proposed/2026-09-12-w10b-contract-additions.md` records the additions. Breaking changes still require a proposal and stop.
+- Log `.agents/w10b-full.log`: the unlocked run completed 1041 passing checks and 14 existing todo items; its timing and timeout observations will be assessed again under the shared lock before reporting a failure.
+- Test `hidden destinations are included in the complete observed submit intent`: regression failed with `destination_picker_7` missing from approval fields; fix cycle 1 builds all fields and wire bytes from the same entry list in the worker realm.
+- Test `an accessible label changed by a fill triggers another observation`: regression failed because the observation was absent; fix cycle 1 includes the accessibility schema in the transition fingerprint.
+- Test `durable jobs` / `responsibility protocol`: two old rejection matchers held driver transactions pending until teardown; their existing native-await pattern now covers those assertions without changing service behavior, pending verification under the shared full-suite lock.
+- Command `git -C C:/Users/gamin/melete-oss-w10b show HEAD:packages/contracts/openapi.json` compared against the regenerated document: all 62 existing paths and 112 existing schemas are byte-equivalent as parsed JSON; exactly two paths were added.
+- Test `browser-matrix`: review found that replaying an existing submit receipt inflated its observation counter; the fixture now counts unique observation ids, and the locked full run will refresh the measurement table. Earlier 5-versus-8 figures included that replay and are superseded.
+
+## Locked full run at 20:46 UTC
+
+- Command `bun test --max-concurrency=2` acquired the shared directory lock at 20:32 UTC and finished with 1038 pass, 14 todo, 10 fail, 3 errors, 4498 assertions, and 788.00 seconds; log `.agents/w10b-locked-full.log` and exit log `.agents/w10b-locked-full.exit.log` retain the output.
+- Log `w10c-running`: another lane added a marker during this run stating that W10c Bun 20612 and W10b Bun 29208 were both observed running; the final `rmdir` returned `Directory not empty`. This lock acquisition did not establish an uncontended run; the other lane's marker was preserved.
+- Test `Chromium controller`: all 9 real-browser tests passed in the locked run, including hidden approval destinations, tampered POST bytes, changed accessibility labels, credential refusal, and input refusal after takeover.
+- Test `local forms through the browser broker`: all 14 tests passed; the 12 measurement rows now count 4 actual captures for each completed checked-recipe run versus 7 in observe-every-action mode, with one effect on completion and zero effects for each stopped or takeover row.
+- Test `browser episode privacy against Postgres and pg-boss`: all 4 tests passed, including restart, cancellation, call-ID shadowing, and original execution input with redacted durable copies.
+- Test `durable jobs` / `responsibility protocol`: the previously hanging rejection assertions passed after their native-await correction; the locked run's remaining responsibility failures were five-second reset-hook timeouts.
+- Log `a beforeEach/afterEach hook timed out`: knowledge-route setup and cleanup, attention reset, authentication reset, and responsibility reset exceeded five seconds; one knowledge retraction body also timed out and its unfinished work raced cleanup, producing `ENOENT`, `EBUSY`, and a later 404.
+- Command `bunx biome check --write` on 8 fixture files: passed; timeout fix cycle 1 gives the reproduced database-reset hooks 15 seconds, and knowledge routes copy a closed, committed seed instead of rebuilding the same three Git commits for every test.
+- Test `lint` / `mediation` / `retraction`: performance fix cycle 2 extends committed-seed copies to these fixture families while preserving independent directories, real Git operations, and the direct `initSpace` tests; verification is pending, and the 180-second whole-suite target remains unmet.
+
+## Final verification in progress at 20:51 UTC
+
+- Command `bun test --max-concurrency=2 apps/melete/src/knowledge/routes.test.ts apps/melete/test/integration/attention.test.ts apps/melete/test/integration/auth.test.ts apps/melete/test/integration/responsibility.test.ts packages/knowledge/src/lint.test.ts packages/knowledge/src/mediation.test.ts packages/knowledge/src/retraction.test.ts`: 130 pass, 0 fail, 471 assertions, 113.35 seconds; log `.agents/w10b-fixture-fixes.log`.
+- Command `bun run typecheck`: exit 0 after the fixture changes; log `.agents/w10b-final-typecheck.log`.
+- Command `bun run lint`: exit 0, 337 files checked; log `.agents/w10b-final-lint.log`.
+- Command `bun run test:plugin`: 20 passed in 10.31 seconds; log `.agents/w10b-plugin.log`.
+- Command `bun run compose:check`: 12 checks passed; command `bun run browser:compose:check`: 11 checks passed; logs `.agents/w10b-compose.log` and `.agents/w10b-browser-compose.log`.
+- Command `bun run conformance:memory`: exit 0, all 10 implemented scenarios passed with required memory-withheld counterfactuals; the existing procedure-transfer scenario remains todo; log `.agents/w10b-memory-conformance.log`.
+- Command `bun test --max-concurrency=2 > .agents/w10b-final-full.log`: queued behind the shared full-suite lock after the preceding checks finished; no full suites are intentionally overlapped by this lane.
+
+## Additional binding evidence at 21:19 UTC
+
+- Command `Stop-Process` stopped only this lane's queued Bash wait after verifying its command and that `.agents/w10b-final-full.log` did not exist; no active full test or shared lock was removed.
+- Test `multiline form values bind the native URL-encoded bytes and produce one effect`: 1 pass, 0 fail, 5.14 seconds; the existing line-break normalization already matched Chromium's native POST, so no controller change was needed; log `.agents/w10b-multiline.log`.
+- Command `bun run typecheck`: the added test first reported `TS2769` for an optional expected fields object; fix cycle 1 explicitly requires the observed intent before submitting, and the rerun passed.
+- Command `bun run lint`: passed after the additional fixture and assertion, 337 files checked; the final full run will include this tenth controller case.
+
+## Slice 2 verification
+
+- Test `Chromium controller`: all nine original controller cases passed in the locked run, and the added multiline case passed separately with one native POST effect; submit-byte and credential refusals retain zero effects.
+- Test `browser egress`: all 27 boundary tests passed in `.agents/w10b-locked-full.log`; controller-side epoch checks, pinned public-address transport, redirect checks, and exact POST binding are included in this slice.
+- Command `git -C C:/Users/gamin/melete-oss-w10b diff --cached --check`: passed; all relative TypeScript imports from the 29 staged TypeScript files are present in the index.
+- Command `bun run typecheck` / `bun run lint`: both passed after the final controller fixture addition; recipe and control primitives are included here because the semantic connector depends on them, with their qualification tests in the next slice.
+- Command `bun test --max-concurrency=2`: the final full run remains queued; the previously reproduced unrelated fixture failures passed their focused rerun, and this slice's browser checks are green.

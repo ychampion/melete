@@ -54,9 +54,17 @@ export async function startBrowserServer(options: {
       if (path === '/command' && options.command) return Response.json(await options.command(body));
       return Response.json({ error: 'not_found' }, { status: 404 });
     } catch (error) {
+      const invalid = error instanceof z.ZodError || error instanceof SyntaxError;
       return Response.json(
-        { error: error instanceof BrowserFault ? error.reason : 'invalid_request' },
-        { status: error instanceof BrowserFault ? 409 : 400 },
+        {
+          error:
+            error instanceof BrowserFault
+              ? error.reason
+              : invalid
+                ? 'invalid_request'
+                : 'worker_operation_failed',
+        },
+        { status: error instanceof BrowserFault ? 409 : invalid ? 400 : 500 },
       );
     }
   };
