@@ -39,6 +39,13 @@ export async function startEffectBoundary(
     masterKey: env.MELETE_MASTER_KEY,
     connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
     enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
+    env: {
+      OPENAI_API_KEY: env.OPENAI_API_KEY,
+      OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+      OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
+      MELETE_SPEECH_MODEL: env.MELETE_SPEECH_MODEL,
+      MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER),
+    },
   });
   const providers = [
     ...providersFromEnv({

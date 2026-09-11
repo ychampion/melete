@@ -33,6 +33,12 @@ export function createInternalServer(options: {
     resolveAuthority: options.resolveAuthority,
     resolveTrust: options.resolveTrust,
     approvalTtlMs: options.approvalTtlMs,
+    estimateSpend: (action) => {
+      const capability = options.connectors.get(action.connection_id)?.capability;
+      return capability?.available && capability.kind === action.kind
+        ? capability.unit_cost_usd
+        : Number.NaN;
+    },
   });
   const app = createBrokerApp({
     broker,

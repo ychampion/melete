@@ -326,3 +326,11 @@ green; the groups above are the part I can state as verified.
 - `ea09cdb`: finding 6 committed and pushed.
 - `a succeeded action with a null receipt is not confirmed`: RED at ea09cdb, rendered `is succeeded` for succeeded/null; GREEN after rendering `not confirmed`.
 - `bun test packages/contracts/src/since-last.test.ts`: 8 pass, 0 fail, 21 assertions. `bun run typecheck` and changed-file `biome check`: passed.
+
+## Finding 4
+
+- `dc2c6e8`: finding 10 committed and pushed.
+- `production speech admission binds approval, origin, intent, trusted spend and receipt`: RED at dc2c6e8, approved admission raised `budget_exceeded: Trusted spend estimate required`.
+- `createInternalServer`: admission reads only the registered available capability price; `startEffectBoundary` passes its validated speech configuration to connector construction.
+- `bun test apps/melete/test/integration/speech-broker.test.ts --max-concurrency=2`: GREEN, 1 pass, 0 fail, 25 assertions, 26.60s; real internal listener on 3192, scripted fake speech, untrusted-origin rejection with no reservation, approved 0.037 reservation before dispatch, receipt, settlement, duplicate intent, changed-payload approval and payload-price refusal.
+- `bun run typecheck` and changed-file `biome check`: passed. `speech-broker.test.ts` asserts the broker's existing 409 payload-invalid response and gives disposable database cleanup its existing integration timeout allowance.
