@@ -21,6 +21,7 @@ import { registerMarkdownTests } from './markdown-tests.ts';
 import { createScope, createTestDatabase } from './postgres.ts';
 import { registerDependenceTests } from './properties-e1-tests.ts';
 import { registerKeyTests } from './properties-e2-tests.ts';
+import { registerExtractorTests } from './properties-e3-tests.ts';
 import { registerServiceTests } from './service-tests.ts';
 import { registerTripTests } from './trip-tests.ts';
 
@@ -33,6 +34,7 @@ registerComparisonTests(db);
 registerServiceTests(db);
 registerDependenceTests(db);
 registerKeyTests(db);
+registerExtractorTests(db);
 afterAll(async () => {
   await db?.close();
 });

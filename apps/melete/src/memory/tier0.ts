@@ -71,8 +71,15 @@ export const DEFAULT_TIME_ZONE = 'UTC';
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z]{2,})+/g;
 const URL = /\bhttps?:\/\/[^\s<>"')\]]+/g;
-const AMOUNT =
-  /(?:(?<symbol>[$£€¥])\s?(?<symbolled>\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)|(?<coded>\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s?(?<code>USD|EUR|GBP|JPY|INR|CAD|AUD|CHF))/g;
+const CURRENCY_CODES = 'USD|EUR|GBP|JPY|INR|CAD|AUD|CHF';
+const NUMBER = String.raw`\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?`;
+// Written all three ways in real text: a symbol in front, a code in front, a code behind.
+const AMOUNT = new RegExp(
+  `(?:(?<symbol>[$£€¥])\\s?(?<symbolled>${NUMBER})` +
+    `|(?<precode>${CURRENCY_CODES})\\s?(?<precoded>${NUMBER})` +
+    `|(?<coded>${NUMBER})\\s?(?<code>${CURRENCY_CODES}))`,
+  'g',
+);
 const PHONE = /\+\d[\d\s().-]{6,20}\d|\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/g;
 const SYMBOL_CURRENCY: Record<string, string> = {
   $: 'USD',
@@ -143,8 +150,10 @@ export function tier0Values(
   }));
   scan(AMOUNT, (match) => {
     const groups = match.groups ?? {};
-    const currency = groups.symbol ? SYMBOL_CURRENCY[groups.symbol] : groups.code;
-    const amount = groups.symbolled ?? groups.coded;
+    const currency = groups.symbol
+      ? SYMBOL_CURRENCY[groups.symbol]
+      : (groups.precode ?? groups.code);
+    const amount = groups.symbolled ?? groups.precoded ?? groups.coded;
     if (!currency || !amount) return null;
     return {
       type: 'amount',
