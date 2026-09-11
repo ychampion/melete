@@ -1,65 +1,40 @@
 # Contributing
 
-Melete is pre-release and moving fast. If you are thinking of doing more than a
-small fix, open an issue first so we can tell you whether it collides with
-something already in flight.
+For substantial changes, describe the problem and intended behavior in an issue
+or pull request. Keep claims tied to code and executable evidence.
 
-## Getting set up
+## Set up and verify
 
-Requires [bun](https://bun.sh) 1.3 or newer. Node 22 is listed in `.nvmrc` for
-tooling that wants it.
+Use the commands in [README](README.md#verify-from-the-repository-root), from
+the repository root. Bun 1.3 or newer is required by `package.json`.
 
-```bash
-bun install
-bun run typecheck
-bun run lint
-bun test
-```
+Database tests use disposable Postgres, including embedded Postgres 17 when
+`DATABASE_URL` is unset. The test `pg-boss uses the embedded database` checks
+queue/database integration. A missing binary may produce a skip; it does not
+establish a pass.
 
-Nothing needs a database. Tests that would use one skip themselves with a
-message when `DATABASE_URL` is unset.
+OpenAPI and client declarations are generated. The tests `is byte-identical to
+a fresh run of client:generate` and the OpenAPI generation tests check drift.
+Inspect and commit generated changes when changing contracts.
 
-## Before you open a pull request
+## Change guidelines
 
-```bash
-bun run typecheck
-bun run lint
-bun test
-bun run openapi        # commit openapi.json if a schema changed
-bun run compose:check
-```
+- Keep public claims tied to named tests and their actual fixture scope.
+  Label unexecuted scenarios **written, not run**, and unsupported properties
+  **not claimed**.
+- Test behavior at boundaries. The conformance examples include stale epochs,
+  payload-bound approvals and unknown sends that are not repeated.
+- Explain changes to tool surface, prompts and budgets with measured evidence.
+- Record architectural decisions under `.agents/notes`; preserve the historical
+  record. Current documentation must distinguish that history from current code.
+- Separate static configuration checks from inside-container probes. The
+  scenario 6 container tests are **written, not run**; a YAML check cannot make
+  them pass.
 
-`bun run lint` runs Biome for both linting and formatting. `bun run lint:fix`
-applies what it can.
-
-## How to make changes that fit
-
-- **Change the contract first.** `packages/contracts` is the shared vocabulary.
-  If a boundary moves, it moves there, and every caller that needs to know breaks
-  at compile time.
-- **Regenerate the OpenAPI document.** A test fails if `openapi.json` differs
-  from the schemas by a byte.
-- **Test the behaviour, not the implementation.** The valuable tests here are the
-  ones that describe a rule: an approval cannot be spent on different bytes, a
-  retracted record leaves retrieval, a stale attempt cannot act.
-- **Do not widen the model's surface casually.** Any change that adds a tool,
-  lengthens a prompt, or loosens a limit should say in the pull request why the
-  harness still works with a mid-tier model.
-- **Write a note for a decision.** `.agents/notes` has one file per decision:
-  problem, decision, alternatives, evidence. Supersede, never edit history.
-- **Say what you did not verify.** A pull request that says "the compose file is
-  syntax-checked but I could not start Docker" is more useful than one that
-  implies otherwise.
-
-## Style
-
-Comments explain why, not what. If a line needs a comment to say what it does,
-the line is usually the problem.
-
-Commit messages are plain prose in the imperative: "Add the broker's payload
-canonicaliser", not "feat(broker): add canonicalizePayload()".
+Use plain prose commit messages. Explain what changed, its tested behavior and
+remaining limits in the pull request. Avoid claiming full-suite success from
+skipped database tests.
 
 ## Licence
 
-By contributing you agree that your contribution is licensed under Apache-2.0,
-the same as the rest of the project.
+Contributions are licensed under Apache-2.0, as described in [LICENSE](LICENSE).
