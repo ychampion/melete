@@ -159,3 +159,10 @@
 - `ddd28b2`, finding 6 (supersedes local `752ad02`): child-scoped environment; the existing production stdio gate regression passes without mutating the parent environment.
 - `bun run typecheck`: final rerun passed after the reply correction (`.agents/w10c-review-typecheck-final.log`). `bun run lint`: passed, 323 files, no fixes (`.agents/w10c-review-lint.log`). `bun run openapi` followed by `bun run client:generate`: both passed from a clean tree; `git -C C:/Users/gamin/melete-oss-w10c diff --exit-code` confirmed no generated change.
 - `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: the single requested full suite queued at 22:08:52 UTC and has not started at this checkpoint. Its command creates `w10c-review-$BASHPID` inside the acquired lock and removes only that marker before `rmdir` on exit. `Get-CimInstance Win32_Process` confirmed successive active full-suite holders; no shared lock or other lane process was removed or stopped.
+
+
+## PR 15 shared-lock queue checkpoint — 2026-09-11 22:50 UTC
+
+- `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: the single full-suite command remains queued from 22:08:52 UTC; `.agents/w10c-review-full.log` does not yet exist, so this lane has launched no full run during the review continuation.
+- `Get-CimInstance Win32_Process` and `Get-ChildItem C:/Users/gamin/.melete-test.lock`: the current holder has marker `orchestrator-w6`, Bun PID 16844 and parent PID 40952; the directory was created at 22:29:42 UTC and that Bun process remains alive. Earlier holders also ran while this lane waited. No other process or shared lock was removed.
+- `43fb5dc` contains the final six finding identities and static-check evidence. Source remains unchanged and no additional tests have been launched while queued. The full-suite result and push remain pending.
