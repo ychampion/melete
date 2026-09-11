@@ -103,20 +103,28 @@ services:
       # The only writable path, and the only thing from the host side it sees.
       - spaces:/work
 
-  # The web client is built separately and is not in this repository yet, so it
-  # sits behind a profile: `docker compose up` brings up everything else today,
-  # and `docker compose --profile web up` includes it once apps/web exists.
+  # apps/web is a small reference client for the API, not the product interface,
+  # so it sits behind a profile: `docker compose up` brings up the service, and
+  # `docker compose --profile web up` adds a browsable client on top of it.
+  #
+  # The API address is a build argument, not an environment variable, because
+  # Vite inlines it into the bundle. Changing it means rebuilding the image.
   web:
     profiles: [web]
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_MELETE_API: ${MELETE_API_URL:-http://localhost:8787}
     restart: unless-stopped
     networks: [edge]
     depends_on:
       melete:
         condition: service_started
-    environment:
-      MELETE_API_URL: ${MELETE_API_URL:-http://localhost:8787}
     ports:
       - "${WEB_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

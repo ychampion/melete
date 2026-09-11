@@ -91,10 +91,13 @@ tools you already have.
 | `packages/contracts` | Zod schemas, types, the job state machine, the broker protocol, the OpenAPI document |
 | `packages/knowledge` | Record parsing, space layout, the SQLite full-text index, write mediation |
 | `packages/runtime-hermes` | The pinned runtime image, its Melete plugin, and a typed run client |
+| `packages/client` | The typed HTTP client: generated types, a thin fetch wrapper, a resumable event stream |
 | `apps/melete` | The service: API, jobs, broker, gateway, connectors, knowledge, events |
+| `apps/mock-api` | Every operation in `openapi.json`, in memory, driven by scripted scenarios |
+| `apps/web` | A small reference client, to show the API is enough to build one |
 | `deploy` | `docker-compose.yml`, `.env.example`, and the check that the sandbox is really a sandbox |
 | `conformance` | Eight scenarios that prove the durability and boundary claims |
-| `docs` | [Architecture](docs/ARCHITECTURE.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md) |
+| `docs` | [Architecture](docs/ARCHITECTURE.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [building a client](docs/CLIENT.md) |
 | `.agents/notes` | Why things are the way they are, one decision per file |
 
 ## Working on it
@@ -106,13 +109,25 @@ bun install
 bun run typecheck
 bun run lint
 bun test
-bun run openapi        # regenerate packages/contracts/openapi.json
-bun run compose:check  # assert the runtime container really has no route out
-bun run conformance    # list the eight scenarios and what each will assert
+bun run openapi          # regenerate packages/contracts/openapi.json
+bun run client:generate  # regenerate the client's types from openapi.json
+bun run compose:check    # assert the runtime container really has no route out
+bun run conformance      # list the eight scenarios and what each will assert
 ```
 
 There is no `docker compose up` yet worth running: the service serves `/health`
 and nothing else.
+
+The client surface is further along than the service, and does not wait for it:
+
+```bash
+bun run dev:mock   # the whole API in memory on :3190, with scripted jobs
+bun run dev:web    # the reference client on :5173, pointed at the mock
+```
+
+Delegate something, watch the job stop for approval, approve it, and see the
+receipt. [docs/CLIENT.md](docs/CLIENT.md) is what a second client needs to know
+before it starts.
 
 ## Licence
 
