@@ -270,3 +270,19 @@ catalogs that now also contain `react`.
 
 Anyone re-running this branch on a quiet machine should expect the whole suite
 green; the groups above are the part I can state as verified.
+
+## Assumptions
+
+- `git -C C:/Users/gamin/melete-oss-w9 status --short`: six tracked draft edits existed at 000b590; no untracked files. Drafts preserved outside the repository; the reaction tests will be finished separately for findings 1 and 2.
+- `rg resolveSpace apps/melete/src`: the reviewed W1 auth code has no session-space resolver. Finding 1 will bind the authenticated owner to the oldest personal space, matching the single-owner setup, and will ignore caller-supplied space headers.
+- `gh pr view 14 --repo ychampion/melete`: PR 14 already exists against integration. Keep that PR and branch; no duplicate PR to main.
+- `bun install`: passed; embedded-postgres 17.10.0-beta.17 already exists as a devDependency, with disposable Postgres and pg-boss fixtures.
+- `clock`: W9-fix began 2026-09-11 20:40 UTC; campaign deadline 2026-09-12 01:40 UTC.
+
+## Finding 1
+
+- `bun test apps/melete/test/integration/reactions.test.ts -t "a session cannot reach"`: reproduction added before restoring the draft fix.
+- `a session cannot reach a message in another space, and learns nothing by trying`: RED at 000b590; expected 404, received 201.
+- `bun test apps/melete/test/integration/reactions.test.ts --max-concurrency=2`: GREEN, 7 pass, 0 fail, 43 assertions, 21.64s; cross-space add/list/listForJob return 404 with no reaction or attention write.
+- `bun run typecheck`: passed. `bunx biome check` on the four changed TypeScript files: passed after formatting.
+- `bun test --max-concurrency=2`: full suite running under `C:/Users/gamin/.melete-test.lock` before the first push; log `melete-w9-full-first.log`.

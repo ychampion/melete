@@ -10,6 +10,7 @@
  */
 
 import type { RuntimeAdapter } from '@melete/contracts';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
@@ -21,12 +22,13 @@ import { mountJobs } from './api/jobs.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
-import { mountReactions } from './api/reactions.ts';
+import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { space } from './db/schema.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
@@ -64,6 +66,12 @@ export type AppDeps = {
   attention?: AttentionService;
   questions?: QuestionService;
   reactions?: ReactionService;
+  /**
+   * Which space a request speaks for. Left out, it is the owner's personal
+   * space, which is the only one v0.1 creates. Supplied, it is whatever the
+   * trusted session resolver says; request headers never supply this authority.
+   */
+  resolveSpace?: SpaceResolver;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -98,7 +106,23 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
   const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);
   if (deps.jobs && attention) mountAttention(app, attention);
-  if (deps.jobs) mountReactions(app, deps.reactions ?? new ReactionService(deps.jobs, attention));
+  if (deps.jobs) {
+    // One owner, one personal space: the oldest personal row is the one /setup
+    // made. A message outside it is not this caller's to read or react to.
+    const personalSpace: SpaceResolver =
+      deps.resolveSpace ??
+      (async (c) => {
+        if (!deps.db || !c.get('owner')) return null;
+        const [row] = await deps.db
+          .select({ id: space.id })
+          .from(space)
+          .where(eq(space.kind, 'personal'))
+          .orderBy(space.createdAt, space.id)
+          .limit(1);
+        return row ? { spaceId: row.id } : null;
+      });
+    mountReactions(app, deps.reactions ?? new ReactionService(deps.jobs, attention), personalSpace);
+  }
   if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);

@@ -132,6 +132,8 @@ withDb('reactions', () => {
     return String(row.seq);
   };
 
+  const scope = () => ({ spaceId });
+
   const monitor = async (title: string) => {
     const { jobs } = fixture();
     return jobs.create({
@@ -173,7 +175,7 @@ withDb('reactions', () => {
     expect(silentRow.attentionStatus).toBe('normal');
     expect(dislikedRow.attentionStatus).toBe('normal');
 
-    await reactions.add(await lastAssistantMessage(disliked.id), {
+    await reactions.add(scope(), await lastAssistantMessage(disliked.id), {
       emoji: THUMBS_DOWN,
       by: 'person',
     });
@@ -193,7 +195,7 @@ withDb('reactions', () => {
     expect(dislikedRow.attentionStatus).toBe('frequency_reduced');
     expect(dislikedRow.cadenceMultiplier).toBeGreaterThan(1);
 
-    await reactions.add(await lastAssistantMessage(disliked.id), {
+    await reactions.add(scope(), await lastAssistantMessage(disliked.id), {
       emoji: THUMBS_DOWN,
       by: 'person',
     });
@@ -210,7 +212,10 @@ withDb('reactions', () => {
     current = await wake(current);
     expect(current.unreadResults).toBe(2);
 
-    await reactions.add(await lastAssistantMessage(row.id), { emoji: THUMBS_UP, by: 'person' });
+    await reactions.add(scope(), await lastAssistantMessage(row.id), {
+      emoji: THUMBS_UP,
+      by: 'person',
+    });
     current = await fixture().jobs.get(row.id);
     expect(current.unreadResults).toBe(0);
     expect(current.attentionStatus).toBe('normal');
@@ -222,10 +227,10 @@ withDb('reactions', () => {
     await wake(row);
     const message = await lastAssistantMessage(row.id);
 
-    const first = await reactions.add(message, { emoji: THUMBS_DOWN, by: 'person' });
-    const second = await reactions.add(message, { emoji: THUMBS_DOWN, by: 'person' });
+    const first = await reactions.add(scope(), message, { emoji: THUMBS_DOWN, by: 'person' });
+    const second = await reactions.add(scope(), message, { emoji: THUMBS_DOWN, by: 'person' });
     expect(second.seq).toBe(first.seq);
-    expect(await reactions.list(message)).toHaveLength(1);
+    expect(await reactions.list(scope(), message)).toHaveLength(1);
     expect((await fixture().jobs.get(row.id)).unreadResults).toBe(2);
   }, 60_000);
 
@@ -299,4 +304,45 @@ withDb('reactions', () => {
     });
     expect(response.status).toBe(400);
   }, 60_000);
+  test('a session cannot reach a message in another space, and learns nothing by trying', async () => {
+    const { handle, jobs } = fixture();
+    // A second space with a job of its own. The session belongs to the first.
+    const elsewhere = newId('sp');
+    await handle.db
+      .insert(space)
+      .values({ id: elsewhere, name: 'Elsewhere', gitPath: `/spaces/${elsewhere}` });
+    const theirs = await jobs.create({
+      space_id: elsewhere,
+      title: 'Not yours',
+      objective: 'A responsibility in another space.',
+      scheduling_class: 'background',
+    });
+    await wake(theirs);
+    const theirMessage = await lastAssistantMessage(theirs.id);
+
+    const service = app();
+    const cookie = await signIn(service);
+    const posted = await service.request(`/messages/${theirMessage}/reactions`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji: THUMBS_DOWN }),
+    });
+    // 404, never 403: refusing by name would confirm the message is there.
+    expect(posted.status).toBe(404);
+    expect(((await posted.json()) as { error: { code: string } }).error.code).toBe('not_found');
+
+    // Nothing was written and no counter moved.
+    expect(
+      await handle.sql`select seq from event where type = 'reaction' and job_id = ${theirs.id}`,
+    ).toHaveLength(0);
+    expect((await jobs.get(theirs.id)).unreadResults).toBe(1);
+
+    // Reading is scoped the same way, by message and by job.
+    const listed = await service.request(`/messages/${theirMessage}/reactions`, {
+      headers: { cookie },
+    });
+    expect(listed.status).toBe(404);
+    const perJob = await service.request(`/jobs/${theirs.id}/reactions`, { headers: { cookie } });
+    expect(perJob.status).toBe(404);
+  }, 90_000);
 });
