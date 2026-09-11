@@ -67,6 +67,115 @@ export const knowledgeExcerpt = z.object({
 });
 export type KnowledgeExcerpt = z.infer<typeof knowledgeExcerpt>;
 
+// --------------------------------------------------------------------------
+// The delta brief: what has happened since the last attempt
+// --------------------------------------------------------------------------
+
+/**
+ * One thing produced since the last attempt that a later claim can rest on: a
+ * file written, a knowledge record committed, an action with a receipt. The
+ * handle is what the attempt cites; the label is what it can say out loud.
+ */
+export const evidenceHandleRef = z.object({
+  kind: z.enum(['artifact', 'knowledge', 'action']),
+  /** `artifact:art_...`, `knowledge:k_...`, `action:act_...`. */
+  handle: z.string().min(1).max(240),
+  label: z.string().max(240),
+  at: timestamp,
+});
+export type EvidenceHandleRef = z.infer<typeof evidenceHandleRef>;
+
+/**
+ * What one of this job's actions did since the last attempt. The receipt
+ * reference is the connector's own handle, a Message-ID or a CalDAV UID, which
+ * is the only thing that makes "it was sent" a fact rather than a hope.
+ */
+export const actionSinceLast = z.object({
+  action_id: prefixedId(ID_PREFIXES.action),
+  kind: z.string().min(1),
+  status: z.string().min(1),
+  receipt_ref: z.string().max(500).nullable().default(null),
+  at: timestamp,
+});
+export type ActionSinceLast = z.infer<typeof actionSinceLast>;
+
+/** A question already put to the person, or still held for a later wake. */
+export const openQuestionRef = z.object({
+  id: z.string().max(240),
+  text: z.string().max(4000),
+  state: z.enum(['asked', 'held']),
+});
+
+/** A decision the person has not made yet. Nothing moves until they do. */
+export const pendingApprovalRef = z.object({
+  approval_id: prefixedId(ID_PREFIXES.approval),
+  action_id: prefixedId(ID_PREFIXES.action),
+  kind: z.string().min(1),
+  requested_at: timestamp,
+});
+
+/**
+ * The delta brief. An attempt is disposable and a responsibility is not, so a
+ * wake that starts from zero rereads its whole history to learn one thing. This
+ * is that one thing, built from durable rows only: what was produced, what the
+ * job did and how it ended, what is still waiting on a person, and what a
+ * correction broke.
+ *
+ * The identity file tells the model to name prior work in one clause. This is
+ * what it names it from.
+ */
+export const sinceLast = z.object({
+  /** The attempt this is measured from. Null on the first wake: nothing is prior. */
+  attempt_id: prefixedId(ID_PREFIXES.attempt).nullable().default(null),
+  ended_at: timestamp.nullable().default(null),
+  evidence: z.array(evidenceHandleRef).max(50).default([]),
+  actions: z.array(actionSinceLast).max(50).default([]),
+  pending_questions: z.array(openQuestionRef).max(50).default([]),
+  pending_approvals: z.array(pendingApprovalRef).max(50).default([]),
+  /** What a correction broke and where. The same briefs as `inputs.repair_briefs`. */
+  repair_briefs: z.array(repairBrief).max(50).default([]),
+});
+export type SinceLast = z.infer<typeof sinceLast>;
+
+export const EMPTY_SINCE_LAST: SinceLast = {
+  attempt_id: null,
+  ended_at: null,
+  evidence: [],
+  actions: [],
+  pending_questions: [],
+  pending_approvals: [],
+  repair_briefs: [],
+};
+
+/**
+ * The delta brief as the model reads it. Plain lines, no ceremony, and nothing
+ * that is not on a durable row. An empty brief renders as one sentence saying
+ * so, because "this is the first wake" is itself worth knowing.
+ */
+export function renderSinceLast(delta: SinceLast): string {
+  const lines: string[] = [
+    delta.attempt_id ? `Since the last attempt (${delta.attempt_id}):` : 'Since the last attempt:',
+  ];
+  for (const item of delta.actions) {
+    const receipt = item.receipt_ref ? `, receipt ${item.receipt_ref}` : '';
+    lines.push(`- action ${item.action_id} (${item.kind}) is ${item.status}${receipt}`);
+  }
+  for (const item of delta.evidence) lines.push(`- new ${item.kind} ${item.handle}: ${item.label}`);
+  for (const item of delta.pending_questions) lines.push(`- question ${item.state}: ${item.text}`);
+  for (const item of delta.pending_approvals)
+    lines.push(`- approval ${item.approval_id} is waiting on action ${item.action_id}`);
+  for (const brief of delta.repair_briefs)
+    lines.push(
+      `- correction: ${brief.key ?? brief.changed_handle} changed from "${brief.old_value}" to "${brief.new_value}"; ${brief.affected.length} output(s) cited the old value`,
+    );
+  if (lines.length === 1) {
+    return delta.attempt_id
+      ? `${lines[0]}\n- nothing was produced and nothing is waiting.`
+      : 'This is the first attempt on this job.';
+  }
+  return lines.join('\n');
+}
+
 /**
  * Everything one attempt is given, and nothing more. The order matters for
  * prompt caching: stable prefix first, volatile inputs last.
@@ -105,6 +214,12 @@ export const attemptBundle = z.object({
      */
     repair_briefs: z.array(repairBrief).default([]),
   }),
+  /**
+   * What has happened since the last attempt, from durable rows. Additive: a
+   * producer that omits it hands the next attempt an empty brief rather than
+   * failing to build a bundle at all.
+   */
+  since_last: sinceLast.default(EMPTY_SINCE_LAST),
   transcript: z.array(canonicalMessage),
   tools: z.array(toolSpec),
   skills: z.array(skillPayload),

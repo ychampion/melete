@@ -5,8 +5,16 @@
  * safe answer was to invalidate everything that had ever seen the claim.
  */
 import { describe, expect, test } from 'bun:test';
+import {
+  type AttemptBundle,
+  attemptBundle,
+  EMPTY_SINCE_LAST,
+  type RuntimeAdapter,
+  renderSinceLast,
+} from '@melete/contracts';
 import { correctClaim } from '../../src/memory/claims.ts';
-import { assembleAttemptKnowledge } from '../../src/memory/context.ts';
+import { assembleAttemptKnowledge, withMemoryRuntime } from '../../src/memory/context.ts';
+import { newId } from '../../src/memory/db.ts';
 import { recordOutput } from '../../src/memory/outputs.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { createJobAttempt } from './lifecycle-fixtures.ts';
@@ -149,6 +157,58 @@ export function registerDependenceTests(db: TestDatabase | null) {
       expect(briefs[0]?.state).toBe('pending');
       const affected = (briefs[0]?.affected ?? []) as { location: string }[];
       expect(affected[0]?.location).toBe('step 2');
+
+      // The delta brief carries it too, so the attempt can say what changed in
+      // one clause instead of rereading the whole correction.
+      // The correction bumped the job's revision and fenced the old attempt, so
+      // the next one is started against whatever the row says now.
+      const [current] = await db.sql`select revision, lease_epoch from job where id = ${jobId}`;
+      const revision = Number(current?.revision);
+      const epoch = Number(current?.lease_epoch);
+      const next = newId('att');
+      await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${next}, ${jobId}, ${epoch}, 'scripted-v1', 'fake', 'scripted-memory-v1')`;
+      let delivered: AttemptBundle | null = null;
+      const runtime: RuntimeAdapter = {
+        async capabilities() {
+          return { version: 'scripted-v1', tools: false, streaming: true, interrupt: true };
+        },
+        async start(bundle) {
+          delivered = bundle;
+          return { kind: 'completed', summary: 'Repaired step 2.', evidence: [] };
+        },
+      };
+      await withMemoryRuntime(runtime, db.sql, async () => scope).start(
+        attemptBundle.parse({
+          attempt: { id: next, job_id: jobId, epoch, revision, token: 'fixture-only' },
+          job: {
+            title: 'Trip',
+            objective: 'trip',
+            constraints: {},
+            progress_summary: '',
+            unresolved_questions: [],
+            deliverable: {},
+          },
+          inputs: { new_user_messages: [], approval_results: [], trigger_events: [] },
+          transcript: [],
+          tools: [],
+          skills: [],
+          knowledge: [],
+          workspace: { mount: '/work', files: [] },
+          budget: { max_turns: 1, max_output_tokens: 100, max_wall_ms: 1000, max_actions: 0 },
+          model: { provider: 'fake', model: 'scripted-memory-v1', fallback: null },
+        }),
+        { async emit() {} },
+        new AbortController().signal,
+      );
+      const carried = delivered as AttemptBundle | null;
+      expect(carried?.since_last.repair_briefs).toHaveLength(1);
+      expect(carried?.since_last.repair_briefs[0]?.old_value).toBe('aisle');
+      expect(carried?.since_last.repair_briefs[0]?.new_value).toBe('window');
+      const text = renderSinceLast(carried?.since_last ?? EMPTY_SINCE_LAST);
+      expect(text).toContain('aisle');
+      expect(text).toContain('window');
+      expect(text).toContain('pref.travel.seat');
     });
   });
 }

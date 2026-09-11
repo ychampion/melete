@@ -213,6 +213,10 @@ export function withMemoryRuntime(
         ...bundle,
         job: { ...bundle.job, constraints: job.constraints },
         inputs: { ...bundle.inputs, repair_briefs: briefs },
+        // The delta brief carries the same briefs as the inputs. The delta is
+        // what an attempt reads to say what it did last time, and a correction
+        // is the most important thing that can have happened since.
+        since_last: { ...bundle.since_last, repair_briefs: briefs },
         knowledge: prepared.knowledge,
       };
       const controller = new AbortController();

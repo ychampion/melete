@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AttemptBundle, RuntimeEvent } from '@melete/contracts';
+import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeEvent } from '@melete/contracts';
 import { stringify } from 'yaml';
 import { signCapability } from '../../../apps/melete/src/broker/capability.ts';
 import { createInternalServer } from '../../../apps/melete/src/broker/internal-server.ts';
@@ -198,6 +198,7 @@ async function main() {
       deliverable: {},
     },
     inputs: { new_user_messages: [], approval_results: [], trigger_events: [], repair_briefs: [] },
+    since_last: EMPTY_SINCE_LAST,
     transcript: [],
     tools: [],
     skills: [],

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AttemptBundle, RuntimeEvent } from '@melete/contracts';
+import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeEvent } from '@melete/contracts';
 import { brokerParkedActions, type FetchLike, HermesRuntimeAdapter } from './adapter.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
@@ -20,6 +20,7 @@ const bundle: AttemptBundle = {
     deliverable: {},
   },
   inputs: { new_user_messages: [], approval_results: [], trigger_events: [], repair_briefs: [] },
+  since_last: EMPTY_SINCE_LAST,
   transcript: [],
   tools: [],
   skills: [],

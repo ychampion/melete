@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { type AttemptBundle, CONTEXT_LIMITS } from '@melete/contracts';
+import { type AttemptBundle, CONTEXT_LIMITS, EMPTY_SINCE_LAST } from '@melete/contracts';
 import {
   HERMES_APPROVAL_ANSWERS,
   HERMES_ROUTES,
@@ -34,6 +34,7 @@ const bundle: AttemptBundle = {
     trigger_events: [],
     repair_briefs: [],
   },
+  since_last: EMPTY_SINCE_LAST,
   transcript: [],
   tools: [],
   skills: [{ name: 'draft-follow-up', body: 'Four sentences. Ask for a date.' }],
