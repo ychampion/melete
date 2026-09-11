@@ -95,6 +95,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/actions/{actionId}/execution/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle an in-cell command using the capability of its dispatching attempt */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Action id */
+                    actionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        record: {
+                            command: string;
+                            cwd: string;
+                            duration_ms: number;
+                            exit_code: number | null;
+                            /** @enum {string} */
+                            language: "shell" | "python";
+                            output_bytes: number;
+                            output_digest: string;
+                            /** @default null */
+                            output_path?: string | null;
+                            /** @default null */
+                            signal?: string | null;
+                            /** @default false */
+                            timed_out?: boolean;
+                            /** @default false */
+                            truncated?: boolean;
+                        };
+                    } | {
+                        error: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Recorded result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema103"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/actions/{actionId}/execution/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim an admitted in-cell command once using its attempt capability */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Action id */
+                    actionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Dispatch claim */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            execute: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/actions/{actionId}/resolve": {
         parameters: {
             query?: never;

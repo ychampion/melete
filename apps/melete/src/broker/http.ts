@@ -4,6 +4,8 @@ import {
   approvalDecisionRequest,
   type CapabilityClaims,
   type EffectProposalResponse,
+  type ExecutionSettlement,
+  executionSettlement,
   type ProposeActionRequest,
   proposeActionRequest,
   type ToolSpec,
@@ -19,6 +21,12 @@ export interface BrokerOperations {
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
   decide(id: string, request: ApprovalDecisionRequest): Promise<unknown>;
+  startExecution?(claims: CapabilityClaims, id: string): Promise<{ execute: boolean }>;
+  settleExecution?(
+    claims: CapabilityClaims,
+    id: string,
+    result: ExecutionSettlement,
+  ): Promise<Action>;
 }
 
 export function createBrokerApp(options: {
@@ -51,9 +59,12 @@ export function createBrokerApp(options: {
   app.use('*', async (c, next) => {
     const path = c.req.path;
     const decision = /^\/actions\/[^/]+\/(approve|deny)$/.test(path) && c.req.method === 'POST';
+    const settlement =
+      /^\/actions\/[^/]+\/execution\/settle$/.test(path) && c.req.method === 'POST';
     const runtime =
       (c.req.method === 'GET' && (path === '/tools' || /^\/actions\/[^/]+$/.test(path))) ||
-      (c.req.method === 'POST' && path === '/actions');
+      (c.req.method === 'POST' &&
+        (path === '/actions' || /^\/actions\/[^/]+\/execution\/(start|settle)$/.test(path)));
     if (!decision && !runtime) return c.json({ error: { code: 'not_found' } }, 404);
     if (Number(c.req.header('content-length') ?? '0') > 1_048_576) {
       return c.json({ error: { code: 'payload_invalid' } }, 413);
@@ -67,7 +78,9 @@ export function createBrokerApp(options: {
       if (!header?.startsWith('Bearer '))
         throw new AuthenticationError('attempt capability required');
       const claims = verifyCapability(header.slice(7), options.capabilityKey);
-      await options.broker.authorize(claims);
+      // A fenced attempt may settle its own already-dispatched command, but
+      // the settlement operation still verifies the action and attempt IDs.
+      if (!settlement) await options.broker.authorize(claims);
       c.set('claims', claims);
     }
     await next();
@@ -92,6 +105,20 @@ export function createBrokerApp(options: {
   app.get('/actions/:id', async (c) =>
     c.json({ action: await options.broker.get(c.get('claims'), c.req.param('id')) }),
   );
+  app.post('/actions/:id/execution/start', async (c) => {
+    if (!options.broker.startExecution) throw new BrokerFault('unknown_tool');
+    return c.json(await options.broker.startExecution(c.get('claims'), c.req.param('id')));
+  });
+  app.post('/actions/:id/execution/settle', async (c) => {
+    if (!options.broker.settleExecution) throw new BrokerFault('unknown_tool');
+    return c.json({
+      action: await options.broker.settleExecution(
+        c.get('claims'),
+        c.req.param('id'),
+        executionSettlement.parse(await c.req.json()),
+      ),
+    });
+  });
   for (const [verb, decision] of [
     ['approve', 'approved'],
     ['deny', 'denied'],

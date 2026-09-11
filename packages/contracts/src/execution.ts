@@ -6,8 +6,8 @@
  * `/work/<job>`, which the owner can read, diff and delete. What running code
  * does add is a record, and this file is the shape of that record.
  *
- * The execution happens in the cell and the ledger entry is made afterwards,
- * which is the only order the topology allows: the broker cannot run the
+ * The execution intent is admitted before the cell starts; its result is settled afterwards,
+ * because the broker cannot run the
  * command, because the broker process holds the credentials the cell must never
  * reach. So the tool's arguments (what the model asked for) and the action's
  * payload (what actually ran, and what came of it) are two different shapes.

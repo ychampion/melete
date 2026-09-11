@@ -8,7 +8,7 @@ broker asks for instead is a record, and this module produces one.
 
 The order is forced by the topology. The broker cannot run the command, because
 the broker process holds the credentials this container must never reach. So the
-command runs here and the record is proposed afterwards. That is why the tool's
+broker admits the intent first; the command runs here and settles afterwards. The tool's
 arguments and the action's payload are two different shapes.
 
 What this file enforces, and what it does not:
@@ -268,3 +268,4 @@ def run_in_cell(language: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         "output_path": output_path,
     }
     return {"record": record, "display": shown}
+

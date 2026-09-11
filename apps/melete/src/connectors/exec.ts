@@ -3,8 +3,8 @@
  *
  * This connector runs nothing. It cannot: the command has to run inside the
  * cell, which is the only place with no route out and no credentials, and this
- * process is the place with both. So the cell runs the command and then
- * proposes the record of what it ran, and this connector is what checks that
+ * process is the place with both. After admission the cell runs the command and
+ * settles the record of what it ran; this connector checks that
  * record and turns it into a receipt.
  *
  * What it can check, it checks. The working directory and the stored output

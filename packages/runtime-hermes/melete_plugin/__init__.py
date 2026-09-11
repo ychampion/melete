@@ -78,11 +78,9 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
     model name the connection would let it choose which mailbox an email leaves
     from, which is a policy decision and not its to make.
 
-    An `in_cell` entry is the one exception, and it is an exception about order
-    rather than about trust. The command has to run here, because here is the
-    place with no route out; the ledger entry is made afterwards, from the
-    record of what ran. The broker still decides whether the job may run
-    anything at all, because an out-of-scope tool never reaches this catalog.
+    An `in_cell` entry reserves its intent before starting. A one-use dispatch
+    claim prevents a retried proposal from running it twice; its result settles
+    that same action after execution.
     """
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
@@ -106,18 +104,7 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
             return from_error("unknown_tool", f"{name} cannot be carried out in this runtime")
 
         display = None
-        payload = arguments
-        if language is not None:
-            try:
-                outcome = run_in_cell(language, arguments)
-            except ExecRefused as refusal:
-                return from_error("payload_invalid", str(refusal))
-            except OSError as failure:
-                return from_error("connector_unavailable", str(failure))
-            # The record, not the arguments: what the ledger receives is what
-            # happened, including the exit code and the digest of the output.
-            payload = outcome["record"]
-            display = outcome
+        payload = {"intent": arguments} if language is not None else arguments
 
         try:
             response = client.propose(
@@ -127,13 +114,30 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
                 client_ref=_client_ref(name, payload),
             )
         except BrokerError as error:
-            if display is not None:
-                # The command already ran. Saying only "the broker refused"
-                # would leave the model to guess whether anything happened.
-                result = from_error(error.code, error.message)
+            return from_error(error.code, error.message)
+
+        if language is not None and response.get("status") == "admitted":
+            action_id = str(response["action_id"])
+            try:
+                if not client.start_execution(action_id).get("execute"):
+                    return from_response({"action_id": action_id, "status": "dispatched"})
+                # Execute the admitted canonical arguments, which are also what
+                # settlement checks. The fallback supports older broker fakes.
+                admitted = response.get("canonical_payload", {}).get("intent", arguments)
+                try:
+                    display = run_in_cell(language, admitted)
+                except (ExecRefused, OSError) as failure:
+                    client.settle_execution(action_id, error=str(failure))
+                    return from_error("payload_invalid", str(failure))
+                settled = client.settle_execution(action_id, record=display["record"])["action"]
+                result = from_response({"action_id": action_id, "status": settled["status"]}, settled.get("receipt"))
                 result["execution"] = _execution_view(display)
                 return result
-            return from_error(error.code, error.message)
+            except BrokerError as error:
+                result = from_error(error.code, error.message)
+                if display is not None:
+                    result["execution"] = _execution_view(display)
+                return result
 
         if needs_approval(response):
             return from_response(response)

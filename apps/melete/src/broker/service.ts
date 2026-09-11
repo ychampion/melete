@@ -9,6 +9,8 @@ import {
   type DispatchResult,
   dispatchResult,
   type EffectProposalResponse,
+  type ExecutionSettlement,
+  executionIntent,
   findTool,
   hashOriginWarnings,
   intentKey,
@@ -248,6 +250,12 @@ export class BrokerService implements BrokerOperations {
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
     if (tool.execution === 'in_cell' && !tool.record_schema)
       throw new BrokerFault('payload_invalid', 'An in-cell tool must declare a record schema');
+    const intent = tool.execution === 'in_cell' ? executionIntent.safeParse(payload) : null;
+    if (intent?.success) {
+      if (!this.validator.validate(tool.input_schema, intent.data.intent))
+        throw new BrokerFault('payload_invalid');
+      return;
+    }
     const schema = tool.execution === 'in_cell' ? tool.record_schema : tool.input_schema;
     if (!schema || !this.validator.validate(schema, payload))
       throw new BrokerFault('payload_invalid');
@@ -662,12 +670,31 @@ export class BrokerService implements BrokerOperations {
     };
   }
 
-  async dispatch(id: string): Promise<Action> {
+  async dispatch(
+    id: string,
+    cellClaim?: { claims: CapabilityClaims; claimed: () => void },
+  ): Promise<Action> {
     const original = await loadAction(this.sql, id);
     const prepared = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
+      if (cellClaim) {
+        await checkAttempt(tx, job, cellClaim.claims);
+        if (
+          action.job_id !== cellClaim.claims.job_id ||
+          action.attempt_id !== cellClaim.claims.attempt_id
+        )
+          throw new BrokerFault('action_not_found');
+      }
       if (action.status !== 'admitted') return { action, context: null };
+      const inCell =
+        this.options.connectors
+          .get(action.connection_id)
+          ?.manifest.tools.some(
+            (tool) => tool.name === action.kind && tool.execution === 'in_cell',
+          ) && executionIntent.safeParse(action.canonical_payload).success;
+      if (cellClaim && !inCell) throw new BrokerFault('unknown_tool');
+      if (inCell && !cellClaim) return { action, context: null };
       const [connection] = await tx`select status, provider, scopes from connection
         where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
       const stored = await loadBinding(tx, action);
@@ -735,6 +762,10 @@ export class BrokerService implements BrokerOperations {
       return { action: await loadAction(tx, id), context: this.context(job, action) };
     });
     if (!prepared.context) return prepared.action;
+    if (cellClaim) {
+      cellClaim.claimed();
+      return prepared.action;
+    }
     const connector = this.options.connectors.get(prepared.action.connection_id);
     if (!connector)
       return this.recordResult(id, {
@@ -770,6 +801,63 @@ export class BrokerService implements BrokerOperations {
       return unknown;
     }
     return this.recordResult(id, result);
+  }
+
+  async startExecution(claims: CapabilityClaims, id: string): Promise<{ execute: boolean }> {
+    let execute = false;
+    await this.dispatch(id, {
+      claims,
+      claimed: () => {
+        execute = true;
+      },
+    });
+    return { execute };
+  }
+
+  async settleExecution(
+    claims: CapabilityClaims,
+    id: string,
+    result: ExecutionSettlement,
+  ): Promise<Action> {
+    const action = await loadAction(this.sql, id);
+    const job = await lockJob(this.sql, action.job_id);
+    if (
+      action.job_id !== claims.job_id ||
+      job.space_id !== claims.space_id ||
+      action.attempt_id !== claims.attempt_id
+    )
+      throw new BrokerFault('action_not_found');
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    const proposed = executionIntent.safeParse(action.canonical_payload);
+    if (!connector || tool?.execution !== 'in_cell' || !proposed.success)
+      throw new BrokerFault('unknown_tool');
+    if (!['dispatched', 'unknown', 'unresolved'].includes(action.status)) {
+      if (['succeeded', 'failed'].includes(action.status)) return action;
+      throw new BrokerFault('action_not_admissible');
+    }
+    if ('error' in result)
+      return this.recordResult(id, { outcome: 'failed', reason: result.error, retryable: false });
+    const { record } = result;
+    const intent = proposed.data.intent;
+    if (
+      record.command !== (intent.code ?? intent.command) ||
+      record.cwd !== (intent.cwd ?? '.') ||
+      record.language !== (action.kind === 'exec.python' ? 'python' : 'shell')
+    )
+      throw new BrokerFault(
+        'payload_invalid',
+        'Execution result does not match the admitted command',
+      );
+    if (!tool.record_schema || !this.validator.validate(tool.record_schema, record))
+      throw new BrokerFault('payload_invalid');
+    // The immutable intent stays on the action; the connector validates the
+    // separate result and records it on the receipt, including late receipts.
+    const checked = await connector.execute(
+      { ...action, canonical_payload: record },
+      this.context(job, action),
+    );
+    return this.recordResult(id, checked);
   }
 
   async recordResult(id: string, result: DispatchResult): Promise<Action> {

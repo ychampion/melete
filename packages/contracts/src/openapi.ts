@@ -39,6 +39,7 @@ import {
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
+import { executionSettlement, executionStartResponse } from './execution-admission.ts';
 import {
   claimHistoryResponse,
   claimListResponse,
@@ -700,6 +701,24 @@ export function buildOpenApiDocument() {
               '200': jsonResponse('Resolved', actionResponse),
               '409': problem('Action is not awaiting reconciliation'),
             },
+          },
+        },
+
+        '/actions/{actionId}/execution/start': {
+          post: {
+            tags: ['actions'],
+            summary: 'Claim an admitted in-cell command once using its attempt capability',
+            requestParams: idParam('actionId', 'Action id'),
+            responses: { '200': jsonResponse('Dispatch claim', executionStartResponse) },
+          },
+        },
+        '/actions/{actionId}/execution/settle': {
+          post: {
+            tags: ['actions'],
+            summary: 'Settle an in-cell command using the capability of its dispatching attempt',
+            requestParams: idParam('actionId', 'Action id'),
+            requestBody: json(executionSettlement),
+            responses: { '200': jsonResponse('Recorded result', actionResponse) },
           },
         },
 
