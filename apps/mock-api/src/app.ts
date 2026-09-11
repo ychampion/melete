@@ -372,10 +372,15 @@ export function createMockApp(deps: AppDeps) {
 
         // Replay first, from the persisted log, then follow. Same order the real
         // service uses, which is why a reconnect needs no separate bookkeeping.
+        //
+        // The replay is deliberately unbounded. A page has a limit because the
+        // caller asked for one and gets a cursor to continue with; a stream has
+        // no second request to make, so capping it would hand the client a hole
+        // it never asked about and could only discover as a skipped sequence.
         for (const event of store.eventsAfter(after, {
           ...(jobId ? { jobId } : {}),
           ...(types ? { types } : {}),
-          limit: 1000,
+          limit: Number.POSITIVE_INFINITY,
         }).events) {
           push(sseFrame(event));
         }

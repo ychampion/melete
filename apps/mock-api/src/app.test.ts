@@ -370,6 +370,55 @@ describe('the event stream', () => {
     expect(text).not.toContain('\nid: 1\n');
     expect(text.startsWith('id: 4')).toBe(true);
   });
+
+  /**
+   * Read until the marker shows up. The stream stays open after the replay, so
+   * the read is raced against a short timer: a replay that stops early has to
+   * fail on what it delivered, not hang waiting for what it never will.
+   */
+  const drainUntil = async (app: Mock['app'], path: string, marker: string): Promise<string> => {
+    const response = await app.fetch(
+      new Request(`http://mock.test${path}`, { headers: { accept: 'text/event-stream' } }),
+    );
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('no stream body');
+    const decoder = new TextDecoder();
+    const idle = Symbol('idle');
+    let text = '';
+    // Each frame is enqueued on its own, so one read is one frame.
+    for (let read = 0; read < 5000 && !text.includes(marker); read += 1) {
+      const next = await Promise.race([
+        reader.read(),
+        new Promise<typeof idle>((resolve) => setTimeout(() => resolve(idle), 250)),
+      ]);
+      if (next === idle || next.done) break;
+      text += decoder.decode(next.value, { stream: true });
+    }
+    await reader.cancel();
+    return text;
+  };
+
+  // A page is capped because the caller asked for a page and gets a cursor to
+  // continue with. A stream has no second request to make, so a cap would hand
+  // the client a hole it never asked about.
+  test('replays a long history in full rather than capping it', async () => {
+    for (let n = 0; n < 1200; n += 1) {
+      mock.store.append({ type: 'notice', payload: { level: 'info', title: `n${n}`, body: '' } });
+    }
+    const text = await drainUntil(mock.app, '/events?after=0', 'id: 1200');
+    expect(text).toContain('id: 1000\n');
+    expect(text).toContain('id: 1200\n');
+  });
+
+  test('a page still honours the limit it was given, and says there is more', async () => {
+    for (let n = 0; n < 300; n += 1) {
+      mock.store.append({ type: 'notice', payload: { level: 'info', title: `n${n}`, body: '' } });
+    }
+    const page = eventPage.parse((await call(mock.app, 'GET', '/events?after=0&limit=50')).json);
+    expect(page.events).toHaveLength(50);
+    expect(page.has_more).toBe(true);
+    expect(page.next_cursor).toBe(50);
+  });
 });
 
 describe('the runner uses the real state machine', () => {

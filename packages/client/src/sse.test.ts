@@ -60,4 +60,35 @@ describe('readSse', () => {
     for await (const frame of readSse(stream([': keepalive\n\ndata: x\n\n']))) frames.push(frame);
     expect(frames.map((f) => f.comment)).toEqual([true, false]);
   });
+
+  // A packet boundary can fall between the CR and the LF of one line ending.
+  // Collapsing that lone CR too early puts a newline beside the one arriving
+  // next, which reads as a blank line: the frame is cut in half and the halves
+  // are thrown away separately.
+  test('keeps a frame whole when CRLF is split across two chunks', async () => {
+    const frames = [];
+    for await (const frame of readSse(
+      stream(['id: 7\r', '\nevent: notice\r\ndata: {"seq":7}\r\n\r\n']),
+    )) {
+      frames.push(frame);
+    }
+    expect(frames).toEqual([{ id: '7', event: 'notice', data: '{"seq":7}', comment: false }]);
+  });
+
+  test('survives a chunk boundary at every position in a frame', async () => {
+    const text = 'id: 3\r\nevent: text_delta\r\ndata: {"seq":3}\r\n\r\n';
+    for (let cut = 1; cut < text.length; cut += 1) {
+      const frames = [];
+      for await (const frame of readSse(stream([text.slice(0, cut), text.slice(cut)]))) {
+        frames.push(frame);
+      }
+      expect(frames).toEqual([{ id: '3', event: 'text_delta', data: '{"seq":3}', comment: false }]);
+    }
+  });
+
+  test('holds a trailing carriage return that ends the body', async () => {
+    const frames = [];
+    for await (const frame of readSse(stream(['data: last\r']))) frames.push(frame);
+    expect(frames.map((f) => f.data)).toEqual(['last']);
+  });
 });

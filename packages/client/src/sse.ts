@@ -64,23 +64,44 @@ export function parseFrame(raw: string): SseFrame | null {
   return { id, event, data: data.join('\n'), comment: false };
 }
 
+/**
+ * Collapse CR and CRLF to LF, leaving a trailing carriage return alone.
+ *
+ * A chunk boundary can fall between the CR and the LF of one line ending. If
+ * that trailing CR were collapsed now, the LF arriving in the next chunk would
+ * sit beside it and fake a blank line, which is a frame boundary: one event
+ * would be cut in half and both halves discarded. So the CR is held back and
+ * decided once its successor is known.
+ */
+function normalizeEndings(text: string): { normalized: string; held: string } {
+  const held = text.endsWith('\r') ? '\r' : '';
+  const body = held ? text.slice(0, -1) : text;
+  return { normalized: body.replace(/\r\n/g, '\n').replace(/\r/g, '\n'), held };
+}
+
 /** Read a response body and yield one frame at a time. */
 export async function* readSse(
   body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<SseFrame, void, void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
+  /** Already normalized, still waiting for a frame boundary. */
   let buffer = '';
+  /** A carriage return whose successor has not arrived yet. */
+  let pending = '';
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
 
-      // Frames are separated by a blank line. Normalising first keeps the split
-      // honest for a server that emits CRLF.
-      buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const { normalized, held } = normalizeEndings(
+        pending + decoder.decode(value, { stream: true }),
+      );
+      buffer += normalized;
+      pending = held;
+
+      // Frames are separated by a blank line.
       let boundary = buffer.indexOf('\n\n');
       while (boundary !== -1) {
         const frame = parseFrame(buffer.slice(0, boundary));
@@ -89,7 +110,7 @@ export async function* readSse(
         boundary = buffer.indexOf('\n\n');
       }
     }
-    const tail = parseFrame(buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+    const tail = parseFrame(buffer + normalizeEndings(pending).normalized);
     if (tail) yield tail;
   } finally {
     // A cancelled reader releases the socket; without this an aborted stream
