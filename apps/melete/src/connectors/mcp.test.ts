@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -313,20 +314,33 @@ test('MCP HTTP transport supports JSON and SSE while pinning session and rejecti
   }
 });
 
-test('production stdio cannot launch under the service OS identity', async () => {
+test('production stdio cannot launch under the service OS identity', () => {
   const previous = process.env.NODE_ENV;
-  process.env.NODE_ENV = 'production';
-  try {
-    const failure = await openStdioMcpTransport({
-      transport: 'stdio',
-      command: 'must-not-execute',
-      args: [],
-    }).catch((error: Error) => error.message);
-    expect(failure).toContain('requires an isolated OS launcher');
-  } finally {
-    if (previous === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = previous;
-  }
+  // Exercise the real launch gate with an environment owned by this child only.
+  const moduleUrl = new URL('./mcp-transport.ts', import.meta.url).href;
+  const result = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      `
+    const { openStdioMcpTransport } = await import(${JSON.stringify(moduleUrl)});
+    try {
+      await openStdioMcpTransport({ transport: 'stdio', command: 'must-not-execute', args: [] });
+      process.exitCode = 1;
+    } catch (error) { console.log(error.message); }
+  `,
+    ],
+    {
+      env: { ...process.env, NODE_ENV: 'production' },
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 5_000,
+    },
+  );
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain('requires an isolated OS launcher');
+  expect(process.env.NODE_ENV).toBe(previous);
 });
 
 test('oversized MCP schemas are omitted while healthy tools and the server survive', async () => {
