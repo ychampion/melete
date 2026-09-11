@@ -243,6 +243,42 @@ databaseTest('an execution is on the ledger without anyone being asked', async (
   expect(action?.receipt?.detail).toMatchObject({ exit_code: 0, duration_ms: 41, cwd: '.' });
 });
 
+databaseTest('a truncated execution stores its output as an artifact of the job', async () => {
+  const context = await setup();
+  const content = 'output '.repeat(4000);
+  const stored = path.join(context.workRoot, context.claims.job_id, '.melete', 'exec', 'run.log');
+  await Bun.write(stored, content);
+  const hash = new Bun.CryptoHasher('sha256').update(content).digest('hex');
+  const proposal = await context.broker.propose(context.claims, {
+    kind: 'exec.run',
+    connection_id: context.execConnection,
+    payload: {
+      language: 'shell',
+      command: 'echo lots',
+      cwd: '.',
+      exit_code: 0,
+      signal: null,
+      timed_out: false,
+      duration_ms: 80,
+      output_digest: hash,
+      output_bytes: content.length,
+      truncated: true,
+      output_path: '.melete/exec/run.log',
+    },
+    client_ref: 'exec-truncated',
+  });
+  expect(proposal.status).toBe('succeeded');
+  const [row] = await context.sql`select id, path, kind, size, content_hash, source_job_id
+    from artifact where job_id = ${context.claims.job_id} and path = '.melete/exec/run.log'`;
+  expect(row).toBeTruthy();
+  expect(row?.kind).toBe('text');
+  expect(row?.content_hash).toBe(hash);
+  expect(row?.source_job_id).toBe(context.claims.job_id);
+  // Nothing was promised about the contents of an arbitrary command's output,
+  // so recording it cannot be what stops the job from finishing.
+  expect((await artifactGate(fixture?.db as never, context.claims.job_id)).passed).toBe(true);
+});
+
 databaseTest('an execution claiming another job workspace is refused at the ledger', async () => {
   const context = await setup();
   const proposal = await context.broker.propose(context.claims, {

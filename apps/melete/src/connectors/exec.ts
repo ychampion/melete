@@ -25,6 +25,8 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import {
   type Action,
+  ARTIFACT_MIME,
+  type ArtifactExpectation,
   type ConnectorManifest,
   EXEC_LIMITS,
   EXEC_RECORD_JSON_SCHEMA,
@@ -32,6 +34,7 @@ import {
   type JsonValue,
   type Receipt,
 } from '@melete/contracts';
+import { validateArtifact } from '../artifact/validate.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
@@ -43,6 +46,22 @@ export type ExecOptions = {
 };
 
 const digest = (value: Buffer): string => createHash('sha256').update(value).digest('hex');
+
+/**
+ * What a stored command output is declared to be. Plain text, no checks, and no
+ * renderer: there is nothing to promise about the output of an arbitrary
+ * command beyond that it is the bytes the command produced. Declaring it is
+ * still worth doing, because a declared write is the only kind that becomes an
+ * artifact, and an artifact is the only kind of thing this release will publish.
+ */
+const STORED_OUTPUT: ArtifactExpectation = {
+  kind: 'text',
+  checks: [],
+  render: false,
+  critique: null,
+  human: false,
+  template: null,
+};
 
 const runSchema = {
   type: 'object',
@@ -148,6 +167,7 @@ export function createExecConnector(options: ExecOptions): Connector {
       throw new Error('the recorded duration exceeds the cell time cap');
     let verified = false;
     let storedBytes: number | null = null;
+    let stored: Buffer | null = null;
     if (record.output_path) {
       const target = await resolveInWorkspace(ctx, record.output_path).catch(() => {
         throw new Error(
@@ -155,7 +175,7 @@ export function createExecConnector(options: ExecOptions): Connector {
         );
       });
       await lstat(target);
-      const stored = await readStored(target);
+      stored = await readStored(target);
       storedBytes = stored.byteLength;
       if (digest(stored) !== record.output_digest)
         throw new Error('the stored output does not hash to the recorded digest');
@@ -178,6 +198,27 @@ export function createExecConnector(options: ExecOptions): Connector {
       // digest is the cell's word. It is said rather than implied.
       digest_verified: verified,
     };
+    // Output that did not fit is not a loose file in a hidden directory: it is
+    // an artifact of this job, with a handle a later attempt can cite and a
+    // person can publish. The bytes were already read to re-hash them, so the
+    // validators cost nothing extra and the record is made from what is on
+    // disk rather than from what the cell said about it.
+    if (stored && record.output_path) {
+      Object.assign(detail, {
+        artifact: {
+          area: 'work',
+          path: record.output_path,
+          kind: STORED_OUTPUT.kind,
+          mime: ARTIFACT_MIME[STORED_OUTPUT.kind],
+          size: stored.byteLength,
+          content_hash: record.output_digest,
+          template: null,
+          evidence: [],
+        },
+        expectation: STORED_OUTPUT as unknown as JsonValue,
+        validations: validateArtifact(STORED_OUTPUT, stored) as unknown as JsonValue,
+      });
+    }
     return { record, detail };
   };
 

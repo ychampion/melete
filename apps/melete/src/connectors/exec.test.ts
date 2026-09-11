@@ -99,6 +99,42 @@ test('a stored output is re-hashed, and a mismatch is refused', async () => {
   expect(bad.reason).toContain('does not hash to the recorded digest');
 });
 
+test('a stored output is declared as an artifact of this job', async () => {
+  const content = `line after line of output${String.fromCharCode(10)}`.repeat(40);
+  await writeFile(path.join(root, 'work', 'job_01', '.melete', 'exec', 'big.log'), content);
+  const result = await run(
+    record({
+      truncated: true,
+      output_path: '.melete/exec/big.log',
+      output_bytes: content.length,
+      output_digest: digest(content),
+    }),
+  );
+  if (result.outcome !== 'succeeded') throw new Error('expected the stored output to verify');
+  const detail = result.receipt.detail as Record<string, unknown>;
+  // The handle a later attempt cites and a person can publish, made from the
+  // bytes on disk rather than from anything the cell claimed about them.
+  expect(detail.artifact).toMatchObject({
+    area: 'work',
+    path: '.melete/exec/big.log',
+    kind: 'text',
+    size: content.length,
+    content_hash: digest(content),
+  });
+  expect(detail.expectation).toMatchObject({ kind: 'text', render: false, human: false });
+  const validations = detail.validations as Array<{ name: string; status: string }>;
+  expect(validations.map((v) => v.name)).toEqual(['text.parses']);
+  expect(validations[0]?.status).toBe('passed');
+});
+
+test('an execution that stored nothing declares no artifact', async () => {
+  const result = await run(
+    record({ output_bytes: 3, output_digest: digest(`ok${String.fromCharCode(10)}`) }),
+  );
+  if (result.outcome !== 'succeeded') throw new Error('expected a receipt');
+  expect((result.receipt.detail as Record<string, unknown>).artifact).toBeUndefined();
+});
+
 test('a working directory outside this job is refused at the ledger', async () => {
   for (const cwd of ['../job_other', '../../outside', '/etc', 'C:\\Windows', 'a/../../job_other']) {
     const refused = await run(record({ cwd }));
