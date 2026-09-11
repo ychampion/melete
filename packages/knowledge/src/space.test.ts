@@ -217,3 +217,62 @@ describe('what a space may be called', () => {
     expect(made.space).toBe(name);
   });
 });
+
+describe('two writes to one space at the same time', () => {
+  const eight = Array.from({ length: 8 }, (_, i) => i);
+
+  test('all of them land, each in its own commit, each attributed to its own caller', async () => {
+    const results = await Promise.allSettled(
+      eight.map((i) =>
+        commitRecord(paths, `knowledge/r${i}.md`, write(`Body number ${i}.`), {
+          proposedBy: `agent-${i}`,
+          subject: `Write record ${i}`,
+          now,
+        }),
+      ),
+    );
+
+    expect(results.filter((r) => r.status === 'rejected')).toEqual([]);
+    for (const i of eight) {
+      expect(existsSync(join(paths.knowledge, `r${i}.md`))).toBe(true);
+    }
+
+    // One commit per write, plus the one that created the space. A write that
+    // was swept into somebody else's commit would show up as a shortfall here.
+    const log = await git(paths.root, ['log', '--format=%s']);
+    expect(log.trim().split('\n')).toHaveLength(eight.length + 1);
+  });
+
+  test('a record carries the trailer of the write that made it, not of its neighbour', async () => {
+    await Promise.all(
+      eight.map((i) =>
+        commitRecord(paths, `knowledge/r${i}.md`, write(`Body number ${i}.`), {
+          proposedBy: `agent-${i}`,
+          subject: `Write record ${i}`,
+          now,
+        }),
+      ),
+    );
+
+    for (const i of [0, 3, 7]) {
+      const entries = await history(paths, `knowledge/r${i}.md`);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.subject).toBe(`Write record ${i}`);
+      expect(entries[0]?.proposedBy).toBe(`agent-${i}`);
+    }
+  });
+
+  test('one write failing does not strand the writes queued behind it', async () => {
+    const results = await Promise.allSettled([
+      commitRecord(paths, '../outside.md', write('Escaping.'), { proposedBy: 'agent', now }),
+      commitRecord(paths, 'knowledge/after.md', write('The one behind it.'), {
+        proposedBy: 'agent',
+        now,
+      }),
+    ]);
+
+    expect(results[0]?.status).toBe('rejected');
+    expect(results[1]?.status).toBe('fulfilled');
+    expect(existsSync(join(paths.knowledge, 'after.md'))).toBe(true);
+  });
+});
