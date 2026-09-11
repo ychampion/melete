@@ -19,6 +19,7 @@ import {
   openHttpMcpTransport,
   openStdioMcpTransport,
 } from './mcp-transport.ts';
+import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from './schema-budget.ts';
 import type { ConnectorContext } from './types.ts';
 
 const scope = z.string().min(1).max(160);
@@ -169,12 +170,21 @@ export async function openMcpWorker(
       if (cursors.has(cursor)) throw new Error('Repeated MCP pagination cursor');
       cursors.add(cursor);
     }
+    const healthNotes: string[] = [];
     const rawNames = new Map<string, string>();
     const tools = config.tools
-      .map((policy) => {
+      .flatMap((policy) => {
         const definition = discovered.get(policy.name);
         if (!definition) throw new Error(`Configured MCP tool is unavailable: ${policy.name}`);
         const name = `mcp_${config.id}.${policy.alias}`;
+        const inputSchema = {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          ...definition.inputSchema,
+        };
+        if (!toolSchemaFits(inputSchema)) {
+          healthNotes.push(`${policy.name}: schema exceeds ${MAX_TOOL_SCHEMA_BYTES} UTF-8 bytes`);
+          return [];
+        }
         rawNames.set(name, policy.name);
         return connectorTool.parse({
           name,
@@ -183,10 +193,7 @@ export async function openMcpWorker(
             policy.name,
           // MCP's unspecified dialect is 2020-12. Preserve it explicitly for the
           // broker so newer constraints cannot be silently treated as draft-07.
-          input_schema: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            ...definition.inputSchema,
-          },
+          input_schema: inputSchema,
           effect_class: policy.effect_class,
           required_scopes: [...new Set(policy.required_scopes)].sort(),
           requires_approval: policy.effect_class !== 'read',
@@ -275,8 +282,8 @@ export async function openMcpWorker(
         try {
           await transport.request('ping');
           return {
-            status: 'ok',
-            detail: 'MCP server answered ping',
+            status: healthNotes.length ? 'degraded' : 'ok',
+            detail: ['MCP server answered ping', ...healthNotes].join('; '),
             checked_at: new Date().toISOString(),
           };
         } catch {

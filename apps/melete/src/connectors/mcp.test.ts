@@ -328,3 +328,33 @@ test('production stdio cannot launch under the service OS identity', async () =>
     else process.env.NODE_ENV = previous;
   }
 });
+
+test('oversized MCP schemas are omitted while healthy tools and the server survive', async () => {
+  let closed = false;
+  const transport: McpTransport = {
+    async request(method) {
+      if (method === 'initialize')
+        return { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} } };
+      if (method === 'ping') return {};
+      return {
+        tools: [
+          { name: 'read', inputSchema: { type: 'object' } },
+          { name: 'write', inputSchema: { type: 'object', description: '\u754c'.repeat(1100) } },
+        ],
+      };
+    },
+    async notify() {},
+    async close() {
+      closed = true;
+    },
+  };
+  const worker = await openMcpWorker(mcpFixtureConfig(), binding, { transport });
+  try {
+    expect(worker.tools.map((tool) => tool.name)).toEqual(['mcp_fixture.read']);
+    expect(await worker.health()).toMatchObject({ status: 'degraded' });
+    expect((await worker.health()).detail).toContain('write: schema exceeds 3000 UTF-8 bytes');
+    expect(closed).toBe(false);
+  } finally {
+    await worker.close();
+  }
+});

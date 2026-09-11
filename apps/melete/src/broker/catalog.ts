@@ -9,6 +9,7 @@ import type {
 import { estimateTokens } from '@melete/skills';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
@@ -396,6 +397,11 @@ export class ToolCatalog {
       const item = items.find((entry) => entry.entry.name === name);
       if (!item) throw new BrokerFault('unknown_tool');
       if (item.entry.health === 'failing') throw new BrokerFault('connector_unavailable');
+      if (!toolSchemaFits(item.tool.input_schema))
+        throw new BrokerFault(
+          'connector_unavailable',
+          `Tool schema exceeds ${MAX_TOOL_SCHEMA_BYTES} UTF-8 bytes`,
+        );
       const prior = [...context.core, ...context.loaded].find((tool) => tool.name === name);
       if (
         prior &&

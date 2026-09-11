@@ -28,6 +28,13 @@ attempt starts its own context. Names already shown remain bound to their
 connection even when another account is granted or revoked; a new account cannot
 reuse a vacated name in that attempt.
 
+Each serialized input schema is limited to 3,000 UTF-8 bytes, at most 750 tokens
+under the existing characters/4 estimator, matching the core allowance. MCP
+workers omit oversized tools while retaining the server and report the omitted
+names in degraded health notes. `load_tool` independently checks the same cap
+before persistence, including tools from other connector sources. This is a
+per-schema limit; the initial core still enforces its separate aggregate budget.
+
 Every call rechecks authority. Async or unresolved schemas fail before an action
 is created, and independent schemas do not share an Ajv `$id` registry. A
 changed schema, effect class or approval policy cannot silently replace the

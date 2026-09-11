@@ -469,3 +469,18 @@ dbTest(
     expect((await request({ name: 'test.invoice' }, token)).status).toBe(200);
   },
 );
+
+dbTest('load_tool rejects an oversized schema before persisting it', async () => {
+  const s = await setup();
+  await s.broker.catalog(s.claims);
+  const tool = s.connector.manifest.tools.find((item) => item.name === 'test.invoice');
+  if (!tool) throw new Error('fixture tool absent');
+  tool.input_schema = { type: 'object', description: '\u754c'.repeat(1100) };
+  expect(await rejectionOf(s.broker.discovery.load(s.claims, tool.name))).toMatchObject({
+    code: 'connector_unavailable',
+  });
+  const [context] =
+    await s.sql`select loaded from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
+  expect(context?.loaded).toEqual([]);
+  expect((await s.broker.discovery.load(s.claims, 'test.read')).tool.name).toBe('test.read');
+});
