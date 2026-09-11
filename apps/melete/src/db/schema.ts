@@ -112,6 +112,7 @@ export const job = pgTable(
     planId: text('plan_id'),
     experienceParentId: text('experience_parent_id'),
     experienceCommandKey: text('experience_command_key').unique(),
+    experienceCategory: text('experience_category'),
     pauseRequested: boolean('pause_requested').notNull().default(false),
     paused: boolean('paused').notNull().default(false),
     experienceCursor: bigint('experience_cursor', { mode: 'number' }).notNull().default(0),

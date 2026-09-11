@@ -14,13 +14,16 @@ import type { QuestionService } from '../jobs/questions.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
+import type { TriggerService } from '../jobs/triggers.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceEffects } from './effects.ts';
 import { ExperienceEvents } from './events.ts';
+import { ExperienceHome } from './home.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
+import { ExperiencePlanning } from './planning.ts';
 import {
   object,
   plainText,
@@ -42,6 +45,7 @@ export type ExperienceDeps = {
   registry?: ConnectorRegistry;
   questions?: QuestionService;
   memoryJournal?: RestrictionJournal;
+  triggers?: TriggerService;
 };
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
@@ -55,6 +59,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     deps.sql && deps.broker && ownerEffects
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
+  const home = new ExperienceHome(deps.db, ownerEffects);
+  const planning = new ExperiencePlanning(service, deps.triggers);
   const events = new ExperienceEvents(deps.db, {
     permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
     question: async (spaceId, id) =>
@@ -81,6 +87,42 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
   > = {
+    'GET /profile': (spaceId) => home.profile(spaceId),
+    'PATCH /profile': (spaceId, _c, input) => home.saveProfile(spaceId, input),
+    'GET /home': (spaceId) => home.home(spaceId),
+    'GET /tasks': (spaceId) => home.tasks(spaceId),
+    'POST /tasks': (spaceId, _c, input) => home.saveTask(spaceId, input),
+    'PATCH /tasks/{id}': (spaceId, c, input) =>
+      home.saveTask(spaceId, input, c.req.param('id') ?? ''),
+    'DELETE /tasks/{id}': (spaceId, c) => home.deleteTask(spaceId, c.req.param('id') ?? ''),
+    'GET /experience/connections': (spaceId) => home.connections(spaceId),
+    'GET /search': (spaceId, c) => home.search(spaceId, c.req.query('q') ?? ''),
+    'GET /plans': (spaceId) => planning.plans(spaceId),
+    'POST /plans': (spaceId, _c, input) => planning.create(spaceId, input),
+    'GET /plans/{id}': async (spaceId, c) => ({
+      plan: await planning.view(await planning.requirePlan(spaceId, c.req.param('id') ?? '')),
+    }),
+    'PATCH /plans/{id}/milestones/{milestoneId}': (spaceId, c, input) =>
+      planning.complete(
+        spaceId,
+        c.req.param('id') ?? '',
+        c.req.param('milestoneId') ?? '',
+        Boolean(input.done),
+      ),
+    'POST /plans/{id}/conversation': (spaceId, c, input) =>
+      planning.conversation(spaceId, c.req.param('id') ?? '', String(input.agent_id)),
+    'GET /automations': (spaceId) => planning.automations(spaceId),
+    'POST /automations': (spaceId, _c, input) => planning.createAutomation(spaceId, input),
+    'POST /automations/{id}/test': (spaceId, c) =>
+      planning.testAutomation(spaceId, c.req.param('id') ?? ''),
+    'POST /automations/morning-brief': (spaceId, _c, input) =>
+      planning.createAutomation(spaceId, {
+        ...input,
+        title: 'Your morning brief',
+        instruction:
+          'Summarize my upcoming events and open tasks for today. Ask before making changes.',
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+      }),
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),

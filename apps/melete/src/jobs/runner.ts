@@ -27,7 +27,7 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { attempt, event, experienceTurn, job } from '../db/schema.ts';
+import { attempt, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -136,13 +136,20 @@ export class AttemptRunner {
         .where(eq(event.jobId, row.id));
       const attemptId = newId('att');
       const epoch = row.leaseEpoch + 1;
+      const available =
+        this.options.scopes === undefined
+          ? await tx
+              .select({ scopes: connection.scopes })
+              .from(connection)
+              .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')))
+          : [];
       const claims: CapabilityClaims = {
         job_id: row.id,
         attempt_id: attemptId,
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
-        scopes: this.options.scopes ?? [],
+        scopes: this.options.scopes ?? [...new Set(available.flatMap((item) => item.scopes))],
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
@@ -367,7 +374,7 @@ export class AttemptRunner {
       .where(
         and(
           eq(attempt.jobId, row.id),
-          row.kind === 'chat' && row.currentTurnId
+          ['chat', 'routine'].includes(row.kind) && row.currentTurnId
             ? eq(attempt.turnId, row.currentTurnId)
             : undefined,
         ),
@@ -421,6 +428,26 @@ export class AttemptRunner {
     if (chatComplete) {
       input = { kind: 'attempt_waiting_for_input' };
       wait = { kind: 'user_input', question: 'What would you like to do next?' };
+    }
+    if (
+      row.kind === 'routine' &&
+      outcome.kind === 'completed' &&
+      input.kind === 'attempt_completed' &&
+      !input.has_unknown_action &&
+      input.all_actions_terminal &&
+      (!input.deliverable_declared || input.deliverable_satisfied)
+    ) {
+      const [schedule] = await tx
+        .select()
+        .from(trigger)
+        .where(
+          and(eq(trigger.jobId, row.id), eq(trigger.kind, 'schedule'), eq(trigger.enabled, true)),
+        )
+        .limit(1);
+      if (schedule) {
+        input = { kind: 'attempt_waiting_for_event_or_time' };
+        wait = { kind: 'event', trigger_id: schedule.id, deadline_at: null };
+      }
     }
     if (
       outcome.kind === 'completed' &&
@@ -607,7 +634,14 @@ export class AttemptRunner {
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)
-      .where(eq(attempt.jobId, row.id));
+      .where(
+        and(
+          eq(attempt.jobId, row.id),
+          ['chat', 'routine'].includes(row.kind) && row.currentTurnId
+            ? eq(attempt.turnId, row.currentTurnId)
+            : undefined,
+        ),
+      );
     await tx
       .update(attempt)
       .set({

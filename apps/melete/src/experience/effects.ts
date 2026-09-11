@@ -12,6 +12,7 @@ import { ServiceError } from '../api/errors.ts';
 import { loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { DEFAULT_BUDGET } from '../jobs/service.ts';
 import { type ActionRow, object, plainText, projectReceipt, recipientText } from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
@@ -55,6 +56,35 @@ export class ExperienceEffects {
         connection &&
         [tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope)),
     );
+  }
+
+  /** A home refresh can only read; its private command is never available to the runtime. */
+  async read(spaceId: string, connectionId: string, kind: string, payload: JsonObject) {
+    const tool = this.registry.get(connectionId)?.manifest.tools.find((item) => item.name === kind);
+    if (tool?.effect_class !== 'read' || !(await this.supports(spaceId, connectionId, kind)))
+      return unavailable('This connection cannot provide that information.');
+    const key = `home:${spaceId}:${connectionId}:${kind}:${Math.floor(Date.now() / 60000)}`;
+    const jobId = await this.sql.begin(async (tx) => {
+      await tx`select id from space where id = ${spaceId} for update`;
+      const [existing] = await tx`select id from job where experience_command_key = ${key}`;
+      if (existing) return String(existing.id);
+      const id = recordId('job');
+      await tx`insert into job (id, space_id, title, objective, kind, state, lease_epoch, experience_command_key, constraints, budget)
+        values (${id}, ${spaceId}, 'Read upcoming events', 'Read upcoming events', 'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command')`;
+      return id;
+    });
+    const [existing] = await this
+      .sql`select id from action where job_id = ${jobId} order by created_at limit 1`;
+    if (existing) return loadAction(this.sql, String(existing.id));
+    const proposed = await this.broker.propose(await this.claims(jobId, connectionId), {
+      connection_id: connectionId,
+      kind,
+      payload,
+      client_ref: 'home',
+    });
+    return loadAction(this.sql, proposed.action_id);
   }
 
   private async command(spaceId: string, source: Action, verb: string) {

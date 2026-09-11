@@ -120,6 +120,7 @@ export function createApp(deps: AppDeps) {
       registry: deps.registry,
       questions,
       memoryJournal: deps.memory?.journal,
+      triggers: deps.triggers,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory) app.route('/', createMemoryRouter(deps.memory));

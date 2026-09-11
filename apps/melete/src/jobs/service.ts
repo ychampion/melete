@@ -128,6 +128,8 @@ export class JobService {
       kind: 'chat' | 'plan' | 'routine' | 'milestone';
       agentId?: string;
       planId?: string;
+      scheduledAt?: Date;
+      dormant?: boolean;
     },
   ): Promise<JobRow> {
     const value = createResponsibilityRequest.parse(input);
@@ -145,18 +147,26 @@ export class JobService {
         objective: value.objective,
         constraints: jobConstraints.parse(value.constraints ?? {}),
         budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
-        nextWakeAt: experience && ['chat', 'plan'].includes(experience.kind) ? null : new Date(),
+        nextWakeAt:
+          experience && (experience.dormant || ['chat', 'plan'].includes(experience.kind))
+            ? null
+            : (experience?.scheduledAt ?? new Date()),
         ...(experience
           ? {
               kind: experience.kind,
               agentId: experience.agentId,
               planId: experience.planId,
-              ...(['chat', 'plan'].includes(experience.kind)
+              ...(experience.dormant || ['chat', 'plan'].includes(experience.kind)
                 ? {
                     state: 'waiting_for_input',
                     wait: { kind: 'user_input', question: 'What would you like to do next?' },
                   }
-                : {}),
+                : experience.scheduledAt
+                  ? {
+                      state: 'waiting_for_event_or_time',
+                      wait: { kind: 'timer', wake_at: experience.scheduledAt.toISOString() },
+                    }
+                  : {}),
             }
           : {}),
         schedulingClass: value.scheduling_class,
@@ -207,7 +217,7 @@ export class JobService {
         .where(
           and(
             eq(attempt.jobId, row.id),
-            row.kind === 'chat'
+            ['chat', 'routine'].includes(row.kind)
               ? row.currentTurnId
                 ? eq(attempt.turnId, row.currentTurnId)
                 : sql`false`

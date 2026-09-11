@@ -18,7 +18,7 @@ const fixture = await createPostgresFixture();
 const databaseTest = fixture ? test : test.skip;
 afterAll(async () => {
   await fixture?.close();
-});
+}, 30000);
 async function setup(mode: 'email' | 'calendar' = 'email') {
   if (!fixture) throw new Error('Postgres unavailable');
   const sql = fixture.sql;
@@ -44,7 +44,21 @@ async function setup(mode: 'email' | 'calendar' = 'email') {
           external_ref: action.id,
           late: false,
           received_at: new Date().toISOString(),
-          detail: action.kind === 'calendar.create' ? { uid: action.id, etag: '"one"' } : {},
+          detail:
+            action.kind === 'calendar.create'
+              ? { uid: action.id, etag: '"one"' }
+              : action.kind === 'calendar.list'
+                ? {
+                    events: [
+                      {
+                        uid: 'dinner',
+                        summary: 'Dinner',
+                        start: '2026-09-12T19:00:00Z',
+                        end: '2026-09-12T20:00:00Z',
+                      },
+                    ],
+                  }
+                : {},
         },
       };
     },
@@ -82,6 +96,28 @@ const bounds = () => ({
   count_cap: 2,
   expires_at: new Date(Date.now() + 86400000).toISOString(),
   reconsent_after_days: 1,
+});
+
+databaseTest('home calendar reads use a scoped private command and reject writes', async () => {
+  const s = await setup('calendar');
+  const read = await s.effects.read(s.claims.space_id, s.connectionId, 'calendar.list', {
+    limit: 20,
+  });
+  expect(read).toMatchObject({
+    status: 'succeeded',
+    receipt: { detail: { events: [{ summary: 'Dinner' }] } },
+  });
+  const repeated = await s.effects.read(s.claims.space_id, s.connectionId, 'calendar.list', {
+    limit: 20,
+  });
+  expect(repeated).toEqual(read);
+  expect(s.calls).toHaveLength(1);
+  expect(
+    await s.effects.read(s.claims.space_id, s.connectionId, 'calendar.create', {}),
+  ).toMatchObject({ status: 'not_available' });
+  expect(await s.effects.read('foreign', s.connectionId, 'calendar.list', {})).toMatchObject({
+    status: 'not_available',
+  });
 });
 
 databaseTest(

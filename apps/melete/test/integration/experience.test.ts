@@ -2,14 +2,20 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   agentResponse,
+  automationResponse,
   conversationResponse,
   dedupKey,
   experienceQuestion,
+  experienceSearch,
+  homeResponse,
   memoryItemList,
   messageAcceptance,
+  planResponse,
+  taskResponse,
   turnList,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { BudgetService } from '../../src/broker/budget.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import {
   action,
@@ -20,6 +26,7 @@ import {
   job,
   owner,
   space,
+  trigger,
 } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
@@ -30,6 +37,7 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { TriggerService } from '../../src/jobs/triggers.ts';
 import { publishRevision } from '../../src/memory/claims.ts';
 import { lockSpace, type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
@@ -53,12 +61,14 @@ const runner = jobs
       key: 'experience-fixture-signing-key-32-bytes',
     })
   : null;
+const triggers = jobs && runner ? new TriggerService(jobs, runner) : undefined;
 const app = handle
   ? createApp({
       db: handle.db,
       env: loadEnv({ NODE_ENV: 'test' }),
       jobs: jobs ?? undefined,
       runner: runner ?? undefined,
+      triggers,
       sql: handle.sql,
       memory: { sql: handle.sql, journal },
       checkDatabase: async () => 'ok',
@@ -108,9 +118,137 @@ async function createConversation() {
 
 withDb('experience rows and authenticated scope', () => {
   afterAll(async () => {
+    await triggers?.stop();
     await runner?.stop();
     await queue?.stop();
     await handle?.close();
+  });
+  test('home uses the saved time zone and tasks; search excludes foreign rows', async () => {
+    expect(
+      (
+        await request('/profile', 'PATCH', {
+          name: 'Alex',
+          time_zone: 'Asia/Kolkata',
+          day_hours: { start: '00:00', end: '00:00' },
+        })
+      ).status,
+    ).toBe(200);
+    const task = taskResponse.parse(
+      await (await request('/tasks', 'POST', { title: 'Dinner groceries', due_at: null })).json(),
+    ).task;
+    await required(handle)
+      .sql`insert into task (id, space_id, title) values (${newId('task')}, ${foreignSpaceId}, 'Dinner private')`;
+    const home = homeResponse.parse(await (await request('/home')).json());
+    expect(home.time_zone).toBe('Asia/Kolkata');
+    expect(home.greeting).toContain('Alex');
+    expect(home.within_day_hours).toBe(true);
+    expect(home.tasks.some((item) => item.id === task.id)).toBe(true);
+    expect(home.upcoming).toMatchObject({ status: 'not_available' });
+    const result = experienceSearch.parse(await (await request('/search?q=Dinner')).json());
+    expect(result.results.some((item) => item.id === task.id && item.kind === 'task')).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('Dinner private');
+    expect((await request(`/tasks/${task.id}`, 'DELETE')).status).toBe(200);
+  });
+  test('plans project real child completion and preserve context in a linked conversation', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    const saved = planResponse.parse(
+      await (
+        await request('/plans', 'POST', {
+          title: 'Plan dinner',
+          category: 'Personal',
+          milestones: [
+            { title: 'Choose menu', assignee: { kind: 'person' } },
+            {
+              title: 'Check availability',
+              assignee: { kind: 'agent', agent_id: persona.id },
+              schedule_at: new Date(Date.now() + 3600000).toISOString(),
+            },
+          ],
+        })
+      ).json(),
+    ).plan;
+    expect(saved.progress_percent).toBe(0);
+    const changed = planResponse.parse(
+      await (
+        await request(
+          `/plans/${saved.id}/milestones/${required(saved.milestones[0]).id}`,
+          'PATCH',
+          { done: true },
+        )
+      ).json(),
+    ).plan;
+    expect(changed.progress_percent).toBe(50);
+    expect(changed.next_step).toBe('Check availability');
+    const [child] = await required(handle)
+      .sql`select j.* from job j join plan_milestone m on m.child_job_id = j.id where m.plan_id = ${saved.id}`;
+    expect(child?.state).toBe('waiting_for_event_or_time');
+    expect(new Date(child?.next_wake_at).getTime()).toBeGreaterThan(Date.now());
+    const linked = conversationResponse.parse(
+      await (
+        await request(`/plans/${saved.id}/conversation`, 'POST', { agent_id: persona.id })
+      ).json(),
+    ).conversation;
+    expect(linked.plan_id).toBe(saved.id);
+    expect((await required(jobs).get(linked.id)).objective).toContain('Plan dinner');
+    expect((await request(`/plans/${saved.id}/share`, 'POST')).status).toBe(200);
+    await required(handle)
+      .db.update(job)
+      .set({ spaceId: foreignSpaceId })
+      .where(eq(job.id, saved.id));
+    expect((await request(`/plans/${saved.id}`)).status).toBe(404);
+  });
+  test('a scheduled routine completes twice with separate spending and attempt bounds', async () => {
+    const persona = agentResponse.parse(
+      await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),
+    ).agent;
+    const routine = automationResponse.parse(
+      await (
+        await request('/automations', 'POST', {
+          title: 'Daily dinner',
+          instruction: 'Check today',
+          weekdays: [1, 2, 3, 4, 5],
+          at: '08:30',
+          agent_id: persona.id,
+        })
+      ).json(),
+    ).automation;
+    expect(routine.schedule).toContain('Every weekday at 8:30 AM');
+    const [registration] = await required(handle)
+      .db.select()
+      .from(trigger)
+      .where(eq(trigger.id, routine.id));
+    const id = required(registration).jobId;
+    await required(handle)
+      .sql`update job set budget = jsonb_set(jsonb_set(budget, '{max_attempts}', '1'), '{max_output_tokens}', '10') where id = ${id}`;
+    const turnIds = [];
+    for (let index = 0; index < 2; index++) {
+      expect((await request(`/automations/${routine.id}/test`, 'POST')).status).toBe(200);
+      const row = await required(jobs).get(id);
+      turnIds.push(row.currentTurnId);
+      const claimed = required(
+        await required(runner).claim({
+          job_id: id,
+          expected_epoch: row.leaseEpoch,
+          expected_version: row.stateVersion,
+          reason: 'event',
+        }),
+      );
+      await new BudgetService(required(handle).sql).reserve(claimed.claims, [
+        { kind: 'tokens', amount: 10 },
+      ]);
+      await required(runner).commitOutcome(claimed.claims, {
+        kind: 'completed',
+        summary: 'Ready for today.',
+        evidence: [],
+      });
+      expect((await required(jobs).get(id)).state).toBe('waiting_for_event_or_time');
+    }
+    expect(new Set(turnIds).size).toBe(2);
+    const [runs] = await required(handle)
+      .sql`select count(*)::int as n from attempt where job_id = ${id} and outcome = 'completed'`;
+    expect(runs?.n).toBe(2);
   });
   test('creates a chat job and projects the agent without identities from the client', async () => {
     const chat = await createConversation();

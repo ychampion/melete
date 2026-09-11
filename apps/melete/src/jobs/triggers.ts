@@ -172,6 +172,11 @@ export class TriggerService {
       payload: { kind: 'trigger_event', trigger_id: registration.id, event: payload },
       dedupKey: `${registration.id}:consumed:${received.seq}`,
     });
+    // Each scheduled occurrence has its own attempt and spending allowance.
+    if (row.kind === 'routine' && registration.kind === 'schedule') {
+      row = { ...row, currentTurnId: newId('turn') };
+      await tx.update(job).set({ currentTurnId: row.currentTurnId }).where(eq(job.id, row.id));
+    }
     return this.jobs.move(
       tx,
       row,

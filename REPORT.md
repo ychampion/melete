@@ -59,3 +59,16 @@
 - `bun run openapi; bun run client:generate`: regenerated the optional quick-answer choices in runtime and owner-question contracts.
 - `bun run typecheck`: passed for quick answers and plain-language memory projection.
 - `bun test apps/melete/test/integration/experience.test.ts --max-concurrency=2`: 7 passed, 0 failed, 59 assertions in 28.60 seconds; offered choices, duplicate answers, real correction revisions, dependency explanations and the existing forget journal path passed.
+
+## Home, plans, routines, and sign-in in progress
+
+- `9b399d0`: committed quick answers and saved details; the fourth full-suite lock wait was cancelled before acquisition after more than fifteen minutes. No foreign lock was removed.
+- `bun run db:generate`: generated `0019_organic_maria_hill.sql` for plan category and single-use magic-link digests.
+- `bun run typecheck`: caught the new schedule class `scheduled`; replaced it with the existing `background` class. The affected check is running again.
+- `bun test apps/melete/test/integration/experience.test.ts apps/melete/src/experience/home.test.ts --max-concurrency=2`: running the new home, task search, linked plan, and two-occurrence routine checks.
+- `POST /signin/magic-link`: uses the configured owner mailbox and `MELETE_PUBLIC_URL`; tokens are digested, expire after ten minutes, and are bound to the active connection generation.
+- `bun test apps/melete/test/integration/experience.test.ts apps/melete/src/experience/home.test.ts --max-concurrency=2`: 11 passed, 0 failed, 87 assertions in 38.09 seconds.
+- `bun test apps/melete/test/integration/experience-signin.test.ts --max-concurrency=2`: first run caught Date serialization during session creation; after ISO serialization, 1 passed, 0 failed, 19 assertions in 32.56 seconds.
+- `bun run typecheck`: passed; `bun run lint`: passed, 331 files.
+- `home calendar reads use a scoped private command and reject writes`: passed, including repeated-read deduplication, foreign space refusal, and write refusal.
+- `experience-effects.test.ts`: all seven assertions groups passed; a five-second fixture close timed out. Cleanup now has a thirty-second bound; focused rerun is pending completion.
