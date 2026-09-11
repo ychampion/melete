@@ -23,7 +23,20 @@ export const envSchema = z.object({
   MELETE_ARTIFACTS_DIR: z.string().default('/data/artifacts'),
 
   /** The address the runtime container reaches the broker on, internal network only. */
-  MELETE_BROKER_BIND: z.string().default('0.0.0.0:8788'),
+  MELETE_BROKER_BIND: z.string().default('127.0.0.1:3112'),
+  MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
+  MELETE_APPROVAL_KEY: z.string().min(32).optional(),
+  MELETE_WORK_DIR: z.string().default('/work'),
+  MELETE_CONNECTIONS_FILE: z.string().optional(),
+  MELETE_GATEWAY_TLS_DIR: z.string().optional(),
+  MELETE_ENABLE_TEST_CONNECTOR: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  MELETE_ENABLE_FAKE_PROVIDER: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   MELETE_RUNTIME_URL: z.string().default('http://runtime:8790'),
 
   /** Provider keys. The gateway injects these; the runtime never sees them. */
@@ -32,6 +45,7 @@ export const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   GOOGLE_API_KEY: z.string().optional(),
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
+  OPENAI_COMPAT_API_KEY: z.string().optional(),
 
   MELETE_DEFAULT_PROVIDER: z.string().default('fireworks'),
   MELETE_DEFAULT_MODEL: z.string().default('deepseek-v4p1-flash'),
@@ -61,7 +75,7 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
 }
 
 /**
- * v0.1 will refuse to store a secret without a master key. The skeleton only
- * warns, because nothing is stored yet.
+ * Secret writes require the master key; parsing and decryption stay in the
+ * service-owned sealed store.
  */
 export const canSealSecrets = (env: Env): boolean => Boolean(env.MELETE_MASTER_KEY);

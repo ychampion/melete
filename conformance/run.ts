@@ -2,10 +2,10 @@
  * `bun run conformance` lists the eight scenarios and what each one will
  * assert, then runs the suite.
  *
- * Today every assertion is a `test.todo`, so the run is green and says plainly
- * that nothing has been proved yet. That is the honest state of a pre-release,
- * and it makes the shape of the proof reviewable before the service exists.
+ * Scenarios 3 and 4 use a real Postgres and test destination. Other scenario
+ * files retain their explicit todos until their implementations land.
  */
+import { fileURLToPath } from 'node:url';
 import { SCENARIOS } from './scenarios.ts';
 
 const out = (line = '') => process.stdout.write(`${line}\n`);
@@ -25,5 +25,16 @@ for (const scenario of SCENARIOS) {
 
 out(`${SCENARIOS.length} scenarios, ${assertions} assertions.`);
 out();
-out('Every assertion is currently a todo: the service they run against does not');
-out('exist yet. Run `bun test conformance` to see them listed by the test runner.');
+out('Scenarios 3 and 4 execute against isolated Postgres and the test destination.');
+out('Scenarios 1, 2, 5, 6, 7 and 8 still contain explicit todos in this checkout.');
+out(
+  'Without DATABASE_URL, tests start embedded Postgres 17; unavailable binaries produce explicit skips.',
+);
+out();
+const run = Bun.spawn([process.execPath, 'test', '--max-concurrency=2', 'conformance/scenarios'], {
+  cwd: fileURLToPath(new URL('..', import.meta.url)),
+  stdin: 'inherit',
+  stdout: 'inherit',
+  stderr: 'inherit',
+});
+process.exit(await run.exited);

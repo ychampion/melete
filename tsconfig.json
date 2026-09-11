@@ -16,6 +16,7 @@
     "packages/*/src/**/*.ts",
     "packages/*/scripts/**/*.ts",
     "apps/*/src/**/*.ts",
+    "apps/*/test/**/*.ts",
     "apps/*/*.ts",
     "deploy/scripts/**/*.ts",
     "conformance/**/*.ts"

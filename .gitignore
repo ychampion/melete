@@ -8,3 +8,6 @@ spaces/
 artifacts/
 **/.index/
 .gstack/
+.omx/
+.agents/w2-tests.log
+deploy/config/gateway-tls/

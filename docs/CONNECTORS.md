@@ -5,9 +5,9 @@ manifest, and the manifest is what policy reads: the tools, their arguments, wha
 class of effect each has, which scopes it needs, and whether it can answer the
 question that matters after a timeout.
 
-> **Status: none of these are implemented yet.** The manifest schema and the
-> effect classes are in `packages/contracts`; the connectors themselves land with
-> the broker.
+The frozen manifest schema and effect classes are in `packages/contracts`.
+Implementations and boundary tests live in `apps/melete/src/connectors`; the
+broker persists the canonical action and reserves budget before calling them.
 
 ## The contract
 
@@ -128,9 +128,12 @@ anything real going wrong.
 
 ## Writing a connector
 
-Not yet. The interface will not be stable until the broker is, and a connector
-written against today's types will need changes. If you want to write one anyway,
-open an issue first so it can be built against the shape that is landing.
+Implement `Connector` from `apps/melete/src/connectors/types.ts`, then register
+the trusted instance under its persisted connection id with `ConnectorRegistry`.
+`execute(action, ctx)` receives the admitted canonical action, trusted job/space
+constraints, and `ctx.idempotency_key === action.id`. Return a typed dispatch
+result; exceptions after dispatch remain unknown. `verify` reads destination
+evidence and never repeats the effect. Keep secrets in the service-side instance.
 
 Two rules that will not change:
 
