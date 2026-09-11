@@ -156,13 +156,28 @@ export const REPAIR_CANDIDATE_STATES = ['candidate', 'evaluated', 'applied', 're
 export const repairCandidateState = z.enum(REPAIR_CANDIDATE_STATES);
 export type RepairCandidateState = z.infer<typeof repairCandidateState>;
 
-/** The test a mapping must pass before anything is allowed to use it. */
+/**
+ * The test a mapping must pass before anything is allowed to use it.
+ *
+ * `expected` documents the output the mapping intends. It is deliberately not
+ * what the test checks: a test that recomputes the expected output with the
+ * transform under test proves only that a function is itself. What is checked
+ * is stated separately and in the vocabulary of the thing that matters, which
+ * is that the operation and every decisive value come through untouched.
+ */
 export const repairCandidateTest = z.object({
   name: z.string().min(1),
+  /** The tool this mapping belongs to. A mapping never changes the operation. */
+  operation: z.string().min(1),
   /** The payload the mapping is applied to. */
   input: jsonObject,
-  /** What the mapping must produce, field for field. */
+  /** What the mapping intends to produce, field for field. */
   expected: jsonObject,
+  /**
+   * The recipient, destination, amount and resource values that must appear
+   * unchanged, at the same paths, in whatever the mapping produces.
+   */
+  preserves: z.array(z.object({ path: z.string().min(1), value: z.string() })).default([]),
 });
 export type RepairCandidateTest = z.infer<typeof repairCandidateTest>;
 

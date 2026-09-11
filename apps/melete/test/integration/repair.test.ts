@@ -19,12 +19,11 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { Hono } from 'hono';
 import { mountRepairs, RepairReadService } from '../../src/api/repairs.ts';
 import { loadAction } from '../../src/broker/records.ts';
+import { ConnectorFaultError } from '../../src/connectors/faults.ts';
 import { schema } from '../../src/db/schema.ts';
 import { createConformanceFixture } from '../helpers/conformance.ts';
 
-// The owner's question queue lives in the jobs module, so this fixture holds
-// the whole committed schema rather than the broker's own slice of it.
-const fixture = await createConformanceFixture({ everyMigration: true });
+const fixture = await createConformanceFixture();
 const databaseTest = fixture ? test : test.skip;
 afterAll(async () => {
   await fixture?.close();
@@ -97,6 +96,42 @@ describe('a repaired send keeps its identity, its approval and its one effect', 
     expect(resumed.repair_disposition).toBe('completed');
     expect(await deliveries(s, parked.id)).toHaveLength(1);
     expect(s.executions()).toBe(2);
+    // The wait is still on the record. A completion that erased why it waited
+    // would leave a recurring rate limit invisible.
+    expect(resumed.repair_counters).toEqual({ rate_limited: 1 });
+    expect(resumed.repair_trace.map((entry) => entry.decision)).toEqual([
+      'park_until_retry_after',
+      'verified_completion',
+    ]);
+    expect(resumed.retry_after_at).toBeNull();
+  });
+
+  databaseTest('a parked action refuses to leave before the destination asked', async () => {
+    const s = await setup();
+    // Five minutes, so nothing about wall-clock timing decides this test.
+    const parked = await s.send({ ...payloadFor('rate_limited'), retry_after: 300 });
+    expect(parked.status).toBe('admitted');
+    expect(s.executions()).toBe(1);
+
+    // A wake, a repeated proposal, a queue redelivery: all of them land here.
+    const early = await s.broker.dispatch(parked.id);
+    expect(early.status).toBe('admitted');
+    expect(early.dispatched_at).toBeNull();
+    expect(s.executions()).toBe(1);
+    expect(await deliveries(s, parked.id)).toHaveLength(0);
+
+    // Two wakes at once must not both get through the due check either.
+    const [first, second] = await Promise.all([
+      s.broker.dispatch(parked.id),
+      s.broker.dispatch(parked.id),
+    ]);
+    expect(first?.status).toBe('admitted');
+    expect(second?.status).toBe('admitted');
+    expect(s.executions()).toBe(1);
+    expect(await deliveries(s, parked.id)).toHaveLength(0);
+
+    // And the recovery scan will not pick it up before it is due.
+    expect(await s.broker.resumeParked(Date.now())).toBe(0);
   });
 
   databaseTest('a revoked credential stops and asks for a reconnection', async () => {
@@ -119,6 +154,34 @@ describe('a repaired send keeps its identity, its approval and its one effect', 
     const s = await setup();
     await s.send(payloadFor('revoked_credential'));
     await s.send({ ...payloadFor('revoked_credential'), body: `${body} again` });
+    expect(await openQuestions(s)).toHaveLength(1);
+  });
+
+  databaseTest('a revocation during backoff fences the retry before it is sent', async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    let connectionId = '';
+    let calls = 0;
+    const s = await fixture.setup({
+      async execute(action, ctx, destination) {
+        calls += 1;
+        if (calls === 1) {
+          // The owner revokes the connection while the policy is backing off.
+          await fixture.sql`update connection set status = 'revoked' where id = ${connectionId}`;
+          throw new ConnectorFaultError({
+            kind: 'transient_before_dispatch',
+            detail: 'the socket closed before the send',
+          });
+        }
+        return destination.execute(action, ctx);
+      },
+    });
+    connectionId = s.connectionId;
+    const action = await s.send({ body });
+    // The retry was authorized a moment ago and is not authorized now.
+    expect(action.status).toBe('failed');
+    expect(action.repair_disposition).toBe('needs_reconnect');
+    expect(calls).toBe(1);
+    expect(await deliveries(s, action.id)).toHaveLength(0);
     expect(await openQuestions(s)).toHaveLength(1);
   });
 
@@ -190,6 +253,31 @@ describe('a repaired send keeps its identity, its approval and its one effect', 
     // It reached the destination exactly once, and nothing pretended to know.
     expect(await deliveries(s, action.id)).toHaveLength(1);
     expect(s.executions()).toBe(1);
+    // Verification was asked and could not decide, which is a person's question.
+    const asked = await openQuestions(s);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.text).toContain('cannot confirm');
+  });
+
+  databaseTest('a failure nobody classified still asks the owner one question', async () => {
+    const s = await setup();
+    const action = await s.send(payloadFor('unclassified'));
+    // Uncertainty is preserved: nothing here decides that it did not happen.
+    expect(action.status).toBe('unknown');
+    expect(action.repair_disposition).toBe('needs_reconciliation');
+    const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('needs_reconciliation');
+    const asked = await openQuestions(s);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.text).toContain('cannot confirm');
+    expect(asked[0]?.blocks_external_effect).toBe(true);
+  });
+
+  databaseTest('a second unclassified failure does not stack a second question', async () => {
+    const s = await setup();
+    await s.send(payloadFor('unclassified'));
+    await s.send({ ...payloadFor('unclassified'), body: `${body} again` });
+    expect(await openQuestions(s)).toHaveLength(1);
   });
 
   databaseTest('a persistent transient failure exhausts and escalates one diagnosis', async () => {

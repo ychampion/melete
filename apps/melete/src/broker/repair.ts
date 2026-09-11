@@ -27,6 +27,7 @@ import {
   type DispatchResult,
   isSafeFieldMapping,
   type JsonObject,
+  type OriginField,
   type RepairCandidateTest,
   type RepairDecision,
   type RepairDisposition,
@@ -35,6 +36,7 @@ import {
   type VerifyResult,
 } from '@melete/contracts';
 import type { ConnectorDescription } from '../connectors/faults.ts';
+import { collectOriginFields } from './trust.ts';
 
 // --------------------------------------------------------------------------
 // Limits
@@ -301,28 +303,101 @@ export function decideRepair(
 }
 
 // --------------------------------------------------------------------------
+// What a revision may change
+// --------------------------------------------------------------------------
+
+/**
+ * A revision fixes an output. It does not re-aim an effect.
+ *
+ * The approval was given for a recipient, an amount and a resource, and those
+ * values are the whole of what the person agreed to. A revision may correct the
+ * content that failed validation; the moment it moves one of the decisive
+ * values it is a different effect, and a different effect is a new action with
+ * its own approval rather than a quiet substitution under an old one.
+ *
+ * The comparison is over `collectOriginFields`, the same reader the broker
+ * gates admission with, so a revision cannot reach a value that admission would
+ * have asked about.
+ */
+export function revisionKeepsIntent(
+  approved: JsonObject,
+  revised: JsonObject,
+  trustGated: boolean,
+): { ok: true } | { ok: false; detail: string } {
+  // An external send or a spend was approved as bytes, and the action keeps the
+  // hash of those bytes. Nothing may move: a correction that needs different
+  // bytes is a different request, and it is asked for as one.
+  if (trustGated) {
+    return canonicalizePayload(approved).hash === canonicalizePayload(revised).hash
+      ? { ok: true }
+      : {
+          ok: false,
+          detail: 'this effect was approved as exact content, which a revision cannot change',
+        };
+  }
+  const before = collectOriginFields(approved);
+  const after = collectOriginFields(revised);
+  const render = (fields: OriginField[]) =>
+    fields.map((field) => `${field.path}=${field.value}`).join('|');
+  if (render(before) !== render(after)) {
+    const moved = before
+      .filter(
+        (field) => !after.some((other) => other.path === field.path && other.value === field.value),
+      )
+      .map((field) => field.path);
+    const added = after
+      .filter(
+        (field) =>
+          !before.some((other) => other.path === field.path && other.value === field.value),
+      )
+      .map((field) => field.path);
+    const named = [...new Set([...moved, ...added])].join(', ') || 'a decisive value';
+    return {
+      ok: false,
+      detail: `the revision would change ${named}, which the approval was given for`,
+    };
+  }
+  // A revision that adds or drops a whole field is not a correction either: the
+  // person read a payload, and a payload with different keys is another one.
+  const keys = (value: JsonObject) => Object.keys(value).sort().join(',');
+  if (keys(approved) !== keys(revised)) {
+    return { ok: false, detail: 'the revision would add or remove a field the approval listed' };
+  }
+  return { ok: true };
+}
+
+// --------------------------------------------------------------------------
 // Drift mappings
 // --------------------------------------------------------------------------
 
 export type MappingProposal = {
   mapping: Record<string, string>;
+  /** True when the connector itself vouched for every rename in the mapping. */
+  declared: boolean;
   safe: boolean;
   test: RepairCandidateTest;
   detail: string;
 };
 
+const decisivePaths = (payload: JsonObject): Set<string> =>
+  new Set(collectOriginFields(payload).map((field) => field.path));
+
 /**
  * Compare what was sent with what the destination says it wants now, and
- * propose the one mapping that could be right.
+ * propose the one mapping it has vouched for.
  *
- * Only an unambiguous one-to-one rename is proposed, and only a rename that
- * carries every value across is marked safe. Two missing fields, or two surplus
- * ones, is a guess, and a guess is recorded as a rejected candidate rather than
- * applied.
+ * Three things have to hold before a rename is even a candidate. The connector
+ * must have declared the equivalence, because a missing field and a surplus
+ * field lining up is not evidence of anything; from outside, a recipient and a
+ * memo look exactly alike. The rename must not touch a value that decides where
+ * the effect lands, so a recipient, a destination, an amount and a resource
+ * keep their names whatever the destination renamed. And every value must
+ * survive the rename unchanged.
  */
 export function proposeMapping(
   sent: JsonObject,
   description: ConnectorDescription,
+  operation: string,
 ): MappingProposal {
   const optional = new Set(description.optional ?? []);
   const required = description.required.filter((field) => !optional.has(field));
@@ -330,44 +405,112 @@ export function proposeMapping(
   const surplus = Object.keys(sent).filter(
     (field) => !optional.has(field) && !required.includes(field),
   );
+  const decisiveFields = collectOriginFields(sent);
+  const decisive = new Map(decisiveFields.map((field) => [field.path, field.category] as const));
+  const preserves = decisiveFields.map((field) => ({ path: field.path, value: field.value }));
+  const test = (mapping: Record<string, string>, expected: JsonObject): RepairCandidateTest => ({
+    name: Object.keys(mapping).length
+      ? `${operation} keeps its operation and every decisive value when ${Object.entries(mapping)
+          .map(([from, to]) => `${from} is called ${to}`)
+          .join(' and ')}`
+      : `${operation} has no rename this destination vouches for`,
+    operation,
+    input: sent,
+    expected,
+    preserves,
+  });
+  const refuse = (detail: string): MappingProposal => ({
+    mapping: {},
+    declared: false,
+    safe: false,
+    test: test({}, sent),
+    detail,
+  });
+
   if (missing.length !== 1 || surplus.length !== 1) {
-    const mapping: Record<string, string> = {};
+    return refuse(
+      missing.length === 0
+        ? 'the destination wants nothing this send is missing'
+        : `${missing.length} fields are missing and ${surplus.length} are surplus, which is a guess`,
+    );
+  }
+  const from = surplus[0] as string;
+  const to = missing[0] as string;
+  const declared = description.equivalent_fields?.[from] === to;
+  if (!declared) {
+    return refuse(`this connector does not vouch for ${from} and ${to} meaning the same thing`);
+  }
+  const category = decisive.get(from);
+  if (category) {
     return {
-      mapping,
+      mapping: {},
+      declared,
       safe: false,
-      test: { name: 'rename is unambiguous', input: sent, expected: sent },
       detail:
-        missing.length === 0
-          ? 'the destination wants nothing this send is missing'
-          : `${missing.length} fields are missing and ${surplus.length} are surplus, which is a guess`,
+        `${from} is the ${category} this effect was approved for, so it keeps its name ` +
+        'whatever the destination now calls it',
+      test: test({}, sent),
     };
   }
-  const mapping = { [surplus[0] as string]: missing[0] as string };
+  const mapping = { [from]: to };
   const expected = applyFieldMapping(sent, mapping) as JsonObject;
+  if (decisivePaths(expected).size !== decisive.size) {
+    return {
+      mapping: {},
+      declared,
+      safe: false,
+      test: test({}, sent),
+      detail: `renaming ${from} to ${to} would make it decide where this effect lands`,
+    };
+  }
   const safe = isSafeFieldMapping(sent, mapping);
   return {
     mapping,
+    declared,
     safe,
-    test: {
-      name: `rename ${surplus[0]} to ${missing[0]} without changing a value`,
-      input: sent,
-      expected,
-    },
+    test: test(mapping, expected),
     detail: safe
-      ? `${surplus[0]} is ${missing[0]} under a new name and every value is unchanged`
-      : `${surplus[0]} to ${missing[0]} would not carry every value across`,
+      ? `${from} is ${to} under a name the connector vouches for, and every value is unchanged`
+      : `${from} to ${to} would not carry every value across`,
   };
 }
 
-/** The candidate's own test, run before anything is allowed to use the mapping. */
+/**
+ * Run the candidate's test.
+ *
+ * It does not recompute the expected payload with the same rename and compare;
+ * that would only re-assert the transform. It applies the mapping and then
+ * checks the things the record says must hold: the operation is untouched,
+ * every decisive value is still at its own path with its own value, and the
+ * payload carries exactly the values it carried before.
+ */
 export function evaluateMapping(proposal: MappingProposal): { passed: boolean; detail: string } {
+  if (!proposal.declared) return { passed: false, detail: proposal.detail };
   if (!proposal.safe) return { passed: false, detail: proposal.detail };
-  const produced = applyFieldMapping(proposal.test.input, proposal.mapping);
-  const passed = JSON.stringify(produced) === JSON.stringify(proposal.test.expected);
-  return {
-    passed,
-    detail: passed ? proposal.detail : 'the mapping did not reproduce its own expected payload',
-  };
+  const produced = applyFieldMapping(proposal.test.input, proposal.mapping) as JsonObject;
+  const surviving = new Map(
+    collectOriginFields(produced).map((field) => [field.path, field.value] as const),
+  );
+  for (const required of proposal.test.preserves) {
+    if (surviving.get(required.path) !== required.value) {
+      return {
+        passed: false,
+        detail: `${required.path} did not survive the rename unchanged`,
+      };
+    }
+  }
+  if (surviving.size !== proposal.test.preserves.length) {
+    return { passed: false, detail: 'the rename introduced a value that decides where this lands' };
+  }
+  const values = (value: JsonObject) =>
+    Object.values(value)
+      .map((item) => JSON.stringify(item ?? null))
+      .sort()
+      .join('|');
+  if (values(produced) !== values(proposal.test.input)) {
+    return { passed: false, detail: 'the rename did not carry every value across' };
+  }
+  return { passed: true, detail: proposal.detail };
 }
 
 // --------------------------------------------------------------------------
@@ -384,6 +527,13 @@ export type RepairExecution = {
 export type RecordedCandidate = { id: string };
 
 export type RepairPorts = {
+  /**
+   * Whether the authority that permitted this effect still holds, asked before
+   * every execution. A reason string means it does not, and nothing is sent.
+   * A repair is a second request to the world, and a second request needs the
+   * permission to be current, not remembered.
+   */
+  authorityLost?(attempt: number): Promise<string | null>;
   execute(input: RepairExecution): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
   describe?(): Promise<ConnectorDescription>;
@@ -425,10 +575,26 @@ export type RepairOptions = {
   random?: () => number;
   sleep?: (ms: number) => Promise<void>;
   deadlineAt?: number | null;
+  /**
+   * True for `write_external` and `spend`, where a person approved exact bytes
+   * and a revision may not move any of them. Defaults to true, because the
+   * costly mistake is treating a send as revisable and never the reverse.
+   */
+  trustGated?: boolean;
+  /** The tool being repaired. A mapping is never allowed to change it. */
+  operation: string;
   classify(error: unknown): ConnectorFault;
 };
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * What a person is asked when the outcome cannot be decided. It says only what
+ * is known, which is that nobody can confirm it either way.
+ */
+export const UNCERTAIN_QUESTION =
+  'Melete cannot confirm whether this was sent and did not send it again. ' +
+  'Check the destination, then tell Melete what you found.';
 
 /**
  * Run one operation to a disposition.
@@ -452,6 +618,7 @@ export async function runRepair(
   const trace: RepairTraceEntry[] = [];
   const counters: Record<string, number> = {};
 
+  const approvedPayload = initialPayload;
   let payload = initialPayload;
   let route: string | null = null;
   let mapping: Record<string, string> | null = null;
@@ -511,6 +678,26 @@ export async function runRepair(
   executions: for (;;) {
     state.now = now();
     state.attempt += 1;
+    const lost = ports.authorityLost ? await ports.authorityLost(state.attempt) : null;
+    if (lost) {
+      state.attempt -= 1;
+      note({
+        attempt: state.attempt,
+        fault_kind: null,
+        decision: 'stop_connection_revoked',
+        detail: `the authority for this effect is no longer current: ${lost}`,
+        delay_ms: null,
+        retry_after: null,
+        candidate_id: candidateId,
+        route,
+      });
+      return finish(
+        'needs_reconnect',
+        { outcome: 'failed', reason: lost, retryable: false },
+        'Melete stopped because this effect is no longer authorized. Nothing was sent. ' +
+          'Reconnect or re-approve it and Melete will carry on from here.',
+      );
+    }
     let outcome: DispatchResult;
     let fault: ConnectorFault | null = null;
     try {
@@ -612,7 +799,11 @@ export async function runRepair(
           candidate_id: candidateId,
           route,
         });
-        return finish('needs_reconciliation', { outcome: 'unknown', reason: fault.detail }, null);
+        return finish(
+          'needs_reconciliation',
+          { outcome: 'unknown', reason: fault.detail },
+          UNCERTAIN_QUESTION,
+        );
       }
 
       if (choice.act === 'park') {
@@ -642,9 +833,14 @@ export async function runRepair(
           route,
         });
         // An uncertain stop is unknown, not failed: nothing here may declare
-        // that a send did not happen when nobody has looked.
+        // that a send did not happen when nobody has looked. It is still a stop
+        // that needs a person, so it asks, without pretending to know.
         if (choice.disposition === 'needs_reconciliation') {
-          return finish('needs_reconciliation', { outcome: 'unknown', reason: fault.detail }, null);
+          return finish(
+            'needs_reconciliation',
+            { outcome: 'unknown', reason: fault.detail },
+            UNCERTAIN_QUESTION,
+          );
         }
         return finish(
           choice.disposition,
@@ -692,7 +888,7 @@ export async function runRepair(
         const description = ports.describe
           ? await ports.describe()
           : { required: [] as string[], optional: [] as string[] };
-        const proposal = proposeMapping(payload, description);
+        const proposal = proposeMapping(payload, description, options.operation);
         const evaluation = evaluateMapping(proposal);
         const recorded = ports.recordCandidate
           ? await ports.recordCandidate({ fault, proposal, description, evaluation })
@@ -731,6 +927,28 @@ export async function runRepair(
         if (!revised) {
           state.canRevise = false;
           continue;
+        }
+        // The approved payload, not the last one sent, is what a revision is
+        // measured against: two safe-looking steps must not add up to a
+        // different effect.
+        const kept = revisionKeepsIntent(approvedPayload, revised, options.trustGated !== false);
+        if (!kept.ok) {
+          note({
+            attempt: state.attempt,
+            fault_kind: fault.kind,
+            decision: 'stop_needs_input',
+            detail: `${kept.detail}, so nothing was revised and nothing was sent`,
+            delay_ms: null,
+            retry_after: null,
+            candidate_id: candidateId,
+            route,
+          });
+          return finish(
+            'needs_input',
+            { outcome: 'failed', reason: 'output_validation_failed', retryable: false },
+            `${kept.detail}. Melete stopped rather than send something you did not approve. ` +
+              'A send that needs different details is a new request, approved on its own.',
+          );
         }
         payload = revised;
         continue executions;

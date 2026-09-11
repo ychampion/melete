@@ -90,6 +90,13 @@ export type ConnectorDescription = {
   required: string[];
   /** Fields it accepts and does not require, so they are not read as surplus. */
   optional?: string[];
+  /**
+   * Renames the connector itself vouches for: old field name to new field name,
+   * same meaning. A repair may apply only what is declared here. Nothing infers
+   * an equivalence from two field names lining up, because two field names
+   * lining up is what a recipient and a memo look like from outside.
+   */
+  equivalent_fields?: Record<string, string>;
   /** The full schema, carried opaquely for the candidate record. */
   schema?: JsonObject;
 };

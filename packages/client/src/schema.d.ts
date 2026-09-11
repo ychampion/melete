@@ -936,6 +936,12 @@ export interface paths {
                                         expected: components["schemas"]["__schema61"];
                                         input: components["schemas"]["__schema61"];
                                         name: string;
+                                        operation: string;
+                                        /** @default [] */
+                                        preserves: {
+                                            path: string;
+                                            value: string;
+                                        }[];
                                     };
                                     updated_at: components["schemas"]["__schema41"];
                                 }[];

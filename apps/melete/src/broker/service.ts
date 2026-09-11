@@ -20,6 +20,8 @@ import {
   originWarnings,
   type ProposeActionRequest,
   type Receipt,
+  repairCounters,
+  repairTrace,
   type ToolSpec,
   type VerifyResult,
   verifyResult,
@@ -645,6 +647,83 @@ export class BrokerService implements BrokerOperations {
     return result.action;
   }
 
+  /**
+   * Everything that has to be true for these bytes to leave, re-asked.
+   *
+   * The connection is still this connection and still active, the generation
+   * the admission reviewed is still current, the tool and its scopes are still
+   * held, the effect binding still matches, and the origins are still the ones
+   * the approval was given against. It returns a fenced reason when the world
+   * has moved and throws a `BrokerFault` when authority was never there.
+   *
+   * A dispatch asks this once before it marks the action dispatched. A repair
+   * asks it again before every further execution, because a revocation during a
+   * backoff is exactly the case a retry must not out-run.
+   */
+  private async checkAuthority(tx: Query, job: LockedJob, action: Action): Promise<string | null> {
+    const [connection] = await tx`select status, provider, scopes from connection
+      where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
+    const stored = await loadBinding(tx, action);
+    const authority = await resolveEffectAuthority(
+      tx,
+      { job, action, phase: 'execution' },
+      this.options.resolveAuthority,
+    );
+    const fenced = checkConnectionGeneration(
+      stored.connection_generation,
+      authority.connectionGeneration,
+      connection?.status === 'active',
+    );
+    if (fenced) return fenced.reason;
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    if (
+      !connector ||
+      connector.manifest.provider !== connection?.provider ||
+      !tool ||
+      ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))
+    )
+      throw new BrokerFault('scope_denied');
+    requireMatchingBinding(
+      stored,
+      bindEffect(action, job, authority, stored.tuple.expires_at as string | null),
+    );
+    // Admission authorized these origins. If the world has since learned that
+    // one of them came from somewhere else, nothing leaves.
+    const classified = await this.classify(tx, job, action, tool);
+    const [authorizing] = action.authorization_ref
+      ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
+      : [];
+    const authorized = originWarnings.parse(authorizing?.origin_warnings ?? []);
+    if (hashOriginWarnings(authorized) !== classified.warnings_hash) {
+      throw new BrokerFault(
+        'untrusted_recipient_origin',
+        classified.warnings.length > 0
+          ? untrustedOrigin(classified.warnings)
+          : 'The origins of this effect no longer match the ones that were approved.',
+      );
+    }
+    return null;
+  }
+
+  /**
+   * The same question, asked outside the dispatch transaction and answered as a
+   * reason rather than an exception, so the repair policy can stop without
+   * sending instead of learning about it from a thrown error.
+   */
+  private async authorityLost(action: Action): Promise<string | null> {
+    try {
+      return await this.sql.begin(async (tx) => {
+        const job = await lockJob(tx, action.job_id);
+        const current = await loadAction(tx, action.id, true);
+        return this.checkAuthority(tx, job, current);
+      });
+    } catch (error) {
+      if (error instanceof BrokerFault) return error.message;
+      throw error;
+    }
+  }
+
   private context(job: LockedJob, action: Action): ConnectorContext {
     return {
       job_id: job.id,
@@ -654,59 +733,32 @@ export class BrokerService implements BrokerOperations {
     };
   }
 
-  async dispatch(id: string): Promise<Action> {
+  /**
+   * `now` is the instant the due check is made against. The recovery scan
+   * supplies the same instant it selected with, so a parked action is never
+   * chosen by one clock and refused by another; everything else takes the wall
+   * clock and never notices.
+   */
+  async dispatch(id: string, now = Date.now()): Promise<Action> {
     const original = await loadAction(this.sql, id);
     const prepared = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
       if (action.status !== 'admitted') return { action, context: null };
-      const [connection] = await tx`select status, provider, scopes from connection
-        where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
-      const stored = await loadBinding(tx, action);
+      // A parked action is admitted and not yet due. The row lock is what makes
+      // this a decision rather than a race: a wake, a repeated proposal and a
+      // queue redelivery all serialize on it, and a destination that asked to
+      // be left alone for a minute is left alone for a minute.
+      if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
+        return { action, context: null };
+      }
       try {
-        const authority = await resolveEffectAuthority(
-          tx,
-          { job, action, phase: 'execution' },
-          this.options.resolveAuthority,
-        );
-        const fenced = checkConnectionGeneration(
-          stored.connection_generation,
-          authority.connectionGeneration,
-          connection?.status === 'active',
-        );
+        const fenced = await this.checkAuthority(tx, job, action);
         if (fenced)
           return {
-            action: await this.rejectDispatch(tx, job, action, fenced.reason),
+            action: await this.rejectDispatch(tx, job, action, fenced),
             context: null,
           };
-        const connector = this.options.connectors.get(action.connection_id);
-        const tool = connector && findTool(connector.manifest, action.kind);
-        if (
-          !connector ||
-          connector.manifest.provider !== connection?.provider ||
-          !tool ||
-          ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))
-        )
-          throw new BrokerFault('scope_denied');
-        requireMatchingBinding(
-          stored,
-          bindEffect(action, job, authority, stored.tuple.expires_at as string | null),
-        );
-        // Admission authorized these origins. If the world has since learned
-        // that one of them came from somewhere else, nothing leaves.
-        const classified = await this.classify(tx, job, action, tool);
-        const [authorizing] = action.authorization_ref
-          ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
-          : [];
-        const authorized = originWarnings.parse(authorizing?.origin_warnings ?? []);
-        if (hashOriginWarnings(authorized) !== classified.warnings_hash) {
-          throw new BrokerFault(
-            'untrusted_recipient_origin',
-            classified.warnings.length > 0
-              ? untrustedOrigin(classified.warnings)
-              : 'The origins of this effect no longer match the ones that were approved.',
-          );
-        }
       } catch (error) {
         if (!(error instanceof BrokerFault)) throw error;
         return { action: await this.rejectDispatch(tx, job, action, error.message), context: null };
@@ -740,6 +792,10 @@ export class BrokerService implements BrokerOperations {
         this.repairPorts(prepared, connector, controller),
         {
           classify: (error) => asConnectorFault(error) ?? unclassifiedFault(error),
+          // An approved send keeps the hash the person read, so a revision of one
+          // is refused rather than sent under an approval it no longer matches.
+          trustGated: isTrustGatedEffect(prepared.action.effect_class),
+          operation: prepared.action.kind,
           // The dispatch timeout is the repair budget too: a retry that cannot
           // finish inside it is not attempted at all.
           deadlineAt: Date.now() + this.dispatchTimeoutMs,
@@ -783,6 +839,9 @@ export class BrokerService implements BrokerOperations {
     // the same hash and the same approval, with the payload the policy chose.
     const wire = (payload: JsonObject): Action => ({ ...action, canonical_payload: payload });
     return {
+      // Asked before every execution, including the first: the dispatch
+      // transaction committed a moment ago and the world can move in a moment.
+      authorityLost: () => this.authorityLost(action),
       execute: async ({ payload, route, mapping, attempt }) =>
         dispatchResult.parse(
           await connector.execute(wire(payload), ctx({ attempt, route, mapping })),
@@ -868,8 +927,18 @@ export class BrokerService implements BrokerOperations {
    */
   private async settleRepair(action: Action, run: RepairRun): Promise<Action> {
     const id = action.id;
-    await this.sql`update action set repair_trace = ${JSON.stringify(run.trace)}::jsonb,
-      repair_counters = ${JSON.stringify(run.counters)}::jsonb,
+    // A parked action comes back on a later wake, and what it met before the
+    // wait is the reason it waited. Appending rather than replacing keeps a
+    // recurring rate limit visible on the record that completed.
+    const [stored] = await this
+      .sql`select repair_trace, repair_counters from action where id = ${id}`;
+    const trace = [...repairTrace.parse(stored?.repair_trace ?? []), ...run.trace];
+    const counters = { ...repairCounters.parse(stored?.repair_counters ?? {}) };
+    for (const [kind, count] of Object.entries(run.counters)) {
+      counters[kind] = (counters[kind] ?? 0) + count;
+    }
+    await this.sql`update action set repair_trace = ${JSON.stringify(trace)}::jsonb,
+      repair_counters = ${JSON.stringify(counters)}::jsonb,
       repair_disposition = ${run.disposition},
       retry_after_at = ${run.retry_after_at}
       where id = ${id}`;
@@ -921,14 +990,19 @@ export class BrokerService implements BrokerOperations {
    */
   private async escalate(action: Action, run: RepairRun): Promise<void> {
     const reconnect = run.disposition === 'needs_reconnect';
+    const uncertain = run.disposition === 'needs_reconciliation';
     const text = reconnect
       ? 'This connection no longer permits the send. Reconnect it and Melete will carry on from here.'
-      : `Melete could not finish this and stopped rather than guess. ${run.question}`;
+      : uncertain
+        ? (run.question as string)
+        : `Melete could not finish this and stopped rather than guess. ${run.question}`;
     const because = [
       `${action.kind} stopped at ${run.disposition.replace(/_/g, ' ')} after ${run.executions} ${
         run.executions === 1 ? 'attempt' : 'attempts'
       }.`,
-      'Nothing was sent twice and nothing was changed to make it go through.',
+      uncertain
+        ? 'The destination never acknowledged it, so nobody can say whether it arrived.'
+        : 'Nothing was sent twice and nothing was changed to make it go through.',
     ];
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, action.job_id);
@@ -960,7 +1034,7 @@ export class BrokerService implements BrokerOperations {
     const rows = await this.sql`select id from action
       where status = 'admitted' and retry_after_at is not null and retry_after_at <= ${due}
       order by retry_after_at`;
-    for (const row of rows) await this.dispatch(row.id as string);
+    for (const row of rows) await this.dispatch(row.id as string, now);
     return rows.length;
   }
 

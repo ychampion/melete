@@ -58,6 +58,7 @@ const CASES = {
   lost_ack_unverifiable: 'needs_reconciliation',
   revoked_credential: 'needs_reconnect',
   bad_output: 'needs_input',
+  bad_output_once: 'needs_input',
   persistent_transient: 'repair_exhausted',
   unclassified: 'needs_reconciliation',
 } as const;
@@ -117,6 +118,10 @@ class Destination {
       case 'bad_output':
         fail('bad_output', 'the file it wrote does not pass its own validation');
         break;
+      case 'bad_output_once':
+        if (this.calls === 1)
+          fail('bad_output', 'the file it wrote does not pass its own validation');
+        break;
       case 'unclassified':
         throw new Error('the destination failed in a way it does not describe');
       default:
@@ -143,7 +148,12 @@ class Destination {
 
   async describe(): Promise<ConnectorDescription> {
     const drifted = this.name === 'schema_drift';
-    return { required: [drifted ? 'content' : 'body'], optional: ['note'] };
+    return {
+      required: [drifted ? 'content' : 'body'],
+      optional: ['note'],
+      // The destination vouches for this one rename and nothing else.
+      ...(drifted ? { equivalent_fields: { body: 'content' } } : {}),
+    };
   }
 
   async refreshCredential(): Promise<boolean> {
@@ -193,6 +203,7 @@ async function runCase(name: CaseName, options: { blind?: boolean } = {}) {
   }
   const run = await runRepair(payload, ports, {
     classify,
+    operation: 'test.send',
     sleep: async () => {},
     random: () => 0.5,
   });
@@ -273,7 +284,7 @@ describe('rate limiting parks rather than spins', () => {
         execute: (input) => destination.execute(input),
         verify: () => destination.verify(),
       },
-      { classify, now: () => started, sleep: async () => {} },
+      { classify, operation: 'test.send', now: () => started, sleep: async () => {} },
     );
     expect(run.disposition).toBe('parked_until_retry');
     // Exactly one execution: parking is the opposite of a tight retry loop.
@@ -404,6 +415,98 @@ describe('what a repair is never allowed to do', () => {
     ).toBe('stop');
   });
 
+  test('a revision that changes the recipient, the amount or the resource is refused', async () => {
+    const approved = {
+      to: 'alex@example.test',
+      amount: 40,
+      path: 'work/brief.txt',
+      body: 'Pilot worksheet ready',
+    };
+    for (const changed of [
+      { to: 'someone.else@example.test' },
+      { amount: 4000 },
+      { path: 'work/other.txt' },
+    ]) {
+      // A destination that would accept the revision, so a swapped recipient
+      // is a delivered message rather than a hidden one.
+      const destination = new Destination('bad_output_once');
+      const run = await runRepair(
+        approved,
+        {
+          execute: (input) => destination.execute(input),
+          verify: () => destination.verify(),
+          async revise() {
+            return { ...approved, ...changed };
+          },
+        },
+        { classify, operation: 'test.send', sleep: async () => {}, trustGated: false },
+      );
+      // Even where content may be corrected, the approval was given for these
+      // values. A different effect is a different action, and this one stops.
+      expect(run.disposition).toBe('needs_input');
+      expect(destination.effects).toEqual([]);
+      expect(run.payload).toEqual(approved);
+      expect(run.trace.some((entry) => entry.decision === 'stop_needs_input')).toBe(true);
+    }
+  });
+
+  test('an approved external send may not be revised at all', async () => {
+    const approved = {
+      to: 'alex@example.test',
+      amount: 40,
+      path: 'work/brief.txt',
+      body: 'Pilot worksheet ready',
+    };
+    const destination = new Destination('bad_output_once');
+    const run = await runRepair(
+      approved,
+      {
+        execute: (input) => destination.execute(input),
+        verify: () => destination.verify(),
+        async revise() {
+          // Only the content moves, and for an approved send that is still a
+          // different message than the one the person read.
+          return { ...approved, body: 'Pilot worksheet ready, corrected' };
+        },
+      },
+      { classify, operation: 'test.send', sleep: async () => {}, trustGated: true },
+    );
+    expect(run.disposition).toBe('needs_input');
+    expect(destination.effects).toEqual([]);
+    expect(run.payload).toEqual(approved);
+  });
+
+  test('a revision that only fixes the content is accepted and sent once', async () => {
+    const approved = {
+      to: 'alex@example.test',
+      amount: 40,
+      path: 'work/brief.txt',
+      body: 'Pilot worksheet ready',
+    };
+    const destination = new Destination('bad_output_once');
+    const run = await runRepair(
+      approved,
+      {
+        execute: (input) => destination.execute(input),
+        verify: () => destination.verify(),
+        async revise() {
+          return { ...approved, body: 'Pilot worksheet ready, corrected' };
+        },
+      },
+      // A workspace write is not approved as exact bytes, so correcting the
+      // artifact is a repair rather than a substitution.
+      { classify, operation: 'files.write', sleep: async () => {}, trustGated: false },
+    );
+    expect(run.disposition).toBe('completed');
+    expect(destination.effects).toEqual([
+      { ...approved, body: 'Pilot worksheet ready, corrected' },
+    ]);
+    expect(run.trace.map((entry) => entry.decision)).toEqual([
+      'revise_and_revalidate',
+      'verified_completion',
+    ]);
+  });
+
   test('a bad output is revised once and is never called delivered on a second failure', async () => {
     const destination = new Destination('bad_output');
     let revisions = 0;
@@ -417,7 +520,7 @@ describe('what a repair is never allowed to do', () => {
           return payloadFor();
         },
       },
-      { classify, sleep: async () => {} },
+      { classify, operation: 'test.send', sleep: async () => {} },
     );
     expect(revisions).toBe(1);
     expect(run.disposition).toBe('needs_input');
@@ -434,15 +537,62 @@ describe('drift mappings are proposals with a test, not live changes', () => {
   const sent = { body: 'Pilot worksheet ready', note: 'for Tuesday' };
 
   test('an unambiguous rename that carries every value is safe and passes its test', () => {
-    const proposal = proposeMapping(sent, { required: ['content'], optional: ['note'] });
+    const proposal = proposeMapping(
+      sent,
+      { required: ['content'], optional: ['note'], equivalent_fields: { body: 'content' } },
+      'test.send',
+    );
     expect(proposal.mapping).toEqual({ body: 'content' });
     expect(proposal.safe).toBe(true);
     expect(evaluateMapping(proposal).passed).toBe(true);
     expect(isSafeFieldMapping(sent, proposal.mapping)).toBe(true);
   });
 
+  test('a rename that would re-aim the effect is refused however the destination asks', () => {
+    // The destination says it wants `memo`; the payload has a recipient. One
+    // missing field and one surplus field is exactly the shape that used to
+    // read as an unambiguous rename.
+    const aimed = { to: 'alex@example.test', body: 'Pilot worksheet ready' };
+    const proposal = proposeMapping(
+      aimed,
+      { required: ['memo'], optional: ['body'], equivalent_fields: { to: 'memo' } },
+      'test.send',
+    );
+    expect(proposal.safe).toBe(false);
+    expect(evaluateMapping(proposal).passed).toBe(false);
+    expect(proposal.detail).toContain('recipient');
+  });
+
+  test('a rename the connector never declared is refused even when it looks obvious', () => {
+    const proposal = proposeMapping(
+      sent,
+      { required: ['content'], optional: ['note'] },
+      'test.send',
+    );
+    expect(proposal.declared).toBe(false);
+    expect(proposal.safe).toBe(false);
+    expect(evaluateMapping(proposal).passed).toBe(false);
+  });
+
+  test("the candidate's test is specified independently of the transform", () => {
+    const proposal = proposeMapping(
+      sent,
+      { required: ['content'], optional: ['note'], equivalent_fields: { body: 'content' } },
+      'test.send',
+    );
+    // It names the operation and the values that must survive, so reading it
+    // tells you what was checked without re-running the rename.
+    expect(proposal.test.operation).toBe('test.send');
+    expect(proposal.test.preserves).toEqual([]);
+    expect(evaluateMapping(proposal).passed).toBe(true);
+  });
+
   test('two missing fields is a guess and is recorded rather than applied', () => {
-    const proposal = proposeMapping(sent, { required: ['content', 'subject'], optional: ['note'] });
+    const proposal = proposeMapping(
+      sent,
+      { required: ['content', 'subject'], optional: ['note'] },
+      'test.send',
+    );
     expect(proposal.safe).toBe(false);
     expect(evaluateMapping(proposal).passed).toBe(false);
   });
@@ -480,7 +630,7 @@ describe('drift mappings are proposals with a test, not live changes', () => {
         execute: (input) => destination.execute(input),
         verify: () => destination.verify(),
       },
-      { classify, sleep: async () => {} },
+      { classify, operation: 'test.send', sleep: async () => {} },
     );
     expect(run.disposition).toBe('needs_input');
     expect(destination.effects.length).toBe(0);

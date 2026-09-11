@@ -300,6 +300,8 @@ export function createTestConnector(
       return {
         required: [drifted ? 'content' : 'body'],
         optional: DRIFT_OPTIONAL,
+        // The destination vouches for this one rename and nothing else.
+        ...(drifted ? { equivalent_fields: { body: 'content' } } : {}),
         schema: { type: 'object', required: [drifted ? 'content' : 'body'] },
       };
     },

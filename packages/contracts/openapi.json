@@ -3521,17 +3521,44 @@
                                       "type": "string",
                                       "minLength": 1
                                     },
+                                    "operation": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
                                     "input": {
                                       "$ref": "#/components/schemas/__schema61"
                                     },
                                     "expected": {
                                       "$ref": "#/components/schemas/__schema61"
+                                    },
+                                    "preserves": {
+                                      "default": [],
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "path": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "value": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "path",
+                                          "value"
+                                        ],
+                                        "additionalProperties": false
+                                      }
                                     }
                                   },
                                   "required": [
                                     "name",
+                                    "operation",
                                     "input",
-                                    "expected"
+                                    "expected",
+                                    "preserves"
                                   ],
                                   "additionalProperties": false
                                 },

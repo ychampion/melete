@@ -13,28 +13,23 @@ export type PostgresFixture = DatabaseHandle & {
 };
 
 export type PostgresFixtureOptions = {
-  /** The initial frozen schema always runs before these additional migrations. */
-  migrations?: Array<string | URL>;
   /**
-   * Apply the whole committed migration journal instead of the broker subset.
-   * A property that spans modules, a repair that has to reach the owner's one
-   * question queue, needs the tables those modules own, and a fixture that
-   * cannot hold them is not evidence of anything.
+   * Extra SQL to apply after the committed journal. For a fixture that needs a
+   * table nothing in the repository owns yet, never for skipping a migration.
    */
-  everyMigration?: boolean;
+  migrations?: Array<string | URL>;
 };
 
-const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
 /**
- * The frozen initial schema, plus the later migrations the broker's own
- * invariants live in. A fixture that stops at 0000 cannot exercise a unique
- * index that was added in 0009, and a test that cannot exercise the index is
- * not evidence of anything.
+ * Every fixture applies the committed journal, in the order the journal gives.
+ *
+ * Naming migrations by filename let a fixture hold a schema no install has ever
+ * had: the broker subset that used to live here ran 0000, 0012 and 0015 and
+ * nothing else, so a property that reached a table another module owns failed
+ * for a reason no deployment could reproduce. The journal is the only ordering
+ * that exists in production, so it is the only one a test may prove anything
+ * against.
  */
-const brokerMigrations = [
-  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
-  new URL('../../drizzle/0015_typed_repair.sql', import.meta.url),
-];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
@@ -148,16 +143,9 @@ export async function createPostgresFixture(
     const url = new URL(adminUrl);
     url.pathname = `/${databaseName}`;
     handle = openDatabase(url.toString(), 2);
-    if (options.everyMigration) {
-      await migrateDatabase(handle);
-    } else {
-      for (const migration of [
-        initialMigration,
-        ...brokerMigrations,
-        ...(options.migrations ?? []),
-      ]) {
-        await handle.sql.unsafe(await readFile(migration, 'utf8'));
-      }
+    await migrateDatabase(handle);
+    for (const migration of options.migrations ?? []) {
+      await handle.sql.unsafe(await readFile(migration, 'utf8'));
     }
     return {
       ...handle,
