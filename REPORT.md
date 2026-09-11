@@ -101,3 +101,11 @@
 - Test `local forms through the browser broker`: 14 tests passed in `.agents/w10b-locked-full.log`, including 12 correct variant/mode dispositions and the hidden destination's approval warning.
 - Test `browser broker authority and durable control`: all 13 tests passed, including fresh-observation identity, owner authentication, preserved reconciliation state, and refusal to fence a newer attempt from a late callback.
 - Log `.agents/w10b-measurements-verified.log`: completed recipe rows used 4 captures versus 7; replaying the approved submit kept one action and one destination effect. The generated measurement file is excluded from source linting, like the existing conformance report.
+
+## Slice 4 verification
+
+- SHA `e2c36c9`: checked-recipe qualification and the real broker fixture matrix committed and pushed to `origin/lane/w10b-browser`.
+- Test `controller refuses the second fill after takeover, and handback requires fresh observation`: the controller rejected the dispatched stale input; both matrix modes also parked the job with zero effects and proved the rejected text absent after handback.
+- Test `browser episode privacy against Postgres and pg-boss`: all 4 integration tests passed in `.agents/w10b-locked-full.log`, including restart, late cancellation receipts, call-ID shadowing, and unchanged original execution input.
+- Test `browserEventForPersistence`: browser arguments and result content are removed only from durable event copies; durable browser identity controls later result redaction, while unrelated tools retain their existing behavior.
+- Test `recipe persistence boundary`: authentication labels, factors, literal values, and rejected-data error contents cannot enter the recipe store; the full fixture matrix also asserts that submitted field values are absent from stored recipes.

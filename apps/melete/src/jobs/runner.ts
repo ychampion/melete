@@ -30,6 +30,7 @@ import { attempt, event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildBundle, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
@@ -239,9 +240,10 @@ export class AttemptRunner {
         current = false;
         if (value.type !== 'tool_result') throw error;
       }
-      if (!current && value.type === 'tool_result') {
-        const [proposal] = await tx
-          .select({ seq: event.seq })
+      let browserCall = false;
+      if (value.type === 'tool_result') {
+        const proposals = await tx
+          .select({ payload: event.payload })
           .from(event)
           .where(
             and(
@@ -249,15 +251,27 @@ export class AttemptRunner {
               eq(event.type, 'tool_call_proposed'),
               sql`${event.payload}->>'call_id' = ${value.call_id}`,
             ),
-          )
-          .limit(1);
-        if (!proposal)
+          );
+        if (!current && !proposals.length)
           throw new ServiceError('stale_epoch', 'An old attempt cannot create a new tool result.');
+        // Durable identity survives restarts, and a second proposal cannot shadow
+        // a browser call with a less restrictive name before its result arrives.
+        browserCall = proposals.some((proposal) =>
+          isBrowserTool((proposal.payload as JsonObject).tool),
+        );
+      }
+      const persisted = browserEventForPersistence(value, browserCall);
+      if (!current && persisted.type === 'tool_result') {
         await appendEvent(tx, {
           jobId: row.id,
           attemptId: execution.id,
           type: 'notice',
-          payload: { kind: 'receipt', late: true, call_id: value.call_id, result: value.result },
+          payload: {
+            kind: 'receipt',
+            late: true,
+            call_id: persisted.call_id,
+            result: persisted.result,
+          },
           dedupKey: `${value.dedup_key}:receipt`,
         });
       }
@@ -288,9 +302,9 @@ export class AttemptRunner {
         throw new AttemptBudgetExceeded('The attempt output-token budget is exhausted.');
       const type = value.type === 'attempt_outcome' ? 'notice' : value.type;
       const payload: JsonObject =
-        value.type === 'attempt_outcome'
-          ? { ...value, kind: 'attempt_outcome' }
-          : { ...value, late: !current };
+        persisted.type === 'attempt_outcome'
+          ? { ...persisted, kind: 'attempt_outcome' }
+          : { ...persisted, late: !current };
       await appendEvent(tx, {
         jobId: row.id,
         attemptId: execution.id,
