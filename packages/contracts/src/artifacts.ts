@@ -50,8 +50,8 @@ export type ArtifactValidatorClass = z.infer<typeof artifactValidatorClass>;
 
 /**
  * `pending` is a real resting state and it blocks: a declared human acceptance
- * that nobody has given yet is not a pass. `unavailable` does not block, and
- * says so in its own word rather than borrowing `passed`.
+ * that nobody has given yet is not a pass. `unavailable` also blocks unless the
+ * result is explicitly advisory; it never borrows `passed`.
  */
 export const ARTIFACT_VALIDATION_STATUSES = ['passed', 'failed', 'pending', 'unavailable'] as const;
 export const artifactValidationStatus = z.enum(ARTIFACT_VALIDATION_STATUSES);

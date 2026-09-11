@@ -78,3 +78,11 @@
 ## Assumptions
 
 - Command Get-Item .hermes-src,.hermes-venv identified junctions into W3; the real-server e2e will use an isolated pinned engine and environment via MELETE_HERMES_SRC and MELETE_HERMES_PYTHON, preserving other worktrees.
+
+## Finding 9
+
+- SHA 74a5ab4: finding 7 committed and pushed.
+- Test non-advisory unavailable renderer permits completion: red (Expected false; Received true) because the earlier partial fix marked requested unavailable rendering advisory.
+- Test non-advisory unavailable renderer permits completion: green through completionFacts; PDF rendering stays unavailable and non-advisory, while explicitly advisory results remain non-blocking.
+- Command bun test apps/melete/src/artifact/validate.test.ts packages/contracts/src/artifacts.test.ts apps/melete/test/integration/artifacts.test.ts --max-concurrency=2: 35 passed in 15.89s.
+- Command bun run typecheck, command bun run openapi and command bun run client:generate passed.

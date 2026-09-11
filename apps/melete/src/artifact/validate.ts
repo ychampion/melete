@@ -477,18 +477,13 @@ function render(kind: ArtifactKind, parsed: Parsed, bytes: Uint8Array): Result {
         // DOCX, XLSX and PDF need a maintained reader. Bun ships none and this
         // release adds no dependency for it, so the honest result is the word
         // `unavailable` rather than a pass nobody earned.
-        // Advisory on purpose. A missing renderer says nothing about the file,
-        // and a validator that establishes nothing must not be able to block a
-        // job; a renderer that runs and fails still does, because that is a
-        // fact about the bytes.
-        return {
-          ...unavailable(
-            'render',
-            `render:${kind}`,
-            'no renderer for this kind is available in this release',
-          ),
-          advisory: true,
-        };
+        // The declaration requested this check. Its unavailability must not
+        // silently weaken that requirement into an advisory suggestion.
+        return unavailable(
+          'render',
+          `render:${kind}`,
+          'no renderer for this kind is available in this release',
+        );
     }
   } catch (error) {
     return fail('render', `render:${kind}`, (error as Error).message);

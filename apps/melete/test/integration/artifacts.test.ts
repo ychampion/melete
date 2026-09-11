@@ -133,6 +133,32 @@ const totalsExpectation: JsonValue = {
 };
 
 databaseTest(
+  'non-advisory unavailable renderer permits completion',
+  async () => {
+    const ctx = await setup();
+    await ctx.broker.propose(ctx.claims, {
+      kind: 'files.write',
+      connection_id: ctx.connectionId,
+      payload: {
+        path: 'report.pdf',
+        content: '%PDF-1.7\nfixture',
+        expect: { kind: 'pdf', render: true },
+      },
+    });
+    const factsBefore = await facts(ctx.claims.job_id, ctx);
+    expect(factsBefore.artifact_validations_passed).toBe(false);
+    expect(factsBefore.artifact_failures.join(' ')).toContain('render:pdf could not run');
+    const [renderer] =
+      await ctx.sql`select status, advisory from artifact_validation where artifact_id in (select id from artifact where job_id = ${ctx.claims.job_id}) and name = 'render:pdf'`;
+    expect(renderer).toMatchObject({ status: 'unavailable', advisory: false });
+    // An explicitly advisory result remains non-blocking.
+    await ctx.sql`update artifact_validation set advisory = true where artifact_id in (select id from artifact where job_id = ${ctx.claims.job_id})`;
+    expect((await facts(ctx.claims.job_id, ctx)).artifact_validations_passed).toBe(true);
+  },
+  SLOW,
+);
+
+databaseTest(
   'duplicate persisted validation names cannot overwrite a failure',
   async () => {
     const ctx = await setup();
