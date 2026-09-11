@@ -38,10 +38,16 @@ import {
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
 import {
+  backgroundOperation,
   jobSubmissionResponse,
   notification,
   notificationDelivery,
   notificationList,
+  operationList,
+  operationRearm,
+  operationRegistration,
+  operationSettlement,
+  operationVersion,
   replyObligation,
   replyObligationList,
   submissionResponse,
@@ -92,6 +98,61 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/operations': {
+          get: {
+            tags: ['jobs'],
+            summary: 'List durable background operations and their recovery dispositions',
+            responses: { '200': jsonResponse('Operations', operationList) },
+          },
+        },
+        '/jobs/{id}/operations': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Register a durable timer, remote reference or local process',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(operationRegistration),
+            responses: {
+              '201': jsonResponse('Registered', backgroundOperation),
+              '409': problem('Operation key conflict'),
+            },
+          },
+        },
+        '/operations/{id}/claim': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Claim ready operation work',
+            requestParams: idParam('id', 'Operation id'),
+            requestBody: json(operationVersion),
+            responses: {
+              '200': jsonResponse('Claimed', backgroundOperation),
+              '409': problem('Stale operation'),
+            },
+          },
+        },
+        '/operations/{id}/rearm': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Rearm a currently owned live operation',
+            requestParams: idParam('id', 'Operation id'),
+            requestBody: json(operationRearm),
+            responses: {
+              '200': jsonResponse('Registered', backgroundOperation),
+              '409': problem('Stale operation'),
+            },
+          },
+        },
+        '/operations/{id}/settle': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Persist an operation result',
+            requestParams: idParam('id', 'Operation id'),
+            requestBody: json(operationSettlement),
+            responses: {
+              '200': jsonResponse('Settled', backgroundOperation),
+              '409': problem('Stale operation'),
+            },
+          },
+        },
         '/reply-obligations': {
           get: {
             tags: ['jobs'],

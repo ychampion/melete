@@ -8,7 +8,7 @@ import {
   triggerSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import { connection, event, trigger } from '../db/schema.ts';
@@ -121,7 +121,20 @@ export class TriggerService {
     const [received] = await tx
       .select()
       .from(event)
-      .where(and(eq(event.type, 'notice'), gt(event.seq, cursor), source))
+      .where(
+        and(
+          eq(event.type, 'notice'),
+          gt(event.seq, cursor),
+          or(
+            source,
+            and(
+              eq(event.jobId, row.id),
+              sql`${event.payload}->>'kind' = 'operation_event'`,
+              sql`${event.payload}->>'trigger_id' = ${registration.id}`,
+            ),
+          ),
+        ),
+      )
       .orderBy(asc(event.seq))
       .limit(1);
     if (!received) return row;

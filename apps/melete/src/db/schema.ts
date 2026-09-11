@@ -92,6 +92,7 @@ export const job = pgTable(
     // Due time lives here, not only in the queue, so a lost timer is recoverable.
     nextWakeAt: timestamp('next_wake_at', { withTimezone: true }),
     wait: jsonb('wait').notNull().default({ kind: 'none' }),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     budget: jsonb('budget').notNull().default({}),
     createdBy: text('created_by').notNull().default('owner'),
     createdAt: created(),
@@ -126,6 +127,9 @@ export const attempt = pgTable(
     revision: integer('revision').notNull().default(0),
     leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     leaseStatus: text('lease_status').notNull().default('active'),
+    substrateDisposition: text('substrate_disposition')
+      .notNull()
+      .default('local_process_interrupted'),
     runtimeCursor: integer('runtime_cursor').notNull().default(-1),
     inputCursor: bigint('input_cursor', { mode: 'number' }).notNull().default(0),
   },
@@ -178,6 +182,7 @@ export const approval = pgTable(
     requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
     decision: text('decision'),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     decidedBy: text('decided_by'),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
   },
@@ -253,6 +258,7 @@ export const trigger = pgTable(
     spec: jsonb('spec').notNull(),
     cursor: text('cursor'),
     enabled: boolean('enabled').notNull().default(true),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     createdAt: created(),
   },
   (t) => [index('trigger_job_idx').on(t.jobId)],
@@ -320,6 +326,7 @@ export const replyObligation = pgTable(
     jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
     kind: text('kind').notNull(),
     state: text('state').notNull().default('owed'),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     coalesceKey: text('coalesce_key').notNull(),
     eventCursor: bigint('event_cursor', { mode: 'number' }).notNull(),
     content: jsonb('content'),
@@ -344,6 +351,7 @@ export const notification = pgTable(
     contentHash: text('content_hash').notNull(),
     deliveryAttempt: integer('delivery_attempt').notNull(),
     state: text('state').notNull().default('pending'),
+    substrateDisposition: text('substrate_disposition').notNull().default('external_uncertain'),
     attemptedAt: timestamp('attempted_at', { withTimezone: true }),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
     createdAt: created(),
@@ -351,6 +359,35 @@ export const notification = pgTable(
   (t) => [
     uniqueIndex('notification_attempt_idx').on(t.deliveryKey, t.deliveryAttempt),
     index('notification_pending_idx').on(t.state),
+  ],
+);
+
+/** Durable registrations are the recovery source; queue messages are disposable hints. */
+export const backgroundOperation = pgTable(
+  'background_operation',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    operationKey: text('operation_key').notNull(),
+    inputDigest: text('input_digest').notNull(),
+    kind: text('kind').notNull(),
+    substrateDisposition: text('substrate_disposition').notNull(),
+    state: text('state').notNull().default('registered'),
+    version: integer('version').notNull().default(0),
+    ownerInstance: text('owner_instance'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    dueAt: timestamp('due_at', { withTimezone: true }).notNull().defaultNow(),
+    remoteRef: text('remote_ref'),
+    triggerId: text('trigger_id').references(() => trigger.id, { onDelete: 'set null' }),
+    result: jsonb('result'),
+    createdAt: created(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('operation_job_key_idx').on(t.jobId, t.operationKey),
+    index('operation_ready_idx').on(t.state, t.dueAt),
   ],
 );
 
@@ -373,4 +410,5 @@ export const schema = {
   acceptanceJournal,
   replyObligation,
   notification,
+  backgroundOperation,
 };

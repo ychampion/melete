@@ -20,6 +20,7 @@ export const QUEUES = {
   triggerSchedule: 'job.trigger',
   /** Retries verify for actions that came back unknown. */
   reconcile: 'melete.reconcile',
+  operation: 'melete.operation',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];

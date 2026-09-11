@@ -13,6 +13,7 @@ import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
+import { mountOperations } from './api/operations.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
@@ -20,6 +21,7 @@ import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
+import { OperationService } from './jobs/operations.ts';
 import { startQueue } from './jobs/queue.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
@@ -39,6 +41,7 @@ export type AppDeps = {
   events?: EventStream;
   submissions?: SubmissionService;
   replies?: ReplyService;
+  operations?: OperationService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -66,6 +69,7 @@ export function createApp(deps: AppDeps) {
     (deps.jobs && submissions ? new ReplyService(deps.jobs, submissions) : undefined);
   if (deps.jobs) mountJobs(app, deps.jobs, submissions);
   if (replies) mountReplies(app, replies);
+  if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -109,9 +113,10 @@ export async function bootstrap(
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
   let replies: ReplyService | undefined;
+  let operations: OperationService | undefined;
   const close = async () => {
     try {
-      await Promise.all([events?.close(), triggers?.stop(), runner?.stop()]);
+      await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
     } finally {
       try {
         await queue?.stop();
@@ -145,11 +150,14 @@ export async function bootstrap(
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
+      operations = new OperationService(jobs, runner);
       if (options.workers !== false) {
+        await operations.start();
         await triggers.start();
         await runner.start();
       }
       if (options.workers === false) await replies?.recover();
+      if (options.workers === false) await operations.recover();
     }
   } catch (error) {
     await close();
@@ -165,6 +173,7 @@ export async function bootstrap(
     events,
     submissions,
     replies,
+    operations,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -183,6 +192,7 @@ export async function bootstrap(
     events,
     submissions,
     replies,
+    operations,
     close,
   };
 }

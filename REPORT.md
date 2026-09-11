@@ -114,3 +114,20 @@
 - Command `bun test apps/melete/test/integration/replies.test.ts`: `8 pass`, `0 fail`, `48 expect() calls`, `40.03s`.
 - Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: one formatting fix, then `Checked 100 files in 361ms. No fixes applied.`.
 - Command `bun test --dots`: `371 pass`, `24 todo`, `0 fail`, `1450 expect() calls`, `Ran 395 tests across 29 files. [151.74s]`.
+
+## Slice 10: wake dispositions
+
+- SHA `6db1928`: reply obligations and notification outbox committed and pushed to `origin/lane/w1-service`.
+- Command `bun run --cwd apps/melete db:generate --name=wake_dispositions`: generated `0005_wake_dispositions.sql`; waits, attempts, delivery records and background operations carry explicit substrate dispositions.
+- Test `deaths at registration, claim, rearm and settlement`: twelve actual child exits cover timer, accepted remote reference and local process records; queue deletion cannot lose the registrations, and duplicate wakes cannot settle twice.
+- Test `local_process`: an expired process remains `interrupted` with `local_process_interrupted`; recovery cannot claim or rearm it. Only its live owner may explicitly schedule a continuation before lease expiry.
+- Test `uncertain external work`: a remote operation without an accepted reference remains `unknown` with `external_uncertain`; no probe or dispatch occurs.
+- Test `operation settlement before wait registration`: a durable result wakes the matching wait once even when settlement precedes wait registration.
+- Command `bun test apps/melete/test/integration/responsibility.test.ts`: `5 pass`, `0 fail`, `38 expect() calls`, `40.97s`.
+- Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: `Checked 104 files in 169ms. No fixes applied.`.
+- Command `bun test --dots`: `376 pass`, `24 todo`, `0 fail`, `1488 expect() calls`, `Ran 400 tests across 30 files. [60.89s]`.
+
+## Assumptions
+
+- Test `remote_task`: remote recovery inspects an already accepted reference using an injected connector probe; a fresh external dispatch is outside `OperationService`. Without a probe the record remains available through the owner operation API.
+- Test `local_process`: substrate disposition names the recovery behavior, while operation state distinguishes a currently live claim from its eventual interrupted disposition; replacement runtime attempts still use a new attempt identity and epoch.

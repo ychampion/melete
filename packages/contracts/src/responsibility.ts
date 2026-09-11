@@ -1,7 +1,7 @@
 /** Additive v0.1 responsibility protocol; the original job/runtime contracts stay stable. */
 import { z } from 'zod';
 import { errorResponse } from './api.ts';
-import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
+import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { job } from './entities.ts';
 
 export const submissionId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/);
@@ -61,3 +61,35 @@ export const notification = z.object({
 });
 export const notificationList = z.object({ notifications: z.array(notification) });
 export const notificationDelivery = z.object({ content_hash: inputDigest });
+
+export const substrateDisposition = z.enum([
+  'remote_recoverable',
+  'timer_or_event',
+  'local_process_interrupted',
+  'external_uncertain',
+]);
+export const responsibilityJob = job.extend({ substrate_disposition: substrateDisposition });
+export const operationRegistration = z.object({
+  operation_key: submissionId,
+  kind: z.enum(['timer', 'remote_task', 'local_process']),
+  due_at: timestamp.optional(),
+  remote_ref: z.string().min(1).max(2000).optional(),
+  trigger_id: prefixedId(ID_PREFIXES.trigger).optional(),
+});
+export type OperationRegistration = z.infer<typeof operationRegistration>;
+export const operationVersion = z.object({ version: z.number().int().nonnegative() });
+export const operationRearm = operationVersion.extend({ due_at: timestamp });
+export const operationSettlement = operationVersion.extend({ result: jsonObject });
+export const backgroundOperation = z.object({
+  id: prefixedId('op'),
+  job_id: prefixedId(ID_PREFIXES.job),
+  operation_key: submissionId,
+  kind: operationRegistration.shape.kind,
+  substrate_disposition: substrateDisposition,
+  state: z.enum(['registered', 'ready', 'claimed', 'settled', 'interrupted', 'unknown']),
+  version: z.number().int().nonnegative(),
+  due_at: timestamp,
+  remote_ref: z.string().nullable(),
+  result: jsonObject.nullable(),
+});
+export const operationList = z.object({ operations: z.array(backgroundOperation) });

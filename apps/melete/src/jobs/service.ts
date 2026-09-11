@@ -1,14 +1,13 @@
 import {
   type CreateJobRequest,
   createJobRequest,
-  type Job,
   type JobBudget,
   type JobConstraints,
   type JobState,
   type JsonObject,
   jobBudget,
   jobConstraints,
-  job as jobContract,
+  responsibilityJob,
   type TransitionInput,
   transition,
   type WaitSpec,
@@ -33,8 +32,8 @@ export const DEFAULT_BUDGET: JobBudget = {
   max_usd_est: 1,
 };
 
-export function jobView(row: JobRow): Job {
-  return jobContract.parse({
+export function jobView(row: JobRow) {
+  return responsibilityJob.parse({
     id: row.id,
     space_id: row.spaceId,
     title: row.title,
@@ -45,6 +44,7 @@ export function jobView(row: JobRow): Job {
     lease_epoch: row.leaseEpoch,
     next_wake_at: row.nextWakeAt?.toISOString() ?? null,
     wait: row.wait,
+    substrate_disposition: row.substrateDisposition,
     budget: row.budget,
     created_by: row.createdBy,
     created_at: row.createdAt.toISOString(),
@@ -192,6 +192,8 @@ export class JobService {
         stateVersion: row.stateVersion + 1,
         leaseEpoch: row.leaseEpoch + (options.bumpEpoch || input.kind === 'cancelled' ? 1 : 0),
         wait,
+        substrateDisposition:
+          result.value === 'running' ? 'local_process_interrupted' : 'timer_or_event',
         nextWakeAt,
         updatedAt: new Date(),
       })
