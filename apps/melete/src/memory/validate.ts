@@ -23,6 +23,7 @@ import {
   type RejectionReason,
   type SourceEvent,
 } from '@melete/contracts';
+import { memorySeams } from './seams.ts';
 import { normalizeEmail, normalizePhone, parseTier0Date, tier0Values } from './tier0.ts';
 
 export type Tier1Rejection = {
@@ -61,6 +62,9 @@ export function checkTier1(
       reason: 'key_not_in_registry',
       detail: 'the registry grows by a reviewed commit, not by extraction',
     };
+  // Test-only: the conformance runner's deliberate break turns the span and
+  // value checks off to prove the scenarios that rest on them go red.
+  if (memorySeams().acceptForeignCitation) return null;
   for (const span of proposal.sources) {
     if (
       span.source_id !== evidence.source.source_id ||
