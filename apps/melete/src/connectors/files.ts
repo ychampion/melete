@@ -252,6 +252,11 @@ export function createFilesConnector(options: FilesOptions): Connector {
       ctx.signal?.throwIfAborted();
       const payload = action.canonical_payload;
       const area = areaFor(payload.area);
+      // Parsed before anything is created or opened. A declaration this side
+      // cannot read is a bad request, and a bad request must not leave a file
+      // on disk and an action nobody can decide the disposition of.
+      const expectation =
+        payload.expect === undefined ? null : artifactExpectation.parse(payload.expect);
       let detail: Record<string, JsonValue>;
       let hash: string | null = null;
       if (action.kind === 'files.move') {
@@ -315,8 +320,7 @@ export function createFilesConnector(options: FilesOptions): Connector {
           // by trusted service code over the bytes that were actually written,
           // before the runtime hears that the write succeeded. The broker turns
           // what this records into rows when it persists the receipt.
-          if (payload.expect !== undefined) {
-            const expectation = artifactExpectation.parse(payload.expect);
+          if (expectation) {
             const bytes = Buffer.from(content, 'utf8');
             detail = {
               ...detail,
