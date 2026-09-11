@@ -82,6 +82,8 @@ class FakeBroker:
             return self.status_code, self.error_body
         if method == "GET" and path == "/tools":
             return 200, {"tools": self.catalog}
+        if method == "POST" and path == "/reactions":
+            return 201, body
         if method == "POST" and path == "/actions":
             return 201, self.propose_response
         if method == "GET" and path.startswith("/actions/"):
@@ -323,3 +325,34 @@ def test_the_client_opens_no_socket_without_configuration():
     with pytest.raises(BrokerError) as caught:
         BrokerClient(base_url="", token="t").tools()
     assert caught.value.code == "not_configured"
+
+
+def test_registered_react_forwards_to_reactions_with_the_attempt_token(client, broker):
+    broker.catalog = [{
+        "name": "react", "description": "Acknowledge a message", "effect_class": "read",
+        "connection_id": None,
+        "input_schema": {
+            "type": "object",
+            "properties": {"message_id": {"type": "string"}, "emoji": {"type": "string"}},
+        },
+    }]
+    ctx = RecordingContext()
+    assert register(ctx, client) == ["react"]
+    arguments = {"message_id": "42", "emoji": "👍"}
+    result = ctx.tools[0]["handler"](arguments)
+    assert result == {"status": "succeeded", "reaction": arguments}
+    assert broker.requests[-1] == {
+        "method": "POST", "path": "/reactions", "body": arguments, "auth": "Bearer cap-token",
+    }
+    assert [request["path"] for request in broker.requests] == ["/tools", "/reactions"]
+
+
+def test_react_preserves_the_brokers_same_job_refusal(client, broker):
+    broker.status_code = 404
+    broker.error_body = {"error": {"code": "action_not_found", "message": "No such message"}}
+    result = build_handler(client, {"name": "react", "connection_id": None})(
+        {"message_id": "99", "emoji": "👍"}
+    )
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "action_not_found"
+    assert broker.requests[0]["path"] == "/reactions"

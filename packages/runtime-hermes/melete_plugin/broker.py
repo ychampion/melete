@@ -125,6 +125,10 @@ class BrokerClient:
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
 
+    def react(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward a reaction under the same attempt token as every other tool."""
+        return self._call("POST", "/reactions", payload)
+
 
 def _error_from_body(error: "urllib.error.HTTPError") -> tuple:
     """Pull the broker's own error code out of a non-2xx body.

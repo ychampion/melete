@@ -335,9 +335,10 @@ describe('durable action lifecycle', () => {
 
     // Another job's message is not this responsibility's to speak about.
     const other = await seedJob(s.sql);
-    await expect(
+    const refusal = await rejectionOf(
       s.broker.react(other.claims, { message_id: seq, emoji: THUMBS_UP }),
-    ).rejects.toMatchObject({ code: 'action_not_found' });
+    );
+    expect(refusal).toMatchObject({ code: 'action_not_found' });
   });
 
   databaseTest(

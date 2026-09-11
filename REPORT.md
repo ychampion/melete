@@ -311,3 +311,12 @@ green; the groups above are the part I can state as verified.
 - `bun test packages/runtime-hermes/src/adapter.test.ts -t "actual Hermes run request"`: RED; the real loopback POST /v1/runs contained only title/objective and omitted the receipt marker.
 - `the actual Hermes run request carries the since-last receipt and pending question`: GREEN through a fake API server on port 3190 after rendering the durable delta into input.
 - `bun test packages/runtime-hermes/src --max-concurrency=2`: 43 pass, 0 fail, 105 assertions, 711ms. `bun run typecheck` and changed-file `biome check`: passed.
+
+## Finding 6
+
+- `b0dffec`: finding 7 committed and pushed.
+- `uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest packages/runtime-hermes/tests -q -k react`: RED, both probes returned unknown_connection without reaching the broker.
+- `test_registered_react_forwards_to_reactions_with_the_attempt_token` and `test_react_preserves_the_brokers_same_job_refusal`: GREEN through registered runtime handlers and the loopback HTTP broker.
+- `bun run test:plugin`: 22 passed in 13.48s; unknown connection entries for other tools remain rejected.
+- `bun test apps/melete/test/integration/broker.test.ts -t "runtime can answer a message" --max-concurrency=2`: GREEN, 1 pass, 0 fail, 5 assertions, 16.90s; uses the existing `rejectionOf` helper to avoid the documented Windows async-matcher stall.
+- `bunx biome check apps/melete/test/integration/broker.test.ts` and `git diff --check`: passed.
