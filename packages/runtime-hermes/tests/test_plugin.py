@@ -165,6 +165,17 @@ def test_schema_is_the_openai_function_body_without_the_name():
     assert schema["parameters"] == CATALOG[0]["input_schema"]
 
 
+def test_registered_handler_keeps_runtime_context_out_of_admission_and_returns_json(client, broker):
+    ctx = RecordingContext()
+    register(ctx, client)
+    handler = ctx.tools[1]["handler"]
+    result = handler({"query": "invoice"}, task_id="runtime-task", session_id="runtime-session", user_task="find it")
+    assert isinstance(result, str), "the pinned Hermes registry requires a JSON string"
+    assert json.loads(result)["status"] == "succeeded"
+    proposal = next(request for request in broker.requests if request["method"] == "POST")
+    assert proposal["body"]["payload"] == {"query": "invoice"}
+
+
 def test_a_tool_with_no_schema_still_gets_a_valid_parameters_object():
     assert tool_schema({"name": "x"})["parameters"] == {"type": "object", "properties": {}}
 

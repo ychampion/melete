@@ -158,8 +158,8 @@ async function main() {
   const db = await createPostgresFixture();
   if (!db) throw new Error('no database: set DATABASE_URL or install embedded-postgres');
 
-  const brokerPort = await freePort();
-  const apiPort = await freePort();
+  const brokerPort = Number(process.env.MELETE_E2E_BROKER_PORT) || (await freePort());
+  const apiPort = Number(process.env.MELETE_E2E_RUNTIME_PORT) || (await freePort());
   const scopes = ['exec.run', 'exec.python', 'files.read', 'files.write', 'files.list'];
   // The gateway's estimator counts one token per UTF-8 byte of the request, so
   // the cap has to clear the whole assembled body, not just the reply.

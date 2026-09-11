@@ -206,6 +206,18 @@ def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
     return f"{scope}:{name}:{digest}"
 
 
+def _runtime_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., str]:
+    forward = build_handler(client, tool)
+
+    def handler(args: Optional[Dict[str, Any]] = None, **context: Any) -> str:
+        # Hermes supplies task/session metadata separately from model arguments.
+        # Only the latter belong in the admitted intent; its registry consumes
+        # JSON text so the broker result survives logging and persistence.
+        return json.dumps(forward(args), ensure_ascii=False)
+
+    return handler
+
+
 def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
     """Register the broker's tools. Called once by the plugin loader.
 
@@ -237,7 +249,7 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
             name=name,
             toolset=TOOLSET,
             schema=tool_schema(tool),
-            handler=build_handler(client, tool),
+            handler=_runtime_handler(client, tool),
             description=str(tool.get("description", "")),
             emoji="",
         )

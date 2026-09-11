@@ -20,6 +20,13 @@ export function shareTestServer(): () => Promise<void> {
   return stopTestServer;
 }
 
+/** Borrow only when the preload owns shutdown; scripts retain their own server lifetime. */
+export async function sharedTestServerUrl(): Promise<string | null | undefined> {
+  if (!globalCleanup) return undefined;
+  server ??= startTestServer();
+  return (await server)?.url ?? null;
+}
+
 async function stopTestServer() {
   const active = await server;
   server = undefined;

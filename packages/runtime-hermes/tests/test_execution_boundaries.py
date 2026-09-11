@@ -82,6 +82,7 @@ def test_timeout_descendant(workspace):
     outcome = run_in_cell("python", {"code": parent, "timeout_ms": 350})
     assert outcome["record"]["timed_out"] is True
     assert outcome["record"]["exit_code"] is None
+    assert "spawned" in outcome["display"], "the probe must create a descendant before timing out"
     time.sleep(1.5)
     assert not (workspace / "descendant-marker").exists(), "a descendant outlived its command"
 
@@ -98,6 +99,7 @@ def test_cancellation_descendant(workspace):
         timer.cancel()
     assert outcome["record"]["exit_code"] is None
     assert outcome["record"]["signal"] == "SIGKILL"
+    assert "spawned" in outcome["display"], "the probe must create a descendant before cancellation"
     time.sleep(1.5)
     assert not (workspace / "cancel-marker").exists(), "a cancelled descendant survived"
 

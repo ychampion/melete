@@ -242,10 +242,10 @@ export class BrokerService implements BrokerOperations {
   }
 
   /**
-   * An in-cell tool's payload is the record of what already happened, not the
-   * arguments the model supplied, so it is validated against the record schema
-   * the connector declared. A connector that declares `in_cell` without one is
-   * a bug, and fails closed here rather than admitting an unchecked shape.
+   * In-cell intents validate the arguments before execution. Legacy completed
+   * records retain their schema, and settlement uses it for the later result.
+   * An in-cell connector must declare that record schema so neither proposal
+   * form nor settlement can admit an unchecked shape.
    */
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
     if (tool.execution === 'in_cell' && !tool.record_schema)
