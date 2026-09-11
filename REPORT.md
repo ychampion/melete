@@ -77,3 +77,14 @@
 - Test `global database preload`: one disposable Postgres server serves isolated per-suite databases; shutdown runs after the whole suite; WAL and fsync keep Postgres defaults.
 - Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: passed (`Checked 88 files in 146ms. No fixes applied.`).
 - Command `bun test --dots`: `340 pass`, `36 todo`, `0 fail`, `1272 expect() calls`, `Ran 376 tests across 27 files. [75.93s]`.
+
+## Slice 6: conformance 1, 2 and 5
+
+- SHA `e1ba489`: persisted SSE committed and pushed to `origin/lane/w1-service`.
+- Test `conformance 1`: an actual child process exits after the transition/event writes and before enqueue; Postgres rolls back that transaction, the prior due wait survives queue deletion, recovery re-enqueues it, and duplicated timers admit one replacement attempt.
+- Test `conformance 2`: A resumes while B holds the live lease; A's admission and outcome reject with `stale_epoch`; B admits normally; a duplicate late receipt records one event without changing B's running state, epoch or state version.
+- Test `conformance 5`: child processes die mid-stream and after a persisted tool result; replacement attempts recover stored context, produce one fake effect, end the old attempt as lost and expose a real SSE gap marker.
+- Command `bun test conformance`: initial import/type failures required declaring the existing Drizzle dependency in the conformance package and omitting an invalid null draft; one fix cycle. Rerun: `12 pass`, `24 todo`, `0 fail`, `59 expect() calls`, `Ran 36 tests across 8 files. [27.55s]`.
+- Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: passed (`Checked 91 files in 164ms. No fixes applied.`).
+- Command `bun test --dots`: `352 pass`, `24 todo`, `0 fail`, `1331 expect() calls`, `Ran 376 tests across 27 files. [87.44s]`.
+- Command `bun run conformance`: now executes the suite after listing its assertions; conformance scenarios 3, 4, 6, 7 and 8 remain outside this lane's requested conformance scope.

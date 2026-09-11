@@ -34,6 +34,9 @@
       "dependencies": {
         "@melete/contracts": "workspace:*",
       },
+      "devDependencies": {
+        "drizzle-orm": "0.45.2",
+      },
     },
     "packages/contracts": {
       "name": "@melete/contracts",
