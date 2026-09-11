@@ -1,0 +1,130 @@
+{
+  "id": "trip-july-to-august",
+  "family": "corrections-and-time",
+  "title": "July becomes August, a one-trip exception is added, and an older July email arrives late",
+  "narrative": "The trip moves from July to August by explicit correction, a one-trip baggage exception is added beside the standing preference, and an email written in May is imported afterwards.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "july-plan",
+      "event_time": "2026-06-01T09:00:00Z",
+      "text": "Our trip is on 10 July 2026.",
+      "claim": {
+        "key": "event.trip.date",
+        "content": "10 July 2026",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "baggage-pref",
+      "event_time": "2026-06-02T09:00:00Z",
+      "text": "I usually travel with one checked bag.",
+      "claim": {
+        "key": "pref.travel.baggage",
+        "content": "one checked bag",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "before-correction",
+      "query": "trip date",
+      "key": "event.trip.date",
+      "expect": {
+        "kind": "answer",
+        "content": "10 July 2026"
+      }
+    },
+    {
+      "step": "correct",
+      "name": "move-to-august",
+      "key": "event.trip.date",
+      "text": "move our trip from July to August",
+      "content": "12 August 2026",
+      "valid_from": "2026-08-01T00:00:00Z"
+    },
+    {
+      "step": "say",
+      "name": "one-trip-exception",
+      "event_time": "2026-08-03T09:00:00Z",
+      "text": "For this trip only, carry-on only.",
+      "claim": {
+        "key": "constraint.trip.baggage",
+        "content": "carry-on only",
+        "kind": "exception"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "after-correction",
+      "query": "trip date",
+      "key": "event.trip.date",
+      "expect": {
+        "kind": "answer",
+        "content": "12 August 2026"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "exception-scope",
+      "query": "trip baggage",
+      "key": "constraint.trip.baggage",
+      "expect": {
+        "kind": "answer",
+        "content": "carry-on only"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "base-preference",
+      "query": "travel baggage",
+      "key": "pref.travel.baggage",
+      "expect": {
+        "kind": "answer",
+        "content": "one checked bag"
+      }
+    },
+    {
+      "step": "import",
+      "name": "old-july-email",
+      "event_time": "2026-05-25T09:00:00Z",
+      "text": "Confirming: see you on the trip on 10 July 2026.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.trip.date",
+        "content": "10 July 2026",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "late-import-loses",
+      "query": "trip date",
+      "key": "event.trip.date",
+      "expect": {
+        "kind": "answer",
+        "content": "12 August 2026"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "historical-july",
+      "query": "trip date",
+      "key": "event.trip.date",
+      "expect": {
+        "kind": "answer",
+        "content": "10 July 2026",
+        "dated": true
+      },
+      "mode": "historical",
+      "at": "2026-07-15T00:00:00Z"
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

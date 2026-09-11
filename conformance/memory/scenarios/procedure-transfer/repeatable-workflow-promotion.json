@@ -1,0 +1,64 @@
+{
+  "id": "repeatable-workflow-promotion",
+  "family": "procedure-transfer",
+  "title": "A repeated workflow becomes a candidate procedure, and a counterexample stops it",
+  "narrative": "The same expense workflow is used twice, then a counterexample arrives: the promoted procedure must carry its conditions and must not be applied where the counterexample holds.",
+  "memory_required": true,
+  "status": "todo",
+  "todo_reason": "Candidate-procedure promotion is not enabled in v0.1. docs/MEMORY.md records that the comparison here does not establish that its extra write cost is useful, so the assertion is written and the row stays todo until promotion lands.",
+  "steps": [
+    {
+      "step": "say",
+      "name": "first-run",
+      "event_time": "2026-08-01T09:00:00Z",
+      "text": "For expenses over 200 EUR I attach the receipt and copy finance.",
+      "claim": {
+        "key": "constraint.expenses.procedure",
+        "content": "attach the receipt and copy finance",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "second-run",
+      "event_time": "2026-08-08T09:00:00Z",
+      "text": "Again: for expenses over 200 EUR I attach the receipt and copy finance.",
+      "claim": {
+        "key": "constraint.expenses.procedure",
+        "content": "attach the receipt and copy finance",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "counterexample",
+      "event_time": "2026-08-15T09:00:00Z",
+      "text": "Travel expenses go to the travel desk, not finance.",
+      "claim": {
+        "key": "constraint.travel.procedure",
+        "content": "go to the travel desk",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "procedure-applies",
+      "query": "expenses procedure",
+      "key": "constraint.expenses.procedure",
+      "expect": {
+        "kind": "answer",
+        "content": "attach the receipt and copy finance"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "counterexample-wins",
+      "query": "travel procedure",
+      "key": "constraint.travel.procedure",
+      "expect": {
+        "kind": "answer",
+        "content": "go to the travel desk"
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "id": "disputed-key-asks-once",
+  "family": "corrections-and-time",
+  "title": "Two owner statements about one date dispute the key and queue exactly one question",
+  "narrative": "The owner gives two different dates for the same review a week apart with no explicit supersede; the key is disputed, one question is queued, and a correction settles it.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "first-date",
+      "event_time": "2026-06-03T09:00:00Z",
+      "text": "The board review is on 3 December 2026.",
+      "claim": {
+        "key": "event.board.date",
+        "content": "3 December 2026",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "second-date",
+      "event_time": "2026-06-10T09:00:00Z",
+      "text": "The board review is on 10 December 2026.",
+      "claim": {
+        "key": "event.board.date",
+        "content": "10 December 2026",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 1
+    },
+    {
+      "step": "ask",
+      "name": "disputed-serving",
+      "query": "board date",
+      "key": "event.board.date",
+      "expect": {
+        "kind": "disputed",
+        "content": "10 December 2026"
+      }
+    },
+    {
+      "step": "correct",
+      "name": "settle",
+      "key": "event.board.date",
+      "text": "the board review is on 10 December 2026",
+      "content": "10 December 2026",
+      "valid_from": "2026-06-11T00:00:00Z"
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    },
+    {
+      "step": "ask",
+      "name": "settled",
+      "query": "board date",
+      "key": "event.board.date",
+      "expect": {
+        "kind": "answer",
+        "content": "10 December 2026"
+      }
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "id": "no-nearby-message-citation",
+  "family": "source-authority",
+  "title": "A value that is only in a nearby message cannot be attached to the document that lacks it",
+  "narrative": "Extraction proposes a date for a newsletter by citing the owner message before it; the span does not belong to the evidence it was given, so nothing is stored and the honest fact is untouched.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "offsite-date",
+      "event_time": "2026-07-12T09:00:00Z",
+      "text": "Our team offsite is on 4 September 2026.",
+      "claim": {
+        "key": "event.offsite.date",
+        "content": "4 September 2026",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "import",
+      "name": "expo-newsletter",
+      "event_time": "2026-07-13T09:00:00Z",
+      "text": "The vendor expo runs all spring.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.expo.date",
+        "content": "4 September 2026",
+        "kind": "document_assertion",
+        "quote": "4 September 2026",
+        "cite": "previous_source",
+        "expect_rejected": true
+      }
+    },
+    {
+      "step": "ask",
+      "name": "no-expo-date",
+      "query": "expo date",
+      "key": "event.expo.date",
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "offsite-date-intact",
+      "query": "offsite date",
+      "key": "event.offsite.date",
+      "expect": {
+        "kind": "answer",
+        "content": "4 September 2026"
+      }
+    }
+  ]
+}

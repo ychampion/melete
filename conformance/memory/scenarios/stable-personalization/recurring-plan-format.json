@@ -1,0 +1,92 @@
+{
+  "id": "recurring-plan-format",
+  "family": "stable-personalization",
+  "title": "A recurring planning task reuses a stated format and a stated day",
+  "narrative": "Two planning preferences and one unrelated one are stated once; the same planning request is made twice and must apply both without asking again and without dragging in the kitchen.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "plan-format",
+      "event_time": "2026-07-02T09:00:00Z",
+      "text": "Always send my weekly plan as a bulleted list.",
+      "claim": {
+        "key": "pref.planning.format",
+        "content": "bulleted list",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "plan-day",
+      "event_time": "2026-07-02T09:05:00Z",
+      "text": "Schedule my planning session on Mondays.",
+      "claim": {
+        "key": "pref.planning.day",
+        "content": "Mondays",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "milk",
+      "event_time": "2026-07-03T08:00:00Z",
+      "text": "I like oat milk in my coffee.",
+      "claim": {
+        "key": "pref.kitchen.milk",
+        "content": "oat milk",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "first-format",
+      "query": "planning format",
+      "key": "pref.planning.format",
+      "expect": {
+        "kind": "answer",
+        "content": "bulleted list",
+        "not_delivered": ["pref.kitchen.milk"]
+      }
+    },
+    {
+      "step": "ask",
+      "name": "first-day",
+      "query": "planning session day",
+      "key": "pref.planning.day",
+      "expect": {
+        "kind": "answer",
+        "content": "Mondays"
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    },
+    {
+      "step": "ask",
+      "name": "second-format",
+      "query": "planning format",
+      "key": "pref.planning.format",
+      "expect": {
+        "kind": "answer",
+        "content": "bulleted list",
+        "not_delivered": ["pref.kitchen.milk"]
+      }
+    },
+    {
+      "step": "ask",
+      "name": "second-day",
+      "query": "planning session day",
+      "key": "pref.planning.day",
+      "expect": {
+        "kind": "answer",
+        "content": "Mondays"
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

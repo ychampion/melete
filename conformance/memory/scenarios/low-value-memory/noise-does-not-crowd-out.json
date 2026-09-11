@@ -1,0 +1,169 @@
+{
+  "id": "noise-does-not-crowd-out",
+  "family": "low-value-memory",
+  "title": "Eight unrelated preferences and four copies of one document change no answer",
+  "narrative": "Plausible but irrelevant preferences and four identical copies of one source must not personalise anything, must not inflate the support behind a claim, and must not crowd the needed date out of the recall.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "noise-milk",
+      "event_time": "2026-07-01T07:00:00Z",
+      "text": "I like oat milk in my coffee.",
+      "claim": {
+        "key": "pref.kitchen.milk",
+        "content": "oat milk",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-genre",
+      "event_time": "2026-07-02T07:01:00Z",
+      "text": "I listen to jazz while I work.",
+      "claim": {
+        "key": "pref.music.genre",
+        "content": "jazz",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-lamp",
+      "event_time": "2026-07-03T07:02:00Z",
+      "text": "My desk lamp should be warm light.",
+      "claim": {
+        "key": "pref.desk.lamp",
+        "content": "warm light",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-commute",
+      "event_time": "2026-07-04T07:03:00Z",
+      "text": "I commute by bicycle.",
+      "claim": {
+        "key": "pref.commute.mode",
+        "content": "bicycle",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-font",
+      "event_time": "2026-07-05T07:04:00Z",
+      "text": "I prefer a serif font.",
+      "claim": {
+        "key": "pref.reading.font",
+        "content": "serif",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-coffee",
+      "event_time": "2026-07-06T07:05:00Z",
+      "text": "I take my coffee strong.",
+      "claim": {
+        "key": "pref.coffee.strength",
+        "content": "strong",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-signature",
+      "event_time": "2026-07-07T07:06:00Z",
+      "text": "Keep my email signature short.",
+      "claim": {
+        "key": "pref.email.signature",
+        "content": "short",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "noise-reminder",
+      "event_time": "2026-07-08T07:07:00Z",
+      "text": "Remind me ten minutes ahead.",
+      "claim": {
+        "key": "pref.calendar.reminder",
+        "content": "ten minutes",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "import",
+      "name": "policy-copy-1",
+      "event_time": "2026-07-11T09:00:00Z",
+      "text": "The policy review is on 9 September 2026.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.review.date",
+        "content": "9 September 2026",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "import",
+      "name": "policy-copy-2",
+      "event_time": "2026-07-12T09:00:00Z",
+      "text": "The policy review is on 9 September 2026.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.review.date",
+        "content": "9 September 2026",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "import",
+      "name": "policy-copy-3",
+      "event_time": "2026-07-13T09:00:00Z",
+      "text": "The policy review is on 9 September 2026.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.review.date",
+        "content": "9 September 2026",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "import",
+      "name": "policy-copy-4",
+      "event_time": "2026-07-14T09:00:00Z",
+      "text": "The policy review is on 9 September 2026.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.review.date",
+        "content": "9 September 2026",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "expect_no_effect_duplicate",
+      "key": "event.review.date",
+      "max_sources": 1
+    },
+    {
+      "step": "ask",
+      "name": "needed-fact",
+      "query": "review date",
+      "key": "event.review.date",
+      "expect": {
+        "kind": "answer",
+        "content": "9 September 2026",
+        "not_delivered": ["pref.kitchen.milk", "pref.music.genre", "pref.commute.mode"]
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

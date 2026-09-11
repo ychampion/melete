@@ -1,0 +1,60 @@
+{
+  "id": "interrupted-work-resumes",
+  "family": "continuing-work",
+  "title": "A killed extraction resumes, and a constraint that arrived meanwhile is the one in force",
+  "narrative": "A process is killed between proposing and publishing, a new budget constraint arrives before the resume, and the next attempt uses current constraints without repeating the interrupted work.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "venue-brief",
+      "event_time": "2026-07-20T09:00:00Z",
+      "text": "Book the offsite venue for 4 September 2026.",
+      "claim": {
+        "key": "event.offsite.date",
+        "content": "4 September 2026",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "kill_at",
+      "phase": "after-proposal"
+    },
+    {
+      "step": "say",
+      "name": "budget-cap",
+      "event_time": "2026-07-22T09:00:00Z",
+      "text": "The offsite budget cap is 2000 EUR.",
+      "claim": {
+        "key": "constraint.offsite.budget",
+        "content": "2000 EUR",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "expect_no_effect_duplicate",
+      "key": "constraint.offsite.budget",
+      "max_sources": 1
+    },
+    {
+      "step": "ask",
+      "name": "current-constraint",
+      "query": "offsite budget",
+      "key": "constraint.offsite.budget",
+      "expect": {
+        "kind": "answer",
+        "content": "2000 EUR"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "authentic-date",
+      "query": "offsite date",
+      "key": "event.offsite.date",
+      "expect": {
+        "kind": "answer",
+        "content": "4 September 2026"
+      }
+    }
+  ]
+}
