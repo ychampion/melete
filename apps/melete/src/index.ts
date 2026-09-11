@@ -8,15 +8,19 @@
 import type { RuntimeAdapter } from '@melete/contracts';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
+import { mountApprovals } from './api/approvals.ts';
 import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountJobs } from './api/jobs.ts';
+import { mountTriggers } from './api/triggers.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
+import { ApprovalService } from './jobs/approvals.ts';
 import { startQueue } from './jobs/queue.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
+import { TriggerService } from './jobs/triggers.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 
 export const VERSION = '0.1.0-pre';
@@ -25,6 +29,8 @@ export type AppDeps = {
   env: Env;
   db: Database | null;
   jobs?: JobService;
+  triggers?: TriggerService;
+  approvals?: ApprovalService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -46,6 +52,8 @@ export function createApp(deps: AppDeps) {
   });
   mountAuth(app, deps);
   if (deps.jobs) mountJobs(app, deps.jobs);
+  if (deps.triggers) mountTriggers(app, deps.triggers);
+  if (deps.approvals) mountApprovals(app, deps.approvals);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -81,8 +89,11 @@ export async function bootstrap(
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
   let runner: AttemptRunner | undefined;
+  let triggers: TriggerService | undefined;
+  let approvals: ApprovalService | undefined;
   const close = async () => {
     try {
+      await triggers?.stop();
       await runner?.stop();
     } finally {
       try {
@@ -109,7 +120,12 @@ export async function bootstrap(
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
       });
-      if (options.workers !== false) await runner.start();
+      triggers = new TriggerService(jobs, runner);
+      approvals = new ApprovalService(jobs, runner);
+      if (options.workers !== false) {
+        await triggers.start();
+        await runner.start();
+      }
     }
   } catch (error) {
     await close();
@@ -120,6 +136,8 @@ export async function bootstrap(
     env,
     db: handle?.db ?? null,
     jobs,
+    triggers,
+    approvals,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -133,6 +151,8 @@ export async function bootstrap(
     jobs,
     queue,
     runner,
+    triggers,
+    approvals,
     close,
   };
 }

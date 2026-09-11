@@ -51,3 +51,19 @@
 - Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: passed (`Checked 86 files in 163ms. No fixes applied.`).
 - Command `bun test --dots`: `310 pass`, `36 todo`, `0 fail`, `1101 expect() calls`, `Ran 346 tests across 25 files. [83.84s]`.
 - Test `attempt runner against Postgres and pg-boss`: lease expiry, stale epochs, capability signatures, runtime deduplication, bounded transcripts, durable outcomes, cancellation, recovery and budget limits are covered with the scripted stub.
+
+## Slice 4: waits, triggers and approvals
+
+- SHA `caaf04c`: bounded attempt runner committed and pushed to `origin/lane/w1-service`.
+- Test `durable waits, triggers and approval inputs`: event registration checks buffered events in the transition transaction, consumes a persisted cursor once, and rejects missing, foreign or disabled predicates.
+- Test `cron registrations are restored from durable trigger rows and disabled schedules disappear`: pg-boss schedules are restored on recovery; the real schedule worker persists one occurrence before waking a wait.
+- Test `approval gate`: request hash, stored canonical payload, job revision, expiry and cancellation reject stale approval decisions; early decisions, duplicate decisions, multiple approvals and denials resume correctly.
+- Command `bun test apps/melete/test/integration/waits.test.ts`: initial `17 pass`, `2 fail` from a raw SQL timestamp string and a too-short fixture session token; one fix cycle corrected both fixtures. Rerun: `19 pass`, `0 fail`, `91 expect() calls`, `30.39s`.
+- Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: one formatting fix, then `Checked 87 files in 155ms. No fixes applied.`.
+- Command `bun test --dots`: `329 pass`, `36 todo`, `0 fail`, `1192 expect() calls`, `Ran 365 tests across 26 files. [112.01s]`.
+
+## Owner review additions
+
+- Test `submission admission`, test `reply obligations`, test `wake dispositions`, test `event resync`, test `generation fences` and test `scheduling fairness`: owner steering adds slices 8 through 13 before the final report; the original conformance 1, 2 and 5 work remains required.
+- Command `bun run typecheck`: new public types may be added only in `packages/contracts/src/responsibility.ts` and exported from the index; OpenAPI changes add new paths; other frozen contract files remain unchanged.
+- Command `bun run db:generate`: each new durable schema addition will have a new Drizzle migration.
