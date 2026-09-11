@@ -74,14 +74,18 @@ const destinationSchema = {
       required: ['kind', 'to', 'subject'],
       properties: {
         kind: { type: 'string', const: 'email' },
+        // No `format: email` here. The validator this schema is handed does
+        // not know the keyword, ignores it, and says so on every call, which
+        // fills the test output with warnings about a check that was never
+        // being made. `publishDestination` is what actually rejects an address.
         to: {
           oneOf: [
-            { type: 'string', format: 'email' },
+            { type: 'string', minLength: 3, maxLength: 320 },
             {
               type: 'array',
               minItems: 1,
               maxItems: 20,
-              items: { type: 'string', format: 'email' },
+              items: { type: 'string', minLength: 3, maxLength: 320 },
             },
           ],
         },
