@@ -1,0 +1,27 @@
+{
+  "name": "@melete/client",
+  "version": "0.1.0-pre",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "The typed HTTP client: generated types from openapi.json, a thin fetch wrapper, and a resumable event stream.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "generate": "bun run scripts/generate.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
+  },
+  "devDependencies": {
+    "@melete/contracts": "workspace:*",
+    "openapi-typescript": "7.13.0"
+  }
+}
