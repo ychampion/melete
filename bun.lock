@@ -61,6 +61,15 @@
         "zod": "4.6.2",
       },
     },
+    "packages/skills": {
+      "name": "@melete/skills",
+      "version": "0.1.0-pre",
+      "dependencies": {
+        "@melete/contracts": "workspace:*",
+        "gray-matter": "4.0.3",
+        "zod": "4.6.2",
+      },
+    },
   },
   "packages": {
     "@biomejs/biome": ["@biomejs/biome@2.5.13", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.13", "@biomejs/cli-darwin-x64": "2.5.13", "@biomejs/cli-linux-arm64": "2.5.13", "@biomejs/cli-linux-arm64-musl": "2.5.13", "@biomejs/cli-linux-x64": "2.5.13", "@biomejs/cli-linux-x64-musl": "2.5.13", "@biomejs/cli-win32-arm64": "2.5.13", "@biomejs/cli-win32-x64": "2.5.13" }, "bin": { "biome": "bin/biome" } }, "sha512-+SEC/mFk1a+5mvUANZgbZTaiZXs1nj4iMhL/PHiqDT5TPUEPFIlliEtkKKZB4N862yylHC3UI+/Sj2I0HJEqhA=="],
@@ -148,6 +157,8 @@
     "@melete/runtime-hermes": ["@melete/runtime-hermes@workspace:packages/runtime-hermes"],
 
     "@melete/service": ["@melete/service@workspace:apps/melete"],
+
+    "@melete/skills": ["@melete/skills@workspace:packages/skills"],
 
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 
