@@ -48,8 +48,8 @@ export type JobSubmissionResponse = z.infer<typeof jobSubmissionResponse>;
 export const attentionHandle = z
   .string()
   .regex(
-    /^(event|claim|action|approval|attempt|obligation|submission|question|trigger|operation|job):[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/,
-    'must be a handle such as event:1234 or claim:k_01J0000000000000000000000',
+    /^(event|claim|action|approval|attempt|obligation|submission|question|trigger|operation|job):[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/,
+    'must be a handle such as event:1234 or claim:k_01J0000000000000000000000@3',
   );
 export type AttentionHandle = z.infer<typeof attentionHandle>;
 
@@ -160,28 +160,57 @@ export const responsibilitySubmissionResponse = jobSubmissionResponse.extend({
 });
 
 /**
+ * Where a question came from. A job contributes at most one; memory contributes
+ * one per key whose head is disputed. They share a queue because a person has
+ * one attention, not one per subsystem.
+ */
+export const questionSource = z.enum(['job', 'memory']);
+export type QuestionSource = z.infer<typeof questionSource>;
+
+/**
  * One entry in the owner's single question queue. Every job contributes at most
  * one, so the queue is a list of responsibilities waiting on a person, not a
- * backlog of prompts from one talkative job.
+ * backlog of prompts from one talkative job. A memory question names the space
+ * and key it disputes instead of a job, and `because` carries the two revision
+ * handles that disagree.
  */
 export const ownerQuestion = deferredQuestion.extend({
   id: prefixedId('qst'),
-  job_id: prefixedId(ID_PREFIXES.job),
-  job_title: z.string(),
+  source: questionSource,
+  job_id: prefixedId(ID_PREFIXES.job).nullable(),
+  job_title: z.string().nullable(),
   attempt_id: prefixedId(ID_PREFIXES.attempt).nullable(),
+  space_id: prefixedId(ID_PREFIXES.space).nullable(),
+  key: z.string().max(200).nullable(),
   state: questionState,
   answer: z.string().nullable(),
   answered_at: timestamp.nullable(),
 });
 export type OwnerQuestion = z.infer<typeof ownerQuestion>;
 export const questionList = z.object({ questions: z.array(ownerQuestion) });
-export const questionAnswerRequest = z.object({ text: z.string().min(1).max(10_000) });
+/**
+ * `choice` names which of the disputed revisions the owner is keeping, and is
+ * required for a memory question: prose cannot say which of two revisions was
+ * meant, and guessing would write the wrong fact down as a protected
+ * correction. A job question ignores it.
+ */
+export const questionAnswerRequest = z.object({
+  text: z.string().min(1).max(10_000),
+  choice: z
+    .string()
+    .regex(/^k_[0-7][0-9A-HJKMNP-TV-Z]{25}@[1-9][0-9]{0,8}$/, 'must be a claim_id@revision handle')
+    .optional(),
+});
 export type QuestionAnswerRequest = z.infer<typeof questionAnswerRequest>;
-/** Answering delivers the text to the job as input, so it carries a submission receipt. */
+/**
+ * Answering a job question delivers the text to the job as input, so it carries
+ * a submission receipt. Answering a memory question settles a key instead, and
+ * there is no job to wake and no receipt to hand back.
+ */
 export const questionAnswerResponse = z.object({
   question: ownerQuestion,
   job: responsibilityJob.nullable(),
-  receipt: submissionReceipt,
+  receipt: submissionReceipt.nullable(),
   error: errorResponse.shape.error.optional(),
 });
 export const jobScheduling = z

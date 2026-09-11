@@ -5,7 +5,11 @@
  * exactly one owner question for the one genuine conflict.
  */
 import { describe, expect, test } from 'bun:test';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { QuestionService } from '../../src/jobs/questions.ts';
+import { JobService } from '../../src/jobs/service.ts';
 import { correctClaim } from '../../src/memory/claims.ts';
+import { createDisputeSettler } from '../../src/memory/disputes.ts';
 import { recall } from '../../src/memory/recall.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { createScope, type TestDatabase } from './postgres.ts';
@@ -116,6 +120,18 @@ export function registerKeyTests(db: TestDatabase | null) {
       ]);
       expect(questions[0]?.if_ignored).toContain('will not act externally');
 
+      // E7: the same dispute is in the owner's one queue, naming its space and
+      // key, not in a feed of memory's own.
+      const queued =
+        await db.sql`select * from question where source = 'memory' and space_id = ${scope.spaceId} and state = 'open'`;
+      expect(queued).toHaveLength(1);
+      expect(queued[0]?.key).toBe(key);
+      expect(queued[0]?.job_id).toBeNull();
+      expect(queued[0]?.because).toEqual([
+        `claim:${contradictions[0]?.head}`,
+        `claim:${contradictions[0]?.alternative}`,
+      ]);
+
       // Day 12: an old email, written on day 1, arrives. It is an older fact.
       expect(
         (
@@ -146,6 +162,9 @@ export function registerKeyTests(db: TestDatabase | null) {
       expect(
         await db.sql`select 1 from memory_questions where space_id = ${scope.spaceId} and state = 'queued'`,
       ).toHaveLength(1);
+      expect(
+        await db.sql`select 1 from question where source = 'memory' and space_id = ${scope.spaceId} and state = 'open'`,
+      ).toHaveLength(1);
 
       // Recall serves the winning head and says the key is disputed.
       await buildViews(db.sql, scope);
@@ -173,7 +192,109 @@ export function registerKeyTests(db: TestDatabase | null) {
       expect(
         await db.sql`select 1 from memory_questions where space_id = ${scope.spaceId} and state = 'queued'`,
       ).toHaveLength(0);
+      // And the queue entry closes with it: the key stopped being disputed.
+      const settled =
+        await db.sql`select state, answered_at from question where source = 'memory' and space_id = ${scope.spaceId}`;
+      expect(settled).toHaveLength(1);
+      expect(settled[0]?.state).toBe('answered');
+      expect(settled[0]?.answered_at).not.toBeNull();
       await single('after the correction');
+    });
+
+    test('the owner answers the queue entry and the key is settled', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      const key = 'event.trip.date';
+      await record(
+        db,
+        scope,
+        { identity: 'q1', text: 'The trip is on 2026-07-20.', eventAt: '2026-07-01T00:00:00Z' },
+        [{ key, content: '2026-07-20T00:00:00.000Z', quote: '2026-07-20', kind: 'user_statement' }],
+      );
+      await record(
+        db,
+        scope,
+        {
+          identity: 'q2',
+          text: 'Itinerary: departure 2026-06-15.',
+          eventAt: '2026-07-05T00:00:00Z',
+          sourceType: 'document',
+          author: 'external',
+          stream: 'documents',
+        },
+        [
+          {
+            key,
+            content: '2026-06-15T00:00:00.000Z',
+            quote: '2026-06-15',
+            kind: 'document_assertion',
+          },
+        ],
+      );
+      await record(
+        db,
+        scope,
+        {
+          identity: 'q3',
+          text: 'Actually the trip is on 2026-08-10.',
+          eventAt: '2026-07-10T00:00:00Z',
+        },
+        [{ key, content: '2026-08-10T00:00:00.000Z', quote: '2026-08-10', kind: 'user_statement' }],
+      );
+      const [entry] =
+        await db.sql`select * from question where source = 'memory' and space_id = ${scope.spaceId} and state = 'open'`;
+      if (!entry) throw new Error('the dispute never reached the queue');
+
+      const jobs = new JobService(drizzle(db.sql), db.boss);
+      const questions = new QuestionService(
+        jobs,
+        undefined,
+        createDisputeSettler(async () => scope, db.sql),
+      );
+
+      // It is in the one queue, beside whatever the jobs are asking.
+      const listed = await questions.list();
+      expect(listed.map((q) => q.id)).toContain(entry.id as string);
+      const view = listed.find((q) => q.id === entry.id);
+      expect(view?.source).toBe('memory');
+      expect(view?.job_id).toBeNull();
+      expect(view?.key).toBe(key);
+
+      // Prose alone cannot settle it: the owner has to name a revision.
+      const vague = await questions
+        .answer(entry.id as string, { text: 'the later one' })
+        .catch((error: { code?: string }) => error);
+      expect((vague as { code?: string }).code).toBe('invalid_choice');
+      // And not just any revision: one of the two the question said disagree.
+      const foreign = await questions
+        .answer(entry.id as string, {
+          text: 'this one',
+          choice: 'k_01J8ZP3QWABCDEFGHJKMNPQRST@1',
+        })
+        .catch((error: { code?: string }) => error);
+      expect((foreign as { code?: string }).code).toBe('invalid_choice');
+
+      // The owner picks the revision that is NOT the automatic head, which is
+      // the whole reason `choice` exists: their answer decides, not the ranking.
+      const automatic = await head(db, scope, key);
+      expect(automatic?.content).toContain('2026-08-10');
+      const chosen = (view?.because ?? [])[1]?.replace(/^claim:/, '') as string;
+      const answered = await questions.answer(entry.id as string, {
+        text: 'July was right after all.',
+        choice: chosen,
+      });
+      expect(answered.question.state).toBe('answered');
+      expect(answered.receipt).toBeNull();
+      expect(answered.job).toBeNull();
+
+      // The head is now what the owner chose, recorded as their correction.
+      const settledHead = await head(db, scope, key);
+      expect(settledHead?.content).toContain('2026-07-20');
+      expect(settledHead?.origin_trust).toBe('owner');
+      expect(
+        await db.sql`select 1 from memory_contradictions where space_id = ${scope.spaceId} and state = 'open'`,
+      ).toHaveLength(0);
+      expect(await questions.list()).toHaveLength(0);
     });
 
     test('the database refuses a second claim on one key', async () => {

@@ -41,6 +41,8 @@ import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { filesystemSpaces } from './knowledge/spaces.ts';
+import { memoryScopeForSpace } from './memory/broker-trust.ts';
+import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 
@@ -185,7 +187,19 @@ export async function bootstrap(
       operations = new OperationService(jobs, runner);
       policy = new PolicyService(jobs, runner);
       attention = new AttentionService(jobs, runner);
-      questions = new QuestionService(jobs, submissions);
+      // A memory question is answered by settling the key it disputes, which
+      // only memory can do, so the queue is handed that one capability.
+      questions = new QuestionService(
+        jobs,
+        submissions,
+        handle
+          ? createDisputeSettler(async (spaceId) => {
+              const scope = await memoryScopeForSpace(handle.sql, spaceId);
+              if (!scope) throw new Error('scope_denied');
+              return scope;
+            }, handle.sql)
+          : undefined,
+      );
       if (options.workers !== false) {
         await operations.start();
         await triggers.start();

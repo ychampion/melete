@@ -325,6 +325,10 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 10000
+                  },
+                  "choice": {
+                    "type": "string",
+                    "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}@[1-9][0-9]{0,8}$"
                   }
                 },
                 "required": [
@@ -356,7 +360,14 @@
                       ]
                     },
                     "receipt": {
-                      "$ref": "#/components/schemas/__schema53"
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/__schema53"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "error": {
                       "$ref": "#/components/schemas/__schema57"
@@ -5499,7 +5510,7 @@
       },
       "__schema49": {
         "type": "string",
-        "pattern": "^(event|claim|action|approval|attempt|obligation|submission|question|trigger|operation|job):[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+        "pattern": "^(event|claim|action|approval|attempt|obligation|submission|question|trigger|operation|job):[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$"
       },
       "__schema50": {
         "type": "string",
@@ -5662,18 +5673,57 @@
             "type": "string",
             "pattern": "^qst_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
           },
-          "job_id": {
+          "source": {
             "type": "string",
-            "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+            "enum": [
+              "job",
+              "memory"
+            ]
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "job_title": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "attempt_id": {
             "anyOf": [
               {
                 "type": "string",
                 "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
               },
               {
                 "type": "null"
@@ -5713,9 +5763,12 @@
           "deadline_at",
           "created_at",
           "id",
+          "source",
           "job_id",
           "job_title",
           "attempt_id",
+          "space_id",
+          "key",
           "state",
           "answer",
           "answered_at"

@@ -17,7 +17,7 @@ import {
   type SubmissionReceipt,
   TERMINAL_STATES,
 } from '@melete/contracts';
-import { and, asc, desc, eq, notInArray, sql } from 'drizzle-orm';
+import { and, eq, isNull, notInArray, or, sql } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
 import { job, question } from '../db/schema.ts';
@@ -36,12 +36,19 @@ export const UNANSWERED_CONSEQUENCE =
 /** The submission ID an answer is admitted under, so a resent answer wakes the job once. */
 export const answerKey = (questionId: string): string => `q:${questionId}`;
 
-export function questionView(row: QuestionRow, jobTitle: string): OwnerQuestion {
+/** No deadline means last, not soonest. */
+const deadlineRank = (at: string | null): number =>
+  at ? Date.parse(at) : Number.POSITIVE_INFINITY;
+
+export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQuestion {
   return ownerQuestion.parse({
     id: row.id,
+    source: row.source,
     job_id: row.jobId,
     job_title: jobTitle,
     attempt_id: row.attemptId,
+    space_id: row.spaceId,
+    key: row.key,
     text: row.text,
     because: row.because,
     if_ignored: row.ifIgnored,
@@ -237,10 +244,26 @@ export async function persistQuestions(
   });
 }
 
+/**
+ * How a memory question is settled. Memory owns the correction path; this is
+ * the only thing the queue needs from it, so the queue never learns what a
+ * claim is and memory never learns what a queue is.
+ */
+export type DisputeSettler = {
+  settle(input: {
+    spaceId: string;
+    key: string;
+    /** The revision the owner is keeping, as `k_…@7`. */
+    choice: string;
+    text: string;
+    idempotencyKey: string;
+  }): Promise<void>;
+};
+
 export type AnswerResult = {
   question: OwnerQuestion;
   job: JobRow | null;
-  receipt: SubmissionReceipt;
+  receipt: SubmissionReceipt | null;
   status: ContentfulStatusCode;
   error?: { code: string; message: string };
 };
@@ -252,6 +275,8 @@ export class QuestionService {
   constructor(
     readonly jobs: JobService,
     readonly submissions?: SubmissionService,
+    /** Left out, a memory question can be read and ranked but not answered. */
+    readonly disputes?: DisputeSettler,
   ) {
     if (!submissions) return;
     const previous = submissions.onAccepted;
@@ -287,7 +312,7 @@ export class QuestionService {
     const [found] = await this.jobs.db
       .select({ question, title: job.title })
       .from(question)
-      .innerJoin(job, eq(job.id, question.jobId))
+      .leftJoin(job, eq(job.id, question.jobId))
       .where(eq(question.id, id))
       .limit(1);
     if (!found) throw new ServiceError('not_found', 'Question not found.', 404);
@@ -298,27 +323,115 @@ export class QuestionService {
     return this.read(id).then((found) => found.view);
   }
 
-  /** One queue across every job, in the order the rule says the owner should see it. */
+  /**
+   * One queue across every job and every disputed key, in the order the rule
+   * says the owner should see it. A memory question has no job, so it is never
+   * excluded by a job's state; it is blocking when an action already admitted
+   * rests on the key it disputes, which is the same rule read through memory.
+   */
   async list(): Promise<OwnerQuestion[]> {
     const rows = await this.jobs.db
       .select({ question, title: job.title })
       .from(question)
-      .innerJoin(job, eq(job.id, question.jobId))
-      .where(and(eq(question.state, 'open'), notInArray(job.state, [...TERMINAL_STATES])))
-      .orderBy(
-        desc(question.blocksExternalEffect),
-        sql`${question.deadlineAt} asc nulls last`,
-        asc(question.createdAt),
+      .leftJoin(job, eq(job.id, question.jobId))
+      .where(
+        and(
+          eq(question.state, 'open'),
+          or(isNull(question.jobId), notInArray(job.state, [...TERMINAL_STATES])),
+        ),
       );
-    return rows.map((row) => questionView(row.question, row.title));
+    const blocking = await this.blockingKeys(rows.map((row) => row.question));
+    return rows
+      .map((row) => {
+        const view = questionView(row.question, row.title);
+        return view.source === 'memory' && blocking.has(JSON.stringify([view.space_id, view.key]))
+          ? { ...view, blocks_external_effect: true }
+          : view;
+      })
+      .sort(
+        (a, b) =>
+          Number(b.blocks_external_effect) - Number(a.blocks_external_effect) ||
+          deadlineRank(a.deadline_at) - deadlineRank(b.deadline_at) ||
+          Date.parse(a.created_at) - Date.parse(b.created_at),
+      );
+  }
+
+  /**
+   * The disputed keys an admitted action depends on, read through the manifests
+   * the job declared. A key nothing has acted on yet is still a question; it
+   * just is not the one holding an effect up.
+   */
+  private async blockingKeys(rows: readonly QuestionRow[]): Promise<Set<string>> {
+    const disputed = rows.filter((row) => row.source === 'memory' && row.spaceId && row.key);
+    if (disputed.length === 0) return new Set();
+    const found = await this.jobs.db.execute(sql`
+      select distinct c.space_id, c.key
+      from action a
+      join job j on j.id = a.job_id
+      join memory_outputs o on o.job_id = a.job_id and o.space_id = j.space_id
+      join memory_output_uses u on u.output_row_id = o.id
+      join memory_claims c on c.id = u.claim_id and c.space_id = o.space_id
+      where a.status in ('admitted', 'dispatched', 'succeeded')
+        and (c.space_id, c.key) in ${sql.raw(
+          `(values ${disputed.map((row) => `('${row.spaceId}','${String(row.key).replace(/'/g, "''")}')`).join(', ')})`,
+        )}`);
+    return new Set(
+      (found as unknown as Array<{ space_id: string; key: string }>).map((row) =>
+        JSON.stringify([row.space_id, row.key]),
+      ),
+    );
+  }
+
+  /**
+   * Settle a disputed key. The owner names the revision they are keeping and it
+   * is committed through memory's correction path as a protected owner
+   * correction, which is what closes the contradiction; the question is then
+   * answered because the thing it asked about has an answer, not because
+   * somebody typed into it.
+   */
+  private async settle(
+    current: { row: QuestionRow; view: OwnerQuestion },
+    value: { text: string; choice?: string },
+  ): Promise<AnswerResult> {
+    if (!this.disputes)
+      throw new ServiceError('service_unavailable', 'Configure the memory service.', 503);
+    if (current.row.state !== 'open')
+      throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+    const { spaceId, key } = current.row;
+    if (!spaceId || !key)
+      throw new ServiceError('question_closed', 'This question names no key.', 409);
+    // Prose cannot choose between two revisions, so the owner has to name one,
+    // and it has to be one of the two the question said were in disagreement.
+    const offered = current.view.because.map((handle) => handle.replace(/^claim:/, ''));
+    if (!value.choice || !offered.includes(value.choice))
+      throw new ServiceError(
+        'invalid_choice',
+        `Name which revision you are keeping: ${offered.join(' or ')}.`,
+        400,
+      );
+    await this.disputes.settle({
+      spaceId,
+      key,
+      choice: value.choice,
+      text: value.text,
+      idempotencyKey: answerKey(current.row.id),
+    });
+    await this.jobs.db
+      .update(question)
+      .set({ state: 'answered', answer: value.text, answeredAt: new Date() })
+      .where(and(eq(question.id, current.row.id), eq(question.state, 'open')));
+    const after = await this.read(current.row.id);
+    return { question: after.view, job: null, receipt: null, status: 200 };
   }
 
   async answer(id: string, input: unknown): Promise<AnswerResult> {
+    const value = questionAnswerRequest.parse(input);
+    const first = await this.read(id);
+    if (first.row.source === 'memory') return this.settle(first, value);
     const submissions = this.submissions;
     if (!submissions)
       throw new ServiceError('service_unavailable', 'Configure the submission service.', 503);
-    const value = questionAnswerRequest.parse(input);
-    const current = await this.read(id);
+    const current = first;
     const key = answerKey(id);
     // A resent answer returns the original receipt instead of waking the job twice.
     if (current.row.state === 'answered' && current.row.answerSubmissionId === key)
@@ -330,6 +443,8 @@ export class QuestionService {
       };
     if (current.row.state !== 'open')
       throw new ServiceError('question_closed', 'This question is no longer open.', 409);
+    if (!current.row.jobId)
+      throw new ServiceError('question_closed', 'This question has no responsibility.', 409);
     const owner = await this.jobs.get(current.row.jobId);
     if (isTerminal(owner.state as JobState))
       throw new ServiceError(

@@ -411,10 +411,14 @@ export const question = pgTable(
   'question',
   {
     id: text('id').primaryKey(),
-    jobId: text('job_id')
-      .notNull()
-      .references(() => job.id, { onDelete: 'cascade' }),
+    /** `job` or `memory`. One queue, two things that can put an entry in it. */
+    source: text('source').notNull().default('job'),
+    /** Null for a memory question: a disputed key belongs to a space, not a job. */
+    jobId: text('job_id').references(() => job.id, { onDelete: 'cascade' }),
     attemptId: text('attempt_id').references(() => attempt.id, { onDelete: 'set null' }),
+    /** Set together, and only for a memory question: which key is in dispute. */
+    spaceId: text('space_id').references(() => space.id, { onDelete: 'cascade' }),
+    key: text('key'),
     text: text('text').notNull(),
     because: jsonb('because').$type<string[]>().notNull(),
     ifIgnored: text('if_ignored').notNull(),
@@ -428,6 +432,10 @@ export const question = pgTable(
   },
   (t) => [
     uniqueIndex('question_open_job_idx').on(t.jobId).where(sql`state = 'open'`),
+    // One open question per disputed key, however many conflicting proposals arrive.
+    uniqueIndex('question_open_memory_idx')
+      .on(t.spaceId, t.key)
+      .where(sql`state = 'open' and source = 'memory'`),
     index('question_queue_idx').on(t.state, t.blocksExternalEffect, t.deadlineAt, t.createdAt),
     check('question_because_not_empty', sql`jsonb_array_length(${t.because}) > 0`),
   ],

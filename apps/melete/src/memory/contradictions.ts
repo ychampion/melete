@@ -23,7 +23,7 @@ import {
   memoryOwnerQuestion,
   type OriginTrust,
 } from '@melete/contracts';
-import { enqueue, iso, type MemoryScope, type MemoryTx, stableId } from './db.ts';
+import { enqueue, iso, type MemoryScope, type MemoryTx, newId, stableId } from './db.ts';
 import { describeDay } from './trust.ts';
 
 /** owner correction 4 > owner statement 3 > connector 2 > document 1 > inference 0. */
@@ -128,6 +128,13 @@ export async function recordContradiction(
     values (${contradictionId}, ${scope.spaceId}, ${input.key}, ${input.audience}, ${input.claimId}, ${head}, ${alternative}, ${questionId})
     on conflict do nothing`;
   await enqueue(tx, scope.spaceId, 'question', questionId);
+  // The owner has one queue. A disputed key is a question they owe an answer
+  // to, so it goes in beside the jobs' questions rather than into a feed of its
+  // own. The partial unique index keeps it to one open entry per key.
+  await tx`insert into question (id, source, space_id, key, text, because, if_ignored)
+    values (${newId('qst')}, 'memory', ${scope.spaceId}, ${input.key}, ${question},
+      ${JSON.stringify([`claim:${head}`, `claim:${alternative}`])}::text::jsonb, ${if_ignored})
+    on conflict do nothing`;
   return { contradiction_id: contradictionId, question_id: questionId };
 }
 
@@ -139,6 +146,10 @@ export async function resolveContradictions(tx: MemoryTx, scope: MemoryScope, ke
     where space_id = ${scope.spaceId} and key = ${key} and state = 'queued'`;
   await tx`update memory_outbox set completed_at = clock_timestamp()
     where space_id = ${scope.spaceId} and kind = 'question' and target_id = ${`mq_${stableId(scope.spaceId, key)}`} and completed_at is null`;
+  // A correction that arrives any other way still settles the queue entry: the
+  // key stopped being disputed, whoever said so.
+  await tx`update question set state = 'answered', answered_at = clock_timestamp()
+    where source = 'memory' and space_id = ${scope.spaceId} and key = ${key} and state = 'open'`;
 }
 
 /** The keys a reader must not act externally on without approval. */

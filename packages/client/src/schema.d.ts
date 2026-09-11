@@ -2901,6 +2901,7 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
+                        choice?: string;
                         text: string;
                     };
                 };
@@ -2916,7 +2917,7 @@ export interface paths {
                             error?: components["schemas"]["__schema57"];
                             job: components["schemas"]["__schema31"] | null;
                             question: components["schemas"]["__schema59"];
-                            receipt: components["schemas"]["__schema53"];
+                            receipt: components["schemas"]["__schema53"] | null;
                         };
                     };
                 };
@@ -3611,8 +3612,12 @@ export interface components {
             deadline_at: components["schemas"]["__schema52"];
             id: string;
             if_ignored: components["schemas"]["__schema50"];
-            job_id: string;
-            job_title: string;
+            job_id: string | null;
+            job_title: string | null;
+            key: string | null;
+            /** @enum {string} */
+            source: "job" | "memory";
+            space_id: string | null;
             /** @enum {string} */
             state: "open" | "answered" | "withdrawn";
             text: components["schemas"]["__schema47"];
