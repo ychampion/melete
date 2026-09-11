@@ -41,6 +41,9 @@ import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { filesystemSpaces } from './knowledge/spaces.ts';
+import { EpisodeService } from './learning/episodes.ts';
+import { expireEpisodes } from './learning/retention.ts';
+import { mountLearning } from './learning/routes.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
@@ -61,6 +64,7 @@ export type AppDeps = {
   policy?: PolicyService;
   attention?: AttentionService;
   questions?: QuestionService;
+  episodes?: EpisodeService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -90,6 +94,7 @@ export function createApp(deps: AppDeps) {
     deps.replies ??
     (deps.jobs && submissions ? new ReplyService(deps.jobs, submissions) : undefined);
   if (deps.jobs) mountJobs(app, deps.jobs, submissions);
+  if (deps.jobs) mountLearning(app, deps.episodes ?? new EpisodeService(deps.jobs));
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
@@ -148,7 +153,9 @@ export async function bootstrap(
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
+  let episodeRetention: ReturnType<typeof setInterval> | undefined;
   const close = async () => {
+    clearInterval(episodeRetention);
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
     } finally {
@@ -160,7 +167,16 @@ export async function bootstrap(
     }
   };
   try {
-    if (handle) await migrateDatabase(handle);
+    if (handle) {
+      await migrateDatabase(handle);
+      await expireEpisodes(handle.sql);
+      episodeRetention = setInterval(() => {
+        void expireEpisodes(handle.sql).catch(() =>
+          process.stderr.write('episode retention failed\n'),
+        );
+      }, 60_000);
+      episodeRetention.unref();
+    }
     if (handle) {
       events = new EventStream(handle);
       await events.start();
@@ -226,6 +242,7 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    episodes: jobs ? new EpisodeService(jobs, (id) => runner?.interrupt(id)) : undefined,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

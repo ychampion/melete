@@ -20,6 +20,16 @@ export function shareTestServer(): () => Promise<void> {
   return stopTestServer;
 }
 
+/**
+ * The preload owns this server's lifetime. Standalone callers keep their own
+ * startup path (`undefined`); an unavailable shared binary stays a skip (`null`).
+ */
+export async function sharedTestServerUrl(): Promise<string | null | undefined> {
+  if (!globalCleanup) return undefined;
+  server ??= startTestServer();
+  return (await server)?.url ?? null;
+}
+
 async function stopTestServer() {
   const active = await server;
   server = undefined;

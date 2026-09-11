@@ -30,6 +30,7 @@ import { attempt, event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { captureAttemptVersions, captureCompletedEpisode } from '../learning/episodes.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildBundle, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
@@ -180,6 +181,7 @@ export class AttemptRunner {
         leaseExpiresAt: new Date(Date.now() + this.leaseMs),
         inputCursor: Number(latest?.seq ?? 0),
       });
+      await captureAttemptVersions(tx, bundle, capabilities.version);
       row = await this.jobs.move(
         tx,
         row,
@@ -438,6 +440,7 @@ export class AttemptRunner {
     };
     // One reading of "is this news", shared by the attention counters and the outbox.
     const result = await attemptResult(tx, row, outcome, attemptId);
+    await captureCompletedEpisode(tx, updated, outcome, attemptId);
     for (const handler of this.onFinished)
       await handler(tx, updated, outcome, attemptId, { questions: carried, result });
     return updated;

@@ -1,4 +1,5 @@
 import { forgetRequest, type MemoryOperationResponse } from '@melete/contracts';
+import { restrictEpisodes } from '../learning/retention.ts';
 import {
   bumpRevision,
   enqueue,
@@ -71,7 +72,10 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   if (!space) throw new MemoryError('scope_denied');
   const [applied] =
     await tx`select id from memory_suppressions where id = ${record.id} and space_id = ${record.space_id}`;
-  if (applied) return generation(space);
+  if (applied) {
+    await restrictEpisodes(tx, record, record.claim_ids);
+    return generation(space);
+  }
   await tx`insert into memory_suppressions (id, space_id, eligibility_cutoff, operation, recorded_at)
     values (${record.id}, ${record.space_id}, ${record.eligibility_cutoff}, ${record.operation}, ${record.recorded_at})`;
   const affected = new Set(record.claim_ids);
@@ -115,6 +119,7 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
       where d.space_id = ${record.space_id} and d.input_kind = 'claim' and d.output_kind = 'claim'
   ) select id from affected`;
   for (const descendant of descendants) affected.add(descendant.id);
+  await restrictEpisodes(tx, record, [...affected]);
   await tx`update memory_claims set hidden = true where space_id = ${record.space_id} and id = any(${[...affected]})`;
   const dataRevision = await bumpRevision(tx, record.space_id);
   const [next] =

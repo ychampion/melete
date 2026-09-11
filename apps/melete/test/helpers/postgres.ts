@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import postgres from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
+import { sharedTestServerUrl } from './database.ts';
 
 export type PostgresFixture = DatabaseHandle & {
   url: string;
@@ -71,7 +72,9 @@ export async function createPostgresFixture(
 ): Promise<PostgresFixture | null> {
   const databaseName = `melete_w2_${randomUUID().replaceAll('-', '')}`;
   const configuredUrl = process.env.DATABASE_URL;
-  let adminUrl = configuredUrl;
+  const sharedUrl = configuredUrl ? undefined : await sharedTestServerUrl();
+  if (sharedUrl === null) return null;
+  let adminUrl = configuredUrl ?? sharedUrl;
   let stopEmbedded: (() => Promise<void>) | undefined;
   let tempRoot: string | undefined;
 

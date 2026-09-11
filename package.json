@@ -19,7 +19,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "test": "bun test --max-concurrency=2",
+    "test": "bun run scripts/test.ts",
     "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest packages/runtime-hermes/tests -q",
     "openapi": "bun run packages/contracts/scripts/openapi.ts",
     "compose:check": "bun run deploy/scripts/compose-check.ts",

@@ -18,6 +18,7 @@
     "apps/*/src/**/*.ts",
     "apps/*/test/**/*.ts",
     "apps/*/*.ts",
+    "scripts/**/*.ts",
     "deploy/scripts/**/*.ts",
     "conformance/**/*.ts"
   ],

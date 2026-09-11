@@ -6,6 +6,7 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { PgBoss } from 'pg-boss';
 import postgres from 'postgres';
 import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/db.ts';
+import { sharedTestServerUrl } from '../helpers/database.ts';
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
 /** One disposable database per integration file; never migrate the caller's existing database. */
@@ -16,7 +17,9 @@ export async function createTestDatabase(
   const port = options.port ?? 3122;
   let embedded: { stop(): Promise<void> } | undefined;
   let directory: string | undefined;
-  let baseUrl = databaseUrl;
+  const sharedUrl = databaseUrl ? undefined : await sharedTestServerUrl();
+  if (sharedUrl === null) return null;
+  let baseUrl = databaseUrl ?? sharedUrl;
   if (!baseUrl) {
     try {
       const { default: EmbeddedPostgres } = await import('embedded-postgres');
