@@ -382,6 +382,28 @@ describe('what a repair is never allowed to do', () => {
     ).toMatchObject({ act: 'stop', disposition: 'repair_exhausted' });
   });
 
+  test('a deadline that has passed stops every repair path, not only the retry', () => {
+    for (const kind of ['expired_credential', 'schema_drift', 'unsupported_route'] as const) {
+      const choice = decideRepair(
+        { kind, may_have_committed: false, retry_after: null, detail: 'late' },
+        state({ now: 5_000, deadlineAt: 4_999 }),
+      );
+      expect(choice).toMatchObject({ act: 'stop', disposition: 'repair_exhausted' });
+    }
+    // A rate limit still parks: waiting costs nothing and holds no worker.
+    expect(
+      decideRepair(
+        {
+          kind: 'rate_limited',
+          may_have_committed: false,
+          retry_after: 30,
+          detail: 'slow down',
+        },
+        state({ now: 5_000, deadlineAt: 4_999 }),
+      ).act,
+    ).toBe('stop');
+  });
+
   test('a bad output is revised once and is never called delivered on a second failure', async () => {
     const destination = new Destination('bad_output');
     let revisions = 0;

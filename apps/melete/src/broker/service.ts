@@ -4,6 +4,7 @@ import {
   type ActionStatus,
   type ApprovalDecisionRequest,
   type CapabilityClaims,
+  type ConnectorFault,
   type ConnectorTool,
   canonicalizePayload,
   type DispatchResult,
@@ -13,6 +14,7 @@ import {
   hashOriginWarnings,
   intentKey,
   isTrustGatedEffect,
+  type JsonObject,
   jobConstraints,
   type OriginWarning,
   originWarnings,
@@ -25,6 +27,12 @@ import {
 import { Ajv } from 'ajv';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import {
+  asConnectorFault,
+  type ConnectorDescription,
+  type RepairAttemptContext,
+  unclassifiedFault,
+} from '../connectors/faults.ts';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { QUEUES } from '../jobs/queue.ts';
@@ -49,6 +57,7 @@ import {
   type Query,
   recordId,
 } from './records.ts';
+import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
 import { collectOriginFields, resolveOriginWarnings, type TrustResolver } from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
@@ -75,6 +84,12 @@ export type BrokerOptions = {
   resolveStandingGrant?: StandingGrantResolver;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
+  /**
+   * Re-open an output that failed its own validation and produce a revised
+   * payload, or nothing. Absent, a bad output stops at `needs_input`: a file
+   * existing is never a delivery, and nothing here invents a revision.
+   */
+  reviseOutput?: (input: { action: Action; fault: ConnectorFault }) => Promise<JsonObject | null>;
 };
 
 export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
@@ -719,20 +734,18 @@ export class BrokerService implements BrokerOperations {
         reason: 'Connector disappeared after dispatch admission',
       });
     const controller = new AbortController();
-    const execution = Promise.resolve()
-      .then(() =>
-        connector.execute(prepared.action, {
-          ...(prepared.context as ConnectorContext),
-          signal: controller.signal,
-        }),
-      )
-      .then((result) => dispatchResult.parse(result))
-      .catch(
-        (): DispatchResult => ({
-          outcome: 'unknown',
-          reason: 'The destination did not return a confirmed acknowledgement',
-        }),
-      );
+    const execution = Promise.resolve().then(() =>
+      runRepair(
+        prepared.action.canonical_payload,
+        this.repairPorts(prepared, connector, controller),
+        {
+          classify: (error) => asConnectorFault(error) ?? unclassifiedFault(error),
+          // The dispatch timeout is the repair budget too: a retry that cannot
+          // finish inside it is not attempted at all.
+          deadlineAt: Date.now() + this.dispatchTimeoutMs,
+        },
+      ),
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), this.dispatchTimeoutMs);
@@ -743,10 +756,212 @@ export class BrokerService implements BrokerOperations {
       controller.abort();
       const unknown = await this.recordResult(id, { outcome: 'unknown', reason: question });
       // A cooperative abort is not proof of non-delivery; a later receipt is still a fact.
-      void execution.then((late) => this.recordResult(id, late)).catch(() => {});
+      void execution.then((late) => this.settleRepair(prepared.action, late)).catch(() => {});
       return unknown;
     }
-    return this.recordResult(id, result);
+    return this.settleRepair(prepared.action, result);
+  }
+
+  /**
+   * What the policy is allowed to do to this destination. Every port is a
+   * capability the connector declared; a connector that cannot describe itself
+   * simply cannot be repaired that way, and the policy stops instead.
+   */
+  private repairPorts(
+    prepared: { action: Action; context: ConnectorContext | null },
+    connector: Connector,
+    controller: AbortController,
+  ): RepairPorts {
+    const action = prepared.action;
+    const base = prepared.context as ConnectorContext;
+    const ctx = (repair?: RepairAttemptContext): ConnectorContext => ({
+      ...base,
+      signal: controller.signal,
+      ...(repair ? { repair } : {}),
+    });
+    // The action is never rewritten. A repaired attempt sends the same identity,
+    // the same hash and the same approval, with the payload the policy chose.
+    const wire = (payload: JsonObject): Action => ({ ...action, canonical_payload: payload });
+    return {
+      execute: async ({ payload, route, mapping, attempt }) =>
+        dispatchResult.parse(
+          await connector.execute(wire(payload), ctx({ attempt, route, mapping })),
+        ),
+      verify: async () => verifyResult.parse(await connector.verify(action, ctx())),
+      ...(connector.describe
+        ? {
+            describe: () =>
+              (connector.describe as NonNullable<Connector['describe']>)(action, ctx()),
+          }
+        : {}),
+      ...(connector.refreshCredential
+        ? {
+            refreshCredential: async () => {
+              const refreshed = await (
+                connector.refreshCredential as NonNullable<Connector['refreshCredential']>
+              )(action, ctx());
+              // A fresh token is not a grant. The connection row decides.
+              return refreshed && (await this.grantPermits(action));
+            },
+          }
+        : {}),
+      ...(connector.routes
+        ? { routes: () => (connector.routes as NonNullable<Connector['routes']>)(action, ctx()) }
+        : {}),
+      ...(this.options.reviseOutput
+        ? {
+            revise: (fault) =>
+              (this.options.reviseOutput as NonNullable<BrokerOptions['reviseOutput']>)({
+                action,
+                fault,
+              }),
+          }
+        : {}),
+      recordCandidate: async ({ fault, proposal, description, evaluation }) =>
+        this.recordCandidate(action, fault, proposal, description, evaluation),
+    };
+  }
+
+  /** A refreshed credential only helps if the connection still permits the call. */
+  private async grantPermits(action: Action): Promise<boolean> {
+    const [connection] = await this
+      .sql`select status, scopes from connection where id = ${action.connection_id}`;
+    if (connection?.status !== 'active') return false;
+    const scopes = (connection.scopes ?? []) as string[];
+    return scopes.includes(action.kind);
+  }
+
+  /**
+   * Write a drift mapping down as a proposal. It is a record before it is ever
+   * a change, and it becomes `applied` only where a passing test says it may.
+   */
+  private async recordCandidate(
+    action: Action,
+    fault: ConnectorFault,
+    proposal: MappingProposal,
+    description: ConnectorDescription,
+    evaluation: { passed: boolean; detail: string },
+  ): Promise<{ id: string }> {
+    const state = !proposal.safe ? 'rejected' : evaluation.passed ? 'evaluated' : 'rejected';
+    const [row] = await this.sql`
+      insert into repair_candidate
+        (id, action_id, job_id, connection_id, kind, fault_kind, state, observed_schema,
+         proposed_mapping, test, evaluation, safe)
+      values (${recordId('rpc')}, ${action.id}, ${action.job_id}, ${action.connection_id},
+        ${action.kind}, ${fault.kind}, ${state},
+        ${JSON.stringify(description.schema ?? { required: description.required })}::jsonb,
+        ${JSON.stringify(proposal.mapping)}::jsonb, ${JSON.stringify(proposal.test)}::jsonb,
+        ${JSON.stringify({ ...evaluation, evaluated_at: new Date().toISOString() })}::jsonb,
+        ${proposal.safe})
+      on conflict (action_id, proposed_mapping) do update
+        set state = excluded.state, evaluation = excluded.evaluation,
+            observed_schema = excluded.observed_schema, safe = excluded.safe, updated_at = now()
+      returning id`;
+    return { id: row?.id as string };
+  }
+
+  /**
+   * Persist what the policy did, then let the action come to rest.
+   *
+   * The trace is written first and unconditionally, so an escalation that fails
+   * still leaves the evidence of what was tried behind it.
+   */
+  private async settleRepair(action: Action, run: RepairRun): Promise<Action> {
+    const id = action.id;
+    await this.sql`update action set repair_trace = ${JSON.stringify(run.trace)}::jsonb,
+      repair_counters = ${JSON.stringify(run.counters)}::jsonb,
+      repair_disposition = ${run.disposition},
+      retry_after_at = ${run.retry_after_at}
+      where id = ${id}`;
+    if (run.disposition === 'parked_until_retry') return this.park(action, run);
+    // A mapping that carried the send is only `applied` once the send landed.
+    if (run.disposition === 'completed') {
+      await this.sql`update repair_candidate set state = 'applied', updated_at = now()
+        where action_id = ${id} and state = 'evaluated' and safe = true`;
+    }
+    const settled = await this.recordResult(id, run.result as DispatchResult);
+    if (run.question) await this.escalate(settled, run);
+    return settled;
+  }
+
+  /**
+   * A rate limit releases the worker. The action goes back to admitted with the
+   * instant it may be approached again, and the job waits on a timer, so a
+   * destination that asked for a minute is not asked again for a minute.
+   */
+  private async park(action: Action, run: RepairRun): Promise<Action> {
+    const wakeAt = run.retry_after_at ?? new Date().toISOString();
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, action.job_id);
+      const current = await loadAction(tx, action.id, true);
+      if (current.status !== 'dispatched') return current;
+      await tx`update action set dispatched_at = null where id = ${action.id}`;
+      await this.setStatus(tx, current, 'admitted');
+      await appendEvent(tx, job.id, current.attempt_id, 'notice', {
+        action_id: action.id,
+        phase: 'repair_parked',
+        retry_after_at: wakeAt,
+      });
+      if (!['cancelled', 'failed', 'completed'].includes(job.state)) {
+        await this.moveJob(tx, job, 'waiting_for_event_or_time', {
+          kind: 'timer',
+          wake_at: wakeAt,
+        });
+        await tx`update job set next_wake_at = ${wakeAt},
+          substrate_disposition = 'timer_or_event' where id = ${job.id}`;
+      }
+      return loadAction(tx, action.id);
+    });
+  }
+
+  /**
+   * One diagnosis, with the progress that was made, in the owner's one queue.
+   * The database holds a single open question per responsibility, so a job that
+   * keeps failing the same way asks once and not once per attempt.
+   */
+  private async escalate(action: Action, run: RepairRun): Promise<void> {
+    const reconnect = run.disposition === 'needs_reconnect';
+    const text = reconnect
+      ? 'This connection no longer permits the send. Reconnect it and Melete will carry on from here.'
+      : `Melete could not finish this and stopped rather than guess. ${run.question}`;
+    const because = [
+      `${action.kind} stopped at ${run.disposition.replace(/_/g, ' ')} after ${run.executions} ${
+        run.executions === 1 ? 'attempt' : 'attempts'
+      }.`,
+      'Nothing was sent twice and nothing was changed to make it go through.',
+    ];
+    await this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, action.job_id);
+      if (['cancelled', 'completed'].includes(job.state)) return;
+      const [row] = await tx`insert into question
+          (id, source, job_id, attempt_id, text, because, if_ignored, blocks_external_effect)
+        values (${recordId('qst')}, 'job', ${job.id}, ${action.attempt_id}, ${text},
+          ${JSON.stringify(because)}::jsonb,
+          'This responsibility stays where it is until you answer, and nothing is sent in the meantime.',
+          true)
+        on conflict (job_id) where state = 'open' do nothing
+        returning id`;
+      await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+        action_id: action.id,
+        phase: 'repair_escalated',
+        disposition: run.disposition,
+        question_id: (row?.id as string) ?? null,
+      });
+    });
+  }
+
+  /**
+   * Bring back the actions a rate limit parked. Only an admitted action with a
+   * due `retry_after_at` is resumed, under its own id, so the destination sees
+   * the same request it declined to take a minute ago.
+   */
+  async resumeParked(now = Date.now()): Promise<number> {
+    const due = new Date(now).toISOString();
+    const rows = await this.sql`select id from action
+      where status = 'admitted' and retry_after_at is not null and retry_after_at <= ${due}
+      order by retry_after_at`;
+    for (const row of rows) await this.dispatch(row.id as string);
+    return rows.length;
   }
 
   async recordResult(id: string, result: DispatchResult): Promise<Action> {

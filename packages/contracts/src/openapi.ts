@@ -67,6 +67,7 @@ import {
   trustRequest,
   trustResolution,
 } from './provenance.ts';
+import { jobRepairsResponse } from './repair.ts';
 import {
   backgroundOperation,
   connectionGeneration,
@@ -663,6 +664,24 @@ export function buildOpenApiDocument() {
             summary: 'The global feed that drives the inbox',
             requestParams: { query: eventQuery },
             responses: { '200': jsonResponse('Events', eventPage) },
+          },
+        },
+
+        '/jobs/{id}/repairs': {
+          get: {
+            tags: ['actions'],
+            summary: 'What was repaired on this responsibility, and what stopped safely',
+            description:
+              'One entry per action that met a typed connector fault: the classes it met, the ' +
+              'decisions the repair policy took, and where it came to rest. `completed` is the ' +
+              'only disposition that means the effect happened; every other one is a safe stop ' +
+              'and `safe_stop` is true. A schema-drift mapping appears as the proposal it is, ' +
+              'with the test it had to pass before anything could use it.',
+            requestParams: idParam('id', 'Job id'),
+            responses: {
+              '200': jsonResponse('Repairs', jobRepairsResponse),
+              '404': problem('No such responsibility'),
+            },
           },
         },
 

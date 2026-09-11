@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import postgres from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
+import { migrateDatabase } from '../../src/db/migrate.ts';
 
 export type PostgresFixture = DatabaseHandle & {
   url: string;
@@ -14,6 +15,13 @@ export type PostgresFixture = DatabaseHandle & {
 export type PostgresFixtureOptions = {
   /** The initial frozen schema always runs before these additional migrations. */
   migrations?: Array<string | URL>;
+  /**
+   * Apply the whole committed migration journal instead of the broker subset.
+   * A property that spans modules, a repair that has to reach the owner's one
+   * question queue, needs the tables those modules own, and a fixture that
+   * cannot hold them is not evidence of anything.
+   */
+  everyMigration?: boolean;
 };
 
 const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
@@ -23,7 +31,10 @@ const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import
  * index that was added in 0009, and a test that cannot exercise the index is
  * not evidence of anything.
  */
-const brokerMigrations = [new URL('../../drizzle/0012_effect_identity.sql', import.meta.url)];
+const brokerMigrations = [
+  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
+  new URL('../../drizzle/0015_typed_repair.sql', import.meta.url),
+];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
@@ -137,12 +148,16 @@ export async function createPostgresFixture(
     const url = new URL(adminUrl);
     url.pathname = `/${databaseName}`;
     handle = openDatabase(url.toString(), 2);
-    for (const migration of [
-      initialMigration,
-      ...brokerMigrations,
-      ...(options.migrations ?? []),
-    ]) {
-      await handle.sql.unsafe(await readFile(migration, 'utf8'));
+    if (options.everyMigration) {
+      await migrateDatabase(handle);
+    } else {
+      for (const migration of [
+        initialMigration,
+        ...brokerMigrations,
+        ...(options.migrations ?? []),
+      ]) {
+        await handle.sql.unsafe(await readFile(migration, 'utf8'));
+      }
     }
     return {
       ...handle,

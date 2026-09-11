@@ -96,6 +96,10 @@ export async function startEffectBoundary(
     void internal.broker
       .recoverDispatched()
       .catch(() => process.stderr.write('action recovery failed\n'));
+    // A parked action comes back on its own clock, not on a worker's patience.
+    void internal.broker
+      .resumeParked()
+      .catch(() => process.stderr.write('parked action resume failed\n'));
   }, 15_000);
   recovery.unref();
   return {

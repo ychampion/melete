@@ -148,6 +148,17 @@ export function decideRepair(
     };
   }
 
+  // The attempt's deadline binds every repair path, not only the retry. A
+  // dispatch that has already run out of time does not start another request.
+  if (state.deadlineAt !== null && state.now >= state.deadlineAt) {
+    return {
+      act: 'stop',
+      decision: 'escalate_diagnosis',
+      disposition: 'repair_exhausted',
+      detail: 'the attempt deadline passed before this could be repaired',
+    };
+  }
+
   switch (fault.kind) {
     case 'revoked_credential':
       // Never switch identities. The person reconnects or nothing happens.
