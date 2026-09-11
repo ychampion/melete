@@ -340,12 +340,15 @@ describe('durable action lifecycle', () => {
 });
 
 describe('full effect authority binding', () => {
-  async function proposal(s: Awaited<ReturnType<typeof setup>>) {
-    const result = await s.broker.propose(s.claims, {
-      kind: 'test.send',
-      connection_id: s.connectionId,
-      payload: { to: 'Zara <ZARA@Example.com>', resource: 'mailbox-one', body: 'Approved bytes' },
-    });
+  async function proposal(s: Awaited<ReturnType<typeof setup>>, revision = 0) {
+    const result = await s.broker.propose(
+      { ...s.claims, revision },
+      {
+        kind: 'test.send',
+        connection_id: s.connectionId,
+        payload: { to: 'Zara <ZARA@Example.com>', resource: 'mailbox-one', body: 'Approved bytes' },
+      },
+    );
     await s.broker.decide(result.action_id, {
       decision: 'approved',
       payload_hash: result.payload_hash,
@@ -444,12 +447,20 @@ describe('full effect authority binding', () => {
     async () => {
       const s = await setup();
       const first = await proposal(s);
-      const second = await proposal(s);
+      // Identical bytes in the same job and revision are one intended effect,
+      // so the only way to hold two actions over the same payload is to move
+      // the objective under them. The bytes stay byte-for-byte equal.
+      await s.sql`update job set revision = 1 where id = ${s.claims.job_id}`;
+      const second = await proposal(s, 1);
       await s.sql`update event set payload = (select payload from event where dedup_key = ${`broker:binding:${first.action_id}`})
       where dedup_key = ${`broker:binding:${second.action_id}`}`;
       expect(first.payload_hash).toBe(second.payload_hash);
+      expect(second.action_id).not.toBe(first.action_id);
+      expect(second.intent_key).not.toBe(first.intent_key);
       expect(
-        await rejectionOf(s.broker.admit(s.claims, second.action_id, second.payload_hash)),
+        await rejectionOf(
+          s.broker.admit({ ...s.claims, revision: 1 }, second.action_id, second.payload_hash),
+        ),
       ).toMatchObject({ code: 'approval_hash_mismatch' });
       expect(s.calls()).toBe(0);
     },

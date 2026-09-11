@@ -171,6 +171,10 @@ export const action = pgTable(
     canonicalPayload: jsonb('canonical_payload').notNull(),
     // The identity of the effect. Approval binds to it; a retry reuses it.
     payloadHash: text('payload_hash').notNull(),
+    // sha256(job, revision, connection, kind, payload hash). One action per
+    // key: a re-proposal after a crash finds this row instead of making a
+    // second one. Null only on rows written before the column existed.
+    intentKey: text('intent_key'),
     status: text('status').notNull().default('proposed'),
     authorizationRef: text('authorization_ref'),
     budgetReservation: text('budget_reservation'),
@@ -184,6 +188,9 @@ export const action = pgTable(
   (t) => [
     index('action_job_status_idx').on(t.jobId, t.status),
     uniqueIndex('action_idempotency_idx').on(t.idempotencyKey),
+    // Postgres lets a unique index hold many nulls, so pre-existing rows are
+    // untouched while every new proposal is one effect exactly once.
+    uniqueIndex('action_intent_key_idx').on(t.intentKey),
   ],
 );
 
@@ -202,6 +209,9 @@ export const approval = pgTable(
     substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     decidedBy: text('decided_by'),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // The doubts the person was shown. A decision is bound to this set, so an
+    // approval given before an origin was known cannot be spent after.
+    originWarnings: jsonb('origin_warnings').notNull().default([]),
   },
   // One live approval per action and payload: re-asking for the same bytes
   // reuses the record instead of stacking duplicates in the inbox.

@@ -370,6 +370,7 @@ export class Runner {
       effect_class: step.effect_class,
       canonical_payload: canonical,
       payload_hash: hash,
+      intent_key: null,
       status: needsApproval ? 'needs_approval' : 'admitted',
       authorization_ref: null,
       budget_reservation: null,
@@ -408,6 +409,7 @@ export class Runner {
       decision: null,
       decided_by: null,
       expires_at: null,
+      origin_warnings: [],
     });
     this.store.append({
       type: 'approval_requested',

@@ -188,6 +188,14 @@ export interface paths {
                                 job_id: string;
                                 job_revision: number;
                                 kind: string;
+                                /** @default [] */
+                                origin_warnings: {
+                                    description: string;
+                                    field: string;
+                                    handle: string | null;
+                                    /** @enum {string} */
+                                    origin_trust: "owner" | "verified_connector" | "external_content" | "inferred" | "unknown";
+                                }[];
                                 payload_hash: components["schemas"]["__schema56"];
                                 requested_at: components["schemas"]["__schema30"];
                             }[];
@@ -2547,6 +2555,8 @@ export interface components {
             effect_class: components["schemas"]["__schema55"];
             id: string;
             idempotency_key: string;
+            /** @default null */
+            intent_key: string | null;
             job_id: string;
             kind: string;
             payload_hash: components["schemas"]["__schema56"];

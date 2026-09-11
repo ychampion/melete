@@ -17,6 +17,15 @@ export type PostgresFixtureOptions = {
 };
 
 const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
+/**
+ * The frozen initial schema, plus the later migrations the broker's own
+ * invariants live in. A fixture that stops at 0000 cannot exercise a unique
+ * index that was added in 0009, and a test that cannot exercise the index is
+ * not evidence of anything.
+ */
+const brokerMigrations = [
+  new URL('../../drizzle/0009_effect_identity_and_trust.sql', import.meta.url),
+];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
@@ -130,7 +139,11 @@ export async function createPostgresFixture(
     const url = new URL(adminUrl);
     url.pathname = `/${databaseName}`;
     handle = openDatabase(url.toString(), 2);
-    for (const migration of [initialMigration, ...(options.migrations ?? [])]) {
+    for (const migration of [
+      initialMigration,
+      ...brokerMigrations,
+      ...(options.migrations ?? []),
+    ]) {
       await handle.sql.unsafe(await readFile(migration, 'utf8'));
     }
     return {

@@ -3,8 +3,8 @@ import {
   type ApprovalDecisionRequest,
   approvalDecisionRequest,
   type CapabilityClaims,
+  type EffectProposalResponse,
   type ProposeActionRequest,
-  type ProposeActionResponse,
   proposeActionRequest,
   type ToolSpec,
 } from '@melete/contracts';
@@ -16,7 +16,7 @@ import { BrokerFault } from './errors.ts';
 export interface BrokerOperations {
   authorize(claims: CapabilityClaims): Promise<void>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
-  propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<ProposeActionResponse>;
+  propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
   decide(id: string, request: ApprovalDecisionRequest): Promise<unknown>;
 }

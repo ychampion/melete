@@ -1,6 +1,8 @@
-import type { Action, DispatchResult, JsonObject } from '@melete/contracts';
+import type { Action, CapabilityClaims, DispatchResult, JsonObject } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
-import { BrokerService } from '../../src/broker/service.ts';
+import { recordId } from '../../src/broker/records.ts';
+import { BrokerService, type StandingGrantResolver } from '../../src/broker/service.ts';
+import type { TrustResolver } from '../../src/broker/trust.ts';
 import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
 import type { Connector, ConnectorContext } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
@@ -44,6 +46,10 @@ export async function createConformanceFixture() {
       options: {
         verify?: boolean;
         dispatchTimeoutMs?: number;
+        /** Where the values in a payload came from; absent means nobody asks. */
+        resolveTrust?: TrustResolver;
+        /** Whether a standing grant covers the effect; absent means none does. */
+        resolveStandingGrant?: StandingGrantResolver;
         execute?: (
           action: Action,
           ctx: ConnectorContext,
@@ -70,8 +76,30 @@ export async function createConformanceFixture() {
           connectors: resolver,
           boss,
           dispatchTimeoutMs: options.dispatchTimeoutMs,
+          resolveTrust: options.resolveTrust,
+          resolveStandingGrant: options.resolveStandingGrant,
         });
       const broker = restart();
+      /**
+       * End the live attempt the way a kill does and open the next one at the
+       * bumped epoch. The job, its revision and its connection are unchanged,
+       * so a proposal of the same payload is the same intended effect.
+       */
+      const nextAttempt = async (): Promise<CapabilityClaims> => {
+        await fixture.sql`update attempt set outcome = 'fenced', ended_at = now()
+          where job_id = ${seed.claims.job_id} and outcome is null`;
+        const [job] = await fixture.sql`update job set lease_epoch = lease_epoch + 1
+          where id = ${seed.claims.job_id} returning lease_epoch, revision`;
+        const attemptId = recordId('att');
+        await fixture.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+          values (${attemptId}, ${seed.claims.job_id}, ${job?.lease_epoch}, 'fake', 'fake', 'scripted')`;
+        return {
+          ...seed.claims,
+          attempt_id: attemptId,
+          epoch: job?.lease_epoch as number,
+          revision: job?.revision as number,
+        };
+      };
       const approve = async (payload: JsonObject, clientRef?: string) => {
         const proposal = await broker.propose(seed.claims, {
           kind: 'test.send',
@@ -97,6 +125,7 @@ export async function createConformanceFixture() {
         restart,
         approve,
         send,
+        nextAttempt,
         executions: () => executions,
       };
     },
