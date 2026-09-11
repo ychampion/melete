@@ -13,6 +13,7 @@
  * booleans. Anything a person would want that this cannot say is a thing the
  * model should be woken for, not a thing the DSL should grow an operator for.
  */
+import { RE2JS } from 're2js';
 import { z } from 'zod';
 
 /** `changed` needs the previous observation; the rest read only the current one. */
@@ -73,6 +74,12 @@ export function readWatchField(observation: unknown, path: string): unknown {
 /** The longest text a predicate will scan, so one huge body cannot stall a wake. */
 export const WATCH_MAX_SCAN = 8192;
 
+/** Creation and evaluation use the same non-backtracking regex grammar. */
+export function compileWatchPattern(pattern: string): RE2JS {
+  if (pattern.length > 1000) throw new Error('watch pattern exceeds 1000 characters');
+  return RE2JS.compile(pattern);
+}
+
 const asComparable = (value: unknown): number | null => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'string') {
@@ -114,7 +121,7 @@ export function evaluateWatchClause(
     case 'matches': {
       if (typeof clause.value !== 'string' || typeof actual !== 'string') return false;
       try {
-        return new RegExp(clause.value).test(actual.slice(0, WATCH_MAX_SCAN));
+        return compileWatchPattern(clause.value).matcher(actual.slice(0, WATCH_MAX_SCAN)).find();
       } catch {
         return false;
       }

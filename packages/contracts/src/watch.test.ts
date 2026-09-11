@@ -153,3 +153,39 @@ describe('a whole predicate', () => {
     expect(evaluateWatch(overdue, observation)).toBe(evaluateWatch(overdue, observation));
   });
 });
+
+test('nested repetition matches an adversarial observation within a bounded time', async () => {
+  // Isolate the probe so a regression cannot block the test runner or its cleanup.
+  const probe = Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      `
+    const { evaluateWatchClause } = await import('./watch.ts');
+    const start = performance.now();
+    const matched = evaluateWatchClause(
+      { field: 'text', op: 'matches', value: '^(a+)+$' },
+      { text: 'a'.repeat(8191) + '!' },
+    );
+    console.log(JSON.stringify({ matched, elapsed: performance.now() - start }));
+  `,
+    ],
+    { cwd: import.meta.dir, stdout: 'pipe', stderr: 'pipe' },
+  );
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    probe.kill();
+  }, 5000);
+  try {
+    const exitCode = await probe.exited;
+    expect(timedOut).toBe(false);
+    expect(exitCode).toBe(0);
+    const result = JSON.parse(await new Response(probe.stdout).text());
+    expect(result.matched).toBe(false);
+    expect(result.elapsed).toBeLessThan(500);
+  } finally {
+    clearTimeout(timer);
+    if (probe.exitCode === null) probe.kill();
+  }
+}, 10000);

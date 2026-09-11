@@ -1,4 +1,5 @@
 import {
+  compileWatchPattern,
   evaluateWatch,
   ID_PREFIXES,
   isTerminal,
@@ -58,11 +59,12 @@ export class TriggerService {
       for (const clause of spec.predicate.all) {
         if (clause.op !== 'matches') continue;
         try {
-          new RegExp(String(clause.value));
+          if (typeof clause.value !== 'string') throw new Error('pattern must be text');
+          compileWatchPattern(clause.value);
         } catch {
           throw new ServiceError(
             'invalid_predicate',
-            `The pattern for ${clause.field} is not a valid regular expression.`,
+            `The pattern for ${clause.field} is not a supported regular expression.`,
             400,
           );
         }

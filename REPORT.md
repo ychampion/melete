@@ -296,3 +296,11 @@ green; the groups above are the part I can state as verified.
 - `git -C C:/Users/gamin/melete-oss-w9 push -u origin lane/w9-product`: pushed finding 1 after the locked suite.
 - `bun test apps/melete/test/integration/reactions.test.ts apps/mock-api/src/app.test.ts --max-concurrency=2`: GREEN, 42 pass, 0 fail, 143 assertions; both preserved reaction draft tests are finished.
 - `bun run typecheck`, `bun run openapi`, `bun run client:generate`, and changed-file `biome check`: passed for finding 2.
+
+## Finding 3
+
+- `e6d6596`: finding 2 committed and pushed.
+- `bun test packages/contracts/src/watch.test.ts -t "nested repetition" --max-concurrency=2`: RED, the 8192-character `^(a+)+$` probe took 786.6364ms against the 500ms bound. The subprocess watchdog protects the shared test event loop.
+- `bun add --cwd packages/contracts --exact re2js@2.8.6`: installed the linear-time matcher; `compileWatchPattern` is shared by watch creation and evaluation. API verified against https://github.com/le0pard/re2js and the installed README.
+- `bun test packages/contracts/src/watch.test.ts apps/melete/test/integration/watch.test.ts --max-concurrency=2`: GREEN, 20 pass, 0 fail, 63 assertions, 26.39s; the adversarial matcher finishes below 500ms.
+- `bun run typecheck`, `bun run openapi`, `bun run client:generate`, changed-file `biome check`: passed for finding 3; generated files unchanged.
