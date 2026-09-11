@@ -186,6 +186,38 @@ export class ToolCatalog {
       join job j on j.id = a.job_id where j.space_id = ${job.space_id} and a.status = 'succeeded'
       group by a.connection_id, a.kind`;
     const items: ScopedCatalogItem[] = [];
+    const skills = await this.skills(job, claims);
+    const nativeNames = new Set(
+      [...META_TOOLS, ...(this.options.nativeTools ?? [])].map((tool) => tool.name),
+    );
+    const reserved = new Set([
+      ...nativeNames,
+      ...skills.map((skill) => `skills.${skill.frontmatter.name.replaceAll('-', '_')}`),
+    ]);
+    const accept = async (name: string, connectionId: string | null, validate: () => void) => {
+      try {
+        validate();
+        return true;
+      } catch (error) {
+        if (!(error instanceof BrokerFault)) throw error;
+        // Isolate configuration faults to their entry; retain a durable diagnostic.
+        await appendEvent(
+          tx,
+          claims.job_id,
+          claims.attempt_id,
+          'notice',
+          {
+            phase: 'catalog_rejected',
+            name,
+            connection_id: connectionId,
+            code: error.code,
+            message: error.message,
+          },
+          `catalog:reject:${claims.attempt_id}:${connectionId ?? 'native'}:${name}`,
+        );
+        return false;
+      }
+    };
     for (const row of connections) {
       const connector = this.options.connectors.get(row.id);
       if (!connector || connector.manifest.provider !== row.provider) continue;
@@ -193,6 +225,16 @@ export class ToolCatalog {
       for (const declared of connector.manifest.tools) {
         const scopes = [declared.name, ...declared.required_scopes];
         if (!scopes.every((scope) => claims.scopes.includes(scope) && row.scopes.includes(scope)))
+          continue;
+        if (
+          !(await accept(declared.name, row.id, () => {
+            if (reserved.has(declared.name))
+              throw new BrokerFault(
+                'unknown_tool',
+                'Connector name is reserved by a broker tool or skill',
+              );
+          }))
+        )
           continue;
         const source = connector.catalog?.source ?? 'connector';
         const tool: ToolSpec = {
@@ -222,7 +264,7 @@ export class ToolCatalog {
         });
       }
     }
-    for (const skill of await this.skills(job, claims)) {
+    for (const skill of skills) {
       const tool: ToolSpec = {
         name: `skills.${skill.frontmatter.name.replaceAll('-', '_')}`,
         description: skill.frontmatter.description,
@@ -230,6 +272,16 @@ export class ToolCatalog {
         effect_class: 'read',
         connection_id: null,
       };
+      if (
+        !(await accept(tool.name, null, () => {
+          if (
+            nativeNames.has(tool.name) ||
+            items.some((item) => item.original === tool.name && item.tool.connection_id === null)
+          )
+            throw new BrokerFault('unknown_tool', 'Duplicate scoped skill or reserved native name');
+        }))
+      )
+        continue;
       items.push({
         original: tool.name,
         tool,
@@ -245,8 +297,21 @@ export class ToolCatalog {
       });
     }
     for (const tool of this.options.nativeTools ?? []) {
-      if (tool.connection_id !== null || tool.effect_class !== 'read')
-        throw new Error('Native catalog tools must be broker-owned reads');
+      if (
+        !(await accept(tool.name, tool.connection_id, () => {
+          if (tool.connection_id !== null || tool.effect_class !== 'read')
+            throw new BrokerFault(
+              'unknown_tool',
+              'Native catalog tools must be broker-owned reads',
+            );
+          if (
+            META_TOOLS.some((meta) => meta.name === tool.name) ||
+            items.some((item) => item.original === tool.name && item.tool.connection_id === null)
+          )
+            throw new BrokerFault('unknown_tool', 'Duplicate native tool name');
+        }))
+      )
+        continue;
       items.push({
         original: tool.name,
         tool,
@@ -258,8 +323,7 @@ export class ToolCatalog {
     const counts = new Map(META_TOOLS.map((tool) => [tool.name, 1]));
     for (const item of items) counts.set(item.original, (counts.get(item.original) ?? 0) + 1);
     for (const item of items) {
-      if ((counts.get(item.original) ?? 0) > 1) {
-        if (!item.tool.connection_id) throw new Error('Duplicate scoped skill');
+      if ((counts.get(item.original) ?? 0) > 1 && item.tool.connection_id) {
         item.tool.name = accountToolName(item.original, item.tool.connection_id);
         item.entry.name = item.tool.name;
       }

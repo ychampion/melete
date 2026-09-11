@@ -35,6 +35,12 @@ names in degraded health notes. `load_tool` independently checks the same cap
 before persistence, including tools from other connector sources. This is a
 per-schema limit; the initial core still enforces its separate aggregate budget.
 
+Invalid native entries, duplicate skill names and connector collisions with
+broker-owned names raise a `BrokerFault` inside entry admission. Discovery drops
+that entry and records a deduplicated `catalog_rejected` notice; unrelated tools
+remain available. Valid same-name tools on different connections retain their
+account aliases.
+
 Every call rechecks authority. Async or unresolved schemas fail before an action
 is created, and independent schemas do not share an Ajv `$id` registry. A
 changed schema, effect class or approval policy cannot silently replace the

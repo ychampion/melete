@@ -1,7 +1,8 @@
 import { afterAll, expect, test } from 'bun:test';
 import type { Skill } from '@melete/contracts';
 import { signCapability } from '../../src/broker/capability.ts';
-import { accountToolName, META_TOOLS, toolTokens } from '../../src/broker/catalog.ts';
+import { accountToolName, META_TOOLS, ToolCatalog, toolTokens } from '../../src/broker/catalog.ts';
+import { COMPOSE_TOOL, createTestComposeExecutor } from '../../src/broker/compose.ts';
 import { createBrokerApp } from '../../src/broker/http.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -33,7 +34,7 @@ dbTest(
   },
 );
 
-async function setup(options: { skills?: Skill[] } = {}) {
+async function setup(options: { skills?: Skill[]; compose?: boolean } = {}) {
   if (!db) throw new Error('Postgres unavailable');
   const seed = await seedJob(db.sql, { scopes: ['test.read', 'test.invoice', 'test.send'] });
   let calls = 0;
@@ -89,6 +90,7 @@ async function setup(options: { skills?: Skill[] } = {}) {
     sql: db.sql,
     connectors: registry,
     catalog: { skills: async () => options.skills ?? [] },
+    ...(options.compose ? { composeExecutor: createTestComposeExecutor() } : {}),
   });
   return { ...seed, broker, registry, connector, calls: () => calls, sql: db.sql };
 }
@@ -483,4 +485,85 @@ dbTest('load_tool rejects an oversized schema before persisting it', async () =>
     await s.sql`select loaded from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
   expect(context?.loaded).toEqual([]);
   expect((await s.broker.discovery.load(s.claims, 'test.read')).tool.name).toBe('test.read');
+});
+
+dbTest('a connector named compose is dropped without breaking HTTP discovery', async () => {
+  const s = await setup({ compose: true });
+  const declared = s.connector.manifest.tools[0];
+  if (!declared) throw new Error('fixture tool absent');
+  s.connector.manifest.tools.push({
+    ...declared,
+    name: 'compose',
+    required_scopes: ['compose'],
+  });
+  s.claims.scopes.push('compose');
+  await s.sql`update connection set scopes = ${JSON.stringify(s.claims.scopes)}::jsonb where id = ${s.connectionId}`;
+  const key = 'catalog-capability-key-32-characters';
+  const app = createBrokerApp({
+    broker: s.broker,
+    capabilityKey: key,
+    approvalKey: 'catalog-approval-key-32-characters',
+  });
+  const response = await app.request('/tools', {
+    headers: { authorization: `Bearer ${signCapability(s.claims, key)}` },
+  });
+  expect(response.status).toBe(200);
+  const available = await s.broker.discovery.available(s.claims);
+  expect(available.filter((tool) => tool.name === 'compose')).toEqual([COMPOSE_TOOL]);
+  expect(
+    available.some(
+      (tool) => tool.connection_id === s.connectionId && tool.name.startsWith('compose'),
+    ),
+  ).toBe(false);
+  expect((await s.broker.discovery.load(s.claims, 'test.invoice')).tool.name).toBe('test.invoice');
+  const notes =
+    await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id} and payload->>'phase' = 'catalog_rejected'`;
+  expect(notes).toHaveLength(1);
+  expect(notes[0]?.payload).toMatchObject({
+    code: 'unknown_tool',
+    name: 'compose',
+    connection_id: s.connectionId,
+  });
+});
+
+dbTest('invalid native entries are dropped with a broker fault note', async () => {
+  const s = await setup();
+  const catalog = new ToolCatalog({
+    sql: s.sql,
+    connectors: s.registry,
+    nativeTools: [
+      { ...COMPOSE_TOOL, name: 'invalid_native', effect_class: 'write_external' },
+      COMPOSE_TOOL,
+    ],
+  });
+  expect((await catalog.available(s.claims)).map((tool) => tool.name)).not.toContain(
+    'invalid_native',
+  );
+  expect((await catalog.load(s.claims, 'test.invoice')).tool.name).toBe('test.invoice');
+  const notes =
+    await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id} and payload->>'phase' = 'catalog_rejected'`;
+  expect(notes).toHaveLength(1);
+  expect(notes[0]?.payload).toMatchObject({ code: 'unknown_tool', name: 'invalid_native' });
+});
+
+dbTest('duplicate skills are dropped without disabling other tools', async () => {
+  const skill: Skill = {
+    path: 'fixture/SKILL.md',
+    body: 'Read receipts.',
+    frontmatter: {
+      name: 'receipts',
+      tools: ['test.invoice'],
+      description: 'Receipt procedure',
+      triggers: ['receipt'],
+      max_tokens: 400,
+    },
+  };
+  const s = await setup({ skills: [skill, structuredClone(skill)] });
+  const available = await s.broker.discovery.available(s.claims);
+  expect(available.filter((tool) => tool.name === 'skills.receipts')).toHaveLength(1);
+  expect((await s.broker.discovery.load(s.claims, 'test.invoice')).tool.name).toBe('test.invoice');
+  const notes =
+    await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id} and payload->>'phase' = 'catalog_rejected'`;
+  expect(notes).toHaveLength(1);
+  expect(notes[0]?.payload).toMatchObject({ code: 'unknown_tool', name: 'skills.receipts' });
 });
