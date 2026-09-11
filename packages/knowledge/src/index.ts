@@ -9,6 +9,7 @@ export * from './frontmatter.ts';
 export * from './fts.ts';
 export * from './git.ts';
 export * from './layout.ts';
+export * from './lint.ts';
 export * from './mediation.ts';
 export * from './records.ts';
 export * from './space.ts';

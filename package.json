@@ -23,6 +23,7 @@
     "openapi": "bun run packages/contracts/scripts/openapi.ts",
     "compose:check": "bun run deploy/scripts/compose-check.ts",
     "conformance": "bun run conformance/run.ts",
+    "knowledge:lint": "bun run packages/knowledge/src/cli/lint.ts",
     "db:generate": "bun run --cwd apps/melete db:generate"
   },
   "devDependencies": {
