@@ -81,3 +81,4 @@
 
 - SHA `02d7f6a`: bundle assembly pushed to `origin/lane/w15-wire` after the locked full suite passed.
 - SHA `731bdbe`: entry point, memory startup, context diagnostics and generated contracts committed and pushed. Its intermediate adapter uses the existing static endpoint; the following launcher slice replaces that endpoint with supervised instances. The focused entry-point tests and final-working-tree locked suite passed.
+- SHA `76dccfe`: process and Docker supervisors, default Compose wiring, per-attempt credentials, process-tree teardown, broker handoff and retry identity guards committed and pushed. The locked suite, Python plugin checks and static Compose checks passed; Docker execution remains unverified.
