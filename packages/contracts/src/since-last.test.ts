@@ -60,6 +60,16 @@ describe('the delta brief', () => {
     expect(renderSinceLast(delta)).toContain('is unknown');
   });
 
+  test('a succeeded action with a null receipt is not confirmed', () => {
+    const delta = sinceLast.parse({
+      actions: [
+        { action_id: ACTION, kind: 'audio.synthesize', status: 'succeeded', receipt_ref: null, at },
+      ],
+    });
+    expect(renderSinceLast(delta)).toContain('not confirmed');
+    expect(renderSinceLast(delta)).not.toContain('is succeeded');
+  });
+
   test('evidence, questions and approvals each get one line', () => {
     const delta = sinceLast.parse({
       attempt_id: ATTEMPT,

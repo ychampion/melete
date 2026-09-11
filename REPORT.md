@@ -320,3 +320,9 @@ green; the groups above are the part I can state as verified.
 - `bun run test:plugin`: 22 passed in 13.48s; unknown connection entries for other tools remain rejected.
 - `bun test apps/melete/test/integration/broker.test.ts -t "runtime can answer a message" --max-concurrency=2`: GREEN, 1 pass, 0 fail, 5 assertions, 16.90s; uses the existing `rejectionOf` helper to avoid the documented Windows async-matcher stall.
 - `bunx biome check apps/melete/test/integration/broker.test.ts` and `git diff --check`: passed.
+
+## Finding 10
+
+- `ea09cdb`: finding 6 committed and pushed.
+- `a succeeded action with a null receipt is not confirmed`: RED at ea09cdb, rendered `is succeeded` for succeeded/null; GREEN after rendering `not confirmed`.
+- `bun test packages/contracts/src/since-last.test.ts`: 8 pass, 0 fail, 21 assertions. `bun run typecheck` and changed-file `biome check`: passed.

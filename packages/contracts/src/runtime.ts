@@ -158,7 +158,8 @@ export function renderSinceLast(delta: SinceLast): string {
   ];
   for (const item of delta.actions) {
     const receipt = item.receipt_ref ? `, receipt ${item.receipt_ref}` : '';
-    lines.push(`- action ${item.action_id} (${item.kind}) is ${item.status}${receipt}`);
+    const status = item.status === 'succeeded' && !item.receipt_ref ? 'not confirmed' : item.status;
+    lines.push(`- action ${item.action_id} (${item.kind}) is ${status}${receipt}`);
   }
   for (const item of delta.evidence) lines.push(`- new ${item.kind} ${item.handle}: ${item.label}`);
   for (const item of delta.pending_questions) lines.push(`- question ${item.state}: ${item.text}`);
