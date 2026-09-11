@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { actionStatus, approvalRequestView, effectClass, payloadHash } from './broker.ts';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
+import { originWarnings } from './effects.ts';
 import {
   action,
   attempt,
@@ -102,7 +103,17 @@ export const resolveActionRequest = z.object({
 // approvals
 // --------------------------------------------------------------------------
 
-export const approvalListResponse = z.object({ approvals: z.array(approvalRequestView) });
+/**
+ * The approval request as the client renders it, plus the doubts that made it
+ * worth asking. A screen that shows an address without saying it came from a
+ * web page is asking the person to approve something they cannot see.
+ */
+export const approvalRequestWithOrigin = approvalRequestView.extend({
+  origin_warnings: originWarnings.default([]),
+});
+export type ApprovalRequestWithOrigin = z.infer<typeof approvalRequestWithOrigin>;
+
+export const approvalListResponse = z.object({ approvals: z.array(approvalRequestWithOrigin) });
 export const approvalDecisionResponse = z.object({
   approval_id: prefixedId(ID_PREFIXES.approval),
   action_id: prefixedId(ID_PREFIXES.action),

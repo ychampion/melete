@@ -237,6 +237,9 @@ export const BROKER_ERROR_CODES = [
   'action_not_found',
   'action_not_admissible',
   'connector_unavailable',
+  // A recipient, destination, amount or resource field did not resolve to an
+  // origin Melete can vouch for, and no approval bound to that doubt exists.
+  'untrusted_recipient_origin',
 ] as const;
 export const brokerErrorCode = z.enum(BROKER_ERROR_CODES);
 export type BrokerErrorCode = z.infer<typeof brokerErrorCode>;

@@ -19,6 +19,7 @@ export function mailAction(
         : 'read',
     canonical_payload: canonical.canonical,
     payload_hash: canonical.hash,
+    intent_key: null,
     status: 'dispatched',
     authorization_ref: null,
     budget_reservation: null,

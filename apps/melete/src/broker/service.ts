@@ -8,10 +8,15 @@ import {
   canonicalizePayload,
   type DispatchResult,
   dispatchResult,
+  type EffectProposalResponse,
   findTool,
+  hashOriginWarnings,
+  intentKey,
+  isTrustGatedEffect,
   jobConstraints,
+  type OriginWarning,
+  originWarnings,
   type ProposeActionRequest,
-  type ProposeActionResponse,
   type Receipt,
   type ToolSpec,
   type VerifyResult,
@@ -44,6 +49,7 @@ import {
   type Query,
   recordId,
 } from './records.ts';
+import { collectOriginFields, resolveOriginWarnings, type TrustResolver } from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
 export type BrokerOptions = {
@@ -55,14 +61,74 @@ export type BrokerOptions = {
   /** Trusted connector pricing, never a cost supplied by the model. */
   estimateSpend?: (action: Action) => number;
   resolveAuthority?: EffectAuthorityResolver;
+  /**
+   * Where the values in a payload came from. The memory lane supplies the real
+   * resolver; without one the broker asks nobody and warns about nothing, which
+   * is what v0.1 ships until that lane lands.
+   */
+  resolveTrust?: TrustResolver;
+  /**
+   * Whether a standing grant already covers this effect. v0.1 ships none, so
+   * the default is no grant and every external send is approved once. A grant
+   * only ever removes the approval when nothing about the payload is in doubt.
+   */
+  resolveStandingGrant?: StandingGrantResolver;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
+};
+
+export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
+export type StandingGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<boolean>;
+
+/** What admission decided about one action before it reserved anything. */
+type Admissibility = {
+  warnings: OriginWarning[];
+  warnings_hash: string;
+  standing_grant: boolean;
+  requires_approval: boolean;
 };
 
 const question =
   'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
 const needsApproval = (tool: ConnectorTool) =>
   tool.requires_approval || tool.effect_class === 'write_external' || tool.effect_class === 'spend';
+
+const untrustedOrigin = (warnings: OriginWarning[]) =>
+  `This effect uses ${warnings.length === 1 ? 'a value' : 'values'} Melete cannot vouch for: ` +
+  `${warnings.map((warning) => `${warning.field} (${warning.origin_trust})`).join(', ')}. ` +
+  'It needs your approval with that in front of you, whatever was agreed before.';
+
+/**
+ * The sentence a tool result carries. Built from the record, so a second
+ * proposal of a send that already happened names the receipt, and a second
+ * proposal of a send nobody can confirm says exactly that instead of retrying.
+ */
+function dispositionMessage(action: Action, repeated: boolean): string {
+  const receiptRef = (action.receipt?.external_ref as string | null | undefined) ?? action.id;
+  const already = repeated ? 'already ' : '';
+  switch (action.status) {
+    case 'proposed':
+      return 'Proposed. Nothing has left Melete yet.';
+    case 'needs_approval':
+      return `This effect is ${already}waiting for your approval. Nothing has been sent.`;
+    case 'approved':
+      return `This effect is ${already}approved and waiting to be admitted. Nothing has been sent.`;
+    case 'denied':
+      return 'You denied this effect. It was not sent, and it will not be.';
+    case 'admitted':
+      return `This effect is ${already}admitted and has not been dispatched yet.`;
+    case 'dispatched':
+      return `This effect was ${already}dispatched and the result has not come back yet.`;
+    case 'succeeded':
+      return `This effect ${already}succeeded at ${action.resolved_at ?? action.created_at}, receipt ${receiptRef}. Nothing was sent again.`;
+    case 'failed':
+      return `This effect ${already}failed at ${action.resolved_at ?? action.created_at}. Nothing was sent again.`;
+    case 'unknown':
+      return `${question} It was ${already}attempted at ${action.dispatched_at ?? action.created_at} and was not sent again.`;
+    case 'unresolved':
+      return `${question} Verification could not decide, and it was not sent again.`;
+  }
+}
 
 export class BrokerService implements BrokerOperations {
   readonly sql: Sql;
@@ -164,8 +230,13 @@ export class BrokerService implements BrokerOperations {
       throw new BrokerFault('payload_invalid');
   }
 
-  private async proposalView(action: Action): Promise<ProposeActionResponse> {
-    const [approval] = await this.sql`select id from approval where action_id = ${action.id}
+  private async proposalView(
+    action: Action,
+    key: string,
+    repeated: boolean,
+  ): Promise<EffectProposalResponse> {
+    const [approval] = await this
+      .sql`select id, origin_warnings from approval where action_id = ${action.id}
       and payload_hash = ${action.payload_hash}`;
     return {
       action_id: action.id,
@@ -173,21 +244,154 @@ export class BrokerService implements BrokerOperations {
       effect_class: action.effect_class,
       payload_hash: action.payload_hash,
       canonical_payload: action.canonical_payload,
-      requires_approval: Boolean(approval),
+      requires_approval: Boolean(approval) && approval?.decision !== 'approved',
       approval_id: approval?.id ?? null,
+      intent_key: action.intent_key ?? key,
+      repeated,
+      message: dispositionMessage(action, repeated),
+      origin_warnings: originWarnings.parse(approval?.origin_warnings ?? []),
     };
+  }
+
+  /**
+   * What admission would decide about this action right now: where its values
+   * came from, whether a standing grant covers it, and therefore whether a
+   * person still has to answer. Recomputed at every phase, because the answer
+   * is about the world at that moment and not about what a proposal believed.
+   */
+  private async classify(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    tool: ConnectorTool,
+  ): Promise<Admissibility> {
+    const gated = isTrustGatedEffect(tool.effect_class);
+    const fields = gated ? collectOriginFields(action.canonical_payload) : [];
+    const warnings = await resolveOriginWarnings(
+      tx,
+      gated ? this.options.resolveTrust : undefined,
+      {
+        space_id: job.space_id,
+        job_id: job.id,
+        connection_id: action.connection_id,
+        kind: action.kind,
+        effect_class: tool.effect_class,
+        canonical_payload: action.canonical_payload,
+        fields,
+      },
+    );
+    // A grant is only ever a shortcut past a question nobody needs to ask. It
+    // never covers a value whose origin Melete cannot vouch for.
+    const granted =
+      warnings.length === 0 && needsApproval(tool) && this.options.resolveStandingGrant
+        ? await this.options.resolveStandingGrant(tx, { job, action, tool })
+        : false;
+    return {
+      warnings,
+      warnings_hash: hashOriginWarnings(warnings),
+      standing_grant: granted,
+      requires_approval: needsApproval(tool) && !granted,
+    };
+  }
+
+  private approvalRow(row: Record<string, unknown>) {
+    return {
+      id: row.id as string,
+      decision: (row.decision ?? null) as 'approved' | 'denied' | null,
+      job_revision: row.job_revision as number,
+      expires_at: (row.expires_at ?? null) as string | Date | null,
+      origin_warnings: originWarnings.parse(row.origin_warnings ?? []),
+    };
+  }
+
+  private async askOwner(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    approvalId: string,
+    classified: Admissibility,
+  ) {
+    await appendEvent(tx, job.id, action.attempt_id, 'approval_requested', {
+      action_id: action.id,
+      approval_id: approvalId,
+      origin_warnings: classified.warnings,
+      origin_warnings_hash: classified.warnings_hash,
+    });
+    if (job.state === 'running')
+      await this.moveJob(tx, job, 'waiting_for_approval', {
+        kind: 'approval',
+        action_ids: [action.id],
+      });
+  }
+
+  /**
+   * The live question attached to this action. A decision is bound to the set
+   * of doubts it was taken against: when that set changes the answer stops
+   * counting, the action goes back to needs_approval, and the person is asked
+   * again with the new doubts attached. The superseded answer stays in the
+   * event log, which is where the history of a decision belongs.
+   */
+  private async holdApproval(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    existing: Record<string, unknown> | undefined,
+    classified: Admissibility,
+  ) {
+    const warnings = JSON.stringify(classified.warnings);
+    if (!existing) {
+      // The binding fixes the expiry; a later approval cannot extend it.
+      const stored = await loadBinding(tx, action);
+      const expiresAt = (stored.tuple.expires_at ?? null) as string | null;
+      const approvalId = recordId('apr');
+      const [row] = await tx`insert into approval
+        (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+        values (${approvalId}, ${action.id}, ${job.revision}, ${action.payload_hash},
+          ${expiresAt}, ${warnings}::jsonb) returning *`;
+      if (!row) throw new Error('Approval insert returned no record');
+      if (action.status !== 'needs_approval') await this.setStatus(tx, action, 'needs_approval');
+      await this.askOwner(tx, job, action, approvalId, classified);
+      return this.approvalRow(row);
+    }
+    const held = this.approvalRow(existing);
+    if (hashOriginWarnings(held.origin_warnings) === classified.warnings_hash) return held;
+    const [row] = await tx`update approval set decision = null, decided_at = null,
+      decided_by = null, requested_at = now(), origin_warnings = ${warnings}::jsonb
+      where id = ${held.id} returning *`;
+    if (!row) throw new Error('Approval update returned no record');
+    await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+      action_id: action.id,
+      approval_id: held.id,
+      phase: 'approval_superseded',
+      reason: 'untrusted_recipient_origin',
+      superseded_decision: held.decision,
+      superseded_origin_warnings: held.origin_warnings,
+    });
+    if (action.status !== 'needs_approval') await this.setStatus(tx, action, 'needs_approval');
+    await this.askOwner(tx, job, action, held.id, classified);
+    return this.approvalRow(row);
   }
 
   async propose(
     claims: CapabilityClaims,
     request: ProposeActionRequest,
-  ): Promise<ProposeActionResponse> {
+  ): Promise<EffectProposalResponse> {
     const canonical = canonicalizePayload(request.payload);
-    const action = await this.sql.begin(async (tx) => {
+    const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
       const { tool } = await this.tool(tx, job, claims, request.connection_id, request.kind);
       this.validatePayload(tool, canonical.canonical);
+      // The identity of the effect itself, independent of which attempt is
+      // alive. A runtime that died between proposing and hearing back proposes
+      // the same key and is handed the action it already made.
+      const key = intentKey({
+        job_id: job.id,
+        job_revision: job.revision,
+        connection_id: request.connection_id,
+        kind: request.kind,
+        payload_hash: canonical.hash,
+      });
       const ref =
         request.client_ref === undefined
           ? null
@@ -206,17 +410,22 @@ export class BrokerService implements BrokerOperations {
               'A retried proposal must use the same content',
             );
           }
-          return existing;
+          return { action: existing, key, repeated: true };
         }
       }
+      // The unique index is the durable half of this; the job row lock is what
+      // makes two live attempts take their turn rather than race.
+      const [prior] = await tx`select * from action where intent_key = ${key} for update`;
+      if (prior) return { action: actionFromRow(prior), key, repeated: true };
       const id = recordId('act');
       const [row] = await tx`insert into action
-        (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash, idempotency_key)
+        (id, job_id, attempt_id, connection_id, kind, effect_class, canonical_payload, payload_hash, idempotency_key, intent_key)
         values (${id}, ${job.id}, ${claims.attempt_id}, ${request.connection_id}, ${request.kind},
-          ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}) returning *`;
+          ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}, ${key}) returning *`;
       if (!row) throw new Error('Action insert returned no record');
       const created = actionFromRow(row);
-      const expiresAt = needsApproval(tool)
+      const classified = await this.classify(tx, job, created, tool);
+      const expiresAt = classified.requires_approval
         ? new Date(Date.now() + (this.options.approvalTtlMs ?? 86_400_000)).toISOString()
         : null;
       const authority = await resolveEffectAuthority(
@@ -230,35 +439,30 @@ export class BrokerService implements BrokerOperations {
         job.id,
         claims.attempt_id,
         'action_requested',
-        { action_id: id, kind: request.kind, payload_hash: canonical.hash },
+        { action_id: id, kind: request.kind, payload_hash: canonical.hash, intent_key: key },
         ref ?? undefined,
       );
-      if (needsApproval(tool)) {
+      if (classified.requires_approval) {
         const approvalId = recordId('apr');
-        await tx`insert into approval (id, action_id, job_revision, payload_hash, expires_at)
-          values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt})`;
-        await this.setStatus(tx, actionFromRow(row), 'needs_approval');
-        await appendEvent(tx, job.id, claims.attempt_id, 'approval_requested', {
-          action_id: id,
-          approval_id: approvalId,
-        });
-        if (job.state === 'running') {
-          await this.moveJob(tx, job, 'waiting_for_approval', {
-            kind: 'approval',
-            action_ids: [id],
-          });
-        }
+        await tx`insert into approval
+          (id, action_id, job_revision, payload_hash, expires_at, origin_warnings)
+          values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt},
+            ${JSON.stringify(classified.warnings)}::jsonb)`;
+        await this.setStatus(tx, created, 'needs_approval');
+        await this.askOwner(tx, job, created, approvalId, classified);
       }
-      return loadAction(tx, id);
+      return { action: await loadAction(tx, id), key, repeated: false };
     });
+    const { action, key, repeated } = proposal;
     // Repeated proposals retrieve the durable disposition; unknown is never replayed.
     if (action.status === 'proposed' || action.status === 'approved') {
       await this.admit(claims, action.id, canonical.hash);
-      return this.proposalView(await this.dispatch(action.id));
+      return this.proposalView(await this.dispatch(action.id), key, repeated);
     }
     // A crash between the two durable steps has not sent anything yet.
-    if (action.status === 'admitted') return this.proposalView(await this.dispatch(action.id));
-    return this.proposalView(action);
+    if (action.status === 'admitted')
+      return this.proposalView(await this.dispatch(action.id), key, repeated);
+    return this.proposalView(action, key, repeated);
   }
 
   async decide(id: string, request: ApprovalDecisionRequest) {
@@ -343,14 +547,29 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
-        if (!['proposed', 'approved'].includes(action.status))
-          throw new BrokerFault('action_not_admissible');
+        const classified = await this.classify(tx, job, action, tool);
         let authorization: string | null = null;
         let expiresAt: string | null = null;
-        if (needsApproval(tool)) {
-          const [approval] = await tx`select * from approval where action_id = ${id}
+        if (classified.requires_approval) {
+          const [row] = await tx`select * from approval where action_id = ${id}
             and payload_hash = ${action.payload_hash} for update`;
-          if (approval?.decision !== 'approved' || action.status !== 'approved')
+          const approval = await this.holdApproval(tx, job, action, row, classified);
+          // A doubt about where a value came from is refused in its own words,
+          // before the bookkeeping states get a chance to answer instead.
+          if (
+            classified.warnings.length > 0 &&
+            (approval.decision !== 'approved' ||
+              action.status !== 'approved' ||
+              hashOriginWarnings(approval.origin_warnings) !== classified.warnings_hash)
+          ) {
+            throw new BrokerFault(
+              'untrusted_recipient_origin',
+              untrustedOrigin(classified.warnings),
+            );
+          }
+          if (!['proposed', 'approved'].includes(action.status))
+            throw new BrokerFault('action_not_admissible');
+          if (approval.decision !== 'approved' || action.status !== 'approved')
             throw new BrokerFault('approval_required');
           if (approval.job_revision !== job.revision) throw new BrokerFault('revision_mismatch');
           if (approval.expires_at && new Date(approval.expires_at).getTime() <= Date.now())
@@ -358,6 +577,8 @@ export class BrokerService implements BrokerOperations {
           authorization = approval.id;
           expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
         }
+        if (!['proposed', 'approved'].includes(action.status))
+          throw new BrokerFault('action_not_admissible');
         const authority = await resolveEffectAuthority(
           tx,
           { job, action, phase: 'admission' },
@@ -386,6 +607,8 @@ export class BrokerService implements BrokerOperations {
             action_id: id,
             phase: 'execution_authorized',
             ...binding,
+            standing_grant: classified.standing_grant,
+            origin_warnings_hash: classified.warnings_hash,
           },
           `broker:execution:${id}`,
         );
@@ -454,6 +677,21 @@ export class BrokerService implements BrokerOperations {
           stored,
           bindEffect(action, job, authority, stored.tuple.expires_at as string | null),
         );
+        // Admission authorized these origins. If the world has since learned
+        // that one of them came from somewhere else, nothing leaves.
+        const classified = await this.classify(tx, job, action, tool);
+        const [authorizing] = action.authorization_ref
+          ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
+          : [];
+        const authorized = originWarnings.parse(authorizing?.origin_warnings ?? []);
+        if (hashOriginWarnings(authorized) !== classified.warnings_hash) {
+          throw new BrokerFault(
+            'untrusted_recipient_origin',
+            classified.warnings.length > 0
+              ? untrustedOrigin(classified.warnings)
+              : 'The origins of this effect no longer match the ones that were approved.',
+          );
+        }
       } catch (error) {
         if (!(error instanceof BrokerFault)) throw error;
         return { action: await this.rejectDispatch(tx, job, action, error.message), context: null };

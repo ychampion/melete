@@ -23,6 +23,8 @@ export function mountApprovals(app: Hono, approvals: ApprovalService): void {
           payload_hash: approval.payloadHash,
           requested_at: approval.requestedAt.toISOString(),
           expires_at: approval.expiresAt?.toISOString() ?? null,
+          // Why the person is being asked, in the record's own words.
+          origin_warnings: approval.originWarnings ?? [],
         })),
       }),
     );

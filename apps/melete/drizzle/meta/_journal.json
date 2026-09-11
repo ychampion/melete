@@ -85,6 +85,13 @@
       "when": 1789128273927,
       "tag": "0011_attention_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789132956208,
+      "tag": "0012_effect_identity",
+      "breakpoints": true
     }
   ]
 }

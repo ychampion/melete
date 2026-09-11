@@ -57,3 +57,41 @@ state, with uncertain actions ordered first. On the internal listener,
 `x-melete-space-id`; an attempt capability cannot use this read route. W1 may
 mount the same read adapter behind its owner authentication. Cancellation stays
 visible alongside any unconfirmed send.
+
+## Effect identity across attempts
+
+At proposal the broker derives
+`intent_key = sha256(job_id, job_revision, connection_id, kind, payload_hash)`,
+stores it on the action, and holds it under a unique index. A proposal whose key
+already exists returns that action and its current state and never makes a second
+one; `unknown` is returned as `unknown` and nothing is dispatched. The response
+carries `intent_key`, `repeated`, and a `message` built from the record, so a
+repeat of a send that already happened reports the time and the receipt instead
+of a fresh send. One changed byte is a different payload hash and therefore a
+different key, so an edited draft is a new action with its own approval. A
+`client_ref` still short-circuits earlier and still refuses changed content under
+a reused reference.
+
+## Trust-class admission
+
+`resolveTrust(tx, input)` answers where each recipient, destination, amount and
+resource field in the canonical payload came from: `owner`, `verified_connector`,
+`external_content`, `inferred`, or `unknown`, with the handle it came from. It is
+asked at proposal, at admission, and again at dispatch. For `write_external` and
+`spend`, any field that is not `owner` or `verified_connector` becomes an
+`origin_warning` in plain words, stored on the approval record and carried in the
+`approval_requested` event and the `/approvals` response.
+
+The set of warnings is hashed and the approval is bound to it. An approval taken
+before an origin was known is set aside when the origin becomes known: the action
+returns to `needs_approval`, the person is asked again with the warnings
+attached, the superseded answer is recorded as an `approval_superseded` notice,
+and admission is refused with `untrusted_recipient_origin`. Resetting an approval
+keeps the expiry the effect binding already fixed, so no answer can extend an
+authorization.
+
+`resolveStandingGrant(tx, { job, action, tool })` may remove the approval
+requirement, but only when nothing about the payload is in doubt. v0.1 ships no
+grants: the option defaults to absent and every external send is approved once,
+per payload hash. Without `resolveTrust` nothing is asked and nothing is warned
+about, which is the shipped behaviour until the memory lane supplies a resolver.

@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { actionStatus, effectClass, payloadHash } from './broker.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
+import { originWarnings, sha256Hex } from './effects.ts';
 import { jobState } from './job-state.ts';
 import { knowledgeRecordStatus } from './knowledge.ts';
 
@@ -208,6 +209,13 @@ export const action = z.object({
   effect_class: effectClass,
   canonical_payload: jsonObject,
   payload_hash: payloadHash,
+  /**
+   * The identity of the effect across attempts: one action per job, revision,
+   * connection, tool and payload hash. Null only on rows written before the
+   * column existed; every action created since carries one. A record that omits
+   * it reads as null rather than failing, so an older producer still parses.
+   */
+  intent_key: sha256Hex.nullable().default(null),
   status: actionStatus,
   /** The approval this admission relied on, if any. */
   authorization_ref: prefixedId(ID_PREFIXES.approval).nullable(),
@@ -233,6 +241,12 @@ export const approval = z.object({
   decision: z.enum(['approved', 'denied']).nullable(),
   decided_by: z.string().nullable(),
   expires_at: timestamp.nullable(),
+  /**
+   * Why this was worth asking about: every recipient, destination, amount or
+   * resource field whose origin Melete cannot vouch for. A decision taken
+   * against one set of doubts cannot be spent against another.
+   */
+  origin_warnings: originWarnings.default([]),
 });
 export type Approval = z.infer<typeof approval>;
 

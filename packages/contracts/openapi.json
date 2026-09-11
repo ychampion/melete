@@ -2930,6 +2930,46 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "origin_warnings": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "field": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "origin_trust": {
+                                  "type": "string",
+                                  "enum": [
+                                    "owner",
+                                    "verified_connector",
+                                    "external_content",
+                                    "inferred",
+                                    "unknown"
+                                  ]
+                                },
+                                "handle": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "description": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "field",
+                                "origin_trust",
+                                "handle",
+                                "description"
+                              ],
+                              "additionalProperties": false
+                            }
                           }
                         },
                         "required": [
@@ -2943,7 +2983,8 @@
                           "canonical_payload",
                           "payload_hash",
                           "requested_at",
-                          "expires_at"
+                          "expires_at",
+                          "origin_warnings"
                         ],
                         "additionalProperties": false
                       }
@@ -6023,6 +6064,18 @@
           "payload_hash": {
             "$ref": "#/components/schemas/__schema84"
           },
+          "intent_key": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -6117,6 +6170,7 @@
           "effect_class",
           "canonical_payload",
           "payload_hash",
+          "intent_key",
           "status",
           "authorization_ref",
           "budget_reservation",
