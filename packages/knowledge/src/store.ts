@@ -4,7 +4,7 @@
  * searched through.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { type ParsedRecord, parseRecord } from './frontmatter.ts';
@@ -32,7 +32,12 @@ const listMarkdown = (dir: string): string[] => {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
+    // A record is a file in this space, never a pointer out of it. A symlink
+    // committed into a shared space would otherwise read another space into
+    // this one, which is the isolation the index handle exists to guarantee.
+    const stats = lstatSync(full);
+    if (stats.isSymbolicLink()) continue;
+    if (stats.isDirectory()) {
       out.push(...listMarkdown(full));
     } else if (entry.endsWith('.md')) {
       out.push(full);

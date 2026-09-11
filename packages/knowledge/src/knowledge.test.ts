@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
@@ -438,5 +438,84 @@ describe('the diff a person approves a write from', () => {
       (line) => !line.startsWith(' '),
     );
     expect(changed).toEqual(['-title: Old title', '+title: New title']);
+  });
+});
+
+// --------------------------------------------------------------------------
+// isolation cannot be decided by looking at the text of a path
+// --------------------------------------------------------------------------
+
+/** Creating a symlink needs a privilege on some Windows setups. Say so rather than passing. */
+const symlinksWork = (() => {
+  const probe = mkdtempSync(join(tmpdir(), 'melete-symlink-probe-'));
+  try {
+    writeFileSync(join(probe, 'target'), 'x', 'utf8');
+    symlinkSync(join(probe, 'target'), join(probe, 'link'));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
+if (!symlinksWork) {
+  process.stdout.write('symlink tests skipped: this machine will not create symlinks\n');
+}
+
+const describeSymlinks = symlinksWork ? describe : describe.skip;
+
+describeSymlinks('a symlink is a path that lies about where it goes', () => {
+  let linkRoot: string;
+  let mine: ReturnType<typeof spacePaths>;
+  let theirs: ReturnType<typeof spacePaths>;
+
+  beforeEach(() => {
+    linkRoot = mkdtempSync(join(tmpdir(), 'melete-links-'));
+    mine = ensureSpaceDirs(linkRoot, 'personal');
+    theirs = ensureSpaceDirs(linkRoot, 'team-acme');
+    writeFileSync(
+      join(theirs.knowledge, 'private.md'),
+      serializeRecord(
+        frontmatter({ id: ID.landlord, space: 'team-acme', title: 'Their private record' }),
+        'Something the other space keeps to itself.',
+      ),
+      'utf8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(linkRoot, { recursive: true, force: true });
+  });
+
+  test('a record that is really a link into another space is not read', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    expect(loadSpace(mine).records).toEqual([]);
+  });
+
+  test('and never reaches the index, so a search cannot find it', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    const { index } = buildIndex(mine);
+    try {
+      expect(index.search('private')).toEqual([]);
+      expect(index.count()).toBe(0);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a write through a linked file is refused', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    expect(resolveInSpace(mine, 'knowledge/borrowed.md')).toBeNull();
+  });
+
+  test('a write through a linked directory is refused too', () => {
+    symlinkSync(theirs.knowledge, join(mine.knowledge, 'borrowed-dir'));
+    expect(resolveInSpace(mine, 'knowledge/borrowed-dir/new.md')).toBeNull();
+  });
+
+  test('an ordinary path in the same space still resolves', () => {
+    expect(resolveInSpace(mine, 'knowledge/ordinary.md')).not.toBeNull();
+    expect(resolveInSpace(mine, 'SCHEMA.md')).not.toBeNull();
   });
 });

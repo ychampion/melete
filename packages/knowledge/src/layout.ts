@@ -3,7 +3,8 @@
  * full-text index; nothing reads across spaces, and the paths here are the only
  * way anything inside the package names a file.
  */
-import { join, relative, resolve, sep } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { SPACE_LAYOUT } from '@melete/contracts';
 
 export type SpacePaths = {
@@ -47,15 +48,51 @@ export function spacePaths(spacesRoot: string, space: string): SpacePaths {
 }
 
 /**
+ * Where a path really leads, following symlinks. For a path that does not exist
+ * yet, the nearest parent that does, which is where it would be created.
+ */
+function realLocation(target: string): string | null {
+  let candidate = target;
+  for (;;) {
+    if (existsSync(candidate)) {
+      try {
+        return realpathSync(candidate);
+      } catch {
+        return null;
+      }
+    }
+    const parent = dirname(candidate);
+    if (parent === candidate) return null;
+    candidate = parent;
+  }
+}
+
+/**
  * Resolve a record path inside a space, refusing anything that escapes it.
  * Isolation is structural: a path that leaves the space root is an error here,
  * not a permission check somewhere later.
+ *
+ * Comparing the text of two paths is not enough, because a symlink is a path
+ * that leads somewhere its own name does not admit to. A shared space is a git
+ * repository and git stores symlinks, so one can arrive in a space without
+ * anybody here putting it there. The second check asks the filesystem where the
+ * path actually goes.
  */
 export function resolveInSpace(paths: SpacePaths, relativePath: string): string | null {
   if (!relativePath || relativePath.startsWith('/') || /^[a-zA-Z]:/.test(relativePath)) return null;
   const absolute = resolve(paths.root, relativePath);
   const back = relative(paths.root, absolute);
   if (back === '' || back.startsWith('..') || back.startsWith(`..${sep}`)) return null;
+
+  // The root itself may be reached through a symlink, which is ordinary on
+  // macOS where the temporary directory is one, so both sides are resolved.
+  if (existsSync(paths.root)) {
+    const realRoot = realLocation(paths.root);
+    const realTarget = realLocation(absolute);
+    if (!realRoot || !realTarget) return null;
+    const fromRoot = relative(realRoot, realTarget);
+    if (fromRoot.startsWith('..') || isAbsolute(fromRoot)) return null;
+  }
   return absolute;
 }
 
