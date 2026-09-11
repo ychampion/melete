@@ -10,6 +10,8 @@
  */
 
 import type { RuntimeAdapter } from '@melete/contracts';
+import { HermesRuntimeAdapter } from '@melete/runtime-hermes';
+import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
@@ -23,9 +25,11 @@ import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
+import { verifyCapability } from './broker/capability.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { connection } from './db/schema.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
@@ -42,8 +46,10 @@ import { TriggerService } from './jobs/triggers.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { filesystemSpaces } from './knowledge/spaces.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
+import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
+import { startServiceMemory } from './memory/start.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 
 export const VERSION = '0.1.0-pre';
@@ -65,6 +71,7 @@ export type AppDeps = {
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
+  runtimeAdapter?: string;
 };
 
 export function createApp(deps: AppDeps) {
@@ -106,6 +113,7 @@ export function createApp(deps: AppDeps) {
       status: database === 'unreachable' ? 'degraded' : 'ok',
       version: VERSION,
       database,
+      runtime_adapter: deps.runtimeAdapter,
       time: new Date().toISOString(),
     });
   });
@@ -135,6 +143,9 @@ export async function bootstrap(
   options: { env?: Env; runtime?: RuntimeAdapter; workers?: boolean } = {},
 ) {
   const env = options.env ?? loadEnv();
+  if (!options.runtime && !['hermes', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
+    throw new Error('MELETE_RUNTIME_ADAPTER must be hermes or stub.');
+  }
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
@@ -148,17 +159,24 @@ export async function bootstrap(
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
-  const close = async () => {
-    try {
-      await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
-    } finally {
-      try {
-        await queue?.stop();
-      } finally {
-        await handle?.close();
-      }
-    }
-  };
+  let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
+  let boundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      const failures: unknown[] = [];
+      const settle = async (tasks: (Promise<unknown> | undefined)[]) => {
+        for (const result of await Promise.allSettled(tasks))
+          if (result.status === 'rejected') failures.push(result.reason);
+      };
+      // Every owned dependency gets its shutdown even when a sibling fails.
+      // Runtimes must stop while their broker and database still exist.
+      await settle([triggers?.stop(), runner?.stop(), operations?.stop()]);
+      await settle([memory?.stop(), boundary?.close(), events?.close()]);
+      await settle([queue?.stop()]);
+      await settle([handle?.close()]);
+      if (failures.length) throw new AggregateError(failures, 'Service shutdown failed');
+    })());
   try {
     if (handle) await migrateDatabase(handle);
     if (handle) {
@@ -167,20 +185,62 @@ export async function bootstrap(
     }
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
-    if (jobs) {
+    if (jobs && handle && queue) {
+      const activeJobs = jobs;
       submissions = new SubmissionService(jobs);
+      if (!env.MELETE_CAPABILITY_KEY)
+        throw new Error('MELETE_CAPABILITY_KEY is required to issue attempt capabilities.');
+      const capabilityKey = env.MELETE_CAPABILITY_KEY;
+      memory = await startServiceMemory(
+        handle.sql,
+        queue.boss,
+        env.MELETE_SPACES_DIR,
+        options.workers === false
+          ? undefined
+          : async (jobId) => {
+              await activeJobs.transaction(async (tx) => {
+                const row = await activeJobs.lock(tx, jobId);
+                if (row?.state === 'queued' && row.nextWakeAt)
+                  await activeJobs.enqueue(tx, row, 'recovery');
+              });
+            },
+      );
+      if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime)
+        boundary = await startEffectBoundary(handle, env);
       const runtime =
         options.runtime ??
-        (env.MELETE_RUNTIME_ADAPTER === 'stub' ? new StubRuntimeAdapter() : undefined);
-      if (!runtime || !env.MELETE_CAPABILITY_KEY)
-        throw new Error(
-          'Configure MELETE_CAPABILITY_KEY and provide a RuntimeAdapter (or MELETE_RUNTIME_ADAPTER=stub for scripted local runs).',
-        );
-      runner = new AttemptRunner(jobs, runtime, {
-        key: env.MELETE_CAPABILITY_KEY,
-        provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
-        model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
-      });
+        (env.MELETE_RUNTIME_ADAPTER === 'stub'
+          ? new StubRuntimeAdapter()
+          : new HermesRuntimeAdapter({
+              baseUrl: env.MELETE_RUNTIME_URL,
+              token: env.MELETE_RUNTIME_KEY,
+              parkedActions: async (bundle) => {
+                const rows =
+                  await handle.sql`select id from action where job_id = ${bundle.attempt.job_id} and status = 'needs_approval' order by id`;
+                return rows.map((row) => row.id as string);
+              },
+            }));
+      runner = new AttemptRunner(
+        jobs,
+        withMemoryRuntime(runtime, handle.sql, memory.scopeForJob, {
+          catalog: async (bundle) =>
+            boundary
+              ? boundary.broker.catalog(verifyCapability(bundle.attempt.token, capabilityKey))
+              : [],
+        }),
+        {
+          key: env.MELETE_CAPABILITY_KEY,
+          provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
+          model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
+          scopesForJob: async (tx, row) => {
+            const granted = await tx
+              .select({ scopes: connection.scopes })
+              .from(connection)
+              .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')));
+            return [...new Set(granted.flatMap((entry) => entry.scopes))].sort();
+          },
+        },
+      );
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -226,6 +286,8 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    memory,
+    runtimeAdapter: options.runtime ? 'injected' : env.MELETE_RUNTIME_ADAPTER,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -248,14 +310,15 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    memory,
+    boundary,
     close,
   };
 }
 
 if (import.meta.main) {
   const service = await bootstrap();
-  const { app, env, handle } = service;
-  const boundary = handle ? await startEffectBoundary(handle, env) : null;
+  const { app, env, boundary } = service;
   process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
   const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 0 });
   if (boundary) process.stdout.write(`effect boundary listening on ${env.MELETE_BROKER_BIND}\n`);
@@ -264,7 +327,6 @@ if (import.meta.main) {
     if (stopping) return;
     stopping = true;
     await server.stop(true);
-    await boundary?.close();
     // service.close() closes the database handle, so it is not closed again here.
     await service.close();
   };

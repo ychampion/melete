@@ -291,6 +291,7 @@ export const memoryIndexEntries = pgTable(
   ],
 );
 export const memoryContexts = pgTable('memory_contexts', {
+  styleViolations: jsonb('style_violations').$type<string[]>().notNull().default([]),
   id: text('id').primaryKey(),
   spaceId: text('space_id')
     .notNull()

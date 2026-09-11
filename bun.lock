@@ -17,6 +17,7 @@
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "@melete/knowledge": "workspace:*",
+        "@melete/runtime-hermes": "workspace:*",
         "@melete/skills": "workspace:*",
         "ajv": "8.20.0",
         "chrono-node": "2.10.1",
@@ -31,6 +32,7 @@
         "pg-boss": "12.31.0",
         "postgres": "3.4.9",
         "ulid": "3.0.2",
+        "yaml": "2.8.1",
         "zod": "4.6.2",
       },
       "devDependencies": {

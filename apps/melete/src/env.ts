@@ -19,9 +19,8 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
-  /** Stub is an explicit local development choice; runtime adapters are injected by callers. */
-  MELETE_RUNTIME_ADAPTER: z.enum(['stub', 'external']).default('external'),
-
+  /** Hermes is the product path; stub is an explicit scripted development choice. */
+  MELETE_RUNTIME_ADAPTER: z.enum(['hermes', 'stub']).default('hermes'),
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
   MELETE_ARTIFACTS_DIR: z.string().default('/data/artifacts'),
@@ -40,7 +39,9 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+
   MELETE_RUNTIME_URL: z.string().default('http://runtime:8790'),
+  MELETE_RUNTIME_KEY: z.string().min(32).optional(),
 
   /** Provider keys. The gateway injects these; the runtime never sees them. */
   FIREWORKS_API_KEY: z.string().optional(),

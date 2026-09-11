@@ -119,23 +119,22 @@ export async function startMemoryService(options: MemoryServiceOptions) {
   await repairQueue(options.sql, options.boss);
   const onError = options.onError ?? (() => {});
   const stopRecovery = startRecoveryScan(options.sql, options.boss, onError);
-  let running = false;
-  const timer = setInterval(async () => {
+  let running: Promise<void> | undefined;
+  const timer = setInterval(() => {
     if (running) return;
-    running = true;
-    try {
-      await runDerivedWork(options);
-    } catch {
-      onError('memory_derived_work_failed');
-    } finally {
-      running = false;
-    }
+    running = runDerivedWork(options)
+      .catch(() => onError('memory_derived_work_failed'))
+      .finally(() => {
+        running = undefined;
+      });
   }, 2000);
   timer.unref();
   return {
     async stop() {
       clearInterval(timer);
       stopRecovery();
+      // Git projection and cleanup must settle before the caller closes SQL.
+      await running;
       if (options.gateway) await options.boss.offWork(MEMORY_EXTRACT_QUEUE);
     },
   };

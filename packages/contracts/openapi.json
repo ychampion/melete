@@ -2811,6 +2811,9 @@
                         "not_configured"
                       ]
                     },
+                    "runtime_adapter": {
+                      "type": "string"
+                    },
                     "time": {
                       "$ref": "#/components/schemas/__schema41"
                     }

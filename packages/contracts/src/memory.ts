@@ -355,6 +355,8 @@ export const recallResult = z.strictObject({
 });
 export type RecallResult = z.infer<typeof recallResult>;
 export const contextRecord = z.strictObject({
+  /** Diagnostics recorded by the service, including an empty array when none were observed. */
+  style_violations: z.array(z.string()).optional(),
   id: prefixedId('ctx'),
   space_id: prefixedId('sp'),
   job_id: prefixedId('job'),
