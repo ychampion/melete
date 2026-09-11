@@ -78,6 +78,7 @@ which is the same rule that lets `files.write` proceed.
 | A stored output is the output that was recorded | the exec connector re-hashes it | `src/connectors/exec.test.ts` |
 | A command past the time cap is killed and the kill recorded | the plugin | `tests/test_execution.py` |
 | Output above the cap is truncated with a marker, full output stored | the plugin | `tests/test_execution.py` |
+| The stored output is an artifact of the job, not a loose file | the exec connector, from the bytes on disk | `src/connectors/exec.test.ts`, `test/integration/artifacts.test.ts` |
 | The child never sees the attempt capability or the model key | the plugin's allow-list environment | `tests/test_execution.py` |
 | An in-cell tool cannot also require approval | the connector registry | `src/connectors/exec.test.ts` |
 | A declaration the service cannot read writes no file | the files connector, before opening it | `src/connectors/files-expect.test.ts` |
@@ -148,7 +149,11 @@ The receipt carries the command, the cwd, exit code 0, 108 ms, the output digest
 and `digest_verified: false`, which says plainly that the output was small
 enough that nothing was stored and the digest is therefore the cell's word. When
 output is truncated the file is stored, the connector re-hashes it, and the same
-field says `true`.
+field says `true`. That file is also declared as a text artifact of the job, so a
+long command's output has a handle a later attempt can cite and a person can
+publish, rather than a path in a hidden directory. Nothing is promised about the
+contents of an arbitrary command's output, so recording it can never be what
+stops a job from finishing.
 
 ## Artifacts: declare, check, then finish
 
