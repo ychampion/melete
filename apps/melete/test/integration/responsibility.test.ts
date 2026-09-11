@@ -2,12 +2,17 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import type { OperationRegistration } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
-import { backgroundOperation, space } from '../../src/db/schema.ts';
+import { Hono } from 'hono';
+import { mountEvents } from '../../src/api/events.ts';
+import { backgroundOperation, event, space } from '../../src/db/schema.ts';
+import { appendEvent } from '../../src/events/store.ts';
+import { EventStream } from '../../src/events/stream.ts';
 import { newId } from '../../src/ids.ts';
 import { OperationService } from '../../src/jobs/operations.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -33,7 +38,7 @@ withDb('responsibility protocol', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
-    await handle.sql`truncate "space" cascade`;
+    await handle.sql`truncate "space", event_retention cascade`;
     spaceId = newId('sp');
     await handle.db
       .insert(space)
@@ -147,5 +152,111 @@ withDb('responsibility protocol', () => {
     const after = await service.get(op.id);
     await service.settle(op.id, after.version - 1, { fired_at: op.dueAt.toISOString() });
     expect((await jobs.get(row.id)).stateVersion).toBe(updated.stateVersion);
+  });
+
+  test('retention reconnect emits a gap and reset snapshot without replaying unavailable history', async () => {
+    const { handle, jobs } = fixture();
+    const submissions = new SubmissionService(jobs);
+    const accepted = await submissions.create(
+      { space_id: spaceId, title: 'Retained request', objective: 'Retain acceptance' },
+      'retention-submission',
+    );
+    if (!accepted.job) throw new Error('Submission missing');
+    const row = accepted.job;
+    const old = await jobs.transaction((tx) =>
+      appendEvent(tx, {
+        jobId: row.id,
+        type: 'text_delta',
+        payload: { text: 'Past stream retention' },
+        dedupKey: 'retention:old',
+      }),
+    );
+    if (!old) throw new Error('Old event missing');
+    const events = new EventStream(handle, { pollIntervalMs: 10 });
+    const app = new Hono();
+    mountEvents(app, events, jobs);
+    await events.protocol.retainAfter(old.seq);
+    const response = await app.request(
+      `/jobs/${row.id}/events?after=${accepted.receipt.event_cursor}`,
+    );
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('Stream missing');
+    try {
+      const gap = new TextDecoder().decode((await reader.read()).value);
+      expect(gap).toContain('event: gap\n');
+      expect(gap).not.toContain('id:');
+      const reset = new TextDecoder().decode((await reader.read()).value);
+      expect(reset).toContain('event: reset\n');
+      const data = JSON.parse(reset.split('data: ')[1] ?? '{}');
+      expect(data.reason).toBe('retention');
+      expect(data.snapshot.jobs[0].id).toBe(row.id);
+      expect(data.snapshot.cursor).toBe(old.seq);
+      expect(reset).not.toContain('Past stream retention');
+      const next = await jobs.transaction((tx) =>
+        appendEvent(tx, {
+          jobId: row.id,
+          type: 'notice',
+          payload: { text: 'New durable data' },
+          dedupKey: 'retention:new',
+        }),
+      );
+      const frame = new TextDecoder().decode((await reader.read()).value);
+      expect(frame).toContain(`id: ${next?.seq}\n`);
+      expect(JSON.parse(frame.split('data: ')[1] ?? '{}')).toMatchObject({
+        cursor: next?.seq,
+        epoch: 0,
+      });
+      expect(await submissions.get('retention-submission')).toEqual(accepted.receipt);
+      expect(await handle.db.select().from(event).where(eq(event.seq, old.seq))).toHaveLength(1);
+    } finally {
+      await reader.cancel();
+      await events.close();
+    }
+  });
+
+  test('epoch changes and explicit resync return current snapshots; old unknown epochs are not invented', async () => {
+    const { handle, jobs } = fixture();
+    const row = await createJob();
+    const [created] = await handle.db.select().from(event).where(eq(event.jobId, row.id));
+    if (!created) throw new Error('Created event missing');
+    const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+      key: 'event-protocol-test-key-32bytes-long',
+    });
+    const claim = await runner.claim({
+      job_id: row.id,
+      expected_epoch: 0,
+      expected_version: 0,
+      reason: 'created',
+    });
+    if (!claim) throw new Error('Attempt not claimed');
+    const events = new EventStream(handle, { pollIntervalMs: 10 });
+    const app = new Hono();
+    mountEvents(app, events, jobs);
+    try {
+      for (const [query, reason] of [
+        [`after=${created.seq}`, 'epoch_changed'],
+        ['resync=true', 'resync'],
+        ['after=999999', 'cursor_ahead'],
+      ] as const) {
+        const response = await app.request(`/jobs/${row.id}/events?${query}`);
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('Stream missing');
+        const frame = new TextDecoder().decode((await reader.read()).value);
+        await reader.cancel();
+        expect(frame).toContain('event: reset\n');
+        const data = JSON.parse(frame.split('data: ')[1] ?? '{}');
+        expect(data.reason).toBe(reason);
+        expect(data.epoch).toBe(1);
+        expect(data.snapshot.jobs[0].state).toBe('running');
+      }
+      await handle.db.update(event).set({ epoch: null }).where(eq(event.seq, created.seq));
+      const handshake = await events.protocol.handshake(created.seq, row.id);
+      expect(handshake.frames[0]).toContain('unknown_epoch');
+      expect(await (await app.request(`/jobs/${row.id}/snapshot`)).json()).toMatchObject({
+        epoch: 1,
+      });
+    } finally {
+      await events.close();
+    }
   });
 });

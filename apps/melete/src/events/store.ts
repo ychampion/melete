@@ -1,6 +1,6 @@
 import type { EventType, JsonObject } from '@melete/contracts';
-import { sql } from 'drizzle-orm';
-import { event } from '../db/schema.ts';
+import { eq, sql } from 'drizzle-orm';
+import { event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 
 export type EventWrite = {
@@ -13,9 +13,12 @@ export type EventWrite = {
 
 /** Called inside serviceTransaction; PostgreSQL delivers NOTIFY only after commit. */
 export async function appendEvent(tx: Transaction, value: EventWrite) {
+  const [current] = value.jobId
+    ? await tx.select({ epoch: job.leaseEpoch }).from(job).where(eq(job.id, value.jobId))
+    : [];
   const [row] = await tx
     .insert(event)
-    .values({ ...value, payload: value.payload ?? {} })
+    .values({ ...value, epoch: current?.epoch ?? null, payload: value.payload ?? {} })
     .onConflictDoNothing({ target: event.dedupKey })
     .returning();
   if (row) await tx.execute(sql`select pg_notify('melete_events', ${String(row.seq)})`);

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { errorResponse } from './api.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { job } from './entities.ts';
+import { apiEvent } from './events.ts';
 
 export const submissionId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/);
 export const inputDigest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -93,3 +94,37 @@ export const backgroundOperation = z.object({
   result: jsonObject.nullable(),
 });
 export const operationList = z.object({ operations: z.array(backgroundOperation) });
+
+export const responsibilityEvent = apiEvent.extend({
+  cursor: z.number().int().nonnegative(),
+  epoch: z.number().int().nonnegative().nullable(),
+});
+export type ResponsibilityEvent = z.infer<typeof responsibilityEvent>;
+export const responsibilitySnapshot = z.object({
+  cursor: z.number().int().nonnegative(),
+  epoch: z.number().int().nonnegative().nullable(),
+  jobs: z.array(responsibilityJob),
+  actions: z.array(
+    z.object({
+      id: prefixedId(ID_PREFIXES.action),
+      job_id: prefixedId(ID_PREFIXES.job),
+      status: z.string(),
+      dispatched_at: timestamp.nullable(),
+      receipt: jsonObject.nullable(),
+    }),
+  ),
+});
+export type ResponsibilitySnapshot = z.infer<typeof responsibilitySnapshot>;
+export const eventReset = z.object({
+  type: z.literal('reset'),
+  reason: z.enum(['retention', 'epoch_changed', 'cursor_ahead', 'resync', 'unknown_epoch']),
+  cursor: z.number().int().nonnegative(),
+  epoch: z.number().int().nonnegative().nullable(),
+  snapshot: responsibilitySnapshot,
+});
+export const eventRetentionGap = z.object({
+  type: z.literal('gap'),
+  reason: z.literal('retention'),
+  after: z.number().int().nonnegative(),
+  retained_after: z.number().int().nonnegative(),
+});

@@ -43,6 +43,13 @@
       "when": 1789120517270,
       "tag": "0005_wake_dispositions",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789120925849,
+      "tag": "0006_event_protocol",
+      "breakpoints": true
     }
   ]
 }

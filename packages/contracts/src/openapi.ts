@@ -50,6 +50,7 @@ import {
   operationVersion,
   replyObligation,
   replyObligationList,
+  responsibilitySnapshot,
   submissionResponse,
 } from './responsibility.ts';
 
@@ -98,6 +99,21 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/jobs/{id}/snapshot': {
+          get: {
+            tags: ['events'],
+            summary: 'Current job and external-effect truth at one event cursor',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Snapshot', responsibilitySnapshot) },
+          },
+        },
+        '/snapshot': {
+          get: {
+            tags: ['events'],
+            summary: 'Current state for an explicit event-stream resync',
+            responses: { '200': jsonResponse('Snapshot', responsibilitySnapshot) },
+          },
+        },
         '/operations': {
           get: {
             tags: ['jobs'],

@@ -198,6 +198,8 @@ export const event = pgTable(
     jobId: text('job_id').references(() => job.id, { onDelete: 'cascade' }),
     attemptId: text('attempt_id').references(() => attempt.id, { onDelete: 'cascade' }),
     type: text('type').notNull(),
+    // Null on pre-protocol events: migration must not invent a historical lease.
+    epoch: integer('epoch'),
     payload: jsonb('payload').notNull().default({}),
     // Duplicate delivery of the same runtime event writes one row, not two.
     dedupKey: text('dedup_key').notNull(),
@@ -391,6 +393,12 @@ export const backgroundOperation = pgTable(
   ],
 );
 
+/** Transport retention is separate from the durable event/transcript ledger. */
+export const eventRetention = pgTable('event_retention', {
+  id: text('id').primaryKey(),
+  retainedAfter: bigint('retained_after', { mode: 'number' }).notNull().default(0),
+});
+
 export const schema = {
   owner,
   space,
@@ -411,4 +419,5 @@ export const schema = {
   replyObligation,
   notification,
   backgroundOperation,
+  eventRetention,
 };

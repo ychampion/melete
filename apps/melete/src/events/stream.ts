@@ -1,9 +1,15 @@
-import { type ApiEvent, apiEvent, SSE_KEEPALIVE, sseFrame } from '@melete/contracts';
+import {
+  type ApiEvent,
+  type ResponsibilityEvent,
+  responsibilityEvent,
+  SSE_KEEPALIVE,
+} from '@melete/contracts';
 import { and, asc, eq, gt } from 'drizzle-orm';
 import postgres from 'postgres';
 import { ZodError } from 'zod';
 import type { DatabaseHandle } from '../db/client.ts';
 import { event } from '../db/schema.ts';
+import { EventProtocol } from './protocol.ts';
 
 export const EVENT_CHANNEL = 'melete_events';
 export type EventStreamOptions = {
@@ -11,16 +17,21 @@ export type EventStreamOptions = {
   pollIntervalMs?: number;
   keepaliveMs?: number;
 };
-export type EventSubscription = { after: number; jobId?: string; signal?: AbortSignal };
+export type EventSubscription = {
+  after: number;
+  jobId?: string;
+  signal?: AbortSignal;
+  epoch?: number;
+  resync?: boolean;
+};
 
 type Client = { notify: () => void; close: () => void; buffered: () => number };
 
 /** The frame still carries the real persisted notice and its real sequence ID. */
-export function persistedFrame(value: ApiEvent): string {
-  const frame = sseFrame(value);
-  return value.type === 'notice' && value.payload.kind === 'gap'
-    ? frame.replace('\nevent: notice\n', '\nevent: gap\n')
-    : frame;
+export function persistedFrame(value: ApiEvent | ResponsibilityEvent): string {
+  const { dedup_key: _dedupKey, ...data } = value;
+  const name = value.type === 'notice' && value.payload.kind === 'gap' ? 'gap' : value.type;
+  return `id: ${value.seq}\nevent: ${name}\ndata: ${JSON.stringify({ ...data, cursor: value.seq, epoch: 'epoch' in value ? value.epoch : null })}\n\n`;
 }
 
 /**
@@ -29,11 +40,13 @@ export function persistedFrame(value: ApiEvent): string {
  * Each consumer owns a cursor and at most one page, independent of other clients.
  */
 export class EventStream {
+  readonly protocol: EventProtocol;
   private listener: ReturnType<typeof postgres> | undefined;
   private listening: { unlisten: () => Promise<void> } | undefined;
   private starting: Promise<void> | undefined;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private readonly clients = new Set<Client>();
+  private readonly pending = new Set<Promise<unknown>>();
   private stopped = false;
   private readonly pageSize: number;
   private readonly pollIntervalMs: number;
@@ -43,6 +56,7 @@ export class EventStream {
     private readonly handle: DatabaseHandle,
     options: EventStreamOptions = {},
   ) {
+    this.protocol = new EventProtocol(handle.db);
     this.pageSize = options.pageSize ?? 200;
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.keepaliveMs = options.keepaliveMs ?? 20_000;
@@ -66,6 +80,16 @@ export class EventStream {
   }
   get bufferedEventCount(): number {
     return [...this.clients].reduce((count, client) => count + client.buffered(), 0);
+  }
+
+  private async query<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = operation();
+    this.pending.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.pending.delete(pending);
+    }
   }
 
   async start(): Promise<void> {
@@ -126,7 +150,7 @@ export class EventStream {
     }
   }
 
-  private async page(after: number, jobId?: string): Promise<ApiEvent[]> {
+  private async page(after: number, jobId?: string): Promise<ResponsibilityEvent[]> {
     const rows = await this.handle.db
       .select()
       .from(event)
@@ -134,8 +158,10 @@ export class EventStream {
       .orderBy(asc(event.seq))
       .limit(this.pageSize);
     return rows.map((row) =>
-      apiEvent.parse({
+      responsibilityEvent.parse({
         seq: row.seq,
+        cursor: row.seq,
+        epoch: row.epoch,
         job_id: row.jobId,
         attempt_id: row.attemptId,
         type: row.type,
@@ -152,8 +178,20 @@ export class EventStream {
     }
     await this.start();
     if (this.stopped) throw new Error('event stream is closed');
+    const initial = await this.query(() =>
+      this.protocol.handshake(
+        subscription.after,
+        subscription.jobId,
+        subscription.epoch,
+        subscription.resync,
+      ),
+    );
+    if (this.stopped) throw new Error('event stream is closed');
     let cursor = subscription.after;
-    let buffered: ApiEvent[] = [];
+    let epoch = initial.epoch;
+    let controls = initial.frames;
+    if (controls.length) cursor = initial.cursor;
+    let buffered: ResponsibilityEvent[] = [];
     let closed = false;
     let change = 0;
     let waiting: (() => void) | undefined;
@@ -169,6 +207,7 @@ export class EventStream {
       if (closed) return;
       closed = true;
       buffered = [];
+      controls = [];
       subscription.signal?.removeEventListener('abort', onAbort);
       this.remove(client);
       notify();
@@ -191,6 +230,12 @@ export class EventStream {
         },
         pull: async (value) => {
           while (!closed) {
+            const control = controls.shift();
+            if (control) {
+              value.enqueue(encoder.encode(control));
+              lastWrite = Date.now();
+              return;
+            }
             const next = buffered.shift();
             if (next) {
               cursor = next.seq;
@@ -200,7 +245,17 @@ export class EventStream {
             }
             const observed = change;
             try {
-              buffered = await this.page(cursor, subscription.jobId);
+              const position = await this.query(() =>
+                this.protocol.handshake(cursor, subscription.jobId, epoch),
+              );
+              if (closed) return;
+              epoch = position.epoch;
+              if (position.frames.length) {
+                cursor = position.cursor;
+                controls = position.frames;
+                continue;
+              }
+              buffered = await this.query(() => this.page(cursor, subscription.jobId));
             } catch (error) {
               if (closed) return;
               if (error instanceof ZodError) {
@@ -244,6 +299,8 @@ export class EventStream {
     if (this.stopped) return;
     this.stopped = true;
     for (const client of [...this.clients]) client.close();
+    // Cancelling a reader does not cancel its SQL; drain it before releasing shared resources.
+    await Promise.allSettled([...this.pending]);
     await this.starting;
     try {
       await this.listening?.unlisten();

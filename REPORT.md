@@ -131,3 +131,15 @@
 
 - Test `remote_task`: remote recovery inspects an already accepted reference using an injected connector probe; a fresh external dispatch is outside `OperationService`. Without a probe the record remains available through the owner operation API.
 - Test `local_process`: substrate disposition names the recovery behavior, while operation state distinguishes a currently live claim from its eventual interrupted disposition; replacement runtime attempts still use a new attempt identity and epoch.
+
+## Slice 11: event protocol
+
+- SHA `bb7d48b`: wake dispositions committed and pushed to `origin/lane/w1-service`.
+- Command `bun run --cwd apps/melete db:generate --name=event_protocol`: generated `0006_event_protocol.sql` with event epochs and a durable stream-retention watermark; pre-protocol epochs remain null.
+- Test `retention reconnect`: an expired cursor receives a retention gap and reset snapshot at a real committed head; subsequent events carry matching `cursor` and `seq` plus the current job epoch.
+- Test `epoch changes and explicit resync`: reconnection with an earlier epoch, `resync=true`, an ahead-of-head cursor or an unknown historical epoch returns current truth without inventing event history.
+- Test `retention reconnect`: stream replay retention leaves the canonical event ledger and independent acceptance journal available for recovery; receipt lookup remains identical after retention advances.
+- Test `conformance 5`: a client that already knows the replacement epoch still replays the original persisted runtime-gap event with its actual sequence ID.
+- Command `bun test apps/melete/test/integration/responsibility.test.ts apps/melete/test/integration/events.test.ts conformance/scenarios/05-runtime-death.test.ts`: an initial shutdown race caused a fixture deadlock; one fix drains pending stream SQL before shutdown. Final run: `22 pass`, `0 fail`, `173 expect() calls`, `24.49s`.
+- Command `bun run typecheck`: one assertion typing fix, then passed (`$ tsc -b`); command `bun run lint`: `Checked 105 files in 99ms. No fixes applied.`.
+- Command `bun test --dots`: `378 pass`, `24 todo`, `0 fail`, `1513 expect() calls`, `Ran 402 tests across 30 files. [55.51s]`.

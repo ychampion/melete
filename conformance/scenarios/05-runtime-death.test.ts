@@ -117,7 +117,13 @@ withDb(`conformance 5: ${s.title}`, () => {
           .sql`select payload->>'text' as text from event where job_id = ${row.id} and type = 'text_delta' order by seq`;
         expect(deltas.map((value) => value.text)).toEqual(['Durable prefix', 'Recovered suffix']);
         expect(row.gapSeq).toBeGreaterThan(0);
-        const response = await stream.response({ jobId: row.id, after: row.gapSeq - 1 });
+        // The reader already knows the replacement epoch; replay checks the original durable gap.
+        const current = await fixture.jobs.get(row.id);
+        const response = await stream.response({
+          jobId: row.id,
+          after: row.gapSeq - 1,
+          epoch: current.leaseEpoch,
+        });
         const reader = response.body?.getReader();
         if (!reader) throw new Error('SSE body missing');
         try {
