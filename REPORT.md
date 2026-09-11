@@ -182,7 +182,43 @@ skips, 0 failures, 3,914 assertions in 77.37 seconds; typecheck and lint passed.
 A separate review of supervisor ownership, context, startup gates and restore
 guards found no concrete defects.
 
-## Remaining checks
+## Clean-host install
 
-The four-service stack is healthy; remaining suite, clean-host and restore
-measurements are recorded in subsequent slices. No overall completion is claimed yet.
+The final README procedure completed in **64.93 seconds** on a fresh Linux
+container host, including prerequisite packages, Bun installation, source clone,
+frozen dependency installation, all image pulls/builds, four healthy services,
+and HTTP checks of the API, web API proxy, and web page. It installed source
+revision `209acd32aaa32814c4b12c8d8710a4ea07710a91`.
+
+The host used the official Docker 29.1.3 DinD image, Alpine 3.23, Compose 5.0.0,
+and Bun 1.4.2. Its independent daemon began with **zero images and zero
+containers**. Docker storage was a new 16 GiB tmpfs using overlay2; it shared
+the first host's Linux 6.8.0-138-generic kernel and 8 CPUs. This is the brief's
+fresh-container-host option, not a second VM. The timed interval excludes
+provisioning the Docker host and transferring the source bundle, both prepared
+before the install. No Docker image or build cache was transferred. The tmpfs
+and local source transfer make this timing specific to this fixture.
+
+The README needed two fixes found by literal execution: minimal Alpine lacked
+the C++ runtime required by Bun, and unauthenticated source cloning was not
+available. It now lists Alpine prerequisites and a source-bundle alternative
+that transfers no credential or local configuration. Both failed hosts were
+replaced with empty daemons before retrying; the second fix passed. The final
+run used the documented PR branch and bundle substitutions.
+
+Docker events measured these clean-host process-to-healthy times:
+
+| Service | Milliseconds |
+| --- | ---: |
+| Postgres | 2,065 |
+| Melete | 5,074 |
+| Web | 2,077 |
+| Runtime | 10,756 |
+
+The clean-host runtime independently reproduced the final Hermes/plugin labels
+and the exact 200-component SBOM hash
+`4424628aac0b3f9a5bd5d05461fd7ca19fdd4ab1e0f4a2b5e9aac0ebd6ce522a`.
+With the classic overlay2 store, image inspect reports uncompressed layer sizes:
+runtime 681,097,087 bytes, Melete 352,241,107 bytes, and web 181,052,159 bytes.
+These sizes are not directly comparable with the first host's compressed
+containerd content sizes. All four services remained healthy after the install.
