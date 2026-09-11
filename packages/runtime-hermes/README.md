@@ -17,7 +17,8 @@ makes upgrading the pin a one-line change instead of a rebase.
 |---|---|---|
 | `platform_toolsets.api_server: [melete]` | `config/config.yaml` | The one key that turns every built-in off. An explicit list replaces the `hermes-api-server` default, so the model's whole catalog is what the broker served for this job. |
 | `plugins.enabled: [melete]` | `config/config.yaml` | An allow-list of plugin directory names. It is a list, not a boolean: `plugins.enabled: true` loads nothing, silently. |
-| `tools.tool_search.enabled: "off"` | `config/config.yaml` | Plugin tools are otherwise collapsed behind a `tool_search`/`tool_describe`/`tool_call` bridge. The broker's catalog is already scope-filtered and capped, so the bridge only adds a round trip. |
+| `tools.tool_search.enabled: "off"` | `config/config.yaml` | Melete supplies its own scoped `search_tools` and `load_tool`; the engine's separate discovery bridge is disabled. |
+| `skills.enabled: false` | `config/config.yaml` | Skills are discovered and read through the broker, which enforces the current space and scopes. |
 | `memory.enabled: false` | `config/config.yaml` | Melete owns memory. A retracted knowledge record has to vanish from retrieval at once, which an engine-side store would quietly undo. |
 | no context files in the image | `Dockerfile` | No `SOUL.md`, `AGENTS.md` or `.hermes.md` for the prompt builder to find. The identity is sent with every run and is capped at 250 tokens. |
 | `providers.melete-gateway` | `config/config.yaml` | The only inference endpoint is Melete's model gateway, which holds the real provider key. The surrogate in this container is worth nothing elsewhere. |
@@ -32,19 +33,30 @@ reach the same end through configuration. Measurements and citations are in
 
 ### What the thin configuration costs
 
-Measured against the pinned tag with the release's own prompt-assembly
-functions, on a machine where a dozen built-ins are already gated off by their
-`check_fn`s (so the default column is a floor, not a ceiling):
+The local discovery end-to-end test captures the first actual provider request
+from pinned commit `2237be355906fbe6065ce1815711eee52b2d646e`. With a seven-tool
+core, it measured 7,426 system-prompt characters and 2,774 tool-schema characters:
+**2,550 estimated tokens**, using `ceil((system + schemas).length / 4)`, below
+the 4,000-token tripwire. The broker core itself was 694 estimated tokens
+against its 750-token budget. This is a scaffolding estimate, not provider usage
+or a tokenizer-specific count. User input and subsequent tool results are metered
+separately by the gateway.
 
-| | tools | tool schemas | system prompt | total |
-|---|---|---|---|---|
-| default `hermes-api-server` | 23 | 8,766 tok | 3,150 tok | 11,916 tok |
-| thin + Melete identity | 6 | 377 tok | 2,926 tok | 3,304 tok |
+The earlier W3 prompt-assembly probe in `.agents/notes/0009-hermes-surface.md`
+used a different tool fixture and is historical evidence. The discovery test
+measures the wire request after the current plugin and configuration are active.
 
-Most of the remaining 2,926 tokens are Hermes's own preamble, not Melete's. Run
-`instructions` are appended to it rather than substituted for it, so an attempt
-always carries the engine's voice underneath the identity. That is the honest
-floor on this engine and the first thing a native loop would recover.
+With the pinned source installed at `.hermes-src` and its Python environment at
+`.hermes-venv`, reproduce on Windows with:
+
+```bash
+bun run packages/runtime-hermes/scripts/discovery-e2e.ts
+```
+
+It uses embedded Postgres, real pg-boss, the local Hermes HTTP server on 3140,
+the broker on 3142, and a scripted provider. It asserts search, load, continuation,
+receipt persistence, append-only provider history and one public outcome. Raw
+captures stay in its temporary directory because they include local capabilities.
 
 ## The plugin contract
 
@@ -56,16 +68,37 @@ The plugin holds no credentials, contains no connector code, and makes no
 decisions. Canonicalisation, effect classification, approval, budget, dispatch,
 and the receipt all happen on the broker side, where they can be recorded.
 
-The catalog is fetched at registration and is already filtered by the job's
-scopes, so an out-of-scope tool never appears in the model's context rather than
-being refused after the model has spent a turn on it.
+The initial catalog is a deterministic core plus two read-only meta-tools.
+`search_tools` returns compact scoped manifests; `load_tool` persists a schema in
+the attempt's context and registers its forwarder. Loaded tools retain the same
+broker approval, scope, budget and receipt checks. Skill reads and the optional
+`compose` execution seam use `/tools/call`; connector effects use `/actions`.
+
+Pinned Hermes snapshots its toolset when constructing each active agent.
+Registering a tool does not mutate that snapshot. The adapter therefore verifies
+the new catalog through its service-owned `catalogState` callback, stops and
+drains the current run, then starts a continuation with the extended catalog.
+Use `brokerCatalogState` when constructing the adapter. Model text cannot
+authorize a continuation. The attempt, capability, budgets and event sequence
+are shared, and there is exactly one public attempt outcome.
+After execution ends, a separate one-second ledger check preserves pending
+approvals even when the model's wall allowance has expired. It permits no new
+model run or tool execution and aborts the lookup if the service stalls.
+
+Continuations keep the native Hermes session history, including complete tool
+call and result metadata. They do not reconstruct `conversation_history`, which
+the pinned HTTP path would normalize and strip. The real-server test checks the
+previous request remains an exact prefix of the next request's history.
 
 Two details that the local end-to-end settled and that are easy to get wrong.
 
 A handler is called as `handler(args, **kwargs)` with the model's arguments in
 one positional dict, not as keyword arguments. A `**kwargs`-only signature
 raises `TypeError` before the broker is reached, and the model is told the tool
-is broken.
+is broken. Engine metadata such as `session_id` is not merged into those
+arguments. Registered handlers return JSON strings because the pinned dispatcher
+adds message metadata to object results; the HTTP broker client itself uses
+ordinary JSON objects.
 
 The proposal reference is scoped to the **job**, not the attempt. An action that
 parks for approval is carried out when the next attempt proposes the same thing
@@ -129,9 +162,10 @@ POST /v1/runs/{id}/stop        cancel
 never reached the ledger is the untracked side channel the broker exists to
 prevent.
 
-`Idempotency-Key` is the attempt id and the session key is the job id, so a
-resent start resolves to the run that already exists and consecutive attempts on
-one job continue one Hermes session.
+The first `Idempotency-Key` is the attempt id; discovery continuations append
+`:tools:<index>`. Each retry therefore resolves to its existing run while a
+verified schema load can start one new run. The session key is the job id, so
+consecutive attempts and discovery continuations retain native session history.
 
 Melete consumes the event stream once and persists every event before fanning it
 out. An interrupted run is a dead attempt and is never resumed; the job survives

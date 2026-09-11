@@ -84,6 +84,12 @@ class FakeBroker:
             return 200, {"tools": self.catalog}
         if method == "POST" and path == "/actions":
             return 201, self.propose_response
+        if method == "POST" and path == "/tools/search":
+            return 200, {"tools": [{"name": "email.search", "description": "Search mail"}]}
+        if method == "POST" and path == "/tools/load":
+            return 200, {"tool": CATALOG[1], "schema_fingerprint": HASH}
+        if method == "POST" and path == "/tools/call":
+            return 200, {"body": "Use the broker for every action."}
         if method == "GET" and path.startswith("/actions/"):
             return 200, {"action": self.action_record}
         return 404, {"error": {"code": "not_found", "message": "no such route"}}
@@ -186,6 +192,52 @@ def test_a_refused_catalog_registers_nothing(client, broker):
     broker.status_code = 403
     broker.error_body = {"error": {"code": "stale_epoch", "message": "fenced"}}
     assert register(RecordingContext(), client) == []
+
+
+def test_discovery_registers_only_broker_returned_schemas(client, broker):
+    broker.catalog = [
+        {"name": "search_tools", "description": "Find tools", "connection_id": None},
+        {"name": "load_tool", "description": "Load tools", "connection_id": None},
+    ]
+    ctx = RecordingContext()
+    register(ctx, client)
+    found = json.loads(ctx.tools[0]["handler"]({"query": "mail"}, task_id="engine", session_id="session"))
+    assert found["tools"][0]["name"] == "email.search"
+    result = json.loads(ctx.tools[1]["handler"]({"name": "email.search"}, user_task="engine metadata"))
+    assert result["status"] == "tools_loaded"
+    assert [tool["name"] for tool in ctx.tools] == ["search_tools", "load_tool", "email.search"]
+    ctx.tools[2]["handler"]({"query": "invoices"})
+    assert broker.requests[-2]["path"] == "/actions"
+    assert broker.requests[-2]["body"]["connection_id"] == CONNECTION
+    assert all(request["auth"] == "Bearer cap-token" for request in broker.requests)
+    assert broker.requests[1]["body"] == {"query": "mail"}
+    assert broker.requests[2]["body"] == {"name": "email.search"}
+    ctx.tools[1]["handler"]({"name": "email.search"})
+    assert len(ctx.tools) == 3
+
+
+def test_denied_load_cannot_register_a_handler(client, broker):
+    ctx = RecordingContext()
+    broker.catalog = [{"name": "load_tool", "description": "Load", "connection_id": None}]
+    register(ctx, client)
+    broker.status_code = 403
+    broker.error_body = {"error": {"code": "scope_denied", "message": "not granted"}}
+    answer = json.loads(ctx.tools[0]["handler"]({"name": "email.send"}))
+    assert answer["error"]["code"] == "scope_denied"
+    assert len(ctx.tools) == 1
+
+
+def test_native_skill_execution_stays_at_the_broker(client, broker):
+    answer = build_handler(client, {"name": "skills.inspect", "connection_id": None})({})
+    assert answer["body"] == "Use the broker for every action."
+    assert broker.requests[0]["path"] == "/tools/call"
+    assert broker.requests[0]["body"] == {"name": "skills.inspect", "arguments": {}}
+
+
+def test_compose_is_forwarded_to_the_broker_native_gate(client, broker):
+    arguments = {"reads": [{"as": "rows", "name": "email.search"}], "script": "return rows;"}
+    build_handler(client, {"name": "compose", "connection_id": None})(arguments)
+    assert broker.requests[0]["body"] == {"name": "compose", "arguments": arguments}
 
 
 # -- calling ------------------------------------------------------------------

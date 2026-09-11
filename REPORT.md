@@ -57,3 +57,13 @@
 - `bun run typecheck` and `bun run lint`: both exit 0; Biome checked 321 files. `git -C C:/Users/gamin/melete-oss-w10c diff --check`: exit 0.
 - `service startup binds the W2 internal port and runs pg-boss against the fixture`: passes on an allocated loopback port and proves discovery resolves an installed skill under `personal/skills` through the same space identifier as the knowledge API.
 - `packages/contracts` and `docs/ARCHITECTURE.md`: `git -C C:/Users/gamin/melete-oss-w10c diff -- packages/contracts docs/ARCHITECTURE.md` remains empty.
+
+## Hermes verification and owner steering — 2026-09-11 20:22 UTC
+
+- `c109c8b` (`Add scoped discovery with durable attempt catalogs`): committed with the required identity and pushed to `origin/lane/w10c-discovery` after the 972-pass suite.
+- `bun run compose:check`: 12 checks passed; `bun run openapi`: exit 0 with no generated contract change at the catalog checkpoint.
+- `bun run test:plugin`: 24 Python tests passed in 12.54 seconds.
+- `bun run packages/runtime-hermes/scripts/discovery-e2e.ts`: exit 0 using real local Hermes `2237be355906fbe6065ce1815711eee52b2d646e`, embedded Postgres, pg-boss, and the scripted gateway; 4 provider requests, 2 runs, 1 stop, 1 connector execution, 10 contiguous runtime events and one completed outcome.
+- `discovery-summary.json`: core 694 estimated tokens; first wire request has 7,426 system characters plus 2,774 schema characters, or 2,550 estimated scaffolding tokens, below 4,000. Native provider history remains append-only across continuation; the broker persisted action `act_01M291W0G096W0YXDJ3AP7FX6B` and its receipt.
+- `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: owner now requires this shared lock for every full suite, with `rmdir` on success or failure. Earlier unlocked timeout and timing conclusions are superseded pending locked reproduction; focused tests need no lock.
+- `packages/contracts/src`: owner now authorizes additive contract changes with regenerated OpenAPI/client types and a dated lane additions note. Reassess the missing MCP provider separately from the remaining OS process-isolation boundary; breaking changes still require a proposal and stop.

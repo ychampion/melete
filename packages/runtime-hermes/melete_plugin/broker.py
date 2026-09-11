@@ -119,6 +119,18 @@ class BrokerClient:
         }
         return self._call("POST", "/actions", body)
 
+    def search_tools(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Discovery is scoped by the same attempt credential as an action."""
+        return self._call("POST", "/tools/search", arguments)
+
+    def load_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Only the broker may supply a schema and its fixed connection."""
+        return self._call("POST", "/tools/load", arguments)
+
+    def call_native(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Native catalog tools still execute on the service side of the gate."""
+        return self._call("POST", "/tools/call", {"name": name, "arguments": arguments})
+
     def action(self, action_id: str) -> Dict[str, Any]:
         """Read one action back, for the receipt a dispatch left on it."""
         result = self._call("GET", f"/actions/{action_id}")

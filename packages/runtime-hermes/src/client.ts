@@ -128,6 +128,12 @@ export type HermesClientOptions = {
   token?: string;
 };
 
+/** Internal continuation state; it does not extend the frozen attempt contract. */
+export type HermesContinuation = {
+  index?: number;
+  input?: string;
+};
+
 const trimSlash = (s: string): string => s.replace(/\/+$/, '');
 
 export class HermesClient {
@@ -167,9 +173,9 @@ export class HermesClient {
    * (`gateway/platforms/api_server.py:2087`). Sending `toolsets: []` in this
    * body, as the skeleton did, has no effect at all.
    */
-  startRun(bundle: AttemptBundle): HermesRequest {
+  startRun(bundle: AttemptBundle, continuation: HermesContinuation = {}): HermesRequest {
     const body = {
-      input: renderInput(bundle),
+      input: continuation.input ?? renderInput(bundle),
       instructions: renderInstructions(bundle),
       session_id: bundle.attempt.job_id,
       model: bundle.model.model,
@@ -179,7 +185,9 @@ export class HermesClient {
       method: 'POST',
       headers: this.headers({
         'content-type': 'application/json',
-        'Idempotency-Key': bundle.attempt.id,
+        'Idempotency-Key': continuation.index
+          ? `${bundle.attempt.id}:tools:${continuation.index}`
+          : bundle.attempt.id,
         'X-Hermes-Session-Key': bundle.attempt.job_id,
       }),
       body: JSON.stringify(body),

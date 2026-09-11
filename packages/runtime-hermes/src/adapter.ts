@@ -16,6 +16,8 @@ import {
   type RuntimeAdapter,
   type RuntimeCapabilities,
   type RuntimeEvent,
+  type ToolSpec,
+  toolSpec,
 } from '@melete/contracts';
 import {
   HermesClient,
@@ -38,13 +40,25 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
  * approval key one refactor away from the runtime's side of the boundary. The
  * service knows both and passes a closure.
  */
-export type ParkedActions = (bundle: AttemptBundle) => Promise<string[]>;
+export type ParkedActions = (bundle: AttemptBundle, signal?: AbortSignal) => Promise<string[]>;
+
+/** Read through the service's authenticated broker client, never from model output. */
+export type CatalogState = (bundle: AttemptBundle, signal?: AbortSignal) => Promise<ToolSpec[]>;
+
+type RunResult = {
+  outcome: AttemptOutcome;
+  loaded?: ToolSpec[];
+  outputTokens: number;
+};
+
+type RunBudget = { turns: number; outputTokens: number; deadline: number };
 
 export type HermesAdapterOptions = {
   baseUrl: string;
   /** `API_SERVER_KEY`, when the API server is configured to require one. */
   token?: string;
   parkedActions: ParkedActions;
+  catalogState?: CatalogState;
   fetch?: FetchLike;
   /** How long to wait for a frame before calling the stream dead. */
   streamIdleMs?: number;
@@ -95,35 +109,106 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     signal: AbortSignal,
   ): Promise<AttemptOutcome> {
     const emitter = new SequencedSink(bundle.attempt.id, sink);
-
-    let runId: string;
+    const controller = new AbortController();
+    const deadline = Date.now() + bundle.budget.max_wall_ms;
+    const timer = setTimeout(() => controller.abort(), bundle.budget.max_wall_ms);
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    const budget: RunBudget = { turns: 0, outputTokens: 0, deadline };
+    let input = this.client.renderInput(bundle);
+    if (bundle.transcript.length) {
+      // The broker's prior context is persisted as part of this first input.
+      // Subsequent runs hydrate the same session's native history. The pin's
+      // explicit conversation_history parser strips tool-call fields, whereas
+      // session hydration preserves them and keeps provider history append-only.
+      input += `\n\n## Recorded prior context\n\n${JSON.stringify(bundle.transcript)}`;
+    }
+    let catalog = bundle.tools;
+    let runId: string | undefined;
+    let final: AttemptOutcome = exhausted('The attempt reached its turn limit.');
+    const stop = () => {
+      if (runId) void this.send(this.client.stop(runId)).catch(() => undefined);
+    };
+    controller.signal.addEventListener('abort', stop);
     try {
-      const accepted = hermesRunAccepted.parse(await this.json(this.client.startRun(bundle)));
-      runId = accepted.run_id;
+      if (this.options.catalogState) {
+        catalog = await beforeDeadline(
+          this.options.catalogState(bundle, controller.signal),
+          deadline,
+        );
+      }
+      for (let index = 0; index < bundle.budget.max_turns; index++) {
+        if (
+          controller.signal.aborted ||
+          budget.turns >= bundle.budget.max_turns ||
+          budget.outputTokens >= bundle.budget.max_output_tokens
+        ) {
+          final = signal.aborted
+            ? gap('the attempt was cancelled')
+            : exhausted('The attempt reached its shared runtime budget.');
+          break;
+        }
+        const accepted = hermesRunAccepted.parse(
+          await beforeDeadline(
+            this.json(
+              this.client.startRun(bundle, {
+                index,
+                input,
+              }),
+              controller.signal,
+            ),
+            deadline,
+          ),
+        );
+        runId = accepted.run_id;
+        if (controller.signal.aborted) stop();
+        const result = await this.consume(
+          runId,
+          bundle,
+          emitter,
+          controller.signal,
+          catalog,
+          budget,
+        );
+        budget.outputTokens += result.outputTokens;
+        final = result.outcome;
+        if (
+          budget.outputTokens > bundle.budget.max_output_tokens ||
+          budget.turns > bundle.budget.max_turns
+        ) {
+          final = exhausted('The attempt reached its shared runtime budget.');
+          break;
+        }
+        if (!result.loaded || signal.aborted || controller.signal.aborted) break;
+        // Approval wins even when a load and an external proposal shared a run.
+        if (
+          (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
+            .length > 0
+        )
+          break;
+        const added = result.loaded.filter(
+          (tool) => !catalog.some((old) => old.name === tool.name),
+        );
+        catalog = result.loaded;
+        input = `Continue the same job and attempt. The broker loaded these tools: ${added.map((tool) => tool.name).join(', ')}. Their schemas are now available. Continue from the recorded progress.`;
+        final = exhausted('The attempt reached its continuation limit.');
+      }
     } catch (error) {
-      // Nothing started, so nothing to reconcile and nothing to record as a gap.
-      return await this.finish(bundle, emitter, {
+      stop();
+      final = {
         kind: 'failed',
         reason: `the runtime refused the run: ${message(error)}`,
         retryable: true,
-      });
-    }
-
-    const stop = () => {
-      // Best effort: the outcome does not depend on the engine acknowledging.
-      void this.send(this.client.stop(runId)).catch(() => undefined);
-    };
-    signal.addEventListener('abort', stop, { once: true });
-    // An abort that arrived while the start request was in flight fired before
-    // there was a listener. The run exists by now, so it still has to be told.
-    if (signal.aborted) stop();
-
-    try {
-      const outcome = await this.consume(runId, bundle, emitter, signal);
-      return await this.finish(bundle, emitter, outcome);
+      };
     } finally {
-      signal.removeEventListener('abort', stop);
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      controller.signal.removeEventListener('abort', stop);
     }
+    if (Date.now() >= deadline && !signal.aborted)
+      final = exhausted('The attempt reached its wall-time limit.');
+    return await this.finish(bundle, emitter, final);
   }
 
   /**
@@ -137,30 +222,47 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     bundle: AttemptBundle,
     emitter: SequencedSink,
     signal: AbortSignal,
-  ): Promise<AttemptOutcome> {
+    catalog: ToolSpec[],
+    budget: RunBudget,
+  ): Promise<RunResult> {
+    const result = (outcome: AttemptOutcome): RunResult => ({
+      outcome,
+      outputTokens: 0,
+    });
     let response: Response;
     try {
       response = await this.send(this.client.events(runId), signal);
     } catch (error) {
-      return gap(`the event stream could not be opened: ${message(error)}`);
+      return result(gap(`the event stream could not be opened: ${message(error)}`));
     }
     if (!response.ok || !response.body) {
-      return gap(`the event stream answered ${response.status}`);
+      return result(gap(`the event stream answered ${response.status}`));
     }
 
-    await emitter.emit({ type: 'turn_started', turn: 0 });
+    await emitter.emit({ type: 'turn_started', turn: budget.turns });
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const calls = new CallIds();
     let buffer = '';
     let outcome: AttemptOutcome | null = null;
+    let loaded: ToolSpec[] | undefined;
+    let text = '';
+    const completedTools: string[] = [];
+    let outputTokens = 0;
+    let budgetStopped = false;
 
     try {
       for (;;) {
         const chunk = await withTimeout(
           reader.read(),
-          this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
+          Math.max(
+            1,
+            Math.min(
+              this.options.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS,
+              budget.deadline - Date.now(),
+            ),
+          ),
         );
         if (chunk.done) break;
         buffer += decoder.decode(chunk.value, { stream: true });
@@ -171,25 +273,68 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           if (!event) continue;
           const mapped = await this.handle(runId, event, emitter, calls);
           if (mapped) outcome = mapped;
+          if (event.event === 'message.delta') text += String(event.delta ?? '');
+          if (event.event === 'tool.started') budget.turns++;
+          if (event.event === 'tool.completed') {
+            completedTools.push(String(event.tool ?? 'unknown'));
+            if (event.tool === 'load_tool' && event.error !== true && this.options.catalogState) {
+              const current = await beforeDeadline(
+                this.options.catalogState(bundle, signal),
+                budget.deadline,
+              );
+              if (current.some((tool) => !catalog.some((old) => old.name === tool.name))) {
+                loaded = current;
+                // Stop explicitly; the model need not obey a textual instruction.
+                // Drain to a terminal frame before another run may execute.
+                await beforeDeadline(this.send(this.client.stop(runId)), budget.deadline);
+              }
+            }
+          }
+          if (
+            !outcome &&
+            !budgetStopped &&
+            (budget.turns >= bundle.budget.max_turns ||
+              budget.outputTokens + Math.ceil(text.length / 4) > bundle.budget.max_output_tokens)
+          ) {
+            budgetStopped = true;
+            await beforeDeadline(this.send(this.client.stop(runId)), budget.deadline);
+          }
+          if (isTerminalEvent(String(event.event))) {
+            const usage = event.usage as Record<string, unknown> | undefined;
+            outputTokens = Math.max(Math.ceil(text.length / 4), Number(usage?.output_tokens ?? 0));
+            if (!completedTools.length || text) budget.turns++;
+            if (loaded && (event.event === 'run.cancelled' || event.event === 'run.completed')) {
+              outcome = { kind: 'completed', summary: 'tools_loaded', evidence: [] };
+            }
+            if (budgetStopped)
+              outcome = exhausted('The attempt reached its shared runtime budget.');
+          }
         }
         if (outcome) break;
       }
     } catch (error) {
       // A read that threw took whatever the engine had already queued with it.
-      return gap(
-        signal.aborted
-          ? 'the attempt was cancelled while its event stream was open'
-          : `the event stream ended early: ${message(error)}`,
+      return result(
+        gap(
+          signal.aborted
+            ? 'the attempt was cancelled while its event stream was open'
+            : `the event stream ended early: ${message(error)}`,
+        ),
       );
     } finally {
       await reader.cancel().catch(() => undefined);
     }
 
-    if (outcome) return outcome;
+    if (outcome)
+      return {
+        outcome,
+        ...(loaded && !budgetStopped && outcome.kind === 'completed' ? { loaded } : {}),
+        outputTokens,
+      };
     // The socket closed without a terminal frame. The engine may have finished;
     // there is no way to tell from here, and guessing would invent a result.
     void bundle;
-    return gap('the event stream closed before the run reported an outcome');
+    return result(gap('the event stream closed before the run reported an outcome'));
   }
 
   /** Map one engine frame. Returns an outcome only for a terminal frame. */
@@ -285,8 +430,16 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     outcome: AttemptOutcome,
   ): Promise<AttemptOutcome> {
     let settled = outcome;
+    // Execution has ended. Give the service one bounded second to preserve
+    // approval truth even when the model has exhausted its wall allowance.
+    const finalization = new AbortController();
+    const deadline = Date.now() + 1_000;
+    const timer = setTimeout(() => finalization.abort(), 1_000);
     try {
-      const parked = await this.options.parkedActions(bundle);
+      const parked = await beforeDeadline(
+        this.options.parkedActions(bundle, finalization.signal),
+        deadline,
+      );
       if (parked.length > 0) {
         for (const actionId of parked) {
           await emitter.emit({ type: 'action_requested', action_id: actionId, kind: 'approval' });
@@ -302,6 +455,9 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         reason: `the parked-action check failed: ${message(error)}`,
         retryable: true,
       };
+    } finally {
+      clearTimeout(timer);
+      finalization.abort();
     }
 
     await emitter.emit({ type: 'attempt_outcome', outcome: settled });
@@ -317,8 +473,8 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     });
   }
 
-  private async json(request: HermesRequest): Promise<unknown> {
-    const response = await this.send(request);
+  private async json(request: HermesRequest, signal?: AbortSignal): Promise<unknown> {
+    const response = await this.send(request, signal);
     if (!response.ok) {
       throw new Error(
         `${request.method} ${new URL(request.url).pathname} answered ${response.status}`,
@@ -341,6 +497,8 @@ const gap = (reason: string): AttemptOutcome => ({
   reason: `${reason}. Some events from this attempt were never received, so its transcript is incomplete.`,
   retryable: true,
 });
+
+const exhausted = (summary: string): AttemptOutcome => ({ kind: 'budget_exhausted', summary });
 
 /**
  * One runtime event minus the four fields the sink stamps on. Distributive, so
@@ -427,6 +585,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+const beforeDeadline = <T>(promise: Promise<T>, deadline: number): Promise<T> =>
+  withTimeout(promise, Math.max(1, deadline - Date.now()));
+
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
@@ -443,9 +604,10 @@ export function brokerParkedActions(options: {
 }): ParkedActions {
   const call =
     options.fetch ?? ((input: string, init?: RequestInit) => globalThis.fetch(input, init));
-  return async (bundle) => {
+  return async (bundle, signal) => {
     const url = `${options.brokerUrl.replace(/\/+$/, '')}/actions?job_id=${encodeURIComponent(bundle.attempt.job_id)}&status=needs_approval`;
     const response = await call(url, {
+      ...(signal ? { signal } : {}),
       headers: {
         authorization: `Bearer ${options.serviceKey}`,
         'x-melete-space-id': options.spaceId,
@@ -457,6 +619,24 @@ export function brokerParkedActions(options: {
     return (body.actions ?? [])
       .filter((action) => action.attempt_id === bundle.attempt.id)
       .map((action) => action.id);
+  };
+}
+
+/** Catalog discovery never receives the service's approval credential. */
+export function brokerCatalogState(options: {
+  brokerUrl: string;
+  fetch?: FetchLike;
+}): CatalogState {
+  const call =
+    options.fetch ?? ((input: string, init?: RequestInit) => globalThis.fetch(input, init));
+  return async (bundle, signal) => {
+    const response = await call(`${options.brokerUrl.replace(/\/+$/, '')}/tools`, {
+      ...(signal ? { signal } : {}),
+      headers: { authorization: `Bearer ${bundle.attempt.token}`, accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`the tool catalog answered ${response.status}`);
+    const body = (await response.json()) as { tools?: unknown };
+    return toolSpec.array().parse(body.tools);
   };
 }
 
