@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -224,6 +224,28 @@ describe('reading a space', () => {
     const res = await app().request('/knowledge', { headers: headers() });
     const body = (await res.json()) as { records: Array<{ id: string }> };
     expect(body.records.map((r) => r.id).sort()).toEqual([ID.bun, ID.landlord].sort());
+  });
+
+  test('a record edited on disk is what a search returns', async () => {
+    // The files are the system of record and a person edits them directly, so
+    // the search has to answer from what is on disk rather than from whatever
+    // the index last happened to hold.
+    await app().request(`/knowledge/search?space_id=${spaceId}&q=lease`, { headers: headers() });
+
+    writeFileSync(
+      join(paths.knowledge, 'landlord-contact.md'),
+      serializeRecord(
+        record({ id: ID.landlord, title: 'Landlord contact', type: 'fact' }),
+        'The lease renews in September now, and the agency handles it.',
+      ),
+      'utf8',
+    );
+
+    const res = await app().request(`/knowledge/search?space_id=${spaceId}&q=September`, {
+      headers: headers(),
+    });
+    const body = (await res.json()) as HitsBody;
+    expect(body.hits[0]?.id).toBe(ID.landlord);
   });
 
   test('a record that is not there is a 404', async () => {

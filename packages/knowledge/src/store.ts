@@ -3,6 +3,7 @@
  * report the ones that do not validate, and build the index the space is
  * searched through.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
@@ -73,10 +74,8 @@ export const toIndexed = (record: LoadedRecord): IndexedRecord => ({
  * deleting the index file costs nothing but the time to run this again.
  */
 export function buildIndex(paths: SpacePaths): { index: SpaceIndex; contents: SpaceContents } {
-  const contents = loadSpace(paths);
   const index = SpaceIndex.open(paths);
-  index.rebuild(contents.records.map(toIndexed));
-  return { index, contents };
+  return { index, contents: rebuild(paths, index) };
 }
 
 /**
@@ -86,7 +85,49 @@ export function buildIndex(paths: SpacePaths): { index: SpaceIndex; contents: Sp
 export function rebuild(paths: SpacePaths, index: SpaceIndex): SpaceContents {
   const contents = loadSpace(paths);
   index.rebuild(contents.records.map(toIndexed));
+  index.setFingerprint(sourceFingerprint(paths));
   return contents;
+}
+
+/**
+ * A cheap description of the files an index is derived from: every record's
+ * path, its size, and when it was last written. Reading it costs one stat per
+ * file rather than a parse, which is what makes it affordable on the way into
+ * a search.
+ *
+ * It can be fooled by a write that lands inside the filesystem's timestamp
+ * resolution and leaves the file exactly as long as it was. That is not how a
+ * person edits prose, and every write through the mediator sets the fingerprint
+ * directly, so this is a safety net for hand edits rather than a guarantee
+ * against an adversary with write access to the space.
+ */
+export function sourceFingerprint(paths: SpacePaths): string {
+  const hash = createHash('sha256');
+  for (const file of listMarkdown(paths.knowledge)) {
+    const stats = statSync(file);
+    const relativePath = relative(paths.root, file).split('\\').join('/');
+    hash.update(`${relativePath}|${stats.size}|${stats.mtimeMs}\n`);
+  }
+  return hash.digest('hex');
+}
+
+/** Say that this index matches the files as they are now. */
+export const markIndexFresh = (paths: SpacePaths, index: SpaceIndex): void =>
+  index.setFingerprint(sourceFingerprint(paths));
+
+/**
+ * Open a space's index, bringing it in step with the files first.
+ *
+ * The Markdown is the system of record and a person is meant to open it in
+ * whatever editor they like, so the index has to notice that they did. Without
+ * this, a record edited or deleted by hand keeps coming back from a search
+ * until something else happens to rebuild.
+ */
+export function openIndex(paths: SpacePaths): { index: SpaceIndex; rebuilt: boolean } {
+  const index = SpaceIndex.open(paths);
+  if (index.fingerprint() === sourceFingerprint(paths)) return { index, rebuilt: false };
+  rebuild(paths, index);
+  return { index, rebuilt: true };
 }
 
 /**

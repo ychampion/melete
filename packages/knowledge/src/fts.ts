@@ -49,7 +49,7 @@ export type QueryOptions = {
  * is thrown away and rebuilt rather than migrated: it is derived from the
  * Markdown, so the cheapest correct thing to do is start again.
  */
-const INDEX_SCHEMA_VERSION = 2;
+const INDEX_SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS record (
@@ -59,6 +59,10 @@ CREATE TABLE IF NOT EXISTS record (
   tags TEXT NOT NULL,
   type TEXT NOT NULL,
   status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS record_fts USING fts5(
   id UNINDEXED,
@@ -72,6 +76,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS record_fts USING fts5(
 const DROP = `
 DROP TABLE IF EXISTS record;
 DROP TABLE IF EXISTS record_fts;
+DROP TABLE IF EXISTS meta;
 `;
 
 /** Tags are stored space-delimited and space-padded, so a filter is a whole-word match. */
@@ -124,13 +129,37 @@ export class SpaceIndex {
     return new SpaceIndex(db, space);
   }
 
-  /** Throw away the index and build it again from the files. Cheap and honest. */
+  /**
+   * Throw away the index and build it again. Cheap and honest.
+   *
+   * The fingerprint goes with it. An index rebuilt from a list of records has
+   * no claim about which files on disk it matches; the store makes that claim
+   * afterwards, once it knows. An index that wrongly says it is current is
+   * worse than one that admits it does not know.
+   */
   rebuild(records: readonly IndexedRecord[]): void {
     this.db.transaction(() => {
       this.db.run('DELETE FROM record');
       this.db.run('DELETE FROM record_fts');
+      this.db.run('DELETE FROM meta');
       for (const record of records) this.insert(record);
     })();
+  }
+
+  /** What the files looked like when this index was last known to match them. */
+  fingerprint(): string | null {
+    const row = this.db
+      .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'fingerprint'")
+      .get();
+    return row?.value ?? null;
+  }
+
+  setFingerprint(value: string): void {
+    this.db.run(
+      `INSERT INTO meta (key, value) VALUES ('fingerprint', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [value],
+    );
   }
 
   upsert(record: IndexedRecord): void {

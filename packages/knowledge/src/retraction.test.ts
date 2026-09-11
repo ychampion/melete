@@ -6,7 +6,7 @@
  * the index file from disk.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { aRecord, fixedClock, IDS } from './fixtures.ts';
@@ -15,7 +15,7 @@ import { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import { hardDelete, retract } from './records.ts';
 import { commitRecord, history, initSpace } from './space.ts';
-import { buildIndex, loadSpace } from './store.ts';
+import { buildIndex, loadSpace, openIndex, sourceFingerprint } from './store.ts';
 
 let root: string;
 let paths: SpacePaths;
@@ -179,5 +179,101 @@ describe('deleting a record outright', () => {
     const entries = await history(paths, 'knowledge/landlord-contact.md');
     expect(entries[0]?.subject).toContain('the owner asked for it to be gone');
     expect(entries[0]?.proposedBy).toBe('zara');
+  });
+});
+
+// --------------------------------------------------------------------------
+// the files are the system of record, so hand edits have to be noticed
+// --------------------------------------------------------------------------
+
+describe('a person edits the space in their own editor', () => {
+  test('a record they add by hand becomes searchable', () => {
+    const first = buildIndex(paths);
+    expect(first.index.search('sourdough')).toEqual([]);
+    first.index.close();
+
+    writeFileSync(
+      join(paths.knowledge, 'bakery.md'),
+      serializeRecord(
+        aRecord({ id: IDS.fresh, title: 'The bakery on the corner' }),
+        'They keep sourdough back until eleven on a Saturday.',
+      ),
+      'utf8',
+    );
+
+    const { index, rebuilt } = openIndex(paths);
+    try {
+      expect(rebuilt).toBe(true);
+      expect(index.search('sourdough')[0]?.id).toBe(IDS.fresh);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a record they delete by hand stops being returned', () => {
+    const first = buildIndex(paths);
+    expect(first.index.search('landlord')).toHaveLength(1);
+    first.index.close();
+
+    rmSync(join(paths.knowledge, 'landlord-contact.md'));
+
+    const { index, rebuilt } = openIndex(paths);
+    try {
+      expect(rebuilt).toBe(true);
+      expect(index.search('landlord')).toEqual([]);
+      expect(index.has(IDS.landlord)).toBe(false);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a body they rewrite by hand is what gets searched', () => {
+    buildIndex(paths).index.close();
+
+    writeFileSync(
+      join(paths.knowledge, 'landlord-contact.md'),
+      serializeRecord(
+        aRecord({ id: IDS.landlord, title: 'Landlord contact and renewal window', type: 'fact' }),
+        'The lease renews in September now, and the agency handles it rather than the landlord.',
+      ),
+      'utf8',
+    );
+
+    const { index } = openIndex(paths);
+    try {
+      expect(index.search('September')[0]?.id).toBe(IDS.landlord);
+      expect(index.search('March')).toEqual([]);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('an untouched space is not rebuilt on every search', () => {
+    buildIndex(paths).index.close();
+    const { index, rebuilt } = openIndex(paths);
+    try {
+      expect(rebuilt).toBe(false);
+      expect(index.count()).toBe(2);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a write through the mediator leaves the index describing itself as current', async () => {
+    const { index } = buildIndex(paths);
+    try {
+      await retract(paths, index, findLandlord(), { reason: RETRACTED, by: 'zara', now });
+      expect(index.fingerprint()).toBe(sourceFingerprint(paths));
+    } finally {
+      index.close();
+    }
+
+    const reopened = openIndex(paths);
+    try {
+      expect(reopened.rebuilt).toBe(false);
+      expect(reopened.index.search('landlord')).toEqual([]);
+    } finally {
+      reopened.index.close();
+    }
   });
 });

@@ -26,7 +26,7 @@ import { parseRecord, serializeRecord } from './frontmatter.ts';
 import type { SpaceIndex } from './fts.ts';
 import { resolveInSpace, type SpacePaths } from './layout.ts';
 import { commitRecord, readWorkingTree, type SpaceCommit } from './space.ts';
-import { type LoadedRecord, loadSpace, toIndexed } from './store.ts';
+import { type LoadedRecord, loadSpace, markIndexFresh, toIndexed } from './store.ts';
 
 /**
  * What a space lets an agent do without asking. A personal space may let the
@@ -458,7 +458,10 @@ export async function applyProposal(
       ],
     };
   }
-  options.index?.upsert(toIndexed(record));
+  if (options.index) {
+    options.index.upsert(toIndexed(record));
+    markIndexFresh(context.paths, options.index);
+  }
 
   return { ok: true, commit, path: checked.verified.path, record };
 }

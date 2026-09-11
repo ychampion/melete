@@ -29,6 +29,7 @@ import {
   type LoadedRecord,
   listProposals,
   loadSpace,
+  openIndex,
   proposalType,
   proposeWrite,
   rebuild,
@@ -121,9 +122,8 @@ const hitView = (hit: SearchHit) => ({
  * that outlives the request is a handle that can outlive a revocation.
  */
 function withIndex<T>(space: SpaceRef, use: (index: SpaceIndex) => T): T {
-  const index = SpaceIndex.open(space.paths);
+  const { index } = openIndex(space.paths);
   try {
-    if (index.count() === 0) rebuild(space.paths, index);
     return use(index);
   } finally {
     index.close();

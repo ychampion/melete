@@ -11,7 +11,13 @@ import { serializeRecord } from './frontmatter.ts';
 import type { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import { type CommitAttribution, commitRecord, commitRemoval, type SpaceCommit } from './space.ts';
-import { type LoadedRecord, rebuild, type SpaceContents, toIndexed } from './store.ts';
+import {
+  type LoadedRecord,
+  markIndexFresh,
+  rebuild,
+  type SpaceContents,
+  toIndexed,
+} from './store.ts';
 
 export type RetractionRequest = {
   reason: string;
@@ -69,6 +75,7 @@ export async function retract(
   };
   const commit = await commitRecord(paths, record.path, content, attribution);
   index.remove(record.frontmatter.id);
+  markIndexFresh(paths, index);
   return { commit, content };
 }
 
