@@ -15,7 +15,6 @@
 import {
   type ErrorResponse,
   ID_PREFIXES,
-  type KnowledgeType,
   knowledgeSearchQuery,
   proposedWrite,
   retractKnowledgeRequest,
@@ -30,6 +29,7 @@ import {
   type LoadedRecord,
   listProposals,
   loadSpace,
+  proposalType,
   proposeWrite,
   rebuild,
   requiresApproval,
@@ -135,7 +135,6 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
   const policyFor = deps.policyFor ?? (() => DEFAULT_POLICY);
   const contextFor = (space: SpaceRef) => ({
     paths: space.paths,
-    spacesRoot: space.paths.root.slice(0, space.paths.root.length - space.name.length - 1),
     knownIds: knownIds(loadSpace(space.paths)),
     policy: policyFor(space),
     ...(deps.now ? { now: deps.now } : {}),
@@ -191,15 +190,20 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
     const space = c.get('space');
     const policy = policyFor(space);
     return c.json({
-      proposals: listProposals(space.paths).map((proposal) => ({
-        proposal_id: proposal.id,
-        path: proposal.path,
-        rationale: proposal.rationale,
-        type: proposal.type,
-        proposed_by: proposal.proposedBy,
-        proposed_at: proposal.proposedAt,
-        requires_approval: requiresApproval(policy, proposal.type as KnowledgeType),
-      })),
+      proposals: listProposals(space.paths).map((proposal) => {
+        // Read from the record itself, never from the metadata beside it: the
+        // staging directory is the one place an agent can write.
+        const type = proposalType(proposal);
+        return {
+          proposal_id: proposal.id,
+          path: proposal.path,
+          rationale: proposal.rationale,
+          type,
+          proposed_by: proposal.proposedBy,
+          proposed_at: proposal.proposedAt,
+          requires_approval: requiresApproval(policy, type),
+        };
+      }),
     });
   });
 
@@ -238,11 +242,15 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
 
     const body = (await c.req.json().catch(() => ({}))) as { approved_by?: string };
     const policy = policyFor(space);
-    const needsPerson = requiresApproval(policy, proposal.type as KnowledgeType);
+    const type = proposalType(proposal);
+    const needsPerson = requiresApproval(policy, type);
     const approvedBy = body.approved_by ?? (needsPerson ? null : 'policy:auto-apply');
     if (!approvedBy) {
       return c.json(
-        fail('approval_required', `a ${proposal.type} record in this space needs a person`),
+        fail(
+          'approval_required',
+          `a ${type ?? 'record the mediator cannot read'} in this space needs a person`,
+        ),
         409,
       );
     }

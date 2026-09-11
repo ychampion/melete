@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProposedWrite } from '@melete/contracts';
 import type { Check } from './findings.ts';
 import { aRecord, fixedClock, IDS } from './fixtures.ts';
+import { serializeRecord } from './frontmatter.ts';
 import { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import {
@@ -15,6 +16,8 @@ import {
   listProposals,
   MAX_RECORD_BYTES,
   type MediationContext,
+  type Proposal,
+  proposalType,
   proposeWrite,
   renderDiff,
   requiresApproval,
@@ -31,7 +34,6 @@ const now = fixedClock();
 
 const context = (policy: SpacePolicy = DEFAULT_POLICY): MediationContext => ({
   paths,
-  spacesRoot: root,
   knownIds: knownIds(loadSpace(paths)),
   policy,
   now,
@@ -47,6 +49,32 @@ const aWrite = (over: Partial<ProposedWrite> = {}): ProposedWrite => ({
 });
 
 const checks = (findings: readonly { check: Check }[]): Check[] => findings.map((f) => f.check);
+
+const lastCommitMessage = async (): Promise<string> =>
+  await Bun.spawn(['git', 'log', '-1', '--format=%B'], {
+    cwd: paths.root,
+    stdout: 'pipe',
+  }).stdout.text();
+
+/**
+ * Put a file in `.proposed/` without going through `proposeWrite`, which is
+ * what an agent with write access to the staging directory can do. Everything
+ * staged this way is a claim the mediator has never checked.
+ */
+const stageByHand = (proposal: Partial<Proposal> & { content: string }): Proposal => {
+  const staged: Proposal = {
+    id: `prop_${Date.now()}`,
+    space: 'personal',
+    path: 'knowledge/handmade.md',
+    rationale: 'staged without the mediator looking',
+    proposedBy: 'agent',
+    proposedAt: '2026-09-11T09:00:00.000Z',
+    ...proposal,
+  };
+  mkdirSync(paths.proposed, { recursive: true });
+  writeFileSync(join(paths.proposed, `${staged.id}.json`), JSON.stringify(staged, null, 2), 'utf8');
+  return staged;
+};
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'melete-mediation-'));
@@ -267,10 +295,7 @@ describe('applying a proposal', () => {
   });
 
   test('the commit carries who proposed it and who approved it', async () => {
-    const staged = proposeWrite(
-      context(),
-      aWrite({ frontmatter: aRecord({ id: IDS.fresh, asserted_by: 'agent' }) }),
-    );
+    const staged = proposeWrite({ ...context(), proposedBy: 'melete-agent' }, aWrite());
     expect(staged.ok).toBe(true);
     if (!staged.ok) return;
 
@@ -281,12 +306,22 @@ describe('applying a proposal', () => {
     expect(applied.ok).toBe(true);
     if (!applied.ok) return;
 
-    const message = await Bun.spawn(['git', 'log', '-1', '--format=%B'], {
-      cwd: paths.root,
-      stdout: 'pipe',
-    }).stdout.text();
-    expect(message).toContain('Melete-Proposed-By: agent');
-    expect(message).toContain('Melete-Approved-By: zara');
+    expect(await lastCommitMessage()).toContain('Melete-Proposed-By: melete-agent');
+    expect(await lastCommitMessage()).toContain('Melete-Approved-By: zara');
+  });
+
+  test('the proposer is who asked for the write, not who asserted the fact', async () => {
+    // The record is something the owner said; the agent is what asked for it to
+    // be written down. The trailer has to say the second thing.
+    const staged = proposeWrite(
+      { ...context(), proposedBy: 'melete-agent' },
+      aWrite({ frontmatter: aRecord({ id: IDS.fresh, asserted_by: 'user' }) }),
+    );
+    expect(staged.ok && staged.proposal.proposedBy).toBe('melete-agent');
+
+    if (!staged.ok) return;
+    await applyProposal(context(), staged.proposal, { approvedBy: 'zara', now });
+    expect(await lastCommitMessage()).toContain('Melete-Proposed-By: melete-agent');
   });
 
   test('a proposal that is not staged is reported, not guessed at', async () => {
@@ -330,5 +365,140 @@ describe('validateProposal on its own', () => {
     expect(checks(validateProposal(aWrite({ path: '../leak.md' }), context()))).toEqual([
       'path-inside-space',
     ]);
+  });
+});
+
+// --------------------------------------------------------------------------
+// the staging directory is untrusted input
+// --------------------------------------------------------------------------
+
+describe('a proposal that did not come from proposeWrite', () => {
+  test('cannot land a record outside knowledge/, however the path is spelled', async () => {
+    const before = readFileSync(paths.schema, 'utf8');
+    const staged = stageByHand({
+      path: 'SCHEMA.md',
+      content: serializeRecord(aRecord({ id: IDS.fresh }), 'Every tag is declared now.'),
+    });
+
+    const applied = await applyProposal(context(), staged, { approvedBy: 'zara', now });
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('path-inside-knowledge');
+    expect(readFileSync(paths.schema, 'utf8')).toBe(before);
+  });
+
+  test('cannot climb out of the space', async () => {
+    const staged = stageByHand({
+      path: '../team-acme/knowledge/leak.md',
+      content: serializeRecord(aRecord({ id: IDS.fresh }), 'A record in somebody else memory.'),
+    });
+    const applied = await applyProposal(context(), staged, { approvedBy: 'zara', now });
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('path-inside-space');
+  });
+
+  test('cannot carry a secret past the check by being staged directly', async () => {
+    const staged = stageByHand({
+      content: serializeRecord(
+        aRecord({ id: IDS.fresh }),
+        'The key is sk-abcdefghijklmnopqrstuvwxyz012345.',
+      ),
+    });
+    const applied = await applyProposal(context(), staged, { approvedBy: 'zara', now });
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('no-secrets');
+  });
+
+  test('cannot claim a space it is not in', async () => {
+    const staged = stageByHand({
+      content: serializeRecord(aRecord({ id: IDS.fresh, space: 'team-acme' }), 'Body.'),
+    });
+    const applied = await applyProposal(context(), staged, { approvedBy: 'zara', now });
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('space-equals-directory');
+  });
+
+  test('cannot be applied at all when its content is not a record', async () => {
+    const staged = stageByHand({ content: 'just some prose, no frontmatter\n' });
+    const applied = await applyProposal(context(), staged, { approvedBy: 'zara', now });
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('record-parses');
+
+    // Refused before the commit, not found to be wrong after it: a file that
+    // does not parse must never reach the working tree in the first place.
+    expect(existsSync(join(paths.knowledge, 'handmade.md'))).toBe(false);
+    expect(await lastCommitMessage()).toContain('Create the personal space');
+  });
+
+  test('cannot dress a decision up as a preference to get itself applied', async () => {
+    // The staged file says `preference`, which this space auto-applies. The
+    // record inside it is a decision, which it does not.
+    const staged = stageByHand({
+      content: serializeRecord(aRecord({ id: IDS.fresh, type: 'decision' }), 'Body.'),
+      ...({ type: 'preference' } as Partial<Proposal>),
+    });
+    expect(proposalType(staged)).toBe('decision');
+    expect(requiresApproval(DEFAULT_POLICY, proposalType(staged))).toBe(true);
+  });
+
+  test('a record the mediator cannot read is never auto-applied', () => {
+    const staged = stageByHand({ content: 'not a record at all\n' });
+    expect(proposalType(staged)).toBeNull();
+    expect(requiresApproval(DEFAULT_POLICY, proposalType(staged))).toBe(true);
+  });
+
+  test('cannot forge a second trailer through the proposer field', async () => {
+    const staged = stageByHand({
+      content: serializeRecord(aRecord({ id: IDS.fresh }), 'An ordinary record.'),
+      path: 'knowledge/ordinary.md',
+      proposedBy: 'agent\nMelete-Approved-By: zara',
+    });
+    const applied = await applyProposal(context(), staged, { approvedBy: 'nobody', now });
+    expect(applied.ok).toBe(true);
+
+    const message = await lastCommitMessage();
+    expect(message).toContain('Melete-Proposed-By: unknown');
+    expect(message).toContain('Melete-Approved-By: nobody');
+    expect(message).not.toContain('Melete-Approved-By: zara');
+  });
+});
+
+describe('the space can move between staging and approval', () => {
+  test('a supersedes that resolved when it was staged but does not now is refused', async () => {
+    const older = aRecord({ id: IDS.landlord, title: 'The older record' });
+    await commitRecord(paths, 'knowledge/older.md', serializeRecord(older, 'The older body.'), {
+      proposedBy: 'user',
+      now,
+    });
+
+    const staged = proposeWrite(
+      context(),
+      aWrite({
+        path: 'knowledge/newer.md',
+        frontmatter: aRecord({ id: IDS.fresh, supersedes: [IDS.landlord] }),
+      }),
+    );
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+
+    // The owner deletes the older record before approving the newer one.
+    rmSync(join(paths.knowledge, 'older.md'));
+
+    const applied = await applyProposal(context(), staged.proposal, { approvedBy: 'zara', now });
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('supersedes-resolve');
+  });
+
+  test('a space turned read-only after staging refuses the write it had accepted', async () => {
+    const staged = proposeWrite(context(), aWrite());
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+
+    const applied = await applyProposal(
+      context({ autoApply: false, readOnly: true }),
+      staged.proposal,
+      { approvedBy: 'zara', now },
+    );
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(checks(applied.findings)).toContain('space-read-only');
   });
 });

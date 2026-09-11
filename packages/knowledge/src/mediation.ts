@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  type KnowledgeFrontmatter,
   type KnowledgeType,
   knowledgeFrontmatter,
   lintRecord,
@@ -21,7 +22,7 @@ import {
 } from '@melete/contracts';
 import { ulid } from 'ulid';
 import { type Finding, finding, fromLint, hasErrors } from './findings.ts';
-import { serializeRecord } from './frontmatter.ts';
+import { parseRecord, serializeRecord } from './frontmatter.ts';
 import type { SpaceIndex } from './fts.ts';
 import { resolveInSpace, type SpacePaths } from './layout.ts';
 import { commitRecord, readWorkingTree, type SpaceCommit } from './space.ts';
@@ -70,6 +71,16 @@ export const SECRET_PATTERNS: ReadonlyArray<{ name: string; pattern: RegExp }> =
   },
 ];
 
+/**
+ * A staged write, as it sits in `.proposed/`.
+ *
+ * Everything in here is a claim. The staging directory is the one place an
+ * agent can write, which is the whole point of it, and that makes every file in
+ * it untrusted input on the way back out. Nothing downstream may believe a
+ * field here without checking it against `content`, and the record's type is
+ * deliberately absent: a second copy of a fact is a second thing to disagree
+ * with, and it was the copy the policy would have read.
+ */
 export type Proposal = {
   id: string;
   space: string;
@@ -78,11 +89,9 @@ export type Proposal = {
   rationale: string;
   /** The full file as it would be written. */
   content: string;
-  /** The agent or person that asked for the write. */
+  /** Who the staged file says asked for the write. A claim, not a finding. */
   proposedBy: string;
   proposedAt: string;
-  /** The record type, so the policy can be applied without re-parsing. */
-  type: KnowledgeType;
 };
 
 export type ProposalRejected = { ok: false; findings: Finding[] };
@@ -98,22 +107,37 @@ export type ProposalResult = ProposalAccepted | ProposalRejected;
 
 export type MediationContext = {
   paths: SpacePaths;
-  spacesRoot: string;
   /** Every record id that exists in this space, for resolving supersedes. */
   knownIds: ReadonlySet<string>;
   policy?: SpacePolicy;
+  /**
+   * Who is asking for the write: an agent's name, or `user` when a person
+   * typed it. It comes from the caller, never from the record: who asserted a
+   * fact and who asked for it to be written down are different questions, and
+   * only the second one belongs in the audit trail.
+   */
+  proposedBy?: string;
   /** Injected so proposal timestamps are pinned in tests. */
   now?: () => Date;
 };
 
 const policyOf = (context: MediationContext): SpacePolicy => context.policy ?? DEFAULT_POLICY;
 
-/** Does this write need a person, given the space's policy? */
-export function requiresApproval(policy: SpacePolicy, type: KnowledgeType): boolean {
+/**
+ * Does this write need a person, given the space's policy? A type of null means
+ * the mediator could not read the record well enough to say what it is, and
+ * something it cannot read is something it must not apply on its own.
+ */
+export function requiresApproval(policy: SpacePolicy, type: KnowledgeType | null): boolean {
   if (policy.readOnly) return true;
+  if (type === null) return true;
   if (policy.autoApply === false) return true;
   return !policy.autoApply.includes(type);
 }
+
+/** A proposer's name as it will appear in a commit trailer, or a refusal to guess. */
+const safeProposer = (claimed: string): string =>
+  /^[A-Za-z0-9 ._:@-]{1,64}$/.test(claimed) ? claimed : 'unknown';
 
 /**
  * Everything that must be true before a proposal may become a diff. Returns a
@@ -176,7 +200,7 @@ export function validateProposal(write: ProposedWrite, context: MediationContext
     findings.push(
       ...lintRecord(parsed.data, {
         filePath: target,
-        spacesRoot: context.spacesRoot,
+        spacesRoot: context.paths.spacesRoot,
         knownIds: context.knownIds,
       }).map((lint) => fromLint(lint, normalized)),
     );
@@ -256,9 +280,8 @@ export function proposeWrite(context: MediationContext, write: ProposedWrite): P
     path: write.path.replace(/\\/g, '/'),
     rationale: write.rationale,
     content: serializeRecord(frontmatter, write.body),
-    proposedBy: frontmatter.asserted_by === 'user' ? 'user' : 'agent',
+    proposedBy: safeProposer(context.proposedBy ?? 'agent'),
     proposedAt: now().toISOString(),
-    type: frontmatter.type,
   };
 
   mkdirSync(context.paths.proposed, { recursive: true });
@@ -268,9 +291,19 @@ export function proposeWrite(context: MediationContext, write: ProposedWrite): P
     ok: true,
     proposal,
     diff: renderDiff(context.paths, proposal),
-    requiresApproval: requiresApproval(policyOf(context), proposal.type),
+    requiresApproval: requiresApproval(policyOf(context), frontmatter.type),
     findings,
   };
+}
+
+/**
+ * What kind of record a staged proposal actually holds, read from the record
+ * itself. Null when the content does not parse, which the policy treats as
+ * needing a person.
+ */
+export function proposalType(proposal: Proposal): KnowledgeType | null {
+  const parsed = parseRecord(proposal.content);
+  return parsed.ok ? parsed.record.frontmatter.type : null;
 }
 
 export function listProposals(paths: SpacePaths): Proposal[] {
@@ -312,14 +345,76 @@ export type ApplyAccepted = {
 };
 export type ApplyResult = ApplyAccepted | ApplyRejected;
 
+export type VerifiedProposal = {
+  path: string;
+  frontmatter: KnowledgeFrontmatter;
+  body: string;
+  /** Serialized again from what was checked, so only checked bytes are committed. */
+  content: string;
+  type: KnowledgeType;
+};
+
+export type VerifyResult =
+  | { ok: true; verified: VerifiedProposal }
+  | { ok: false; findings: Finding[] };
+
+/**
+ * Read a staged proposal back as something that can be trusted, or say why it
+ * cannot be.
+ *
+ * This is the trust boundary. A proposal is a file in the directory the agent
+ * is allowed to write to, so between staging and applying it may have been
+ * written by something other than `proposeWrite`: the path could name
+ * `SCHEMA.md` rather than a record, the content could carry a secret or fail to
+ * parse, and the metadata beside it could describe a record it does not hold.
+ * Everything is therefore derived from `content` and checked again from
+ * scratch, against the space as it is now rather than as it was when the
+ * proposal was staged.
+ */
+export function verifyProposal(context: MediationContext, proposal: Proposal): VerifyResult {
+  const parsed = parseRecord(proposal.content);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      findings: parsed.issues.map((issue) =>
+        finding('record-parses', issue, { path: proposal.path }),
+      ),
+    };
+  }
+
+  const path = proposal.path.replace(/\\/g, '/');
+  const write: ProposedWrite = {
+    space: proposal.space,
+    path,
+    frontmatter: parsed.record.frontmatter,
+    body: parsed.record.body,
+    rationale: proposal.rationale,
+  };
+
+  const findings = validateProposal(write, context);
+  if (hasErrors(findings)) return { ok: false, findings };
+
+  return {
+    ok: true,
+    verified: {
+      path,
+      frontmatter: parsed.record.frontmatter,
+      body: parsed.record.body,
+      content: serializeRecord(parsed.record.frontmatter, parsed.record.body),
+      type: parsed.record.frontmatter.type,
+    },
+  };
+}
+
 /**
  * Apply a staged proposal: commit it, update the catalog, and put it in the
  * index. The commit carries who proposed it and who approved it, which is the
  * audit record; reverting that commit is the undo.
  *
- * The proposal is checked again here. Between staging and approval the space
- * can have moved, and an approval must never be spent on a record that no
- * longer makes sense.
+ * The proposal is checked again here, by `verifyProposal`. Between staging and
+ * approval the space can have moved and the staged file can have changed, and
+ * an approval must never be spent on a record that no longer makes sense or on
+ * one that was never checked.
  */
 export async function applyProposal(
   context: MediationContext,
@@ -334,27 +429,25 @@ export async function applyProposal(
       findings: [finding('proposal-missing', `no staged proposal ${String(proposalOrId)}`)],
     };
   }
-  if (policyOf(context).readOnly) {
-    return {
-      ok: false,
-      findings: [
-        finding('space-read-only', `the ${context.paths.space} space is read-only`, {
-          path: proposal.path,
-        }),
-      ],
-    };
-  }
 
-  const commit = await commitRecord(context.paths, proposal.path, proposal.content, {
-    proposedBy: proposal.proposedBy,
-    approvedBy: options.approvedBy,
-    subject: proposal.rationale,
-    ...(options.now ? { now: options.now } : {}),
-  });
+  const checked = verifyProposal(context, proposal);
+  if (!checked.ok) return { ok: false, findings: checked.findings };
+
+  const commit = await commitRecord(
+    context.paths,
+    checked.verified.path,
+    checked.verified.content,
+    {
+      proposedBy: safeProposer(proposal.proposedBy),
+      approvedBy: options.approvedBy,
+      subject: proposal.rationale,
+      ...(options.now ? { now: options.now } : {}),
+    },
+  );
 
   discardProposal(context.paths, proposal.id);
 
-  const record = loadSpace(context.paths).records.find((r) => r.path === proposal.path);
+  const record = loadSpace(context.paths).records.find((r) => r.path === checked.verified.path);
   if (!record) {
     return {
       ok: false,
@@ -367,5 +460,5 @@ export async function applyProposal(
   }
   options.index?.upsert(toIndexed(record));
 
-  return { ok: true, commit, path: proposal.path, record };
+  return { ok: true, commit, path: checked.verified.path, record };
 }

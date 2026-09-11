@@ -8,6 +8,13 @@ import { SPACE_LAYOUT } from '@melete/contracts';
 
 export type SpacePaths = {
   space: string;
+  /**
+   * The directory the spaces live in. Carried on the handle because the lint
+   * needs it to check that a record's `space` equals its directory, and a
+   * caller that has to reconstruct it by trimming the space name off the root
+   * gets it wrong the first time a space is named something awkward.
+   */
+  spacesRoot: string;
   root: string;
   schema: string;
   index: string;
@@ -25,6 +32,7 @@ export function spacePaths(spacesRoot: string, space: string): SpacePaths {
   const root = join(spacesRoot, space);
   return {
     space,
+    spacesRoot,
     root,
     schema: join(root, SPACE_LAYOUT.schema),
     index: join(root, SPACE_LAYOUT.index),
