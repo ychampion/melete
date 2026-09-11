@@ -61,3 +61,13 @@
 - Log `slices 2 and 3`: stopped at the explicit frozen-contract rule with the two proposals under `.agents/notes/proposed/`; no runtime, database, service, fixture or contract implementation was changed.
 - Log `slices 4 and 5`: stopped at the dependency gate; the single real-local-Hermes capability-chain test does not exist or pass in this lane. The W3 real-server script was not run and no provider credentials were used.
 - Log `DONE not met`: the full suite is not green and the requested capability proof remains missing. The authorized stop outcome is a draft PR to `integration`, with this report and the final matrix; no merge is requested or performed.
+
+## Delivery and final stop — 2026-09-11 20:14 UTC
+
+- SHA `65a5d8a4e8c1b658765163b93bd67fb48ea2cabf`: committed the pinned audit, two diagnostics, two frozen-contract proposals, capability matrix, README correction and report. `git -C C:/Users/gamin/melete-oss-w14 log -1 --format='%H%n%an <%ae>%n%cn <%ce>%n%s'` confirms both author and committer are `ychampion <68075205+ychampion@users.noreply.github.com>`.
+- Command `git -C C:/Users/gamin/melete-oss-w14 push -u origin lane/w14-capabilities`: exit 0; the lane branch now tracks `origin/lane/w14-capabilities`. No force push or push to main occurred.
+- Command `gh pr create --repo ychampion/melete --base integration --head lane/w14-capabilities --draft --title 'Audit Hermes capabilities and document the blocked proof' --body-file <temp-body>`: exit 0; created https://github.com/ychampion/melete/pull/13.
+- Command `gh pr view 13 --repo ychampion/melete --json number,url,baseRefName,headRefName,headRefOid,isDraft,state`: verified `state=OPEN`, `isDraft=true`, `baseRefName=integration`, `headRefName=lane/w14-capabilities`, and audit head `65a5d8a4e8c1b658765163b93bd67fb48ea2cabf` before this append-only report commit.
+- Log `final stop`: resume slices 2/3 only after the frozen-contract additions are available; integrate W10c/W11/W12 before slices 4/5; resolve the recorded fixture timeout and run the full suite plus the single real-Hermes capability-chain proof. No passing end-to-end claim or merge is made.
+
+PROOF PENDING: waiting for W10c/W11 to merge
