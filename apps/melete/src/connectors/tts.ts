@@ -9,9 +9,9 @@
  * capability that is advertised and then refused is worse than one that was
  * never offered.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Action,
@@ -20,14 +20,40 @@ import type {
   ConnectorManifest,
   DispatchResult,
   JsonValue,
+  Receipt,
   VerifyResult,
 } from '@melete/contracts';
-import { capabilityTool } from '@melete/contracts';
+import { canonicalizePayload, capabilityTool, receipt } from '@melete/contracts';
+import { z } from 'zod';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
 
 const digest = (value: Uint8Array): string =>
   createHash('sha256').update(Buffer.from(value)).digest('hex');
+
+const speechEvidence = z.object({
+  version: z.literal(1),
+  space_id: z.string(),
+  job_id: z.string(),
+  payload_hash: z.string(),
+  receipt,
+});
+
+async function atomicWrite(file: string, bytes: Uint8Array): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.part`;
+  const handle = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+    0o600,
+  );
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, file);
+}
 
 export type SpeechRequest = { script: string; voice: string };
 /** What an adapter has to do: bytes in, bytes out. Nothing about files or rows. */
@@ -149,12 +175,29 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
     tools: [capabilityTool(capability)],
   };
 
-  const target = async (ctx: ConnectorContext, name: string) => {
+  const directory = async (ctx: ConnectorContext, evidence = false) => {
     if (!/^sp_[A-Za-z0-9]+$/.test(ctx.space_id)) throw new Error('invalid trusted file scope');
-    const base = await realpath(options.spacesRoot);
-    const directory = path.join(base, ctx.space_id, 'artifacts');
-    await mkdir(directory, { recursive: true });
-    return path.join(directory, safeName(name));
+    let current = await realpath(options.spacesRoot);
+    for (const segment of evidence
+      ? ['.speech-receipts', ctx.space_id]
+      : [ctx.space_id, 'artifacts']) {
+      current = path.join(current, segment);
+      try {
+        await mkdir(current);
+      } catch (error) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+      }
+      const stat = await lstat(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('unsafe speech directory');
+    }
+    return current;
+  };
+  const target = async (ctx: ConnectorContext, name: string) =>
+    path.join(await directory(ctx), safeName(name));
+  const evidenceFile = async (action: Action, ctx: ConnectorContext) => {
+    if (!/^act_[A-Za-z0-9]+$/.test(action.id)) throw new Error('invalid action identity');
+    // Evidence is outside both runtime-writable areas: work and space artifacts.
+    return path.join(await directory(ctx, true), `${action.id}.json`);
   };
 
   const readBytes = async (file: string): Promise<Uint8Array | null> => {
@@ -184,51 +227,77 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
       const voice = typeof payload.voice === 'string' ? payload.voice : 'alto';
       const bytes = await options.adapter.synthesize({ script, voice });
       const file = await target(ctx, name);
-      // Written whole and then named, so a crash mid-write never leaves a
-      // half-file that verify would hash as a success.
-      const temporary = `${file}.${action.id}.part`;
-      const handle = await open(
-        temporary,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      );
-      try {
-        await handle.write(bytes);
-      } finally {
-        await handle.close();
-      }
-      const { rename } = await import('node:fs/promises');
-      await rename(temporary, file);
+      await atomicWrite(file, bytes);
       const hash = digest(bytes);
-      return {
-        outcome: 'succeeded',
-        receipt: {
-          action_id: action.id,
-          connection_id: action.connection_id,
-          external_ref: hash,
-          detail: {
-            kind: 'artifact',
-            path: `artifacts/${safeName(name)}`,
-            mime: capability.produces,
-            bytes: bytes.length,
-            content_hash: hash,
-            model: options.adapter.model,
-            provider: capability.provider,
-          },
-          received_at: new Date().toISOString(),
-          late: false,
+      const proof: Receipt = {
+        action_id: action.id,
+        connection_id: action.connection_id,
+        external_ref: hash,
+        detail: {
+          kind: 'artifact',
+          path: `artifacts/${safeName(name)}`,
+          mime: capability.produces,
+          bytes: bytes.length,
+          content_hash: hash,
+          model: options.adapter.model,
+          provider: capability.provider,
         },
+        received_at: new Date().toISOString(),
+        late: false,
       };
+      // Publish evidence only after the complete audio is named. A crash between
+      // these writes stays undecided, even when an older episode occupied the path.
+      await atomicWrite(
+        await evidenceFile(action, ctx),
+        Buffer.from(
+          JSON.stringify({
+            version: 1,
+            space_id: ctx.space_id,
+            job_id: action.job_id,
+            payload_hash: action.payload_hash,
+            receipt: proof,
+          }),
+        ),
+      );
+      return { outcome: 'succeeded', receipt: proof };
     },
     async verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult> {
+      const undecided = {
+        decision: 'undecided',
+        reason: 'No matching action-bound speech evidence',
+      } as const;
+      if (action.id !== ctx.idempotency_key || action.job_id !== ctx.job_id) return undecided;
       const payload = action.canonical_payload;
       const name = typeof payload.path === 'string' ? payload.path : null;
       if (!name) return { decision: 'undecided', reason: 'the action names no file' };
       const bytes = await readBytes(await target(ctx, name));
-      if (!bytes) return { decision: 'failed', evidence: { present: false } };
+      const saved = await readBytes(await evidenceFile(action, ctx));
+      if (!bytes || !saved) return undecided;
+      let evidence: z.infer<typeof speechEvidence>;
+      try {
+        evidence = speechEvidence.parse(JSON.parse(Buffer.from(saved).toString('utf8')));
+      } catch {
+        return undecided;
+      }
+      const proof = evidence.receipt;
+      const hash = digest(bytes);
+      if (
+        evidence.space_id !== ctx.space_id ||
+        evidence.job_id !== action.job_id ||
+        evidence.payload_hash !== action.payload_hash ||
+        canonicalizePayload(payload).hash !== action.payload_hash ||
+        proof.action_id !== action.id ||
+        proof.connection_id !== action.connection_id ||
+        proof.detail.path !== `artifacts/${safeName(name)}` ||
+        proof.detail.content_hash !== hash ||
+        proof.external_ref !== hash ||
+        proof.detail.bytes !== bytes.length
+      )
+        return undecided;
       return {
         decision: 'succeeded',
-        evidence: { present: true, content_hash: digest(bytes), bytes: bytes.length },
-        receipt: null,
+        evidence: { present: true, action_id: action.id, content_hash: hash, bytes: bytes.length },
+        receipt: proof,
       };
     },
     async health(): Promise<ConnectorHealth> {

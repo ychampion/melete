@@ -334,3 +334,12 @@ green; the groups above are the part I can state as verified.
 - `createInternalServer`: admission reads only the registered available capability price; `startEffectBoundary` passes its validated speech configuration to connector construction.
 - `bun test apps/melete/test/integration/speech-broker.test.ts --max-concurrency=2`: GREEN, 1 pass, 0 fail, 25 assertions, 26.60s; real internal listener on 3192, scripted fake speech, untrusted-origin rejection with no reservation, approved 0.037 reservation before dispatch, receipt, settlement, duplicate intent, changed-payload approval and payload-price refusal.
 - `bun run typecheck` and changed-file `biome check`: passed. `speech-broker.test.ts` asserts the broker's existing 409 payload-invalid response and gives disposable database cleanup its existing integration timeout allowance.
+
+## Finding 5
+
+- `a1a6d8f`: finding 4 committed and pushed.
+- `an unrelated target file cannot confirm an action that never executed` and `an older episode cannot confirm a new action at the same path`: RED at a1a6d8f, expected undecided but received succeeded.
+- `restart verification restores the action-bound receipt and refuses changed bytes or identity`: RED at a1a6d8f, verification returned a null receipt.
+- `tts.ts`: synced atomic audio writes precede service-owned evidence outside runtime-writable artifact/work areas; verification binds space, job, action, connection, payload hash, content hash, size and path, and restores the original receipt.
+- `bun test apps/melete/src/connectors/tts.test.ts --max-concurrency=2`: GREEN, 13 pass, 1 skipped: no key, 0 fail, 30 assertions, 511ms. Fixture IDs corrected to the frozen 26-character ULID format so recovered receipts undergo schema validation.
+- `production speech admission binds approval, origin, intent, trusted spend and receipt`: still GREEN after evidence persistence, 25 assertions. `bun run typecheck` and changed-file `biome check`: passed.

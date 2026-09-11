@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Action } from '@melete/contracts';
@@ -23,7 +23,7 @@ async function workspace() {
 }
 
 const context = (spaceId: string, actionId: string): ConnectorContext => ({
-  job_id: 'job_01J0000000000000000000000',
+  job_id: 'job_01J00000000000000000000000',
   space_id: spaceId,
   idempotency_key: actionId,
   constraints: {
@@ -37,9 +37,9 @@ const proposal = (actionId: string, payload: Record<string, unknown>): Action =>
   const canonical = canonicalizePayload(payload);
   return {
     id: actionId,
-    job_id: 'job_01J0000000000000000000000',
-    attempt_id: 'att_01J0000000000000000000000',
-    connection_id: 'conn_01J0000000000000000000000',
+    job_id: 'job_01J00000000000000000000000',
+    attempt_id: 'att_01J00000000000000000000000',
+    connection_id: 'conn_01J00000000000000000000000',
     kind: 'audio.synthesize',
     effect_class: 'spend',
     canonical_payload: canonical.canonical,
@@ -103,13 +103,13 @@ describe('the speech capability', () => {
 describe('the capability connector', () => {
   test('writes a playable artifact and returns a receipt naming its hash', async () => {
     const spacesRoot = await workspace();
-    const spaceId = 'sp_01J0000000000000000000000';
+    const spaceId = 'sp_01J00000000000000000000000';
     const connector = createCapabilityConnector({
       spacesRoot,
       adapter: fakeSpeechAdapter,
       provider: 'fake',
     });
-    const actionId = 'act_01J0000000000000000000000';
+    const actionId = 'act_01J00000000000000000000000';
     const action = proposal(actionId, { script, path: 'episode-one.wav', voice: 'alto' });
     const result = await connector.execute(action, context(spaceId, actionId));
     expect(result.outcome).toBe('succeeded');
@@ -127,19 +127,97 @@ describe('the capability connector', () => {
 
   test('verify reads the file back, so an unknown dispatch has an answer', async () => {
     const spacesRoot = await workspace();
-    const spaceId = 'sp_01J0000000000000000000001';
+    const spaceId = 'sp_01J00000000000000000000010';
     const connector = createCapabilityConnector({
       spacesRoot,
       adapter: fakeSpeechAdapter,
       provider: 'fake',
     });
-    const actionId = 'act_01J0000000000000000000001';
+    const actionId = 'act_01J00000000000000000000010';
     const action = proposal(actionId, { script, path: 'episode-two.wav' });
     const ctx = context(spaceId, actionId);
-    expect((await connector.verify(action, ctx)).decision).toBe('failed');
+    expect((await connector.verify(action, ctx)).decision).toBe('undecided');
     await connector.execute(action, ctx);
     const verified = await connector.verify(action, ctx);
     expect(verified.decision).toBe('succeeded');
+  });
+
+  test('an unrelated target file cannot confirm an action that never executed', async () => {
+    const spacesRoot = await workspace();
+    const spaceId = 'sp_01J00000000000000000000000';
+    const actionId = 'act_01J00000000000000000000000';
+    const directory = join(spacesRoot, spaceId, 'artifacts');
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'episode.wav'), 'unrelated bytes');
+    const connector = createCapabilityConnector({
+      spacesRoot,
+      adapter: fakeSpeechAdapter,
+      provider: 'fake',
+    });
+    const result = await connector.verify(
+      proposal(actionId, { script, path: 'episode.wav' }),
+      context(spaceId, actionId),
+    );
+    expect(result.decision).toBe('undecided');
+  });
+
+  test('an older episode cannot confirm a new action at the same path', async () => {
+    const spacesRoot = await workspace();
+    const spaceId = 'sp_01J00000000000000000000000';
+    const oldId = 'act_01J00000000000000000000001';
+    const newId = 'act_01J00000000000000000000002';
+    const connector = createCapabilityConnector({
+      spacesRoot,
+      adapter: fakeSpeechAdapter,
+      provider: 'fake',
+    });
+    await connector.execute(
+      proposal(oldId, { script: 'Older episode', path: 'episode.wav' }),
+      context(spaceId, oldId),
+    );
+    expect(
+      (
+        await connector.verify(
+          proposal(newId, { script, path: 'episode.wav' }),
+          context(spaceId, newId),
+        )
+      ).decision,
+    ).toBe('undecided');
+  });
+
+  test('restart verification restores the action-bound receipt and refuses changed bytes or identity', async () => {
+    const spacesRoot = await workspace();
+    const spaceId = 'sp_01J00000000000000000000000';
+    const actionId = 'act_01J00000000000000000000003';
+    const options = { spacesRoot, adapter: fakeSpeechAdapter, provider: 'fake' };
+    const action = proposal(actionId, { script, path: 'episode.wav' });
+    const ctx = context(spaceId, actionId);
+    const executed = await createCapabilityConnector(options).execute(action, ctx);
+    if (executed.outcome !== 'succeeded') throw new Error('Expected synthesis');
+    const restarted = createCapabilityConnector(options);
+    const verified = await restarted.verify(action, ctx);
+    expect(verified.decision).toBe('succeeded');
+    if (verified.decision !== 'succeeded') return;
+    expect(verified.receipt).toEqual(executed.receipt);
+    const changed = proposal(actionId, { script: 'Different script', path: 'episode.wav' });
+    expect((await restarted.verify(changed, ctx)).decision).toBe('undecided');
+    expect(
+      (
+        await restarted.verify(
+          { ...action, connection_id: 'conn_01J00000000000000000000004' },
+          ctx,
+        )
+      ).decision,
+    ).toBe('undecided');
+    expect(
+      (await restarted.verify({ ...action, job_id: 'job_01J00000000000000000000004' }, ctx))
+        .decision,
+    ).toBe('undecided');
+    await writeFile(
+      join(spacesRoot, spaceId, 'artifacts', 'episode.wav'),
+      silentWav({ script: 'Unrelated replacement' }),
+    );
+    expect((await restarted.verify(action, ctx)).decision).toBe('undecided');
   });
 
   test('a path that is not a simple file name is refused', async () => {
@@ -149,20 +227,20 @@ describe('the capability connector', () => {
       adapter: fakeSpeechAdapter,
       provider: 'fake',
     });
-    const actionId = 'act_01J0000000000000000000002';
+    const actionId = 'act_01J00000000000000000000020';
     const action = proposal(actionId, { script, path: '../escape.wav' });
     await expect(
-      connector.execute(action, context('sp_01J0000000000000000000002', actionId)),
+      connector.execute(action, context('sp_01J00000000000000000000020', actionId)),
     ).rejects.toThrow();
   });
 
   test('with no adapter it fails honestly instead of writing an empty file', async () => {
     const spacesRoot = await workspace();
     const connector = createCapabilityConnector({ spacesRoot, adapter: null, provider: 'none' });
-    const actionId = 'act_01J0000000000000000000003';
+    const actionId = 'act_01J00000000000000000000030';
     const result = await connector.execute(
       proposal(actionId, { script, path: 'nothing.wav' }),
-      context('sp_01J0000000000000000000003', actionId),
+      context('sp_01J00000000000000000000030', actionId),
     );
     expect(result.outcome).toBe('failed');
     expect((await connector.health()).status).toBe('degraded');
