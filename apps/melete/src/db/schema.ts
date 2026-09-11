@@ -110,6 +110,8 @@ export const job = pgTable(
     agentId: text('agent_id').references(() => agent.id, { onDelete: 'restrict' }),
     currentTurnId: text('current_turn_id'),
     planId: text('plan_id'),
+    experienceParentId: text('experience_parent_id'),
+    experienceCommandKey: text('experience_command_key').unique(),
     pauseRequested: boolean('pause_requested').notNull().default(false),
     paused: boolean('paused').notNull().default(false),
     experienceCursor: bigint('experience_cursor', { mode: 'number' }).notNull().default(0),

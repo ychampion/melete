@@ -22,18 +22,23 @@ export function createInternalServer(options: {
   resolveAuthority?: BrokerOptions['resolveAuthority'];
   resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
+  resolveStandingGrant?: BrokerOptions['resolveStandingGrant'];
+  broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
 }) {
-  const broker = new BrokerService({
-    sql: options.sql,
-    connectors: options.connectors,
-    boss: options.boss,
-    dispatchTimeoutMs: options.dispatchTimeoutMs,
-    resolveAuthority: options.resolveAuthority,
-    resolveTrust: options.resolveTrust,
-    approvalTtlMs: options.approvalTtlMs,
-  });
+  const broker =
+    options.broker ??
+    new BrokerService({
+      sql: options.sql,
+      connectors: options.connectors,
+      boss: options.boss,
+      dispatchTimeoutMs: options.dispatchTimeoutMs,
+      resolveAuthority: options.resolveAuthority,
+      resolveTrust: options.resolveTrust,
+      approvalTtlMs: options.approvalTtlMs,
+      resolveStandingGrant: options.resolveStandingGrant,
+    });
   const app = createBrokerApp({
     broker,
     capabilityKey: options.capabilityKey,

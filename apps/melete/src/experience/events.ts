@@ -1,9 +1,17 @@
 import { type ExperienceEvent, experienceEvent, type TrailStep } from '@melete/contracts';
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { action, attempt, connection, event, job } from '../db/schema.ts';
+import { action, artifact, attempt, connection, event, job } from '../db/schema.ts';
 import { appendEvent } from '../events/store.ts';
-import { answerText, object, plainText, projectActionGroup, projectReceipt } from './projectors.ts';
+import {
+  answerText,
+  object,
+  plainText,
+  projectActionGroup,
+  projectArtifact,
+  projectCards,
+  projectReceipt,
+} from './projectors.ts';
 
 /** Projection has its own durable rows on the existing stream; reconnects never re-label history. */
 export class ExperienceEvents {
@@ -24,12 +32,17 @@ export class ExperienceEvents {
           .where(and(eq(job.id, id), eq(job.spaceId, spaceId)))
           .for('update');
         if (!row) return;
+        const linked = await tx
+          .select({ id: job.id })
+          .from(job)
+          .where(and(eq(job.experienceParentId, id), eq(job.spaceId, spaceId)));
+        const jobs = [id, ...linked.map((item) => item.id)];
         const raw = await tx
           .select()
           .from(event)
           .where(
             and(
-              eq(event.jobId, id),
+              inArray(event.jobId, jobs),
               gt(event.seq, row.experienceCursor),
               sql`coalesce(${event.payload}->>'kind', '') <> 'experience'`,
             ),
@@ -74,7 +87,11 @@ export class ExperienceEvents {
             .from(action)
             .innerJoin(connection, eq(connection.id, action.connectionId))
             .where(
-              and(eq(action.jobId, id), eq(connection.spaceId, spaceId), inArray(action.id, group)),
+              and(
+                inArray(action.jobId, jobs),
+                eq(connection.spaceId, spaceId),
+                inArray(action.id, group),
+              ),
             );
           const projected = projectActionGroup(effects);
           if (projected) await emit(source, projected, 'group');
@@ -113,13 +130,16 @@ export class ExperienceEvents {
               .where(
                 and(
                   eq(action.id, payload.action_id),
-                  eq(action.jobId, id),
+                  inArray(action.jobId, jobs),
                   eq(connection.spaceId, spaceId),
                 ),
               );
             if (effect) {
               const receipt = projectReceipt(effect.action, effect.connection);
               if (receipt) await emit(source, { type: 'receipt', receipt });
+              for (const card of projectCards(effect.action, effect.connection))
+                await emit(source, { type: 'card', card }, `card:${card.id}`);
+              if (source.jobId !== id) await flush(source);
             }
           } else if (source.type === 'attempt_ended') {
             const [execution] = source.attemptId
@@ -161,6 +181,16 @@ export class ExperienceEvents {
                 source_count: projectActionGroup(effects)?.sources.length ?? 0,
               };
               await emit(source, done);
+              const files = await tx
+                .select()
+                .from(artifact)
+                .where(and(eq(artifact.jobId, id), eq(artifact.spaceId, spaceId)));
+              for (const file of files)
+                await emit(
+                  source,
+                  { type: 'card', card: projectArtifact(file) },
+                  `file:${file.id}`,
+                );
             } else if (outcome.kind === 'failed')
               await emit(source, {
                 type: 'note',
@@ -253,6 +283,7 @@ export class ExperienceEvents {
     };
     signal.addEventListener('abort', close, { once: true });
     if (signal.aborted) close();
+    const self = this;
     const body = new ReadableStream<Uint8Array>(
       {
         async pull(controller) {
@@ -287,7 +318,6 @@ export class ExperienceEvents {
       },
       { highWaterMark: 1 },
     );
-    const self = this;
     return new Response(body, {
       headers: {
         'Content-Type': 'text/event-stream; charset=utf-8',

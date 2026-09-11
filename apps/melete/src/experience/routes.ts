@@ -1,15 +1,22 @@
 import { experienceOperations, experienceResult, unavailable } from '@melete/contracts';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
+import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { readEventCursor } from '../api/events.ts';
+import { BrokerFault } from '../broker/errors.ts';
+import { loadAction } from '../broker/records.ts';
+import type { BrokerService } from '../broker/service.ts';
+import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, connection, experienceDraftSend } from '../db/schema.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
+import { ExperienceEffects } from './effects.ts';
 import { ExperienceEvents } from './events.ts';
+import { ExperiencePermissions } from './permissions.ts';
 import {
   object,
   plainText,
@@ -25,23 +32,58 @@ export type ExperienceDeps = {
   jobs?: JobService;
   submissions?: SubmissionService;
   runner?: AttemptRunner;
+  sql?: Sql;
+  broker?: BrokerService;
+  registry?: ConnectorRegistry;
 };
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   const events = new ExperienceEvents(deps.db);
+  const ownerEffects =
+    deps.sql && deps.broker && deps.registry
+      ? new ExperienceEffects(deps.sql, deps.broker, deps.registry)
+      : undefined;
+  const permissions =
+    deps.sql && deps.broker && ownerEffects
+      ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
+      : undefined;
   const effects = async (spaceId: string, id: string) => {
     await service.requireConversation(spaceId, id);
+    const linked = deps.sql
+      ? await deps.sql`select id from job where experience_parent_id = ${id} and space_id = ${spaceId}`
+      : [];
     return deps.db
       .select({ action, connection })
       .from(action)
       .innerJoin(connection, eq(connection.id, action.connectionId))
-      .where(and(eq(action.jobId, id), eq(connection.spaceId, spaceId)))
+      .where(
+        and(
+          inArray(action.jobId, [id, ...linked.map((row) => String(row.id))]),
+          eq(connection.spaceId, spaceId),
+        ),
+      )
       .orderBy(action.createdAt, action.id);
   };
   const handlers: Record<
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
   > = {
+    'GET /permissions': (spaceId) =>
+      permissions?.list(spaceId) ?? unavailable('Permissions are not connected yet.'),
+    'POST /permissions/{id}': (spaceId, c, input) =>
+      permissions?.decide(spaceId, c.req.param('id') ?? '', input) ??
+      unavailable('Permissions are not connected yet.'),
+    'GET /rules': (spaceId) =>
+      permissions?.rules(spaceId) ?? unavailable('Rules are not connected yet.'),
+    'DELETE /rules/{id}': (spaceId, c) =>
+      permissions?.revoke(spaceId, c.req.param('id') ?? '') ??
+      unavailable('Rules are not connected yet.'),
+    'POST /drafts/{id}/send': (spaceId, c) =>
+      permissions?.send(spaceId, c.req.param('id') ?? '') ??
+      unavailable('Sending is not connected yet.'),
+    'POST /receipts/{id}/undo': (spaceId, c) =>
+      ownerEffects?.undo(spaceId, c.req.param('id') ?? '') ??
+      unavailable('Undo is not connected yet.'),
     'GET /conversations/{id}/events': async (spaceId, c) => {
       const id = c.req.param('id') ?? '';
       await service.requireConversation(spaceId, id);
@@ -64,20 +106,27 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         ],
       };
     },
-    'GET /conversations/{id}/receipts': async (spaceId, c) => ({
-      receipts: (await effects(spaceId, c.req.param('id') ?? '')).flatMap(
-        ({ action, connection }) => {
-          const receipt = projectReceipt(action, connection);
-          return receipt ? [receipt] : [];
-        },
-      ),
-    }),
+    'GET /conversations/{id}/receipts': async (spaceId, c) => {
+      const receipts = [];
+      for (const { action, connection } of await effects(spaceId, c.req.param('id') ?? '')) {
+        const receipt =
+          ownerEffects && deps.sql
+            ? await ownerEffects.receipt(spaceId, await loadAction(deps.sql, action.id))
+            : projectReceipt(action, connection);
+        if (receipt) receipts.push(receipt);
+      }
+      return { receipts };
+    },
     'GET /conversations/{id}/drafts': async (spaceId, c) => {
       const rows = await effects(spaceId, c.req.param('id') ?? '');
       const drafts = [];
       for (const { action } of rows.filter(
         ({ action }) => action.kind === 'email.draft' && action.status === 'succeeded',
       )) {
+        if (ownerEffects) {
+          drafts.push(await ownerEffects.draft(spaceId, action.id));
+          continue;
+        }
         const [send] = await deps.db
           .select()
           .from(experienceDraftSend)
@@ -131,17 +180,29 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       const input = 'request' in operation ? operation.request.parse(await c.req.json()) : {};
       if ('query' in operation) operation.query.parse(c.req.query());
       const handler = handlers[key];
-      const body = handler
-        ? await handler(spaceId, c, input)
-        : unavailable(
-            path.includes('share')
-              ? 'Sharing is not available yet.'
-              : path.includes('browser')
-                ? 'Browser tasks are not connected yet.'
-                : path.includes('signin')
-                  ? 'Use your password to sign in for now.'
-                  : 'This feature is not connected yet.',
-          );
+      let body: unknown;
+      try {
+        body = handler
+          ? await handler(spaceId, c, input)
+          : unavailable(
+              path.includes('share')
+                ? 'Sharing is not available yet.'
+                : path.includes('browser')
+                  ? 'Browser tasks are not connected yet.'
+                  : path.includes('signin')
+                    ? 'Use your password to sign in for now.'
+                    : 'This feature is not connected yet.',
+            );
+      } catch (error) {
+        if (!(error instanceof BrokerFault)) throw error;
+        throw new ServiceError(
+          'permission_changed',
+          error.code === 'scope_denied'
+            ? 'This agent no longer has access to that connection.'
+            : 'This action needs to be reviewed again before it can continue.',
+          error.code === 'scope_denied' ? 403 : 409,
+        );
+      }
       if (body instanceof Response) return body;
       return c.json(experienceResult(operation.response).parse(body));
     });

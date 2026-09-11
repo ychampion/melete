@@ -37,3 +37,17 @@
 - `bun run typecheck; bun run lint`: passed; 319 files checked.
 - `bun run test:plugin`: 20 passed in 10.18 seconds.
 - `until mkdir C:/Users/gamin/.melete-test.lock`: second wait cancelled before acquisition so implementation can continue; no foreign lock removed and no unlocked full suite run.
+
+## Receipts, draft sending and bounded permissions
+
+- `214c623`: committed durable conversations, agent identity, grouped trail projection and runtime narration.
+- `bun run db:generate`: generated 0018_same_stingray.sql for private owner-command identities linked to conversations.
+- `bun test apps/melete/test/integration/experience-effects.test.ts apps/melete/src/connectors/calendar.test.ts --max-concurrency=2`: 12 passed, 0 failed, 68 assertions in 23.06 seconds.
+- `bun run typecheck`: found an inferred recursive undo return type, then a newly added fixture result type; explicit return types fixed both. The next check passed.
+- `bun test apps/melete/test/integration/experience-effects.test.ts apps/melete/test/integration/experience.test.ts apps/melete/test/integration/broker.test.ts apps/melete/src/connectors/calendar.test.ts --max-concurrency=2`: 41 passed, 0 failed, 230 assertions in 27.40 seconds.
+- `calendar connector > delete respects the observed version and keeps a changed event`: stale ETag rejected; matching ETag removes exactly the selected event.
+- `always is bounded, exact-recipient only, and untrusted destinations cannot create a rule`: trusted recipient isolation and untrusted rule refusal passed.
+- `revoking an admitted standing permission prevents dispatch`: revocation refused the queued effect without invoking the connector.
+- `a rule cannot exceed its count cap or survive expiry and re-consent`: all three bounds passed.
+- `POST /receipts/{id}/undo`: calendar create reverses through a distinct brokered delete; sends and file writes with no stored reversal return not_available.
+- `POST /permissions/{id}`: the reviewed action uses allow-once; the new rule count applies to subsequent actions. An admitted use consumes the cap conservatively, even when later execution is refused.

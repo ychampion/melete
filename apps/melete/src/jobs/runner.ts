@@ -112,6 +112,7 @@ export class AttemptRunner {
       if (
         !row ||
         row.paused ||
+        row.kind === 'command' ||
         row.leaseEpoch !== wake.expected_epoch ||
         row.stateVersion !== wake.expected_version ||
         !row.nextWakeAt ||

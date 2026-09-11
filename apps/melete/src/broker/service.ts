@@ -51,7 +51,12 @@ import {
   type Query,
   recordId,
 } from './records.ts';
-import { collectOriginFields, resolveOriginWarnings, type TrustResolver } from './trust.ts';
+import {
+  collectOriginFields,
+  createTableTrustResolver,
+  resolveOriginWarnings,
+  type TrustResolver,
+} from './trust.ts';
 
 type ConnectorResolver = { get(connectionId: string): Connector | undefined };
 export type BrokerOptions = {
@@ -79,7 +84,12 @@ export type BrokerOptions = {
   approvalTtlMs?: number;
 };
 
-export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
+export type StandingGrantInput = {
+  job: LockedJob;
+  action: Action;
+  tool: ConnectorTool;
+  phase: 'proposal' | 'admission' | 'execution';
+};
 export type StandingGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<boolean>;
 
 /** What admission decided about one action before it reserved anything. */
@@ -151,6 +161,19 @@ export class BrokerService implements BrokerOperations {
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
+    });
+  }
+
+  /** The owner adapter asks the same origin resolver as admission, inside its decision lock. */
+  async origins(tx: Query, job: LockedJob, action: Action) {
+    return resolveOriginWarnings(tx, this.options.resolveTrust ?? createTableTrustResolver({}), {
+      space_id: job.space_id,
+      job_id: job.id,
+      connection_id: action.connection_id,
+      kind: action.kind,
+      effect_class: action.effect_class,
+      canonical_payload: action.canonical_payload,
+      fields: collectOriginFields(action.canonical_payload),
     });
   }
 
@@ -294,12 +317,16 @@ export class BrokerService implements BrokerOperations {
     job: LockedJob,
     action: Action,
     tool: ConnectorTool,
+    phase: StandingGrantInput['phase'] = 'proposal',
   ): Promise<Admissibility> {
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? collectOriginFields(action.canonical_payload) : [];
     const warnings = await resolveOriginWarnings(
       tx,
-      gated ? this.options.resolveTrust : undefined,
+      gated
+        ? (this.options.resolveTrust ??
+            (this.options.resolveStandingGrant ? createTableTrustResolver({}) : undefined))
+        : undefined,
       {
         space_id: job.space_id,
         job_id: job.id,
@@ -314,7 +341,7 @@ export class BrokerService implements BrokerOperations {
     // never covers a value whose origin Melete cannot vouch for.
     const granted =
       warnings.length === 0 && needsApproval(tool) && this.options.resolveStandingGrant
-        ? await this.options.resolveStandingGrant(tx, { job, action, tool })
+        ? await this.options.resolveStandingGrant(tx, { job, action, tool, phase })
         : false;
     return {
       warnings,
@@ -521,7 +548,16 @@ export class BrokerService implements BrokerOperations {
     });
   }
 
-  async decide(id: string, request: ApprovalDecisionRequest) {
+  async decide(
+    id: string,
+    request: ApprovalDecisionRequest,
+    guard?: (
+      tx: Query,
+      job: LockedJob,
+      action: Action,
+      approval: Record<string, unknown>,
+    ) => Promise<void>,
+  ) {
     const original = await loadAction(this.sql, id);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
@@ -554,6 +590,7 @@ export class BrokerService implements BrokerOperations {
       );
       if (['cancelled', 'completed', 'failed'].includes(job.state))
         throw new BrokerFault('stale_epoch');
+      await guard?.(tx, job, action, approval);
       if (approval.decision) {
         if (approval.decision !== request.decision) throw new BrokerFault('action_not_admissible');
         return {
@@ -603,7 +640,7 @@ export class BrokerService implements BrokerOperations {
         }
         this.validatePayload(tool, action.canonical_payload);
         if (action.status === 'denied') throw new BrokerFault('approval_denied');
-        const classified = await this.classify(tx, job, action, tool);
+        const classified = await this.classify(tx, job, action, tool, 'admission');
         let authorization: string | null = null;
         let expiresAt: string | null = null;
         if (classified.requires_approval) {
@@ -742,7 +779,12 @@ export class BrokerService implements BrokerOperations {
         );
         // Admission authorized these origins. If the world has since learned
         // that one of them came from somewhere else, nothing leaves.
-        const classified = await this.classify(tx, job, action, tool);
+        const classified = await this.classify(tx, job, action, tool, 'execution');
+        if (classified.requires_approval && !action.authorization_ref)
+          throw new BrokerFault(
+            'approval_required',
+            'The standing permission no longer covers this action.',
+          );
         const [authorizing] = action.authorization_ref
           ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
           : [];
