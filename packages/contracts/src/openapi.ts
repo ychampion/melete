@@ -39,6 +39,7 @@ import {
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
+import { experiencePaths } from './experience-openapi.ts';
 import {
   claimHistoryResponse,
   claimListResponse,
@@ -141,6 +142,7 @@ export function buildOpenApiDocument() {
         { name: 'memory' },
       ],
       paths: {
+        ...experiencePaths(),
         '/responsibilities': {
           post: {
             tags: ['jobs'],

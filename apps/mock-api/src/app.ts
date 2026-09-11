@@ -53,6 +53,7 @@ import {
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
+import { mountExperienceMock } from './experience.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { MockConflict, newId, type Store } from './store.ts';
@@ -86,6 +87,7 @@ const KEEPALIVE_MS = 20_000;
 export function createMockApp(deps: AppDeps) {
   const { store, runner, scenarios } = deps;
   const app = new Hono();
+  mountExperienceMock(app);
 
   // The reference client is served from another port in development, and the
   // session cookie has to survive that, so the origin is reflected rather than

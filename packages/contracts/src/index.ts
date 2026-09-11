@@ -12,6 +12,7 @@ export * from './connector.ts';
 export * from './effects.ts';
 export * from './entities.ts';
 export * from './events.ts';
+export * from './experience.ts';
 export * from './job-state.ts';
 export * from './knowledge.ts';
 export * from './memory.ts';
