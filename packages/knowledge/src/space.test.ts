@@ -198,3 +198,22 @@ describe('history and undo', () => {
     expect(await readAtHead(paths, 'knowledge/prefers-bun.md')).toContain('bun everywhere');
   });
 });
+
+describe('what a space may be called', () => {
+  test.each([
+    ['..', 'a name that is a way up the tree'],
+    ['../evil', 'a name that climbs out of the spaces root'],
+    ['a/b', 'a name with a separator in it'],
+    ['C:evil', 'a name that looks like a drive'],
+    ['Personal', 'a name that is not lowercase'],
+    ['', 'no name at all'],
+    ['.hidden', 'a name that starts with a dot'],
+  ])('refuses %p, %s', async (name) => {
+    await expect(initSpace(root, name)).rejects.toThrow('not a usable space name');
+  });
+
+  test.each(['personal', 'team-acme', 'work_2026', 'a.b'])('accepts %p', async (name) => {
+    const made = await initSpace(root, name);
+    expect(made.space).toBe(name);
+  });
+});

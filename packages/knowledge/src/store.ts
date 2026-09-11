@@ -136,11 +136,28 @@ export function openIndex(paths: SpacePaths): { index: SpaceIndex; rebuilt: bool
 }
 
 /**
+ * What a space may be called. A space name becomes a directory name and the
+ * value of every record's `space` field, so it has to be something that means
+ * the same thing in a path, in frontmatter, and in a lint message.
+ */
+export const SPACE_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+
+/**
  * Create the directories a new space needs. This is the filesystem half only;
  * `initSpace` in space.ts adds the generated files and the git repository, and
  * is what a caller outside this package should use.
+ *
+ * The name is checked here because this is where a space first becomes a
+ * directory. A caller that takes the name from a person, which the API will,
+ * would otherwise be one string away from creating a space somewhere else
+ * entirely.
  */
 export function ensureSpaceDirs(spacesRoot: string, space: string): SpacePaths {
+  if (!SPACE_NAME.test(space)) {
+    throw new Error(
+      `"${space}" is not a usable space name: lowercase letters, digits, dot, dash and underscore, starting with a letter or digit`,
+    );
+  }
   const paths = spacePaths(spacesRoot, space);
   for (const dir of [paths.root, paths.knowledge, paths.raw, paths.artifacts, paths.skills]) {
     mkdirSync(dir, { recursive: true });

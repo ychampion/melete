@@ -59,11 +59,16 @@ export async function retract(
     throw new Error(illegal.map((f) => f.message).join('; '));
   }
 
+  // `status` says what Melete believes; `valid_until` says what was true in the
+  // world, and the whole point of keeping them apart is that they are different
+  // questions. Retracting means stop relying on this, which is not evidence
+  // about when the thing stopped being true: a record retracted because it was
+  // wrong from the start was never true at all. So the validity window is left
+  // exactly as the person left it rather than closed with today's date.
   const frontmatter = {
     ...record.frontmatter,
     status: 'retracted' as const,
     updated: isoDate(at),
-    valid_until: record.frontmatter.valid_until ?? isoDate(at),
   };
   const body = `${record.body.trim()}\n\n**Retracted ${isoDate(at)}:** ${request.reason.trim()}`;
   const content = serializeRecord(frontmatter, body);

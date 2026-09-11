@@ -131,7 +131,9 @@ describe('retracting a record while a job is running', () => {
     }
   });
 
-  test('retraction closes the validity window if it was open', async () => {
+  test('retraction does not invent a claim about when it stopped being true', async () => {
+    // Melete no longer relies on the record. That says nothing about the world,
+    // and a record retracted because it was always wrong was never true at all.
     const { index } = buildIndex(paths);
     try {
       await retract(paths, index, findLandlord(), { reason: RETRACTED, by: 'zara', now });
@@ -139,7 +141,9 @@ describe('retracting a record while a job is running', () => {
       index.close();
     }
     const record = loadSpace(paths).records.find((r) => r.frontmatter.id === IDS.landlord);
-    expect(record?.frontmatter.valid_until).toBe('2026-09-11');
+    expect(record?.frontmatter.status).toBe('retracted');
+    expect(record?.frontmatter.valid_until).toBeNull();
+    expect(record?.frontmatter.valid_from).toBe('2026-07-10');
   });
 });
 
