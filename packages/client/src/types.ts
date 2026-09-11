@@ -1,10 +1,13 @@
 /**
  * Friendly names for the shapes the API returns.
  *
- * The OpenAPI document names its shared components anonymously (`__schema0`),
- * so every alias here is derived from the path that returns it. That keeps the
- * names readable without hand-writing a second copy of the contract: change the
- * document and these aliases change with it, or stop compiling.
+ * The entities a client handles most carry real component names now, but most
+ * other shared shapes are still hoisted anonymously (`__schema0`), and those
+ * names are positional: adding a path renumbers shapes that did not change. So
+ * every alias here is derived from the path that returns it rather than from a
+ * component name. That keeps the names readable without hand-writing a second
+ * copy of the contract: change the document and these aliases change with it,
+ * or stop compiling.
  */
 import type { components, paths } from './schema.d.ts';
 

@@ -13,7 +13,7 @@ import { ID_PREFIXES, type JsonValue, jsonObject, prefixedId, timestamp } from '
  * the class; policy, not the model, decides what each class costs.
  */
 export const EFFECT_CLASSES = ['read', 'write_reversible', 'write_external', 'spend'] as const;
-export const effectClass = z.enum(EFFECT_CLASSES);
+export const effectClass = z.enum(EFFECT_CLASSES).meta({ id: 'EffectClass' });
 export type EffectClass = z.infer<typeof effectClass>;
 
 /**
@@ -36,7 +36,7 @@ export const ACTION_STATUSES = [
   'unknown',
   'unresolved',
 ] as const;
-export const actionStatus = z.enum(ACTION_STATUSES);
+export const actionStatus = z.enum(ACTION_STATUSES).meta({ id: 'ActionStatus' });
 export type ActionStatus = z.infer<typeof actionStatus>;
 
 /** Statuses an action can rest in without any further work. */
@@ -313,20 +313,22 @@ export type VerifyResult = z.infer<typeof verifyResult>;
 export const approvalDecision = z.enum(['approved', 'denied']);
 export type ApprovalDecision = z.infer<typeof approvalDecision>;
 
-export const approvalRequestView = z.object({
-  approval_id: prefixedId(ID_PREFIXES.approval),
-  action_id: prefixedId(ID_PREFIXES.action),
-  job_id: prefixedId(ID_PREFIXES.job),
-  job_revision: z.number().int().nonnegative(),
-  kind: z.string(),
-  effect_class: effectClass,
-  connection_id: prefixedId(ID_PREFIXES.connection),
-  /** Rendered by the client from this record, never from model text. */
-  canonical_payload: jsonObject,
-  payload_hash: payloadHash,
-  requested_at: timestamp,
-  expires_at: timestamp.nullable(),
-});
+export const approvalRequestView = z
+  .object({
+    approval_id: prefixedId(ID_PREFIXES.approval),
+    action_id: prefixedId(ID_PREFIXES.action),
+    job_id: prefixedId(ID_PREFIXES.job),
+    job_revision: z.number().int().nonnegative(),
+    kind: z.string(),
+    effect_class: effectClass,
+    connection_id: prefixedId(ID_PREFIXES.connection),
+    /** Rendered by the client from this record, never from model text. */
+    canonical_payload: jsonObject,
+    payload_hash: payloadHash,
+    requested_at: timestamp,
+    expires_at: timestamp.nullable(),
+  })
+  .meta({ id: 'ApprovalRequest' });
 export type ApprovalRequestView = z.infer<typeof approvalRequestView>;
 
 export const approvalDecisionRequest = z.object({

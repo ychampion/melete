@@ -16,6 +16,6 @@ written as though it already does. Until the catalog rows exist, a space's
 identifier is derived from its directory name, so it is the same on every
 machine.
 
-Three routes are served that the OpenAPI document does not describe yet, listed
-in `.agents/notes/proposed/2026-09-11-knowledge-api-gaps.md`. A contract test
-fails if a fourth appears.
+Every route served here is described by the OpenAPI document. A contract test
+fails if one appears that is not, and the proposal and record-edit operations
+are served by the memory module rather than this one.

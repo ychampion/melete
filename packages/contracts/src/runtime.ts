@@ -172,6 +172,12 @@ export const RUNTIME_EVENT_TYPES = [
   'tool_result',
   'action_requested',
   'attempt_outcome',
+  /**
+   * History is missing. A dropped stream or an interrupted run leaves a hole,
+   * and a transcript with a silent hole reads as a complete one. This says
+   * where the hole is, which is a different fact from "the attempt failed".
+   */
+  'gap',
 ] as const;
 export const runtimeEventType = z.enum(RUNTIME_EVENT_TYPES);
 export type RuntimeEventType = z.infer<typeof runtimeEventType>;
@@ -215,6 +221,13 @@ export const runtimeEvent = z.discriminatedUnion('type', [
     type: z.literal('attempt_outcome'),
     outcome: attemptOutcome,
     usage: attemptUsage.optional(),
+  }),
+  z.object({
+    ...runtimeEventBase,
+    type: z.literal('gap'),
+    reason: z.string().min(1).max(2000),
+    /** Events after this durable sequence number and before this one may be missing. */
+    after_seq: z.number().int().nonnegative(),
   }),
 ]);
 export type RuntimeEvent = z.infer<typeof runtimeEvent>;

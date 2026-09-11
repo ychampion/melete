@@ -1,6 +1,11 @@
 # Proposed - Contract additions for effect identity and trust-class admission
 
-Status: proposed
+Status: **accepted 2026-09-12**, as landed with the lane. `effects.ts`, the
+additive fields on `action` and `approval`, and the widened
+`BROKER_ERROR_CODES` are all on `integration`. Two later notes on this one:
+the migration became `0012_effect_identity` when the attention lane took
+0011, and the test helper no longer names it by filename, so the advice at
+the end of this note about updating that path is obsolete.
 Date: 2026-09-11
 Raised by: the effect-identity lane, implementing note 0010
 
