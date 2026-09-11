@@ -131,3 +131,10 @@
 - Log `FIREWORKS_API_KEY absent`: real smoke remains `skipped: no key`; all executed provider tests use the in-process fake or a local transport double.
 - Log `DONE not claimed`: one known teardown failure remains after the permitted fix cycles; preserve the implementation, open a draft PR, and do not merge.
 - Log `temporary fixture cleanup`: automatic approval review rejected one recursive temporary-directory removal earlier in this run; its Postgres process was stopped and the directory remains preserved.
+
+## Slice 7 — committed conformance handoff
+
+- SHA `89b9ace`: gateway, service startup, full effect binding, current generation checks, API action reads, and usage uncertainty flags committed and pushed; the known gateway teardown failure is retained and documented.
+- Command `bun run conformance`: scenarios 3 and 4 pass 14 tests against Postgres 17, pg-boss and the durable test connector; final full-suite execution repeats the same 14 passing scenarios.
+- Test `conformance 3`: lost acknowledgement, post-destination timeout, broker restart, original logical identity, verification and unsupported verification are implemented.
+- Test `conformance 4`: payload/revision binding, edited draft identity, cancel/admit ordering, truthful final/unknown dispositions, cancelled action listing and late authentic receipt reconciliation are implemented.
