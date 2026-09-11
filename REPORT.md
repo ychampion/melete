@@ -93,3 +93,11 @@
 - Command `git -C C:/Users/gamin/melete-oss-w10b diff --cached --check`: passed; all relative TypeScript imports from the 29 staged TypeScript files are present in the index.
 - Command `bun run typecheck` / `bun run lint`: both passed after the final controller fixture addition; recipe and control primitives are included here because the semantic connector depends on them, with their qualification tests in the next slice.
 - Command `bun test --max-concurrency=2`: the final full run remains queued; the previously reproduced unrelated fixture failures passed their focused rerun, and this slice's browser checks are green.
+
+## Slice 3 verification
+
+- SHA `fdc0bd5`: semantic browser actions, controller guards, scoped artifacts, and additive control contracts committed and pushed to `origin/lane/w10b-browser`.
+- Test `checked browser recipes` / `recipe persistence boundary`: all 28 tests passed, covering schema reorder, one safe alias, immutable versions, candidate states, and rejection of credential-bearing recipe data.
+- Test `local forms through the browser broker`: 14 tests passed in `.agents/w10b-locked-full.log`, including 12 correct variant/mode dispositions and the hidden destination's approval warning.
+- Test `browser broker authority and durable control`: all 13 tests passed, including fresh-observation identity, owner authentication, preserved reconciliation state, and refusal to fence a newer attempt from a late callback.
+- Log `.agents/w10b-measurements-verified.log`: completed recipe rows used 4 captures versus 7; replaying the approved submit kept one action and one destination effect. The generated measurement file is excluded from source linting, like the existing conformance report.

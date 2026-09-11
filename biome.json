@@ -19,7 +19,8 @@
       "!packages/contracts/openapi.json",
       "!apps/melete/drizzle",
       "!packages/client/src/schema.d.ts",
-      "!conformance/memory/report.json"
+      "!conformance/memory/report.json",
+      "!.agents/w10b-measurements.json"
     ]
   },
   "formatter": {
