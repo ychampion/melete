@@ -254,8 +254,8 @@ scenarios in `apps/mock-api/scenarios/` are chosen by what the message says:
   after setup.
 
 The designed surfaces (conversations, plans, agents, automations, memory,
-connections, rules, the day panel) are served under `/experience/*` by
-`apps/mock-api/src/experience.ts`. A conversation there is a view over jobs:
+connections, rules, the day panel) are served under `/surfaces/*` by
+`apps/mock-api/src/surfaces.ts`. A conversation there is a view over jobs:
 every message becomes a job, and the cards a person sees are derived from that
 job's persisted events, so the rules above hold in the web app without a second
 implementation. `MOCK_FRESH=1` starts signed out so the setup flow can be

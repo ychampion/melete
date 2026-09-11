@@ -1,5 +1,5 @@
 /**
- * The designed surfaces, served in memory under /experience.
+ * The designed surfaces, served in memory under /surfaces.
  *
  * A conversation here is a view over jobs: every message a person sends is a
  * job played by a scenario through the real state machine, and the trail,
@@ -10,8 +10,9 @@
  * reach.
  *
  * The shapes match apps/web/src/experience/types.ts, which follow
- * docs/design/INTEGRATION.md. When the experience contract lands, these routes
- * are the ones it describes.
+ * docs/design/INTEGRATION.md. The experience contract in
+ * packages/contracts/src/experience.ts is the target these routes migrate to;
+ * the field mapping is in .agents/notes/proposed/2026-09-12-w16b-experience-shapes.md.
  */
 
 import type { ApiEvent } from '@melete/contracts';
@@ -24,7 +25,7 @@ import { newId, type Store } from './store.ts';
 
 type Json = Record<string, unknown>;
 
-export type ExperienceDeps = {
+export type SurfacesDeps = {
   store: Store;
   runner: Runner;
   scenarios: Scenario[];
@@ -130,7 +131,7 @@ function formatWhen(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-export function createExperience(deps: ExperienceDeps) {
+export function createSurfaces(deps: SurfacesDeps) {
   const { store, runner, spaceId, api } = deps;
   const browserAvailable = deps.options?.browser ?? true;
   const app = new Hono();

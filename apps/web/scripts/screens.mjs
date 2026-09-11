@@ -33,7 +33,7 @@ const COMMIT = new Set(['1440-light', '390-light', '1440-dark']);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const api = async (method, path, body) => {
-  const response = await fetch(`${API}/experience${path}`, {
+  const response = await fetch(`${API}/surfaces${path}`, {
     method,
     headers: body ? { 'content-type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,

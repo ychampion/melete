@@ -45,11 +45,11 @@ buttons, the voice control, attachments, and the tour stages. There is no
 
 ## How conversations run against the mock
 
-`apps/mock-api` serves the designed surfaces under `/experience`. A
+`apps/mock-api` serves the designed surfaces under `/surfaces`. A
 conversation is a view over jobs: each message a person sends becomes a job
 played by a scenario through the real state machine, and the trail, cards,
 permissions, receipts, questions and unknown outcomes are derived from that
-job's persisted events (`apps/mock-api/src/experience.ts`). So the approval
+job's persisted events (`apps/mock-api/src/surfaces.ts`). So the approval
 flow, the hash mismatch, the one-question-at-a-time rule and the unknown
 outcome all hold in the new interface with the same mock that held them in the
 reference client. The scenario vocabulary grew additively: `say`, `card`,

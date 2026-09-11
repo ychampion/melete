@@ -1,7 +1,8 @@
 /**
  * The one place the interface talks to a backend. Everything a surface needs
  * is a method here, typed by ./types.ts. The mock serves these routes under
- * /experience; a real service serves them through the experience contract.
+ * /surfaces; the experience contract in packages/contracts/src/experience.ts is
+ * the target, and this file is where its shapes are adopted.
  *
  * Requests never throw on a non-2xx status: every call resolves to
  * { data, error }, and `error` is the sentence the service gave.
@@ -43,7 +44,7 @@ async function call<T>(
   body?: unknown,
 ): Promise<Result<T>> {
   try {
-    const response = await fetch(`${base}/experience${path}`, {
+    const response = await fetch(`${base}/surfaces${path}`, {
       method,
       credentials: 'include',
       headers: body === undefined ? {} : { 'content-type': 'application/json' },
@@ -187,7 +188,7 @@ export async function* subscribeConversation(
     let body: ReadableStream<Uint8Array> | null = null;
     try {
       const response = await fetch(
-        `${base}/experience/conversations/${encodeURIComponent(id)}/events?after=${cursor}`,
+        `${base}/surfaces/conversations/${encodeURIComponent(id)}/events?after=${cursor}`,
         {
           headers: {
             accept: 'text/event-stream',

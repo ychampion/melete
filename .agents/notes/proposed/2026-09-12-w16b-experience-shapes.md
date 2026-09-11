@@ -2,7 +2,7 @@
 
 The web app in `apps/web` builds against `apps/web/src/experience/types.ts`,
 shaped as `docs/design/INTEGRATION.md` describes, and the mock serves them
-under `/experience/*` (`apps/mock-api/src/experience.ts`). No contract file was
+under `/surfaces/*` (`apps/mock-api/src/surfaces.ts`). No contract file was
 changed: the experience contract is being defined separately, and these are
 the shapes it needs to carry for the designed surfaces to run against a real
 service. Everything here is additive.

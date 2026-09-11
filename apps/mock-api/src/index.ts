@@ -7,11 +7,11 @@
  * machine is the real one.
  */
 import { createMockApp, MOCK_VERSION } from './app.ts';
-import { createExperience } from './experience.ts';
 import { Runner } from './runner.ts';
 import { loadScenarios } from './scenarios.ts';
 import { seed } from './seed.ts';
 import { Store } from './store.ts';
+import { createSurfaces } from './surfaces.ts';
 
 export const DEFAULT_PORT = 3190;
 
@@ -20,7 +20,7 @@ export type MockOptions = {
   speed?: number;
   now?: () => Date;
   /**
-   * The designed surfaces under /experience. Seeding starts two conversations
+   * The designed surfaces under /surfaces. Seeding starts two conversations
    * at boot, which a test that counts jobs does not want; the server does.
    * `fresh` starts signed out, so the onboarding can be walked.
    */
@@ -35,7 +35,7 @@ export function createMock(options: MockOptions = {}) {
   const runner = new Runner(store, { speed: options.speed ?? 1 });
   const { spaceId, connections } = seed(store);
   const app = createMockApp({ store, runner, scenarios, spaceId });
-  const experience = createExperience({
+  const surfaces = createSurfaces({
     store,
     runner,
     scenarios,
@@ -47,9 +47,9 @@ export function createMock(options: MockOptions = {}) {
       seed: options.experience?.seed ?? false,
     },
   });
-  app.route('/experience', experience.app);
+  app.route('/surfaces', surfaces.app);
   // Seeding sends requests through the app, so it runs after every route is mounted.
-  if (options.experience?.seed) void experience.seed();
+  if (options.experience?.seed) void surfaces.seed();
   return { app, store, runner, scenarios, spaceId, connections };
 }
 
