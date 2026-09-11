@@ -16,3 +16,18 @@
 - Command `bun run typecheck`: passed after two test-response typing fixes (`Response.json()` is unknown); no contract edits.
 - Command `bunx biome check apps/melete/src/broker apps/melete/src/connectors/types.ts`: passed; whole-tree lint deferred while later connector slices are being authored.
 - Test `attempt credential cannot approve itself`: approval route requires a distinct API-only bearer credential; capability JWTs cannot self-approve.
+
+## Slice 2 — durable action lifecycle
+
+- SHA `71ee0f6`: broker HTTP gate pushed to `origin/lane/w2-broker`.
+- Command `bun test apps/melete/test/integration/broker.test.ts --max-concurrency=2`: 10 pass, 60 assertions, 0 fail, 10.56 seconds against embedded Postgres 17.
+- Test `approval and wake commit together in pg-boss`: approval decision, job wake and real queue row share the transaction.
+- Test `late receipt after cancellation is stored without reopening work`: receipt late=true, job remains cancelled at the bumped epoch.
+- Test `proposal retries reuse action identity across service restart and refuse edited content`: same client_ref retrieves one action; changed content is rejected.
+- Log `ZodError created_at Invalid ISO datetime`: fixed the Drizzle-shared timestamp text conversion at the broker read boundary (first fix).
+- Log `Bun rejects.toMatchObject stalled postgres BEGIN`: direct asynchronous rejection observation resolved retry/denial test stalls (second fix); production rejection independently reproduced with rollback.
+- Command `bun run typecheck`: passed with integration helper and test sources included in tsconfig.
+- Command `bun test apps/melete/test/integration/postgres.test.ts --max-concurrency=2`: 2 pass; actual Postgres 17 and pg-boss enqueue/fetch/complete.
+- Command `bun test --max-concurrency=2`: full suite 268 pass, 1 existing DB skip, 36 pending conformance todos, 0 fail, 36.80 seconds; supersedes the interrupted full run that loaded the pre-fix destination encoder.
+- Log `pg_ctl ... melete-w2-postgres-9a160y/data stop -m fast -w`: stopped the interrupted full-run fixture; its temporary data is preserved.
+- Log `automatic approval review blocked by policy`: one failed destination-test temporary-directory cleanup was rejected; its Postgres process is stopped and the directory is preserved.
