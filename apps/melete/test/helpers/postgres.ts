@@ -18,12 +18,15 @@ export type PostgresFixtureOptions = {
 
 const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
 /**
- * The frozen initial schema, plus the later migrations the broker's own
- * invariants live in. A fixture that stops at 0000 cannot exercise a unique
- * index that was added in 0009, and a test that cannot exercise the index is
- * not evidence of anything.
+ * Broker fixtures also need the production event epoch, wake scheduling class,
+ * and effect-identity index. Testing only the initial schema hides integration
+ * failures at those boundaries.
  */
-const brokerMigrations = [new URL('../../drizzle/0012_effect_identity.sql', import.meta.url)];
+const brokerMigrations = [
+  new URL('../../drizzle/0006_event_protocol.sql', import.meta.url),
+  new URL('../../drizzle/0008_scheduling_attention.sql', import.meta.url),
+  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
+];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
