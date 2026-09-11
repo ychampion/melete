@@ -41,18 +41,46 @@ The runtime asserts Hermes tag `v2026.9.7` resolves to
 `2237be355906fbe6065ce1815711eee52b2d646e`. Its labels also identify plugin content
 SHA-256 `181a9f349c5b3dbbc42d70d446a0f89124b8151cec5ab776f2bdd2992e9d9e3b`.
 Base images are pinned by digest; Bun and Python dependencies use frozen locks.
-`/opt/melete-runtime/sbom.cdx.json` inventories 181 Python/system/plugin components;
+`/opt/melete-runtime/sbom.cdx.json` inventories 200 Python/system/plugin components;
 `build-info.json` records both asserted hashes. The image smoke check ran as UID
 10001 with a read-only root and no network, imported YAML, and confirmed Python
-3.12.14 and the inventory. A clean rebuild comparison remains pending.
+3.12.14 and the inventory. A no-cache rebuild took 57.58 seconds and produced
+the same pins and inventory SHA-256
+`79b483e3b6ac766bccec94eec52ddf078b83fb94935b3cff7e6178b3aaee337f`.
+This establishes repeatable source/dependency content, not identical image
+bytes: image timestamps, upstream apt repositories and attestations remain variable.
 
 Failures fixed: the runtime PATH omitted `/usr/sbin`; the Bun Dockerfiles omitted
 workspace manifests required by the frozen lockfile; upstream's Python version
 file made uv install its interpreter beneath root's private home. The runtime
 now uses the base image's Python explicitly and disallows interpreter downloads.
+Live startup also required installing the Hermes entrypoint into its venv and
+including its locked messaging extra for the API server's aiohttp dependency.
+
+## Per-attempt isolation
+
+The trusted service now supervises one Hermes container per claimed attempt.
+Only that service receives the Docker socket. Each child mounts the named work
+volume's `job_<id>` subpath at `/work`, an independent named Hermes home, and
+an internal bridge with isolated gateway mode and exactly the broker peer.
+Startup reconciles only strictly labelled resources belonging to this project.
+
+The deployed proof stopped only a real claimed cell's engine process, then ran
+Python probes in that container. A sibling canary existed in the shared volume
+as a positive control, but three traversal forms returned ENOENT from the cell;
+its own workspace remained writable. Internet, Postgres DNS and actual IP,
+metadata, web DNS, and a proven live host listener were unreachable. Broker
+and model routes returned HTTP 401 without authentication. UID 10001, read-only
+root, zero effective capabilities, no-new-privileges and absence of the Docker
+socket were checked from inside. The warm probe cell passed the same checks.
+Scenario 6: 9 tests, 52 assertions, 47.82 seconds, zero failures.
+
+The startup wiring also provisions database-backed knowledge spaces and opens
+memory only after replaying its independent restriction journal. Per-attempt
+context uses the existing memory eligibility/invalidation path and bounded
+Markdown retrieval; context records use separate durable audit identities.
 
 ## Remaining checks
 
-Per-attempt isolation, healthy stack startup, scenarios 1–8, memory conformance,
-compose restart, clean-host installation, and actual backup/restore are pending.
-No deployment completion or isolation claim is made by the build result alone.
+The four-service stack is healthy; remaining suite, clean-host and restore
+measurements are recorded in subsequent slices. No overall completion is claimed yet.

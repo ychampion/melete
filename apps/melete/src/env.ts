@@ -19,12 +19,13 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
-  /** Stub is an explicit local development choice; runtime adapters are injected by callers. */
-  MELETE_RUNTIME_ADAPTER: z.enum(['stub', 'external']).default('external'),
+  /** Docker supervises isolated attempts; stub is an explicit local test choice. */
+  MELETE_RUNTIME_ADAPTER: z.enum(['stub', 'external', 'docker']).default('external'),
 
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
   MELETE_ARTIFACTS_DIR: z.string().default('/data/artifacts'),
+  MELETE_RESTRICTIONS_DIR: z.string().default('/data/restrictions'),
 
   /** The address the runtime container reaches the broker on, internal network only. */
   MELETE_BROKER_BIND: z.string().default('127.0.0.1:3112'),
@@ -41,6 +42,18 @@ export const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   MELETE_RUNTIME_URL: z.string().default('http://runtime:8790'),
+  MELETE_RUNTIME_KEY: z.string().min(32).optional(),
+  MELETE_RUNTIME_IMAGE: z.string().default('melete-runtime:local'),
+  MELETE_DOCKER_SOCKET: z.string().default('/var/run/docker.sock'),
+  MELETE_COMPOSE_PROJECT: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9_-]*$/)
+    .default('melete'),
+  MELETE_WORK_VOLUME: z
+    .string()
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)
+    .default('melete_work'),
+  MELETE_RUNTIME_START_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
   /** Provider keys. The gateway injects these; the runtime never sees them. */
   FIREWORKS_API_KEY: z.string().optional(),

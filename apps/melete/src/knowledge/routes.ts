@@ -8,9 +8,8 @@
  * naming it. And nothing an agent sends lands in a space: a proposal is staged
  * and diffed, and applying it is a separate call that ends in a git commit.
  *
- * Authentication is not here. The placeholder middleware reads the space from a
- * header; the session will supply it, and every handler below is written as
- * though it already does.
+ * Authentication runs before this module. The owner's session may select a
+ * catalog space; standalone fixtures must provide an explicit space header.
  */
 import {
   type ErrorResponse,
@@ -50,7 +49,7 @@ export type KnowledgeDeps = {
 
 type Variables = { space: SpaceRef };
 
-/** The header the session will replace. Tests and scripts use it directly. */
+/** An explicit selection within the authenticated owner's catalog. */
 export const SPACE_HEADER = 'x-melete-space';
 
 const fail = (code: string, message: string, detail?: Record<string, unknown>): ErrorResponse => ({
@@ -141,17 +140,14 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
   // routes, least of all with an error about a space.
   const bindSpace: MiddlewareHandler<{ Variables: Variables }> = async (c, next) => {
     const header = c.req.header(SPACE_HEADER);
-    if (!header) {
-      return c.json(
-        fail(
-          'no_space',
-          `this request needs a space; the session will supply it, and until then ${SPACE_HEADER} does`,
-        ),
-        401,
-      );
+    const authenticated = Boolean(c.get('owner'));
+    const selected = header ?? (authenticated ? c.req.query('space_id') : undefined);
+    const available = !selected && authenticated ? await deps.spaces.list() : [];
+    if (!selected && available.length !== 1) {
+      return c.json(fail('no_space', `Select a space using ${SPACE_HEADER}.`), 401);
     }
-    const space = await deps.spaces.byId(header);
-    if (!space) return c.json(fail('no_such_space', `no space with id ${header}`), 404);
+    const space = selected ? await deps.spaces.byId(selected) : available[0];
+    if (!space) return c.json(fail('no_such_space', 'No accessible space has that id.'), 404);
     c.set('space', space);
     await next();
     return undefined;

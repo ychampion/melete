@@ -491,4 +491,39 @@ describe('the knowledge module inside the service', () => {
     const res = await api.request('/jobs', { headers: { Cookie: session } });
     expect(res.status).toBe(404);
   });
+
+  serviceTest(
+    'setup makes the catalog space usable without a provisional ID or header',
+    async () => {
+      const api = createApp({
+        env: loadEnv({ MELETE_SPACES_DIR: root }),
+        db: database().db,
+        checkDatabase: async () => 'ok',
+      });
+      const cookie = await signIn(api);
+      const catalog = (await (
+        await api.request('/spaces', { headers: { Cookie: cookie } })
+      ).json()) as { spaces: Array<{ id: string; git_path: string }> };
+      const personal = catalog.spaces[0];
+      if (!personal) throw new Error('Setup did not create a personal space');
+      const search = await api.request(`/knowledge/search?space_id=${personal.id}&q=anything`, {
+        headers: { Cookie: cookie },
+      });
+      expect(search.status).toBe(200);
+      expect(await search.json()).toEqual({ hits: [] });
+      expect(existsSync(join(personal.git_path, '.git', 'HEAD'))).toBe(true);
+
+      const listing = await api.request('/knowledge', { headers: { Cookie: cookie } });
+      expect(listing.status).toBe(200);
+      expect(await listing.json()).toEqual({ records: [] });
+      const unauthenticated = await api.request(`/knowledge?space_id=${personal.id}`, {
+        headers: { [SPACE_HEADER]: personal.id },
+      });
+      expect(unauthenticated.status).toBe(401);
+      const mismatch = await api.request(`/knowledge/search?space_id=${spaceId}&q=anything`, {
+        headers: { Cookie: cookie, [SPACE_HEADER]: personal.id },
+      });
+      expect(mismatch.status).toBe(403);
+    },
+  );
 });

@@ -29,8 +29,8 @@ ENV PYTHONUNBUFFERED=1 \
     UV_PYTHON_DOWNLOADS=never \
     PATH=/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# git to fetch the pinned tag; ca-certificates for the clone; nothing else.
-# No shell tooling the agent could reach for, no package manager left behind.
+# git fetches the pinned tag; ca-certificates verifies the clone. The cell's
+# network, filesystem and tool boundaries are enforced separately below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
@@ -46,8 +46,10 @@ WORKDIR /opt/hermes
 RUN git clone --depth 1 --branch "${HERMES_TAG}" "${HERMES_REPO}" /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_COMMIT}" \
     && git -C /opt/hermes rev-parse HEAD > /opt/hermes/.melete-hermes-commit \
-    && uv sync --frozen --no-install-project \
-    && uv pip install --no-cache-dir --no-deps -e "." \
+    && uv sync --frozen --no-install-project --extra messaging \
+    && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps -e "." \
+    && test -x /opt/hermes/.venv/bin/hermes \
+    && /opt/hermes/.venv/bin/python -c "import aiohttp, yaml" \
     && rm -rf /root/.cache/uv
 
 # The plugin and the config, staged where the entrypoint can sync them into the
@@ -58,6 +60,7 @@ COPY melete_plugin/ /opt/melete-runtime/melete_plugin/
 COPY config/config.yaml /opt/melete-runtime/config.yaml
 COPY entrypoint.sh /usr/local/bin/melete-runtime-entrypoint
 COPY build-metadata.py /opt/melete-runtime/build-metadata.py
+COPY healthcheck.py /opt/melete-runtime/healthcheck.py
 RUN python /opt/melete-runtime/build-metadata.py "${HERMES_COMMIT}" "${MELETE_PLUGIN_SHA}"
 RUN chmod +x /usr/local/bin/melete-runtime-entrypoint
 

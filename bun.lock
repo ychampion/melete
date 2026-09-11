@@ -17,6 +17,7 @@
       "dependencies": {
         "@melete/contracts": "workspace:*",
         "@melete/knowledge": "workspace:*",
+        "@melete/runtime-hermes": "workspace:*",
         "@melete/skills": "workspace:*",
         "ajv": "8.20.0",
         "chrono-node": "2.10.1",
@@ -77,6 +78,7 @@
       },
       "devDependencies": {
         "drizzle-orm": "0.45.2",
+        "postgres": "3.4.9",
       },
     },
     "packages/client": {

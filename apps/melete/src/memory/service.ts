@@ -108,14 +108,15 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
 export async function startMemoryService(options: MemoryServiceOptions) {
   await restoreMemory(options.sql, options.journal);
   await options.boss.createQueue(MEMORY_EXTRACT_QUEUE);
-  if (options.gateway)
-    await options.boss.work<{ work_id: string }>(
-      MEMORY_EXTRACT_QUEUE,
-      { localConcurrency: 2, batchSize: 1 },
-      async (jobs) => {
-        for (const job of jobs) await runExtractionWork(options, job.data.work_id);
-      },
-    );
+  // Structured observations use Tier 0 without a model. Other evidence stays
+  // pending in runExtractionWork until an extraction gateway is configured.
+  await options.boss.work<{ work_id: string }>(
+    MEMORY_EXTRACT_QUEUE,
+    { localConcurrency: 2, batchSize: 1 },
+    async (jobs) => {
+      for (const job of jobs) await runExtractionWork(options, job.data.work_id);
+    },
+  );
   await repairQueue(options.sql, options.boss);
   const onError = options.onError ?? (() => {});
   const stopRecovery = startRecoveryScan(options.sql, options.boss, onError);
@@ -136,7 +137,7 @@ export async function startMemoryService(options: MemoryServiceOptions) {
     async stop() {
       clearInterval(timer);
       stopRecovery();
-      if (options.gateway) await options.boss.offWork(MEMORY_EXTRACT_QUEUE);
+      await options.boss.offWork(MEMORY_EXTRACT_QUEUE);
     },
   };
 }
