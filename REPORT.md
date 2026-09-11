@@ -143,3 +143,16 @@
 - Command `bun test apps/melete/test/integration/responsibility.test.ts apps/melete/test/integration/events.test.ts conformance/scenarios/05-runtime-death.test.ts`: an initial shutdown race caused a fixture deadlock; one fix drains pending stream SQL before shutdown. Final run: `22 pass`, `0 fail`, `173 expect() calls`, `24.49s`.
 - Command `bun run typecheck`: one assertion typing fix, then passed (`$ tsc -b`); command `bun run lint`: `Checked 105 files in 99ms. No fixes applied.`.
 - Command `bun test --dots`: `378 pass`, `24 todo`, `0 fail`, `1513 expect() calls`, `Ran 402 tests across 30 files. [55.51s]`.
+
+## Slice 12: account and policy generations
+
+- SHA `677ccfb`: event protocol committed and pushed to `origin/lane/w1-service`.
+- Command `bun run --cwd apps/melete db:generate --name=context_generations`: generated `0007_context_generations.sql`; spaces, connections, attempts and background-operation provenance persist their generations.
+- Test `revocation during inference`: the lifecycle transaction fences the old attempt, invalidates context snapshot references, fails undispatched actions, marks dispatched actions unknown and emits a persisted `context_invalidated` control before a fresh attempt runs.
+- Test `credential switches`: context assembly and connector admission reject stale generation snapshots; fresh bundles include the new generation and exclude revoked account content and credential bytes.
+- Test `revocation during inference`: completed tool identities survive context redaction so revocation cannot make an already completed effect replayable.
+- Test `delayed invalidation signal`: runtime controllers are tracked by attempt identity; signalling the old inference after its replacement starts aborts only the old inference.
+- Command `bun test apps/melete/test/integration/responsibility.test.ts -t 'revocation during|credential switches'`: initial fixture content was moved from owner constraints to the fake connector result; an assertion-path stall was isolated with `bun run .omx/inspect-generation.ts`, which rejected both gates immediately, then fixed by awaiting and inspecting rejections explicitly. Final run: `2 pass`, `0 fail`, `30 expect() calls`, `8.33s`.
+- Command `bun test apps/melete/test/integration/responsibility.test.ts -t 'delayed invalidation'`: `1 pass`, `0 fail`, `3 expect() calls`, `7.46s`.
+- Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: one formatting fix, then `Checked 108 files in 91ms. No fixes applied.`.
+- Command `bun test --dots`: `381 pass`, `24 todo`, `0 fail`, `1546 expect() calls`, `Ran 405 tests across 30 files. [52.67s]`.

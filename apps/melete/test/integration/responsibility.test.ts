@@ -1,14 +1,37 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
-import type { OperationRegistration } from '@melete/contracts';
+import {
+  type ContextInvalidated,
+  type OperationRegistration,
+  type RuntimeAdapter,
+  responsibilityAttemptBundle,
+} from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { ServiceError } from '../../src/api/errors.ts';
 import { mountEvents } from '../../src/api/events.ts';
-import { backgroundOperation, event, space } from '../../src/db/schema.ts';
+import {
+  action,
+  attempt,
+  backgroundOperation,
+  connection,
+  event,
+  secret,
+  space,
+} from '../../src/db/schema.ts';
+import { loadEnv } from '../../src/env.ts';
 import { appendEvent } from '../../src/events/store.ts';
 import { EventStream } from '../../src/events/stream.ts';
 import { newId } from '../../src/ids.ts';
+import { createApp } from '../../src/index.ts';
+import { buildBundle } from '../../src/jobs/bundle.ts';
+import {
+  requireConnectionGeneration,
+  withCapability,
+  withConnectionCapability,
+} from '../../src/jobs/fence.ts';
 import { OperationService } from '../../src/jobs/operations.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -33,6 +56,16 @@ async function createJob() {
     title: 'Responsibility',
     objective: 'Durable progress',
   });
+}
+async function rejects(operation: () => Promise<unknown>, code: string) {
+  let caught: unknown;
+  try {
+    await operation();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(ServiceError);
+  expect((caught as ServiceError).code).toBe(code);
 }
 withDb('responsibility protocol', () => {
   beforeEach(async () => {
@@ -258,5 +291,297 @@ withDb('responsibility protocol', () => {
     } finally {
       await events.close();
     }
+  });
+
+  test('revocation during inference fences admission and restarts without revoked context', async () => {
+    const { handle, jobs } = fixture();
+    const key = 'policy-test-signing-key-32bytes-long';
+    const connectionId = newId('conn');
+    await handle.db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, provider: 'test', label: 'Account' });
+    const row = await jobs.create({
+      space_id: spaceId,
+      title: 'Account context',
+      objective: 'Use the current account',
+      constraints: {
+        notes: JSON.stringify({
+          script: [
+            {
+              type: 'tool',
+              tool: 'test.read',
+              call_id: 'account-read',
+              epoch: 1,
+            },
+            { type: 'stall', key: 'inference', epoch: 1 },
+          ],
+        }),
+      },
+    });
+    let ready = () => {};
+    const stalled = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let oldToken = '';
+    let oldAttemptId = '';
+    const controls: ContextInvalidated[] = [];
+    const runtime = new StubRuntimeAdapter({
+      onTool: async () => ({ private_material: 'REVOKED_ACCOUNT_BYTES' }),
+      onStall: async (_key, bundle) => {
+        const parsed = responsibilityAttemptBundle.parse(bundle);
+        expect(parsed.connection_generations[connectionId]).toBe(0);
+        oldToken = bundle.attempt.token;
+        oldAttemptId = bundle.attempt.id;
+        ready();
+        await new Promise<void>(() => {});
+      },
+      onContextInvalidated: (control) => {
+        controls.push(control);
+      },
+    });
+    const runner = new AttemptRunner(jobs, runtime, { key });
+    const running = runner.handleWake({
+      job_id: row.id,
+      expected_epoch: 0,
+      expected_version: 0,
+      reason: 'created',
+    });
+    await stalled;
+    await handle.db
+      .update(attempt)
+      .set({ contextSnapshotRef: 'cached-private-context' })
+      .where(eq(attempt.id, oldAttemptId));
+    const actionIds = [newId('act'), newId('act')];
+    for (const [index, id] of actionIds.entries())
+      await handle.db.insert(action).values({
+        id,
+        jobId: row.id,
+        attemptId: oldAttemptId,
+        connectionId,
+        kind: 'test.send',
+        effectClass: 'write_external',
+        canonicalPayload: {},
+        payloadHash: 'a'.repeat(64),
+        idempotencyKey: id,
+        status: index === 0 ? 'admitted' : 'dispatched',
+        dispatchedAt: index === 0 ? null : new Date(),
+      });
+    let admitted = 0;
+    expect(
+      await withConnectionCapability(jobs, oldToken, key, connectionId, async () => ++admitted),
+    ).toBe(1);
+    const policy = new PolicyService(jobs, runner);
+    expect(
+      await policy.changeConnection(connectionId, { kind: 'revoke', expected_generation: 0 }),
+    ).toMatchObject({ generation: 1, policy_generation: 1, status: 'revoked' });
+    await running;
+    await expect(withCapability(jobs, oldToken, key, async () => ++admitted)).rejects.toMatchObject(
+      { code: 'stale_epoch' },
+    );
+    expect(admitted).toBe(1);
+    expect(controls).toHaveLength(1);
+    expect(controls[0]).toMatchObject({
+      type: 'context_invalidated',
+      attempt_id: oldAttemptId,
+      reason: 'connection_revoked',
+    });
+    const [ended] = await handle.db.select().from(attempt).where(eq(attempt.id, oldAttemptId));
+    expect(ended?.contextSnapshotRef).toBeNull();
+    expect(ended?.leaseStatus).toBe('context_invalidated');
+    const effects = await handle.db.select().from(action).where(eq(action.jobId, row.id));
+    expect(effects.find((effect) => effect.id === actionIds[0])?.status).toBe('failed');
+    expect(effects.find((effect) => effect.id === actionIds[1])?.status).toBe('unknown');
+    const nextJob = await jobs.get(row.id);
+    const next = await runner.claim({
+      job_id: row.id,
+      expected_epoch: nextJob.leaseEpoch,
+      expected_version: nextJob.stateVersion,
+      reason: 'recovery',
+    });
+    if (!next) throw new Error('Fresh context attempt missing');
+    expect(next.bundle.policy_generation).toBe(1);
+    expect(next.bundle.connection_generations[connectionId]).toBeUndefined();
+    expect(JSON.stringify(next.bundle)).not.toContain('REVOKED_ACCOUNT_BYTES');
+    expect(next.bundle.transcript.some((message) => message.tool_call_id === 'account-read')).toBe(
+      true,
+    );
+    await expect(
+      jobs.transaction((tx) => requireConnectionGeneration(tx, next.claims, connectionId)),
+    ).rejects.toMatchObject({ code: 'context_invalidated' });
+    const invalidations = await handle.db
+      .select()
+      .from(event)
+      .where(eq(event.type, 'context_invalidated'));
+    expect(invalidations).toHaveLength(1);
+    expect(invalidations[0]?.attemptId).toBe(oldAttemptId);
+    await runner.stop();
+  });
+
+  test('credential switches compare generations at both context assembly and connector admission', async () => {
+    const { handle, jobs } = fixture();
+    const key = 'generation-test-signing-key-32bytes';
+    const connectionId = newId('conn');
+    const credentialId = newId('sec');
+    await handle.db
+      .insert(secret)
+      .values({ id: credentialId, spaceId, ciphertext: 'sealed-fixture' });
+    await handle.db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, provider: 'test', label: 'Switchable' });
+    const row = await createJob();
+    const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), { key });
+    const first = await runner.claim({
+      job_id: row.id,
+      expected_epoch: 0,
+      expected_version: 0,
+      reason: 'created',
+    });
+    if (!first) throw new Error('First attempt missing');
+    await handle.db
+      .update(connection)
+      .set({ generation: 1 })
+      .where(eq(connection.id, connectionId));
+    await rejects(
+      () => withCapability(jobs, first.bundle.attempt.token, key, async () => 'admitted'),
+      'context_invalidated',
+    );
+    await rejects(
+      () =>
+        jobs.transaction((tx) =>
+          buildBundle(
+            tx,
+            row,
+            {
+              id: first.claims.attempt_id,
+              epoch: first.claims.epoch,
+              revision: first.claims.revision,
+              token: first.bundle.attempt.token,
+            },
+            first.bundle.model,
+            0,
+            first.bundle,
+          ),
+        ),
+      'context_invalidated',
+    );
+    const policy = new PolicyService(jobs, runner);
+    await expect(
+      policy.changeConnection(connectionId, {
+        kind: 'switch',
+        expected_generation: 0,
+        secret_ref: credentialId,
+      }),
+    ).rejects.toMatchObject({ code: 'generation_conflict' });
+    expect(
+      await policy.changeConnection(connectionId, {
+        kind: 'switch',
+        expected_generation: 1,
+        secret_ref: credentialId,
+      }),
+    ).toMatchObject({ generation: 2, policy_generation: 1, status: 'active' });
+    const freshJob = await jobs.get(row.id);
+    const fresh = await runner.claim({
+      job_id: row.id,
+      expected_epoch: freshJob.leaseEpoch,
+      expected_version: freshJob.stateVersion,
+      reason: 'recovery',
+    });
+    if (!fresh) throw new Error('Fresh attempt missing');
+    expect(fresh.bundle.connection_generations[connectionId]).toBe(2);
+    expect(JSON.stringify(fresh.bundle)).not.toContain('sealed-fixture');
+    expect(
+      await withConnectionCapability(
+        jobs,
+        fresh.bundle.attempt.token,
+        key,
+        connectionId,
+        async () => 'admitted',
+      ),
+    ).toBe('admitted');
+    expect(await policy.changePolicy(spaceId, 1)).toMatchObject({ policy_generation: 2 });
+    await expect(
+      withCapability(jobs, fresh.bundle.attempt.token, key, async () => 'admitted'),
+    ).rejects.toMatchObject({ code: 'stale_epoch' });
+    const app = createApp({
+      env: loadEnv({}),
+      db: handle.db,
+      jobs,
+      policy,
+      checkDatabase: async () => 'ok',
+    });
+    expect(
+      (
+        await app.request(`/connections/${connectionId}/lifecycle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'revoke', expected_generation: 2 }),
+        })
+      ).status,
+    ).toBe(401);
+  });
+
+  test('a delayed invalidation signal stops the old inference without aborting its replacement', async () => {
+    const { jobs } = fixture();
+    const row = await jobs.create({
+      space_id: spaceId,
+      title: 'Overlapping generations',
+      objective: 'Replace stale inference',
+      constraints: { notes: JSON.stringify({ script: [{ type: 'stall', key: 'inference' }] }) },
+    });
+    const signals = new Map<string, AbortSignal>();
+    const ready: Array<() => void> = [];
+    const oldReady = new Promise<void>((resolve) => ready.push(resolve));
+    const newReady = new Promise<void>((resolve) => ready.push(resolve));
+    const stub = new StubRuntimeAdapter({
+      onStall: async () => {
+        ready.shift()?.();
+        await new Promise<void>(() => {});
+      },
+    });
+    const runtime: RuntimeAdapter = {
+      capabilities: () => stub.capabilities(),
+      start: (bundle, sink, signal) => {
+        signals.set(bundle.attempt.id, signal);
+        return stub.start(bundle, sink, signal);
+      },
+    };
+    const runner = new AttemptRunner(jobs, runtime, {
+      key: 'overlapping-generation-test-key-32bytes',
+    });
+    const first = runner.handleWake({
+      job_id: row.id,
+      expected_epoch: 0,
+      expected_version: 0,
+      reason: 'created',
+    });
+    await oldReady;
+    const oldAttemptId = [...signals.keys()][0];
+    if (!oldAttemptId) throw new Error('Old inference missing');
+    // A second service can deliver the durable replacement wake before the old adapter gets its control.
+    await new PolicyService(jobs).changePolicy(spaceId, 0);
+    const updated = await jobs.get(row.id);
+    const second = runner.handleWake({
+      job_id: row.id,
+      expected_epoch: updated.leaseEpoch,
+      expected_version: updated.stateVersion,
+      reason: 'recovery',
+    });
+    await newReady;
+    await runner.invalidateContext({
+      type: 'context_invalidated',
+      job_id: row.id,
+      attempt_id: oldAttemptId,
+      connection_id: null,
+      policy_generation: 1,
+      reason: 'policy_changed',
+    });
+    await first;
+    expect(signals.get(oldAttemptId)?.aborted).toBe(true);
+    expect([...signals.entries()].filter(([id]) => id !== oldAttemptId)[0]?.[1].aborted).toBe(
+      false,
+    );
+    expect((await jobs.get(row.id)).state).toBe('running');
+    await runner.stop();
+    await second;
   });
 });

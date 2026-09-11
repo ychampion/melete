@@ -10,7 +10,7 @@ import {
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
-import { backgroundOperation, trigger } from '../db/schema.ts';
+import { backgroundOperation, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -126,6 +126,7 @@ export class OperationService {
     return this.jobs.transaction(async (tx) => {
       const job = await this.jobs.lock(tx, jobId);
       if (!job) throw new ServiceError('not_found', 'Job not found.', 404);
+      const [parent] = await tx.select().from(space).where(eq(space.id, job.spaceId));
       const [existing] = await tx
         .select()
         .from(backgroundOperation)
@@ -168,6 +169,7 @@ export class OperationService {
           jobId,
           operationKey: value.operation_key,
           inputDigest: digest,
+          policyGeneration: parent?.policyGeneration ?? 0,
           kind: value.kind,
           substrateDisposition: disposition,
           state: disposition === 'external_uncertain' ? 'unknown' : 'registered',
@@ -264,6 +266,7 @@ export class OperationService {
           type: 'notice',
           payload: {
             kind: 'operation_event',
+            policy_generation: row.policyGeneration,
             trigger_id: row.triggerId,
             operation_id: row.id,
             result,

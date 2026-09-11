@@ -11,7 +11,7 @@ import {
 import { and, asc, eq, gt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
-import { connection, event, trigger } from '../db/schema.ts';
+import { connection, event, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -172,9 +172,15 @@ export class TriggerService {
         .from(event)
         .where(eq(event.dedupKey, dedupKey));
       if (existing) return { seq: existing.seq, duplicate: true };
+      const [parent] = await tx.select().from(space).where(eq(space.id, source.spaceId));
       const received = await appendEvent(tx, {
         type: 'notice',
-        payload: { kind: 'connector_event', ...value },
+        payload: {
+          kind: 'connector_event',
+          ...value,
+          connection_generation: source.generation,
+          policy_generation: parent?.policyGeneration ?? 0,
+        },
         dedupKey,
       });
       if (!received) throw new Error('serialized event insert lost');

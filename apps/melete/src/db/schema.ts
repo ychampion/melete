@@ -35,6 +35,7 @@ export const owner = pgTable(
 export const space = pgTable('space', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
+  policyGeneration: integer('policy_generation').notNull().default(0),
   kind: text('kind').notNull().default('personal'),
   // Reserved so shared spaces can arrive without a rewrite. Always "owner" in v0.1.
   audience: text('audience').notNull().default('owner'),
@@ -68,6 +69,7 @@ export const connection = pgTable(
     secretRef: text('secret_ref').references(() => secret.id, { onDelete: 'set null' }),
     scopes: jsonb('scopes').$type<string[]>().notNull().default([]),
     status: text('status').notNull().default('active'),
+    generation: integer('generation').notNull().default(0),
     health: text('health').notNull().default('unknown'),
     lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
     createdAt: created(),
@@ -124,6 +126,11 @@ export const attempt = pgTable(
     outcome: text('outcome'),
     outcomeDetail: jsonb('outcome_detail'),
     contextSnapshotRef: text('context_snapshot_ref'),
+    policyGeneration: integer('policy_generation').notNull().default(0),
+    connectionGenerations: jsonb('connection_generations')
+      .$type<Record<string, number>>()
+      .notNull()
+      .default({}),
     revision: integer('revision').notNull().default(0),
     leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     leaseStatus: text('lease_status').notNull().default('active'),
@@ -374,6 +381,7 @@ export const backgroundOperation = pgTable(
       .references(() => job.id, { onDelete: 'cascade' }),
     operationKey: text('operation_key').notNull(),
     inputDigest: text('input_digest').notNull(),
+    policyGeneration: integer('policy_generation').notNull().default(0),
     kind: text('kind').notNull(),
     substrateDisposition: text('substrate_disposition').notNull(),
     state: text('state').notNull().default('registered'),

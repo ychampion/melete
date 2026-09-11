@@ -39,6 +39,8 @@ import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
 import {
   backgroundOperation,
+  connectionGeneration,
+  connectionLifecycle,
   jobSubmissionResponse,
   notification,
   notificationDelivery,
@@ -48,6 +50,8 @@ import {
   operationRegistration,
   operationSettlement,
   operationVersion,
+  policyChange,
+  policyGeneration,
   replyObligation,
   replyObligationList,
   responsibilitySnapshot,
@@ -99,6 +103,30 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/connections/{id}/lifecycle': {
+          post: {
+            tags: ['connections'],
+            summary: 'Switch or revoke credentials and fence previous context generations',
+            requestParams: idParam('id', 'Connection id'),
+            requestBody: json(connectionLifecycle),
+            responses: {
+              '200': jsonResponse('New generation', connectionGeneration),
+              '409': problem('Generation changed'),
+            },
+          },
+        },
+        '/spaces/{id}/policy-generation': {
+          post: {
+            tags: ['spaces'],
+            summary: 'Advance policy and restart attempts with fresh context',
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(policyChange),
+            responses: {
+              '200': jsonResponse('Policy generation', policyGeneration),
+              '409': problem('Generation changed'),
+            },
+          },
+        },
         '/jobs/{id}/snapshot': {
           get: {
             tags: ['events'],

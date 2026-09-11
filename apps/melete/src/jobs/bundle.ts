@@ -4,11 +4,14 @@ import {
   attemptBundle,
   attemptOutcome,
   type CanonicalMessage,
+  type ContextGenerations,
   type Deliverable,
   jobBudget,
   jobConstraints,
   jsonObject,
+  type ResponsibilityAttemptBundle,
   receipt,
+  responsibilityAttemptBundle,
   TERMINAL_ACTION_STATUSES,
   waitSpec,
 } from '@melete/contracts';
@@ -16,6 +19,7 @@ import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { action, artifact, attempt, connection, event, knowledgeRecord } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { readGenerations, requireGenerations } from './generations.ts';
 import type { JobRow } from './service.ts';
 
 export const TRANSCRIPT_MAX_MESSAGES = 100;
@@ -178,7 +182,11 @@ export async function buildBundle(
   attemptIdentity: { id: string; epoch: number; revision: number; token: string },
   model: AttemptBundle['model'],
   afterSeq: number,
-): Promise<AttemptBundle> {
+  expected?: ContextGenerations,
+): Promise<ResponsibilityAttemptBundle> {
+  const generations = expected
+    ? await requireGenerations(tx, row.spaceId, expected)
+    : await readGenerations(tx, row.spaceId);
   const events = await tx
     .select()
     .from(event)
@@ -194,10 +202,65 @@ export async function buildBundle(
     .from(attempt)
     .where(and(eq(attempt.jobId, row.id), isNotNull(attempt.endedAt)))
     .orderBy(desc(attempt.epoch));
-  const history = assembleHistory(events, attempts, afterSeq);
+  const provenance = await tx
+    .select({
+      id: attempt.id,
+      policyGeneration: attempt.policyGeneration,
+      connectionGenerations: attempt.connectionGenerations,
+    })
+    .from(attempt)
+    .where(eq(attempt.jobId, row.id));
+  const contextMatches = (entry: {
+    policyGeneration: number;
+    connectionGenerations: Record<string, number>;
+  }) =>
+    entry.policyGeneration === generations.policy_generation &&
+    Object.entries(entry.connectionGenerations).every(
+      ([id, generation]) => generations.connection_generations[id] === generation,
+    );
+  const currentAttempts = new Set(provenance.filter(contextMatches).map((entry) => entry.id));
+  const usableEvents = events.flatMap((entry) => {
+    const payload = jsonObject.parse(entry.payload);
+    const current = entry.attemptId
+      ? currentAttempts.has(entry.attemptId)
+      : generations.policy_generation === 0;
+    if (entry.type === 'tool_result' && !current) {
+      const result = toolResult.parse(payload);
+      // Keep the completed identity to prevent replay, while discarding revoked context bytes.
+      return [
+        {
+          ...entry,
+          payload: {
+            call_id: result.call_id,
+            ok: result.ok,
+            result: { context_invalidated: true },
+          },
+        },
+      ];
+    }
+    if (entry.type === 'approval_decided' && payload.decision === 'approved' && !current) return [];
+    if (entry.type === 'notice' && payload.kind === 'trigger_event') {
+      const source = jsonObject.safeParse(payload.event);
+      if (
+        source.success &&
+        (source.data.kind === 'connector_event' || source.data.kind === 'operation_event')
+      ) {
+        if ((source.data.policy_generation ?? 0) !== generations.policy_generation) return [];
+        if (
+          typeof source.data.connection_id === 'string' &&
+          generations.connection_generations[source.data.connection_id] !==
+            (source.data.connection_generation ?? 0)
+        )
+          return [];
+      }
+    }
+    return [entry];
+  });
+  const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
   const constraints = jobConstraints.parse(row.constraints);
   const wait = waitSpec.parse(row.wait);
-  return attemptBundle.parse({
+  return responsibilityAttemptBundle.parse({
+    ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
       title: row.title,

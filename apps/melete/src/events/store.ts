@@ -1,4 +1,4 @@
-import type { EventType, JsonObject } from '@melete/contracts';
+import type { JsonObject, ResponsibilityEvent } from '@melete/contracts';
 import { eq, sql } from 'drizzle-orm';
 import { event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -6,7 +6,7 @@ import type { Transaction } from '../db/transaction.ts';
 export type EventWrite = {
   jobId?: string | null;
   attemptId?: string | null;
-  type: EventType;
+  type: ResponsibilityEvent['type'];
   payload?: JsonObject;
   dedupKey: string;
 };

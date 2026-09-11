@@ -2,6 +2,7 @@ import {
   type AttemptBundle,
   type AttemptOutcome,
   attemptOutcome,
+  type ContextInvalidated,
   dedupKey,
   type EventSink,
   type JsonObject,
@@ -58,6 +59,7 @@ export type StubStep = z.infer<typeof stepSchema>;
 export type StubScript = z.infer<typeof scriptSchema>;
 
 export type StubRuntimeOptions = {
+  onContextInvalidated?: (control: ContextInvalidated) => void | Promise<void>;
   /** A scripted fake effect. No provider or connector is contacted by the stub. */
   onTool?: (
     callId: string,
@@ -119,6 +121,10 @@ async function waitFor(
 /** Deterministic disposable runtime used by the service integration suite. */
 export class StubRuntimeAdapter implements RuntimeAdapter {
   constructor(private readonly options: StubRuntimeOptions = {}) {}
+
+  contextInvalidated(control: ContextInvalidated) {
+    return this.options.onContextInvalidated?.(control);
+  }
 
   async capabilities(): Promise<RuntimeCapabilities> {
     return { streaming: true, tools: true, interrupt: true, version: 'stub/1' };

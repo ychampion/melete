@@ -1,12 +1,14 @@
 import {
-  type AttemptBundle,
   type AttemptOutcome,
   attemptOutcome,
   attemptUsage,
   type CapabilityClaims,
+  type ContextAwareRuntimeAdapter,
+  type ContextInvalidated,
   dedupKey,
   type JsonObject,
   jobBudget,
+  type ResponsibilityAttemptBundle,
   type RuntimeAdapter,
   type RuntimeEvent,
   runtimeEvent,
@@ -23,6 +25,7 @@ import { newId } from '../ids.ts';
 import { buildBundle, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { requireCurrentAttempt } from './fence.ts';
+import { readGenerations, requireGenerations } from './generations.ts';
 import { type AttemptWake, QUEUES, RECOVERY_SCAN_SECONDS } from './queue.ts';
 import type { JobRow, JobService } from './service.ts';
 
@@ -37,7 +40,7 @@ export type RunnerOptions = {
   heartbeatMs?: number;
   leaseMs?: number;
 };
-export type ClaimedAttempt = { bundle: AttemptBundle; claims: CapabilityClaims };
+export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
 
 class AttemptBudgetExceeded extends Error {}
 
@@ -45,7 +48,7 @@ class AttemptBudgetExceeded extends Error {}
 export class AttemptRunner {
   private readonly active = new Map<
     string,
-    { attemptId: string; controller: AbortController; done: Promise<void> }
+    { jobId: string; attemptId: string; controller: AbortController; done: Promise<void> }
   >();
   private workerStarted = false;
   /** Wait registration is supplied by the trigger service, inside the outcome transaction. */
@@ -118,6 +121,7 @@ export class AttemptRunner {
         model: this.options.model ?? 'script',
         fallback: null,
       };
+      const generations = await readGenerations(tx, row.spaceId);
       const bundle = await buildBundle(
         tx,
         row,
@@ -129,12 +133,15 @@ export class AttemptRunner {
         },
         model,
         previous?.inputCursor ?? 0,
+        generations,
       );
       await tx.insert(attempt).values({
         id: attemptId,
         jobId: row.id,
         epoch,
         revision: row.revision,
+        policyGeneration: generations.policy_generation,
+        connectionGenerations: generations.connection_generations,
         runtimeVersion: capabilities.version,
         provider: model.provider,
         model: model.model,
@@ -469,6 +476,10 @@ export class AttemptRunner {
           const parsed = attemptOutcome.safeParse(
             (committed?.payload as JsonObject | undefined)?.outcome,
           );
+          await requireGenerations(tx, row.spaceId, {
+            policy_generation: execution.policyGeneration,
+            connection_generations: execution.connectionGenerations,
+          });
           if (parsed.success && execution.revision === row.revision)
             await this.finish(tx, row, execution.id, parsed.data);
           else await this.lose(tx, row, execution.id, 'lease_expired');
@@ -509,9 +520,21 @@ export class AttemptRunner {
   }
 
   interrupt(jobId: string, attemptId?: string): void {
-    const active = this.active.get(jobId);
-    if (active && (!attemptId || active.attemptId === attemptId))
-      active.controller.abort(new Error('Attempt interrupted'));
+    for (const active of this.active.values())
+      if (active.jobId === jobId && (!attemptId || active.attemptId === attemptId))
+        active.controller.abort(new Error('Attempt interrupted'));
+  }
+
+  async invalidateContext(control: ContextInvalidated): Promise<void> {
+    const active = this.active.get(control.attempt_id);
+    if (active?.jobId === control.job_id) active.controller.abort(control);
+    try {
+      await (this.runtime as ContextAwareRuntimeAdapter).contextInvalidated?.(control);
+    } catch {
+      process.stderr.write(
+        `runtime context invalidation acknowledgement failed for ${control.attempt_id}\n`,
+      );
+    }
   }
 
   async handleWake(wake: AttemptWake): Promise<void> {
@@ -523,7 +546,13 @@ export class AttemptRunner {
     const done = new Promise<void>((resolve) => {
       finished = resolve;
     });
-    this.active.set(claims.job_id, { attemptId: claims.attempt_id, controller, done });
+    // A replacement can start between a fence commit and delivery of its predecessor's abort.
+    this.active.set(claims.attempt_id, {
+      jobId: claims.job_id,
+      attemptId: claims.attempt_id,
+      controller,
+      done,
+    });
     let heartbeatBusy = false;
     const heartbeat = setInterval(() => {
       if (heartbeatBusy) return;
@@ -585,8 +614,8 @@ export class AttemptRunner {
       clearInterval(heartbeat);
       if (timeout) clearTimeout(timeout);
       controller.signal.removeEventListener('abort', abortListener);
-      if (this.active.get(claims.job_id)?.controller === controller)
-        this.active.delete(claims.job_id);
+      if (this.active.get(claims.attempt_id)?.controller === controller)
+        this.active.delete(claims.attempt_id);
       finished();
     }
   }

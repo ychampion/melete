@@ -4,6 +4,7 @@ import { errorResponse } from './api.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { job } from './entities.ts';
 import { apiEvent } from './events.ts';
+import { attemptBundle, type RuntimeAdapter } from './runtime.ts';
 
 export const submissionId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/);
 export const inputDigest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -96,6 +97,7 @@ export const backgroundOperation = z.object({
 export const operationList = z.object({ operations: z.array(backgroundOperation) });
 
 export const responsibilityEvent = apiEvent.extend({
+  type: apiEvent.shape.type.or(z.literal('context_invalidated')),
   cursor: z.number().int().nonnegative(),
   epoch: z.number().int().nonnegative().nullable(),
 });
@@ -127,4 +129,44 @@ export const eventRetentionGap = z.object({
   reason: z.literal('retention'),
   after: z.number().int().nonnegative(),
   retained_after: z.number().int().nonnegative(),
+});
+
+export const contextGenerations = z.object({
+  policy_generation: z.number().int().nonnegative(),
+  connection_generations: z.record(z.string(), z.number().int().nonnegative()),
+});
+export type ContextGenerations = z.infer<typeof contextGenerations>;
+export const responsibilityAttemptBundle = attemptBundle.extend(contextGenerations.shape);
+export type ResponsibilityAttemptBundle = z.infer<typeof responsibilityAttemptBundle>;
+export const contextInvalidated = z.object({
+  type: z.literal('context_invalidated'),
+  job_id: prefixedId(ID_PREFIXES.job),
+  attempt_id: prefixedId(ID_PREFIXES.attempt),
+  policy_generation: z.number().int().nonnegative(),
+  connection_id: prefixedId(ID_PREFIXES.connection).nullable(),
+  reason: z.enum(['credential_switched', 'connection_revoked', 'policy_changed']),
+});
+export type ContextInvalidated = z.infer<typeof contextInvalidated>;
+export interface ContextAwareRuntimeAdapter extends RuntimeAdapter {
+  contextInvalidated?(control: ContextInvalidated): void | Promise<void>;
+}
+export const connectionLifecycle = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('revoke'), expected_generation: z.number().int().nonnegative() }),
+  z.object({
+    kind: z.literal('switch'),
+    expected_generation: z.number().int().nonnegative(),
+    secret_ref: prefixedId(ID_PREFIXES.secret),
+  }),
+]);
+export type ConnectionLifecycle = z.infer<typeof connectionLifecycle>;
+export const connectionGeneration = z.object({
+  connection_id: prefixedId(ID_PREFIXES.connection),
+  generation: z.number().int().nonnegative(),
+  policy_generation: z.number().int().nonnegative(),
+  status: z.string(),
+});
+export const policyChange = z.object({ expected_generation: z.number().int().nonnegative() });
+export const policyGeneration = z.object({
+  space_id: prefixedId(ID_PREFIXES.space),
+  policy_generation: z.number().int().nonnegative(),
 });
