@@ -108,7 +108,7 @@ state machine uses`; transition behavior is tested in
 `packages/contracts/src/job-state.test.ts`. This table is interface guidance,
 not a claim that every control has shipped.
 
-## Reproduce the examples without an application server
+## Reproduce the examples without a deployed service
 
 From the repository root after installing dependencies:
 
