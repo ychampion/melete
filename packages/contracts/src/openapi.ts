@@ -67,6 +67,7 @@ import {
   trustRequest,
   trustResolution,
 } from './provenance.ts';
+import { createReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import {
   backgroundOperation,
   connectionGeneration,
@@ -133,6 +134,7 @@ export function buildOpenApiDocument() {
         { name: 'jobs' },
         { name: 'attempts' },
         { name: 'events' },
+        { name: 'reactions' },
         { name: 'actions' },
         { name: 'approvals' },
         { name: 'connections' },
@@ -621,6 +623,40 @@ export function buildOpenApiDocument() {
               '202': jsonResponse('Accepted; the job is queued for its next attempt', jobResponse),
               '409': problem('The job is not waiting for input'),
             },
+          },
+        },
+
+        '/messages/{messageId}/reactions': {
+          post: {
+            tags: ['reactions'],
+            summary: 'React to a message with one emoji',
+            description:
+              'A message is an event, and its id is that event seq. The reaction is persisted and streamed ' +
+              'like any other event, and a client draws it on the message bubble rather than as a row of its ' +
+              'own. A thumbs-down from a person counts the result it lands on as two unread ones; a thumbs-up ' +
+              'clears the unread streak. Reacting twice with the same emoji records one reaction.',
+            requestParams: idParam('messageId', 'Message id: the event seq'),
+            requestBody: json(createReactionRequest),
+            responses: {
+              '201': jsonResponse('Recorded', reactionResponse),
+              '404': problem('No such message'),
+              '409': problem('That event is not a message'),
+            },
+          },
+          get: {
+            tags: ['reactions'],
+            summary: 'The reactions drawn on one message',
+            requestParams: idParam('messageId', 'Message id: the event seq'),
+            responses: { '200': jsonResponse('Reactions', reactionListResponse) },
+          },
+        },
+
+        '/jobs/{jobId}/reactions': {
+          get: {
+            tags: ['reactions'],
+            summary: 'Every reaction on one job stream, for a client rendering a transcript',
+            requestParams: idParam('jobId', 'Job id'),
+            responses: { '200': jsonResponse('Reactions', reactionListResponse) },
           },
         },
 

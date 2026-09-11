@@ -12,6 +12,7 @@ bug.
 - [The typed client](#the-typed-client)
 - [Authentication](#authentication)
 - [The event stream and the resume rule](#the-event-stream-and-the-resume-rule)
+- [The reaction rule](#the-reaction-rule)
 - [The approval-card rule](#the-approval-card-rule)
 - [The unknown-outcome rule](#the-unknown-outcome-rule)
 - [The inbox rule](#the-inbox-rule)
@@ -98,6 +99,52 @@ transcript is complete when it is not.
 
 Events the caller already holds are dropped by the cursor, so a replayed event
 is never rendered twice.
+
+## The reaction rule
+
+**Draw a reaction on the message it belongs to. Never as a row of its own.**
+
+A message in Melete is an event, so a message id is that event's `seq` as a
+decimal string. There is no message table: the durable event stream is the
+transcript, and a bubble on screen is one event.
+
+```ts
+await client.api.POST('/messages/{messageId}/reactions', {
+  params: { path: { messageId: String(event.seq) } },
+  body: { emoji: '👍' },
+});
+```
+
+Reactions come back on the same stream as everything else, as events of type
+`reaction` with `{ message_id, emoji, by }`. So a client that already renders
+the stream needs no second fetch: collect them by `message_id` as they arrive
+and draw them under the bubble. `GET /messages/{messageId}/reactions` and
+`GET /jobs/{jobId}/reactions` exist for a client that is not following the
+stream.
+
+`by` is `person` or `assistant`. Both are drawn the same way. The assistant
+reacts when a message needs only acknowledgement, which is what the `react` tool
+in its catalog is for: an acknowledgement is a better answer than three
+sentences manufactured to fill a reply.
+
+A system line saying "the owner reacted to a message" is exactly the noise a
+reaction exists to replace. If you find yourself adding one, the interface has
+turned an acknowledgement back into a notification.
+
+Two glyphs mean something to the service, and the rest are expression:
+
+| Emoji | From a person, on an assistant message | Why |
+|---|---|---|
+| 👎 | the result it lands on counts as two unread ones | read and wrong for them is worse news than unread |
+| 👍 | the unread streak clears | it is a read receipt, the same as opening the job |
+
+That is the only way a reaction changes anything. It never wakes a job, never
+sends anything, and never stands in for an answer to a question: a job waiting
+on `waiting_for_input` is still waiting after a thumbs-up.
+
+Reacting twice with the same emoji records one reaction, so a retry after a
+dropped connection is safe and does not push a job further into frequency
+reduction than the person pushed it.
 
 ## The approval-card rule
 

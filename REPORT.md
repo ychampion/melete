@@ -44,3 +44,48 @@ verdict written next to it", "every banned opener is actually caught when it
 opens", "the identity file is inside the 250-token cap it loads on every attempt
 against"; `apps/melete/src/runtime/style.test.ts` "never blocks: a recorder that
 throws does not fail the attempt".
+
+## 2. Reactions
+
+A reaction is an event about an event. A message id is the `seq` of the event
+that carries the message, because Melete has no message table: the durable event
+stream is the transcript and a bubble on screen is one event. That means a
+reaction replays on reconnect with the message it belongs to and needs no
+storage of its own.
+
+`packages/contracts/src/reactions.ts` adds the `reaction` event type, the emoji
+validator (a glyph, not a word), `POST /messages/{id}/reactions`,
+`GET /messages/{id}/reactions` and `GET /jobs/{id}/reactions`. The runtime
+reaches the same behaviour through the broker: `react` is in every catalog with
+effect class `read`, no connection and no approval, and the broker refuses a
+reaction aimed at another job's message.
+
+Attention: a thumbs-down from a person on an assistant message makes the result
+it lands on count as two unread ones; a thumbs-up clears the streak the way
+opening the job does. Reacting twice with the same emoji records one reaction and
+counts once, so a retry after a dropped connection is safe.
+
+The reference app draws reactions under the bubble with quiet controls that
+appear on hover or focus, never as a transcript row. The mock API implements all
+three routes. `docs/CLIENT.md` gains "The reaction rule".
+
+```
+bun run typecheck                 clean
+bun run lint                      Checked 299 files. No fixes applied.
+bun test --max-concurrency=2      930 pass, 14 todo, 0 fail, 3899 expect() calls, 75 files
+bun run openapi                   wrote packages/contracts/openapi.json
+bun run client:generate           wrote packages/client/src/schema.d.ts
+bun run compose:check             compose:check passed (12 checks)
+```
+
+Falsifier test: `apps/melete/test/integration/reactions.test.ts` "two thumbs-down
+trip the frequency reduction one cycle earlier than unread alone" — two
+background monitors on the same threshold of three, one reacted to and one left
+alone; the reacted-to one is `frequency_reduced` at cycle two while the silent
+one is still `normal`, and the silent one only gets there at cycle three.
+
+Also: "a thumbs-up clears the unread streak", "reacting twice with the same emoji
+records one reaction and counts once", "a reaction is an ordinary event:
+persisted, replayed and readable over HTTP" (asserts the SSE frame),
+`apps/melete/test/integration/broker.test.ts` "the runtime can answer a message
+with a glyph instead of prose".

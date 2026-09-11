@@ -23,6 +23,7 @@ import {
   connectionResponse,
   createConnectionRequest,
   createJobRequest,
+  createReactionRequest,
   createSpaceRequest,
   type EventType,
   type errorResponse,
@@ -43,6 +44,8 @@ import {
   postMessageRequest,
   proposeKnowledgeRequest,
   proposeKnowledgeResponse,
+  reactionListResponse,
+  reactionResponse,
   resolveActionRequest,
   retractKnowledgeRequest,
   SSE_KEEPALIVE,
@@ -293,6 +296,78 @@ export function createMockApp(deps: AppDeps) {
     const queued = store.move(jobId, { kind: 'user_input_received' }, { wait: { kind: 'none' } });
     runner.signal(jobId, { kind: 'input', text: parsed.value.text });
     return send(jobResponse, { job: queued }, 202);
+  });
+
+  /**
+   * A message is an event, so its id is that event's seq. Reactions are events
+   * too, which is why nothing here keeps a second list: the stream already has
+   * them, and a client draws them on the bubble by matching `message_id`.
+   */
+  const reactionsOn = (messageId: string) =>
+    store
+      .eventsAfter(0, { types: ['reaction'], limit: 1000 })
+      .events.filter((entry) => (entry.payload as { message_id?: string }).message_id === messageId)
+      .map((entry) => ({
+        message_id: messageId,
+        emoji: (entry.payload as { emoji: string }).emoji,
+        by: (entry.payload as { by: string }).by,
+        job_id: entry.job_id,
+        seq: entry.seq,
+        created_at: entry.created_at,
+      }));
+
+  app.post('/messages/:messageId/reactions', async (c) => {
+    const messageId = c.req.param('messageId');
+    const target = store
+      .eventsAfter(0, { limit: 10_000 })
+      .events.find((entry) => String(entry.seq) === messageId);
+    if (!target) return reject(404, fail('not_found', 'no such message'));
+    if (target.type === 'reaction')
+      return reject(409, fail('not_reactable', 'a reaction is not a message'));
+    const parsed = await parseBody(c.req.raw, createReactionRequest);
+    if (!parsed.ok) return parsed.response;
+    const already = reactionsOn(messageId).find(
+      (entry) => entry.emoji === parsed.value.emoji && entry.by === parsed.value.by,
+    );
+    if (already) return send(reactionResponse, { reaction: already }, 201);
+    const written = store.append({
+      type: 'reaction',
+      job_id: target.job_id,
+      payload: { message_id: messageId, emoji: parsed.value.emoji, by: parsed.value.by },
+    });
+    return send(
+      reactionResponse,
+      {
+        reaction: {
+          message_id: messageId,
+          emoji: parsed.value.emoji,
+          by: parsed.value.by,
+          job_id: written.job_id,
+          seq: written.seq,
+          created_at: written.created_at,
+        },
+      },
+      201,
+    );
+  });
+
+  app.get('/messages/:messageId/reactions', (c) =>
+    send(reactionListResponse, { reactions: reactionsOn(c.req.param('messageId')) }),
+  );
+
+  app.get('/jobs/:jobId/reactions', (c) => {
+    const jobId = c.req.param('jobId');
+    const reactions = store
+      .eventsAfter(0, { jobId, types: ['reaction'], limit: 1000 })
+      .events.map((entry) => ({
+        message_id: (entry.payload as { message_id: string }).message_id,
+        emoji: (entry.payload as { emoji: string }).emoji,
+        by: (entry.payload as { by: string }).by,
+        job_id: entry.job_id,
+        seq: entry.seq,
+        created_at: entry.created_at,
+      }));
+    return send(reactionListResponse, { reactions });
   });
 
   app.get('/jobs/:jobId/attempts', (c) => {

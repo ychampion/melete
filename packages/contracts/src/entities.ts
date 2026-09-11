@@ -269,6 +269,8 @@ export const EVENT_TYPES = [
   'approval_decided',
   'knowledge_changed',
   'notice',
+  /** A glyph on a message, from either side. Persisted and streamed like the rest. */
+  'reaction',
 ] as const;
 export const eventType = z.enum(EVENT_TYPES);
 export type EventType = z.infer<typeof eventType>;

@@ -21,6 +21,7 @@ import { mountJobs } from './api/jobs.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
+import { mountReactions } from './api/reactions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
@@ -34,6 +35,7 @@ import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
 import { QuestionService } from './jobs/questions.ts';
 import { startQueue } from './jobs/queue.ts';
+import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
@@ -61,6 +63,7 @@ export type AppDeps = {
   policy?: PolicyService;
   attention?: AttentionService;
   questions?: QuestionService;
+  reactions?: ReactionService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -93,7 +96,9 @@ export function createApp(deps: AppDeps) {
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
-  if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
+  const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);
+  if (deps.jobs && attention) mountAttention(app, attention);
+  if (deps.jobs) mountReactions(app, deps.reactions ?? new ReactionService(deps.jobs, attention));
   if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);

@@ -21,9 +21,13 @@ import {
   knowledgeRecordResponse,
   knowledgeSearchResponse,
   proposeKnowledgeResponse,
+  reactionListResponse,
+  reactionResponse,
   SCHEMA_VERSION,
   skillListResponse,
   spaceListResponse,
+  THUMBS_DOWN,
+  THUMBS_UP,
 } from '@melete/contracts';
 import { createMock } from './index.ts';
 import type { Runner } from './runner.ts';
@@ -522,6 +526,69 @@ describe('the runner uses the real state machine', () => {
         (event.payload as { status?: string }).status === 'dispatched',
     );
     expect(dispatches).toHaveLength(1);
+  });
+});
+
+describe('reactions', () => {
+  /** The mock's transcript is its event log, so a message id is an event seq. */
+  const aMessage = async (): Promise<{ jobId: string; messageId: string }> => {
+    const created = await call(mock.app, 'POST', '/jobs', {
+      space_id: mock.spaceId,
+      title: 'Chase the heating repair',
+      objective: 'Chase the heating repair by email.',
+    });
+    const jobId = jobResponse.parse(created.json).job.id;
+    const events = eventPage.parse(
+      (await call(mock.app, 'GET', `/jobs/${jobId}/events?limit=1000`)).json,
+    ).events;
+    const message = events.find((event) => event.type !== 'reaction');
+    if (!message) throw new Error('the mock produced no message');
+    return { jobId, messageId: String(message.seq) };
+  };
+
+  test('a reaction is recorded, streamed as an event, and listed on its message', async () => {
+    const { jobId, messageId } = await aMessage();
+    const posted = await call(mock.app, 'POST', `/messages/${messageId}/reactions`, {
+      emoji: THUMBS_UP,
+    });
+    expect(posted.status).toBe(201);
+    const parsed = reactionResponse.parse(posted.json).reaction;
+    expect(parsed.message_id).toBe(messageId);
+    expect(parsed.by).toBe('person');
+    expect(parsed.job_id).toBe(jobId);
+
+    const listed = await call(mock.app, 'GET', `/messages/${messageId}/reactions`);
+    expect(reactionListResponse.parse(listed.json).reactions).toHaveLength(1);
+
+    const perJob = await call(mock.app, 'GET', `/jobs/${jobId}/reactions`);
+    expect(reactionListResponse.parse(perJob.json).reactions).toHaveLength(1);
+
+    const events = eventPage.parse(
+      (await call(mock.app, 'GET', `/jobs/${jobId}/events?limit=1000`)).json,
+    ).events;
+    expect(events.filter((event) => event.type === 'reaction')).toHaveLength(1);
+  });
+
+  test('reacting twice with the same emoji records one reaction', async () => {
+    const { messageId } = await aMessage();
+    await call(mock.app, 'POST', `/messages/${messageId}/reactions`, { emoji: THUMBS_DOWN });
+    await call(mock.app, 'POST', `/messages/${messageId}/reactions`, { emoji: THUMBS_DOWN });
+    const listed = await call(mock.app, 'GET', `/messages/${messageId}/reactions`);
+    expect(reactionListResponse.parse(listed.json).reactions).toHaveLength(1);
+  });
+
+  test('a message that does not exist is a 404, and a word is not an emoji', async () => {
+    const missing = await call(mock.app, 'POST', '/messages/999999/reactions', {
+      emoji: THUMBS_UP,
+    });
+    expect(missing.status).toBe(404);
+    expect(errorResponse.parse(missing.json).error.code).toBe('not_found');
+
+    const { messageId } = await aMessage();
+    const word = await call(mock.app, 'POST', `/messages/${messageId}/reactions`, {
+      emoji: 'thumbsup',
+    });
+    expect(word.status).toBe(400);
   });
 });
 

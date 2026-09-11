@@ -38,6 +38,9 @@ const broker: BrokerOperations = {
   async get() {
     throw new BrokerFault('action_not_found');
   },
+  async react(_c, request) {
+    return { message_id: request.message_id, emoji: request.emoji };
+  },
   async decide() {
     return { decision: 'approved' };
   },

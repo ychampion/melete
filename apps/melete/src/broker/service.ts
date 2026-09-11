@@ -17,7 +17,11 @@ import {
   type OriginWarning,
   originWarnings,
   type ProposeActionRequest,
+  REACT_TOOL_NAME,
+  type ReactRequest,
   type Receipt,
+  reactRequest,
+  reactToolSchema,
   type ToolSpec,
   type VerifyResult,
   verifyResult,
@@ -178,13 +182,51 @@ export class BrokerService implements BrokerOperations {
     return { tool, connector };
   }
 
+  /**
+   * Answer a message with a glyph. It writes one event on this job's own
+   * stream, touches nothing outside the installation, and is refused for a
+   * message belonging to another job: a reaction is still a statement about
+   * something, and the runtime may only speak about its own responsibility.
+   */
+  async react(claims: CapabilityClaims, request: ReactRequest) {
+    const value = reactRequest.parse(request);
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, claims.job_id);
+      await checkAttempt(tx, job, claims);
+      const [target] = await tx`select seq, job_id, type from event
+        where seq = ${Number(value.message_id)}`;
+      if (!target || target.job_id !== job.id || target.type === 'reaction')
+        throw new BrokerFault('action_not_found');
+      await appendEvent(
+        tx,
+        job.id,
+        claims.attempt_id,
+        'reaction',
+        { message_id: value.message_id, emoji: value.emoji, by: 'assistant' },
+        `reaction:${value.message_id}:assistant:${value.emoji}`,
+      );
+      return { message_id: value.message_id, emoji: value.emoji };
+    });
+  }
+
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
       const connections = await tx`select id, provider, scopes from connection
         where space_id = ${job.space_id} and status = 'active' order by id`;
-      const tools: ToolSpec[] = [];
+      // Acknowledgement is always available: it belongs to no connection, needs
+      // no scope, and cannot change anything outside this installation.
+      const tools: ToolSpec[] = [
+        {
+          name: REACT_TOOL_NAME,
+          description:
+            'React to a message with one emoji instead of replying, when the message needs only acknowledgement.',
+          input_schema: reactToolSchema as unknown as ToolSpec['input_schema'],
+          effect_class: 'read',
+          connection_id: null,
+        },
+      ];
       for (const connection of connections) {
         const connector = this.options.connectors.get(connection.id);
         if (!connector || connector.manifest.provider !== connection.provider) continue;
