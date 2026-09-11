@@ -86,6 +86,10 @@ export const createReactionRequest = z.object({
 });
 export type CreateReactionRequest = z.infer<typeof createReactionRequest>;
 
+/** Public callers supply only the glyph; the authenticated route assigns identity. */
+export const personReactionRequest = z.strictObject({ emoji: reactionEmoji });
+export type PersonReactionRequest = z.infer<typeof personReactionRequest>;
+
 export const reactionResponse = z.object({ reaction });
 export const reactionListResponse = z.object({ reactions: z.array(reaction) });
 export type ReactionListResponse = z.infer<typeof reactionListResponse>;

@@ -23,7 +23,6 @@ import {
   connectionResponse,
   createConnectionRequest,
   createJobRequest,
-  createReactionRequest,
   createSpaceRequest,
   type EventType,
   type errorResponse,
@@ -41,6 +40,7 @@ import {
   knowledgeRecordResponse,
   knowledgeSearchQuery,
   knowledgeSearchResponse,
+  personReactionRequest,
   postMessageRequest,
   proposeKnowledgeRequest,
   proposeKnowledgeResponse,
@@ -324,16 +324,16 @@ export function createMockApp(deps: AppDeps) {
     if (!target) return reject(404, fail('not_found', 'no such message'));
     if (target.type === 'reaction')
       return reject(409, fail('not_reactable', 'a reaction is not a message'));
-    const parsed = await parseBody(c.req.raw, createReactionRequest);
+    const parsed = await parseBody(c.req.raw, personReactionRequest);
     if (!parsed.ok) return parsed.response;
     const already = reactionsOn(messageId).find(
-      (entry) => entry.emoji === parsed.value.emoji && entry.by === parsed.value.by,
+      (entry) => entry.emoji === parsed.value.emoji && entry.by === 'person',
     );
     if (already) return send(reactionResponse, { reaction: already }, 201);
     const written = store.append({
       type: 'reaction',
       job_id: target.job_id,
-      payload: { message_id: messageId, emoji: parsed.value.emoji, by: parsed.value.by },
+      payload: { message_id: messageId, emoji: parsed.value.emoji, by: 'person' },
     });
     return send(
       reactionResponse,
@@ -341,7 +341,7 @@ export function createMockApp(deps: AppDeps) {
         reaction: {
           message_id: messageId,
           emoji: parsed.value.emoji,
-          by: parsed.value.by,
+          by: 'person',
           job_id: written.job_id,
           seq: written.seq,
           created_at: written.created_at,

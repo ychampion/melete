@@ -345,4 +345,38 @@ withDb('reactions', () => {
     const perJob = await service.request(`/jobs/${theirs.id}/reactions`, { headers: { cookie } });
     expect(perJob.status).toBe(404);
   }, 90_000);
+  test('a client cannot sign a reaction as the assistant', async () => {
+    const row = await monitor('Tracker, impersonated');
+    await wake(row);
+    const message = await lastAssistantMessage(row.id);
+    const service = app();
+    const cookie = await signIn(service);
+
+    // `by` is not a field a caller may send; the schema refuses the whole body
+    // rather than ignoring the part it does not like.
+    const spoofed = await service.request(`/messages/${message}/reactions`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji: THUMBS_DOWN, by: 'assistant' }),
+    });
+    expect(spoofed.status).toBe(400);
+    expect(
+      await fixture().handle
+        .sql`select seq from event where type = 'reaction' and job_id = ${row.id}`,
+    ).toHaveLength(0);
+
+    // The same glyph without the claim is recorded as the person, and the
+    // attention counters move the way a person's reaction moves them.
+    const honest = await service.request(`/messages/${message}/reactions`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji: THUMBS_DOWN }),
+    });
+    expect(honest.status).toBe(201);
+    const parsed = reactionContract.parse(
+      ((await honest.json()) as { reaction: unknown }).reaction,
+    );
+    expect(parsed.by).toBe('person');
+    expect((await fixture().jobs.get(row.id)).unreadResults).toBe(2);
+  }, 90_000);
 });

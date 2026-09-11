@@ -2601,11 +2601,6 @@ export interface paths {
             requestBody?: {
                 content: {
                     "application/json": {
-                        /**
-                         * @default person
-                         * @enum {string}
-                         */
-                        by?: "person" | "assistant";
                         emoji: string;
                     };
                 };

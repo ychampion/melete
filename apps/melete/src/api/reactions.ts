@@ -1,4 +1,4 @@
-import { createReactionRequest } from '@melete/contracts';
+import { personReactionRequest } from '@melete/contracts';
 import type { Context, Hono } from 'hono';
 import type { ReactionScope, ReactionService } from '../jobs/reactions.ts';
 import { ServiceError } from './errors.ts';
@@ -26,9 +26,12 @@ export function mountReactions(
 
   app.post('/messages/:id/reactions', async (c) => {
     const text = await c.req.text();
-    const input = createReactionRequest.parse(text ? JSON.parse(text) : {});
+    const input = personReactionRequest.parse(text ? JSON.parse(text) : {});
     const scope = await scopeFor(c);
-    return c.json({ reaction: await reactions.add(scope, c.req.param('id'), input) }, 201);
+    return c.json(
+      { reaction: await reactions.add(scope, c.req.param('id'), { ...input, by: 'person' }) },
+      201,
+    );
   });
 
   app.get('/messages/:id/reactions', async (c) =>

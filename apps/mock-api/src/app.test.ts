@@ -569,6 +569,17 @@ describe('reactions', () => {
     expect(events.filter((event) => event.type === 'reaction')).toHaveLength(1);
   });
 
+  test('the public mock route rejects assistant attribution without writing', async () => {
+    const { messageId } = await aMessage();
+    const spoofed = await call(mock.app, 'POST', `/messages/${messageId}/reactions`, {
+      emoji: THUMBS_UP,
+      by: 'assistant',
+    });
+    expect(spoofed.status).toBe(400);
+    const listed = await call(mock.app, 'GET', `/messages/${messageId}/reactions`);
+    expect(reactionListResponse.parse(listed.json).reactions).toHaveLength(0);
+  });
+
   test('reacting twice with the same emoji records one reaction', async () => {
     const { messageId } = await aMessage();
     await call(mock.app, 'POST', `/messages/${messageId}/reactions`, { emoji: THUMBS_DOWN });

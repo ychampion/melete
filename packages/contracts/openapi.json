@@ -3197,19 +3197,12 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 24
-                  },
-                  "by": {
-                    "default": "person",
-                    "type": "string",
-                    "enum": [
-                      "person",
-                      "assistant"
-                    ]
                   }
                 },
                 "required": [
                   "emoji"
-                ]
+                ],
+                "additionalProperties": false
               }
             }
           }

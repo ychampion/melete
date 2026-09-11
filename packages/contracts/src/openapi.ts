@@ -67,7 +67,7 @@ import {
   trustRequest,
   trustResolution,
 } from './provenance.ts';
-import { createReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
+import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import {
   backgroundOperation,
   connectionGeneration,
@@ -636,7 +636,7 @@ export function buildOpenApiDocument() {
               'own. A thumbs-down from a person counts the result it lands on as two unread ones; a thumbs-up ' +
               'clears the unread streak. Reacting twice with the same emoji records one reaction.',
             requestParams: idParam('messageId', 'Message id: the event seq'),
-            requestBody: json(createReactionRequest),
+            requestBody: json(personReactionRequest),
             responses: {
               '201': jsonResponse('Recorded', reactionResponse),
               '404': problem('No such message'),

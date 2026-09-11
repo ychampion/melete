@@ -286,3 +286,13 @@ green; the groups above are the part I can state as verified.
 - `bun test apps/melete/test/integration/reactions.test.ts --max-concurrency=2`: GREEN, 7 pass, 0 fail, 43 assertions, 21.64s; cross-space add/list/listForJob return 404 with no reaction or attention write.
 - `bun run typecheck`: passed. `bunx biome check` on the four changed TypeScript files: passed after formatting.
 - `bun test --max-concurrency=2`: full suite running under `C:/Users/gamin/.melete-test.lock` before the first push; log `melete-w9-full-first.log`.
+
+## Finding 2
+
+- `266a2e0`: finding 1 committed; finding 2 reuses and finishes the preserved spoofing draft test.
+- `a client cannot sign a reaction as the assistant` and `the public mock route rejects assistant attribution without writing`: RED at 266a2e0, expected 400, received 201 in both APIs.
+- `personReactionRequest`: additive public schema; retained the existing createReactionRequest fields and assigned person identity server-side.
+- `266a2e0`, `bun test --max-concurrency=2` under the full-suite lock: 992 pass, 1 key-gated skip, 14 existing todo, 0 fail, 4099 assertions, 511.34s. Three-minute target exceeded; final run will share one throwaway Postgres through DATABASE_URL without changing fixture isolation.
+- `git -C C:/Users/gamin/melete-oss-w9 push -u origin lane/w9-product`: pushed finding 1 after the locked suite.
+- `bun test apps/melete/test/integration/reactions.test.ts apps/mock-api/src/app.test.ts --max-concurrency=2`: GREEN, 42 pass, 0 fail, 143 assertions; both preserved reaction draft tests are finished.
+- `bun run typecheck`, `bun run openapi`, `bun run client:generate`, and changed-file `biome check`: passed for finding 2.
