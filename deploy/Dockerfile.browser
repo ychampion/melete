@@ -1,0 +1,29 @@
+# The browser controller is a separate Node process, with only its own runtime
+# dependencies. No Melete configuration, credentials, or database client is copied.
+FROM node:24.14.0-bookworm-slim
+
+ENV NODE_ENV=production \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/chromium \
+    HOME=/tmp
+
+WORKDIR /app
+
+RUN npm init --yes \
+    && npm pkg set type=module \
+    && npm install --omit=dev --ignore-scripts --save-exact playwright@1.63.0 zod@4.6.2 \
+    && npx --no-install playwright install --with-deps chromium \
+    && npm cache clean --force \
+    && groupadd --gid 10003 browser \
+    && useradd --uid 10003 --gid 10003 --no-create-home browser \
+    && mkdir /space \
+    && chown 10003:10003 /space
+
+COPY apps/melete/src/workers/browser/ apps/melete/src/workers/browser/
+# The egress relay shares the web connector's public-address predicate. Its
+# contract and connector imports are types and are erased by Node.
+COPY apps/melete/src/connectors/web.ts apps/melete/src/connectors/web.ts
+COPY apps/melete/src/connectors/types.ts apps/melete/src/connectors/types.ts
+
+USER 10003:10003
+
+CMD ["node", "--experimental-transform-types", "apps/melete/src/workers/browser/entry.ts"]

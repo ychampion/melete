@@ -109,3 +109,12 @@
 - Test `browser episode privacy against Postgres and pg-boss`: all 4 integration tests passed in `.agents/w10b-locked-full.log`, including restart, late cancellation receipts, call-ID shadowing, and unchanged original execution input.
 - Test `browserEventForPersistence`: browser arguments and result content are removed only from durable event copies; durable browser identity controls later result redaction, while unrelated tools retain their existing behavior.
 - Test `recipe persistence boundary`: authentication labels, factors, literal values, and rejected-data error contents cannot enter the recipe store; the full fixture matrix also asserts that submitted field values are absent from stored recipes.
+
+## Slice 5 verification
+
+- SHA `c64a386`: durable browser-event privacy committed and pushed to `origin/lane/w10b-browser`.
+- Command `bun run browser:compose:check`: all 11 checks passed; the worker uses uid 10003, one space subpath, an internal control network, a separate internet network, and no database, vault, provider, runtime, or Docker-socket access configuration.
+- Test `browser-compose-check.test.ts`: all 34 configuration and mutation checks passed in `.agents/w10b-locked-full.log`; command `bun run compose:check` also passed all 12 existing checks.
+- Command `docker compose`: unavailable on this Windows host; `docs/browser-worker.md` and `docs/THREAT-MODEL.md` distinguish these static checks from the unexecuted image, volume-permission, and Linux network checks.
+- Test `worker receives OS essentials without database, vault or provider credentials`: passed; Windows development remains a same-user process, while production requires an explicitly configured isolated endpoint.
+- Test `takeover`: fencing is implemented, but interactive sign-in remains unsupported because unbrokered networking stays closed during human control; the documentation states this limit and the native URL-encoded POST boundary.

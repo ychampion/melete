@@ -24,6 +24,7 @@
     "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest packages/runtime-hermes/tests -q",
     "openapi": "bun run packages/contracts/scripts/openapi.ts",
     "compose:check": "bun run deploy/scripts/compose-check.ts",
+    "browser:compose:check": "bun run deploy/scripts/browser-compose-check.ts",
     "conformance": "bun run conformance/run.ts",
     "conformance:memory": "bun run conformance/memory/run.ts",
     "knowledge:lint": "bun run packages/knowledge/src/cli/lint.ts",
