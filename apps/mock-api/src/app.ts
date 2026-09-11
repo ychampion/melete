@@ -75,6 +75,7 @@ export type AppDeps = {
   runner: Runner;
   scenarios: Scenario[];
   spaceId: string;
+  experienceSpeed?: number;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -87,7 +88,6 @@ const KEEPALIVE_MS = 20_000;
 export function createMockApp(deps: AppDeps) {
   const { store, runner, scenarios } = deps;
   const app = new Hono();
-  mountExperienceMock(app);
 
   // The reference client is served from another port in development, and the
   // session cookie has to survive that, so the origin is reflected rather than
@@ -97,10 +97,12 @@ export function createMockApp(deps: AppDeps) {
     cors({
       origin: (origin) => origin ?? '*',
       credentials: true,
-      allowHeaders: ['content-type', 'accept', 'last-event-id'],
-      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['content-type', 'accept', 'last-event-id', 'idempotency-key'],
+      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
+
+  mountExperienceMock(app, deps);
 
   /**
    * Parse an outgoing body with the contract before it leaves. A failure here is

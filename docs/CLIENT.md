@@ -1,250 +1,208 @@
-# Building a client
+# Building a personal interface
 
-Melete is an API. The web client in `apps/web` is one consumer of it, not the
-product interface; anything that client can do, a script can do, and this
-document is what a second client needs to know before it starts.
+Use the experience operations in [`packages/contracts/src/experience.ts`](../packages/contracts/src/experience.ts).
+They translate saved work into conversations, answers, cards, receipts, permissions,
+plans, and the one decision the person needs to make. The existing lower-level API
+remains additive and compatible for scripts; it is not the presentation contract.
 
-Everything here is generated from or checked against
-[`packages/contracts/openapi.json`](../packages/contracts/openapi.json). If this
-page and the document ever disagree, the document is right and this page is a
-bug.
+The source of truth is [`packages/contracts/openapi.json`](../packages/contracts/openapi.json).
+Run `bun run openapi` and `bun run client:generate` after contract additions.
+Every experience response is either the documented success shape or
+`{ status: 'not_available', reason: string }`. Hide unavailable surfaces and retain
+the reason where the person explicitly requested the feature. Never manufacture
+events, receipts, browser previews, or successful actions.
 
-- [The typed client](#the-typed-client)
-- [Authentication](#authentication)
-- [The event stream and the resume rule](#the-event-stream-and-the-resume-rule)
-- [The approval-card rule](#the-approval-card-rule)
-- [The unknown-outcome rule](#the-unknown-outcome-rule)
-- [The inbox rule](#the-inbox-rule)
-- [The five states a job can wait in](#the-five-states-a-job-can-wait-in)
-- [Developing against the mock](#developing-against-the-mock)
+## No backend vocabulary in the interface
 
-## The typed client
+Render the adapter's text and typed fields. Do not fetch internal records to build
+cards. Tool names, arguments, raw JSON, hashes, model identities, token counters,
+logs, internal handles, and model reasoning do not belong in the interface.
+Opaque ids, versions, and undo handles are request parameters, not labels.
+The `say` step is a short statement of intended action; it is never reasoning.
+
+Permission cards come from the saved action being reviewed. Never reconstruct
+permission from an answer, or substitute fresh permission bytes after a stale
+decision. Display `what`, `why`, and the offered choices. For sending, show `draft` in full, including every recipient in `recipient`, `cc`, and `bcc`; the result-card preview may be shortened. A message that cannot be reviewed safely offers only denial. Sources identify the
+connected app and the readable source title; `connection_id` selects its logo.
+
+## Authentication and scope
+
+v0.1 has one owner. Set up or sign in with the existing password endpoints;
+the client sends the `HttpOnly` session cookie with `credentials: 'include'`.
+Experience routes derive their personal space from that session. Requests cannot
+supply an owner or space id. An item from another space is unavailable.
+Browser mutations must originate from the same origin as the API.
+
+For email sign-in, configure `MELETE_PUBLIC_URL` and connect the owner's own
+mailbox with send access. `POST /signin/magic-link` accepts `{ email }`. The
+connector sends a link to that same mailbox; it cannot send sign-in mail to a
+different recipient. The link expires in ten minutes and works once. Revoking or
+replacing the connection invalidates its outstanding links. Requests are limited
+to one per minute and five per hour for the owner.
+
+The link carries its token in the URL fragment. Read it on the sign-in page,
+remove the fragment from browser history, and post `{ token }` to
+`/signin/magic-link/consume`; the response sets the normal session cookie.
+Never place the token in a query string or store it in browser persistence.
+Google and Apple sign-in return `not_available`.
+
+## Conversations and the composer
 
 ```ts
-import { createMeleteClient, subscribeEvents } from '@melete/client';
+import { createMeleteClient } from '@melete/client';
 
-const client = createMeleteClient({ baseUrl: 'http://localhost:8787' });
-
-const { data, error } = await client.api.POST('/jobs', {
-  body: {
-    space_id,
-    title: 'Chase the heating repair',
-    objective: 'Ask the building manager for a date an engineer is booked.',
-  },
+const client = createMeleteClient({ baseUrl: 'http://localhost:3200' });
+const { data } = await client.api.POST('/conversations', {
+  body: { title: 'Plan dinner', agent_id: selectedAgent.id },
 });
-```
-
-`client.api` is an [`openapi-fetch`](https://openapi-ts.dev) client typed by
-`packages/client/src/schema.d.ts`, which `bun run client:generate` writes from
-`openapi.json`. A test regenerates it and compares the bytes, so a client built
-on a stale contract cannot reach a green build.
-
-Requests never throw on a non-2xx status. Every call returns `{ data, error }`,
-and `error` is the contract's error body: `{ error: { code, message, detail? } }`.
-`errorMessage(error)` pulls the sentence out of it, so a screen never has to
-invent wording for a failure the service already described.
-
-## Authentication
-
-v0.1 has one owner and authenticates with a session cookie.
-
-The client sends `credentials: 'include'` by default, which is what a browser
-client on a different origin than the API needs. That only works if the service
-is configured to allow the client's origin; a client served from the same origin
-as the API needs nothing at all. Pass `credentials: 'omit'` when the caller
-carries its own header credential instead, and put it in `headers`.
-
-Never put a credential in a query string. `subscribeEvents` uses `fetch` rather
-than the browser's `EventSource` precisely because `EventSource` cannot send
-headers and cannot be given a custom `fetch`, which forces credentials into the
-URL where they end up in server logs.
-
-## The event stream and the resume rule
-
-`GET /jobs/{jobId}/events` and `GET /events` answer with JSON when `Accept` is
-`application/json` and with Server-Sent Events when it is `text/event-stream`.
-Both start after the `after` cursor, and `Last-Event-ID` overrides `after`.
-
-Events are persisted before they are streamed. The SSE frame `id` is the event's
-`seq`, which is exactly what a browser sends back in `Last-Event-ID`, so
-resumption needs no bookkeeping of its own.
-
-**The resume rule: remember the last `seq` you rendered, and send it as both
-`after` and `Last-Event-ID` when you reopen the stream.**
-
-```ts
-for await (const item of subscribeEvents(client, { jobId, after: lastSeq })) {
-  if (item.type === 'event') render(item.event);
-  if (item.type === 'gap') renderEllipsis(item);
+if (data && !('status' in data)) {
+  await client.api.POST('/conversations/{id}/messages', {
+    params: { path: { id: data.conversation.id } },
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    body: { text: 'Find a free evening this week.' },
+  });
 }
 ```
 
-What comes back on reconnect is not what was lost. Durable events, the ones that
-carry state, are replayed from the database and nothing is missing. Text deltas
-are transient and are never replayed, so whatever streamed while the connection
-was down is gone for good.
+Keep an idempotency key while retrying the same message. A successful submission
+returns its receipt and turn id. Resending that key with different text is refused.
+`GET /conversations/{id}/messages` returns the saved turns and partial answers.
+Client delivery states are `sending`, `queued_offline`, and `failed_retry`; they
+describe delivery to the service, not completion of the requested work.
 
-That is the only thing the client must not paper over. `subscribeEvents` yields
-a `gap` item at the point the connection broke, and the client shows an ellipsis
-there. An interface that silently stitches the two halves together is claiming a
-transcript is complete when it is not.
+Use `conversation.status` and `conversation.composer`. A completed turn leaves
+the conversation ready for another message. `PATCH /conversations/{id}/agent`
+selects the agent for the following turn; a running turn keeps its original agent.
 
-| Item | When | What to draw |
-|---|---|---|
-| `open` | a connection was established | a live indicator |
-| `event` | one event, in `seq` order | the event |
-| `gap`, reason `reconnect` | the stream dropped and reopened | an ellipsis: text may be missing |
-| `gap`, reason `sequence_skip` | the next `seq` jumped | an ellipsis naming both ends |
+`POST /conversations/{id}/stop` fences the active turn, interrupts the runtime,
+and retains its partial answer. Queued work can pause and resume without a new
+turn. A running pause is offered only when the runtime supports a safe checkpoint;
+the currently pinned runtime returns `not_available` for that case. Do not turn
+pause into a new run or repeat completed actions.
 
-Events the caller already holds are dropped by the cursor, so a replayed event
-is never rendered twice.
+## Trail and answer streaming
 
-## The approval-card rule
+Read `GET /conversations/{id}/events?since=0`, or the personal feed at
+`GET /events?view=experience&since=0`. JSON responses contain `events`,
+`next_cursor`, and `has_more`. Use `Accept: text/event-stream` for SSE.
+`Last-Event-ID` takes precedence over `since`; the SSE id is the persisted `seq`.
+Experience events have `conversation_id`, `turn_id`, `created_at`, and `item`.
 
-**Render an approval from the `action` record, never from model text.**
+| Item type | Render |
+| --- | --- |
+| `say` | One or two first-person sentences before a group of actions or a decision |
+| `action` | One past-tense label for the group, its metadata, and app sources |
+| `note` | A plain update or interruption notice |
+| `done` | Summary, elapsed time, app names, and source count |
+| `text_delta` | Append to the answer for that turn |
+| `card` | The supplied result card |
+| `receipt` | What changed, where, and when |
+| `permission` | The saved permission card |
+| `question` | The question and its offered options |
+| `status` | Update the composer and agent face |
 
-`GET /approvals` returns `canonical_payload` and `payload_hash`. The payload is
-what the broker canonicalised: keys sorted, strings trimmed, email recipients
-normalised and de-duplicated. It is the bytes the connector will be handed. A
-model's own description of what it is about to send is not evidence of what it
-is about to send, and a screen that renders the description is showing the
-person the wrong thing.
+Remember the last rendered sequence and drop duplicates after reconnecting.
+Sequence values are shared with other persisted events and can skip; a numerical
+gap alone does not mean content is missing. Display explicit interruption notes.
+Saved projected deltas replay; refresh the turn's saved answer when reconciling a
+reconnection. The legacy `subscribeEvents` helper reads a different event shape;
+use an SSE reader for this endpoint and parse each body with `experienceEvent`.
 
-So: draw each field of `canonical_payload` as its own row, show `payload_hash`
-next to it, and send that same hash back with the decision.
+Groups are deterministic projections of the action records. Do not split a
+compound action back into one row per call. Result cards come from files,
+calendar events, draft messages, pages, and saved artifacts. Treat `primary_action`
+and `secondary_actions` as typed controls; do not interpret their handles.
+
+## Drafts, permissions, receipts, and rules
+
+Read a conversation's `/drafts`, `/cards`, and `/receipts`. A draft contains
+recipient, channel, body, subject when present, and its current status. The
+assistant cannot directly send from a chat conversation. The person's
+`POST /drafts/{id}/send` creates the exact send for review and returns the draft,
+permission when needed, and a receipt only when success is confirmed.
+
+`GET /permissions` contains the owner decisions. Post to `/permissions/{id}`:
 
 ```ts
-await client.api.POST('/approvals/{approvalId}', {
-  params: { path: { approvalId } },
-  body: { decision: 'approved', payload_hash: approval.payload_hash },
+await client.api.POST('/permissions/{id}', {
+  params: { path: { id: permission.id } },
+  body: { option: 'allow_once', version: permission.version },
 });
 ```
 
-If the draft moved between the person reading it and the decision landing, the
-hash no longer matches and the API answers `409 approval_hash_mismatch`. Show
-that as "this changed while you were reading it", refresh, and ask again. Never
-retry with the new hash on the person's behalf: they approved the old bytes.
+`always` additionally requires `bounds: { count_cap, expires_at,
+reconsent_after_days }`. Offer it only when present in the card's options.
+The service resolves the exact recipient from trusted evidence. A grant for one
+recipient never authorizes another, and an untrusted destination cannot create
+a rule. The current reviewed action is allowed once; the cap applies to future
+actions. A reserved use consumes the cap conservatively even if a later check
+refuses execution. List rules with `GET /rules`, revoke with `DELETE /rules/{id}`.
+Expiry, re-consent, access changes, and revocation are checked before execution.
 
-Editing a draft produces a different hash and therefore a different action. There
-is no such thing as amending an approved send.
+A receipt is evidence of a confirmed change. When it includes `undo`, offer its
+handle until `valid_until`, then post to `/receipts/{id}/undo`. Calendar creation
+can be reversed with a conditional delete that refuses to erase a changed event.
+The reversal has its own receipt. Sends cannot be recalled. Draft discard and
+file restore are unavailable where the connector has no stored reversal.
+An unconfirmed send is never repeated automatically; show the supplied reason.
 
-## The unknown-outcome rule
+## Quick answers, agents, and saved details
 
-An action that was dispatched and never acknowledged rests at `unknown`. It means
-the effect may or may not have happened. It is not a failure, it is not a
-success, and **it is never retried**.
+`GET /quick-answers` returns plain questions with `why`, `if_ignored`, and at
+most four choices. Submit `{ option_id }` to `/quick-answers/{id}`. Invented choices
+are refused. Native questions without choices remain available through the
+existing free-text question API.
 
-Show `unknown` and `unresolved` actions as needing a person, distinct from both
-success and failure, and put them at the top of the ledger. The words that work
-are the plain ones:
+`GET /agents/templates` offers Planner, Travel concierge, and Study buddy.
+`GET/POST /agents` and `PATCH /agents/{id}` manage the specified appearance,
+tone, standing instruction, and allowed connections. Access is always limited by
+both the active connection and the agent's selected connections. Usage and turn
+status let a client derive the nine supported face states. Agent identity stays
+within the shared 250-token bound.
 
-> I sent this once and never heard back. It may or may not have arrived. I have
-> not sent it again.
+`GET /memory/items` returns active saved details in plain language. Render key,
+value, source (`onboarding`, `conversation`, or `inferred`), creation and last-use
+dates, and editability. Patch `{ value, version }` to `/memory/items/{id}`;
+delete the item to use the existing forget path. A stale edit is refused.
+`/memory/items/{id}/why` explains the evidence a recent output used. Suppressed or
+retracted evidence is not shown. Show an empty explanation honestly when no
+recent usage is recorded.
 
-The only way out is a person saying what they found:
+## Plans, home, routines, and search
 
-```ts
-await client.api.POST('/actions/{actionId}/resolve', {
-  params: { path: { actionId } },
-  body: { resolution: 'succeeded', note: 'It is in the Sent folder.' },
-});
-```
+| Surface | Operations and behavior |
+| --- | --- |
+| Plans | `GET/POST /plans`, `GET /plans/{id}`; progress and next step are derived from milestones |
+| Milestones | `PATCH /plans/{id}/milestones/{milestoneId}` updates a person's done state; agent steps complete from their scheduled work |
+| Plan conversation | `POST /plans/{id}/conversation` accepts an agent id and preserves the plan as context |
+| Profile | `GET/PATCH /profile` sets name, time zone, and day-hours window, including overnight windows |
+| Home | `GET /home` returns the local greeting/date, calendar events when connected, and open tasks |
+| Tasks | `GET/POST /tasks`, `PATCH/DELETE /tasks/{id}` |
+| Routines | `GET/POST /automations`, `POST /automations/{id}/test`; sentences describe schedules and recent runs describe outcomes |
+| Morning brief | `POST /automations/morning-brief` accepts `agent_id` and `at` in the profile's time zone |
+| Connections | `GET /experience/connections` returns app names, labels, status, and readable access levels |
+| Search | `GET /search?q=` searches conversations, plans, tasks, connected apps, recent actions, and cached calendar events in the session's space |
 
-`resolution` is `succeeded`, `failed`, or `unresolved`. `unresolved` is a real
-answer and a legitimate resting place; do not hide it or make it hard to pick.
-Whatever the person says is recorded as a reconciliation, and the action is not
-dispatched again either way.
+Agent milestones use the durable timer queue. Routines use the existing schedule
+triggers and return to their schedule after a completed occurrence. Each
+occurrence has its own spending and attempt allowance. Home calendar refreshes
+can only read and share a result within a minute. Search is lexical; action and
+calendar search examine the most recent 500 confirmed action records, with at
+most 100 results overall.
 
-## The inbox rule
-
-**Render `because` and `if_ignored`, and nothing else. One question at a time.**
-
-`GET /questions` is the whole inbox. It is one queue across every
-responsibility, not one queue per job: a job contributes at most one entry, and
-the service keeps whatever else it wanted to ask for a later wake. Entries come
-back in the order a person should deal with them, which is what blocks an
-external effect first, then the nearest deadline, then the oldest. Render the
-list in the order it was given and do not re-sort it.
-
-Every entry, and every row in `GET /notifications`, carries two fields:
-
-| Field | What it is | What to draw |
-|---|---|---|
-| `because` | handles of the records that made this necessary, such as `event:4821` or `claim:k_01J...` | the reason, resolvable back to the record |
-| `if_ignored` | one plain sentence about what happens if nobody acts, carrying a date when one exists | under the reason, in the same weight as the rest |
-
-Those two fields are the interface. Do not add urgency the service did not
-claim: no invented severity, no red badge on a question whose `if_ignored` says
-nothing breaks, no unread count that turns a queue into a backlog to clear.
-
-Answering is one call, and the answer reaches the job as input:
-
-```ts
-await client.api.POST('/questions/{id}/answer', {
-  params: { path: { id: question.id } },
-  body: { text: 'Send it to the flat, not the office.' },
-});
-```
-
-That job wakes and no other job moves. Resending the same answer replays the
-original receipt instead of waking the job twice, so a retry after a dropped
-connection is safe. A question the person has already moved past answers with
-`409 question_closed`; refresh the queue rather than retrying.
-
-A notification without a `because` does not exist. The outbox refuses it with
-`notification_without_because`, and a quiet monitor whose check found nothing
-new writes no row at all, because there is no handle to cite. An empty inbox
-means nothing needs a person, not that something went missing.
-
-## The five states a job can wait in
-
-A job that is not moving is waiting for exactly one thing, and the interface's
-whole job is to name it. Use these sentences.
-
-| `job.state` | Say exactly this | What to offer |
-|---|---|---|
-| `waiting_for_input` | **I need one answer from you before I can go on.** | `job.wait.question`, and a box that posts to `/jobs/{id}/messages` |
-| `waiting_for_approval` | **I have something to send. Read it and decide.** | the approval card, from the action record |
-| `waiting_for_event_or_time` | **Nothing to do until something happens. I am watching for it.** | `job.next_wake_at`, or what the trigger is |
-| `needs_reconciliation` | **I cannot tell whether one action happened. Tell me what you find.** | the unknown action and the resolve control |
-| `failed` | **I stopped without finishing. Here is how far I got.** | the last attempt's outcome detail |
-
-`job.wait` carries the specifics: a `question` for input, `action_ids` for an
-approval, a `wake_at` for a timer, a `trigger_id` for an event.
-
-The other four states need no sentence. `queued` and `running` are motion,
-`completed` is a result, `cancelled` is over.
-
-Two things to get right whatever the state. A job outlives the tab, so never
-imply the person has to stay and watch. And one job asks one question at a time:
-`job.wait.question` is the only thing it is waiting to hear, and anything else it
-wanted to ask is held on `job.deferred_questions` until a later wake. If you find
-yourself building a per-job list of prompts, the interface has drifted from what
-the service actually does; the one list that does exist is
-[the inbox](#the-inbox-rule), across jobs rather than within one.
+Plan sharing, browser sessions and controls, now playing, and live data have typed
+contracts but return `not_available` until their backing capability is connected.
 
 ## Developing against the mock
 
-`apps/mock-api` implements every operation in `openapi.json` in memory, and runs
-jobs through the same `transition` function the service uses. It is enough to
-build a whole client against.
+Run `MOCK_PORT=3202 bun run dev:mock` in Git Bash and point the client at that
+address. The mock uses the existing scripted scenarios and the service's pure
+projection functions, and validates experience requests and responses against
+the same schemas. Its data is local to the mock process.
 
-```bash
-bun run dev:mock                  # http://localhost:3190
-bun run dev:web                   # http://localhost:5173
-```
-
-Point a client at it with `VITE_MELETE_API`, or `baseUrl` directly. Two
-scenarios ship in `apps/mock-api/scenarios/`, chosen by what the job objective
-says:
-
-- **approved-send** — runs to a receipt through an approval, and takes a denial
-  to a question rather than a second attempt at sending.
-- **unknown-outcome** — the connector never answers; the action rests at
-  `unknown` and the job at `needs_reconciliation` until a person settles it.
-  Ask for something "unknown" or "flaky" in the objective to get this one.
-
-Adding a case is a JSON file, not a branch. The mock parses every request with
-the contract's schemas on the way in and every response on the way out, so a
-body it invented that the document does not describe fails there rather than in
-your client.
+The repair/email scenario prepares a draft, asks for permission after the explicit
+send, and produces a receipt after approval. The unknown/flaky scenario leaves
+an unconfirmed send for the person and does not send it again. Saved details are
+projected from the mock's active seeded records. Profile, agents, tasks, plans,
+rules, and routines can be exercised without connecting an external service.
+Browser tasks and sign-in delivery remain honestly unavailable in the mock.

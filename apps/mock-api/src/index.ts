@@ -27,7 +27,13 @@ export function createMock(options: MockOptions = {}) {
   const scenarios = loadScenarios();
   const runner = new Runner(store, { speed: options.speed ?? 1 });
   const { spaceId, connections } = seed(store);
-  const app = createMockApp({ store, runner, scenarios, spaceId });
+  const app = createMockApp({
+    store,
+    runner,
+    scenarios,
+    spaceId,
+    experienceSpeed: options.speed ?? 1,
+  });
   return { app, store, runner, scenarios, spaceId, connections };
 }
 

@@ -77,6 +77,8 @@ export type ExperienceReceipt = z.infer<typeof experienceReceipt>;
 export const experienceDraft = z.strictObject({
   id,
   recipient: text,
+  cc: z.array(text).max(50).optional(),
+  bcc: z.array(text).max(50).optional(),
   channel: z.enum(['email', 'message']),
   body: z.string().max(100000),
   subject: z.string().max(1000).optional(),
@@ -135,6 +137,7 @@ export const permissionCard = z.strictObject({
   options: z.array(z.enum(['allow_once', 'always', 'deny'])).min(1),
   version: id,
   preview: resultCard.nullable(),
+  draft: experienceDraft.optional(),
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 export const permissionDecision = z.discriminatedUnion('option', [

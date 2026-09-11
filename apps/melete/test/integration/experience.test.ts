@@ -520,6 +520,49 @@ withDb('experience rows and authenticated scope', () => {
     );
     expect(messages.turns.map((turn) => turn.id)).toEqual([accepted.turn_id]);
   });
+  test('an unconfirmed change cannot produce a completed turn or done trail step', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Prepare dinner' });
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const connectionId = newId('conn');
+    await required(handle)
+      .db.insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Mail', provider: 'imap' });
+    const actionId = newId('act');
+    await required(handle)
+      .db.insert(action)
+      .values({
+        id: actionId,
+        jobId: chat.id,
+        attemptId: claimed.claims.attempt_id,
+        connectionId,
+        kind: 'email.send',
+        effectClass: 'write_external',
+        canonicalPayload: {},
+        payloadHash: 'a'.repeat(64),
+        idempotencyKey: actionId,
+        status: 'unknown',
+      });
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'All ready.',
+      evidence: [],
+    });
+    const view = conversationResponse.parse(
+      await (await request(`/conversations/${chat.id}`)).json(),
+    );
+    expect(view.conversation.status).toBe('needs_you');
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    expect(page.events.some((event) => event.item.type === 'done')).toBe(false);
+  });
   test('real ledger rows yield one grouped trail action and stable resumable safe events', async () => {
     const chat = await createConversation();
     await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Check dinner plans' });

@@ -712,7 +712,7 @@
                                         "const": "question"
                                       },
                                       "question": {
-                                        "$ref": "#/components/schemas/__schema55"
+                                        "$ref": "#/components/schemas/__schema56"
                                       }
                                     },
                                     "required": [
@@ -1077,7 +1077,7 @@
                         "drafts": {
                           "type": "array",
                           "items": {
-                            "$ref": "#/components/schemas/__schema58"
+                            "$ref": "#/components/schemas/__schema55"
                           }
                         }
                       },
@@ -1125,7 +1125,7 @@
                       "type": "object",
                       "properties": {
                         "draft": {
-                          "$ref": "#/components/schemas/__schema58"
+                          "$ref": "#/components/schemas/__schema55"
                         },
                         "permission": {
                           "anyOf": [
@@ -1463,7 +1463,7 @@
                         "questions": {
                           "type": "array",
                           "items": {
-                            "$ref": "#/components/schemas/__schema55"
+                            "$ref": "#/components/schemas/__schema56"
                           }
                         }
                       },
@@ -8853,6 +8853,9 @@
                 "type": "null"
               }
             ]
+          },
+          "draft": {
+            "$ref": "#/components/schemas/__schema55"
           }
         },
         "required": [
@@ -8880,73 +8883,22 @@
           "id": {
             "$ref": "#/components/schemas/__schema40"
           },
-          "conversation_id": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/__schema40"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "text": {
+          "recipient": {
             "$ref": "#/components/schemas/__schema41"
           },
-          "why": {
+          "cc": {
+            "maxItems": 50,
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/__schema41"
             }
           },
-          "if_ignored": {
-            "$ref": "#/components/schemas/__schema41"
-          },
-          "options": {
-            "$ref": "#/components/schemas/__schema56"
-          }
-        },
-        "required": [
-          "id",
-          "conversation_id",
-          "text",
-          "why",
-          "if_ignored",
-          "options"
-        ],
-        "additionalProperties": false
-      },
-      "__schema56": {
-        "maxItems": 4,
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/__schema57"
-        }
-      },
-      "__schema57": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "$ref": "#/components/schemas/__schema40"
-          },
-          "label": {
-            "$ref": "#/components/schemas/__schema41"
-          }
-        },
-        "required": [
-          "id",
-          "label"
-        ],
-        "additionalProperties": false
-      },
-      "__schema58": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "$ref": "#/components/schemas/__schema40"
-          },
-          "recipient": {
-            "$ref": "#/components/schemas/__schema41"
+          "bcc": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/__schema41"
+            }
           },
           "channel": {
             "type": "string",
@@ -8983,6 +8935,71 @@
           "body",
           "connection_id",
           "status"
+        ],
+        "additionalProperties": false
+      },
+      "__schema56": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/__schema40"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema40"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "$ref": "#/components/schemas/__schema41"
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/__schema41"
+            }
+          },
+          "if_ignored": {
+            "$ref": "#/components/schemas/__schema41"
+          },
+          "options": {
+            "$ref": "#/components/schemas/__schema57"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "text",
+          "why",
+          "if_ignored",
+          "options"
+        ],
+        "additionalProperties": false
+      },
+      "__schema57": {
+        "maxItems": 4,
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/__schema58"
+        }
+      },
+      "__schema58": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/__schema40"
+          },
+          "label": {
+            "$ref": "#/components/schemas/__schema41"
+          }
+        },
+        "required": [
+          "id",
+          "label"
         ],
         "additionalProperties": false
       },
@@ -10092,7 +10109,7 @@
         ]
       },
       "__schema103": {
-        "$ref": "#/components/schemas/__schema56"
+        "$ref": "#/components/schemas/__schema57"
       },
       "__schema104": {
         "type": "object",

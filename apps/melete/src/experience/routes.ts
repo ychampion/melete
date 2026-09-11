@@ -24,14 +24,7 @@ import { ExperienceHome } from './home.ts';
 import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
 import { ExperiencePlanning } from './planning.ts';
-import {
-  object,
-  plainText,
-  projectArtifact,
-  projectCards,
-  projectReceipt,
-  recipientText,
-} from './projectors.ts';
+import { draftForReview, projectArtifact, projectCards, projectReceipt } from './projectors.ts';
 import { ExperienceQuestions } from './questions.ts';
 import { ExperienceService } from './service.ts';
 
@@ -194,21 +187,22 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         ({ action }) => action.kind === 'email.draft' && action.status === 'succeeded',
       )) {
         if (ownerEffects) {
-          drafts.push(await ownerEffects.draft(spaceId, action.id));
+          const draft = await ownerEffects.draft(spaceId, action.id);
+          if ('reason' in draft) return draft;
+          drafts.push(draft);
           continue;
         }
         const [send] = await deps.db
           .select()
           .from(experienceDraftSend)
           .where(eq(experienceDraftSend.draftActionId, action.id));
-        const payload = object(action.canonicalPayload);
+        const draft = draftForReview(action);
+        if (!draft)
+          return unavailable(
+            'The full message cannot be shown safely. Prepare a new draft before sending.',
+          );
         drafts.push({
-          id: action.id,
-          recipient: recipientText(payload),
-          channel: 'email',
-          body: plainText(payload.body, ''),
-          subject: plainText(payload.subject, 'Draft'),
-          connection_id: action.connectionId,
+          ...draft,
           status: send?.discardedAt
             ? 'discarded'
             : send?.sendActionId

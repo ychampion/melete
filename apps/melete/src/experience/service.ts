@@ -18,6 +18,7 @@ import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { agentValues, agentView } from './agents.ts';
+import { answerText, plainText } from './projectors.ts';
 
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
@@ -29,7 +30,7 @@ export function conversationView(
     : (turn?.status ?? (row.state === 'running' ? 'working' : 'idle'));
   return conversation.parse({
     id: row.id,
-    title: row.title,
+    title: plainText(row.title, 'Conversation'),
     agent_id: row.agentId,
     status,
     composer:
@@ -215,7 +216,7 @@ export class ExperienceService {
           conversation_id: row.jobId,
           agent_id: row.agentId,
           text: row.text,
-          answer: row.answer,
+          answer: answerText(row.answer),
           status: row.status,
           delivery: row.status === 'queued' ? 'sending' : null,
           created_at: row.createdAt.toISOString(),

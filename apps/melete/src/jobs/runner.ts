@@ -484,7 +484,7 @@ export class AttemptRunner {
       jobId: row.id,
       attemptId,
       type: 'attempt_ended',
-      payload: { outcome },
+      payload: { outcome, ...(row.kind === 'chat' ? { experience_completed: chatComplete } : {}) },
       dedupKey: `${attemptId}:ended`,
     });
     if (updated.state === 'waiting_for_event_or_time' && this.onWait)
@@ -505,7 +505,7 @@ export class AttemptRunner {
         .update(experienceTurn)
         .set({
           status:
-            outcome.kind === 'completed'
+            outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
               ? 'done'
               : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
                 ? 'failed'

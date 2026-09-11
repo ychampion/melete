@@ -13,7 +13,7 @@ import { loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
-import { type ActionRow, object, plainText, projectReceipt, recipientText } from './projectors.ts';
+import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
 export const actionProjectionRow = (value: Action): ActionRow => ({
@@ -253,13 +253,13 @@ export class ExperienceEffects {
     if (source.kind !== 'email.draft' || source.status !== 'succeeded') throw experienceMissing();
     const [sent] = await this
       .sql`select s.*, a.status from experience_draft_send s left join action a on a.id = s.send_action_id where draft_action_id = ${id}`;
+    const preview = draftForReview(actionProjectionRow(source));
+    if (!preview)
+      return unavailable(
+        'The full message cannot be shown safely. Prepare a new draft before sending.',
+      );
     return {
-      id,
-      recipient: recipientText(source.canonical_payload),
-      channel: 'email' as const,
-      body: plainText(source.canonical_payload.body, ''),
-      subject: plainText(source.canonical_payload.subject, 'Draft'),
-      connection_id: source.connection_id,
+      ...preview,
       status: sent?.discarded_at
         ? ('discarded' as const)
         : sent?.status === 'succeeded'
@@ -273,6 +273,7 @@ export class ExperienceEffects {
   async send(spaceId: string, id: string) {
     const { action: source } = await this.source(spaceId, id);
     const draft = await this.draft(spaceId, id);
+    if ('reason' in draft) return draft;
     if (draft.status === 'discarded')
       throw new ServiceError('invalid_request', 'This draft was discarded.', 409);
     const effect = await this.execute(

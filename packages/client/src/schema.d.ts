@@ -1211,7 +1211,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            drafts: components["schemas"]["__schema58"][];
+                            drafts: components["schemas"]["__schema55"][];
                         } | components["schemas"]["__schema45"];
                     };
                 };
@@ -1307,7 +1307,7 @@ export interface paths {
                                     /** @constant */
                                     type: "permission";
                                 } | {
-                                    question: components["schemas"]["__schema55"];
+                                    question: components["schemas"]["__schema56"];
                                     /** @constant */
                                     type: "question";
                                 } | {
@@ -1628,7 +1628,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            draft: components["schemas"]["__schema58"];
+                            draft: components["schemas"]["__schema55"];
                             permission: components["schemas"]["__schema53"] | null;
                             receipt: components["schemas"]["__schema52"] | null;
                         } | components["schemas"]["__schema45"];
@@ -4835,7 +4835,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            questions: components["schemas"]["__schema55"][];
+                            questions: components["schemas"]["__schema56"][];
                         } | components["schemas"]["__schema45"];
                     };
                 };
@@ -6005,6 +6005,7 @@ export interface components {
         };
         __schema53: {
             conversation_id: components["schemas"]["__schema40"];
+            draft?: components["schemas"]["__schema55"];
             id: components["schemas"]["__schema40"];
             options: components["schemas"]["__schema54"][];
             preview: components["schemas"]["__schema49"] | null;
@@ -6015,20 +6016,9 @@ export interface components {
         /** @enum {string} */
         __schema54: "allow_once" | "always" | "deny";
         __schema55: {
-            conversation_id: components["schemas"]["__schema40"] | null;
-            id: components["schemas"]["__schema40"];
-            if_ignored: components["schemas"]["__schema41"];
-            options: components["schemas"]["__schema56"];
-            text: components["schemas"]["__schema41"];
-            why: components["schemas"]["__schema41"][];
-        };
-        __schema56: components["schemas"]["__schema57"][];
-        __schema57: {
-            id: components["schemas"]["__schema40"];
-            label: components["schemas"]["__schema41"];
-        };
-        __schema58: {
+            bcc?: components["schemas"]["__schema41"][];
             body: string;
+            cc?: components["schemas"]["__schema41"][];
             /** @enum {string} */
             channel: "email" | "message";
             connection_id: components["schemas"]["__schema40"];
@@ -6037,6 +6027,19 @@ export interface components {
             /** @enum {string} */
             status: "draft" | "awaiting_permission" | "sent" | "discarded";
             subject?: string;
+        };
+        __schema56: {
+            conversation_id: components["schemas"]["__schema40"] | null;
+            id: components["schemas"]["__schema40"];
+            if_ignored: components["schemas"]["__schema41"];
+            options: components["schemas"]["__schema57"];
+            text: components["schemas"]["__schema41"];
+            why: components["schemas"]["__schema41"][];
+        };
+        __schema57: components["schemas"]["__schema58"][];
+        __schema58: {
+            id: components["schemas"]["__schema40"];
+            label: components["schemas"]["__schema41"];
         };
         __schema59: {
             bounds: {
@@ -6282,7 +6285,7 @@ export interface components {
         __schema101: boolean;
         /** @default null */
         __schema102: components["schemas"]["__schema91"] | null;
-        __schema103: components["schemas"]["__schema56"];
+        __schema103: components["schemas"]["__schema57"];
         __schema104: {
             event_cursor: number | null;
             input_digest: components["schemas"]["__schema106"] | null;

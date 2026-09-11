@@ -169,7 +169,7 @@ export class ExperienceEvents {
               ? await tx.select().from(attempt).where(eq(attempt.id, source.attemptId))
               : [];
             const outcome = object(payload.outcome);
-            if (outcome.kind === 'completed') {
+            if (outcome.kind === 'completed' && payload.experience_completed !== false) {
               const effects = await tx
                 .select({ action, connection })
                 .from(action)
@@ -191,14 +191,7 @@ export class ExperienceEvents {
                 ),
                 apps: [
                   ...new Set(
-                    effects
-                      .map(
-                        ({ connection }) =>
-                          projectActionGroup(effects)?.sources.find(
-                            (item) => item.connection_id === connection.id,
-                          )?.app,
-                      )
-                      .filter((item): item is string => Boolean(item)),
+                    projectActionGroup(effects)?.sources.map((source) => source.app) ?? [],
                   ),
                 ],
                 source_count: projectActionGroup(effects)?.sources.length ?? 0,
@@ -214,7 +207,9 @@ export class ExperienceEvents {
                   { type: 'card', card: projectArtifact(file) },
                   `file:${file.id}`,
                 );
-            } else if (outcome.kind === 'failed')
+            } else if (payload.experience_completed === false)
+              await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
+            else if (outcome.kind === 'failed')
               await emit(source, {
                 type: 'note',
                 text: 'I stopped before finishing. Your progress is saved.',

@@ -72,3 +72,17 @@
 - `bun run typecheck`: passed; `bun run lint`: passed, 331 files.
 - `home calendar reads use a scoped private command and reject writes`: passed, including repeated-read deduplication, foreign space refusal, and write refusal.
 - `experience-effects.test.ts`: all seven assertions groups passed; a five-second fixture close timed out. Cleanup now has a thirty-second bound; focused rerun is pending completion.
+
+## Review and scenario parity
+
+- `50eea82`: committed plans, routines, home, and email sign-in; focused experience-effects rerun passed 7 tests and 41 assertions in 48.57 seconds.
+- `bun run test:plugin`: 20 passed in 10.04 seconds.
+- `until mkdir C:/Users/gamin/.melete-test.lock`: the current full-suite request has waited more than twenty minutes; the shared lock has changed owners during that wait. No foreign lock was removed and the full suite has not started.
+- `projectPermission`: review found shortened bodies and omitted Cc/Bcc; a staged additive full-draft field and server refusal for unreviewable sends address the gap.
+- `BrokerService.classify`: review found the stored asks-before-acting preference was not enforced for reversible changes; the staged gate and refusal tests cover that preference and missing agents.
+- `bun test apps/mock-api/src/experience.test.ts apps/melete/src/experience/projectors.test.ts apps/melete/test/integration/experience-effects.test.ts apps/melete/test/integration/experience.test.ts --max-concurrency=2`: 25 passed; one new fixture tried to create a missing agent id and the foreign-key constraint refused it. The test now uses an existing agent from a foreign space.
+- `bun test apps/melete/test/integration/experience-effects.test.ts apps/mock-api/src/experience.test.ts --max-concurrency=2`: 12 passed, 0 failed, 82 assertions in 16.08 seconds after that fixture correction.
+- `bun run typecheck`: caught unparsed mock response values in the new test; explicit contract parsing fixed them and the rerun passed.
+- `bun run openapi` and `bun run client:generate`: regenerated complete send-review fields and the additive turn identity input.
+- `bun run lint`: passed, 332 files. `bun run compose:check`: passed all 12 checks.
+- `until mkdir C:/Users/gamin/.melete-test.lock`: the previous wait was cancelled before acquisition to apply the completed mock and review fixes; the next full-suite request uses the stable tested source.

@@ -19,10 +19,20 @@ const databaseTest = fixture ? test : test.skip;
 afterAll(async () => {
   await fixture?.close();
 }, 30000);
-async function setup(mode: 'email' | 'calendar' = 'email') {
+async function setup(mode: 'email' | 'calendar' | 'local' = 'email') {
   if (!fixture) throw new Error('Postgres unavailable');
   const sql = fixture.sql;
-  const manifest = mode === 'email' ? emailManifest : calendarManifest;
+  const manifest =
+    mode === 'calendar'
+      ? calendarManifest
+      : mode === 'local'
+        ? {
+            ...emailManifest,
+            tools: emailManifest.tools
+              .filter((tool) => tool.name === 'email.draft')
+              .map((tool) => ({ ...tool, name: 'test.write', required_scopes: ['test.write'] })),
+          }
+        : emailManifest;
   const seed = await seedJob(sql, {
     scopes: manifest.tools.map((tool) => tool.name),
     provider: manifest.provider,
@@ -328,3 +338,115 @@ databaseTest('stale permission versions and removed agent access block effects',
   ).toMatchObject({ code: 'scope_denied' });
   expect(s.calls.filter((call) => call.kind === 'email.send')).toHaveLength(0);
 });
+
+databaseTest(
+  'send review shows every recipient and full body; hidden content cannot be approved',
+  async () => {
+    const s = await setup();
+    const body = `${'Dinner notes. '.repeat(400)}Please bring dessert.`;
+    const draft = await s.broker.propose(s.claims, {
+      connection_id: s.connectionId,
+      kind: 'email.draft',
+      payload: {
+        to: 'alex@example.test',
+        cc: ['jules@example.test'],
+        bcc: ['pat@example.test'],
+        subject: 'Dinner',
+        body,
+      },
+    });
+    const send = await s.permissions.send(s.claims.space_id, draft.action_id);
+    if ('reason' in send || !send.permission) throw new Error('Expected full review');
+    expect(send.draft.body).toBe(body);
+    expect(send.permission.draft).toMatchObject({
+      body,
+      cc: ['jules@example.test'],
+      bcc: ['pat@example.test'],
+    });
+    const unsafe = await s.draft('alex@example.test', 'The private access_token is hidden.');
+    expect(await s.permissions.send(s.claims.space_id, unsafe)).toMatchObject({
+      status: 'not_available',
+    });
+    const source = await loadAction(s.sql, unsafe);
+    const effect = await s.effects.execute(
+      s.claims.space_id,
+      source,
+      'send',
+      'email.send',
+      source.canonical_payload,
+    );
+    if ('reason' in effect) throw new Error(effect.reason);
+    const [approval] = await s.sql`select id from approval where action_id = ${effect.id}`;
+    if (!approval) throw new Error('Expected saved review');
+    const card = await s.permissions.card(s.claims.space_id, String(approval.id));
+    expect(card.options).toEqual(['deny']);
+    expect(JSON.stringify(card)).not.toMatch(BACKEND_VOCABULARY);
+    expect(
+      await rejectionOf(
+        s.permissions.decide(s.claims.space_id, card.id, {
+          option: 'allow_once',
+          version: card.version,
+        }),
+      ),
+    ).toMatchObject({ code: 'unavailable_preview' });
+    expect(s.calls.filter((call) => call.kind === 'email.send')).toHaveLength(0);
+  },
+);
+
+databaseTest(
+  'agent asks-before-acting enforces reversible writes and missing agents fail closed',
+  async () => {
+    const s = await setup('local');
+    const first = await s.broker.propose(s.claims, {
+      connection_id: s.connectionId,
+      kind: 'test.write',
+      payload: { to: 'alex@example.test', subject: 'Draft', body: 'One' },
+    });
+    expect(first.requires_approval).toBe(true);
+    expect(s.calls).toHaveLength(0);
+    await s.sql`update agent set asks_before_acting = false where id = ${s.persona}`;
+    const second = await s.broker.propose(s.claims, {
+      connection_id: s.connectionId,
+      kind: 'test.write',
+      payload: { to: 'alex@example.test', subject: 'Draft', body: 'Two' },
+    });
+    expect(second.requires_approval).toBe(false);
+    expect(s.calls).toHaveLength(1);
+    const foreign = recordId('sp');
+    await s.sql`insert into space (id, name, git_path) values (${foreign}, 'Other', ${`test/${foreign}`})`;
+    await s.sql`update agent set space_id = ${foreign} where id = ${s.persona}`;
+    await s.sql`update job set kind = 'routine' where id = ${s.claims.job_id}`;
+    expect(await s.broker.catalog(s.claims)).toEqual([]);
+    expect(
+      await rejectionOf(
+        s.broker.propose(s.claims, {
+          connection_id: s.connectionId,
+          kind: 'test.write',
+          payload: { to: 'alex@example.test', subject: 'Draft', body: 'Three' },
+        }),
+      ),
+    ).toMatchObject({ code: 'scope_denied' });
+    expect(s.calls).toHaveLength(1);
+  },
+);
+
+databaseTest(
+  'identical requests deduplicate within a turn and remain distinct across turns',
+  async () => {
+    const s = await setup();
+    const request = {
+      connection_id: s.connectionId,
+      kind: 'email.draft',
+      payload: { to: 'alex@example.test', subject: 'Dinner', body: 'At seven?' },
+      client_ref: 'stable-plugin-reference',
+    };
+    await s.sql`update job set current_turn_id = 'first-turn' where id = ${s.claims.job_id}`;
+    const first = await s.broker.propose(s.claims, request);
+    expect((await s.broker.propose(s.claims, request)).action_id).toBe(first.action_id);
+    await s.sql`update job set current_turn_id = 'second-turn' where id = ${s.claims.job_id}`;
+    const second = await s.broker.propose(s.claims, request);
+    expect(second.action_id).not.toBe(first.action_id);
+    expect((await s.broker.propose(s.claims, request)).action_id).toBe(second.action_id);
+    expect(s.calls).toHaveLength(2);
+  },
+);

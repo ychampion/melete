@@ -188,6 +188,7 @@ export class BrokerService implements BrokerOperations {
     if (
       access.paused ||
       (access.allowed && !access.allowed.includes(connectionId)) ||
+      access.missingAgent ||
       (access.chat && !access.agentId)
     )
       throw new BrokerFault('scope_denied');
@@ -220,6 +221,7 @@ export class BrokerService implements BrokerOperations {
       const access = await agentAccess(tx, job.id);
       for (const connection of connections) {
         if (
+          access.missingAgent ||
           (access.chat && !access.agentId) ||
           (access.allowed && !access.allowed.includes(connection.id))
         )
@@ -319,6 +321,15 @@ export class BrokerService implements BrokerOperations {
     tool: ConnectorTool,
     phase: StandingGrantInput['phase'] = 'proposal',
   ): Promise<Admissibility> {
+    const access = await agentAccess(tx, job.id);
+    const requiresApproval =
+      needsApproval(tool) ||
+      Boolean(
+        access.agentId &&
+          access.asksBeforeActing &&
+          tool.effect_class !== 'read' &&
+          tool.name !== 'email.draft',
+      );
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? collectOriginFields(action.canonical_payload) : [];
     const warnings = await resolveOriginWarnings(
@@ -340,14 +351,14 @@ export class BrokerService implements BrokerOperations {
     // A grant is only ever a shortcut past a question nobody needs to ask. It
     // never covers a value whose origin Melete cannot vouch for.
     const granted =
-      warnings.length === 0 && needsApproval(tool) && this.options.resolveStandingGrant
+      warnings.length === 0 && requiresApproval && this.options.resolveStandingGrant
         ? await this.options.resolveStandingGrant(tx, { job, action, tool, phase })
         : false;
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
-      requires_approval: needsApproval(tool) && !granted,
+      requires_approval: requiresApproval && !granted,
     };
   }
 
@@ -451,11 +462,14 @@ export class BrokerService implements BrokerOperations {
         connection_id: request.connection_id,
         kind: request.kind,
         payload_hash: canonical.hash,
+        ...(access.turnId ? { turn_id: access.turnId } : {}),
       });
       const ref =
         request.client_ref === undefined
           ? null
-          : `broker:proposal:${job.id}:${createHash('sha256').update(request.client_ref).digest('hex')}`;
+          : `broker:proposal:${job.id}:${createHash('sha256')
+              .update(access.turnId ? `${access.turnId}:${request.client_ref}` : request.client_ref)
+              .digest('hex')}`;
       if (ref) {
         const [event] = await tx`select payload from event where dedup_key = ${ref}`;
         if (event) {
@@ -530,7 +544,7 @@ export class BrokerService implements BrokerOperations {
     if (
       !safe ||
       safe !== text.trim() ||
-      !/^(I\b|I['’]m\b|I['’]ll\b)/i.test(safe) ||
+      !/^(I\b|I['â€™]m\b|I['â€™]ll\b)/i.test(safe) ||
       (safe.match(/[.!?](?:\s|$)/g)?.length ?? 0) > 2
     )
       throw new BrokerFault('payload_invalid', 'Use one or two plain first-person sentences.');
@@ -746,6 +760,7 @@ export class BrokerService implements BrokerOperations {
         if (
           access.paused ||
           (access.allowed && !access.allowed.includes(action.connection_id)) ||
+          access.missingAgent ||
           (access.chat && (!access.agentId || directSend(action.kind)))
         )
           throw new BrokerFault('scope_denied');

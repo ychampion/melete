@@ -1,5 +1,6 @@
 import {
   type ExperienceSource,
+  experienceDraft,
   experienceReceipt,
   permissionCard,
   type ResultCard,
@@ -47,7 +48,12 @@ export function plainText(value: unknown, fallback: string, limit = 4000): strin
     .slice(0, limit);
 }
 export function answerText(value: unknown): string {
-  if (typeof value !== 'string' || BACKEND_VOCABULARY.test(value) || /^[\s]*[[{]/.test(value))
+  if (
+    typeof value !== 'string' ||
+    BACKEND_VOCABULARY.test(value) ||
+    /^[\s]*[[{]/.test(value) ||
+    /\b(?:Bearer\s+|sk-[A-Za-z0-9]{12})/.test(value)
+  )
     return '';
   return value;
 }
@@ -244,6 +250,44 @@ export function projectArtifact(row: typeof artifact.$inferSelect): ResultCard {
     source_connection: null,
   });
 }
+/** Approval must show the exact recipients and complete body, without hiding unsafe content. */
+export function draftForReview(row: ActionRow) {
+  const payload = object(row.canonicalPayload);
+  const addresses = (value: unknown) =>
+    typeof value === 'string'
+      ? [value]
+      : Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+        ? (value as string[])
+        : [];
+  const to = addresses(payload.to);
+  const cc = addresses(payload.cc);
+  const bcc = addresses(payload.bcc);
+  const safe = (value: unknown, limit: number) =>
+    typeof value === 'string' &&
+    value.length <= limit &&
+    (!value || plainText(value, '', limit) === value.trim());
+  if (
+    !to.length ||
+    ![...to, ...cc, ...bcc].every((value) => safe(value, 4000)) ||
+    !safe(payload.body, 100000) ||
+    !safe(payload.subject, 1000) ||
+    ![to, cc, bcc].every((addresses) => safe(addresses.join(', '), 4000))
+  )
+    return null;
+  const parsed = experienceDraft.safeParse({
+    id: row.id,
+    recipient: to.join(', '),
+    channel: 'email',
+    body: payload.body,
+    subject: payload.subject,
+    ...(cc.length ? { cc } : {}),
+    ...(bcc.length ? { bcc } : {}),
+    connection_id: row.connectionId,
+    status: 'draft',
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 export function projectPermission(input: {
   id: string;
   version: string;
@@ -253,6 +297,9 @@ export function projectPermission(input: {
   canAlways: boolean;
 }) {
   const payload = object(input.action.canonicalPayload);
+  const isSend = input.action.kind.endsWith('.send');
+  const draft = isSend ? draftForReview(input.action) : null;
+  const canApprove = !isSend || Boolean(draft);
   const base = actionLabel(input.action)
     .replace(/^Sent /, 'Send ')
     .replace(/^Created /, 'Create ')
@@ -260,13 +307,23 @@ export function projectPermission(input: {
     .replace(/^Removed /, 'Remove ');
   const what = input.action.kind.endsWith('.send') ? `${base} to ${recipientText(payload)}` : base;
   const facts = [
+    ...(draft
+      ? [
+          { label: 'To', value: draft.recipient },
+          ...(draft.cc?.length ? [{ label: 'Cc', value: draft.cc.join(', ') }] : []),
+          ...(draft.bcc?.length ? [{ label: 'Bcc', value: draft.bcc.join(', ') }] : []),
+        ]
+      : []),
     ...(typeof payload.subject === 'string'
       ? [{ label: 'Subject', value: plainText(payload.subject, 'Message') }]
       : []),
     ...(typeof payload.body === 'string'
       ? [
           {
-            label: 'Message',
+            label:
+              typeof payload.body === 'string' && payload.body.length > 4000
+                ? 'Message preview'
+                : 'Message',
             value: plainText(payload.body, 'Message content is not available for preview.'),
           },
         ]
@@ -289,8 +346,18 @@ export function projectPermission(input: {
     id: input.id,
     conversation_id: input.action.jobId,
     what,
-    why: input.reasons,
-    options: input.canAlways ? ['allow_once', 'always', 'deny'] : ['allow_once', 'deny'],
+    why: canApprove
+      ? input.reasons
+      : [
+          ...input.reasons,
+          'The full message cannot be shown safely. Prepare a new draft before sending.',
+        ],
+    ...(draft ? { draft } : {}),
+    options: !canApprove
+      ? ['deny']
+      : input.canAlways
+        ? ['allow_once', 'always', 'deny']
+        : ['allow_once', 'deny'],
     version: input.version,
     preview: {
       id: input.id,

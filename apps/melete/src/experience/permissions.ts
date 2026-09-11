@@ -5,7 +5,7 @@ import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
-import { plainText, projectPermission, recipientText } from './projectors.ts';
+import { draftForReview, plainText, projectPermission, recipientText } from './projectors.ts';
 import { permissionVersion, ruleKinds, ruleRecipient, ruleView } from './rules.ts';
 import { experienceMissing } from './service.ts';
 
@@ -81,6 +81,16 @@ export class ExperiencePermissions {
       async (tx, job, action, approval) => {
         if (job.space_id !== spaceId || permissionVersion(approval) !== input.version)
           throw new ServiceError('stale_permission', 'This request changed. Review it again.', 409);
+        if (
+          input.option !== 'deny' &&
+          action.kind.endsWith('.send') &&
+          !draftForReview(actionProjectionRow(action))
+        )
+          throw new ServiceError(
+            'unavailable_preview',
+            'Prepare a new draft that can be reviewed in full.',
+            409,
+          );
         if (input.option !== 'always') return;
         if (!ruleKinds[action.kind])
           throw new ServiceError('invalid_request', 'This permission can only be used once.', 400);
@@ -134,6 +144,7 @@ export class ExperiencePermissions {
   async send(spaceId: string, id: string) {
     const result = await this.effects.send(spaceId, id);
     if ('reason' in result) return result;
+    if ('reason' in result.draft) return result.draft;
     const [approval] = await this
       .sql`select id from approval where action_id = ${result.action.id} and decision is null`;
     if (['failed', 'denied', 'unknown', 'unresolved'].includes(result.action.status))
