@@ -1,21 +1,20 @@
 # HTTP surface
 
-Hono routes for the endpoints in `packages/contracts/openapi.json`. Every route
-validates its request with the Zod schema from `@melete/contracts` and returns a
-response that parses against the matching response schema, so the document and
-the service cannot drift.
+The Hono adapters in this directory mount through `createApp` in
+`../index.ts`. Jobs, replies, operations, policy, attention, questions,
+triggers, approvals and events require injected service dependencies.
+Authentication tests include `all other routes require a valid cookie while
+health stays public`; event tests include `Last-Event-ID overrides the URL
+cursor and unknown jobs fail before streaming`.
 
-Rules this module keeps:
+The internal action-read adapter uses a separate service credential and
+injected space authorization. Its existence does not prove the public entry
+point exposes every action route. Complete default routing of every OpenAPI
+operation is **not claimed**.
 
-- The approval view is built from `action` rows. Model text never reaches an
-  approval screen, and Markdown a model produced is rendered sanitised.
-- No response carries a `secret_ref` or a credential. `connectionView` is the
-  only shape connections leave the process in.
-- Reads are scoped to one space. A caller that holds a handle to one space
-  cannot widen it with a query parameter.
+The optional memory router is not supplied by default bootstrap. The legacy
+knowledge module still selects its file-view space from a header after public
+session authentication; that is not authoritative memory scope validation.
 
-`actions.ts` implements the space-scoped action list through an injected owner
-authorization function. It deliberately includes actions belonging to cancelled
-jobs and orders `unknown`/`unresolved` sends first. The broker's internal listener
-exposes this read adapter to the API using its service credential. Other owner
-routes remain for the API lane.
+See [CLIENT](../../../../docs/CLIENT.md) for client behavior and
+[ARCHITECTURE](../../../../docs/ARCHITECTURE.md) for wiring and test references.
