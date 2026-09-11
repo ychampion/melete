@@ -23,7 +23,14 @@ export const stableId = (...parts: (string | number)[]) =>
   createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 export const iso = (value: string | Date) => new Date(value).toISOString();
 export const generation = (row: Record<string, unknown>): SpaceGeneration =>
-  spaceGeneration.parse(row);
+  spaceGeneration.parse({
+    space_id: row.space_id,
+    policy_generation: row.policy_generation,
+    data_revision: row.data_revision,
+    access_generation: row.access_generation,
+    eligibility_generation: row.eligibility_generation,
+    restore_ready: row.restore_ready,
+  });
 
 export async function lockSpace(tx: MemoryTx, scope: MemoryScope, write = true) {
   const [row] =

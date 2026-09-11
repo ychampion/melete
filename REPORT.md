@@ -29,3 +29,10 @@
 - Test `persist before acknowledgment, dedup, immutable versions, separate streams`: initial 60 s / 20 s timeouts isolated to Bun's async rejection matcher waiting on a rollback. Fix cycle 1 awaits the rejection before asserting; the test passes in 125 ms.
 - Test `concurrent inputs commit contiguous stream sequences and reject cross-space metadata`: pass; test `pg-boss uses the embedded database`: pass.
 - Command `bun run typecheck`: pass; command `bun run lint`: pass (65 files); command `bun test --max-concurrency 2`: 198 pass, 1 baseline skip, 36 baseline todos, 0 fail in 18.82 s.
+
+## Slice 3
+
+- SHA `9abf95f`: evidence ledger and new-table migration pushed to `origin/lane/w7-memory`.
+- Test `memory resolve rules`: 11 rules pass, including source event time, protected corrections, attributed disagreement, source identity deduplication, temporary exceptions, preference precedence, and reserved job/action authority rejection.
+- Test `claim revisions retain exact support and direct corrections are immediate and idempotent`: pass; July remains inspectable with validity and supersession times; August is protected; stale correction evidence rolls back; one active head remains.
+- Command `bun run typecheck`: pass; command `bun run lint`: pass (68 files); command `bun test --max-concurrency 2`: 210 pass, 1 baseline skip, 36 baseline todos, 0 fail in 17.40 s.

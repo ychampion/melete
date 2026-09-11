@@ -1,4 +1,11 @@
 import { afterAll, describe, expect, test } from 'bun:test';
+import {
+  claimHistory,
+  correctClaim,
+  listClaims,
+  publishRevision,
+} from '../../src/memory/claims.ts';
+import { lockSpace } from '../../src/memory/db.ts';
 import { ingest, loadEvidence } from '../../src/memory/evidence.ts';
 import { createScope, createTestDatabase } from './postgres.ts';
 
@@ -65,5 +72,60 @@ withDb('memory evidence ledger', () => {
       'w7.probe',
       jobs.map((j) => j.id),
     );
+  });
+  test('claim revisions retain exact support and direct corrections are immediate and idempotent', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const evidence = await ingest(db.sql, scope, source());
+    const first = await db.sql.begin(async (tx) => {
+      await lockSpace(tx, scope);
+      return publishRevision(tx, scope, 'trip.month', null, {
+        content: 'July',
+        kind: 'user_statement',
+        factual_status: 'attributed',
+        protected: false,
+        valid_from: '2026-07-01T00:00:00Z',
+        valid_until: null,
+        sources: [
+          {
+            source_id: evidence.source.source_id,
+            source_version: '1',
+            start: 0,
+            end: source().text.length,
+          },
+        ],
+      });
+    });
+    const correction = {
+      claim_id: first.claim_id,
+      expected_revision: 1,
+      text: 'move our trip from July to August',
+      content: 'August',
+      valid_from: '2026-08-01T00:00:00Z',
+      idempotency_key: 'correction1',
+    };
+    const revised = await correctClaim(db.sql, scope, correction);
+    expect(revised.protected).toBe(true);
+    expect(revised.revision).toBe(2);
+    expect((await correctClaim(db.sql, scope, correction)).revision).toBe(2);
+    const freshSession = { ...scope };
+    expect((await listClaims(db.sql, freshSession)).claims[0]?.current.content).toBe('August');
+    const history = await claimHistory(db.sql, freshSession, first.claim_id);
+    expect(history.revisions.map((r) => r.content)).toEqual(['July', 'August']);
+    expect(history.revisions[0]?.status).toBe('superseded');
+    expect(history.revisions[0]?.superseded_at).not.toBeNull();
+    expect(history.revisions[0]?.valid_until).toBe('2026-08-01T00:00:00.000Z');
+    expect(history.revisions[0]?.sources[0]?.source_id).toBe(evidence.source.source_id);
+    const stale = await correctClaim(db.sql, scope, {
+      ...correction,
+      idempotency_key: 'stale',
+    }).catch((error: Error) => error.message);
+    expect(stale).toBe('stale_revision');
+    const rolledBack =
+      await db.sql`select id from memory_sources where space_id = ${scope.spaceId} and source_identity = 'stale'`;
+    expect(rolledBack).toHaveLength(0);
+    const heads =
+      await db.sql`select revision from memory_revisions where claim_id = ${first.claim_id} and status = 'active'`;
+    expect(heads).toHaveLength(1);
   });
 });
