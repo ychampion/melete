@@ -166,3 +166,10 @@
 - `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: the single full-suite command remains queued from 22:08:52 UTC; `.agents/w10c-review-full.log` does not yet exist, so this lane has launched no full run during the review continuation.
 - `Get-CimInstance Win32_Process` and `Get-ChildItem C:/Users/gamin/.melete-test.lock`: the current holder has marker `orchestrator-w6`, Bun PID 16844 and parent PID 40952; the directory was created at 22:29:42 UTC and that Bun process remains alive. Earlier holders also ran while this lane waited. No other process or shared lock was removed.
 - `43fb5dc` contains the final six finding identities and static-check evidence. Source remains unchanged and no additional tests have been launched while queued. The full-suite result and push remain pending.
+
+
+## PR 15 lock recovery and queue checkpoint — 2026-09-11 23:20 UTC
+
+- `Get-CimInstance Win32_Process`: by 23:06:44 UTC, both known W6 owner processes (Bun 16844 and Bash 40952) and the Bash children had exited, and repeated scans showed no full test process. `Get-ChildItem C:/Users/gamin/.melete-test.lock` still showed only the unchanged `orchestrator-w6` marker in the directory created at 22:29:42 UTC.
+- `Remove-Item -LiteralPath C:/Users/gamin/.melete-test.lock/orchestrator-w6` and nonrecursive `Directory.Delete`: at 23:07 UTC, removed that verified stale marker and empty directory after checking the exact root, unchanged UTC creation time, no reparse points, and absence of the known owners and any full runner. The first guard rejected a local-versus-UTC datetime comparison before any deletion; the corrected UTC comparison matched the recorded creation time. No live process was stopped.
+- `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: other queued lanes subsequently acquired the lock and completed handoffs. This lane is still queued; its full-suite log does not yet exist. `ps -ef` confirms its waiting shell continues the 15-second retry loop. No full test has run from this review continuation yet, and no additional source changes or tests were made while queued.
