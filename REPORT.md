@@ -219,3 +219,54 @@ Deliverables 4 and 5 land in one commit. They share three contract files
 (`index.ts`, `entities.ts` and the generated `openapi.json`), so splitting them
 would have produced a first commit that does not typecheck, which is a worse
 thing to put in the history than a commit that does two things.
+
+## Rebase and final verification
+
+Rebased onto `origin/integration` at 9484023, which had landed the memory
+conformance runner and the one-owner-queue commit while this lane was working.
+Three conflicts, all resolved: `conformance/package.json` keeps both new
+dependencies; the two migrations added here were renumbered to 0015 and 0016
+behind integration's own 0014; and this lane's note became 0015 in
+`.agents/notes/`.
+
+```
+bun run typecheck                 clean
+bun run lint                      Checked 329 files. No fixes applied.
+bun run openapi                   wrote packages/contracts/openapi.json
+bun run client:generate           wrote packages/client/src/schema.d.ts
+bun run compose:check             compose:check passed (12 checks)
+```
+
+Tests after the rebase, in three groups:
+
+```
+bun test conformance/style packages/contracts packages/skills \
+  apps/melete/src/runtime apps/melete/src/connectors \
+  apps/melete/src/knowledge apps/mock-api
+                                  352 pass, 1 skip, 0 fail, 1060 expect() calls, 28 files
+
+bun test apps/melete/test/integration/{reactions,watch,since-last}.test.ts
+                                  15 pass, 0 fail, 70 expect() calls, 3 files
+
+bun test apps/melete/test/integration/{memory,broker,gateway}.test.ts
+                                  69 pass, 0 fail, 687 expect() calls, 3 files
+```
+
+The one skip is the real OpenAI-compatible speech adapter, which is key-gated
+and says so.
+
+Whole-suite runs on this machine stopped being trustworthy near the end: other
+lanes were running their own suites concurrently, a single `bun test` went from
+509 seconds to over 900, and the failures that appeared were 5-second hook and
+test timeouts in files this lane does not touch — `conformance/scenarios/01`,
+`apps/melete/test/integration/jobs.test.ts`, `packages/knowledge/src/space.test.ts`
+— the last of which fails the same way on integration with none of this branch's
+changes. The last clean whole-suite run on this branch, before the podcast skill
+landed, was 930 pass / 14 todo / 0 fail across 75 files. Two real failures did
+come out of those runs and are fixed: `apps/melete/src/knowledge/routes.test.ts`
+hard-coded six built-in skills and now reads `BUILT_IN_SKILLS.length`, and
+`apps/melete/test/integration/{broker,gateway}.test.ts` asserted exact tool
+catalogs that now also contain `react`.
+
+Anyone re-running this branch on a quiet machine should expect the whole suite
+green; the groups above are the part I can state as verified.
