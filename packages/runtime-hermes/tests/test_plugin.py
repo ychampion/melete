@@ -375,3 +375,15 @@ def test_the_client_opens_no_socket_without_configuration():
     with pytest.raises(BrokerError) as caught:
         BrokerClient(base_url="", token="t").tools()
     assert caught.value.code == "not_configured"
+
+
+def test_invalid_schema_stops_repeated_broker_requests(client, broker):
+    broker.status_code = 409
+    broker.error_body = {"error": {"code": "schema_invalid", "message": "Tool schema cannot compile"}}
+    handler = build_handler(client, CATALOG[1])
+    first = handler(query="first")
+    second = handler(query="different arguments cannot repair a schema")
+    assert first == second
+    assert first["retryable"] is False
+    assert "Do not retry" in first["instruction"]
+    assert len(broker.requests) == 1

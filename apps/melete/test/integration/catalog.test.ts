@@ -363,7 +363,7 @@ dbTest('asynchronous or unresolved connector schemas cannot authorize an action'
           payload: {},
         }),
       ),
-    ).toMatchObject({ code: 'payload_invalid' });
+    ).toMatchObject({ code: 'schema_invalid' });
     expect(await s.sql`select id from action where job_id = ${s.claims.job_id}`).toHaveLength(0);
     expect(s.calls()).toBe(0);
   }

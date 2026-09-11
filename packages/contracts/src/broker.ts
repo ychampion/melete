@@ -233,6 +233,7 @@ export const BROKER_ERROR_CODES = [
   'unknown_connection',
   'unknown_tool',
   'payload_invalid',
+  'schema_invalid',
   'approval_required',
   'approval_denied',
   'approval_hash_mismatch',

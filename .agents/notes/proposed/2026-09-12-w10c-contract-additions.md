@@ -33,3 +33,12 @@ Attempt outcomes are database text, so no migration is required. The exported
 `BROKER_TIMEOUT_MS` default is shared by service dispatch and the ledger client;
 a configured ledger timeout is propagated to adapter finalization. Regenerated
 OpenAPI and client types include the additional outcome.
+
+
+## PR 15 review: invalid tool schema
+
+The additive `schema_invalid` broker fault distinguishes operator schema faults
+from repairable `payload_invalid` arguments. It is terminal for that plugin tool
+handler: the model receives `retryable: false` and a stop instruction, and repeated
+calls return the refusal locally without another broker request. Compilation or
+async-schema refusal creates no action. Existing broker fault codes stay valid.

@@ -23,7 +23,7 @@ import {
   type VerifyResult,
   verifyResult,
 } from '@melete/contracts';
-import { Ajv } from 'ajv';
+import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
@@ -229,18 +229,23 @@ export class BrokerService implements BrokerOperations {
   }
 
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
+    let validate: ValidateFunction;
     try {
       const validator =
         tool.input_schema.$schema === 'https://json-schema.org/draft/2020-12/schema'
           ? this.validator2020
           : this.validator;
-      const validate = validator.compile(tool.input_schema);
-      // Connector schemas are synchronous and self-contained; promises cannot authorize dispatch.
-      if (('$async' in validate && validate.$async) || validate(payload) !== true)
-        throw new BrokerFault('payload_invalid');
+      validate = validator.compile(tool.input_schema);
     } catch {
-      throw new BrokerFault('payload_invalid');
+      throw new BrokerFault(
+        'schema_invalid',
+        'Tool schema cannot compile; operator repair is required',
+      );
     }
+    // Changing model arguments cannot repair an unsupported schema.
+    if ('$async' in validate && validate.$async)
+      throw new BrokerFault('schema_invalid', 'Asynchronous tool schemas are unsupported');
+    if (validate(payload) !== true) throw new BrokerFault('payload_invalid');
   }
 
   private async proposalView(

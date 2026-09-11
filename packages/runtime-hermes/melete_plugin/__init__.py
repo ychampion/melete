@@ -73,8 +73,19 @@ def build_handler(
     """
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
+    terminal_error: Optional[Dict[str, Any]] = None
+
+    def refuse(error: BrokerError) -> Dict[str, Any]:
+        nonlocal terminal_error
+        result = from_error(error.code, error.message)
+        if error.code == "schema_invalid":
+            # Arguments cannot fix the operator's schema; prevent another request.
+            terminal_error = result
+        return result
 
     def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
+        if terminal_error is not None:
+            return terminal_error
         # Hermes dispatches as `handler(args, **kwargs)` with the model's
         # arguments in one positional dict (`tools/registry.py:822`), not as
         # keyword arguments. A `**kwargs`-only signature raises TypeError before
@@ -104,7 +115,7 @@ def build_handler(
             if connection_id is None and (name.startswith("skills.") or name == "compose"):
                 return client.call_native(name, arguments)
         except BrokerError as error:
-            return from_error(error.code, error.message)
+            return refuse(error)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
@@ -117,7 +128,7 @@ def build_handler(
                 client_ref=_client_ref(name, arguments),
             )
         except BrokerError as error:
-            return from_error(error.code, error.message)
+            return refuse(error)
 
         if needs_approval(response):
             return from_response(response)
