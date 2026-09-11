@@ -24,6 +24,8 @@ const source: SourceEvent = {
   audience: 'private',
   state: 'active',
   eligibility_generation: 1,
+  author: 'owner',
+  origin_trust: 'owner',
 };
 const july: ClaimRevision = {
   claim_id: 'k_01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -38,6 +40,7 @@ const july: ClaimRevision = {
   recorded_at: source.ingested_at,
   superseded_at: null,
   data_revision: 1,
+  origin_trust: 'owner',
   sources: [],
 };
 const proposal: ProposedClaim = {

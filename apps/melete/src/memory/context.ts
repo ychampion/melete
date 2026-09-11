@@ -1,6 +1,7 @@
 import {
   type AttemptBundle,
   type ContextRecord,
+  claimHandleOf,
   contextRecord,
   type RecallResult,
   type RuntimeAdapter,
@@ -9,6 +10,7 @@ import {
 import { eligibleRevision } from './claims.ts';
 import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
 import { notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
+import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
 import { asKnowledge, effectiveAudience, type RecallOptions, recall } from './recall.ts';
 
 export async function recordAttemptContext(
@@ -53,17 +55,23 @@ export async function recordAttemptContext(
       items: result.items.map((item) => ({
         claim_id: item.claim_id,
         revision: item.revision,
+        handle: claimHandleOf(item.claim_id, item.revision),
+        key: item.key,
+        origin_trust: item.origin_trust,
         sources: item.sources,
       })),
+      unattributed: [],
+      disputed_keys: result.disputed_keys,
       recipe: result.recipe,
       token_budget: result.token_budget,
       recall_status: result.status,
       invalidated_at: null,
       created_at: new Date().toISOString(),
     };
-    await tx`insert into memory_contexts (id, space_id, job_id, attempt_id, job_revision, policy_generation, data_revision, access_generation, audience, purpose, items, recipe, token_budget, recall_status)
+    await tx`insert into memory_contexts (id, space_id, job_id, attempt_id, job_revision, policy_generation, data_revision, access_generation, audience, purpose, items, recipe, token_budget, recall_status, disputed_keys)
       values (${context.id}, ${scope.spaceId}, ${jobId}, ${attemptId}, ${context.job_revision}, ${context.policy_generation}, ${context.data_revision}, ${context.access_generation},
-      ${JSON.stringify(context.audience)}::text::jsonb, ${context.purpose}, ${JSON.stringify(context.items)}::text::jsonb, ${context.recipe}, ${JSON.stringify(context.token_budget)}::text::jsonb, ${context.recall_status})`;
+      ${JSON.stringify(context.audience)}::text::jsonb, ${context.purpose}, ${JSON.stringify(context.items)}::text::jsonb, ${context.recipe}, ${JSON.stringify(context.token_budget)}::text::jsonb, ${context.recall_status},
+      ${JSON.stringify(context.disputed_keys)}::text::jsonb)`;
     await tx`update attempt set context_snapshot_ref = ${context.id} where id = ${attemptId}`;
     await tx`insert into memory_derivations (space_id, input_kind, input_id, input_version, output_kind, output_id, output_version)
       values (${scope.spaceId}, 'job', ${jobId}, ${String(audience.jobRevision)}, 'context', ${context.id}, '1') on conflict do nothing`;
@@ -115,6 +123,8 @@ export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, a
       recipe: row.recipe,
       token_budget: row.token_budget,
       recall_status: row.recall_status,
+      unattributed: row.unattributed,
+      disputed_keys: row.disputed_keys,
       invalidated_at: null,
       created_at: iso(row.created_at),
     });
@@ -172,10 +182,15 @@ export function withMemoryRuntime(
         prepared.context.job_revision !== bundle.attempt.revision
       )
         throw new MemoryError('stale_attempt');
+      // E1. What a correction broke since the last attempt, named precisely: the
+      // handle that moved, the value before and after, and the outputs that cited
+      // it. This is the reason the next attempt does not start from zero.
+      const briefs = await pendingRepairBriefs(sql, scope, bundle.attempt.job_id);
       // Accepted action constraints come directly from job state, outside optional memory trimming.
       const next: AttemptBundle = {
         ...bundle,
         job: { ...bundle.job, constraints: job.constraints },
+        inputs: { ...bundle.inputs, repair_briefs: briefs },
         knowledge: prepared.knowledge,
       };
       const controller = new AbortController();
@@ -201,6 +216,12 @@ export function withMemoryRuntime(
           AbortSignal.any([signal, controller.signal]),
         );
         await assertContextCurrent(sql, scope, bundle.attempt.id);
+        // Delivered only once the attempt actually finished holding them.
+        await markRepairBriefsDelivered(
+          sql,
+          scope,
+          briefs.map((brief) => brief.id),
+        );
         return outcome;
       } finally {
         clearInterval(timer);

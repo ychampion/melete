@@ -10,7 +10,20 @@ import {
   proposeKnowledgeResponse,
   skillListResponse,
 } from '@melete/contracts';
-import { commitRecord, initSpace, type SpacePaths, serializeRecord } from '@melete/knowledge';
+import {
+  applyProposal,
+  commitRecord,
+  DEFAULT_POLICY,
+  getProposal,
+  initSpace,
+  knownIds,
+  listProposals,
+  loadSpace,
+  proposalType,
+  requiresApproval,
+  type SpacePaths,
+  serializeRecord,
+} from '@melete/knowledge';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { loadEnv } from '../env.ts';
 import { createApp, VERSION } from '../index.ts';
@@ -106,16 +119,12 @@ const toOpenApiPath = (path: string): string =>
   path.replace(/:([A-Za-z0-9_]+)/g, '{$1}').replace(/\/$/, '') || '/';
 
 /**
- * Routes this module serves that the OpenAPI document does not describe yet.
- * Each one is a contract change proposed in
- * .agents/notes/proposed/2026-09-11-knowledge-api-gaps.md, not an accident.
+ * Empty, and meant to stay that way. Listing a space and applying a proposal are
+ * both in the document now, and the apply operation is served by the memory
+ * module under the path the document declares. An entry here would mean a route
+ * exists that nothing describes.
  */
-const PENDING_CONTRACT = new Set([
-  'GET /knowledge',
-  // W7 declared the apply operation as /knowledge/proposals/{id}/apply; this
-  // module still serves it under {proposalId}.
-  'POST /knowledge/proposals/{proposalId}/apply',
-]);
+const PENDING_CONTRACT = new Set<string>([]);
 
 /**
  * Knowledge operations the document declares that the memory module serves,
@@ -123,6 +132,7 @@ const PENDING_CONTRACT = new Set([
  * record; this module owns search, listing, reading and retraction.
  */
 const SERVED_BY_MEMORY = new Set([
+  'GET /knowledge/proposals',
   'POST /knowledge/proposals/{id}/apply',
   'DELETE /knowledge/proposals/{id}',
   'POST /knowledge/{recordId}/edit',
@@ -329,34 +339,40 @@ describe('proposing and applying a write', () => {
     expect(body.error.detail.findings[0]?.check).toBe('path-inside-space');
   });
 
-  test('staged proposals are listed with whether they need a person', async () => {
+  // Listing and applying moved to the memory module, which owns the review
+  // surface because the Postgres claim store is the authority for it. The
+  // mediator they call is still this package's, so these exercise it directly.
+  const mediation = () => ({
+    paths,
+    knownIds: knownIds(loadSpace(paths)),
+    policy: DEFAULT_POLICY,
+  });
+
+  test('a staged proposal says whether the space policy needs a person', async () => {
     await app().request('/knowledge/proposals', {
       method: 'POST',
       headers: headers(),
       body: proposal(),
     });
-    const res = await app().request('/knowledge/proposals', { headers: headers() });
-    const body = (await res.json()) as { proposals: Array<{ requires_approval: boolean }> };
-    expect(body.proposals).toHaveLength(1);
-    expect(body.proposals[0]?.requires_approval).toBe(false);
+    const staged = listProposals(paths);
+    expect(staged).toHaveLength(1);
+    const preference = staged[0];
+    if (!preference) throw new Error('nothing staged');
+    expect(requiresApproval(DEFAULT_POLICY, proposalType(preference))).toBe(false);
+    expect(requiresApproval(DEFAULT_POLICY, 'decision')).toBe(true);
   });
 
   test('applying commits it and it becomes searchable', async () => {
-    const staged = (await (
-      await app().request('/knowledge/proposals', {
-        method: 'POST',
-        headers: headers(),
-        body: proposal(),
-      })
-    ).json()) as StagedBody;
-
-    const applied = await app().request(`/knowledge/proposals/${staged.proposal_id}/apply`, {
+    await app().request('/knowledge/proposals', {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify({ approved_by: 'zara' }),
+      body: proposal(),
     });
-    expect(applied.status).toBe(200);
-    expect(((await applied.json()) as { commit: string }).commit).toMatch(/^[0-9a-f]{40}$/);
+    const staged = listProposals(paths)[0];
+    if (!staged) throw new Error('nothing staged');
+    const applied = await applyProposal(mediation(), staged, { approvedBy: 'zara' });
+    expect(applied.ok).toBe(true);
+    if (applied.ok) expect(applied.commit.sha).toMatch(/^[0-9a-f]{40}$/);
 
     const found = (await (
       await app().request(`/knowledge/search?space_id=${spaceId}&q=departures`, {
@@ -366,31 +382,8 @@ describe('proposing and applying a write', () => {
     expect(found.hits[0]?.id).toBe(ID.fresh);
   });
 
-  test('a type the space does not auto-apply needs a named person', async () => {
-    const staged = (await (
-      await app().request('/knowledge/proposals', {
-        method: 'POST',
-        headers: headers(),
-        body: proposal({ frontmatter: record({ id: ID.fresh, type: 'decision' }) }),
-      })
-    ).json()) as StagedBody;
-
-    const applied = await app().request(`/knowledge/proposals/${staged.proposal_id}/apply`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({}),
-    });
-    expect(applied.status).toBe(409);
-    expect(((await applied.json()) as ErrorBody).error.code).toBe('approval_required');
-  });
-
-  test('applying a proposal that is not staged is a 404', async () => {
-    const res = await app().request('/knowledge/proposals/prop_nothing/apply', {
-      method: 'POST',
-      headers: headers(),
-      body: '{}',
-    });
-    expect(res.status).toBe(404);
+  test('a proposal id that is not staged resolves to nothing', () => {
+    expect(getProposal(paths, 'prop_nothing')).toBeFalsy();
   });
 });
 

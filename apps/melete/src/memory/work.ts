@@ -36,6 +36,8 @@ export type ExtractionBatch = {
   text: string;
   claims: ClaimHead[];
   snapshot: SpaceGeneration;
+  /** The zone Tier 0 resolves this source's relative dates against. */
+  time_zone: string | null;
 };
 function toWork(row: Record<string, unknown>): MemoryWork {
   return memoryWork.parse({
@@ -92,6 +94,7 @@ export async function claimWork(
       text,
       claims,
       snapshot: generation(space),
+      time_zone: (evidence.time_zone as string | null) ?? null,
     };
   });
 }

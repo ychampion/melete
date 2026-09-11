@@ -1,4 +1,5 @@
 import {
+  claimHandleOf,
   type JobConstraints,
   type KnowledgeExcerpt,
   type RecallItem,
@@ -8,6 +9,7 @@ import {
   type SpaceGeneration,
 } from '@melete/contracts';
 import { eligibleRevision, references, revisionFromRow, sourceExcerpts } from './claims.ts';
+import { disputedKeys } from './contradictions.ts';
 import {
   generation,
   lockSpace,
@@ -101,9 +103,18 @@ export function asKnowledge(item: RecallItem): KnowledgeExcerpt {
         `[${source.source_id}@${source.source_version}:${source.start}-${source.end}] ${item.excerpts[i] ?? ''}`,
     )
     .join('\n');
+  const flags = [
+    `origin ${item.origin_trust}`,
+    item.key ? `key ${item.key}` : 'no key',
+    item.disputed ? 'DISPUTED: do not act externally on this key without approval' : 'undisputed',
+  ].join('; ');
   return {
     path: `memory/claims/${item.claim_id}/revisions/${item.revision}`,
-    excerpt: `${item.domain_key}: ${item.content}\n${item.kind}; ${item.factual_status}; ${item.status}\nValid ${item.valid_from} to ${item.valid_until ?? 'open'}; recorded ${item.recorded_at}; superseded ${item.superseded_at ?? 'no'}\n${citations}`,
+    handle: item.handle,
+    key: item.key,
+    origin_trust: item.origin_trust,
+    disputed: item.disputed,
+    excerpt: `${item.domain_key}: ${item.content}\n${item.kind}; ${item.factual_status}; ${item.status}\n${flags}\nValid ${item.valid_from} to ${item.valid_until ?? 'open'}; recorded ${item.recorded_at}; superseded ${item.superseded_at ?? 'no'}\n${citations}`,
     provenance: {
       id: item.claim_id,
       asserted_by:
@@ -186,10 +197,11 @@ export async function itemAt(
   scope: MemoryScope,
   candidate: Candidate,
   request: RecallRequest,
+  disputed: ReadonlySet<string> = new Set(),
 ): Promise<RecallItem | null> {
   if (!(await eligibleRevision(tx, scope, candidate.claim_id, candidate.revision))) return null;
   const [row] =
-    await tx`select r.*, c.domain_key, c.head_revision, b.content from memory_revisions r join memory_claims c on c.id = r.claim_id
+    await tx`select r.*, c.domain_key, c.key, c.head_revision, b.content from memory_revisions r join memory_claims c on c.id = r.claim_id
     join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision where r.claim_id = ${candidate.claim_id} and r.revision = ${candidate.revision} and c.space_id = ${scope.spaceId}`;
   if (!row) return null;
   const at = new Date(request.at ?? Date.now()).getTime();
@@ -214,10 +226,15 @@ export async function itemAt(
     if (!body) return null;
     excerpts.push((body.content as string).slice(ref.start, ref.end));
   }
+  const key = (row.key as string | null) ?? null;
   return {
     claim_id: revision.claim_id,
     revision: revision.revision,
+    handle: claimHandleOf(revision.claim_id, revision.revision),
     domain_key: row.domain_key,
+    key,
+    origin_trust: revision.origin_trust,
+    disputed: key !== null && disputed.has(key),
     content: row.content,
     kind: revision.kind,
     factual_status: revision.factual_status,
@@ -240,6 +257,7 @@ const empty = (
   snapshot: null,
   index_generation: null,
   items: [],
+  disputed_keys: [],
   coverage: {
     indexed_revision: 0,
     authoritative_revision: 0,
@@ -302,6 +320,8 @@ export async function recall(
           snapshot,
           index_generation: indexGeneration,
         };
+      // The keys an open contradiction covers, read once under the same lock.
+      const disputed = new Set(await disputedKeys(tx, scope.spaceId, audience.audiences));
       const lexical = await (options.lexical ?? lexicalCandidates)(
         tx,
         scope,
@@ -331,7 +351,7 @@ export async function recall(
         for (const row of rows) {
           const candidate = { claim_id: row.claim_id, revision: row.revision, score: 0 };
           // Access and temporal authority precede dense ranking too.
-          if (!(await itemAt(tx, scope, candidate, request))) continue;
+          if (!(await itemAt(tx, scope, candidate, request, disputed))) continue;
           if (
             row.model !== info.model ||
             row.version !== info.version ||
@@ -365,7 +385,7 @@ export async function recall(
         (a, b) => b.score - a.score || a.claim_id.localeCompare(b.claim_id),
       )) {
         if (Date.now() - started > deadlineMs) throw new MemoryError('recall_timeout');
-        const item = await itemAt(tx, scope, candidate, request);
+        const item = await itemAt(tx, scope, candidate, request, disputed);
         if (!item) continue;
         const tokens = itemTokens(item);
         if (used + tokens > request.max_tokens || items.length >= request.limit) {
@@ -381,6 +401,7 @@ export async function recall(
         snapshot,
         index_generation: indexGeneration,
         items,
+        disputed_keys: [...disputed],
         coverage: {
           indexed_revision: indexed,
           authoritative_revision: space.data_revision as number,

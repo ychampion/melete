@@ -4,8 +4,11 @@ import {
   claim,
   claimRevision,
   correctionRequest,
+  isMemoryKey,
+  type OriginTrust,
   type SourceRef,
 } from '@melete/contracts';
+import { resolveContradictions } from './contradictions.ts';
 import {
   bumpRevision,
   enqueue,
@@ -19,7 +22,9 @@ import {
 } from './db.ts';
 import { persistEvidence } from './evidence.ts';
 import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
+import { writeRepairBriefs } from './outputs.ts';
 import { assertMemoryDomain } from './resolve.ts';
+import { revisionTrust } from './trust.ts';
 
 export type ClaimHead = Claim & { current: ClaimRevision };
 export async function references(tx: MemoryTx, id: string, revision: number): Promise<SourceRef[]> {
@@ -55,6 +60,7 @@ export async function revisionFromRow(
     valid_until: row.valid_until ? iso(row.valid_until as Date) : null,
     recorded_at: iso(row.recorded_at as Date),
     superseded_at: row.superseded_at ? iso(row.superseded_at as Date) : null,
+    origin_trust: row.origin_trust ?? 'inferred',
     sources: await references(tx, row.claim_id as string, row.revision as number),
   });
 }
@@ -74,6 +80,7 @@ export async function getHead(
       id: row.id,
       space_id: row.space_id,
       domain_key: row.domain_key,
+      key: row.key ?? null,
       audience: row.audience,
       head_revision: row.head_revision,
       hidden: row.hidden,
@@ -161,7 +168,29 @@ export async function addReferences(
 export type RevisionDraft = Pick<
   ClaimRevision,
   'content' | 'kind' | 'factual_status' | 'valid_from' | 'valid_until' | 'sources' | 'protected'
->;
+> & { key?: string | null; confidence?: number | null };
+
+/**
+ * The trust class of a revision, read from the sources it actually cites. A
+ * model's own conclusion stays `inferred` however good its evidence looks, and
+ * everything else is the minimum over its sources.
+ */
+export async function revisionTrustFor(
+  tx: MemoryTx,
+  kind: string,
+  refs: readonly SourceRef[],
+): Promise<OriginTrust> {
+  const classes: OriginTrust[] = [];
+  for (const ref of refs) {
+    const [row] = await tx`select origin_trust from memory_sources where id = ${ref.source_id}`;
+    classes.push((row?.origin_trust as OriginTrust) ?? 'inferred');
+  }
+  return revisionTrust(
+    kind,
+    classes.map((origin_trust) => ({ origin_trust })),
+  );
+}
+
 /** The caller holds the space lock and has validated the complete change set. */
 export async function publishRevision(
   tx: MemoryTx,
@@ -174,8 +203,10 @@ export async function publishRevision(
 ) {
   assertMemoryDomain(domainKey);
   const id = head?.id ?? identity ?? newId('k');
+  // A claim keeps the key it was created with; a revision never moves a key.
+  const key = head ? head.key : (draft.key ?? (isMemoryKey(domainKey) ? domainKey : null));
   if (!head)
-    await tx`insert into memory_claims (id, space_id, domain_key, audience) values (${id}, ${scope.spaceId}, ${domainKey}, ${scope.audience})`;
+    await tx`insert into memory_claims (id, space_id, domain_key, key, audience) values (${id}, ${scope.spaceId}, ${domainKey}, ${key}, ${scope.audience})`;
   const [next] =
     await tx`select coalesce(max(revision), 0) + 1 as revision from memory_revisions where claim_id = ${id}`;
   const revision = next?.revision as number;
@@ -187,9 +218,11 @@ export async function publishRevision(
       valid_until = case when valid_until is null and valid_from <= ${draft.valid_from} then ${draft.valid_from} else valid_until end
       where claim_id = ${id} and status in ('active','disputed')`;
   }
+  const originTrust = await revisionTrustFor(tx, draft.kind, draft.sources);
   const [row] =
-    await tx`insert into memory_revisions (claim_id, revision, kind, factual_status, status, protected, valid_from, valid_until, data_revision)
-    values (${id}, ${revision}, ${draft.kind}, ${draft.factual_status}, ${status}, ${draft.protected}, ${draft.valid_from}, ${draft.valid_until}, ${dataRevision}) returning *`;
+    await tx`insert into memory_revisions (claim_id, revision, kind, factual_status, status, protected, valid_from, valid_until, data_revision, origin_trust, confidence)
+    values (${id}, ${revision}, ${draft.kind}, ${draft.factual_status}, ${status}, ${draft.protected}, ${draft.valid_from}, ${draft.valid_until}, ${dataRevision},
+      ${originTrust}, ${draft.confidence === undefined || draft.confidence === null ? null : String(draft.confidence)}) returning *`;
   if (draft.content !== null)
     await tx`insert into memory_revision_content (claim_id, revision, content) values (${id}, ${revision}, ${draft.content})`;
   await addReferences(tx, scope.spaceId, id, revision, draft.sources);
@@ -225,6 +258,7 @@ export async function correctClaim(
         source_identity: input.idempotency_key,
         source_version: '1',
         source_type: 'message',
+        author: 'owner',
         event_at: input.valid_from,
         text: input.text,
       },
@@ -264,6 +298,18 @@ export async function correctClaim(
     );
     await tx`update memory_work set status = 'done' where source_id = ${evidence.source.source_id}`;
     await tx`update memory_streams set consumed_sequence = committed_sequence where space_id = ${scope.spaceId} and publisher = ${scope.publisher} and stream = 'owner-corrections'`;
+    // Exactly the outputs that cited the revision this correction replaced, and a
+    // brief naming the change and where each of them said the old thing.
+    await writeRepairBriefs(tx, scope, {
+      claimId: head.id,
+      key: head.key,
+      oldRevision: head.head_revision,
+      newRevision: revision.revision,
+      oldValue: head.current.content ?? '',
+      newValue: input.content,
+    });
+    // An owner correction outranks everything, so a contradiction on this key is settled.
+    if (head.key) await resolveContradictions(tx, scope, head.key);
     await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
     await enqueue(tx, scope.spaceId, 'invalidate', `${head.id}:${revision.revision}`);
     return revision;

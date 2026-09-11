@@ -20,6 +20,7 @@ export function createInternalServer(options: {
   defaultProvider?: string;
   dispatchTimeoutMs?: number;
   resolveAuthority?: BrokerOptions['resolveAuthority'];
+  resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
   gatewayFetch?: GatewayOptions['fetch'];
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
@@ -30,6 +31,7 @@ export function createInternalServer(options: {
     boss: options.boss,
     dispatchTimeoutMs: options.dispatchTimeoutMs,
     resolveAuthority: options.resolveAuthority,
+    resolveTrust: options.resolveTrust,
     approvalTtlMs: options.approvalTtlMs,
   });
   const app = createBrokerApp({

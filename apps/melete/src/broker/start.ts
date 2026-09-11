@@ -6,8 +6,10 @@ import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
+import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import { createInternalServer } from './internal-server.ts';
+import type { TrustResolver } from './trust.ts';
 
 /** Start only the effect listener; the API keeps its own port and authentication surface. */
 export async function startEffectBoundary(
@@ -15,6 +17,8 @@ export async function startEffectBoundary(
   env: Env,
   dependencies: {
     resolveAuthority?: EffectAuthorityResolver;
+    /** Left out, memory answers. Pass one to isolate the broker in a test. */
+    resolveTrust?: TrustResolver;
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -76,6 +80,7 @@ export async function startEffectBoundary(
     defaultProvider: env.MELETE_DEFAULT_PROVIDER,
     connectTls: (host) => certificates.get(host),
     resolveAuthority: dependencies.resolveAuthority,
+    resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
   });
   try {
     await internal.broker.recoverDispatched();

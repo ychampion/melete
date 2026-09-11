@@ -5,6 +5,7 @@ import { type ExtractionGateway, proposeExtraction } from './extract.ts';
 import { cleanupMemory, type DerivedCleanup } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
 import { type RestrictionJournal, restoreMemory } from './restore.ts';
+import { observationProposals } from './tier0.ts';
 import { type EmbeddingProvider, runViewWork } from './views.ts';
 import {
   checkLease,
@@ -43,10 +44,27 @@ export async function workerScope(sql: MemorySql, workId: string): Promise<Memor
 }
 export async function runExtractionWork(options: MemoryServiceOptions, workId: string) {
   const scope = await workerScope(options.sql, workId);
-  if (!scope || !options.gateway) return;
+  if (!scope) return;
   const batch = await claimWork(options.sql, scope, { workId });
   if (!batch) return;
   try {
+    // E3 Tier 0 runs first and, for a structured connector observation, runs
+    // alone: a calendar entry, a contact record or a receipt becomes a checked
+    // fact with no model in the path at all.
+    const tier0 = observationProposals(batch.source, batch.text, {
+      timeZone: batch.time_zone ?? undefined,
+      offset: batch.work.segment_start,
+    });
+    if (tier0.length) {
+      await commitExtraction(options.sql, scope, batch, { proposals: tier0 });
+      return;
+    }
+    // Nothing deterministic to do and no model configured: the work stays
+    // pending rather than being spent, so a later gateway still sees it.
+    if (!options.gateway) {
+      await retryWork(options.sql, scope, batch, 'no_extraction_gateway');
+      return;
+    }
     const proposals = await proposeExtraction(options.sql, scope, batch, options.gateway);
     await commitExtraction(options.sql, scope, batch, { proposals });
   } catch (error) {

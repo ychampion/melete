@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
 import { attemptUsage, waitSpec } from './entities.ts';
+import { claimHandle, memoryKey, originTrust } from './memory.ts';
+import { repairBrief } from './provenance.ts';
 
 export const runtimeCapabilities = z.object({
   streaming: z.boolean(),
@@ -46,6 +48,16 @@ export type SkillPayload = z.infer<typeof skillPayload>;
 export const knowledgeExcerpt = z.object({
   path: z.string().min(1),
   excerpt: z.string(),
+  /**
+   * The stable handle of the revision this excerpt came from, as claim_id at
+   * revision. It is what the attempt cites in the manifest of anything it
+   * writes, and what a later correction matches against.
+   */
+  handle: claimHandle.optional(),
+  key: memoryKey.nullable().default(null),
+  origin_trust: originTrust.default('inferred'),
+  /** An open contradiction on this key: do not act externally on it without approval. */
+  disputed: z.boolean().default(false),
   provenance: z.object({
     id: prefixedId(ID_PREFIXES.knowledge),
     asserted_by: z.string(),
@@ -87,6 +99,11 @@ export const attemptBundle = z.object({
       }),
     ),
     trigger_events: z.array(jsonObject),
+    /**
+     * What a correction broke and where. Each brief names the handle that moved,
+     * the value before and after, and the outputs that cited the old revision.
+     */
+    repair_briefs: z.array(repairBrief).default([]),
   }),
   transcript: z.array(canonicalMessage),
   tools: z.array(toolSpec),

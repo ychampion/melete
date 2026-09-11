@@ -127,6 +127,7 @@ export function assembleHistory(
     new_user_messages: [],
     approval_results: [],
     trigger_events: [],
+    repair_briefs: [],
   };
   const transcript: CanonicalMessage[] = [];
   for (const row of events) {

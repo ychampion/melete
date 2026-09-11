@@ -15,11 +15,17 @@ import {
   newId,
   stableId,
 } from './db.ts';
+import { originTrustOf } from './trust.ts';
 
 export const EXTRACTOR_POLICY = 'memory-extract-v1';
 export const SEGMENT_CHARACTERS = 16000;
 export function toSource(row: Record<string, unknown>): SourceEvent {
+  const author = (row.author as 'owner' | 'external' | undefined) ?? 'owner';
   return sourceEvent.parse({
+    author,
+    origin_trust:
+      row.origin_trust ??
+      originTrustOf({ source_type: row.source_type as SourceEvent['source_type'], author }),
     source_id: row.id,
     source_version: row.source_version,
     owner_id: row.owner_id,
@@ -67,7 +73,8 @@ export async function persistEvidence(
       if (
         content?.content !== input.text ||
         iso(old.event_at) !== iso(input.event_at) ||
-        old.source_type !== (ownerEdit ? 'owner_edit' : input.source_type)
+        old.source_type !== (ownerEdit ? 'owner_edit' : input.source_type) ||
+        old.author !== (ownerEdit ? 'owner' : input.author)
       )
         throw new MemoryError('source_version_conflict');
     }
@@ -82,11 +89,16 @@ export async function persistEvidence(
   const [blocked] = await tx`select id from memory_suppressions where space_id = ${scope.spaceId}
     and publisher = ${scope.publisher} and stream = ${input.stream} and source_identity = ${input.source_identity} limit 1`;
   const state = blocked ? 'suppressed' : 'active';
+  const sourceType = ownerEdit ? 'owner_edit' : input.source_type;
+  const author = ownerEdit ? 'owner' : input.author;
+  // The class is fixed here, from how the bytes arrived. Nothing downstream raises it.
+  const trust = originTrustOf({ source_type: sourceType, author });
   const [row] =
     await tx`insert into memory_sources (id, space_id, owner_id, publisher, stream, source_identity, source_version, stream_sequence,
-    source_type, event_at, audience, state, eligibility_generation, content_length)
+    source_type, event_at, audience, state, eligibility_generation, content_length, author, origin_trust, time_zone)
     values (${newId('src')}, ${scope.spaceId}, ${scope.ownerId}, ${scope.publisher}, ${input.stream}, ${input.source_identity}, ${input.source_version},
-    ${stream?.committed_sequence}, ${ownerEdit ? 'owner_edit' : input.source_type}, ${input.event_at}, ${scope.audience}, ${state}, ${space.eligibility_generation}, ${input.text.length}) returning *`;
+    ${stream?.committed_sequence}, ${sourceType}, ${input.event_at}, ${scope.audience}, ${state}, ${space.eligibility_generation}, ${input.text.length},
+    ${author}, ${trust}, ${input.time_zone ?? null}) returning *`;
   if (!row) throw new MemoryError('source_not_persisted');
   const source = toSource(row);
   if (state === 'active') {

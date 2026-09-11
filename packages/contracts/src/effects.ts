@@ -22,6 +22,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { proposeActionResponse } from './broker.ts';
+import { ORIGIN_TRUST, type OriginTrust, originTrust } from './memory.ts';
 
 // --------------------------------------------------------------------------
 // Effect identity
@@ -71,15 +72,7 @@ export function intentKey(input: IntentKeyInput): string {
  * value the model produced without either. `unknown` is the honest default and
  * is treated exactly as harshly as the rest.
  */
-export const ORIGIN_TRUST_CLASSES = [
-  'owner',
-  'verified_connector',
-  'external_content',
-  'inferred',
-  'unknown',
-] as const;
-export const originTrust = z.enum(ORIGIN_TRUST_CLASSES);
-export type OriginTrust = z.infer<typeof originTrust>;
+export const ORIGIN_TRUST_CLASSES = ORIGIN_TRUST;
 
 /** The two classes that can carry an external write or a spend on their own. */
 export const TRUSTED_ORIGIN_CLASSES = [

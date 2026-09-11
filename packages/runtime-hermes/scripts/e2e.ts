@@ -197,7 +197,7 @@ async function main() {
       unresolved_questions: [],
       deliverable: {},
     },
-    inputs: { new_user_messages: [], approval_results: [], trigger_events: [] },
+    inputs: { new_user_messages: [], approval_results: [], trigger_events: [], repair_briefs: [] },
     transcript: [],
     tools: [],
     skills: [],

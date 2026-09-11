@@ -24,6 +24,8 @@ import {
   jobListQuery,
   jobListResponse,
   jobResponse,
+  knowledgeListQuery,
+  knowledgeListResponse,
   knowledgeRecordResponse,
   knowledgeSearchQuery,
   knowledgeSearchResponse,
@@ -53,6 +55,18 @@ import {
   recallResult,
   sourceEvidenceResponse,
 } from './memory.ts';
+import {
+  attributionReport,
+  attributionRequest,
+  contradictionList,
+  memoryOwnerQuestionList,
+  outputAttribution,
+  outputAttributionResponse,
+  rejectedProposalList,
+  repairBriefList,
+  trustRequest,
+  trustResolution,
+} from './provenance.ts';
 import {
   backgroundOperation,
   connectionGeneration,
@@ -431,6 +445,70 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        '/memory/outputs': {
+          post: {
+            tags: ['memory'],
+            summary: 'Declare which recalled revisions an output used',
+            description:
+              'A draft, a plan step or a proposed action names the handles it used. A correction then ' +
+              'invalidates exactly the outputs that cited the superseded revision, and an output with an ' +
+              'empty manifest is recorded as unattributed and keeps the conservative rule.',
+            requestBody: json(outputAttribution),
+            responses: {
+              '201': jsonResponse('Recorded attribution', outputAttributionResponse),
+              '403': problem('Scope denied'),
+            },
+          },
+        },
+        '/memory/attribution': {
+          post: {
+            tags: ['memory'],
+            summary: 'Report payload values that came from an uncited delivered item',
+            description:
+              'The check the broker runs before admitting a write_external or spend: any recipient, date, ' +
+              'amount or identifier in the payload that appears in a delivered item whose handle is not in ' +
+              'the manifest is reported.',
+            requestBody: json(attributionRequest),
+            responses: { '200': jsonResponse('Attribution findings', attributionReport) },
+          },
+        },
+        '/memory/trust': {
+          post: {
+            tags: ['memory'],
+            summary: 'Resolve the origin trust of each field of a canonical payload',
+            requestBody: json(trustRequest),
+            responses: { '200': jsonResponse('Per-field origin', trustResolution) },
+          },
+        },
+        '/memory/questions': {
+          get: {
+            tags: ['memory'],
+            summary: 'List queued owner questions about contradicted keys',
+            responses: { '200': jsonResponse('Questions', memoryOwnerQuestionList) },
+          },
+        },
+        '/memory/contradictions': {
+          get: {
+            tags: ['memory'],
+            summary: 'List keys with more than one candidate head',
+            responses: { '200': jsonResponse('Contradictions', contradictionList) },
+          },
+        },
+        '/memory/rejections': {
+          get: {
+            tags: ['memory'],
+            summary: 'List extraction proposals rejected by structural validation, with reasons',
+            responses: { '200': jsonResponse('Rejected proposals', rejectedProposalList) },
+          },
+        },
+        '/memory/jobs/{id}/repair-briefs': {
+          get: {
+            tags: ['memory'],
+            summary: 'Read the repair briefs a correction wrote on a responsibility',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Repair briefs', repairBriefList) },
+          },
+        },
         '/knowledge/proposals/{id}/apply': {
           post: {
             tags: ['knowledge'],
@@ -684,6 +762,21 @@ export function buildOpenApiDocument() {
             summary: 'Check a connection now',
             requestParams: idParam('connectionId', 'Connection id'),
             responses: { '200': jsonResponse('Connection', connectionResponse) },
+          },
+        },
+
+        '/knowledge': {
+          get: {
+            tags: ['knowledge'],
+            summary: 'List the records of one space',
+            description:
+              'The catalog of the space the caller is bound to. A space id may be repeated as a query ' +
+              'argument and must match; it never selects a different space.',
+            requestParams: { query: knowledgeListQuery },
+            responses: {
+              '200': jsonResponse('Records', knowledgeListResponse),
+              '403': problem('Wrong space'),
+            },
           },
         },
 

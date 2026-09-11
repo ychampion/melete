@@ -1,13 +1,17 @@
-import { claimId, sourceId } from '@melete/contracts';
+import { attributionRequest, claimId, prefixedId, sourceId, trustRequest } from '@melete/contracts';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { ZodError } from 'zod';
+import { checkPayloadAttribution } from './attribution.ts';
 import { claimHistory, correctClaim, listClaims } from './claims.ts';
-import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
+import { listContradictions, listQuestions } from './contradictions.ts';
+import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { ingest, loadEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory } from './forget.ts';
 import type { MarkdownViews } from './markdown.ts';
+import { pendingRepairBriefs, recordOutput } from './outputs.ts';
 import { type RecallOptions, recall } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
+import { createTrustResolver } from './trust.ts';
 
 export type MemoryRouteOptions = {
   sql: MemorySql;
@@ -129,6 +133,79 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
     if (!result) throw new MemoryError('source_not_found');
     return c.json(result);
   });
+  // E1. The runtime declares what an output used. An empty manifest is recorded
+  // as unattributed rather than refused: chat prose is real, and saying which
+  // outputs the precise rule does not cover is more honest than pretending.
+  app.post('/memory/outputs', async (c) =>
+    c.json(await recordOutput(options.sql, c.get('memoryScope'), await body(c.req.raw)), 201),
+  );
+  // E1. The check the broker runs before admitting a write_external or spend.
+  // It is pure: the caller supplies the payload, the manifest and the items that
+  // were delivered, and gets back every value it cannot account for.
+  app.post('/memory/attribution', async (c) => {
+    const input = attributionRequest.parse(await body(c.req.raw));
+    return c.json(checkPayloadAttribution(input.payload, input.delivered, input.uses));
+  });
+  // E4. Per-field origin, with the sentence a person is shown on the approval card.
+  app.post('/memory/trust', async (c) => {
+    const scope = c.get('memoryScope');
+    const input = trustRequest.parse(await body(c.req.raw));
+    const resolver = createTrustResolver(options.sql, async () => scope);
+    return c.json(
+      await resolver.resolve({
+        space_id: scope.spaceId,
+        payload: input.payload,
+        handles: input.handles,
+      }),
+    );
+  });
+  app.get('/memory/questions', async (c) =>
+    c.json(
+      await options.sql.begin(async (tx) => {
+        const scope = c.get('memoryScope');
+        await lockSpace(tx, scope, false);
+        return { questions: await listQuestions(tx, scope) };
+      }),
+    ),
+  );
+  app.get('/memory/contradictions', async (c) =>
+    c.json(
+      await options.sql.begin(async (tx) => {
+        const scope = c.get('memoryScope');
+        await lockSpace(tx, scope, false);
+        return { contradictions: await listContradictions(tx, scope) };
+      }),
+    ),
+  );
+  app.get('/memory/rejections', async (c) =>
+    c.json(
+      await options.sql.begin(async (tx) => {
+        const scope = c.get('memoryScope');
+        await lockSpace(tx, scope, false);
+        const rows = await tx`select work_id, proposal_index, key, reason, detail, recorded_at
+          from memory_rejections where space_id = ${scope.spaceId} order by recorded_at desc, id limit 200`;
+        return {
+          rejected: rows.map((row) => ({
+            work_id: row.work_id,
+            index: row.proposal_index,
+            key: row.key ?? null,
+            reason: row.reason,
+            detail: row.detail,
+            recorded_at: new Date(row.recorded_at as Date).toISOString(),
+          })),
+        };
+      }),
+    ),
+  );
+  app.get('/memory/jobs/:id/repair-briefs', async (c) =>
+    c.json({
+      repair_briefs: await pendingRepairBriefs(
+        options.sql,
+        c.get('memoryScope'),
+        prefixedId('job').parse(c.req.param('id')),
+      ),
+    }),
+  );
   app.get('/memory/claims', async (c) =>
     c.json(await listClaims(options.sql, c.get('memoryScope'))),
   );

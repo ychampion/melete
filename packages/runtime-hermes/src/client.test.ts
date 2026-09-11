@@ -32,6 +32,7 @@ const bundle: AttemptBundle = {
     new_user_messages: [{ role: 'user', content: 'any news?', at: '2026-09-11T00:00:00.000Z' }],
     approval_results: [{ action_id: `act_${SUFFIX}`, decision: 'denied', note: null }],
     trigger_events: [],
+    repair_briefs: [],
   },
   transcript: [],
   tools: [],
@@ -40,6 +41,9 @@ const bundle: AttemptBundle = {
     {
       path: 'knowledge/landlord-contact.md',
       excerpt: 'The landlord answers email but never the phone.',
+      key: null,
+      origin_trust: 'owner',
+      disputed: false,
       provenance: {
         id: `k_${SUFFIX}`,
         asserted_by: 'user',

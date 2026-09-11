@@ -27,7 +27,12 @@ function makeBundle(script: StubScript = { script: [] }, epoch = 1): AttemptBund
       unresolved_questions: [],
       deliverable: { kind: 'none' },
     },
-    inputs: { new_user_messages: [], approval_results: [], trigger_events: [] },
+    inputs: {
+      new_user_messages: [],
+      approval_results: [],
+      trigger_events: [],
+      repair_briefs: [],
+    },
     transcript: [],
     tools: [],
     skills: [],
