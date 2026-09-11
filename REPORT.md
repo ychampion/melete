@@ -222,3 +222,43 @@ With the classic overlay2 store, image inspect reports uncompressed layer sizes:
 runtime 681,097,087 bytes, Melete 352,241,107 bytes, and web 181,052,159 bytes.
 These sizes are not directly comparable with the first host's compressed
 containerd content sizes. All four services remained healthy after the install.
+
+## Backup and restore
+
+`MELETE_CONFORMANCE_COMPOSE=1 bun run deploy/scripts/compose-restore.ts` passed
+on the deployed stack in **74,315 ms**. It parked a real Hermes job for approval,
+seeded two memory facts, and took a custom-format `pg_dump`. It then forgot one
+fact after that snapshot so the independent journal was newer than the dump.
+
+The script stopped the stack and destroyed only the positively identified
+`melete_pgdata` volume. All five other named volumes and the original `.env`
+were retained and verified unchanged. It restored into an empty database.
+The dump was 191,325 bytes, SHA-256
+`02b5a00ed65321f7ffd65f78e57095d3efb6225899140e47cc63fe9d101c2d06`.
+
+| Restore phase | Milliseconds |
+| --- | ---: |
+| Verify stack and volume ownership | 501 |
+| Park a real job and seed memory | 15,845 |
+| Stop Melete and dump Postgres | 884 |
+| Forget one fact after the snapshot | 6,716 |
+| Replace the exact Postgres volume | 14,386 |
+| Restore the empty database | 688 |
+| Reject stale state before replay | 1,161 |
+| Normal startup, health and replay verification | 18,618 |
+| Approve the restored job and verify one receipt | 15,512 |
+
+Before startup, the read-only verification command failed with exit 1 because
+the retained restriction had not been replayed. The API was stopped during this
+check; this is not an HTTP denial measurement. Normal startup then replayed one
+journal restriction into SQL before opening memory and job workers. The
+forgotten fact returned zero items; the unrelated fact returned one.
+
+The restored job was still `waiting_for_approval` with the same approval ID and
+payload hash and no destination effect. Approval completed it with exactly one
+succeeded action, one receipt, and one destination row. All four services were
+healthy afterward. The script requires explicit Compose opt-in, fake-provider
+and test-connector flags, checkout/project/volume ownership checks, a verified
+backup, and no other consumers before replacing that one volume. A partial
+restore leaves Melete stopped. Backup bytes and detailed evidence stay in a
+private directory outside the checkout.
