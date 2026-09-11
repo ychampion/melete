@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { lstat, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -16,14 +17,32 @@ export type PostgresFixtureOptions = {
   migrations?: Array<string | URL>;
 };
 
-const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
+/**
+ * Migrations are named through the journal, never by filename. A lane that
+ * branches while another is landing gets its index reassigned on merge, and a
+ * fixture that spelled the old number out would then load nothing and fail
+ * somewhere unrelated. The name after the index is the stable part, so that is
+ * what a fixture asks for; a name the journal does not have fails here, saying
+ * so, rather than as a missing table later.
+ */
+const journal = JSON.parse(
+  readFileSync(new URL('../../drizzle/meta/_journal.json', import.meta.url), 'utf8'),
+) as { entries: Array<{ idx: number; tag: string }> };
+
+function migrationNamed(name: string): URL {
+  const entry = journal.entries.find((candidate) => candidate.tag.replace(/^\d+_/, '') === name);
+  if (!entry) throw new Error(`no migration named ${name} in drizzle/meta/_journal.json`);
+  return new URL(`../../drizzle/${entry.tag}.sql`, import.meta.url);
+}
+
+const initialMigration = migrationNamed('initial_schema');
 /**
  * The frozen initial schema, plus the later migrations the broker's own
- * invariants live in. A fixture that stops at 0000 cannot exercise a unique
- * index that was added in 0009, and a test that cannot exercise the index is
- * not evidence of anything.
+ * invariants live in. A fixture that stops at the initial schema cannot
+ * exercise a unique index added later, and a test that cannot exercise the
+ * index is not evidence of anything.
  */
-const brokerMigrations = [new URL('../../drizzle/0012_effect_identity.sql', import.meta.url)];
+const brokerMigrations = [migrationNamed('effect_identity')];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
