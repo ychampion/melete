@@ -14,4 +14,8 @@ Rules this module keeps:
 - Reads are scoped to one space. A caller that holds a handle to one space
   cannot widen it with a query parameter.
 
-Not implemented yet.
+`actions.ts` implements the space-scoped action list through an injected owner
+authorization function. It deliberately includes actions belonging to cancelled
+jobs and orders `unknown`/`unresolved` sends first. The broker's internal listener
+exposes this read adapter to the API using its service credential. Other owner
+routes remain for the API lane.

@@ -5,7 +5,9 @@ import {
   type DispatchResult,
 } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
+import type { EffectAuthority } from '../../src/broker/authority.ts';
 import { loadAction, recordId } from '../../src/broker/records.ts';
+import type { BrokerOptions } from '../../src/broker/service.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import type { Connector } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
@@ -42,7 +44,7 @@ const manifest: ConnectorManifest = {
     verify: false,
   })),
 };
-async function setup(execute?: Connector['execute']) {
+async function setup(execute?: Connector['execute'], options: Partial<BrokerOptions> = {}) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   const seed = await seedJob(fixture.sql);
   let calls = 0;
@@ -82,6 +84,7 @@ async function setup(execute?: Connector['execute']) {
     sql: fixture.sql,
     connectors: resolver,
     boss: boss ?? undefined,
+    ...options,
   });
   return { ...seed, broker, connector, resolver, sql: fixture.sql, calls: () => calls };
 }
@@ -334,4 +337,159 @@ describe('durable action lifecycle', () => {
       });
     },
   );
+});
+
+describe('full effect authority binding', () => {
+  async function proposal(s: Awaited<ReturnType<typeof setup>>) {
+    const result = await s.broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: { to: 'Zara <ZARA@Example.com>', resource: 'mailbox-one', body: 'Approved bytes' },
+    });
+    await s.broker.decide(result.action_id, {
+      decision: 'approved',
+      payload_hash: result.payload_hash,
+    });
+    return result;
+  }
+
+  databaseTest(
+    'approval records action, bytes, resource, recipient, connection, principal and expiry together',
+    async () => {
+      const s = await setup();
+      const p = await proposal(s);
+      const [event] =
+        await s.sql`select payload from event where dedup_key = ${`broker:binding:${p.action_id}`}`;
+      const [approval] = await s.sql`select expires_at from approval where id = ${p.approval_id}`;
+      expect(event?.payload.tuple).toMatchObject({
+        action_id: p.action_id,
+        payload_hash: p.payload_hash,
+        connection_id: s.connectionId,
+        acting_principal: 'owner',
+        resource: { resource: 'mailbox-one', kind: 'test.send' },
+        recipient: { to: 'zara@example.com' },
+        expires_at: new Date(approval?.expires_at).toISOString(),
+      });
+      expect(event?.payload.policy_generation).toBe(0);
+      expect(event?.payload.connection_generation).toBe(0);
+    },
+  );
+
+  for (const [field, changed, code, reason] of [
+    ['resource', { mailbox: 'replacement' }, 'approval_hash_mismatch', 'effect_binding'],
+    ['recipient', { to: 'other@example.com' }, 'approval_hash_mismatch', 'effect_binding'],
+    ['actingPrincipal', 'another-account', 'approval_hash_mismatch', 'effect_binding'],
+    ['policyGeneration', 1, 'scope_denied', 'policy_generation'],
+    ['connectionGeneration', 1, 'scope_denied', 'connection_generation'],
+    ['allowed', false, 'scope_denied', 'Current policy rejects this effect'],
+  ] as const) {
+    databaseTest(
+      `admission revalidates ${field} with the injected current authority and ledgers refusal`,
+      async () => {
+        const current: Partial<EffectAuthority> = {};
+        const phases: string[] = [];
+        const s = await setup(undefined, {
+          resolveAuthority: async (_tx, input) => {
+            phases.push(input.phase);
+            return current;
+          },
+        });
+        const p = await proposal(s);
+        Object.assign(current, { [field]: changed });
+        expect(
+          await rejectionOf(s.broker.admit(s.claims, p.action_id, p.payload_hash)),
+        ).toMatchObject({ code });
+        const [event] =
+          await s.sql`select payload from event where job_id = ${s.claims.job_id} and payload->>'phase' = 'admission_rejected'`;
+        expect(event?.payload).toMatchObject({ code, reason });
+        expect(phases).toContain('admission');
+        expect(
+          await s.sql`select id from budget_ledger where action_id = ${p.action_id}`,
+        ).toHaveLength(0);
+        expect(s.calls()).toBe(0);
+      },
+    );
+  }
+
+  databaseTest('changing an approval expiry cannot extend the reviewed authorization', async () => {
+    const s = await setup();
+    const p = await proposal(s);
+    await s.sql`update approval set expires_at = expires_at + interval '1 day' where id = ${p.approval_id}`;
+    expect(await rejectionOf(s.broker.admit(s.claims, p.action_id, p.payload_hash))).toMatchObject({
+      code: 'approval_hash_mismatch',
+    });
+    expect(s.calls()).toBe(0);
+  });
+
+  databaseTest(
+    'an approval cannot move to a different active connection with the same payload',
+    async () => {
+      const s = await setup();
+      const p = await proposal(s);
+      const replacement = recordId('conn');
+      await s.sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${replacement}, ${s.claims.space_id}, 'test', 'Replacement', '["test.send"]'::jsonb)`;
+      s.resolver.get = (id: string) =>
+        id === replacement || id === s.connectionId ? s.connector : undefined;
+      await s.sql`update action set connection_id = ${replacement} where id = ${p.action_id}`;
+      expect(
+        await rejectionOf(s.broker.admit(s.claims, p.action_id, p.payload_hash)),
+      ).toMatchObject({ code: 'approval_hash_mismatch' });
+      expect(s.calls()).toBe(0);
+    },
+  );
+
+  databaseTest(
+    'a binding copied from another action cannot authorize otherwise identical bytes',
+    async () => {
+      const s = await setup();
+      const first = await proposal(s);
+      const second = await proposal(s);
+      await s.sql`update event set payload = (select payload from event where dedup_key = ${`broker:binding:${first.action_id}`})
+      where dedup_key = ${`broker:binding:${second.action_id}`}`;
+      expect(first.payload_hash).toBe(second.payload_hash);
+      expect(
+        await rejectionOf(s.broker.admit(s.claims, second.action_id, second.payload_hash)),
+      ).toMatchObject({ code: 'approval_hash_mismatch' });
+      expect(s.calls()).toBe(0);
+    },
+  );
+
+  for (const revocation of ['generation', 'disabled'] as const) {
+    databaseTest(
+      `execution fences a queued action after connection ${revocation} and never dispatches`,
+      async () => {
+        let generation = 4;
+        const phases: string[] = [];
+        const s = await setup(undefined, {
+          resolveAuthority: async (_tx, input) => {
+            phases.push(input.phase);
+            return { connectionGeneration: generation, policyGeneration: 3 };
+          },
+        });
+        const p = await proposal(s);
+        await s.broker.admit(s.claims, p.action_id, p.payload_hash);
+        if (revocation === 'generation') generation++;
+        else await s.sql`update connection set status = 'disabled' where id = ${s.connectionId}`;
+        const action = await s.broker.dispatch(p.action_id);
+        expect(action.status).toBe('failed');
+        expect(action.reconciliation).toMatchObject({
+          reason: 'connection_generation',
+          retryable: false,
+        });
+        expect(action.dispatched_at).toBeNull();
+        expect(phases).toContain('execution');
+        expect(s.calls()).toBe(0);
+        const [ledger] =
+          await s.sql`select settled from budget_ledger where action_id = ${action.id}`;
+        expect(ledger?.settled).toBe(0);
+        const [event] =
+          await s.sql`select payload from event where job_id = ${s.claims.job_id} and payload->>'phase' = 'dispatch_rejected'`;
+        expect(event?.payload).toMatchObject({
+          outcome: 'fenced',
+          reason: 'connection_generation',
+        });
+      },
+    );
+  }
 });

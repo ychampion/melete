@@ -155,13 +155,15 @@ export class PostgresGatewayBudget implements GatewayBudget {
         throw new GatewayError(409, 'reservation_mismatch');
       }
       const [attempt] =
-        await tx`select epoch, usage from attempt where id = ${entry.attempt_id} for update`;
+        await tx`select epoch, usage, outcome_detail from attempt where id = ${entry.attempt_id} for update`;
       if (!attempt) throw new GatewayError(409, 'attempt_not_found');
       const late = attempt.epoch !== job.lease_epoch;
       const usage = result.usage;
       if (
         usage &&
-        (!Object.values(usage).every((value) => Number.isSafeInteger(value) && value >= 0) ||
+        (![usage.inputTokens, usage.outputTokens, usage.totalTokens, usage.cachedInputTokens].every(
+          (value) => Number.isSafeInteger(value) && value >= 0,
+        ) ||
           usage.totalTokens < usage.inputTokens + usage.outputTokens)
       )
         throw new GatewayError(502, 'invalid_usage');
@@ -179,8 +181,14 @@ export class PostgresGatewayBudget implements GatewayBudget {
         requests: Number(previous.requests ?? 0) + 1,
         usd_est: Number(previous.usd_est ?? 0),
       };
+      const detail = {
+        ...(attempt.outcome_detail ?? {}),
+        gateway_usage_uncertain:
+          attempt.outcome_detail?.gateway_usage_uncertain === true || usage === null,
+      };
       await tx`update attempt set model_actual = coalesce(${result.modelActual}, model_actual),
-        usage = ${JSON.stringify(accumulated)}::jsonb where id = ${entry.attempt_id}`;
+        usage = ${JSON.stringify(accumulated)}::jsonb,
+        outcome_detail = ${JSON.stringify(detail)}::jsonb where id = ${entry.attempt_id}`;
       await appendEvent(
         tx,
         job.id,
@@ -203,6 +211,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           latency_ms: result.latencyMs,
           status: result.status,
           http_status: result.httpStatus,
+          usage_uncertain: usage === null,
           late,
         },
         dedup,

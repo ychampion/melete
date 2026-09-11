@@ -69,3 +69,65 @@
 - Test `calendar.update`: preserves the creation action UID and records the update action/hash in ICS, because replacing UID would identify a new event.
 - Test `ICS import`: read-only series list includes recurrence rules; recurrence occurrences are not expanded.
 - Test `email.health`: IMAP connectivity is checked; this does not claim SMTP delivery.
+
+## Slice 6 — gateway integration in progress
+
+- SHA `7c6749a`: mail/calendar/sealed-secret slice pushed; focused mail suite is 18 pass / 96 assertions / 735 ms.
+- Command `git -C C:/Users/gamin/melete-oss-w2 status --short --branch`: re-read with REPORT.md at owner resume, 2026-09-11 08:25 UTC; continuing from existing edits.
+- Command `bun test apps/melete/src/gateway --max-concurrency=2`: 14 unit tests / 68 assertions green, including actual CONNECT with a test-only certificate and metered inner requests.
+- Test `scripted fake streams through the gateway, broker approval, destination, and final response`: passed against real HTTP and Postgres with two persisted model usage records and one destination delivery.
+- Test `service startup binds the W2 internal port and runs pg-boss against the fixture`: passed on 127.0.0.1:3112.
+- Log `cancellation fences both broker and provider HTTP routes ... timed out after 5000ms`: focused diagnosis in progress before slice 6 commit.
+
+## Slice 7 — conformance verification
+
+- Command `bun test conformance/scenarios/03-unknown-outcomes.test.ts conformance/scenarios/04-approval-binding.test.ts --max-concurrency=2`: 11 pass, 84 assertions, 0 fail, 34.70 seconds.
+- Test `verify resolves the action to succeeded and the job continues`: adjusted the assertion to count the reconciliation wake separately from the earlier approval wake; both are durable queue records.
+- Test `approval binding`: one-byte tamper, revision drift, edited action identity, cancel/admit race and both late final/unknown dispositions pass against the durable test destination.
+
+## Slice 6 — gateway verification checkpoint, 2026-09-11 08:46 UTC
+
+- Command `bun test apps/melete/src/gateway --max-concurrency=2`: 14 pass, 68 assertions, 0 fail, 768 ms after integration shutdown changes.
+- Command `bun test apps/melete/test/integration/gateway.test.ts --max-concurrency=2`: 3 pass, 1 fail, 35 assertions, 26.49 seconds; scripted streaming/approval/destination round trip, concurrent request cap, and pg-boss startup pass.
+- Log `cancellation fences both broker and provider HTTP routes without a request record ... timed out after 5000ms`: persists after the two permitted fixes (HTTP shutdown ordering and rejected-request draining); no further fix cycles on this check.
+- Command `bun run compose:check`: 11 checks pass; compose runtime stays on internal-only network, effect port unpublished, keys supplied only to Melete, shared work volume and proxy configuration added.
+- Command `if ($env:FIREWORKS_API_KEY)`: absent; real Fireworks smoke `skipped: no key`; no external provider request made.
+- Log `owner steering A-F`: preserve commits; add full approval binding and generation resolver, cancelled action listing, fenced late receipt reconciliation, execution generation fencing, post-destination timeout identity, and uncertain usage evidence before final report.
+
+## Assumptions — D06/D07 integration
+
+- Log `owner steering A`: frozen contracts remain untouched; generation and approval binding metadata use broker-owned injected resolvers and durable event evidence until W1 columns merge.
+- Log `slice 6 failing check`: gateway edits remain uncommitted while the reported check is red; continue the requested sharpening and report exact final check status before opening the PR.
+
+## D06/D07 — implemented and focused verification
+
+- Command `bun test apps/melete/test/integration/broker.test.ts apps/melete/test/integration/budget.test.ts --max-concurrency=2`: 26 pass, 134 assertions, 0 fail, 35.33 seconds; full tuple, current policy/generation refusal, expiry extension refusal, connection revoke/replace fencing, and uncertain usage flags verified.
+- Command `bun run conformance`: 14 pass, 109 assertions, 0 fail, 35.63 seconds; 26 pre-existing todos remain in scenarios outside W2.
+- Test `provider timeout after the destination write reconciles the original logical action identity`: destination accepts before the injected deadline; restart and verification use one original action id and one destination row.
+- Test `cancelled jobs still expose unknown and unresolved sends through the owner action API`: returns both uncertain states after cancellation; runtime credential and another space are refused.
+- Test `an authentic fenced receipt resolves an unknown action without reopening its attempt or cancelled job`: succeeded action with late=true; cancelled job and ended attempt remain terminal; no recovery wake is enqueued.
+- Test `gateway retains unknown usage and rejects a principal after the epoch bump`: token reservation remains unsettled and attempt.outcome_detail.gateway_usage_uncertain is true; provider model_actual remains independent from requested model.
+- Command `bun run lint`: 107 files passed after formatting W2 files and excluding generated .omx state; no generated state was edited or removed.
+- Log `typecheck TS18046 Response.json is unknown`: action API conformance reads now validate with the frozen actionListResponse schema; checking the correction next.
+
+## Assumptions — approval lifetime and API integration
+
+- Test `approval records action, bytes, resource, recipient, connection, principal and expiry together`: service approval TTL defaults to 24 hours; only trusted approvalTtlMs changes it.
+- Command `startEffectBoundary(handle, env, { resolveAuthority })`: zero-generation compatibility is explicit until W1 injects its current column resolver; frozen contracts are unchanged.
+- Command `GET /actions?job_id=<id>`: internal API read uses the distinct API bearer and x-melete-space-id; W1 can mount the exported adapter behind owner authentication.
+
+## Final verification — stop-rule handoff, 2026-09-11 09:00 UTC
+
+- Command `bun test --max-concurrency=2`: 297 pass, 1 existing DATABASE_URL ping skip, 26 pre-existing todos, 1 fail, 1030 assertions, 137.13 seconds; whole suite remains below the three-minute cap.
+- Log `(fail) cancellation fences both broker and provider HTTP routes without a request record [5015.00ms]`: `this test timed out after 5000ms`; two fix cycles were exhausted before the architecture sharpening, and the final full suite reproduces it.
+- Test `cancellation fences both broker and provider HTTP routes without a request record`: HTTP 403 and no-reservation assertions ran; earlier instrumentation localized the remaining wait to server.close cleanup. The failing test is retained for the handoff.
+- Command `bun run typecheck`: passed after validating action-list response JSON with the frozen schema.
+- Command `bun run lint`: passed, 107 files; focused formatter subsequently handled only added W2 source/test lines.
+- Command `bun run compose:check`: 11 pass; Docker is absent on this laptop, so Linux container/network execution remains unverified here.
+- Command `git -C C:/Users/gamin/melete-oss-w2 diff --exit-code 65e26f1438cd5c8e95e7bf160f456be07d8cb534 -- packages/contracts`: passed; frozen contracts unchanged.
+- Command `git -C C:/Users/gamin/melete-oss-w2 diff --check`: passed.
+- Test `full effect authority binding`: both added action-id and connection-id substitution tests passed in the final suite, in addition to resource, recipient, principal, generation, policy and expiry checks.
+- Test `provider evidence parsing`: empty, partial, negative, malformed cache, and overflowing usage keep the reservation uncertain; actual returned model and parsed usage remain separate from the requested alias.
+- Log `FIREWORKS_API_KEY absent`: real smoke remains `skipped: no key`; all executed provider tests use the in-process fake or a local transport double.
+- Log `DONE not claimed`: one known teardown failure remains after the permitted fix cycles; preserve the implementation, open a draft PR, and do not merge.
+- Log `temporary fixture cleanup`: automatic approval review rejected one recursive temporary-directory removal earlier in this run; its Postgres process was stopped and the directory remains preserved.

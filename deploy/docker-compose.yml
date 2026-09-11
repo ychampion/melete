@@ -22,6 +22,7 @@ volumes:
   pgdata:
   spaces:
   artifacts:
+  work:
 
 services:
   postgres:
@@ -56,18 +57,26 @@ services:
       PORT: 8787
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?set MELETE_MASTER_KEY in .env}
+      MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?set MELETE_CAPABILITY_KEY in .env}
+      MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?set MELETE_APPROVAL_KEY in .env}
       MELETE_SPACES_DIR: /data/spaces
       MELETE_ARTIFACTS_DIR: /data/artifacts
       MELETE_BROKER_BIND: 0.0.0.0:8788
+      MELETE_WORK_DIR: /work
+      MELETE_CONNECTIONS_FILE: /etc/melete/connections.json
+      MELETE_GATEWAY_TLS_DIR: /etc/melete/gateway-tls
       MELETE_RUNTIME_URL: http://runtime:8790
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
+      OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
     volumes:
       - spaces:/data/spaces
       - artifacts:/data/artifacts
+      - work:/work
+      - ./config:/etc/melete:ro
     ports:
       - "${MELETE_PORT:-8787}:8787"
     healthcheck:
@@ -89,6 +98,9 @@ services:
         condition: service_started
     environment:
       MELETE_BROKER_URL: http://melete:8788
+      HTTP_PROXY: http://melete:8788
+      HTTPS_PROXY: http://melete:8788
+      NO_PROXY: melete,localhost,127.0.0.1
       HERMES_EXEC_ASK: "1"
     user: "10001:10001"
     read_only: true
@@ -101,7 +113,7 @@ services:
       - /tmp:size=64m,mode=1777
     volumes:
       # The only writable path, and the only thing from the host side it sees.
-      - spaces:/work
+      - work:/work
 
   # The web client is built separately and is not in this repository yet, so it
   # sits behind a profile: `docker compose up` brings up everything else today,

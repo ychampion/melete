@@ -20,8 +20,17 @@ import {
 import { Ajv } from 'ajv';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { QUEUES } from '../jobs/queue.ts';
+import {
+  bindEffect,
+  type EffectAuthorityResolver,
+  loadBinding,
+  requireMatchingBinding,
+  resolveEffectAuthority,
+  saveBinding,
+} from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import { BrokerFault } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
@@ -45,6 +54,9 @@ export type BrokerOptions = {
   dispatchTimeoutMs?: number;
   /** Trusted connector pricing, never a cost supplied by the model. */
   estimateSpend?: (action: Action) => number;
+  resolveAuthority?: EffectAuthorityResolver;
+  /** Approval lifetime is service policy, never a value supplied by a tool caller. */
+  approvalTtlMs?: number;
 };
 
 const question =
@@ -60,6 +72,11 @@ export class BrokerService implements BrokerOperations {
   constructor(private readonly options: BrokerOptions) {
     this.sql = options.sql;
     this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
+    if (
+      options.approvalTtlMs !== undefined &&
+      (!Number.isSafeInteger(options.approvalTtlMs) || options.approvalTtlMs <= 0)
+    )
+      throw new Error('approvalTtlMs must be a positive integer');
   }
 
   async authorize(claims: CapabilityClaims): Promise<void> {
@@ -77,7 +94,7 @@ export class BrokerService implements BrokerOperations {
     kind: string,
   ) {
     const [connection] = await tx`select provider, scopes, status from connection
-      where id = ${connectionId} and space_id = ${job.space_id}`;
+      where id = ${connectionId} and space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
     const connector = this.options.connectors.get(connectionId);
     if (!connector || connector.manifest.provider !== connection.provider)
@@ -198,6 +215,16 @@ export class BrokerService implements BrokerOperations {
         values (${id}, ${job.id}, ${claims.attempt_id}, ${request.connection_id}, ${request.kind},
           ${tool.effect_class}, ${canonical.json}::jsonb, ${canonical.hash}, ${id}) returning *`;
       if (!row) throw new Error('Action insert returned no record');
+      const created = actionFromRow(row);
+      const expiresAt = needsApproval(tool)
+        ? new Date(Date.now() + (this.options.approvalTtlMs ?? 86_400_000)).toISOString()
+        : null;
+      const authority = await resolveEffectAuthority(
+        tx,
+        { job, action: created, phase: 'proposal' },
+        this.options.resolveAuthority,
+      );
+      await saveBinding(tx, created, bindEffect(created, job, authority, expiresAt));
       await appendEvent(
         tx,
         job.id,
@@ -208,8 +235,8 @@ export class BrokerService implements BrokerOperations {
       );
       if (needsApproval(tool)) {
         const approvalId = recordId('apr');
-        await tx`insert into approval (id, action_id, job_revision, payload_hash)
-          values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash})`;
+        await tx`insert into approval (id, action_id, job_revision, payload_hash, expires_at)
+          values (${approvalId}, ${id}, ${job.revision}, ${canonical.hash}, ${expiresAt})`;
         await this.setStatus(tx, actionFromRow(row), 'needs_approval');
         await appendEvent(tx, job.id, claims.attempt_id, 'approval_requested', {
           action_id: id,
@@ -229,6 +256,8 @@ export class BrokerService implements BrokerOperations {
       await this.admit(claims, action.id, canonical.hash);
       return this.proposalView(await this.dispatch(action.id));
     }
+    // A crash between the two durable steps has not sent anything yet.
+    if (action.status === 'admitted') return this.proposalView(await this.dispatch(action.id));
     return this.proposalView(action);
   }
 
@@ -249,6 +278,20 @@ export class BrokerService implements BrokerOperations {
       if (approval.job_revision !== job.revision) throw new BrokerFault('revision_mismatch');
       if (approval.expires_at && new Date(approval.expires_at).getTime() <= Date.now())
         throw new BrokerFault('approval_required', 'Approval expired');
+      const authority = await resolveEffectAuthority(
+        tx,
+        { job, action, phase: 'decision' },
+        this.options.resolveAuthority,
+      );
+      requireMatchingBinding(
+        await loadBinding(tx, action),
+        bindEffect(
+          action,
+          job,
+          authority,
+          approval.expires_at ? new Date(approval.expires_at).toISOString() : null,
+        ),
+      );
       if (['cancelled', 'completed', 'failed'].includes(job.state))
         throw new BrokerFault('stale_epoch');
       if (approval.decision) {
@@ -303,6 +346,7 @@ export class BrokerService implements BrokerOperations {
         if (!['proposed', 'approved'].includes(action.status))
           throw new BrokerFault('action_not_admissible');
         let authorization: string | null = null;
+        let expiresAt: string | null = null;
         if (needsApproval(tool)) {
           const [approval] = await tx`select * from approval where action_id = ${id}
             and payload_hash = ${action.payload_hash} for update`;
@@ -312,7 +356,15 @@ export class BrokerService implements BrokerOperations {
           if (approval.expires_at && new Date(approval.expires_at).getTime() <= Date.now())
             throw new BrokerFault('approval_required', 'Approval expired');
           authorization = approval.id;
+          expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
         }
+        const authority = await resolveEffectAuthority(
+          tx,
+          { job, action, phase: 'admission' },
+          this.options.resolveAuthority,
+        );
+        const binding = bindEffect(action, job, authority, expiresAt);
+        requireMatchingBinding(await loadBinding(tx, action), binding);
         const requests: ReservationRequest[] = [{ kind: 'calls', amount: 1 }];
         if (tool.effect_class === 'spend') {
           const cost = this.options.estimateSpend?.(action);
@@ -325,6 +377,18 @@ export class BrokerService implements BrokerOperations {
           budget_reservation = ${reservations[0]?.id ?? null}, attempt_id = ${claims.attempt_id}
           where id = ${id}`;
         await this.setStatus(tx, { ...action, attempt_id: claims.attempt_id }, 'admitted');
+        await appendEvent(
+          tx,
+          job.id,
+          claims.attempt_id,
+          'notice',
+          {
+            action_id: id,
+            phase: 'execution_authorized',
+            ...binding,
+          },
+          `broker:execution:${id}`,
+        );
         return { action: await loadAction(tx, id), error: null };
       } catch (error) {
         if (!(error instanceof BrokerFault)) throw error;
@@ -333,6 +397,7 @@ export class BrokerService implements BrokerOperations {
           action_id: id,
           phase: 'admission_rejected',
           code: error.code,
+          reason: error.message,
         });
         return { action: null, error };
       }
@@ -357,6 +422,42 @@ export class BrokerService implements BrokerOperations {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
       if (action.status !== 'admitted') return { action, context: null };
+      const [connection] = await tx`select status, provider, scopes from connection
+        where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
+      const stored = await loadBinding(tx, action);
+      try {
+        const authority = await resolveEffectAuthority(
+          tx,
+          { job, action, phase: 'execution' },
+          this.options.resolveAuthority,
+        );
+        const fenced = checkConnectionGeneration(
+          stored.connection_generation,
+          authority.connectionGeneration,
+          connection?.status === 'active',
+        );
+        if (fenced)
+          return {
+            action: await this.rejectDispatch(tx, job, action, fenced.reason),
+            context: null,
+          };
+        const connector = this.options.connectors.get(action.connection_id);
+        const tool = connector && findTool(connector.manifest, action.kind);
+        if (
+          !connector ||
+          connector.manifest.provider !== connection?.provider ||
+          !tool ||
+          ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))
+        )
+          throw new BrokerFault('scope_denied');
+        requireMatchingBinding(
+          stored,
+          bindEffect(action, job, authority, stored.tuple.expires_at as string | null),
+        );
+      } catch (error) {
+        if (!(error instanceof BrokerFault)) throw error;
+        return { action: await this.rejectDispatch(tx, job, action, error.message), context: null };
+      }
       // Admission authorizes these bytes only. A storage mutation must not reach a connector.
       if (canonicalizePayload(action.canonical_payload).hash !== action.payload_hash) {
         await this.setStatus(tx, action, 'failed');
@@ -411,6 +512,7 @@ export class BrokerService implements BrokerOperations {
   }
 
   async recordResult(id: string, result: DispatchResult): Promise<Action> {
+    result = dispatchResult.parse(result);
     const original = await loadAction(this.sql, id);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
@@ -418,6 +520,7 @@ export class BrokerService implements BrokerOperations {
       if (!['dispatched', 'unknown', 'unresolved'].includes(action.status)) return action;
       const [attempt] = await tx`select epoch from attempt where id = ${action.attempt_id}`;
       const late = attempt?.epoch !== job.lease_epoch;
+      const wasUncertain = action.status === 'unknown' || action.status === 'unresolved';
       let receipt: Receipt | null = null;
       if (result.outcome === 'succeeded') {
         if (
@@ -430,6 +533,7 @@ export class BrokerService implements BrokerOperations {
           };
         } else receipt = { ...result.receipt, late };
       }
+      if (wasUncertain && result.outcome === 'unknown') return action;
       await this.setStatus(tx, action, result.outcome);
       await tx`update action set receipt = ${receipt ? JSON.stringify(receipt) : null}::jsonb,
         resolved_at = ${result.outcome === 'unknown' ? null : new Date().toISOString()},
@@ -438,7 +542,10 @@ export class BrokerService implements BrokerOperations {
             ? { reason: question, detail: result.reason, late }
             : result.outcome === 'failed'
               ? { reason: result.reason, retryable: result.retryable, late }
-              : { late },
+              : {
+                  late,
+                  ...(wasUncertain ? { decision: 'succeeded', source: 'authentic_receipt' } : {}),
+                },
         )}::jsonb
         where id = ${id}`;
       if (result.outcome !== 'unknown') {
@@ -456,6 +563,17 @@ export class BrokerService implements BrokerOperations {
         !['cancelled', 'failed', 'completed'].includes(job.state)
       ) {
         await this.moveJob(tx, job, 'needs_reconciliation', { kind: 'user_input', question });
+      }
+      if (
+        wasUncertain &&
+        result.outcome !== 'unknown' &&
+        !late &&
+        job.state === 'needs_reconciliation'
+      ) {
+        const [pending] =
+          await tx`select count(*)::int as count from action where job_id = ${job.id}
+          and status in ('unknown', 'unresolved', 'dispatched')`;
+        if (pending?.count === 0) await this.wake(tx, job, 'recovery');
       }
       return loadAction(tx, id);
     });
@@ -545,6 +663,24 @@ export class BrokerService implements BrokerOperations {
       from: action.status,
       to: status,
     });
+  }
+
+  private async rejectDispatch(
+    tx: Query,
+    job: LockedJob,
+    action: Action,
+    reason: string,
+  ): Promise<Action> {
+    await this.setStatus(tx, action, 'failed');
+    await tx`update action set resolved_at = now(), reconciliation = ${JSON.stringify({ reason, retryable: false })}::jsonb where id = ${action.id}`;
+    await tx`update budget_ledger set settled = 0 where action_id = ${action.id} and settled is null`;
+    await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+      action_id: action.id,
+      phase: 'dispatch_rejected',
+      outcome: 'fenced',
+      reason,
+    });
+    return loadAction(tx, action.id);
   }
 
   private async moveJob(tx: Query, job: LockedJob, state: string, wait: Record<string, unknown>) {

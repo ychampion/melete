@@ -2,10 +2,11 @@
  * The Melete service. One process in v0.1 with separate modules and separate
  * database roles: api, jobs, broker, gateway, connectors, knowledge, events.
  *
- * This is the skeleton. It serves /health and nothing else; every other module
- * is a directory with a README describing the contract it will implement.
+ * The public API currently serves /health; the effect listener serves broker,
+ * API action reads, and model traffic on its own internal port.
  */
 import { Hono } from 'hono';
+import { startEffectBoundary } from './broker/start.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { type Env, loadEnv } from './env.ts';
 
@@ -63,7 +64,20 @@ export function bootstrap() {
 }
 
 if (import.meta.main) {
-  const { app, env } = bootstrap();
+  const { app, env, handle } = bootstrap();
+  const boundary = handle ? await startEffectBoundary(handle, env) : null;
   process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
-  Bun.serve({ port: env.PORT, fetch: app.fetch });
+  const api = Bun.serve({ port: env.PORT, fetch: app.fetch });
+  if (boundary) process.stdout.write(`effect boundary listening on ${env.MELETE_BROKER_BIND}\n`);
+  const stop = async () => {
+    api.stop(true);
+    await boundary?.close();
+    await handle?.close();
+  };
+  process.once('SIGINT', () => {
+    void stop();
+  });
+  process.once('SIGTERM', () => {
+    void stop();
+  });
 }

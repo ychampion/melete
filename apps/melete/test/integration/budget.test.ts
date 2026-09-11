@@ -108,10 +108,12 @@ databaseTest(
     await budget.settle(accepted.value, receipt);
     await budget.settle(accepted.value, receipt);
     const [attempt] =
-      await fixture.sql`select usage, model_actual from attempt where id = ${s.claims.attempt_id}`;
+      await fixture.sql`select model, usage, model_actual, outcome_detail from attempt where id = ${s.claims.attempt_id}`;
     expect(attempt?.usage.requests).toBe(1);
     expect(attempt?.usage.input_tokens).toBe(12);
     expect(attempt?.model_actual).toBe('fake-scripted-v1');
+    expect(attempt?.model).toBe('scripted');
+    expect(attempt?.outcome_detail.gateway_usage_uncertain).toBe(false);
     const [ledger] =
       await fixture.sql`select settled from budget_ledger where id = ${accepted.value.id}`;
     expect(ledger?.settled).toBe(20);
@@ -147,6 +149,12 @@ databaseTest(
     const [event] =
       await fixture.sql`select payload from event where dedup_key = ${`gateway:receipt:${reservation.id}`}`;
     expect(event?.payload.late).toBe(true);
+    expect(event?.payload.usage_uncertain).toBe(true);
+    const [attempt] =
+      await fixture.sql`select model_actual, outcome, outcome_detail from attempt where id = ${s.claims.attempt_id}`;
+    expect(attempt?.model_actual).toBeNull();
+    expect(attempt?.outcome_detail.gateway_usage_uncertain).toBe(true);
+    expect(attempt?.outcome).toBeNull();
     expect(await rejectionOf(budget.reserve({ ...request, requestId: 'fenced' }))).toMatchObject({
       code: 'stale_epoch',
     });
