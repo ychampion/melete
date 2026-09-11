@@ -343,3 +343,13 @@ green; the groups above are the part I can state as verified.
 - `tts.ts`: synced atomic audio writes precede service-owned evidence outside runtime-writable artifact/work areas; verification binds space, job, action, connection, payload hash, content hash, size and path, and restores the original receipt.
 - `bun test apps/melete/src/connectors/tts.test.ts --max-concurrency=2`: GREEN, 13 pass, 1 skipped: no key, 0 fail, 30 assertions, 511ms. Fixture IDs corrected to the frozen 26-character ULID format so recovered receipts undergo schema validation.
 - `production speech admission binds approval, origin, intent, trusted spend and receipt`: still GREEN after evidence persistence, 25 assertions. `bun run typecheck` and changed-file `biome check`: passed.
+
+## Finding 8
+
+- `c839c81`: finding 5 committed and pushed. The final fixture-ID edit left one Biome formatting error in tts.test.ts; its earlier passed-check line was premature. Formatting is corrected and verified in this slice.
+- `the production catalog omits synthesis when no provider is configured`: RED at c839c81, the catalog advertised audio.synthesize with no adapter.
+- `the skill HTTP service and selection omit podcasts without an available granted tool`, `the skill service offers a podcast only with its provider and all grants`, and `objective selection cannot offer a podcast when its catalog lacks speech`: RED at c839c81; absent, ungranted and disabled speech still exposed make-a-podcast.
+- `production attempt bundles select skills from the available job-scoped catalog`: RED at c839c81, the actual production runner omitted an available and granted tool and skill; GREEN for both granted and ungranted attempts.
+- `grantedToolCatalog`, `RuntimeCatalog`, `connectorsFromEnv`: shared availability/grant filtering now feeds the broker, production skill HTTP listing and runtime bundle selection; database space identities match connection grants.
+- `bun test apps/melete/test/integration/capability-catalog.test.ts apps/melete/src/knowledge/routes.test.ts apps/melete/test/integration/speech-broker.test.ts --max-concurrency=2`: GREEN, 32 pass, 0 fail, 92 assertions, 51.79s.
+- `bun run typecheck`: passed after typing the catalog query and removing moved imports. Changed-file `biome check`: passed, including the prior tts.test.ts formatting correction.

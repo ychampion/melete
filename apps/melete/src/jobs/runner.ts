@@ -56,6 +56,11 @@ export type RunnerOptions = {
   scopes?: string[];
   heartbeatMs?: number;
   leaseMs?: number;
+  loadCatalog?: (
+    tx: Transaction,
+    claims: CapabilityClaims,
+    bundle: ResponsibilityAttemptBundle,
+  ) => Promise<Pick<ResponsibilityAttemptBundle, 'tools' | 'skills'>>;
 };
 export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
 /** What the attempt raised besides its outcome, handed to every finish handler. */
@@ -166,6 +171,8 @@ export class AttemptRunner {
         previous?.inputCursor ?? 0,
         generations,
       );
+      if (this.options.loadCatalog)
+        Object.assign(bundle, await this.options.loadCatalog(tx, claims, bundle));
       await tx.insert(attempt).values({
         id: attemptId,
         jobId: row.id,

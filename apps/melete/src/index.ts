@@ -26,6 +26,7 @@ import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { connectorsFromEnv } from './connectors/configured.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { space } from './db/schema.ts';
@@ -43,8 +44,9 @@ import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
+import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
-import { filesystemSpaces } from './knowledge/spaces.ts';
+import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
@@ -177,6 +179,7 @@ export async function bootstrap(
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
+  let catalog: RuntimeCatalog | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
@@ -190,6 +193,12 @@ export async function bootstrap(
   };
   try {
     if (handle) await migrateDatabase(handle);
+    if (handle)
+      catalog = new RuntimeCatalog(
+        handle.db,
+        await connectorsFromEnv(handle.sql, env),
+        env.MELETE_SPACES_DIR,
+      );
     if (handle) {
       events = new EventStream(handle);
       await events.start();
@@ -209,6 +218,7 @@ export async function bootstrap(
         key: env.MELETE_CAPABILITY_KEY,
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
+        loadCatalog: catalog?.forAttempt,
       });
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
@@ -255,6 +265,13 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    knowledge:
+      handle && catalog
+        ? {
+            spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
+            toolsForSpace: (space) => catalog?.toolsForSpace(space.id) ?? Promise.resolve([]),
+          }
+        : undefined,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

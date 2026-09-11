@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
-import { configuredConnectors, readConnectionConfig } from '../connectors/configured.ts';
+import { connectorsFromEnv } from '../connectors/configured.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
@@ -32,21 +32,7 @@ export async function startEffectBoundary(
   }
   const hostname = binding[1].replace(/^\[|\]$/g, '');
   const port = Number(binding[2]);
-  const registry = await configuredConnectors({
-    sql: handle.sql,
-    workRoot: env.MELETE_WORK_DIR,
-    spacesRoot: env.MELETE_SPACES_DIR,
-    masterKey: env.MELETE_MASTER_KEY,
-    connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
-    enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
-    env: {
-      OPENAI_API_KEY: env.OPENAI_API_KEY,
-      OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
-      OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
-      MELETE_SPEECH_MODEL: env.MELETE_SPEECH_MODEL,
-      MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER),
-    },
-  });
+  const registry = await connectorsFromEnv(handle.sql, env);
   const providers = [
     ...providersFromEnv({
       FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,

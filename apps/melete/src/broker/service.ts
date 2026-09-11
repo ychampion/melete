@@ -17,11 +17,9 @@ import {
   type OriginWarning,
   originWarnings,
   type ProposeActionRequest,
-  REACT_TOOL_NAME,
   type ReactRequest,
   type Receipt,
   reactRequest,
-  reactToolSchema,
   type ToolSpec,
   type VerifyResult,
   verifyResult,
@@ -29,6 +27,7 @@ import {
 import { Ajv } from 'ajv';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import { type ConnectionGrant, grantedToolCatalog } from '../connectors/catalog.ts';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { QUEUES } from '../jobs/queue.ts';
@@ -167,7 +166,11 @@ export class BrokerService implements BrokerOperations {
       where id = ${connectionId} and space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
     const connector = this.options.connectors.get(connectionId);
-    if (!connector || connector.manifest.provider !== connection.provider)
+    if (
+      !connector ||
+      connector.manifest.provider !== connection.provider ||
+      connector.capability?.available === false
+    )
       throw new BrokerFault('connector_unavailable');
     const tool = findTool(connector.manifest, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
@@ -213,46 +216,9 @@ export class BrokerService implements BrokerOperations {
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const connections = await tx`select id, provider, scopes from connection
+      const connections = await tx<ConnectionGrant[]>`select id, provider, scopes from connection
         where space_id = ${job.space_id} and status = 'active' order by id`;
-      // Acknowledgement is always available: it belongs to no connection, needs
-      // no scope, and cannot change anything outside this installation.
-      const tools: ToolSpec[] = [
-        {
-          name: REACT_TOOL_NAME,
-          description:
-            'React to a message with one emoji instead of replying, when the message needs only acknowledgement.',
-          input_schema: reactToolSchema as unknown as ToolSpec['input_schema'],
-          effect_class: 'read',
-          connection_id: null,
-        },
-      ];
-      for (const connection of connections) {
-        const connector = this.options.connectors.get(connection.id);
-        if (!connector || connector.manifest.provider !== connection.provider) continue;
-        for (const tool of connector.manifest.tools) {
-          if (
-            ![tool.name, ...tool.required_scopes].every(
-              (s) => claims.scopes.includes(s) && connection.scopes.includes(s),
-            )
-          )
-            continue;
-          tools.push({
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.input_schema,
-            effect_class: tool.effect_class,
-            connection_id: connection.id,
-          });
-        }
-      }
-      return tools.sort((a, b) =>
-        a.name < b.name
-          ? -1
-          : a.name > b.name
-            ? 1
-            : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
-      );
+      return grantedToolCatalog(connections, this.options.connectors, claims.scopes);
     });
   }
 

@@ -202,12 +202,8 @@ describe('the capability connector', () => {
     const changed = proposal(actionId, { script: 'Different script', path: 'episode.wav' });
     expect((await restarted.verify(changed, ctx)).decision).toBe('undecided');
     expect(
-      (
-        await restarted.verify(
-          { ...action, connection_id: 'conn_01J00000000000000000000004' },
-          ctx,
-        )
-      ).decision,
+      (await restarted.verify({ ...action, connection_id: 'conn_01J00000000000000000000004' }, ctx))
+        .decision,
     ).toBe('undecided');
     expect(
       (await restarted.verify({ ...action, job_id: 'job_01J00000000000000000000004' }, ctx))

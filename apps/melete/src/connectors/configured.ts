@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
@@ -77,6 +78,7 @@ export async function configuredConnectors(options: {
       // hold. A second path to the world would be a second place to get those
       // right.
       const configured = capabilitiesFromEnv(options.env ?? process.env);
+      if (!configured.speech) continue;
       registry.register(
         row.id,
         createCapabilityConnector({
@@ -122,4 +124,23 @@ export async function configuredConnectors(options: {
     }
   }
   return registry;
+}
+
+/** Both listeners build catalogs from the validated startup environment. */
+export async function connectorsFromEnv(sql: Sql, env: Env) {
+  return configuredConnectors({
+    sql,
+    workRoot: env.MELETE_WORK_DIR,
+    spacesRoot: env.MELETE_SPACES_DIR,
+    masterKey: env.MELETE_MASTER_KEY,
+    connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
+    enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
+    env: {
+      OPENAI_API_KEY: env.OPENAI_API_KEY,
+      OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+      OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
+      MELETE_SPEECH_MODEL: env.MELETE_SPEECH_MODEL,
+      MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER),
+    },
+  });
 }
