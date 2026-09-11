@@ -364,6 +364,15 @@ export class QuestionService {
   private async blockingKeys(rows: readonly QuestionRow[]): Promise<Set<string>> {
     const disputed = rows.filter((row) => row.source === 'memory' && row.spaceId && row.key);
     if (disputed.length === 0) return new Set();
+    // Every key here was written by an extraction proposal, so a key is data.
+    // Each half of each pair is bound as its own parameter: no part of a key is
+    // ever spliced into the statement, so nothing in one can be read as SQL and
+    // there is no escaping to get right. The row comparison keeps the pairing
+    // exact, so a space cannot borrow another space's key.
+    const wanted = sql.join(
+      disputed.map((row) => sql`(${String(row.spaceId)}::text, ${String(row.key)}::text)`),
+      sql`, `,
+    );
     const found = await this.jobs.db.execute(sql`
       select distinct c.space_id, c.key
       from action a
@@ -372,9 +381,7 @@ export class QuestionService {
       join memory_output_uses u on u.output_row_id = o.id
       join memory_claims c on c.id = u.claim_id and c.space_id = o.space_id
       where a.status in ('admitted', 'dispatched', 'succeeded')
-        and (c.space_id, c.key) in ${sql.raw(
-          `(values ${disputed.map((row) => `('${row.spaceId}','${String(row.key).replace(/'/g, "''")}')`).join(', ')})`,
-        )}`);
+        and (c.space_id, c.key) in (values ${wanted})`);
     return new Set(
       (found as unknown as Array<{ space_id: string; key: string }>).map((row) =>
         JSON.stringify([row.space_id, row.key]),
