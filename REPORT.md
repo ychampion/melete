@@ -39,6 +39,19 @@ Append-only. Every line names a SHA, a command, a test, or a log excerpt.
 - **The "Ask Melete about this plan" chat** plays the Kyoto scenario for any plan, because the mock picks scenarios by text; the plan's title is in the message, the answer is not plan-specific.
 - The gstack browse skill was not used; Playwright 1.63 was already installed and a committed script is repeatable by anyone.
 
+## Assumptions, continued
+- The full-suite `bun test` run (under the lock, started at ~04:25) was killed by the machine for low memory before it produced a result; the orchestrator then directed: never run the full suite on this box, only `apps/web` checks and `bun run --cwd apps/web build`. No full-suite result is claimed. `bun test apps/mock-api` (33 pass, 0 fail) is the only test evidence beyond the screen walk.
+- The experience contract landed as `origin/lane/w16a-experience` (PR #22) after the web app was built. It is merged into this branch (e639b22) so the contract, its OpenAPI paths, its mock module and its tests are here. The web app still talks to this lane's `/surfaces/*` routes: retargeting every surface to the contract's shapes is a separate slice, and the field-by-field mapping is recorded in `.agents/notes/proposed/2026-09-12-w16b-experience-shapes.md`. The two mock modules coexist on one Hono app; this lane's prefix moved from `/experience` to `/surfaces` (49146ad) because the contract owns `/experience/connections`.
+
+## Log, continued
+- 2790744 REPORT.md: verification steps and the not-done list.
+- 49146ad `apps/mock-api/src/experience.ts` → `surfaces.ts`, mounted at `/surfaces`; adapter, screens script, docs updated. `bun run typecheck` clean.
+- e639b22 merge of `origin/lane/w16a-experience` (723c748). Conflicts resolved: `docs/CLIENT.md` (theirs, plus this lane's mock paragraph and "Rules the web app adds"), `REPORT.md` (both reports, this lane first), `apps/mock-api/src/index.ts` (both wirings). After the merge: `bun install` "no changes", `bun run typecheck` clean, `bunx biome check .` "Checked 354 files … No fixes applied" after one `role="img"` fix, `bun test apps/mock-api` 33 pass / 0 fail, `bun run --cwd apps/web build` "✓ built in 518ms". Both lanes' routes answer on one mock: `GET /surfaces/capabilities` and `GET /experience/connections`.
+- after e639b22: `node apps/web/scripts/screens.mjs` on the merged tree → "128 checks, 0 failed"; `apps/web/docs/screens/` regenerated.
+
+## Final
+Branch `lane/w16b-web`. `bun run typecheck` clean, `bunx biome check .` clean, `bun run --cwd apps/web build` green, `bun test apps/mock-api` 33/33, the screen walk 128/128 at 1440, 1024 and 390 in light and dark with no horizontal overflow and no console errors. The full repo suite was not run (killed for memory, then forbidden by the orchestrator). The web app runs against this lane's `/surfaces/*` mock routes; the landed experience contract is merged and mapped, not yet wired. PR opened to `integration`.
+
 ---
 
 # Lane W16a report, merged into this branch
