@@ -1,0 +1,22 @@
+# W7 memory core
+
+## Assumptions
+
+- SHA `65e26f1438cd5c8e95e7bf160f456be07d8cb534`: the supplied revised memory design supersedes the Markdown authority described in frozen `docs/ARCHITECTURE.md`; that file remains unchanged.
+- Command `bun install`: completed with Bun 1.3.13 in `C:/Users/gamin/melete-oss-w7` on `lane/w7-memory` at 2026-09-11 14:10 +05:30; campaign deadline is 19:10 +05:30.
+- Command `rg --files .agents apps/melete packages/contracts packages/knowledge`: W1/W2/W4 implementations and `.agents/notes/proposed/2026-09-11-knowledge-api-gaps.md` are absent at the starting SHA; integration hooks will be explicit, and missing frozen-contract hooks will be proposed without changing those types.
+- Command `rg -n PENDING_CONTRACT .`: no W4 pending list exists in this checkout. The existing `ProposalStore.list/apply/discard` names define the three additive knowledge operations for this branch; this mapping needs reconciliation when W4 lands.
+- Test configuration `bun test --max-concurrency 2`: scripted gateway only; no real-provider smoke step is requested by a slice.
+- Log `2026-09-11 14:10 +05:30`: work remains in this worktree; no stash, other checkout, force push, or main push is authorized.
+
+## Initial evidence
+
+- Command `git -C C:/Users/gamin/melete-oss-w7 status --short --branch`: clean `lane/w7-memory...origin/main` before implementation.
+- SHA `65e26f1438cd5c8e95e7bf160f456be07d8cb534`: broker, gateway, attempt worker, and authenticated API are README stubs; the service currently serves health only.
+
+## Slice 1
+
+- Command `bun run typecheck`: pass; command `bun run lint`: pass (60 files).
+- Command `bun test --max-concurrency 2`: 195 pass, 1 baseline DB skip, 36 baseline conformance todos, 0 fail in 995 ms.
+- Test `memory authority contracts`: strict scope rejection, typed proposals, empty versus unavailable, and additive OpenAPI operations pass.
+- Command `bun run openapi`: regenerated the committed document from the additive schemas.
