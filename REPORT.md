@@ -31,3 +31,13 @@
 - Command `bun test --max-concurrency=2`: full suite 268 pass, 1 existing DB skip, 36 pending conformance todos, 0 fail, 36.80 seconds; supersedes the interrupted full run that loaded the pre-fix destination encoder.
 - Log `pg_ctl ... melete-w2-postgres-9a160y/data stop -m fast -w`: stopped the interrupted full-run fixture; its temporary data is preserved.
 - Log `automatic approval review blocked by policy`: one failed destination-test temporary-directory cleanup was rejected; its Postgres process is stopped and the directory is preserved.
+
+## Slice 3 — transactional budgets
+
+- SHA `721e377`: lifecycle and embedded Postgres fixture pushed to the lane branch.
+- Command `bun test apps/melete/test/integration/budget.test.ts --max-concurrency=2`: 6 pass, 19 assertions, 0 fail, 11.55 seconds.
+- Test `two parallel reservations against a small allowance admit exactly one`: 7 tokens reserved against a 10-token job ceiling; one contender rejected.
+- Test `a new attempt cannot spend a previous attempt allowance again`: job-wide ledger totals survive epoch changes.
+- Test `gateway reserves both requests and tokens before recording a provider result`: request cap under row lock; token reservation before request, settlement to actual usage, duplicate receipt idempotent.
+- Test `gateway retains unknown usage and rejects a principal after the epoch bump`: missing usage remains charged and cancellation remains visible.
+- Command `bun run typecheck`: passed, including budget integration tests; full-suite evidence is 268 pass / 0 fail above.
