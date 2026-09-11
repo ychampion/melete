@@ -5,6 +5,6 @@ import { defineConfig } from 'vite';
 // else it learns from the API itself.
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173 },
+  server: { port: 5180 },
   build: { outDir: 'dist', sourcemap: true },
 });

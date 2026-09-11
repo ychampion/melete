@@ -1,0 +1,182 @@
+/*
+ * Design tokens, ported from the design canvas. Light is warm paper, dark is
+ * true black. Every component reads these, so a palette change is one file.
+ *
+ * Three theme states: an explicit choice stamps data-theme on the root, and
+ * the default follows the system preference.
+ */
+
+:root {
+  color-scheme: light;
+
+  --canvas: #f4f3ef;
+  --surface: #ffffff;
+  --soft: #f8f7f4;
+  --sidebar: #f4f3ef;
+  --overlay: #ffffff;
+
+  --text: #2a2d34;
+  --heading: #17191d;
+  --muted: #6b7080;
+  --secondary: #5c6170;
+  --placeholder: #6f7481;
+
+  --line: #e7e5df;
+  --line-strong: #dbd8d0;
+  --control: #c4c1b8;
+  --hover: #ebe9e3;
+  --row-hover: #f6f5f1;
+
+  --primary: #2f5fd6;
+  --primary-hover: #274fb8;
+  --primary-fg: #ffffff;
+  --blue-soft: #e4ebfb;
+  --blue-ink: #22459c;
+  --blue-line: #c2d0f2;
+
+  --bubble: #e4ebfb;
+  --bubble-ink: #1d3a80;
+
+  --travel: #e4ebfb;
+  --travel-ink: #22459c;
+  --sage: #e6efe4;
+  --sage-ink: #3d6142;
+  --sand: #f5ecdc;
+  --sand-ink: #7a5a2a;
+  --lilac: #eee8f6;
+  --lilac-ink: #5f4a7c;
+
+  --success: #2e8a5a;
+  --success-soft: #e6f4ea;
+  --danger: #d24b4b;
+  --danger-soft: #fbe9e9;
+  --rating: #b8801a;
+  --chip-bg: #f1efea;
+
+  --shadow: 0 1px 2px #1d1b1608, 0 4px 16px #1d1b1608;
+  --elevated: 0 12px 32px #1d1b1614, 0 1px 2px #1d1b160a;
+  --ring: #2f5fd640;
+  --skeleton-a: #e7e5df;
+  --skeleton-b: #f3f1ec;
+
+  /* The dark studio panels (face editor, sign-in hero) keep their own ink. */
+  --studio: #0f1113;
+  --studio-panel: #17191c;
+  --studio-panel-2: #1d2024;
+  --studio-line: #262a2f;
+  --studio-text: #e6e7ea;
+  --studio-muted: #8e939c;
+
+  --font-body: "DM Sans Variable", "DM Sans", system-ui, sans-serif;
+  --font-head: "Manrope Variable", "Manrope", "DM Sans", system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --canvas: #0c0c0d;
+    --surface: #161719;
+    --soft: #202225;
+    --sidebar: #0c0c0d;
+    --overlay: #212428;
+
+    --text: #d3d5da;
+    --heading: #f3f4f6;
+    --muted: #8a8f98;
+    --secondary: #a4a9b2;
+    --placeholder: #83888f;
+
+    --line: #2b2e33;
+    --line-strong: #3e424a;
+    --control: #6b7079;
+    --hover: #1f2023;
+    --row-hover: #24262b;
+
+    --primary: #8db6f7;
+    --primary-hover: #a6c7f9;
+    --primary-fg: #0c1524;
+    --blue-soft: #1b2942;
+    --blue-ink: #b9d1f6;
+    --blue-line: #2c4470;
+
+    --bubble: #1b2536;
+    --bubble-ink: #dfe9fa;
+
+    --travel: #16272b;
+    --travel-ink: #93c9cf;
+    --sage: #1b2a21;
+    --sage-ink: #a9cdb4;
+    --sand: #2a2419;
+    --sand-ink: #d6c19a;
+    --lilac: #251f31;
+    --lilac-ink: #c8b6de;
+
+    --success: #5fc08f;
+    --success-soft: #15291f;
+    --danger: #f28b8b;
+    --danger-soft: #33201f;
+    --rating: #e3b341;
+    --chip-bg: #202225;
+
+    --shadow: 0 8px 24px -8px #000000cc;
+    --elevated: 0 24px 48px -12px #000000e6, 0 0 0 1px #42464e;
+    --ring: #8db6f780;
+    --skeleton-a: #1c1d20;
+    --skeleton-b: #33363c;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --canvas: #0c0c0d;
+  --surface: #161719;
+  --soft: #202225;
+  --sidebar: #0c0c0d;
+  --overlay: #212428;
+
+  --text: #d3d5da;
+  --heading: #f3f4f6;
+  --muted: #8a8f98;
+  --secondary: #a4a9b2;
+  --placeholder: #83888f;
+
+  --line: #2b2e33;
+  --line-strong: #3e424a;
+  --control: #6b7079;
+  --hover: #1f2023;
+  --row-hover: #24262b;
+
+  --primary: #8db6f7;
+  --primary-hover: #a6c7f9;
+  --primary-fg: #0c1524;
+  --blue-soft: #1b2942;
+  --blue-ink: #b9d1f6;
+  --blue-line: #2c4470;
+
+  --bubble: #1b2536;
+  --bubble-ink: #dfe9fa;
+
+  --travel: #16272b;
+  --travel-ink: #93c9cf;
+  --sage: #1b2a21;
+  --sage-ink: #a9cdb4;
+  --sand: #2a2419;
+  --sand-ink: #d6c19a;
+  --lilac: #251f31;
+  --lilac-ink: #c8b6de;
+
+  --success: #5fc08f;
+  --success-soft: #15291f;
+  --danger: #f28b8b;
+  --danger-soft: #33201f;
+  --rating: #e3b341;
+  --chip-bg: #202225;
+
+  --shadow: 0 8px 24px -8px #000000cc;
+  --elevated: 0 24px 48px -12px #000000e6, 0 0 0 1px #42464e;
+  --ring: #8db6f780;
+  --skeleton-a: #1c1d20;
+  --skeleton-b: #33363c;
+}
