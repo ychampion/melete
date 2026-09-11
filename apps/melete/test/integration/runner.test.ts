@@ -710,6 +710,8 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       expect(health.status).toBe(200);
       expect(await health.json()).toMatchObject({ database: 'ok' });
       expect((await service.app.request('/jobs')).status).toBe(401);
+      expect((await service.app.request('/events')).status).toBe(401);
+      expect((await service.app.request(`/jobs/${newId('job')}/events`)).status).toBe(401);
       const row = await create([{ type: 'outcome', outcome: completion() }]);
       const deadline = Date.now() + 3500;
       while ((await jobs.get(row.id)).state !== 'completed' && Date.now() < deadline)

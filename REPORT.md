@@ -67,3 +67,13 @@
 - Test `submission admission`, test `reply obligations`, test `wake dispositions`, test `event resync`, test `generation fences` and test `scheduling fairness`: owner steering adds slices 8 through 13 before the final report; the original conformance 1, 2 and 5 work remains required.
 - Command `bun run typecheck`: new public types may be added only in `packages/contracts/src/responsibility.ts` and exported from the index; OpenAPI changes add new paths; other frozen contract files remain unchanged.
 - Command `bun run db:generate`: each new durable schema addition will have a new Drizzle migration.
+
+## Slice 5: persisted SSE
+
+- SHA `3f9db9a`: waits, triggers and approvals committed and pushed to `origin/lane/w1-service`.
+- Test `persisted event streams`: authenticated routes replay Postgres rows by cursor, honor Last-Event-ID, fan out committed notifications through one LISTEN connection, retain one page per slow reader, and release cancelled readers.
+- Test `a gap marker names its persisted notice and rollback holes never invent gaps`: interrupted streams identify a stored gap; sequence holes from rollback or other jobs do not fabricate history.
+- Command `bun test apps/melete/test/integration/events.test.ts`: `11 pass`, `0 fail`, `78 expect() calls`, `Ran 11 tests across 1 file. [23.18s]`.
+- Test `global database preload`: one disposable Postgres server serves isolated per-suite databases; shutdown runs after the whole suite; WAL and fsync keep Postgres defaults.
+- Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: passed (`Checked 88 files in 146ms. No fixes applied.`).
+- Command `bun test --dots`: `340 pass`, `36 todo`, `0 fail`, `1272 expect() calls`, `Ran 376 tests across 27 files. [75.93s]`.

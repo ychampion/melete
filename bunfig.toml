@@ -1,2 +1,3 @@
 [test]
+preload = ["./apps/melete/test/helpers/preload.ts"]
 maxConcurrency = 2

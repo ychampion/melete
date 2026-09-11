@@ -11,11 +11,13 @@ import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
 import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
+import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
+import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { startQueue } from './jobs/queue.ts';
 import { AttemptRunner } from './jobs/runner.ts';
@@ -31,6 +33,7 @@ export type AppDeps = {
   jobs?: JobService;
   triggers?: TriggerService;
   approvals?: ApprovalService;
+  events?: EventStream;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -54,6 +57,7 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountJobs(app, deps.jobs);
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -91,10 +95,10 @@ export async function bootstrap(
   let runner: AttemptRunner | undefined;
   let triggers: TriggerService | undefined;
   let approvals: ApprovalService | undefined;
+  let events: EventStream | undefined;
   const close = async () => {
     try {
-      await triggers?.stop();
-      await runner?.stop();
+      await Promise.all([events?.close(), triggers?.stop(), runner?.stop()]);
     } finally {
       try {
         await queue?.stop();
@@ -105,6 +109,10 @@ export async function bootstrap(
   };
   try {
     if (handle) await migrateDatabase(handle);
+    if (handle) {
+      events = new EventStream(handle);
+      await events.start();
+    }
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
     if (jobs) {
@@ -138,6 +146,7 @@ export async function bootstrap(
     jobs,
     triggers,
     approvals,
+    events,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -153,6 +162,7 @@ export async function bootstrap(
     runner,
     triggers,
     approvals,
+    events,
     close,
   };
 }
