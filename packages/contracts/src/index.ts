@@ -15,6 +15,7 @@ export * from './job-state.ts';
 export * from './knowledge.ts';
 export * from './memory.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
+export * from './provenance.ts';
 export * from './responsibility.ts';
 export * from './runtime.ts';
 export * from './skills.ts';

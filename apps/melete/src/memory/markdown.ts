@@ -4,6 +4,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
   type ExtractionProposal,
+  isMemoryKey,
   memoryKnowledgeFrontmatter,
   ownerKnowledgeEdit,
 } from '@melete/contracts';
@@ -27,6 +28,7 @@ import {
   stableEntityId,
   stableId,
 } from './db.ts';
+import { originTrustOf } from './trust.ts';
 import { type ExtractionBatch, finishWork } from './work.ts';
 
 const exec = promisify(execFile);
@@ -34,7 +36,7 @@ const pathFor = (id: string) => `knowledge/${id}.md`;
 type ReviewPayload = { batch: ExtractionBatch; proposals: ExtractionProposal[] };
 
 /** Legacy day-level fields coexist with the exact revision and source-version mapping. */
-export function claimFrontmatter(head: ClaimHead) {
+export function claimFrontmatter(head: ClaimHead, disputed = false) {
   const revision = head.current;
   const day = (value: string) => value.slice(0, 10);
   return memoryKnowledgeFrontmatter.parse({
@@ -67,7 +69,13 @@ export function claimFrontmatter(head: ClaimHead) {
     superseded_by: null,
     created: day(revision.recorded_at),
     updated: day(revision.recorded_at),
-    tags: [revision.kind, revision.factual_status, 'memory-view'],
+    tags: [
+      revision.kind,
+      revision.factual_status,
+      `origin:${revision.origin_trust}`,
+      ...(disputed ? ['disputed-key'] : []),
+      'memory-view',
+    ],
     links: [],
     schema_version: 1,
     memory_revision: revision.revision,
@@ -78,6 +86,9 @@ export function claimFrontmatter(head: ClaimHead) {
     superseded_at: revision.superseded_at,
     source_refs: revision.sources,
     supersedes_revisions: Array.from({ length: revision.revision - 1 }, (_, index) => index + 1),
+    origin_trust: revision.origin_trust,
+    key: head.key,
+    disputed,
   });
 }
 
@@ -153,6 +164,11 @@ export class MarkdownViews {
           scope.spaceId,
           hidden.map((row) => row.id as string),
         );
+      const contested = new Set(
+        (
+          await tx`select key from memory_contradictions where space_id = ${scope.spaceId} and state = 'open'`
+        ).map((row) => row.key as string),
+      );
       const rows =
         await tx`select id from memory_claims where space_id = ${scope.spaceId} and not hidden order by id`;
       const changed: string[] = [];
@@ -168,7 +184,10 @@ export class MarkdownViews {
         const path = pathFor(head.id);
         const absolute = join(paths.root, path);
         await this.rejectLink(absolute);
-        const content = serializeRecord(claimFrontmatter(head), head.current.content ?? '');
+        const content = serializeRecord(
+          claimFrontmatter(head, head.key !== null && contested.has(head.key)),
+          head.current.content ?? '',
+        );
         const previous = await readFile(absolute, 'utf8').catch((error: NodeJS.ErrnoException) => {
           if (error.code !== 'ENOENT') throw error;
           return null;
@@ -280,12 +299,19 @@ export class MarkdownViews {
                   data_revision: payload.batch.snapshot.data_revision + 1,
                   recorded_at: new Date(row.created_at).toISOString(),
                   superseded_at: null,
+                  origin_trust: originTrustOf({
+                    source_type: payload.batch.source.source_type,
+                    author: payload.batch.source.author,
+                  }),
                 };
           if (!current) throw new MemoryError('invalid_proposal');
+          const proposedKey =
+            proposal.op === 'retract' ? (old?.key ?? null) : (proposal.key ?? null);
           const head: ClaimHead = {
             id,
             space_id: scope.spaceId,
             domain_key: proposal.op === 'retract' ? (old?.domain_key ?? '') : proposal.domain_key,
+            key: proposedKey && isMemoryKey(proposedKey) ? proposedKey : null,
             audience: payload.batch.source.audience,
             head_revision: current.revision,
             hidden: false,

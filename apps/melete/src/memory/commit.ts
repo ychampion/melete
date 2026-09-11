@@ -1,6 +1,7 @@
 import {
   type ExtractionProposal,
   extractionChangeSet,
+  isMemoryKey,
   type SourceEvent,
   type SourceRef,
 } from '@melete/contracts';
@@ -10,7 +11,9 @@ import {
   getHead,
   historyInTransaction,
   publishRevision,
+  revisionTrustFor,
 } from './claims.ts';
+import { keyPrecedence, recordContradiction, resolveKeyedHead } from './contradictions.ts';
 import {
   bumpRevision,
   enqueue,
@@ -20,10 +23,12 @@ import {
   type MemorySql,
   type MemoryTx,
   stableEntityId,
+  stableId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
 import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
+import { type Tier1Rejection, validateTier1 } from './validate.ts';
 import { checkLease, type ExtractionBatch, finishWork, retryWork } from './work.ts';
 
 type Validated = {
@@ -59,10 +64,20 @@ async function validateProposal(
     assertMemoryDomain(proposal.domain_key);
     if (proposal.valid_until && new Date(proposal.valid_until) < new Date(proposal.valid_from))
       throw new MemoryError('invalid_validity');
+    const key = typeof proposal.key === 'string' && isMemoryKey(proposal.key) ? proposal.key : null;
     if (proposal.op === 'add') {
-      const [existing] =
-        await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and domain_key = ${proposal.domain_key} and not hidden`;
-      if (existing) throw new MemoryError('stale_revision');
+      if (key) {
+        // A second candidate for an occupied key is a contradiction to resolve,
+        // not a collision to refuse. The key's current head is loaded here so the
+        // precedence table can decide which of the two holds the active slot.
+        const [occupant] =
+          await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and key = ${key} and not hidden`;
+        if (occupant) head = await getHead(tx, scope, occupant.id as string);
+      } else {
+        const [existing] =
+          await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and domain_key = ${proposal.domain_key} and not hidden`;
+        if (existing) throw new MemoryError('stale_revision');
+      }
     }
   }
   const sources: SourceEvent[] = [];
@@ -103,10 +118,17 @@ async function validateProposal(
       !sources.some((s) => ['message', 'owner_edit'].includes(s.source_type))
     )
       throw new MemoryError('unsupported_attribution');
+    const observed = sources.every(
+      (s) => s.source_type === 'observation' || s.source_type === 'receipt',
+    );
+    // A checked fact is what a connector saw. Tier 0 makes these from a structured
+    // observation on a registry key; the older calendar domain keeps its own path.
     if (
       proposal.kind === 'checked_fact' &&
-      (!proposal.domain_key.startsWith('calendar.') ||
-        !sources.every((s) => s.source_type === 'observation'))
+      !(
+        observed &&
+        (proposal.domain_key.startsWith('calendar.') || isMemoryKey(proposal.domain_key))
+      )
     )
       throw new MemoryError('unsupported_checked_fact');
     if (proposal.factual_status === 'checked' && proposal.kind !== 'checked_fact')
@@ -119,6 +141,157 @@ export type CommitResult = {
   claim_ids: string[];
   reason?: string;
 };
+
+/** A rejection is a durable record with a reason, readable at /memory/rejections. */
+async function recordRejections(
+  sql: MemorySql,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  rejected: readonly Tier1Rejection[],
+) {
+  for (const item of rejected) {
+    const id = `mr_${stableId(scope.spaceId, batch.work.id, item.index, item.reason)}`;
+    await sql`insert into memory_rejections (id, space_id, work_id, proposal_index, key, reason, detail)
+      values (${id}, ${scope.spaceId}, ${batch.work.id}, ${item.index}, ${item.key}, ${item.reason}, ${item.detail})
+      on conflict do nothing`;
+  }
+}
+type KeyedPublication = {
+  proposal: Extract<ExtractionProposal, { op: 'add' | 'supersede' }>;
+  key: string;
+  head: ClaimHead | null;
+  refs: SourceRef[];
+  sources: SourceEvent[];
+  headEventAt: string;
+};
+
+/**
+ * E2. Publish one keyed proposal. The precedence table decides which candidate
+ * holds the single active slot; when neither wins, both revisions are committed,
+ * the key enters `contradictions`, and one owner question is queued.
+ */
+async function publishKeyed(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  input: KeyedPublication,
+): Promise<string | null> {
+  const { proposal, key, head, refs, sources } = input;
+  const audience = batch.source.audience;
+  const draft = {
+    content: proposal.content,
+    kind: proposal.kind,
+    factual_status: proposal.factual_status,
+    protected: false,
+    valid_from: proposal.valid_from,
+    valid_until: proposal.valid_until,
+    sources: refs,
+    key,
+    confidence: proposal.confidence ?? null,
+  };
+  const identity = stableEntityId('k', batch.work.id, key);
+  if (!head) {
+    const revision = await publishRevision(
+      tx,
+      { ...scope, audience },
+      key,
+      null,
+      draft,
+      'active',
+      identity,
+    );
+    return revision.claim_id;
+  }
+  const proposalTrust = await revisionTrustFor(tx, proposal.kind, refs);
+  const decision = resolveKeyedHead(
+    {
+      precedence: keyPrecedence({
+        origin_trust: proposalTrust,
+        protected: false,
+        kind: proposal.kind,
+      }),
+      event_at: eventTime(sources),
+      content: proposal.content,
+      explicit_supersede: proposal.op === 'supersede',
+    },
+    {
+      precedence: keyPrecedence({
+        origin_trust: head.current.origin_trust,
+        protected: head.current.protected,
+        kind: head.current.kind,
+      }),
+      event_at: input.headEventAt,
+      content: head.current.content ?? '',
+    },
+  );
+  if (decision.decision === 'no-op') return null;
+  if (decision.decision === 'historical') {
+    await publishRevision(tx, { ...scope, audience }, key, head, draft, 'historical');
+    return head.id;
+  }
+  if (decision.decision === 'publish') {
+    const revision = await publishRevision(tx, { ...scope, audience }, key, head, draft, 'active');
+    await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
+    return head.id;
+  }
+  if (decision.decision === 'dispute') {
+    // The newer statement takes the slot and is marked disputed; the previous one
+    // stays in history as the alternative the question is about.
+    const revision = await publishRevision(
+      tx,
+      { ...scope, audience },
+      key,
+      head,
+      { ...draft, factual_status: 'disputed' },
+      'disputed',
+    );
+    await recordContradiction(tx, scope, {
+      key,
+      audience,
+      claimId: head.id,
+      head: {
+        revision: revision.revision,
+        content: proposal.content,
+        event_at: eventTime(sources),
+      },
+      alternative: {
+        revision: head.head_revision,
+        content: head.current.content ?? '',
+        event_at: input.headEventAt,
+      },
+    });
+    await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
+    return head.id;
+  }
+  // Equal event time: import order is not an authority, so the slot does not move.
+  const revision = await publishRevision(
+    tx,
+    { ...scope, audience },
+    key,
+    head,
+    draft,
+    'historical',
+  );
+  await tx`update memory_revisions set status = 'disputed', factual_status = 'disputed'
+    where claim_id = ${head.id} and revision = ${head.head_revision} and status = 'active'`;
+  await recordContradiction(tx, scope, {
+    key,
+    audience,
+    claimId: head.id,
+    head: {
+      revision: head.head_revision,
+      content: head.current.content ?? '',
+      event_at: input.headEventAt,
+    },
+    alternative: {
+      revision: revision.revision,
+      content: proposal.content,
+      event_at: eventTime(sources),
+    },
+  });
+  return head.id;
+}
+
 /** Internal failure-schedule seam; no request, model, or queue payload can install a hook. */
 export type PublicationHooks = { beforePublication?: () => Promise<void> };
 /** Validate every operation before publishing any revision, edge, cursor or invalidation. */
@@ -131,7 +304,20 @@ export async function commitExtraction(
   hooks: PublicationHooks = {},
 ): Promise<CommitResult> {
   try {
-    const { proposals } = extractionChangeSet.parse(raw);
+    const parsed = extractionChangeSet.parse(raw);
+    // E3. Structural validation runs before anything is published and before the
+    // whole-set rules below: a proposal whose span is not verbatim, whose key is
+    // not in the registry, or whose value Tier 0 cannot find in the evidence it
+    // cited is rejected here with a reason. It is never attached to a nearby
+    // message. Proposals with no key are untouched and keep their existing path.
+    const { accepted: proposals, rejected } = validateTier1(parsed.proposals, {
+      source: batch.source,
+      text: batch.text,
+      segmentStart: batch.work.segment_start,
+      segmentEnd: batch.work.segment_end,
+      timeZone: batch.time_zone ?? undefined,
+    });
+    if (rejected.length) await recordRejections(sql, scope, batch, rejected);
     const result = await sql.begin(async (tx) => {
       const space = await lockSpace(tx, scope);
       const [prior] =
@@ -189,6 +375,20 @@ export async function commitExtraction(
         const sourceRows = head
           ? await tx`select distinct s.* from memory_references ref join memory_sources s on s.id = ref.source_id where ref.claim_id = ${head.id} and ref.revision = ${head.head_revision}`
           : [];
+        const key =
+          typeof proposal.key === 'string' && isMemoryKey(proposal.key) ? proposal.key : null;
+        if (key) {
+          const published = await publishKeyed(tx, scope, batch, {
+            proposal,
+            key,
+            head,
+            refs,
+            sources,
+            headEventAt: eventTime(sourceRows.map(toSource)),
+          });
+          if (published) claimIds.push(published);
+          continue;
+        }
         const history = head ? await historyInTransaction(tx, scope, head.id) : null;
         const existing =
           head && history

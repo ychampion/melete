@@ -16,7 +16,12 @@ import {
   jobConstraints,
   space,
 } from './entities.ts';
-import { knowledgeFrontmatter, knowledgeRecordStatus, proposedWrite } from './knowledge.ts';
+import {
+  knowledgeFrontmatter,
+  knowledgeRecordStatus,
+  knowledgeType,
+  proposedWrite,
+} from './knowledge.ts';
 import { skillFrontmatter } from './skills.ts';
 
 export const healthResponse = z.object({
@@ -150,6 +155,25 @@ export const knowledgeHit = z.object({
   score: z.number(),
 });
 export const knowledgeSearchResponse = z.object({ hits: z.array(knowledgeHit) });
+
+/**
+ * The catalog of one space. Search answers a question; nothing else could show a
+ * caller what is actually in the space, which is why listing is its own
+ * operation rather than a search with an empty query.
+ */
+export const knowledgeListEntry = z.object({
+  id: prefixedId(ID_PREFIXES.knowledge),
+  path: z.string(),
+  title: z.string(),
+  type: knowledgeType,
+  status: knowledgeRecordStatus,
+  tags: z.array(z.string()),
+  updated: z.string(),
+});
+export const knowledgeListQuery = z.object({
+  space_id: prefixedId(ID_PREFIXES.space).optional(),
+});
+export const knowledgeListResponse = z.object({ records: z.array(knowledgeListEntry) });
 
 export const knowledgeRecordResponse = z.object({
   id: prefixedId(ID_PREFIXES.knowledge),

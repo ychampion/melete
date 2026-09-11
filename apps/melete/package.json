@@ -17,6 +17,7 @@
     "@melete/knowledge": "workspace:*",
     "@melete/skills": "workspace:*",
     "ajv": "8.20.0",
+    "chrono-node": "2.10.1",
     "drizzle-orm": "0.45.2",
     "fast-xml-parser": "5.11.1",
     "hono": "4.13.7",
