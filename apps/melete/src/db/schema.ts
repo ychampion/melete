@@ -290,6 +290,28 @@ export const skill = pgTable(
   (t) => [uniqueIndex('skill_space_name_idx').on(t.spaceId, t.name)],
 );
 
+export const submission = pgTable('submission', {
+  submissionId: text('submission_id').primaryKey(),
+  inputDigest: text('input_digest').notNull(),
+  jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+  jobRevision: integer('job_revision'),
+  eventCursor: bigint('event_cursor', { mode: 'number' }),
+  state: text('state').notNull(),
+  httpStatus: integer('http_status').notNull(),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  createdAt: created(),
+});
+
+/** Independent of the receipt row and retained beyond event-stream pruning. */
+export const acceptanceJournal = pgTable('acceptance_journal', {
+  submissionId: text('submission_id').primaryKey(),
+  jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+  receipt: jsonb('receipt').notNull(),
+  receiptHash: text('receipt_hash').notNull(),
+  createdAt: created(),
+});
+
 export const schema = {
   owner,
   space,
@@ -305,4 +327,6 @@ export const schema = {
   trigger,
   budgetLedger,
   skill,
+  submission,
+  acceptanceJournal,
 };

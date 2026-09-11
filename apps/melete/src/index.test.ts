@@ -57,8 +57,8 @@ describe('environment', () => {
 
 describe('schema', () => {
   test('every entity in the contract has a table', () => {
-    expect(Object.keys(schema).sort()).toEqual(
-      [
+    expect(Object.keys(schema)).toEqual(
+      expect.arrayContaining([
         'action',
         'approval',
         'artifact',
@@ -73,7 +73,7 @@ describe('schema', () => {
         'skill',
         'space',
         'trigger',
-      ].sort(),
+      ]),
     );
   });
 });

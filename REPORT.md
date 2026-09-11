@@ -88,3 +88,16 @@
 - Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: passed (`Checked 91 files in 164ms. No fixes applied.`).
 - Command `bun test --dots`: `352 pass`, `24 todo`, `0 fail`, `1331 expect() calls`, `Ran 376 tests across 27 files. [87.44s]`.
 - Command `bun run conformance`: now executes the suite after listing its assertions; conformance scenarios 3, 4, 6, 7 and 8 remain outside this lane's requested conformance scope.
+
+## Slice 8: submission receipts
+
+- SHA `566990d`: required conformance scenarios committed and pushed to `origin/lane/w1-service`; the final report remains deferred until the owner review slices finish.
+- Command `bun run --cwd apps/melete db:generate --name=submissions`: generated `0003_submissions.sql` with the receipt and independent acceptance-journal tables.
+- Test `death after durable admission but before response`: a child exits after the admission transaction commits; lookup and retry return the same receipt with one job and one receipt row.
+- Test `racing repeats`: canonical JSON key order deduplicates admission; input text bytes and operation identity remain significant; a changed payload under the same key returns 409 and preserves the original receipt.
+- Test `receipt_missing`, test `history_missing`, test `history_corrupt` and test `marker_only`: damaged history becomes persisted `unknown_durability`; the service never admits replacement work for that known submission ID.
+- Command `bun test apps/melete/test/integration/submissions.test.ts apps/melete/test/integration/jobs.test.ts`: `25 pass`, `0 fail`, `319 expect() calls`, `57.91s` before adding the persisted-uncertainty assertions.
+- Command `bun run typecheck`: three assertion typings corrected in one fix cycle; final run passed (`$ tsc -b`).
+- Command `bun test --dots`: first full run found the old exact-table-list assertion; one fix lets the original entity assertion accept additive tables. Final run: `363 pass`, `24 todo`, `0 fail`, `1402 expect() calls`, `Ran 387 tests across 28 files. [138.98s]`.
+- Command `bun run lint`: passed (`Checked 96 files in 371ms. No fixes applied.`); command `bun run openapi`: regenerated the new receipt lookup and input paths.
+- Test `global database preload`: suites clone one migrated template into separate disposable databases; tests assert `fsync=on` and `synchronous_commit=on`.

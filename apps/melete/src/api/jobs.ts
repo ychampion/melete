@@ -1,24 +1,30 @@
-import {
-  cancelJobRequest,
-  createJobRequest,
-  jobListQuery,
-  jobState,
-  postMessageRequest,
-} from '@melete/contracts';
+import { cancelJobRequest, jobListQuery, jobState } from '@melete/contracts';
 import type { Hono } from 'hono';
 import type { JobService } from '../jobs/service.ts';
 import { jobView } from '../jobs/service.ts';
+import { SubmissionService } from '../jobs/submissions.ts';
 import { ServiceError } from './errors.ts';
 
-export function mountJobs(app: Hono, jobs?: JobService): void {
+export function mountJobs(app: Hono, jobs?: JobService, submissions?: SubmissionService): void {
   const service = () => {
     if (!jobs) throw new ServiceError('service_unavailable', 'Configure the job service.', 503);
     return jobs;
   };
+  const admissions = () => submissions ?? new SubmissionService(service());
   app.post('/jobs', async (c) => {
-    const input = createJobRequest.parse(await c.req.json());
-    return c.json({ job: jobView(await service().create(input)) }, 201);
+    const result = await admissions().create(await c.req.json(), c.req.header('Idempotency-Key'));
+    return c.json(
+      {
+        job: result.job ? jobView(result.job) : null,
+        receipt: result.receipt,
+        ...(result.error ? { error: result.error } : {}),
+      },
+      result.status,
+    );
   });
+  app.get('/submissions/:id', async (c) =>
+    c.json({ receipt: await admissions().get(c.req.param('id')) }),
+  );
   app.get('/jobs', async (c) => {
     const query = jobListQuery.parse(c.req.query());
     if (query.state) jobState.parse(query.state);
@@ -30,8 +36,19 @@ export function mountJobs(app: Hono, jobs?: JobService): void {
   // /messages is the frozen API spelling; /input is the lane brief's alias.
   for (const path of ['/jobs/:id/input', '/jobs/:id/messages']) {
     app.post(path, async (c) => {
-      const input = postMessageRequest.parse(await c.req.json());
-      return c.json({ job: jobView(await service().input(c.req.param('id') ?? '', input.text)) });
+      const result = await admissions().input(
+        c.req.param('id') ?? '',
+        await c.req.json(),
+        c.req.header('Idempotency-Key'),
+      );
+      return c.json(
+        {
+          job: result.job ? jobView(result.job) : null,
+          receipt: result.receipt,
+          ...(result.error ? { error: result.error } : {}),
+        },
+        result.status,
+      );
     });
   }
   app.post('/jobs/:id/cancel', async (c) => {

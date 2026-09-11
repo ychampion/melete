@@ -108,35 +108,38 @@ export class JobService {
   }
 
   async create(input: CreateJobRequest): Promise<JobRow> {
+    return this.transaction((tx) => this.createInTransaction(tx, input));
+  }
+
+  /** Submission admission composes its receipt with the same job/wake transaction. */
+  async createInTransaction(tx: Transaction, input: CreateJobRequest): Promise<JobRow> {
     const value = createJobRequest.parse(input);
-    return this.transaction(async (tx) => {
-      const [parent] = await tx
-        .select({ id: space.id })
-        .from(space)
-        .where(eq(space.id, value.space_id));
-      if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
-      const [row] = await tx
-        .insert(job)
-        .values({
-          id: newId('job'),
-          spaceId: value.space_id,
-          title: value.title,
-          objective: value.objective,
-          constraints: jobConstraints.parse(value.constraints ?? {}),
-          budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
-          nextWakeAt: new Date(),
-        })
-        .returning();
-      if (!row) throw new Error('job insert returned no row');
-      await appendEvent(tx, {
-        jobId: row.id,
-        type: 'job_created',
-        payload: { title: row.title },
-        dedupKey: `${row.id}:created`,
-      });
-      await this.enqueue(tx, row, 'created');
-      return row;
+    const [parent] = await tx
+      .select({ id: space.id })
+      .from(space)
+      .where(eq(space.id, value.space_id));
+    if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
+    const [row] = await tx
+      .insert(job)
+      .values({
+        id: newId('job'),
+        spaceId: value.space_id,
+        title: value.title,
+        objective: value.objective,
+        constraints: jobConstraints.parse(value.constraints ?? {}),
+        budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
+        nextWakeAt: new Date(),
+      })
+      .returning();
+    if (!row) throw new Error('job insert returned no row');
+    await appendEvent(tx, {
+      jobId: row.id,
+      type: 'job_created',
+      payload: { title: row.title },
+      dedupKey: `${row.id}:created`,
     });
+    await this.enqueue(tx, row, 'created');
+    return row;
   }
 
   async enqueue(tx: Transaction, row: JobRow, reason: AttemptWake['reason']): Promise<void> {
@@ -206,23 +209,20 @@ export class JobService {
   }
 
   async input(id: string, text: string): Promise<JobRow> {
-    return this.transaction(async (tx) => {
-      const row = await this.lock(tx, id);
-      if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
-      const updated = await this.move(
-        tx,
-        row,
-        { kind: 'user_input_received' },
-        { reason: 'input' },
-      );
-      await appendEvent(tx, {
-        jobId: id,
-        type: 'notice',
-        payload: { kind: 'user_message', text },
-        dedupKey: `${id}:input:${updated.stateVersion}`,
-      });
-      return updated;
+    return this.transaction((tx) => this.inputInTransaction(tx, id, text));
+  }
+
+  async inputInTransaction(tx: Transaction, id: string, text: string): Promise<JobRow> {
+    const row = await this.lock(tx, id);
+    if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+    const updated = await this.move(tx, row, { kind: 'user_input_received' }, { reason: 'input' });
+    await appendEvent(tx, {
+      jobId: id,
+      type: 'notice',
+      payload: { kind: 'user_message', text },
+      dedupKey: `${id}:input:${updated.stateVersion}`,
     });
+    return updated;
   }
 
   async cancel(id: string, reason?: string): Promise<JobRow> {

@@ -37,6 +37,7 @@ import {
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
+import { jobSubmissionResponse, submissionResponse } from './responsibility.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -83,6 +84,34 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/submissions/{id}': {
+          get: {
+            tags: ['jobs'],
+            summary: 'Look up a durable submission receipt after losing a reply',
+            requestParams: idParam('id', 'Client idempotency key or server ULID'),
+            responses: {
+              '200': jsonResponse(
+                'Acceptance, rejection, or unknown durability',
+                submissionResponse,
+              ),
+            },
+          },
+        },
+        '/jobs/{id}/input': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Submit an input once and receive its durable receipt',
+            requestParams: idParam('id', 'Job ID'),
+            requestBody: json(postMessageRequest),
+            responses: {
+              '200': jsonResponse('Input submission receipt', jobSubmissionResponse),
+              '409': jsonResponse(
+                'Submission conflict or rejected transition',
+                jobSubmissionResponse,
+              ),
+            },
+          },
+        },
         '/health': {
           get: {
             tags: ['health'],

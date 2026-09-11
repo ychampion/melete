@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { migrateDatabase } from '../../src/db/migrate.ts';
+import { startQueue } from '../../src/jobs/queue.ts';
 
 export type TestDatabase = DatabaseHandle & { url: string };
 type TestServer = { url: string; stop: () => Promise<void> };
 let server: Promise<TestServer | null> | undefined;
+let template: Promise<string> | undefined;
 let globalCleanup = false;
 let fixtures = 0;
 
@@ -21,7 +23,43 @@ export function shareTestServer(): () => Promise<void> {
 async function stopTestServer() {
   const active = await server;
   server = undefined;
-  await active?.stop();
+  const templateName = await template?.catch(() => undefined);
+  template = undefined;
+  try {
+    if (active && templateName) {
+      const admin = openDatabase(active.url, 1);
+      try {
+        await admin.sql`drop database ${admin.sql(templateName)} with (force)`;
+      } finally {
+        await admin.close();
+      }
+    }
+  } finally {
+    await active?.stop();
+  }
+}
+
+async function prepareTemplate(url: string) {
+  const name = `melete_template_${randomBytes(10).toString('hex')}`;
+  const admin = openDatabase(url, 2);
+  await admin.sql`create database ${admin.sql(name)}`;
+  const target = new URL(url);
+  target.pathname = `/${name}`;
+  const handle = openDatabase(target.toString(), 2);
+  let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
+  try {
+    await migrateDatabase(handle);
+    queue = await startQueue(target.toString());
+    return name;
+  } catch (error) {
+    await handle.close();
+    await admin.sql`drop database ${admin.sql(name)} with (force)`;
+    throw error;
+  } finally {
+    await queue?.stop();
+    await handle.close();
+    await admin.close();
+  }
 }
 
 async function unusedPort(): Promise<number> {
@@ -88,9 +126,11 @@ export async function testDatabase(): Promise<TestDatabase | null> {
   if (!shared) return null;
   fixtures++;
   const { url } = shared;
+  template ??= prepareTemplate(url);
+  const templateName = await template;
   const admin = openDatabase(url, 2);
   const name = `melete_test_${randomBytes(10).toString('hex')}`;
-  await admin.sql`create database ${admin.sql(name)}`;
+  await admin.sql`create database ${admin.sql(name)} template ${admin.sql(templateName)}`;
   const target = new URL(url);
   target.pathname = `/${name}`;
   const handle = openDatabase(target.toString(), 4);

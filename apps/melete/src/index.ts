@@ -22,6 +22,7 @@ import { ApprovalService } from './jobs/approvals.ts';
 import { startQueue } from './jobs/queue.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
+import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 
@@ -34,6 +35,7 @@ export type AppDeps = {
   triggers?: TriggerService;
   approvals?: ApprovalService;
   events?: EventStream;
+  submissions?: SubmissionService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -54,7 +56,7 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
-  if (deps.jobs) mountJobs(app, deps.jobs);
+  if (deps.jobs) mountJobs(app, deps.jobs, deps.submissions);
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -96,6 +98,7 @@ export async function bootstrap(
   let triggers: TriggerService | undefined;
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
+  let submissions: SubmissionService | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop()]);
@@ -116,6 +119,7 @@ export async function bootstrap(
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
     if (jobs) {
+      submissions = new SubmissionService(jobs);
       const runtime =
         options.runtime ??
         (env.MELETE_RUNTIME_ADAPTER === 'stub' ? new StubRuntimeAdapter() : undefined);
@@ -147,6 +151,7 @@ export async function bootstrap(
     triggers,
     approvals,
     events,
+    submissions,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -163,6 +168,7 @@ export async function bootstrap(
     triggers,
     approvals,
     events,
+    submissions,
     close,
   };
 }
