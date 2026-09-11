@@ -1,21 +1,25 @@
-# Markdown records, git, FTS
+# Markdown inspection and file-view tools
 
-Wraps `@melete/knowledge` and `@melete/skills` for the service: reads and writes
-the per-space git repository, stages and applies agent writes, and answers a
-search from the SQLite FTS5 index a space is searched through.
+This module wraps the file-backed knowledge and skills packages. Its SQLite
+search is a file view, not the authoritative Postgres memory recall path.
+Tests include `search finds a record by a word from its body`,
+`a record edited on disk is what a search returns`, and
+`a retracted record keeps its text and leaves retrieval`.
 
-Retrieval is scoped by the handle the caller holds, not by a filter argument the
-model supplies. A request is bound to one space before any handler runs, and a
-handler given a different space id refuses rather than serving it. A retracted
-record leaves the index in the same operation that retracts it, and stays gone
-after a restart.
+The legacy route middleware uses `x-melete-space` to select a configured space.
+The main application adds session authentication, but the header is not a
+membership-derived memory scope. The test `asking for a different space than
+the session holds is refused` supplies that header as its fixture context;
+it does not prove cross-space authorization through a real session.
+A complete trusted-scope bridge for these routes is **not claimed**.
 
-Authentication is not here. The placeholder middleware reads the space from the
-`x-melete-space` header; the session will supply it, and every handler is
-written as though it already does. Until the catalog rows exist, a space's
-identifier is derived from its directory name, so it is the same on every
-machine.
+The memory router separately owns authoritative owner edits and proposal review.
+`Markdown round trips support, preserves local edits, and owner edits become
+protected revisions` and `review mediation stages diffs and revalidates apply
+against authoritative evidence` exercise those components. Default bootstrap
+does not inject that router, and a raw file edit alone does not update Postgres
+claims.
 
-Three routes are served that the OpenAPI document does not describe yet, listed
-in `.agents/notes/proposed/2026-09-11-knowledge-api-gaps.md`. A contract test
-fails if a fourth appears.
+See [MEMORY](../../../../docs/MEMORY.md) for authoritative retrieval and startup
+requirements. Whole-stack retraction/restart conformance is **written, not run**
+in scenario 7.
