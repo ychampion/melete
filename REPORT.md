@@ -2,7 +2,10 @@
 
 Campaign started 2026-09-11 at 20:50 UTC on Linux amd64. Base:
 `9484023cabd32b786cb4d336dec818f441cd0cc1` (`origin/integration`).
-Branch: `lane/w6-deploy`. This report is updated as each deployment check runs.
+Branch: `lane/w6-deploy`. Both Linux stacks reached four healthy services;
+the restart, isolation and restore proofs passed. The clean-host installation
+took 64.93 seconds. The explicit provider skip and deferred memory scenario are
+listed below rather than counted as passing checks.
 
 ## Assumptions
 
@@ -14,6 +17,11 @@ Branch: `lane/w6-deploy`. This report is updated as each deployment check runs.
   at most two fix cycles. Unverified checks are reported as such.
 - Reclaim only this lane's identified build cache. The initial builder cache was
   empty; pre-existing images, containers and volumes are outside this lane.
+- Use a fresh container host for the second install, as permitted by the brief.
+  Its independent Docker daemon has no imported images or build cache; tmpfs
+  storage avoids exhausting the first host's disk during the extra builds.
+- Use the README's source-bundle path because the source host requires
+  authentication. Keep the existing credential off the second host.
 
 ## Host preflight
 
@@ -38,14 +46,16 @@ containerd image store reports compressed content via image inspect and combined
 content/snapshot disk usage in image ls; the columns measure different things.
 
 The runtime asserts Hermes tag `v2026.9.7` resolves to
-`2237be355906fbe6065ce1815711eee52b2d646e`. Its labels also identify plugin content
-SHA-256 `181a9f349c5b3dbbc42d70d446a0f89124b8151cec5ab776f2bdd2992e9d9e3b`.
+`2237be355906fbe6065ce1815711eee52b2d646e`. Its final labels identify plugin content
+SHA-256 `742ebece0315ab89309b92ab75cd449d572556fda1771a135742095db609f7c9`.
 Base images are pinned by digest; Bun and Python dependencies use frozen locks.
 `/opt/melete-runtime/sbom.cdx.json` inventories 200 Python/system/plugin components;
 `build-info.json` records both asserted hashes. The image smoke check ran as UID
 10001 with a read-only root and no network, imported YAML, and confirmed Python
-3.12.14 and the inventory. A no-cache rebuild took 57.58 seconds and produced
-the same pins and inventory SHA-256
+3.12.14 and the inventory. Before the tool-payload correction below, a no-cache
+rebuild took 57.58 seconds and produced the same initial plugin pin
+`181a9f349c5b3dbbc42d70d446a0f89124b8151cec5ab776f2bdd2992e9d9e3b`
+and inventory SHA-256
 `79b483e3b6ac766bccec94eec52ddf078b83fb94935b3cff7e6178b3aaee337f`.
 This establishes repeatable source/dependency content, not identical image
 bytes: image timestamps, upstream apt repositories and attestations remain variable.
@@ -100,9 +110,9 @@ Docker events measured each process from start to first healthy event:
 The final Bun image rebuild completed both images in 26.99 seconds. Melete
 compressed content is 122,029,764 bytes; web is 70,180,910 bytes. Melete's restore
 proof module was imported successfully inside its deployed non-root container.
-The proxy tests, browser hook tests and global typecheck pass. The full repository
-suite passed 937 tests and 3,914 assertions in 80.48 seconds; 24 deployment-only
-or opt-in cases were explicitly skipped in that separate fixture-database run.
+The proxy tests, browser hook tests and global typecheck pass. Final repository
+results are recorded with the conformance table below. No interactive browser
+walkthrough was performed; the deployed web page and proxy were checked over HTTP.
 
 ## Compose restart vertical slice
 
@@ -157,6 +167,7 @@ passed 23 tests in 9.16 seconds. The runtime was repinned to plugin SHA-256
 `742ebece0315ab89309b92ab75cd449d572556fda1771a135742095db609f7c9` and rebuilt in
 51.41 seconds. Its 200-component SBOM hash is now
 `4424628aac0b3f9a5bd5d05461fd7ca19fdd4ab1e0f4a2b5e9aac0ebd6ce522a`.
+The final runtime's first-host compressed content size is 296,757,737 bytes.
 
 Memory conformance used disposable databases on the Compose Postgres host and
 real memory routes with scripted extraction/answering. Ten active scenarios and
@@ -198,6 +209,9 @@ fresh-container-host option, not a second VM. The timed interval excludes
 provisioning the Docker host and transferring the source bundle, both prepared
 before the install. No Docker image or build cache was transferred. The tmpfs
 and local source transfer make this timing specific to this fixture.
+From creation of the host container through install completion, including
+daemon startup and source transfer, the elapsed interval was 87.19 seconds
+(21:51:18.945–21:52:46.133 UTC). The Docker host image was already available.
 
 The README needed two fixes found by literal execution: minimal Alpine lacked
 the C++ runtime required by Bun, and unauthenticated source cloning was not
@@ -205,6 +219,7 @@ available. It now lists Alpine prerequisites and a source-bundle alternative
 that transfers no credential or local configuration. Both failed hosts were
 replaced with empty daemons before retrying; the second fix passed. The final
 run used the documented PR branch and bundle substitutions.
+The two failed install attempts stopped after 3.58 and 3.55 seconds, respectively.
 
 Docker events measured these clean-host process-to-healthy times:
 
@@ -262,3 +277,29 @@ and test-connector flags, checkout/project/volume ownership checks, a verified
 backup, and no other consumers before replacing that one volume. A partial
 restore leaves Melete stopped. Backup bytes and detailed evidence stay in a
 private directory outside the checkout.
+
+## Scope and limits
+
+- Image source pins, dependency locks and the final SBOM reproduced on two
+  independent daemons. Byte-identical image digests are not claimed.
+- The deployment ran real Hermes containers with a scripted provider and test
+  destination. Real-provider comparison remains explicitly skipped without
+  credentials; memory procedure transfer remains the pre-existing deferred case.
+- Restart recovery preserves effect identity. Superseded attempt rows can still
+  lack an end timestamp; nine such historical rows were observed after the
+  combined runs. Their epochs were fenced and no supervised containers remained.
+- The Linux network and mount checks establish the named boundaries on the
+  tested rootful Docker hosts. They do not establish VM isolation or other
+  operating systems. The trusted supervisor's Docker socket is inside the host
+  trust boundary.
+
+The reproducible commands and Linux boundary evidence are also recorded in
+[note 0020](.agents/notes/0020-deployment-evidence.md) and the
+[threat model](docs/THREAT-MODEL.md). Raw logs, timing files, event traces and the
+private restore archive are retained outside the checkout; no local credential
+or database dump is included in the PR.
+
+The measurement campaign finished at 22:03 UTC, about 73 minutes after starting
+and within its five-hour cap. The two owned auxiliary fixture containers were
+removed after evidence capture. The primary four-service stack remains available;
+no pre-existing image, container or volume was pruned.
