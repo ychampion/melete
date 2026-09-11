@@ -304,3 +304,10 @@ green; the groups above are the part I can state as verified.
 - `bun add --cwd packages/contracts --exact re2js@2.8.6`: installed the linear-time matcher; `compileWatchPattern` is shared by watch creation and evaluation. API verified against https://github.com/le0pard/re2js and the installed README.
 - `bun test packages/contracts/src/watch.test.ts apps/melete/test/integration/watch.test.ts --max-concurrency=2`: GREEN, 20 pass, 0 fail, 63 assertions, 26.39s; the adversarial matcher finishes below 500ms.
 - `bun run typecheck`, `bun run openapi`, `bun run client:generate`, changed-file `biome check`: passed for finding 3; generated files unchanged.
+
+## Finding 7
+
+- `1c9c272`: finding 3 committed and pushed.
+- `bun test packages/runtime-hermes/src/adapter.test.ts -t "actual Hermes run request"`: RED; the real loopback POST /v1/runs contained only title/objective and omitted the receipt marker.
+- `the actual Hermes run request carries the since-last receipt and pending question`: GREEN through a fake API server on port 3190 after rendering the durable delta into input.
+- `bun test packages/runtime-hermes/src --max-concurrency=2`: 43 pass, 0 fail, 105 assertions, 711ms. `bun run typecheck` and changed-file `biome check`: passed.
