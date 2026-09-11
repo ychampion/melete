@@ -1,11 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
+import { loadSkills } from '@melete/skills';
 import { configuredConnectors, readConnectionConfig } from '../connectors/configured.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
+import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import { createInternalServer } from './internal-server.ts';
@@ -69,6 +71,7 @@ export async function startEffectBoundary(
     }
   }
   const queue = await startQueue(env.DATABASE_URL);
+  const spaces = filesystemSpaces(env.MELETE_SPACES_DIR);
   queue.boss.on('error', () => process.stderr.write('effect queue error\n'));
   const internal = createInternalServer({
     sql: handle.sql,
@@ -81,6 +84,10 @@ export async function startEffectBoundary(
     connectTls: (host) => certificates.get(host),
     resolveAuthority: dependencies.resolveAuthority,
     resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
+    catalog: {
+      skills: async (spaceId) =>
+        loadSkills({ spaceSkillsDirectory: (await spaces.byId(spaceId))?.paths.skills }).skills,
+    },
   });
   try {
     await internal.broker.recoverDispatched();

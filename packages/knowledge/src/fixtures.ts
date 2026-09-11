@@ -3,7 +3,36 @@
  * Not exported from the package barrel, because nothing outside the tests
  * should be building records from a template.
  */
+import { cpSync, lstatSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
+import { type SpacePaths, spacePaths } from './layout.ts';
+import { initSpace } from './space.ts';
+
+/** Each test copies an independent real Git history instead of rebuilding the same seed. */
+export async function seededSpace(prepare?: (paths: SpacePaths) => Promise<void>) {
+  const parent = realpathSync(tmpdir());
+  const templateRoot = mkdtempSync(join(parent, 'melete-seeded-space-'));
+  const paths = await initSpace(templateRoot, 'personal');
+  await prepare?.(paths);
+  return {
+    copy(root: string): SpacePaths {
+      cpSync(templateRoot, root, { recursive: true });
+      return spacePaths(root, 'personal');
+    },
+    close() {
+      if (
+        dirname(templateRoot) !== parent ||
+        !basename(templateRoot).startsWith('melete-seeded-space-') ||
+        lstatSync(templateRoot).isSymbolicLink() ||
+        realpathSync(templateRoot) !== templateRoot
+      )
+        throw new Error('Unverified test template directory');
+      rmSync(templateRoot, { recursive: true, force: true });
+    },
+  };
+}
 
 export const IDS = {
   bun: 'k_01J8ZP3QWABCDEFGHJKMNPQRST',

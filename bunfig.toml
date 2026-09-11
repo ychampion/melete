@@ -1,3 +1,5 @@
 [test]
 preload = ["./apps/melete/test/helpers/preload.ts"]
 maxConcurrency = 2
+# Real Git/Postgres fixtures can exceed five seconds on the shared Windows host.
+timeout = 15000

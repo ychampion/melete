@@ -327,7 +327,11 @@ describe('durable action lifecycle', () => {
         payload: {},
       });
       await s.sql`update connection set scopes = '["test.read"]'::jsonb where id = ${s.connectionId}`;
-      expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toEqual(['test.read']);
+      expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toEqual([
+        'search_tools',
+        'load_tool',
+        'test.read',
+      ]);
       await expect(s.broker.get(s.claims, proposal.action_id)).rejects.toMatchObject({
         code: 'scope_denied',
       });

@@ -5,16 +5,16 @@
  * handle that stays open across the retraction, and the restart is reopening
  * the index file from disk.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { aRecord, fixedClock, IDS } from './fixtures.ts';
+import { aRecord, fixedClock, IDS, seededSpace } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
 import { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
 import { hardDelete, retract } from './records.ts';
-import { commitRecord, history, initSpace } from './space.ts';
+import { commitRecord, history } from './space.ts';
 import { buildIndex, loadSpace, openIndex, sourceFingerprint } from './store.ts';
 
 let root: string;
@@ -23,25 +23,30 @@ const now = fixedClock();
 
 const RETRACTED = 'The lease was renewed, so the renewal window is wrong.';
 
-beforeEach(async () => {
+let seed: Awaited<ReturnType<typeof seededSpace>>;
+beforeAll(async () => {
+  seed = await seededSpace(async (paths) => {
+    await commitRecord(
+      paths,
+      'knowledge/landlord-contact.md',
+      serializeRecord(
+        aRecord({ id: IDS.landlord, title: 'Landlord contact and renewal window', type: 'fact' }),
+        'The lease renews in March. The landlord answers email but never the phone.',
+      ),
+      { proposedBy: 'user', now },
+    );
+    await commitRecord(
+      paths,
+      'knowledge/prefers-bun.md',
+      serializeRecord(aRecord({ id: IDS.bun }), 'Zara uses bun for every package operation.'),
+      { proposedBy: 'user', now },
+    );
+  });
+}, 30_000);
+afterAll(() => seed?.close());
+beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'melete-retract-'));
-  paths = await initSpace(root, 'personal');
-
-  await commitRecord(
-    paths,
-    'knowledge/landlord-contact.md',
-    serializeRecord(
-      aRecord({ id: IDS.landlord, title: 'Landlord contact and renewal window', type: 'fact' }),
-      'The lease renews in March. The landlord answers email but never the phone.',
-    ),
-    { proposedBy: 'user', now },
-  );
-  await commitRecord(
-    paths,
-    'knowledge/prefers-bun.md',
-    serializeRecord(aRecord({ id: IDS.bun }), 'Zara uses bun for every package operation.'),
-    { proposedBy: 'user', now },
-  );
+  paths = seed.copy(root);
 });
 
 afterEach(() => {

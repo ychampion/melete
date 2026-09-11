@@ -37,6 +37,7 @@ import {
   saveBinding,
 } from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
+import { type CatalogOptions, resolveToolAlias, ToolCatalog } from './catalog.ts';
 import { BrokerFault } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import {
@@ -75,6 +76,7 @@ export type BrokerOptions = {
   resolveStandingGrant?: StandingGrantResolver;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
+  catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
 };
 
 export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
@@ -132,11 +134,17 @@ function dispositionMessage(action: Action, repeated: boolean): string {
 
 export class BrokerService implements BrokerOperations {
   readonly sql: Sql;
-  private readonly validator = new Ajv({ strict: false, allErrors: false });
+  readonly discovery: ToolCatalog;
+  private readonly validator = new Ajv({ strict: false, allErrors: false, addUsedSchema: false });
   private readonly dispatchTimeoutMs: number;
 
   constructor(private readonly options: BrokerOptions) {
     this.sql = options.sql;
+    this.discovery = new ToolCatalog({
+      sql: options.sql,
+      connectors: options.connectors,
+      ...options.catalog,
+    });
     this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     if (
       options.approvalTtlMs !== undefined &&
@@ -165,7 +173,7 @@ export class BrokerService implements BrokerOperations {
     const connector = this.options.connectors.get(connectionId);
     if (!connector || connector.manifest.provider !== connection.provider)
       throw new BrokerFault('connector_unavailable');
-    const tool = findTool(connector.manifest, kind);
+    const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
     const required = new Set([...tool.required_scopes, tool.name]);
     if (
@@ -179,39 +187,7 @@ export class BrokerService implements BrokerOperations {
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
-    return this.sql.begin(async (tx) => {
-      const job = await lockJob(tx, claims.job_id);
-      await checkAttempt(tx, job, claims);
-      const connections = await tx`select id, provider, scopes from connection
-        where space_id = ${job.space_id} and status = 'active' order by id`;
-      const tools: ToolSpec[] = [];
-      for (const connection of connections) {
-        const connector = this.options.connectors.get(connection.id);
-        if (!connector || connector.manifest.provider !== connection.provider) continue;
-        for (const tool of connector.manifest.tools) {
-          if (
-            ![tool.name, ...tool.required_scopes].every(
-              (s) => claims.scopes.includes(s) && connection.scopes.includes(s),
-            )
-          )
-            continue;
-          tools.push({
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.input_schema,
-            effect_class: tool.effect_class,
-            connection_id: connection.id,
-          });
-        }
-      }
-      return tools.sort((a, b) =>
-        a.name < b.name
-          ? -1
-          : a.name > b.name
-            ? 1
-            : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
-      );
-    });
+    return this.discovery.catalog(claims);
   }
 
   async get(claims: CapabilityClaims, id: string): Promise<Action> {
@@ -226,8 +202,14 @@ export class BrokerService implements BrokerOperations {
   }
 
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
-    if (!this.validator.validate(tool.input_schema, payload))
+    try {
+      const validate = this.validator.compile(tool.input_schema);
+      // Connector schemas are synchronous and self-contained; promises cannot authorize dispatch.
+      if (('$async' in validate && validate.$async) || validate(payload) !== true)
+        throw new BrokerFault('payload_invalid');
+    } catch {
       throw new BrokerFault('payload_invalid');
+    }
   }
 
   private async proposalView(
@@ -375,12 +357,21 @@ export class BrokerService implements BrokerOperations {
   async propose(
     claims: CapabilityClaims,
     request: ProposeActionRequest,
+    readOnly = false,
   ): Promise<EffectProposalResponse> {
     const canonical = canonicalizePayload(request.payload);
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
       const { tool } = await this.tool(tx, job, claims, request.connection_id, request.kind);
+      if (readOnly && (tool.effect_class !== 'read' || tool.requires_approval))
+        throw new BrokerFault(
+          'scope_denied',
+          'Composition may invoke only auto-admitted read tools',
+        );
+      // A presentation alias binds one granted account; the durable intent and
+      // connector dispatch keep the original verb, including after a restart.
+      request = { ...request, kind: tool.name };
       this.validatePayload(tool, canonical.canonical);
       // The identity of the effect itself, independent of which attempt is
       // alive. A runtime that died between proposing and hearing back proposes
@@ -463,6 +454,10 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  proposeRead(claims: CapabilityClaims, request: ProposeActionRequest) {
+    return this.propose(claims, request, true);
   }
 
   async decide(id: string, request: ApprovalDecisionRequest) {
@@ -670,6 +665,7 @@ export class BrokerService implements BrokerOperations {
           !connector ||
           connector.manifest.provider !== connection?.provider ||
           !tool ||
+          tool.effect_class !== action.effect_class ||
           ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))
         )
           throw new BrokerFault('scope_denied');
@@ -680,6 +676,8 @@ export class BrokerService implements BrokerOperations {
         // Admission authorized these origins. If the world has since learned
         // that one of them came from somewhere else, nothing leaves.
         const classified = await this.classify(tx, job, action, tool);
+        if (classified.requires_approval && !action.authorization_ref)
+          throw new BrokerFault('approval_required', 'Tool now requires approval');
         const [authorizing] = action.authorization_ref
           ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
           : [];

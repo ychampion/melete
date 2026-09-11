@@ -6,6 +6,7 @@ import type {
   JobConstraints,
   VerifyResult,
 } from '@melete/contracts';
+import type { CatalogMetadata } from '../broker/catalog.ts';
 
 /** Trusted service context, assembled from persisted job state, never tool arguments. */
 export type ConnectorContext = {
@@ -18,6 +19,7 @@ export type ConnectorContext = {
 
 export interface Connector {
   manifest: ConnectorManifest;
+  catalog?: CatalogMetadata;
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   health(): Promise<ConnectorHealth>;

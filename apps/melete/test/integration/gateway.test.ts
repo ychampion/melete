@@ -1,4 +1,7 @@
 import { afterAll, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { proposeActionResponse } from '@melete/contracts';
 import { signCapability } from '../../src/broker/capability.ts';
 import { createInternalServer } from '../../src/broker/internal-server.ts';
@@ -7,7 +10,9 @@ import { createTestConnector, initializeTestLedger } from '../../src/connectors/
 import { loadEnv } from '../../src/env.ts';
 import { fakeProvider } from '../../src/gateway/fake.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
+import { spaceIdFor } from '../../src/knowledge/spaces.ts';
 import { seedJob } from '../helpers/broker.ts';
+import { unusedTestPort } from '../helpers/database.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
 const fixture = await createPostgresFixture();
@@ -202,31 +207,65 @@ databaseTest(
   'service startup binds the W2 internal port and runs pg-boss against the fixture',
   async () => {
     if (!fixture) throw new Error('Postgres fixture unavailable');
-    const seed = await seedJob(fixture.sql, { scopes: ['test.send'] });
+    const spacesRoot = await mkdtemp(join(tmpdir(), 'melete-discovery-skills-'));
+    await mkdir(join(spacesRoot, 'personal', '.git'), { recursive: true });
+    await mkdir(join(spacesRoot, 'personal', 'skills'));
+    await writeFile(
+      join(spacesRoot, 'personal', 'skills', 'receipt.md'),
+      `---
+name: fixture-receipt
+description: Read the fixtureonlyskill procedure
+triggers: [fixtureonlyskill]
+tools: [test.send]
+max_tokens: 400
+---
+Use the scoped receipt procedure.
+`,
+    );
+    const seed = await seedJob(fixture.sql, {
+      scopes: ['test.send'],
+      spaceId: spaceIdFor('personal'),
+    });
     const env = loadEnv({
       DATABASE_URL: fixture.url,
       MELETE_CAPABILITY_KEY: capabilityKey,
       MELETE_APPROVAL_KEY: approvalKey,
-      MELETE_BROKER_BIND: '127.0.0.1:3112',
+      MELETE_BROKER_BIND: `127.0.0.1:${await unusedTestPort()}`,
       MELETE_ENABLE_TEST_CONNECTOR: 'true',
       MELETE_ENABLE_FAKE_PROVIDER: 'true',
       MELETE_DEFAULT_PROVIDER: 'fake',
+      MELETE_SPACES_DIR: spacesRoot,
     });
     const internal = await startEffectBoundary(fixture, env);
     try {
       const token = signCapability(seed.claims, capabilityKey);
-      const response = await fetch('http://127.0.0.1:3112/tools', {
+      const address = internal.server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing broker address');
+      const response = await fetch(`http://127.0.0.1:${address.port}/tools`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        tools: [{ name: 'test.send', connection_id: seed.connectionId }],
+        tools: [
+          { name: 'load_tool', connection_id: null },
+          { name: 'search_tools', connection_id: null },
+          { name: 'test.send', connection_id: seed.connectionId },
+        ],
+      });
+      const search = await fetch(`http://127.0.0.1:${address.port}/tools/search`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'fixtureonlyskill' }),
+      });
+      expect(await search.json()).toMatchObject({
+        tools: [{ name: 'skills.fixture_receipt', source: 'skill' }],
       });
       const [queue] =
         await fixture.sql`select name from pgboss.queue where name = ${QUEUES.attempt}`;
       expect(queue?.name).toBe(QUEUES.attempt);
     } finally {
       await internal.close();
+      await rm(spacesRoot, { recursive: true, force: true });
     }
   },
 );

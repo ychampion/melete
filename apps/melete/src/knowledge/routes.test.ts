@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +15,6 @@ import {
   commitRecord,
   DEFAULT_POLICY,
   getProposal,
-  initSpace,
   knownIds,
   listProposals,
   loadSpace,
@@ -24,6 +23,7 @@ import {
   type SpacePaths,
   serializeRecord,
 } from '@melete/knowledge';
+import { seededSpace } from '../../../../packages/knowledge/src/fixtures.ts';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { loadEnv } from '../env.ts';
 import { createApp, VERSION } from '../index.ts';
@@ -84,26 +84,31 @@ afterAll(async () => {
 const app = () => knowledgeRoutes({ spaces: filesystemSpaces(root) });
 const headers = () => ({ [SPACE_HEADER]: spaceId, 'content-type': 'application/json' });
 
-beforeEach(async () => {
+let seed: Awaited<ReturnType<typeof seededSpace>>;
+beforeAll(async () => {
+  seed = await seededSpace(async (paths) => {
+    await commitRecord(
+      paths,
+      'knowledge/prefers-bun.md',
+      serializeRecord(record(), 'Zara uses bun for every package operation.'),
+      { proposedBy: 'user' },
+    );
+    await commitRecord(
+      paths,
+      'knowledge/landlord-contact.md',
+      serializeRecord(
+        record({ id: ID.landlord, title: 'Landlord contact', type: 'fact', tags: ['housing'] }),
+        'The lease renews in March.',
+      ),
+      { proposedBy: 'user' },
+    );
+  });
+}, 30_000);
+afterAll(() => seed?.close());
+beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'melete-api-'));
-  paths = await initSpace(root, 'personal');
+  paths = seed.copy(root);
   spaceId = spaceIdFor('personal');
-
-  await commitRecord(
-    paths,
-    'knowledge/prefers-bun.md',
-    serializeRecord(record(), 'Zara uses bun for every package operation.'),
-    { proposedBy: 'user' },
-  );
-  await commitRecord(
-    paths,
-    'knowledge/landlord-contact.md',
-    serializeRecord(
-      record({ id: ID.landlord, title: 'Landlord contact', type: 'fact', tags: ['housing'] }),
-      'The lease renews in March.',
-    ),
-    { proposedBy: 'user' },
-  );
 });
 
 afterEach(() => {

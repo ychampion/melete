@@ -9,11 +9,13 @@ import {
   type ToolSpec,
 } from '@melete/contracts';
 import { Hono } from 'hono';
-import { ZodError } from 'zod';
+import { ZodError, z } from 'zod';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
+import type { ToolCatalog } from './catalog.ts';
 import { BrokerFault } from './errors.ts';
 
 export interface BrokerOperations {
+  discovery?: ToolCatalog;
   authorize(claims: CapabilityClaims): Promise<void>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
@@ -53,7 +55,8 @@ export function createBrokerApp(options: {
     const decision = /^\/actions\/[^/]+\/(approve|deny)$/.test(path) && c.req.method === 'POST';
     const runtime =
       (c.req.method === 'GET' && (path === '/tools' || /^\/actions\/[^/]+$/.test(path))) ||
-      (c.req.method === 'POST' && path === '/actions');
+      (c.req.method === 'POST' &&
+        ['/actions', '/tools/search', '/tools/load', '/tools/call'].includes(path));
     if (!decision && !runtime) return c.json({ error: { code: 'not_found' } }, 404);
     if (Number(c.req.header('content-length') ?? '0') > 1_048_576) {
       return c.json({ error: { code: 'payload_invalid' } }, 413);
@@ -82,6 +85,32 @@ export function createBrokerApp(options: {
           : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
     );
     return c.json({ tools });
+  });
+  app.post('/tools/search', async (c) => {
+    const body = z
+      .object({ query: z.string() })
+      .strict()
+      .parse(await c.req.json());
+    if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
+    return c.json({ tools: await options.broker.discovery.search(c.get('claims'), body.query) });
+  });
+  app.post('/tools/load', async (c) => {
+    const body = z
+      .object({ name: z.string() })
+      .strict()
+      .parse(await c.req.json());
+    if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
+    return c.json(await options.broker.discovery.load(c.get('claims'), body.name));
+  });
+  app.post('/tools/call', async (c) => {
+    const body = z
+      .object({ name: z.string(), arguments: z.record(z.string(), z.json()) })
+      .strict()
+      .parse(await c.req.json());
+    if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
+    return c.json(
+      await options.broker.discovery.callSkill(c.get('claims'), body.name, body.arguments),
+    );
   });
   app.post('/actions', async (c) =>
     c.json(
