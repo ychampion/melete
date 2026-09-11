@@ -100,11 +100,17 @@ many times the same failure recurs.
 
 ## What was not done
 
-No connector other than `test` raises typed faults yet. The files, web, email and
-calendar connectors keep their present behaviour, which now reads as
-`unclassified` and is unchanged from before this note. Teaching each of them its
-own classes is a per-connector change with its own falsifier, and doing it
-blindly would be the same guess this note exists to refuse.
+`calendar` and `files` classify only what they can classify honestly: a CalDAV
+429, 401 and 403, and a file whose content is not what the action recorded or
+what was written. `web` and `email` classify nothing yet. A web fetch already
+reports the destination's status in its receipt rather than failing on it, and a
+mail transport error is not yet distinguishable enough to name a class without
+guessing, which is the guess this note exists to refuse. Both keep their present
+behaviour exactly, which now reads as `unclassified`.
+
+A write in the files connector is now read back and compared before it answers
+`succeeded`. That is the smallest real form of "never mark delivered because a
+file exists": the receipt's hash is the hash of what is on disk.
 
 `reviseOutput` is a seam, not an implementation: absent a reviser, a bad output
 stops at `needs_input`. Nothing here invents a revision.

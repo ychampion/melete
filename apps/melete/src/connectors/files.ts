@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type { Action, ConnectorManifest, JsonValue, Receipt } from '@melete/contracts';
+import { ConnectorFaultError } from './faults.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 type Area = 'work' | 'artifacts';
@@ -213,7 +214,12 @@ export function createFilesConnector(options: FilesOptions): Connector {
         const target = await resolveFile(ctx, areaFor(payload.to_area ?? area), to, true);
         hash = digest(await read(source));
         if (payload.content_hash !== undefined && payload.content_hash !== hash) {
-          throw new Error('source content hash mismatch');
+          // Nothing was moved. The file on disk is not the content this action
+          // recorded, which is a question for a person, not a retry.
+          throw new ConnectorFaultError({
+            kind: 'bad_output',
+            detail: 'the file to move is not the content the action recorded',
+          });
         }
         try {
           await lstat(target);
@@ -262,6 +268,16 @@ export function createFilesConnector(options: FilesOptions): Connector {
             await file.close();
           }
           hash = digest(content);
+          // A file existing is not a delivery. Read back what was written and
+          // compare it, so a short write or a racing writer is a bad output
+          // rather than a receipt for content nobody has.
+          const written = digest(await read(target));
+          if (written !== hash) {
+            throw new ConnectorFaultError({
+              kind: 'bad_output',
+              detail: 'the file on disk does not match the content that was written',
+            });
+          }
           detail = { path: relative, area, content_hash: hash, bytes: Buffer.byteLength(content) };
         } else throw new Error('unknown files tool');
       }

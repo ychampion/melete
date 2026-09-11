@@ -31,8 +31,18 @@ routes for the same operation, used only after a route said definitively that it
 did not execute. A connector that implements none of them simply stops instead,
 which is the correct outcome rather than a missing feature.
 
-In v0.1 only `test` raises typed faults. Files, web, email and calendar keep
-their present behaviour.
+Which connectors classify what, in v0.1:
+
+| Connector | Classes it raises |
+|---|---|
+| `test` | every class, on demand, for the falsifiers |
+| `calendar` | `rate_limited` (with the server's `Retry-After`), `expired_credential` on 401, `revoked_credential` on 403. Every other refusal stays a plain failure |
+| `files` | `bad_output` when a move's source is not the content the action recorded, and when a write does not read back as what was written |
+| `web`, `email` | none yet. A web fetch reports the destination's status in its receipt rather than failing on it, and mail transport errors are not yet distinguishable enough to classify honestly |
+
+A connector that classifies nothing behaves exactly as it did before typed
+faults existed. Adding a class is a per-connector change with its own falsifier,
+and guessing one would be the same guess the policy exists to refuse.
 
 ## Core connectors
 

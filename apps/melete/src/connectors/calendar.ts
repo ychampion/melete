@@ -9,8 +9,23 @@ import type {
 import { XMLParser } from 'fast-xml-parser';
 import ICAL from 'ical.js';
 import { z } from 'zod';
+import { asConnectorFault, ConnectorFaultError } from './faults.ts';
 import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
+
+/**
+ * `Retry-After` is either seconds or an HTTP date. Anything unreadable means
+ * the server asked for a wait without saying how long, and the policy uses its
+ * own default rather than inventing one here.
+ */
+function retryAfterSeconds(header: string | null): number | null {
+  if (!header) return null;
+  const seconds = Number(header.trim());
+  if (Number.isInteger(seconds) && seconds >= 0) return Math.min(seconds, 86_400);
+  const at = Date.parse(header);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, Math.min(Math.ceil((at - Date.now()) / 1000), 86_400));
+}
 
 export type CalendarConnection = {
   id: string;
@@ -369,7 +384,29 @@ export class CalendarConnector implements Connector {
           { uid, etag: response.headers.get('etag'), action_id: action.id },
           uid,
         );
-      if ([400, 401, 403, 404, 409, 412, 415, 422].includes(response.status))
+      // Three statuses mean something specific enough to repair rather than
+      // report. All three are definitive non-execution: the server answered
+      // the write and did not perform it.
+      if (response.status === 429) {
+        throw new ConnectorFaultError({
+          kind: 'rate_limited',
+          detail: 'the calendar server asked to be left alone for a while',
+          retry_after: retryAfterSeconds(response.headers.get('retry-after')),
+        });
+      }
+      if (response.status === 401) {
+        throw new ConnectorFaultError({
+          kind: 'expired_credential',
+          detail: 'the calendar server refused the credential this write carried',
+        });
+      }
+      if (response.status === 403) {
+        throw new ConnectorFaultError({
+          kind: 'revoked_credential',
+          detail: 'the calendar server no longer permits this account to write',
+        });
+      }
+      if ([400, 404, 409, 412, 415, 422].includes(response.status))
         return {
           outcome: 'failed',
           reason: `Calendar server rejected the write (${response.status}).`,
@@ -379,7 +416,10 @@ export class CalendarConnector implements Connector {
         outcome: 'unknown',
         reason: 'Calendar write was not confirmed. Verify its UID before deciding.',
       };
-    } catch {
+    } catch (error) {
+      // A typed fault has already said what happened; do not flatten it into a
+      // guess about the outcome.
+      if (asConnectorFault(error)) throw error;
       return dispatched
         ? {
             outcome: 'unknown',
