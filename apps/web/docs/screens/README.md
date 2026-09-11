@@ -50,8 +50,6 @@ Written by `bun run --cwd apps/web screens` against the mock. Every surface is c
 | home | 390-dark | no | 0 |
 | chat-working | 1440-light | no | 0 |
 | chat-working | 1440-dark | no | 0 |
-| chat-working | 1024-light | no | 0 |
-| chat-working | 1024-dark | no | 0 |
 | chat-working | 390-light | no | 0 |
 | chat-working | 390-dark | no | 0 |
 | chat-decide | 1440-light | no | 0 |

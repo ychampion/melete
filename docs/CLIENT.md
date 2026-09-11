@@ -1,8 +1,9 @@
 # Building a client
 
-Melete is an API. The web client in `apps/web` is one consumer of it, not the
-product interface; anything that client can do, a script can do, and this
-document is what a second client needs to know before it starts.
+Melete is an API. The web app in `apps/web` is one consumer of it: anything it
+can do, a script can do, and this document is what a second client needs to
+know before it starts. The web app adds its own rules on top, listed at the
+end, so that a second interface says the same things the first one does.
 
 Everything here is generated from or checked against
 [`packages/contracts/openapi.json`](../packages/contracts/openapi.json). If this
@@ -17,6 +18,7 @@ bug.
 - [The inbox rule](#the-inbox-rule)
 - [The five states a job can wait in](#the-five-states-a-job-can-wait-in)
 - [Developing against the mock](#developing-against-the-mock)
+- [Rules the web app adds](#rules-the-web-app-adds)
 
 ## The typed client
 
@@ -230,21 +232,89 @@ jobs through the same `transition` function the service uses. It is enough to
 build a whole client against.
 
 ```bash
-bun run dev:mock                  # http://localhost:3190
-bun run dev:web                   # http://localhost:5173
+MOCK_PORT=3210 bun run dev:mock   # http://localhost:3210 (the default is 3190)
+bun run dev:web                   # http://localhost:5180
 ```
 
-Point a client at it with `VITE_MELETE_API`, or `baseUrl` directly. Two
-scenarios ship in `apps/mock-api/scenarios/`, chosen by what the job objective
-says:
+Point a client at it with `VITE_MELETE_API`, or `baseUrl` directly. The
+scenarios in `apps/mock-api/scenarios/` are chosen by what the message says:
 
 - **approved-send** — runs to a receipt through an approval, and takes a denial
   to a question rather than a second attempt at sending.
 - **unknown-outcome** — the connector never answers; the action rests at
   `unknown` and the job at `needs_reconciliation` until a person settles it.
   Ask for something "unknown" or "flaky" in the objective to get this one.
+- **dinner-with-friends** — checks the calendar, searches the web and Maps,
+  drafts a note, and asks before adding the event; the result card's button is
+  the decision. Ask for "dinner".
+- **book-a-table** — the follow-up: opens the sandboxed browser, picks the
+  slot, and asks before reserving. Say "book it".
+- **kyoto-in-october**, **passport-renewal**, **welcome** — a question with
+  numbered answers, a plain answer with its source, and the first message
+  after setup.
+
+The designed surfaces (conversations, plans, agents, automations, memory,
+connections, rules, the day panel) are served under `/experience/*` by
+`apps/mock-api/src/experience.ts`. A conversation there is a view over jobs:
+every message becomes a job, and the cards a person sees are derived from that
+job's persisted events, so the rules above hold in the web app without a second
+implementation. `MOCK_FRESH=1` starts signed out so the setup flow can be
+walked; `MOCK_BROWSER=off` reports the browser capability unavailable.
 
 Adding a case is a JSON file, not a branch. The mock parses every request with
 the contract's schemas on the way in and every response on the way out, so a
 body it invented that the document does not describe fails there rather than in
 your client.
+
+## Rules the web app adds
+
+These are what `apps/web` does on top of the API. A second interface should
+do the same, so a person who moves between them is never told two stories.
+
+**The trail has four kinds of step and no more.** `say` is one or two plain
+sentences from the agent to the person. `action` is a past-tense human label
+("Read your calendar, checked Alex and Priya's availability"), a short meta
+("free after 7:00 PM"), and the sources it read, each drawn with its app's
+logo. `note` is a quiet aside. `done` is the resting line: how long, which
+apps, how many sources. There is no `thought` step: the trail never shows
+model reasoning, a tool name, or "Thought for N seconds".
+
+**One decision, three outcomes.** A permission card offers allow once, always,
+and deny. "Always" creates a rule the person can see and revoke under
+Settings › Rules, and a later request the rule covers is allowed with the rule
+named on its card. When a result card's own button is the decision ("Add to
+calendar"), the separate permission card is not drawn; the card's More menu
+carries the other two outcomes. A hash mismatch is shown as "This changed while
+you were reading it" on the card, and the person decides again.
+
+**Every write leaves a receipt.** What, where, when, with an undo valid for a
+stated window, drawn under the card that caused it. An undone receipt says so
+in place; nothing disappears.
+
+**Drafts are sent by the person.** A draft names its recipient and channel
+("Send via Messages"), can be edited in place, and nothing leaves until that
+button is pressed.
+
+**The composer has one state button.** Send when it is the person's turn,
+Pause while an agent works, Resume after a pause, Stop while an answer streams.
+Stop keeps the partial text. Enter sends; Shift+Enter is a new line. An
+attachment queues as a tile with a progress bar and a cancel that works
+mid-upload.
+
+**A gap is drawn, not hidden.** On reconnect the durable events replay and a
+marker says text that streamed while the connection was down may be missing.
+
+**One question at a time, numbers answer it.** A question with up to four
+options listens to the keys 1–4 (and the next number focuses "type your own")
+only while it is the newest open question in the newest turn.
+
+**Delivery is honest.** A message shows sending, then its time; offline it says
+it will send when you are back; a failure offers retry and keeps the text.
+
+**Unavailable means absent.** A surface whose capability the adapter reports as
+unavailable (the browser card and panel, an OAuth button, voice, attachments, a
+tour stage) is not drawn and not offered. Nothing says "coming soon".
+
+**The technology stays in Settings.** Memory items, connections and rules are
+the only places a person sees what Melete remembers, may reach, or may do
+without asking. Errors say what happened and what already happened about it.

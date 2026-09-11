@@ -95,7 +95,7 @@ tools you already have.
 | `packages/client` | The typed HTTP client: generated types, a thin fetch wrapper, a resumable event stream |
 | `apps/melete` | The service: API, jobs, broker, gateway, connectors, knowledge, events |
 | `apps/mock-api` | Every operation in `openapi.json`, in memory, driven by scripted scenarios |
-| `apps/web` | A small reference client, to show the API is enough to build one |
+| `apps/web` | The web app, built from the design canvas; runs against the mock or a real service |
 | `deploy` | `docker-compose.yml`, `.env.example`, and the check that the sandbox is really a sandbox |
 | `conformance` | Eight scenarios that prove the durability and boundary claims, and [eight memory scenario families](conformance/memory/README.md) that prove the memory ones |
 | `docs` | [Architecture](docs/ARCHITECTURE.md), [memory](docs/MEMORY.md), [what the service proves](docs/ENGINEERING.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [building a client](docs/CLIENT.md) |
@@ -123,8 +123,8 @@ and nothing else.
 The client surface is further along than the service, and does not wait for it:
 
 ```bash
-bun run dev:mock   # the whole API in memory on :3190, with scripted jobs
-bun run dev:web    # the reference client on :5173, pointed at the mock
+MOCK_PORT=3210 bun run dev:mock   # the whole API in memory, with scripted jobs and the designed surfaces
+bun run dev:web                   # the web app on :5180, pointed at the mock
 ```
 
 Delegate something, watch the job stop for approval, approve it, and see the
