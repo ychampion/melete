@@ -13,6 +13,7 @@ import {
   waitSpec,
 } from '@melete/contracts';
 import { and, asc, eq, gt, inArray, or, sql } from 'drizzle-orm';
+import { fromDrizzle } from 'pg-boss';
 import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import { connection, event, job, space, trigger } from '../db/schema.ts';
@@ -35,10 +36,18 @@ export type TriggerRow = typeof trigger.$inferSelect;
 
 /**
  * How many unseen observations one delivery will test. A feed that has run
- * ahead is caught up over several deliveries rather than in one unbounded
+ * ahead is caught up over durable continuations rather than in one unbounded
  * transaction, and the cursor means none of them is tested twice.
  */
 export const WATCH_SCAN_LIMIT = 200;
+
+type WatchScan = {
+  job_id: string;
+  trigger_id: string;
+  after_seq: number;
+  epoch: number;
+  version: number;
+};
 
 export class TriggerService {
   private started = false;
@@ -224,7 +233,25 @@ export class TriggerService {
       spec.kind === 'watch'
         ? await this.firstMatch(tx, registration, spec.predicate, candidates)
         : candidates[0];
-    if (!received) return row;
+    if (!received) {
+      const last = candidates.at(-1);
+      if (spec.kind === 'watch' && candidates.length === WATCH_SCAN_LIMIT && last) {
+        // Cursor and continuation commit together. A crash cannot leave a full
+        // page consumed with no durable work to reach the next observation.
+        await this.jobs.boss.send(
+          QUEUES.triggerScan,
+          {
+            job_id: row.id,
+            trigger_id: registration.id,
+            after_seq: last.seq,
+            epoch: row.leaseEpoch,
+            version: row.stateVersion,
+          } satisfies WatchScan,
+          { db: fromDrizzle(tx, sql), retryLimit: 5, retryDelay: 1, retryBackoff: true },
+        );
+      }
+      return row;
+    }
     await tx
       .update(trigger)
       .set({ cursor: String(received.seq) })
@@ -372,11 +399,39 @@ export class TriggerService {
         for (const wake of wakes) await this.fireSchedule(wake.data.trigger_id, wake.id);
       },
     );
+    await this.jobs.boss.work<WatchScan>(
+      QUEUES.triggerScan,
+      { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
+      async (wakes) => {
+        for (const wake of wakes)
+          await this.jobs.transaction(async (tx) => {
+            const scan = wake.data;
+            const row = await this.jobs.lock(tx, scan.job_id);
+            if (
+              row?.state !== 'waiting_for_event_or_time' ||
+              row.leaseEpoch !== scan.epoch ||
+              row.stateVersion !== scan.version
+            )
+              return;
+            const wait = waitSpec.parse(row.wait);
+            if (wait.kind !== 'event' || wait.trigger_id !== scan.trigger_id) return;
+            const [registration] = await tx
+              .select()
+              .from(trigger)
+              .where(and(eq(trigger.id, scan.trigger_id), eq(trigger.jobId, row.id)));
+            if (!registration?.enabled || registration.kind !== 'watch') return;
+            await this.registerWait(tx, row);
+          });
+      },
+    );
     this.started = true;
   }
 
   async stop(): Promise<void> {
-    if (this.started) await this.jobs.boss.offWork(QUEUES.triggerSchedule, { wait: false });
+    if (this.started) {
+      await this.jobs.boss.offWork(QUEUES.triggerSchedule, { wait: false });
+      await this.jobs.boss.offWork(QUEUES.triggerScan, { wait: false });
+    }
     this.started = false;
   }
 }

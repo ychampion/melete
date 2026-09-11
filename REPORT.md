@@ -353,3 +353,11 @@ green; the groups above are the part I can state as verified.
 - `grantedToolCatalog`, `RuntimeCatalog`, `connectorsFromEnv`: shared availability/grant filtering now feeds the broker, production skill HTTP listing and runtime bundle selection; database space identities match connection grants.
 - `bun test apps/melete/test/integration/capability-catalog.test.ts apps/melete/src/knowledge/routes.test.ts apps/melete/test/integration/speech-broker.test.ts --max-concurrency=2`: GREEN, 32 pass, 0 fail, 92 assertions, 51.79s.
 - `bun run typecheck`: passed after typing the catalog query and removing moved imports. Changed-file `biome check`: passed, including the prior tts.test.ts formatting correction.
+
+## Finding 9
+
+- `44161f1`: finding 8 committed and pushed.
+- `a backlog accumulated while running reaches observation 201 through durable continuation`: RED at 44161f1, cursor stopped after 200 nonmatches and no durable continuation existed.
+- `QUEUES.triggerScan`: pg-boss continuation and the scan cursor commit in the same transaction; the bounded worker checks the job epoch, wait version, trigger identity and enabled state before continuing.
+- `bun test apps/melete/test/integration/watch.test.ts --max-concurrency=2`: GREEN, 6 pass, 0 fail, 29 assertions, 26.59s; a reconstructed service consumes observation 201 exactly once with no new feed delivery and no extra model attempt.
+- `bun run typecheck` and changed-file `biome check`: passed.

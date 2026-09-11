@@ -175,6 +175,50 @@ withDb('watch triggers', () => {
     expect(afterFirst?.lastObservation).toMatchObject({ subject: 'Weekly digest 0' });
   }, 60_000);
 
+  test('a backlog accumulated while running reaches observation 201 through durable continuation', async () => {
+    const { handle, jobs } = fixture();
+    const row = await monitor();
+    const registration = await watching(row);
+    const running = await claim(row);
+    let lastRoutine = 0;
+    for (let index = 0; index < 200; index++)
+      lastRoutine = (await observe(`backlog-${index}`, routine(index))).seq;
+    const match = await observe('backlog-match', overdue);
+    const waiting = await waitFor(running, {
+      kind: 'event',
+      trigger_id: registration.id,
+      deadline_at: null,
+    });
+    expect(waiting.state).toBe('waiting_for_event_or_time');
+    const [scanned] = await handle.sql`select cursor from trigger where id = ${registration.id}`;
+    expect(Number(scanned?.cursor)).toBe(lastRoutine);
+    const continuation =
+      await handle.sql`select data from pgboss.job where name = 'melete.trigger-scan' and data->>'trigger_id' = ${registration.id}`;
+    expect(continuation).toHaveLength(1);
+    expect(continuation[0]?.data.after_seq).toBe(lastRoutine);
+    // A new service resumes the persisted work, without a new feed delivery.
+    const restarted = new TriggerService(jobs, runner);
+    try {
+      await restarted.start();
+      const deadline = Date.now() + 10_000;
+      while ((await jobs.get(row.id)).state !== 'queued' && Date.now() < deadline)
+        await Bun.sleep(50);
+      expect((await jobs.get(row.id)).state).toBe('queued');
+      const consumed =
+        await handle.sql`select payload from event where job_id = ${row.id} and payload->>'kind' = 'trigger_event'`;
+      expect(consumed).toHaveLength(1);
+      expect(consumed[0]?.payload.because).toEqual([`event:${match.seq}`]);
+      const [finished] = await handle.sql`select cursor from trigger where id = ${registration.id}`;
+      expect(Number(finished?.cursor)).toBe(match.seq);
+      expect(await handle.sql`select id from attempt where job_id = ${row.id}`).toHaveLength(1);
+      expect(
+        await handle.sql`select id from pgboss.job where name = ${QUEUES.attempt} and data->>'job_id' = ${row.id} and data->>'reason' = 'event'`,
+      ).toHaveLength(1);
+    } finally {
+      await restarted.stop();
+    }
+  }, 60_000);
+
   test('a changed clause is quiet on a first sighting and wakes on the second, different one', async () => {
     const { jobs } = fixture();
     const row = await monitor();
