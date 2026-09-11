@@ -13,6 +13,7 @@ import {
   type ArtifactExpectation,
   type ArtifactKind,
   artifactCheckName,
+  artifactExpectation,
   type PendingArtifactValidation,
 } from '@melete/contracts';
 import { Ajv } from 'ajv';
@@ -507,6 +508,8 @@ export function validateArtifact(
   expectation: ArtifactExpectation,
   bytes: Uint8Array,
 ): PendingArtifactValidation[] {
+  // Direct callers must obey the same declaration boundary as brokered writes.
+  expectation = artifactExpectation.parse(expectation);
   const checkedAt = now();
   const { parsed, error } = parseFor(expectation.kind, bytes);
   const results: Result[] = [];

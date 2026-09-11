@@ -12,6 +12,7 @@ import {
   type Receipt,
 } from '@melete/contracts';
 import { validateArtifact } from '../artifact/validate.ts';
+import { BrokerFault } from '../broker/errors.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 type Area = 'work' | 'artifacts';
@@ -247,6 +248,14 @@ export function createFilesConnector(options: FilesOptions): Connector {
   };
   return {
     manifest: filesManifest,
+    async prepare(payload) {
+      if (payload.expect !== undefined) {
+        const declaration = artifactExpectation.safeParse(payload.expect);
+        if (!declaration.success)
+          throw new BrokerFault('payload_invalid', declaration.error.message);
+      }
+      return payload;
+    },
     async execute(action, ctx) {
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();

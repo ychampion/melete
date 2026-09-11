@@ -21,6 +21,7 @@ import {
   publishReceipt,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { BrokerFault } from '../broker/errors.ts';
 import { type Query, recordId } from '../broker/records.ts';
 import { type ArtifactRoots, defaultArtifactRoots, readArtifactContent } from './content.ts';
 import { validateArtifact } from './validate.ts';
@@ -92,6 +93,12 @@ export async function recordArtifactFromReceipt(
   const declared = declaredFrom(input.receipt);
   if (!declared) return null;
   const { artifact, expectation, validations } = declared;
+  const names = new Set<string>();
+  for (const result of validations) {
+    if (names.has(result.name))
+      throw new BrokerFault('payload_invalid', `Duplicate validation name: ${result.name}`);
+    names.add(result.name);
+  }
   const id = recordId('art');
   await tx`insert into artifact
     (id, space_id, job_id, source_job_id, area, path, kind, content_hash, mime, size,
@@ -136,9 +143,7 @@ export async function recordArtifactFromReceipt(
     await tx`insert into artifact_validation
       (artifact_id, class, name, status, detail, evidence, advisory, checked_at, validated_content_hash)
       values (${id}, ${result.class}, ${result.name}, ${result.status}, ${result.detail},
-        ${JSON.stringify(result.evidence)}::jsonb, ${result.advisory}, ${result.checked_at}, ${result.validated_content_hash ?? artifact.content_hash})
-      on conflict (artifact_id, name) do update set status = excluded.status,
-        detail = excluded.detail, evidence = excluded.evidence, checked_at = excluded.checked_at`;
+        ${JSON.stringify(result.evidence)}::jsonb, ${result.advisory}, ${result.checked_at}, ${result.validated_content_hash ?? artifact.content_hash})`;
   }
   return id;
 }

@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { artifactExpectation } from '@melete/contracts';
+import { ZodError } from 'zod';
 import {
   imageDimensions,
   markdownHeadings,
@@ -10,6 +11,15 @@ import {
 } from './validate.ts';
 
 const utf8 = (text: string) => new TextEncoder().encode(text);
+
+test('row_count min10 followed by min1 is a typed declaration error', () => {
+  const declaration = artifactExpectation.parse({
+    kind: 'csv',
+    checks: [{ kind: 'row_count', min: 10 }],
+  });
+  declaration.checks.push({ kind: 'row_count', min: 1, max: null });
+  expect(() => validateArtifact(declaration, utf8('item\none'))).toThrow(ZodError);
+});
 const named = (results: ReturnType<typeof validateArtifact>, name: string) => {
   const found = results.find((result) => result.name === name);
   if (!found) throw new Error(`no validation named ${name} in ${results.map((r) => r.name)}`);

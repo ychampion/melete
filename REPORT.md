@@ -65,3 +65,16 @@
 - Command bun run --cwd apps/melete db:generate --name artifact_content_digest produced migration 0016 after 0015, adding only validated_content_hash to artifact_validation.
 - Command bun test apps/melete/src/artifact/validate.test.ts apps/melete/src/connectors/files-expect.test.ts apps/melete/src/connectors/exec.test.ts apps/melete/test/integration/artifacts.test.ts --max-concurrency=2: 45 passed in 14.60s.
 - Command bun run typecheck, command bun run openapi and command bun run client:generate passed; artifact roots reach both receipt revalidation and the completion gate.
+
+## Finding 7
+
+- SHA 31d575d: finding 6 committed and pushed.
+- Test row_count min10 followed by min1 silently removes failure: red because malformed declarations reached dispatch without a typed refusal; green rejects as payload_invalid before adding an action and preserves the original failed row_count.
+- Test row_count min10 followed by min1 is a typed declaration error: red with generic Error, green with ZodError for direct validator callers.
+- Test duplicate persisted validation names cannot overwrite a failure: red with silent upsert, green with payload_invalid before an artifact is inserted.
+- Command bun test apps/melete/src/artifact/validate.test.ts apps/melete/src/connectors/files-expect.test.ts apps/melete/test/integration/artifacts.test.ts packages/contracts/src/artifacts.test.ts --max-concurrency=2: 37 passed in 12.22s; subsequent duplicate persistence checks: 2 passed in 18.06s.
+- Command bun run typecheck, command bun run openapi and command bun run client:generate passed.
+
+## Assumptions
+
+- Command Get-Item .hermes-src,.hermes-venv identified junctions into W3; the real-server e2e will use an isolated pinned engine and environment via MELETE_HERMES_SRC and MELETE_HERMES_PYTHON, preserving other worktrees.

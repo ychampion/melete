@@ -131,7 +131,7 @@ const uniqueChecks = (checks: ArtifactCheck[], ctx: z.RefinementCtx): void => {
     if (seen.has(name)) {
       ctx.addIssue({
         code: 'custom',
-        path: ['checks', index],
+        path: [index],
         message: `two checks would both be recorded as ${name}; declare each one once`,
       });
     }

@@ -14,7 +14,11 @@ import path from 'node:path';
 import type { JsonValue } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { artifactGate } from '../../src/artifact/gate.ts';
-import { acceptArtifact, createArtifactRecorder } from '../../src/artifact/record.ts';
+import {
+  acceptArtifact,
+  createArtifactRecorder,
+  recordArtifactFromReceipt,
+} from '../../src/artifact/record.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createArtifactsConnector } from '../../src/connectors/artifacts.ts';
@@ -127,6 +131,102 @@ const totalsExpectation: JsonValue = {
     { kind: 'required_columns', columns: ['item', 'amount'] },
   ],
 };
+
+databaseTest(
+  'duplicate persisted validation names cannot overwrite a failure',
+  async () => {
+    const ctx = await setup();
+    const duplicate = (status: string) => ({
+      name: 'row_count',
+      class: 'deterministic',
+      status,
+      detail: '',
+      evidence: {},
+      advisory: false,
+      checked_at: new Date().toISOString(),
+    });
+    let refusal: unknown;
+    try {
+      await ctx.sql.begin(async (tx) =>
+        recordArtifactFromReceipt(tx, {
+          job: { id: ctx.claims.job_id, space_id: ctx.claims.space_id },
+          action: { id: recordId('act'), kind: 'files.write' },
+          receipt: {
+            action_id: recordId('act'),
+            detail: {
+              artifact: {
+                area: 'work',
+                path: 'duplicate.csv',
+                kind: 'csv',
+                mime: 'text/csv',
+                size: 8,
+                content_hash: 'a'.repeat(64),
+                template: null,
+                evidence: [],
+              },
+              expectation: { kind: 'csv', checks: [{ kind: 'row_count', min: 10 }], render: false },
+              validations: [duplicate('failed'), duplicate('passed')],
+            },
+          },
+        }),
+      );
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toMatchObject({ code: 'payload_invalid' });
+    expect(await ctx.sql`select id from artifact where job_id = ${ctx.claims.job_id}`).toHaveLength(
+      0,
+    );
+  },
+  SLOW,
+);
+
+databaseTest(
+  'row_count min10 followed by min1 silently removes failure',
+  async () => {
+    const ctx = await setup();
+    await ctx.broker.propose(ctx.claims, {
+      kind: 'files.write',
+      connection_id: ctx.connectionId,
+      payload: {
+        path: 'duplicate.csv',
+        content: 'item\none',
+        expect: { kind: 'csv', checks: [{ kind: 'row_count', min: 10 }] },
+      },
+    });
+    const [original] = await ctx.sql`select id from artifact where job_id = ${ctx.claims.job_id}`;
+    const request = {
+      kind: 'files.write',
+      connection_id: ctx.connectionId,
+      payload: {
+        path: 'duplicate.csv',
+        content: 'item\none',
+        expect: {
+          kind: 'csv',
+          checks: [
+            { kind: 'row_count', min: 10 },
+            { kind: 'row_count', min: 1 },
+          ],
+        },
+      },
+    };
+    let refusal: unknown;
+    try {
+      await ctx.broker.propose(ctx.claims, request);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toMatchObject({ code: 'payload_invalid' });
+    expect(String(refusal)).toContain('row_count');
+    const [row] =
+      await ctx.sql`select status from artifact_validation where artifact_id = ${original?.id} and name = 'row_count'`;
+    expect(row?.status).toBe('failed');
+    expect((await artifactGate(fixture?.db as never, ctx.claims.job_id, ctx)).passed).toBe(false);
+    const actions = await ctx.sql`select id from action where job_id = ${ctx.claims.job_id}`;
+    expect(actions).toHaveLength(1);
+  },
+  SLOW,
+);
 
 databaseTest(
   'validation digest must match the current artifact digest',
