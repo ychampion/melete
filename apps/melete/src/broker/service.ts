@@ -92,6 +92,16 @@ export type BrokerOptions = {
    * existing is never a delivery, and nothing here invents a revision.
    */
   reviseOutput?: (input: { action: Action; fault: ConnectorFault }) => Promise<JsonObject | null>;
+  /**
+   * How the jobs module parks a responsibility: end the attempt, release the
+   * worker, and put the job on a timer, all inside the broker's transaction.
+   * Without one the broker performs the equivalent itself, which is correct on
+   * its own but does not know about anything W1 adds later.
+   */
+  parkAttempt?: (
+    tx: Query,
+    input: { job_id: string; attempt_id: string; wake_at: string; reason: string },
+  ) => Promise<void>;
 };
 
 export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
@@ -971,16 +981,52 @@ export class BrokerService implements BrokerOperations {
         phase: 'repair_parked',
         retry_after_at: wakeAt,
       });
-      if (!['cancelled', 'failed', 'completed'].includes(job.state)) {
-        await this.moveJob(tx, job, 'waiting_for_event_or_time', {
-          kind: 'timer',
+      if (['cancelled', 'failed', 'completed'].includes(job.state))
+        return loadAction(tx, action.id);
+      if (this.options.parkAttempt) {
+        // The jobs module owns attempt and worker lifecycle. Where it has
+        // supplied its own release, the broker asks for the wait and stays out
+        // of the state machine entirely.
+        await this.options.parkAttempt(tx, {
+          job_id: job.id,
+          attempt_id: current.attempt_id,
           wake_at: wakeAt,
+          reason: 'rate_limited',
         });
-        await tx`update job set next_wake_at = ${wakeAt},
-          substrate_disposition = 'timer_or_event' where id = ${job.id}`;
+        return loadAction(tx, action.id);
       }
+      await this.moveJob(tx, job, 'waiting_for_event_or_time', { kind: 'timer', wake_at: wakeAt });
+      await tx`update job set next_wake_at = ${wakeAt},
+        substrate_disposition = 'timer_or_event' where id = ${job.id}`;
+      await this.releaseAttempt(tx, job, current.attempt_id, wakeAt);
       return loadAction(tx, action.id);
     });
+  }
+
+  /**
+   * End the attempt the wait belongs to, the way the jobs module ends one.
+   *
+   * A job that waits while its attempt still holds a lease is a worker nobody
+   * will ever reclaim: the runner's recovery sweep only fences attempts whose
+   * job is still `running`, so a lease left open here is left open forever, and
+   * the heartbeat that would renew it belongs to a process that has moved on.
+   */
+  private async releaseAttempt(
+    tx: Query,
+    job: LockedJob,
+    attemptId: string,
+    wakeAt: string,
+  ): Promise<void> {
+    const outcome = {
+      kind: 'waiting_for_event_or_time',
+      wait: { kind: 'timer', wake_at: wakeAt },
+      summary: 'The destination asked to be left alone, so this waits on a timer.',
+    };
+    await tx`update attempt set outcome = 'waiting_for_event_or_time',
+      outcome_detail = ${JSON.stringify(outcome)}::jsonb, ended_at = now(),
+      lease_status = 'ended', lease_expires_at = null
+      where id = ${attemptId} and ended_at is null`;
+    await appendEvent(tx, job.id, attemptId, 'attempt_ended', { outcome }, `${attemptId}:ended`);
   }
 
   /**

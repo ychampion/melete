@@ -7,7 +7,11 @@ import {
   type StandingGrantResolver,
 } from '../../src/broker/service.ts';
 import type { TrustResolver } from '../../src/broker/trust.ts';
-import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
+import {
+  createTestConnector,
+  initializeTestLedger,
+  type TestCredentials,
+} from '../../src/connectors/test.ts';
 import type { Connector, ConnectorContext } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { seedJob } from './broker.ts';
@@ -56,6 +60,8 @@ export async function createConformanceFixture(options: PostgresFixtureOptions =
         resolveStandingGrant?: StandingGrantResolver;
         /** Re-open an output that failed validation; absent means none can be. */
         reviseOutput?: BrokerOptions['reviseOutput'];
+        /** Where a refreshed credential is read from; absent means none can be. */
+        credentials?: TestCredentials;
         execute?: (
           action: Action,
           ctx: ConnectorContext,
@@ -64,7 +70,10 @@ export async function createConformanceFixture(options: PostgresFixtureOptions =
       } = {},
     ) {
       const seed = await seedJob(fixture.sql, { scopes: ['test.send'] });
-      const destination = createTestConnector(fixture.sql, { verify: options.verify });
+      const destination = createTestConnector(fixture.sql, {
+        verify: options.verify,
+        credentials: options.credentials,
+      });
       let executions = 0;
       const connector: Connector = {
         ...destination,

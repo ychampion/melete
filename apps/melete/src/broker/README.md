@@ -79,9 +79,33 @@ connector differs. Each line of `action.repair_trace` carries the hash of the
 bytes that attempt sent, so the record shows exactly when and why the wire form
 changed.
 
+`checkAuthority(tx, job, action)` is everything that has to be true for those
+bytes to leave: the connection is still this connection and still active, the
+generation admission reviewed is current, the tool and scopes are still held,
+the binding still matches, and the origins are still the approved ones. The
+dispatch asks it once before marking the action dispatched, and the policy asks
+it again before every further execution, so a grant revoked during a backoff
+fences the retry instead of being out-run by it.
+
+A revision never re-aims an effect. For `write_external` and `spend` the person
+approved exact bytes and the action keeps that hash, so no revision is accepted
+at all; elsewhere a revision may correct content but never a recipient, a
+destination, an amount, a resource, or the set of fields the person saw, and it
+is measured against the approved payload rather than the last one sent.
+
 `repair_candidate` holds a drift mapping as a proposal with the test it must
-pass. It becomes `applied` only after that test passed and after the send it
-carried landed; anything ambiguous is `rejected` and the action stops.
+pass. The connector must have declared the rename, a field that decides where
+the effect lands keeps its name, and the test names the operation and the values
+that must survive rather than recomputing the expected payload with the same
+rename. A candidate becomes `applied` only after that test passed and after the
+send it carried landed; anything ambiguous is `rejected` and the action stops.
+
+Parking a rate-limited action ends its attempt as well as moving the job onto a
+timer, because the runner's recovery sweep only fences attempts whose job is
+still running. `parkAttempt` is the seam for the jobs module to own that
+release. The due time is enforced under the dispatch row lock, and the recovery
+scan passes the instant it selected with, so two clocks cannot disagree about
+whether an action is ready.
 
 Per-class counters and the disposition live on the action row, and
 `GET /jobs/{id}/repairs` reports them with the trace and the candidates.

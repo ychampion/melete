@@ -7,6 +7,7 @@ import type {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { type ConnectorDescription, ConnectorFaultError } from './faults.ts';
+import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type TestDelivery = {
@@ -150,9 +151,17 @@ export const TEST_FALLBACK_ROUTE = 'test.send/authorized-fallback';
 /** Fields the drifted destination accepts without requiring them. */
 const DRIFT_OPTIONAL = ['fault', 'drop_ack', 'retry_after'];
 
+/**
+ * Where a refreshed credential comes from. The connector never holds the value:
+ * it borrows it inside `withSecret`, uses it, and keeps only the fact that a
+ * refresh happened. Nothing derived from the value is written anywhere a
+ * runtime, an event, a receipt or an owner-facing record can read.
+ */
+export type TestCredentials = { access: SecretAccess; secret_ref: string };
+
 export function createTestConnector(
   destination: Sql | TestDestinationLedger,
-  options: { verify?: boolean; fault?: TestFaultCase } = {},
+  options: { verify?: boolean; fault?: TestFaultCase; credentials?: TestCredentials } = {},
 ): Connector {
   const ledger = typeof destination === 'function' ? postgresTestLedger(destination) : destination;
   const canVerify = options.verify !== false;
@@ -305,8 +314,25 @@ export function createTestConnector(
         schema: { type: 'object', required: [drifted ? 'content' : 'body'] },
       };
     },
-    async refreshCredential(action) {
+    async refreshCredential(action, ctx) {
+      // A revoked grant is not a stale token. Nothing is read and nothing is
+      // substituted; the broker is told the grant is gone.
       if (caseFor(action) === 'revoked_credential') return false;
+      if (!options.credentials) return false;
+      try {
+        await options.credentials.access.withSecret(
+          options.credentials.secret_ref,
+          ctx.space_id,
+          async (value) => {
+            // The value is used here and nowhere else. What survives the call is
+            // that a refresh succeeded, which is not a secret.
+            if (!value) throw new Error('the credential store returned nothing');
+            return true;
+          },
+        );
+      } catch {
+        return false;
+      }
       refreshed.add(action.id);
       return true;
     },

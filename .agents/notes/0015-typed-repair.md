@@ -28,12 +28,12 @@ broker's policy reads the class. Nine classes, nine dispositions:
 |---|---|
 | `transient_before_dispatch` | retry the same bytes, exponential backoff with full jitter, at most three executions, and not at all if the deadline leaves no room |
 | `rate_limited` | persist `retry_after_at`, put the action back to `admitted`, park the job on a timer, release the worker |
-| `expired_credential` | refresh once through the credential store, retry only if the connection row still permits the call |
+| `expired_credential` | borrow the credential inside the store's `withSecret`, once, then retry only if the connection row still permits the call |
 | `revoked_credential` | stop. `failed{reason: connection_revoked}`, and one question asking for a reconnection. Never another identity |
-| `schema_drift` | ask the connector to `describe()` itself, propose one mapping, write it down as a candidate with a test, and retry only if the mapping is an unambiguous rename that carries every value |
+| `schema_drift` | ask the connector to `describe()` itself, propose only a rename it vouches for, write it down as a candidate with a test, and retry only if that test passes |
 | `unsupported_route` | take one equivalent authorized route for the same operation, same action id, same intent key, recorded as `change_route` |
 | `uncertain_outcome` | reconcile through `verify`; stay `unknown` when the evidence is insufficient |
-| `bad_output` | re-open, revise, re-validate, once. A file existing is never a delivery |
+| `bad_output` | re-open, revise, re-validate, once, and only where the revision changes nothing the approval was given for. A file existing is never a delivery |
 | `unclassified` | nothing is retried and nothing is resolved; the action rests at `unknown` exactly where the broker has always rested it |
 
 A repair may change a selector, a wrapper, a route or a field's name. It may
@@ -44,6 +44,42 @@ the policy hands the connector differently is the payload on the wire. Every
 line of the trace records the hash of the bytes that attempt sent, so the record
 itself shows when the wire form changed and that it changed only under an
 applied mapping.
+
+## Why a retry re-asks for permission
+
+The dispatch transaction checks the connection generation, the connection's
+status and scopes, the effect binding and the origins the approval was given
+against, and then marks the action dispatched. A repair sends a second request
+to the world, minutes later in the case of a backoff, and permission is a
+current fact rather than a remembered one: a grant revoked while the policy was
+waiting has to fence the retry. Those checks are one method now, and the policy
+asks it before every execution including the first. Anything but a clear answer
+stops the action at `needs_reconnect`, and nothing is sent.
+
+## Why a revision may not re-aim an effect
+
+A revision exists to correct an output that failed its own validation. It is not
+a second chance to choose a recipient. For `write_external` and `spend` the
+person approved exact bytes and the action keeps that hash, so no revision of
+one is permitted at all; a send that needs different content is a new request,
+approved on its own. Everywhere else a revision may change content but never a
+value read as a recipient, a destination, an amount or a resource, and never the
+set of fields the person saw. The comparison is against the approved payload
+rather than the last one sent, so two individually harmless-looking steps cannot
+add up to a different effect.
+
+## Why a drift mapping needs the connector to vouch for it
+
+A missing field and a surplus field lining up is not evidence of anything. From
+outside a payload, a recipient and a memo look exactly alike, and an earlier
+version of this policy accepted `to` becoming `memo` as an obvious rename. Three
+things are required now. The connector declares the equivalence in its
+description, because only it knows what its destination renamed. A field that
+decides where the effect lands keeps its name whatever the destination now calls
+it. And the candidate's test states the operation and the decisive values that
+must survive, then checks those against what the mapping produced, rather than
+recomputing the expected payload with the same rename, which would prove only
+that a function is itself.
 
 ## Why an untyped throw is treated as uncertain
 
@@ -65,6 +101,23 @@ disposition, and the recovery scan's `resumeParked` dispatches it when it is
 due, under its own id. This is only safe because the fault is a definitive
 non-execution: nothing that `may_have_committed` is ever un-dispatched.
 
+Parking ends the attempt as well, because a job that waits while its attempt
+still holds a lease is a worker nobody will reclaim: the runner's recovery sweep
+only fences attempts whose job is still `running`, and the heartbeat that would
+renew the lease belongs to a process that has moved on. `parkAttempt` is the
+seam for the jobs module to own that release; without one the broker performs
+the equivalent itself, ending the attempt and emitting `attempt_ended`.
+
+The due time is enforced under the dispatch row lock, so a wake, a repeated
+proposal and a queue redelivery all serialize on it rather than racing past it.
+The recovery scan passes the instant it selected with into the dispatch, because
+two clocks disagreeing is how an action gets chosen by one and refused by the
+other.
+
+A resumed action appends to its trace and counters rather than replacing them. A
+completion that erased the rate limit which caused the wait would make a
+recurring rate limit invisible on the only record that survives.
+
 ## Why a drift mapping is a record before it is a change
 
 `repair_candidate` holds the proposal, the shape re-discovery found, the test the
@@ -83,6 +136,13 @@ Completions and safe stops are counted apart and must never be summed:
 eleven safe stops delivered nothing, and reporting them as eleven successes or
 eleven failures is wrong in opposite directions. `CLIENT.md` carries the rule.
 
+## What the fixtures may hold
+
+Every test fixture applies the committed migration journal in the order the
+journal gives. Naming migrations by filename let a fixture hold a schema no
+install has ever had, and a property proved against a schema nobody runs is not
+proved.
+
 ## Falsifiers
 
 `apps/melete/src/broker/repair.test.ts` runs every class against a deterministic
@@ -99,6 +159,13 @@ resumed, the candidate applied, and one question in the owner's queue however
 many times the same failure recurs.
 
 ## What was not done
+
+Only the `test` connector implements a store-backed credential refresh, and it
+does so by borrowing the value inside the store's `withSecret` and keeping
+nothing but the fact that a refresh happened; the falsifier asserts the value
+appears in no action row, event, receipt, question or destination record. A
+connector with no credential store cannot refresh and stops at
+`needs_reconnect`, which is the honest outcome rather than a silent retry.
 
 `calendar` and `files` classify only what they can classify honestly: a CalDAV
 429, 401 and 403, and a file whose content is not what the action recorded or

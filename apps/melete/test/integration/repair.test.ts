@@ -19,8 +19,14 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { Hono } from 'hono';
 import { mountRepairs, RepairReadService } from '../../src/api/repairs.ts';
 import { loadAction } from '../../src/broker/records.ts';
+import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorFaultError } from '../../src/connectors/faults.ts';
+import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
+import { createTestConnector } from '../../src/connectors/test.ts';
 import { schema } from '../../src/db/schema.ts';
+import { AttemptRunner } from '../../src/jobs/runner.ts';
+import { JobService } from '../../src/jobs/service.ts';
+import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { createConformanceFixture } from '../helpers/conformance.ts';
 
 const fixture = await createConformanceFixture();
@@ -37,6 +43,8 @@ async function setup(options: Parameters<NonNullable<typeof fixture>['setup']>[0
 type Harness = Awaited<ReturnType<typeof setup>>;
 
 const body = 'Pilot worksheet ready';
+/** A value that must never appear in anything a runtime or an owner can read. */
+const SECRET = 'caldav-private-password-3f9a1c';
 const payloadFor = (fault: string): JsonObject => ({ body, fault });
 
 const deliveries = (s: Harness, actionId: string) =>
@@ -134,6 +142,44 @@ describe('a repaired send keeps its identity, its approval and its one effect', 
     expect(await s.broker.resumeParked(Date.now())).toBe(0);
   });
 
+  databaseTest('parking releases the attempt, it does not strand it', async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    const s = await setup();
+    // A lease that is about to expire, which is the state a live attempt is in.
+    await s.sql`update attempt set lease_expires_at = now() - interval '1 minute',
+      lease_status = 'active' where id = ${s.claims.attempt_id}`;
+
+    const parked = await s.send({ ...payloadFor('rate_limited'), retry_after: 300 });
+    expect(parked.status).toBe('admitted');
+
+    const [held] = await s.sql`select lease_status, ended_at, lease_expires_at, outcome
+      from attempt where id = ${s.claims.attempt_id}`;
+    // A job that waits with a lease still open is a worker nobody will reclaim:
+    // the runner's recovery only rescues attempts whose job is still running.
+    expect(held?.lease_status).toBe('ended');
+    expect(held?.ended_at).not.toBeNull();
+    expect(held?.lease_expires_at).toBeNull();
+    expect(held?.outcome).toBe('waiting_for_event_or_time');
+
+    const [ended] = await s.sql`select count(*)::int as count from event
+      where attempt_id = ${s.claims.attempt_id} and type = 'attempt_ended'`;
+    expect(ended?.count).toBe(1);
+
+    // The runner's recovery sweep has nothing to do with it, and does not
+    // resurrect the responsibility that is waiting on a timer.
+    const runner = new AttemptRunner(
+      new JobService(drizzle(s.sql, { schema }), fixture.boss),
+      new StubRuntimeAdapter(),
+      { key: 'repair-lifecycle-signing-key-32-bytes' },
+    );
+    await runner.recover();
+    const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('waiting_for_event_or_time');
+    const [attempts] =
+      await s.sql`select count(*)::int as count from attempt where job_id = ${s.claims.job_id}`;
+    expect(attempts?.count).toBe(1);
+  });
+
   databaseTest('a revoked credential stops and asks for a reconnection', async () => {
     const s = await setup();
     const action = await s.send(payloadFor('revoked_credential'));
@@ -154,6 +200,106 @@ describe('a repaired send keeps its identity, its approval and its one effect', 
     const s = await setup();
     await s.send(payloadFor('revoked_credential'));
     await s.send({ ...payloadFor('revoked_credential'), body: `${body} again` });
+    expect(await openQuestions(s)).toHaveLength(1);
+  });
+
+  databaseTest('an expired credential is refreshed through the store, once', async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    const store = new SealedSecretStore(new PostgresSecretRepository(fixture.sql), () =>
+      '11'.repeat(32),
+    );
+    const s = await setup();
+    const [space] = await s.sql`select space_id from job where id = ${s.claims.job_id}`;
+    const secretRef = await store.put(space?.space_id as string, SECRET);
+    await s.sql`update connection set secret_ref = ${secretRef} where id = ${s.connectionId}`;
+    const connector = createTestConnector(s.sql, {
+      credentials: { access: store, secret_ref: secretRef },
+    });
+    const broker = new BrokerService({
+      sql: s.sql,
+      connectors: { get: (id: string) => (id === s.connectionId ? connector : undefined) },
+      boss: fixture.boss,
+    });
+    const payload = payloadFor('expired_credential');
+    const proposal = await broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload,
+    });
+    await broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+    const action = await broker.dispatch(proposal.action_id);
+
+    expect(action.status).toBe('succeeded');
+    expect(action.repair_counters).toEqual({ expired_credential: 1 });
+    expect(await deliveries(s, action.id)).toHaveLength(1);
+
+    // The credential was borrowed inside the store and never written down. If
+    // any of these carried it, a runtime, an event stream or an owner's screen
+    // would be one query away from the secret.
+    const visible = await s.sql`
+      select a.canonical_payload::text || coalesce(a.receipt::text, '')
+        || coalesce(a.reconciliation::text, '') || a.repair_trace::text
+        || a.repair_counters::text as text
+      from action a where a.id = ${action.id}`;
+    const events = await s.sql`select payload::text as text from event
+      where job_id = ${s.claims.job_id}`;
+    const ledger = await s.sql`select payload::text as text from test_destination_ledger
+      where action_id = ${action.id}`;
+    const questions = await s.sql`select text, because::text as because from question
+      where job_id = ${s.claims.job_id}`;
+    for (const row of [...visible, ...events, ...ledger]) {
+      expect(String(row.text)).not.toContain(SECRET);
+    }
+    for (const row of questions) {
+      expect(`${row.text}${row.because}`).not.toContain(SECRET);
+    }
+  });
+
+  databaseTest('a revoked grant is never refreshed and never substituted', async () => {
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    const store = new SealedSecretStore(new PostgresSecretRepository(fixture.sql), () =>
+      '22'.repeat(32),
+    );
+    let reads = 0;
+    const s = await setup({
+      credentials: {
+        secret_ref: 'sec_unused',
+        access: {
+          async withSecret(_id, _space, use) {
+            reads += 1;
+            return use('never-read-for-a-revoked-grant');
+          },
+        },
+      },
+    });
+    void store;
+    const action = await s.send(payloadFor('revoked_credential'));
+    expect(action.repair_disposition).toBe('needs_reconnect');
+    // Nothing reached for a credential, so nothing could have substituted one.
+    expect(reads).toBe(0);
+    expect(await deliveries(s, action.id)).toHaveLength(0);
+  });
+
+  databaseTest('a refresh the store cannot satisfy stops instead of retrying', async () => {
+    const s = await setup({
+      credentials: {
+        secret_ref: 'sec_missing',
+        access: {
+          async withSecret() {
+            throw new Error('Secret unavailable');
+          },
+        },
+      },
+    });
+    const action = await s.send(payloadFor('expired_credential'));
+    expect(action.status).toBe('failed');
+    expect(action.repair_disposition).toBe('needs_reconnect');
+    expect(action.reconciliation).toMatchObject({ reason: 'connection_revoked' });
+    expect(await deliveries(s, action.id)).toHaveLength(0);
     expect(await openQuestions(s)).toHaveLength(1);
   });
 

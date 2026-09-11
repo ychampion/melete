@@ -23,13 +23,27 @@ exactly as it did before typed faults existed: the action rests at `unknown` and
 reconciliation stays a separate step.
 
 Three optional methods let a connector be repaired rather than only retried.
-`describe()` answers with the fields the destination requires now, so a
-`schema_drift` fault can produce a mapping candidate. `refreshCredential()`
-refreshes through the credential store and answers false when the grant is gone;
-it never substitutes another identity. `routes()` offers equivalent authorized
-routes for the same operation, used only after a route said definitively that it
-did not execute. A connector that implements none of them simply stops instead,
-which is the correct outcome rather than a missing feature.
+
+`describe()` answers with the fields the destination requires now, plus the
+fields it accepts, plus `equivalent_fields`: the renames the connector itself
+vouches for, old name to new name. A repair applies only what is declared there.
+Nothing infers an equivalence from a missing field and a surplus field lining
+up, because from outside a payload that is what a recipient and a memo look
+like, and a field that decides where the effect lands keeps its name whatever
+the destination now calls it.
+
+`refreshCredential()` borrows the credential inside the store's `withSecret`,
+uses it, and keeps nothing but the fact that a refresh happened; it answers
+false when the grant is gone, and it never substitutes another identity. The
+broker re-checks the connection row afterwards, so a fresh token on a revoked
+connection is still a stop. A connector with no credential store cannot refresh
+and stops at `needs_reconnect`.
+
+`routes()` offers equivalent authorized routes for the same operation, used only
+after a route said definitively that it did not execute.
+
+A connector that implements none of them simply stops instead, which is the
+correct outcome rather than a missing feature.
 
 Which connectors classify what, in v0.1:
 

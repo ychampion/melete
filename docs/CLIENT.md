@@ -188,6 +188,12 @@ correctly. Count them apart, and use the plain words:
 > The destination asked me to wait an hour, so I will try again at 14:20. I have
 > not sent anything yet.
 
+A repair never re-aims an effect. An approved external send or spend keeps the
+exact bytes the person read, so nothing corrects one in flight; a send that
+needs different details comes back as a new request with its own approval card.
+Say that plainly when a `needs_input` stop names it, rather than offering a
+retry the service will refuse.
+
 `counters` gives the fault classes an action met, and `trace` gives the ordered
 decisions with the hash of the bytes each attempt put on the wire. That hash is
 the action's own approved hash throughout, because a repair may change a
