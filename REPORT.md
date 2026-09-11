@@ -38,3 +38,40 @@ Checked 171 files in 223ms. No fixes applied.
 $ bun run typecheck
 tsc -b && tsc -p apps/web/tsconfig.json --noEmit   (clean)
 ```
+
+## Slice 2 — the Melete plugin
+
+`packages/runtime-hermes/melete_plugin/` is three modules: `broker.py` (the one
+socket), `results.py` (the three shapes a broker answer can take), and
+`__init__.py` (`register(ctx)`). It imports nothing from Hermes beyond the `ctx`
+object, so the compatibility-path removal on 2026-09-14 cannot reach it.
+
+A needs-approval result carries an instruction to stop, because Hermes cannot
+suspend a run for days and resume it. A broker that never answered is reported
+as `unknown`, not `failed`: a request with no answer may still have been
+received, and retrying it is how one approved send becomes two.
+
+Corrected the slice 1 measurement. The probe had registered its stubs with a
+bare JSON Schema, but `tools/registry.py:774` builds the definition as
+`{**entry.schema, "name": entry.name}`, so what goes in `schema=` is the OpenAI
+function body. The corrected numbers are thin 3,093 tokens, thin + identity
+3,304, default 11,916. Still under the 4,000 budget. `melete_plugin.tool_schema`
+produces the right shape and a test pins it.
+
+`config/config.yaml`, the README and `src/client.ts` were rewritten against what
+the tag actually reads. The skeleton's `POST /v1/runs` body carried
+`skip_memory`, `skip_context_files`, `toolsets: []`, `max_turns` and `provider`;
+none of those are fields on that route, and `_create_agent` takes all of them
+from config. The body now carries `input`, `instructions`, `session_id` and
+`model`, which is what the engine reads.
+
+Checks:
+
+```
+$ bun run test:plugin
+18 passed in 9.16s
+$ bun test packages/runtime-hermes --max-concurrency=2
+24 pass, 0 fail, 45 expect() calls
+$ bun run typecheck
+(clean)
+```

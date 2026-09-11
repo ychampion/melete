@@ -30,8 +30,12 @@ HOME = Path(tempfile.mkdtemp(prefix="melete-probe-home-"))
     ]
 
     def register(ctx):
+        # Hermes merges {"name": entry.name} over `schema`, so the value passed
+        # here is the OpenAI function body: description + parameters. This is
+        # the same shape melete_plugin.tool_schema produces.
         for name, description, schema in TOOLS:
-            ctx.register_tool(name=name, toolset="melete", schema=schema,
+            ctx.register_tool(name=name, toolset="melete",
+                              schema={"description": description, "parameters": schema},
                               handler=lambda **kw: {"ok": True}, description=description, emoji="")
 '''), encoding="utf-8")
 
@@ -129,6 +133,31 @@ try:
         "default-api_server", enabled_toolsets=sorted(_get_platform_tools({}, "api_server")))
 except Exception as exc:
     import traceback; result["default_run_error"] = traceback.format_exc()[-3000:]
+
+# The same thin toolset with the tool-search bridge left at its default, to show
+# what the "off" line in config.yaml is actually buying.
+CONFIG_BRIDGE = dict(CONFIG, tools={"tool_search": {"enabled": "auto"}})
+(HOME / "config.yaml").write_text(yaml.safe_dump(CONFIG_BRIDGE), encoding="utf-8")
+try:
+    from hermes_cli import config as _config_mod
+    _config_mod._CONFIG_CACHE = None
+except Exception:
+    pass
+model_tools._tool_defs_cache.clear()
+bridge = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=None, quiet_mode=True)
+bridge_json = json.dumps(bridge, separators=(",", ":"))
+result["thin_tools_bridge_on"] = {
+    "names": sorted(t["function"]["name"] for t in bridge),
+    "tool_count": len(bridge),
+    "schema_chars": len(bridge_json),
+    "schema_tokens_est": len(bridge_json) // 4,
+}
+(HOME / "config.yaml").write_text(yaml.safe_dump(CONFIG), encoding="utf-8")
+try:
+    _config_mod._CONFIG_CACHE = None
+except Exception:
+    pass
+model_tools._tool_defs_cache.clear()
 
 IDENTITY = Path(sys.argv[2]).read_text(encoding="utf-8") if len(sys.argv) > 2 else ""
 try:

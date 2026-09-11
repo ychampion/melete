@@ -4,6 +4,7 @@
  * contracts package. The image, the plugin, and this client are the whole of it.
  */
 export * from './client.ts';
+export * from './instructions.ts';
 
 /** The release this image is built from. Changing it is a decision, not a bump. */
 export const HERMES_PINNED_TAG = 'v2026.9.7';

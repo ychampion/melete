@@ -64,19 +64,24 @@ describe('request building', () => {
     expect(req.headers['content-type']).toBe('application/json');
   });
 
-  test('the run body turns every thin-harness switch off', () => {
+  test('the run body carries only fields the engine reads', () => {
     const body = JSON.parse(client.startRun(bundle).body ?? '{}');
-    expect(body.skip_memory).toBe(true);
-    expect(body.skip_context_files).toBe(true);
-    expect(body.toolsets).toEqual([]);
-    expect(body.max_turns).toBe(8);
-    expect(body.provider).toBe('fireworks');
+    // POST /v1/runs has no toolset, memory or context-file fields: _create_agent
+    // reads those from config.yaml. Sending them would be decoration.
+    expect(Object.keys(body).sort()).toEqual(['input', 'instructions', 'model', 'session_id']);
+    expect(body.model).toBe('deepseek-v4p1-flash');
   });
 
-  test('the run body carries the attempt identity for correlation', () => {
-    const body = JSON.parse(client.startRun(bundle).body ?? '{}');
-    expect(body.metadata.attempt_id).toBe(`att_${SUFFIX}`);
-    expect(body.metadata.epoch).toBe(3);
+  test('the attempt id is the idempotency key and the job id is the session', () => {
+    const req = client.startRun(bundle);
+    expect(req.headers['Idempotency-Key']).toBe(`att_${SUFFIX}`);
+    expect(req.headers['X-Hermes-Session-Key']).toBe(`job_${SUFFIX}`);
+    expect(JSON.parse(req.body ?? '{}').session_id).toBe(`job_${SUFFIX}`);
+  });
+
+  test('capabilities is a plain read', () => {
+    expect(client.capabilities().url).toBe('http://runtime:8790/v1/capabilities');
+    expect(client.capabilities().method).toBe('GET');
   });
 
   test('status and stop address the run by id', () => {
@@ -85,15 +90,17 @@ describe('request building', () => {
     expect(client.stop('run_1').method).toBe('POST');
   });
 
-  test('the event request asks for a stream and can resume one', () => {
-    const req = client.events('run_1', '42');
+  test('the event request asks for a stream and does not try to resume one', () => {
+    const req = client.events('run_1');
     expect(req.headers.accept).toBe('text/event-stream');
-    expect(req.headers['last-event-id']).toBe('42');
+    // The engine's queue has no replay, so a Last-Event-ID would be a lie about
+    // what a reconnect could recover.
+    expect(req.headers['last-event-id']).toBeUndefined();
   });
 
   test('an approval answers a request id with once or deny and nothing else', () => {
     const req = client.approve('run_1', 'req_9', 'once');
-    expect(JSON.parse(req.body ?? '{}')).toEqual({ request_id: 'req_9', answer: 'once' });
+    expect(JSON.parse(req.body ?? '{}')).toEqual({ request_id: 'req_9', choice: 'once' });
     expect(HERMES_APPROVAL_ANSWERS).toEqual(['once', 'deny']);
     expect(HERMES_APPROVAL_ANSWERS).not.toContain('always');
   });
@@ -114,10 +121,19 @@ describe('context assembly', () => {
     expect(IDENTITY).toContain('receipt');
   });
 
-  test('the system prompt is identity, then skills, then knowledge', () => {
+  test('the instructions are identity, then skills, then knowledge', () => {
     const system = client.renderSystem(bundle);
     expect(system.indexOf(IDENTITY)).toBe(0);
     expect(system.indexOf('draft-follow-up')).toBeLessThan(system.indexOf('already knows'));
+  });
+
+  test('every knowledge excerpt carries where it came from', () => {
+    const system = client.renderSystem(bundle);
+    expect(system).toContain('knowledge/landlord-contact.md (user, 2026-09-10, active)');
+  });
+
+  test('the model is told that a parked action has not happened', () => {
+    expect(client.renderSystem(bundle)).toContain('has NOT happened');
   });
 
   test('the input carries what changed since the last attempt', () => {
@@ -133,8 +149,16 @@ describe('response schemas', () => {
     expect(hermesRunStatus.parse({ run_id: 'r1', status: 'running' }).status).toBe('running');
   });
 
-  test('an unknown status is refused rather than passed along', () => {
-    expect(hermesRunStatus.safeParse({ run_id: 'r1', status: 'thinking' }).success).toBe(false);
+  test('an unknown status falls back to running rather than losing the run', () => {
+    // A status this build does not know about still names a live run; refusing
+    // the parse would drop the run id with it.
+    expect(hermesRunStatus.parse({ run_id: 'r1', status: 'thinking' }).status).toBe('running');
+  });
+
+  test('interrupted and cancelled are statuses, not surprises', () => {
+    for (const status of ['interrupted', 'cancelled', 'waiting_for_approval'] as const) {
+      expect(hermesRunStatus.parse({ run_id: 'r1', status }).status).toBe(status);
+    }
   });
 
   test('an approval notification carries the fields the probe recorded', () => {

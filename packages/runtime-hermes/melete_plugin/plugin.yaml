@@ -1,0 +1,13 @@
+# Discovered by Hermes's PluginManager from $HERMES_HOME/plugins/melete/.
+# The registry key is the directory name, and `plugins.enabled` in config.yaml
+# is an allow-list of those keys, not a boolean.
+name: melete
+version: 0.1.0
+description: Registers the Melete broker's tools and forwards every call to it.
+author: Melete
+license: Apache-2.0
+kind: standalone
+# Declared so `hermes plugins list` says what this is. Melete never overrides a
+# built-in tool: broker tool names are dotted and collide with nothing.
+provides_tools: []
+provides_hooks: []

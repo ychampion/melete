@@ -3,17 +3,27 @@
  * requests and parses responses; it never opens a socket, so the whole thing is
  * testable without a container.
  *
- * The five calls Melete uses:
+ * The six calls Melete uses, all read from the tag rather than assumed
+ * (`gateway/platforms/api_server_runs.py:101`,
+ * `gateway/platforms/api_server.py:1503`):
+ *
+ *   GET  /v1/capabilities          what this build supports
  *   POST /v1/runs                  start one bounded attempt
  *   GET  /v1/runs/{id}             status
  *   GET  /v1/runs/{id}/events      the SSE stream, consumed exactly once
- *   POST /v1/runs/{id}/approval    answer a command-approval notification
+ *   POST /v1/runs/{id}/approval    answer a shell-command notification
  *   POST /v1/runs/{id}/stop        cancel
+ *
+ * `/v1/runs/{id}/steer` exists and is deliberately not used: a mid-run
+ * instruction that never reached the ledger is exactly the untracked side
+ * channel the broker exists to prevent.
  */
 import type { AttemptBundle } from '@melete/contracts';
 import { z } from 'zod';
+import { renderInput, renderInstructions } from './instructions.ts';
 
 export const HERMES_ROUTES = {
+  capabilities: '/v1/capabilities',
   runs: '/v1/runs',
   status: (runId: string) => `/v1/runs/${runId}`,
   events: (runId: string) => `/v1/runs/${runId}/events`,
@@ -28,26 +38,74 @@ export type HermesRequest = {
   body?: string;
 };
 
+/**
+ * The statuses a run can hold. `interrupted` and `cancelled` are terminal on the
+ * engine's side (`api_server_run_idempotency.py:17`); `stopping` is what a run
+ * shows between `/stop` and the executor noticing.
+ */
+export const HERMES_RUN_STATUSES = [
+  'queued',
+  'started',
+  'running',
+  'stopping',
+  'waiting_for_approval',
+  'completed',
+  'failed',
+  'cancelled',
+  'interrupted',
+] as const;
 export const hermesRunStatus = z.object({
   run_id: z.string(),
-  status: z.enum(['queued', 'running', 'awaiting_approval', 'completed', 'failed', 'stopped']),
+  status: z.enum(HERMES_RUN_STATUSES).catch('running'),
   error: z.string().nullable().optional(),
+  output: z.string().optional(),
+  usage: z.record(z.string(), z.unknown()).optional(),
+  last_event: z.string().optional(),
 });
 export type HermesRunStatus = z.infer<typeof hermesRunStatus>;
 
+/** `POST /v1/runs` answers 202 with this (`api_server_runs.py:288`). */
 export const hermesRunAccepted = z.object({
-  run_id: z.string(),
+  run_id: z.string().min(1),
   status: z.string(),
+  /** True when the idempotency key matched a run that was already admitted. */
+  replayed: z.boolean().default(false),
 });
 export type HermesRunAccepted = z.infer<typeof hermesRunAccepted>;
 
 /**
- * What the gateway notifier sends when a command needs a decision. The probe
- * recorded these exact fields; `request_id` is what an answer is addressed to.
+ * `GET /v1/capabilities`. Only the parts Melete acts on are modelled; the rest
+ * of the body is large and is not ours to validate.
+ */
+export const hermesCapabilities = z.object({
+  platform: z.string().optional(),
+  model: z.string().optional(),
+  features: z
+    .object({
+      run_submission: z.boolean().optional(),
+      run_events_sse: z.boolean().optional(),
+      run_stop: z.boolean().optional(),
+      run_approval_response: z.boolean().optional(),
+      runs_idempotency: z
+        .object({
+          supported: z.boolean().default(false),
+          durable: z.boolean().default(false),
+          retention_seconds: z.number().optional(),
+        })
+        .optional(),
+    })
+    .default({}),
+});
+export type HermesCapabilities = z.infer<typeof hermesCapabilities>;
+
+/**
+ * What the gateway notifier sends when a shell command needs a decision. Melete
+ * does not route its own tool approvals through this; it exists so that a shell
+ * command, if one ever appears, surfaces instead of silently denying.
  */
 export const hermesApprovalRequest = z.object({
   request_id: z.string(),
-  command: z.string(),
+  command: z.string().optional(),
   description: z.string().optional(),
   pattern_key: z.string().optional(),
   pattern_keys: z.array(z.string()).optional(),
@@ -66,7 +124,7 @@ export type HermesApprovalAnswer = (typeof HERMES_APPROVAL_ANSWERS)[number];
 
 export type HermesClientOptions = {
   baseUrl: string;
-  /** Surrogate token; the gateway swaps it for a real provider key. */
+  /** The API server's bearer, when one is configured (`API_SERVER_KEY`). */
   token?: string;
 };
 
@@ -87,34 +145,43 @@ export class HermesClient {
     return headers;
   }
 
+  capabilities(): HermesRequest {
+    return {
+      url: `${this.baseUrl}${HERMES_ROUTES.capabilities}`,
+      method: 'GET',
+      headers: this.headers(),
+    };
+  }
+
   /**
-   * Start a run from an attempt bundle. Everything thin about the harness is
-   * expressed here: memory and context files off, no built-in toolsets, the
-   * identity in place of SOUL.md, at most three skills.
+   * Start a run from an attempt bundle.
+   *
+   * `Idempotency-Key` is the attempt id, so a resent POST resolves to the run
+   * that already exists rather than starting a second one. The session key is
+   * the job id: consecutive attempts on one job continue the same Hermes
+   * session, which is what lets an approved action resume where it parked.
+   *
+   * Nothing here configures the engine. Toolsets, memory, context files and the
+   * provider all come from the image's `config.yaml`, because the `/v1/runs`
+   * body has no fields for them: `_create_agent` reads them from config
+   * (`gateway/platforms/api_server.py:2087`). Sending `toolsets: []` in this
+   * body, as the skeleton did, has no effect at all.
    */
   startRun(bundle: AttemptBundle): HermesRequest {
     const body = {
-      input: this.renderInput(bundle),
-      system: this.renderSystem(bundle),
-      // The plugin registers the broker's tools; nothing built in is available.
-      skip_memory: true,
-      skip_context_files: true,
-      toolsets: [],
-      metadata: {
-        attempt_id: bundle.attempt.id,
-        job_id: bundle.attempt.job_id,
-        epoch: bundle.attempt.epoch,
-        revision: bundle.attempt.revision,
-      },
-      max_turns: bundle.budget.max_turns,
-      max_output_tokens: bundle.budget.max_output_tokens,
-      provider: bundle.model.provider,
+      input: renderInput(bundle),
+      instructions: renderInstructions(bundle),
+      session_id: bundle.attempt.job_id,
       model: bundle.model.model,
     };
     return {
       url: `${this.baseUrl}${HERMES_ROUTES.runs}`,
       method: 'POST',
-      headers: this.headers({ 'content-type': 'application/json' }),
+      headers: this.headers({
+        'content-type': 'application/json',
+        'Idempotency-Key': bundle.attempt.id,
+        'X-Hermes-Session-Key': bundle.attempt.job_id,
+      }),
       body: JSON.stringify(body),
     };
   }
@@ -128,17 +195,16 @@ export class HermesClient {
   }
 
   /**
-   * The event stream. Melete consumes it once and persists before fan-out; an
-   * interrupted run is a dead attempt, never resumed, so `lastEventId` exists
-   * only to finish reading a stream that was already open.
+   * The event stream. It is an in-memory queue with no replay
+   * (`api_server_runs.py:154`), so there is no reconnecting to catch up: Melete
+   * consumes it once, persists before fan-out, and treats a dropped stream as a
+   * dead attempt. `Last-Event-ID` is not sent, because nothing would honour it.
    */
-  events(runId: string, lastEventId?: string): HermesRequest {
-    const extra: Record<string, string> = { accept: 'text/event-stream' };
-    if (lastEventId) extra['last-event-id'] = lastEventId;
+  events(runId: string): HermesRequest {
     return {
       url: `${this.baseUrl}${HERMES_ROUTES.events(runId)}`,
       method: 'GET',
-      headers: this.headers(extra),
+      headers: this.headers({ accept: 'text/event-stream' }),
     };
   }
 
@@ -147,7 +213,7 @@ export class HermesClient {
       url: `${this.baseUrl}${HERMES_ROUTES.approval(runId)}`,
       method: 'POST',
       headers: this.headers({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ request_id: requestId, answer }),
+      body: JSON.stringify({ request_id: requestId, choice: answer }),
     };
   }
 
@@ -160,43 +226,17 @@ export class HermesClient {
     };
   }
 
-  /** Stable prefix first, volatile inputs last, so the provider can cache it. */
+  /** Kept as methods so a caller can see what a run will be told without sending it. */
   renderSystem(bundle: AttemptBundle): string {
-    const parts = [IDENTITY];
-    if (bundle.skills.length > 0) {
-      parts.push(bundle.skills.map((s) => `## ${s.name}\n${s.body}`).join('\n\n'));
-    }
-    if (bundle.knowledge.length > 0) {
-      parts.push(
-        `## What Melete already knows\n${bundle.knowledge
-          .map((k) => `- ${k.path}: ${k.excerpt}`)
-          .join('\n')}`,
-      );
-    }
-    return parts.join('\n\n');
+    return renderInstructions(bundle);
   }
 
   renderInput(bundle: AttemptBundle): string {
-    const lines = [`# ${bundle.job.title}`, bundle.job.objective];
-    if (bundle.job.progress_summary) lines.push(`## So far\n${bundle.job.progress_summary}`);
-    for (const message of bundle.inputs.new_user_messages) {
-      lines.push(`## From the owner\n${message.content}`);
-    }
-    for (const approval of bundle.inputs.approval_results) {
-      lines.push(`## Decision\n${approval.action_id} was ${approval.decision}.`);
-    }
-    return lines.join('\n\n');
+    return renderInput(bundle);
   }
 }
 
-/** Under 250 tokens by contract; the runtime image ships it in place of SOUL.md. */
-export const IDENTITY = `You are Melete, a personal assistant working on one responsibility at a time.
-You cannot reach the network, the filesystem outside /work, or any account directly.
-Every effect on the world goes through a tool call, and each one is recorded, may need the owner's approval, and may be refused.
-Work in small steps. When you need a fact, search knowledge before guessing.
-When you cannot proceed without the owner, ask exactly one precise question and stop.
-When you finish, say what you did and point at the evidence.
-Never claim you sent, saved, or scheduled something unless a tool call returned a receipt for it.`;
+export { IDENTITY } from './instructions.ts';
 
 // --------------------------------------------------------------------------
 // SSE parsing
@@ -212,6 +252,10 @@ export type SseMessage = {
  * Split a Server-Sent Events buffer into complete messages, returning whatever
  * is left over so a caller can feed the next chunk in. Deliberately dumb: no
  * network, no state beyond the remainder.
+ *
+ * Hermes writes bare comment lines as keepalives every 30 seconds and one more
+ * (`: stream closed`) when the run ends, so a chunk with no fields at all is
+ * normal and is dropped here rather than surfaced as an empty event.
  */
 export function parseSse(buffer: string): { messages: SseMessage[]; rest: string } {
   const messages: SseMessage[] = [];
@@ -237,3 +281,29 @@ export function parseSse(buffer: string): { messages: SseMessage[]; rest: string
 
   return { messages, rest };
 }
+
+/**
+ * One frame off the run stream. `event` is the name and the rest is flat
+ * (`api_server_runs.py:64`), which is why this is a loose record rather than a
+ * discriminated union: a future engine event must not fail the parse and lose
+ * the frames around it.
+ */
+export const hermesRunEvent = z
+  .object({
+    event: z.string().min(1),
+    run_id: z.string().optional(),
+    timestamp: z.number().optional(),
+  })
+  .loose();
+export type HermesRunEvent = z.infer<typeof hermesRunEvent>;
+
+/** The engine's terminal frames. Anything else means the run is still going. */
+export const HERMES_TERMINAL_EVENTS = [
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.interrupted',
+] as const;
+
+export const isTerminalEvent = (name: string): boolean =>
+  (HERMES_TERMINAL_EVENTS as readonly string[]).includes(name);

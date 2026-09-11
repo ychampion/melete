@@ -15,7 +15,7 @@ virtualenv at `.hermes-venv/`; both are gitignored and neither is vendored.
 ## Verdict
 
 The tripwire does not fire. Built-in toolsets can be disabled, every route
-Melete needs exists, and the thin scaffolding measures **3,275 tokens**, under
+Melete needs exists, and the thin scaffolding measures **3,304 tokens**, under
 the 4,000 budget. The lane continues on Hermes.
 
 ## The plugin surface
@@ -101,8 +101,8 @@ tools:
     enabled: "off"
 ```
 
-Measured: with the bridge on, three tools and 607 tokens of schema. With it off,
-six tools and 349 tokens. This is the only non-obvious line in the thin config.
+Measured: with the bridge on, three tools and 661 tokens of schema. With it off,
+six tools and 377 tokens. This is the only non-obvious line in the thin config.
 
 ## Config keys
 
@@ -218,15 +218,23 @@ uv pip install --python .hermes-venv/Scripts/python.exe -e ./.hermes-src
 
 | | tools | tool schemas | system prompt | total |
 |---|---|---|---|---|
-| default `hermes-api-server` on this machine | 23 | 8,737 tok | 3,154 tok | **11,891 tok** |
-| thin, no identity | 6 | 349 tok | 2,719 tok | **3,068 tok** |
-| thin + Melete identity | 6 | 349 tok | 2,926 tok | **3,275 tok** |
+| default `hermes-api-server` on this machine | 23 | 8,766 tok | 3,150 tok | **11,916 tok** |
+| thin, no identity | 6 | 377 tok | 2,715 tok | **3,093 tok** |
+| thin + Melete identity | 6 | 377 tok | 2,926 tok | **3,304 tok** |
 
 The identity file is 843 chars, 210 tokens, inside the 250-token contract.
 
+The first run of this probe registered its stubs with a bare JSON Schema as
+`schema=`, which is the wrong shape. `tools/registry.py:774` builds the
+definition as `{**entry.schema, "name": entry.name}`, so what is passed there is
+the OpenAI function body, and a bare schema produces a definition with no
+`parameters` key at all. That understated the thin figure by 28 tokens and the
+default by 29. The table is from the corrected run, and
+`melete_plugin.tool_schema` produces the shape the probe now uses.
+
 Two things the numbers say that the plan did not.
 
-The 23-tool default is not the 37 tools the brief expected, and 8,737 tokens is
+The 23-tool default is not the 37 tools the plan expected, and 8,766 tokens is
 not 13,900. Roughly a dozen built-ins are gated off on this machine by their
 `check_fn`s: no provider keys, no browser, no vision dependencies. The default
 figure here is therefore a floor, and the real saving in a container with

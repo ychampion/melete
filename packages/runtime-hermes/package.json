@@ -14,10 +14,12 @@
     }
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest tests -q"
   },
   "dependencies": {
     "@melete/contracts": "workspace:*",
-    "zod": "4.6.2"
+    "zod": "4.6.2",
+    "@melete/skills": "workspace:*"
   }
 }
