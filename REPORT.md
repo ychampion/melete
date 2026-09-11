@@ -53,3 +53,19 @@
 - Test `files traversal`: rejects parent segments, absolute/device/stream paths and existing symbolic links; trusted roots define the job and space boundary.
 - Log `files boundary limitation`: portable checks require service-controlled directory structure and do not claim protection against another process racing directory replacement.
 - Command `bun test --max-concurrency=2`: full-suite 268 pass / 0 fail / 36.80 seconds includes the corrected destination integration.
+
+## Slice 5 — mail, calendars, and sealed secrets
+
+- SHA `d9297ac`: core connector boundary and durable destination tests pushed.
+- Command `bun test apps/melete/src/connectors/email.test.ts apps/melete/src/connectors/mail-transport.test.ts apps/melete/src/connectors/calendar.test.ts apps/melete/src/connectors/secrets.test.ts --max-concurrency=2`: all 18 tests passed using local IMAP/SMTP/CalDAV doubles.
+- Test `secret.safeParse`: generated secret references use frozen prefixed ULIDs; sealed box ciphertext binds the record and space, rejects tamper, row swaps and wrong keys.
+- Test `SMTP acknowledgement loss`: stable action-derived Message-ID can be verified in Sent without a second send.
+- Test `CalDAV verification`: compares UID, action/hash marker and approved fields; stale ETags and credential redirects rejected.
+- Test `inbox hygiene`: MIME-decoded OTP, password reset and magic link content withheld from search and read; documented as best-effort.
+
+## Assumptions — connector semantics
+
+- Test `email.draft`: local durable draft lives in its action receipt; only email.send writes to the mailbox transport.
+- Test `calendar.update`: preserves the creation action UID and records the update action/hash in ICS, because replacing UID would identify a new event.
+- Test `ICS import`: read-only series list includes recurrence rules; recurrence occurrences are not expanded.
+- Test `email.health`: IMAP connectivity is checked; this does not claim SMTP delivery.
