@@ -11,6 +11,8 @@
 # plugin's toolset is what turns every built-in off. There is no separate
 # "enabled_toolsets: []" key; that was a guess in the skeleton.
 platform_toolsets:
+  # Built-in skill creation stays disabled. The melete toolset exposes learning.propose
+  # for an existing owner intervention; publication requires Melete's held-out gate.
   api_server: [melete]
 
 plugins:

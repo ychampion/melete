@@ -24,3 +24,16 @@
 - Log `2026-09-11 owner steering`: continue at xhigh effort, solo and sequentially; no further delegation. Command `git status --short --branch` confirmed no commits or staged changes from the interrupted command.
 - Command `bun run test`, final allowed fix cycle 2 result: 907 pass, 14 pre-existing todo, 4 fail, 513.98 seconds. Three existing teardown hooks hit their explicit 15-second limits; the replies fault fixture reported `Fault child exited 143`. All four `learning episode capture` tests passed. The two-cycle stop condition ends further baseline timeout tuning; this slice is functional but not a green full-suite result.
 - Test `procedureChange`: the next slice uses a finite audited grammar; draft generation tests remain outside discovery until their migration and runtime wiring are complete.
+
+## Slice 2 — bounded candidate generation
+
+- SHA `4b24d48`: episode capture committed separately with the full-suite failures retained above.
+- Command `bun run db:generate`: generated `0016_outgoing_redwing.sql` for the one-call learning ledger and proposal reservation timestamp; no shared contract changes.
+- Test `learning-proposals.test.ts`, first run: failed before reservation because the gateway requires a surrogate header; cleanup also reported `ERR_SERVER_NOT_RUNNING` after redundant connection cleanup. Fix cycle 1 supplies the existing surrogate protocol, sends only finite step identifiers within the gateway byte-based token reservation, and uses the gateway's existing close method.
+- Command `bun test --max-concurrency=1 --timeout=30000 apps/melete/src/learning/procedure.test.ts apps/melete/test/integration/learning-proposals.test.ts packages/runtime-hermes/src/client.test.ts`: 31 pass, 0 fail, 94 assertions, 19.40 seconds after fix cycle 1.
+- Test `one corrected episode produces one scoped candidate with no private prose`: verified one persisted gateway call, actual token/model settlement, idempotent replay, exact scope/model compatibility, and absence of planted secrets from both the request and candidate body.
+- Test `Hermes skill creation refers only this current job owner intervention`: the existing current-attempt authorizer rejects a fenced attempt; another job cannot refer the intervention; arbitrary paths and skill bodies fail the request schema.
+- Command `bun run test:plugin`: 21 pass in 11.20 seconds, including a real loopback HTTP handoff to `/tools/learning/propose` with unchanged live-skill fixture files.
+- Test `skill_creation_goes_to_learning_without_writing_live_skills`: configuration keeps only the Melete toolset; the narrowly added plugin forwarder refers owner evidence and never publishes a skill. No Hermes source patch is required.
+- Command `bun run typecheck`, first wiring run: one `Promise<boolean | void>` error from a logging callback; fix cycle 1 uses a void callback and the subsequent typecheck passed.
+- Commands `bun run typecheck`, `bun run lint`, and `bun run compose:check`: passed after final candidate wiring; Compose reported 12 checks. The earlier full-suite timing/fixture failures remain open and are not represented as green.

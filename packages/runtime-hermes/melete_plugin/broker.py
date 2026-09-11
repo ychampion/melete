@@ -125,6 +125,10 @@ class BrokerClient:
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
 
+    def propose_procedure(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Refer an existing owner intervention; the service owns generation and evaluation."""
+        return self._call("POST", "/tools/learning/propose", payload)
+
 
 def _error_from_body(error: "urllib.error.HTTPError") -> tuple:
     """Pull the broker's own error code out of a non-2xx body.

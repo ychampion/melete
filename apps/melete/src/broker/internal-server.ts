@@ -4,6 +4,7 @@ import type { PgBoss } from 'pg-boss';
 import type { Sql } from 'postgres';
 import { createActionReadApi } from '../api/actions.ts';
 import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
+import { learningRuntimeFetch } from '../learning/runtime-route.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
 import { createBrokerApp } from './http.ts';
@@ -63,10 +64,15 @@ export function createInternalServer(options: {
     defaultProvider: options.defaultProvider,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
-    brokerFetch: (request) =>
-      request.method === 'GET' && new URL(request.url).pathname === '/actions'
-        ? reads.fetch(request)
-        : app.fetch(request),
+    brokerFetch: learningRuntimeFetch({
+      sql: options.sql,
+      capabilityKey: options.capabilityKey,
+      broker,
+      fallback: (request) =>
+        request.method === 'GET' && new URL(request.url).pathname === '/actions'
+          ? reads.fetch(request)
+          : app.fetch(request),
+    }),
     onError: (error) => process.stderr.write(`model gateway: ${error.message}\n`),
   });
   return { server, broker, budget };

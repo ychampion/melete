@@ -56,6 +56,7 @@ export const episode = pgTable(
     failureClass: text('failure_class'),
     restricted: boolean('restricted').notNull().default(false),
     generationState: text('generation_state').notNull().default('pending'),
+    generationStartedAt: timestamp('generation_started_at', { withTimezone: true }),
     createdAt: created(),
     expiresAt: timestamp('expires_at', { withTimezone: true })
       .notNull()

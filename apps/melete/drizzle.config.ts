@@ -12,6 +12,7 @@ export default defineConfig({
     './src/db/auth-schema.ts',
     './src/memory/schema.ts',
     './src/learning/schema.ts',
+    './src/learning/proposal-schema.ts',
   ],
   out: './drizzle',
   strict: true,

@@ -42,8 +42,11 @@ import { TriggerService } from './jobs/triggers.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { filesystemSpaces } from './knowledge/spaces.ts';
 import { EpisodeService } from './learning/episodes.ts';
+import { mountProposals } from './learning/proposal-routes.ts';
+import type { ProcedureProposer } from './learning/proposer.ts';
 import { expireEpisodes } from './learning/retention.ts';
 import { mountLearning } from './learning/routes.ts';
+import { startLearning } from './learning/start.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
@@ -65,6 +68,7 @@ export type AppDeps = {
   attention?: AttentionService;
   questions?: QuestionService;
   episodes?: EpisodeService;
+  proposer?: ProcedureProposer;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -95,6 +99,7 @@ export function createApp(deps: AppDeps) {
     (deps.jobs && submissions ? new ReplyService(deps.jobs, submissions) : undefined);
   if (deps.jobs) mountJobs(app, deps.jobs, submissions);
   if (deps.jobs) mountLearning(app, deps.episodes ?? new EpisodeService(deps.jobs));
+  if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
@@ -154,10 +159,17 @@ export async function bootstrap(
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
   let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   const close = async () => {
     clearInterval(episodeRetention);
     try {
-      await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
+      await Promise.all([
+        learning?.close(),
+        events?.close(),
+        triggers?.stop(),
+        runner?.stop(),
+        operations?.stop(),
+      ]);
     } finally {
       try {
         await queue?.stop();
@@ -197,6 +209,7 @@ export async function bootstrap(
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
       });
+      learning = await startLearning(jobs, env, options.workers !== false);
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -243,6 +256,7 @@ export async function bootstrap(
     attention,
     questions,
     episodes: jobs ? new EpisodeService(jobs, (id) => runner?.interrupt(id)) : undefined,
+    proposer: learning?.proposer,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -265,6 +279,7 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    learning,
     close,
   };
 }

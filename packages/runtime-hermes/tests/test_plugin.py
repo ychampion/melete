@@ -84,6 +84,8 @@ class FakeBroker:
             return 200, {"tools": self.catalog}
         if method == "POST" and path == "/actions":
             return 201, self.propose_response
+        if method == "POST" and path == "/tools/learning/propose":
+            return 200, {"status": "candidate_pending", "episode_id": "ep_recorded"}
         if method == "GET" and path.startswith("/actions/"):
             return 200, {"action": self.action_record}
         return 404, {"error": {"code": "not_found", "message": "no such route"}}
@@ -189,6 +191,21 @@ def test_a_refused_catalog_registers_nothing(client, broker):
 
 
 # -- calling ------------------------------------------------------------------
+
+
+def test_skill_creation_goes_to_learning_without_writing_live_skills(client, broker, tmp_path, monkeypatch):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    existing = skills / "existing.md"
+    existing.write_text("Owner-reviewed procedure", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    result = build_handler(client, {"name": "learning.propose", "connection_id": None})({})
+    assert result == {"status": "candidate_pending", "episode_id": "ep_recorded"}
+    assert broker.requests == [{
+        "method": "POST", "path": "/tools/learning/propose", "body": {}, "auth": "Bearer cap-token"
+    }]
+    assert sorted(path.name for path in skills.iterdir()) == ["existing.md"]
+    assert existing.read_text(encoding="utf-8") == "Owner-reviewed procedure"
 
 
 def test_a_dispatched_call_returns_the_receipt(client, broker):
