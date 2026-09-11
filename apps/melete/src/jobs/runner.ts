@@ -360,10 +360,21 @@ export class AttemptRunner {
         : original;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
+    let artifactFailures: string[] = [];
     switch (outcome.kind) {
-      case 'completed':
-        input = { kind: 'attempt_completed', ...(await completionFacts(tx, row, outcome)) };
+      case 'completed': {
+        const facts = await completionFacts(tx, row, outcome);
+        artifactFailures = facts.artifact_failures;
+        input = {
+          kind: 'attempt_completed',
+          all_actions_terminal: facts.all_actions_terminal,
+          has_unknown_action: facts.has_unknown_action,
+          deliverable_declared: facts.deliverable_declared,
+          deliverable_satisfied: facts.deliverable_satisfied,
+          artifact_validations_passed: facts.artifact_validations_passed,
+        };
         break;
+      }
       case 'waiting_for_input':
         input = { kind: 'attempt_waiting_for_input' };
         wait = { kind: 'user_input', question: outcome.question };
@@ -399,6 +410,19 @@ export class AttemptRunner {
       wait = {
         kind: 'user_input',
         question: 'The declared deliverable has no verified evidence. What should happen next?',
+      };
+    // Name the check that failed. "Something went wrong with the artifact" is
+    // not a question anybody can answer; "the amount column adds up to 91.50
+    // but the total says 100.00" is.
+    if (
+      outcome.kind === 'completed' &&
+      input.kind === 'attempt_completed' &&
+      !input.artifact_validations_passed &&
+      !input.has_unknown_action
+    )
+      wait = {
+        kind: 'user_input',
+        question: `A declared artifact check did not pass: ${artifactFailures.join('; ')}. Fix the file and finish, or say what should happen instead.`,
       };
     // Deciding the question before the move lets the wait name the one asked.
     const resolution = await resolveQuestions(tx, row, {

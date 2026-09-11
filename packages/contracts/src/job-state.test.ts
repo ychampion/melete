@@ -185,3 +185,32 @@ describe('the transition function is pure', () => {
     expect(frozen).toEqual({ kind: 'attempt_waiting_for_approval' });
   });
 });
+
+describe('declared artifact checks', () => {
+  const completing = (over: Partial<Extract<TransitionInput, { kind: 'attempt_completed' }>>) =>
+    transition('running', {
+      kind: 'attempt_completed',
+      all_actions_terminal: true,
+      has_unknown_action: false,
+      deliverable_declared: false,
+      deliverable_satisfied: true,
+      ...over,
+    } as TransitionInput);
+
+  test('a failing artifact check turns a completion into a question', () => {
+    expect(unwrap(completing({ artifact_validations_passed: false }))).toBe('waiting_for_input');
+    expect(unwrap(completing({ artifact_validations_passed: true }))).toBe('completed');
+  });
+
+  test('a caller that knows nothing about artifacts is unaffected', () => {
+    // The field is optional so every existing caller keeps its behaviour; only
+    // a caller that has read the validation rows can say false.
+    expect(unwrap(completing({}))).toBe('completed');
+  });
+
+  test('an unresolved external effect still outranks a failing check', () => {
+    expect(
+      unwrap(completing({ artifact_validations_passed: false, has_unknown_action: true })),
+    ).toBe('needs_reconciliation');
+  });
+});

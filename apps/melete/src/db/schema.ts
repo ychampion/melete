@@ -253,14 +253,84 @@ export const artifact = pgTable(
       .notNull()
       .references(() => space.id, { onDelete: 'cascade' }),
     jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    /**
+     * The job whose work this is. `job_id` is nulled when a job row goes away;
+     * this one is not a foreign key precisely so it survives that, because it is
+     * what "update this with the latest data" resolves against.
+     */
+    sourceJobId: text('source_job_id'),
+    /** `work` is the job's own workspace; `artifacts` is the space directory. */
+    area: text('area').notNull().default('work'),
     path: text('path').notNull(),
+    kind: text('kind').notNull().default('binary'),
     contentHash: text('content_hash').notNull(),
     mime: text('mime').notNull(),
     size: integer('size').notNull(),
     audience: text('audience').notNull().default('owner'),
+    /** The template this was produced from, when one was declared. */
+    template: text('template'),
+    /** The declared expectation, verbatim. Null for a file nobody promised anything about. */
+    expectation: jsonb('expectation'),
+    /** Handles the content was derived from: action ids, claim handles, artifact ids. */
+    evidence: jsonb('evidence').notNull().default([]),
     createdAt: created(),
   },
-  (t) => [index('artifact_space_idx').on(t.spaceId)],
+  (t) => [
+    index('artifact_space_idx').on(t.spaceId),
+    // The gate reads the latest row per path, so this is the index it walks.
+    index('artifact_job_path_idx').on(t.jobId, t.area, t.path, t.createdAt),
+  ],
+);
+
+/**
+ * One validation result, bound to the artifact row and therefore to the exact
+ * bytes it was computed over. Re-writing a file makes a new artifact row with
+ * its own results rather than editing these, so the history of what was wrong
+ * survives the fix.
+ */
+export const artifactValidation = pgTable(
+  'artifact_validation',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    artifactId: text('artifact_id')
+      .notNull()
+      .references(() => artifact.id, { onDelete: 'cascade' }),
+    class: text('class').notNull(),
+    name: text('name').notNull(),
+    status: text('status').notNull(),
+    detail: text('detail').notNull().default(''),
+    evidence: jsonb('evidence').notNull().default({}),
+    /** Advisory results are recorded and shown; they never block a completion. */
+    advisory: boolean('advisory').notNull().default(false),
+    checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('artifact_validation_artifact_idx').on(t.artifactId),
+    // One live result per named check per artifact: a human acceptance replaces
+    // the pending row it answers rather than sitting beside it.
+    uniqueIndex('artifact_validation_name_idx').on(t.artifactId, t.name),
+  ],
+);
+
+/** Where an artifact went, and what the destination called it when it got there. */
+export const artifactPublication = pgTable(
+  'artifact_publication',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    artifactId: text('artifact_id')
+      .notNull()
+      .references(() => artifact.id, { onDelete: 'cascade' }),
+    actionId: text('action_id').notNull(),
+    destination: text('destination').notNull(),
+    externalRef: text('external_ref'),
+    contentHash: text('content_hash').notNull(),
+    detail: jsonb('detail').notNull().default({}),
+    publishedAt: timestamp('published_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('artifact_publication_artifact_idx').on(t.artifactId),
+    uniqueIndex('artifact_publication_action_idx').on(t.actionId),
+  ],
 );
 
 /**
@@ -488,6 +558,8 @@ export const schema = {
   approval,
   event,
   artifact,
+  artifactValidation,
+  artifactPublication,
   knowledgeRecord,
   trigger,
   budgetLedger,

@@ -3,6 +3,7 @@ import { ID_PREFIXES, prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import type { Sql } from 'postgres';
 import { createActionReadApi } from '../api/actions.ts';
+import { type ArtifactCritic, createArtifactRecorder } from '../artifact/record.ts';
 import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
@@ -23,6 +24,10 @@ export function createInternalServer(options: {
   resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
   gatewayFetch?: GatewayOptions['fetch'];
+  /** A scripted stand-in for the model, for the local end-to-end runs. */
+  fake?: GatewayOptions['fake'];
+  /** Advisory model review of a written artifact. Unset means none is run. */
+  artifactCritic?: ArtifactCritic;
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
 }) {
   const broker = new BrokerService({
@@ -33,6 +38,9 @@ export function createInternalServer(options: {
     resolveAuthority: options.resolveAuthority,
     resolveTrust: options.resolveTrust,
     approvalTtlMs: options.approvalTtlMs,
+    // A declared write becomes an artifact row with its checks beside it, in
+    // the same transaction that persists the receipt.
+    recordArtifact: createArtifactRecorder(options.artifactCritic),
   });
   const app = createBrokerApp({
     broker,
@@ -61,6 +69,7 @@ export function createInternalServer(options: {
     budget,
     providers: options.providers,
     defaultProvider: options.defaultProvider,
+    fake: options.fake,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
     brokerFetch: (request) =>

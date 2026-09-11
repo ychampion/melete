@@ -18,6 +18,7 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
+import { artifactGate } from '../artifact/gate.ts';
 import {
   action,
   artifact,
@@ -327,6 +328,10 @@ export type CompletionFacts = {
   has_unknown_action: boolean;
   deliverable_declared: boolean;
   deliverable_satisfied: boolean;
+  /** Every declared check on this job's latest artifacts holds. */
+  artifact_validations_passed: boolean;
+  /** Why not, in words a person can act on. Empty when it passed. */
+  artifact_failures: string[];
 };
 
 function hasReceipt(row: CompletionAction): boolean {
@@ -420,6 +425,10 @@ export function evaluateCompletion(
     ),
     deliverable_declared: declared.kind !== 'none',
     deliverable_satisfied: satisfied,
+    // Nothing is known about artifacts from records alone; the caller that
+    // reads the validation rows fills these in.
+    artifact_validations_passed: true,
+    artifact_failures: [],
   };
 }
 
@@ -468,5 +477,13 @@ export async function completionFacts(
           and(inArray(knowledgeRecord.id, knowledgeIds), eq(knowledgeRecord.spaceId, row.spaceId)),
         )
     : [];
-  return evaluateCompletion(row, outcomeCompleted, { actions, artifacts, knowledge });
+  const facts = evaluateCompletion(row, outcomeCompleted, { actions, artifacts, knowledge });
+  // A declared check that failed outranks a confident summary: the file is not
+  // the thing it was promised to be, whatever the attempt said about it.
+  const gate = await artifactGate(tx, row.id);
+  return {
+    ...facts,
+    artifact_validations_passed: gate.passed,
+    artifact_failures: gate.failures,
+  };
 }

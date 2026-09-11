@@ -62,6 +62,16 @@ export type BrokerOptions = {
   estimateSpend?: (action: Action) => number;
   resolveAuthority?: EffectAuthorityResolver;
   /**
+   * Called inside the transaction that persists a successful receipt, with the
+   * receipt already written. This is where a file that declared an expectation
+   * becomes an artifact row with its validation results beside it. Optional:
+   * a broker with no recorder still dispatches, it just records nothing extra.
+   */
+  recordArtifact?: (
+    tx: Query,
+    input: { job: LockedJob; action: Action; receipt: Receipt },
+  ) => Promise<void>;
+  /**
    * Where the values in a payload came from. The memory lane supplies the real
    * resolver; without one the broker asks nobody and warns about nothing, which
    * is what v0.1 ships until that lane lands.
@@ -201,6 +211,10 @@ export class BrokerService implements BrokerOperations {
             input_schema: tool.input_schema,
             effect_class: tool.effect_class,
             connection_id: connection.id,
+            // The cell needs to know which tools it carries out itself, and
+            // the shape of the record it owes the ledger afterwards.
+            execution: tool.execution,
+            record_schema: tool.record_schema,
           });
         }
       }
@@ -225,8 +239,17 @@ export class BrokerService implements BrokerOperations {
     });
   }
 
+  /**
+   * An in-cell tool's payload is the record of what already happened, not the
+   * arguments the model supplied, so it is validated against the record schema
+   * the connector declared. A connector that declares `in_cell` without one is
+   * a bug, and fails closed here rather than admitting an unchecked shape.
+   */
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
-    if (!this.validator.validate(tool.input_schema, payload))
+    if (tool.execution === 'in_cell' && !tool.record_schema)
+      throw new BrokerFault('payload_invalid', 'An in-cell tool must declare a record schema');
+    const schema = tool.execution === 'in_cell' ? tool.record_schema : tool.input_schema;
+    if (!schema || !this.validator.validate(schema, payload))
       throw new BrokerFault('payload_invalid');
   }
 
@@ -795,6 +818,12 @@ export class BrokerService implements BrokerOperations {
         outcome: result.outcome,
         late,
       });
+      // A receipt that carries a declared artifact becomes rows here, in the
+      // same transaction, so an artifact never exists without the receipt that
+      // produced it and a validation never exists without its artifact.
+      if (receipt && this.options.recordArtifact) {
+        await this.options.recordArtifact(tx, { job, action, receipt });
+      }
       if (
         result.outcome === 'unknown' &&
         !late &&

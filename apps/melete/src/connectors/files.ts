@@ -2,7 +2,16 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
 import path from 'node:path';
-import type { Action, ConnectorManifest, JsonValue, Receipt } from '@melete/contracts';
+import {
+  type Action,
+  ARTIFACT_MIME,
+  artifactExpectation,
+  artifactKindForPath,
+  type ConnectorManifest,
+  type JsonValue,
+  type Receipt,
+} from '@melete/contracts';
+import { validateArtifact } from '../artifact/validate.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 type Area = 'work' | 'artifacts';
@@ -22,7 +31,7 @@ function areaFor(value: JsonValue | undefined): Area {
 }
 
 /** Reject both host and portable path syntax, including Windows device/stream names. */
-function segmentsFor(value: string): string[] {
+export function segmentsFor(value: string): string[] {
   if (
     !value ||
     value.includes('\0') ||
@@ -54,7 +63,11 @@ const missing = (error: unknown): boolean =>
   error instanceof Error && 'code' in error && error.code === 'ENOENT';
 
 /** Inspect every component: checking only the final realpath misses dangling links. */
-async function noLinks(base: string, segments: string[], createParents: boolean): Promise<string> {
+export async function noLinks(
+  base: string,
+  segments: string[],
+  createParents: boolean,
+): Promise<string> {
   let current = base;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
@@ -82,6 +95,35 @@ async function noLinks(base: string, segments: string[], createParents: boolean)
 
 const pathSchema = { type: 'string', minLength: 1 };
 const areaSchema = { type: 'string', enum: ['work', 'artifacts'] };
+/**
+ * What a write says the file is meant to be. Declaring nothing is the normal
+ * case and writes a scratch file; declaring something makes the file an
+ * artifact, and the checks below are run over the bytes before the receipt is
+ * returned. The shape is deliberately loose at the schema layer and strict at
+ * the parse: `artifactExpectation` is the authority and a payload it refuses
+ * fails the write rather than being recorded half-understood.
+ */
+const expectSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['kind'],
+  properties: {
+    kind: {
+      type: 'string',
+      enum: ['markdown', 'csv', 'json', 'text', 'html', 'image', 'pdf', 'docx', 'xlsx', 'binary'],
+    },
+    checks: { type: 'array', maxItems: 25, items: { type: 'object' } },
+    render: { type: 'boolean' },
+    critique: { type: ['string', 'null'], maxLength: 2000 },
+    human: { type: 'boolean' },
+    template: { type: ['string', 'null'], maxLength: 200 },
+  },
+};
+const evidenceSchema = {
+  type: 'array',
+  maxItems: 50,
+  items: { type: 'string', minLength: 1, maxLength: 200 },
+};
 const inputSchema = (properties: Record<string, JsonValue>, required: string[]) => ({
   type: 'object',
   properties,
@@ -117,9 +159,15 @@ export const filesManifest: ConnectorManifest = {
     },
     {
       name: 'files.write',
-      description: 'Write a UTF-8 file inside the selected area.',
+      description: 'Write a UTF-8 file. Declare expect to make it a checked deliverable.',
       input_schema: inputSchema(
-        { path: pathSchema, area: areaSchema, content: { type: 'string' } },
+        {
+          path: pathSchema,
+          area: areaSchema,
+          content: { type: 'string' },
+          expect: expectSchema,
+          evidence: evidenceSchema,
+        },
         ['path', 'content'],
       ),
       effect_class: 'write_reversible',
@@ -263,6 +311,32 @@ export function createFilesConnector(options: FilesOptions): Connector {
           }
           hash = digest(content);
           detail = { path: relative, area, content_hash: hash, bytes: Buffer.byteLength(content) };
+          // A declared write is an artifact, and an artifact is checked here,
+          // by trusted service code over the bytes that were actually written,
+          // before the runtime hears that the write succeeded. The broker turns
+          // what this records into rows when it persists the receipt.
+          if (payload.expect !== undefined) {
+            const expectation = artifactExpectation.parse(payload.expect);
+            const bytes = Buffer.from(content, 'utf8');
+            detail = {
+              ...detail,
+              artifact: {
+                area,
+                path: relative,
+                kind: expectation.kind,
+                mime: ARTIFACT_MIME[expectation.kind] ?? ARTIFACT_MIME.binary,
+                size: bytes.byteLength,
+                content_hash: hash,
+                template: expectation.template,
+                declared_kind_matches_extension: artifactKindForPath(relative) === expectation.kind,
+                evidence: Array.isArray(payload.evidence)
+                  ? payload.evidence.filter((item): item is string => typeof item === 'string')
+                  : [],
+              },
+              expectation: expectation as unknown as JsonValue,
+              validations: validateArtifact(expectation, bytes) as unknown as JsonValue,
+            };
+          }
         } else throw new Error('unknown files tool');
       }
       return { outcome: 'succeeded', receipt: receiptFor(action, detail, hash) };

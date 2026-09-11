@@ -10,6 +10,7 @@ import { z } from 'zod';
 import {
   type EmailConnection,
   ImapSmtpTransport,
+  type MailAttachment,
   type MailMessage,
   type MailTransport,
   validateMailConnection,
@@ -167,6 +168,42 @@ export class EmailConnector implements Connector {
     return this.secrets.withSecret(this.config.secretRef, this.config.spaceId, (password) =>
       work(this.transport(this.config, password)),
     );
+  }
+
+  /**
+   * The same mailbox, the same credential, the same transport, exposed for the
+   * one other thing that sends mail: publishing an artifact as an attachment.
+   * It is a separate tool with its own action and its own approval, so this is
+   * not a second way to send a message, it is the same way used once more.
+   */
+  asMailer(): {
+    send(message: {
+      to: string[];
+      subject: string;
+      body: string;
+      messageId: string;
+      attachments: MailAttachment[];
+    }): Promise<{ messageId: string; accepted?: string[]; rejected?: string[] }>;
+  } {
+    return {
+      send: (message) =>
+        this.use(async (transport) => {
+          const result = await transport.send({
+            to: message.to,
+            cc: [],
+            bcc: [],
+            subject: message.subject,
+            body: message.body,
+            messageId: message.messageId,
+            attachments: message.attachments,
+          });
+          return {
+            messageId: result.messageId,
+            accepted: result.accepted,
+            rejected: result.rejected,
+          };
+        }),
+    };
   }
 
   private success(

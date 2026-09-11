@@ -23,7 +23,13 @@ const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import
  * index that was added in 0009, and a test that cannot exercise the index is
  * not evidence of anything.
  */
-const brokerMigrations = [new URL('../../drizzle/0012_effect_identity.sql', import.meta.url)];
+const brokerMigrations = [
+  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
+  // Artifact validation tables and the columns a declared write fills in. A
+  // fixture without this cannot record an artifact, and a test that cannot
+  // record one proves nothing about the gate that reads them.
+  new URL('../../drizzle/0015_artifact_validation.sql', import.meta.url),
+];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {

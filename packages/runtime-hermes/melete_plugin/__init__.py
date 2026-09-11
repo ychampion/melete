@@ -22,6 +22,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
+from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
 
 logger = logging.getLogger("melete.plugin")
@@ -59,6 +60,16 @@ def tool_schema(tool: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+#: Catalog entries this container carries out itself. Everything else is
+#: forwarded untouched. The broker says which is which; the plugin does not
+#: decide, so a tool cannot become locally executed by being named cleverly.
+IN_CELL = "in_cell"
+
+#: How a locally executed tool maps to a language. A catalog entry outside this
+#: table that claims in_cell execution is refused rather than guessed at.
+IN_CELL_LANGUAGES = {"exec.run": "shell", "exec.python": "python"}
+
+
 def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., Dict[str, Any]]:
     """Build the forwarder for one catalog entry.
 
@@ -66,9 +77,16 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
     connection id comes from the catalog rather than from the model: letting the
     model name the connection would let it choose which mailbox an email leaves
     from, which is a policy decision and not its to make.
+
+    An `in_cell` entry is the one exception, and it is an exception about order
+    rather than about trust. The command has to run here, because here is the
+    place with no route out; the ledger entry is made afterwards, from the
+    record of what ran. The broker still decides whether the job may run
+    anything at all, because an out-of-scope tool never reaches this catalog.
     """
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
+    language = IN_CELL_LANGUAGES.get(name) if tool.get("execution") == IN_CELL else None
 
     def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
         # Hermes dispatches as `handler(args, **kwargs)` with the model's
@@ -81,14 +99,40 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
             return from_error("unknown_connection", f"{name} has no connection in the catalog")
+        if tool.get("execution") == IN_CELL and language is None:
+            # The broker asked for local execution of something this plugin has
+            # no way to run. Refusing is the only honest answer: proposing the
+            # arguments as if they were a record would put a fiction in the ledger.
+            return from_error("unknown_tool", f"{name} cannot be carried out in this runtime")
+
+        display = None
+        payload = arguments
+        if language is not None:
+            try:
+                outcome = run_in_cell(language, arguments)
+            except ExecRefused as refusal:
+                return from_error("payload_invalid", str(refusal))
+            except OSError as failure:
+                return from_error("connector_unavailable", str(failure))
+            # The record, not the arguments: what the ledger receives is what
+            # happened, including the exit code and the digest of the output.
+            payload = outcome["record"]
+            display = outcome
+
         try:
             response = client.propose(
                 kind=name,
                 connection_id=str(connection_id),
-                payload=arguments,
-                client_ref=_client_ref(name, arguments),
+                payload=payload,
+                client_ref=_client_ref(name, payload),
             )
         except BrokerError as error:
+            if display is not None:
+                # The command already ran. Saying only "the broker refused"
+                # would leave the model to guess whether anything happened.
+                result = from_error(error.code, error.message)
+                result["execution"] = _execution_view(display)
+                return result
             return from_error(error.code, error.message)
 
         if needs_approval(response):
@@ -103,11 +147,31 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
                 receipt = client.action(str(response["action_id"])).get("receipt")
             except BrokerError as error:
                 logger.warning("melete: receipt read failed for %s: %s", name, error.message)
-        return from_response(response, receipt)
+        result = from_response(response, receipt)
+        if display is not None:
+            result["execution"] = _execution_view(display)
+        return result
 
     handler.__name__ = "melete_" + name.replace(".", "_").replace("-", "_")
     handler.__doc__ = f"Forward {name} to the Melete broker."
     return handler
+
+
+def _execution_view(outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """What the model reads about a command it ran.
+
+    The output it is shown is the truncated one; the record names the file the
+    rest was written to, so nothing is lost and nothing is silently elided.
+    """
+    record = outcome["record"]
+    return {
+        "exit_code": record["exit_code"],
+        "timed_out": record["timed_out"],
+        "duration_ms": record["duration_ms"],
+        "truncated": record["truncated"],
+        "output_path": record["output_path"],
+        "output": outcome["display"],
+    }
 
 
 def _client_ref(name: str, arguments: Dict[str, Any]) -> str:

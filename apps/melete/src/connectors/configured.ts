@@ -1,8 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { createArtifactsConnector } from './artifacts.ts';
 import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
+import { createExecConnector } from './exec.ts';
 import { createFilesConnector } from './files.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
@@ -55,6 +57,11 @@ export async function configuredConnectors(options: {
   enableTestConnector?: boolean;
 }) {
   const registry = new ConnectorRegistry();
+  // Publishing by email uses the mailbox the owner already configured. The
+  // artifacts connector is therefore registered after the loop, so the order
+  // connections happen to appear in does not decide whether it can mail.
+  const pending: Array<() => void> = [];
+  let mailer: ReturnType<EmailConnector['asMailer']> | undefined;
   const secrets = new SealedSecretStore(
     new PostgresSecretRepository(options.sql),
     () => options.masterKey,
@@ -68,17 +75,30 @@ export async function configuredConnectors(options: {
   for (const row of connections) {
     const setting = config.get(row.id);
     if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
-    else if (row.provider === 'web') registry.register(row.id, createWebConnector());
+    else if (row.provider === 'exec') registry.register(row.id, createExecConnector(options));
+    else if (row.provider === 'artifacts') {
+      const id = row.id;
+      pending.push(() =>
+        registry.register(
+          id,
+          createArtifactsConnector({
+            sql: options.sql,
+            workRoot: options.workRoot,
+            spacesRoot: options.spacesRoot,
+            mailer,
+          }),
+        ),
+      );
+    } else if (row.provider === 'web') registry.register(row.id, createWebConnector());
     else if (row.provider === 'test' && options.enableTestConnector)
       registry.register(row.id, createTestConnector(options.sql));
     else if (row.provider === 'imap' && setting?.kind === 'email' && row.secret_ref) {
-      registry.register(
-        row.id,
-        new EmailConnector(
-          { ...setting, spaceId: row.space_id, secretRef: row.secret_ref },
-          secrets,
-        ),
+      const email = new EmailConnector(
+        { ...setting, spaceId: row.space_id, secretRef: row.secret_ref },
+        secrets,
       );
+      registry.register(row.id, email);
+      mailer ??= email.asMailer();
     } else if (row.provider === 'caldav' && setting?.kind === 'caldav' && row.secret_ref) {
       registry.register(
         row.id,
@@ -102,5 +122,6 @@ export async function configuredConnectors(options: {
       );
     }
   }
+  for (const register of pending) register();
   return registry;
 }

@@ -51,7 +51,18 @@ export type Space = z.infer<typeof space>;
 // connection
 // --------------------------------------------------------------------------
 
-export const CONNECTION_PROVIDERS = ['imap', 'smtp', 'caldav', 'web', 'files', 'test'] as const;
+export const CONNECTION_PROVIDERS = [
+  'imap',
+  'smtp',
+  'caldav',
+  'web',
+  'files',
+  'test',
+  // Runs inside the cell and records what it ran; see execution.ts.
+  'exec',
+  // Publishes a finished artifact to a destination outside the workspace.
+  'artifacts',
+] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
 
@@ -298,6 +309,12 @@ export const artifact = z.object({
   mime: z.string().min(1),
   size: z.number().int().nonnegative(),
   audience: spaceAudience,
+  /**
+   * The job whose work this is. `job_id` is detached when a job row goes away;
+   * this one is the durable answer to "update this with the latest data", which
+   * is the same job waking again rather than a new job writing a similar file.
+   */
+  source_job_id: prefixedId(ID_PREFIXES.job).nullable().optional(),
   created_at: timestamp,
 });
 export type Artifact = z.infer<typeof artifact>;
