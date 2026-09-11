@@ -96,3 +96,13 @@
 - `2240b24`: committed the uncertain-send scenario and uniform sign-in responses.
 - `ExperiencePlanning.automation`: run history now checks persisted completion confirmation; an unknown effect is shown as needs_you instead of done. Milestones requiring reconciliation use the same readable attention state.
 - `bun test apps/melete/test/integration/experience.test.ts --max-concurrency=2`: 12 passed, 0 failed, 103 assertions in 13.07 seconds; includes all five card sources from real rows, foreign artifact exclusion, credential-address refusal, and an unconfirmed third routine occurrence.
+- `a27dc60`: committed all five real-row card projections and confirmed routine history; subsequent type checking and lint passed.
+- `git -C C:/Users/gamin/melete-oss-w16a show origin/integration:packages/contracts/openapi.json` plus a resolved-reference schema comparison: 68 existing operations, zero removed or changed existing fields; new optional fields remain additive.
+- `gh api repos/ychampion/melete/branches/integration --jq .commit.sha`: 9484023cabd32b786cb4d336dec818f441cd0cc1, matching the local starting base.
+
+## Full-suite evidence
+
+- `a27dc60`: full suite acquired the shared lock at 2026-09-11 23:17:44 UTC.
+- `bun test --max-concurrency=2`: 936 passed, 0 failed, 14 existing todos, 4060 assertions across 80 files in 264.02 seconds. The lock was released by the exit trap.
+- `/tmp/w16a-full-tests.log`: captured the complete run; the three-minute duration target was not met despite all executed tests passing.
+- `python` duration summary of the full-suite log: recorded test bodies used about 164 seconds; setup and cleanup account for much of the remaining time. Checking the separate memory fixture's repeated embedded-server startup before changing it.
