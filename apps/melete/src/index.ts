@@ -6,7 +6,11 @@
  * is a directory with a README describing the contract it will implement.
  */
 import { Hono } from 'hono';
+import { ZodError } from 'zod';
+import { mountAuth } from './api/auth.ts';
+import { ServiceError } from './api/errors.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
+import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
 
 export const VERSION = '0.1.0-pre';
@@ -19,6 +23,21 @@ export type AppDeps = {
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
+  app.onError((error, c) => {
+    if (error instanceof ServiceError)
+      return c.json({ error: { code: error.code, message: error.message } }, error.status);
+    if (error instanceof ZodError || error instanceof SyntaxError)
+      return c.json(
+        { error: { code: 'invalid_request', message: 'Request data is invalid.' } },
+        400,
+      );
+    process.stderr.write(`request failed: ${error.message}\n`);
+    return c.json(
+      { error: { code: 'internal_error', message: 'The request could not be completed.' } },
+      500,
+    );
+  });
+  mountAuth(app, deps);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -46,9 +65,10 @@ export function createApp(deps: AppDeps) {
 }
 
 /** Wire the real dependencies. Called only when this file is the entry point. */
-export function bootstrap() {
+export async function bootstrap() {
   const env = loadEnv();
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
+  if (handle) await migrateDatabase(handle);
 
   const app = createApp({
     env,
@@ -63,7 +83,7 @@ export function bootstrap() {
 }
 
 if (import.meta.main) {
-  const { app, env } = bootstrap();
+  const { app, env } = await bootstrap();
   process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
   Bun.serve({ port: env.PORT, fetch: app.fetch });
 }

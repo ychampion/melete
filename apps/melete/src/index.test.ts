@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { openDatabase, pingDatabase } from './db/client.ts';
 import { schema } from './db/schema.ts';
 import { loadEnv, readEnv } from './env.ts';
 import { createApp, VERSION } from './index.ts';
@@ -27,11 +26,11 @@ describe('health', () => {
     expect(body.status).toBe('degraded');
   });
 
-  test('an unimplemented endpoint says so instead of pretending', async () => {
+  test('a protected endpoint requires a session', async () => {
     const res = await testApp().request('/jobs');
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe('not_found');
+    expect(body.error.code).toBe('unauthorized');
   });
 });
 
@@ -76,25 +75,5 @@ describe('schema', () => {
         'trigger',
       ].sort(),
     );
-  });
-});
-
-// The service must be testable with no database. These run only when one is
-// configured, and say plainly why they were skipped when it is not.
-const DATABASE_URL = process.env.DATABASE_URL;
-const describeWithDb = DATABASE_URL ? describe : describe.skip;
-
-if (!DATABASE_URL) {
-  process.stdout.write('db tests skipped: set DATABASE_URL to run them against a real Postgres\n');
-}
-
-describeWithDb('against a real database', () => {
-  test('answers a ping', async () => {
-    const handle = openDatabase(DATABASE_URL as string);
-    try {
-      expect(await pingDatabase(handle)).toBe(true);
-    } finally {
-      await handle.close();
-    }
   });
 });

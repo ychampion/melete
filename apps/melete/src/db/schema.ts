@@ -3,6 +3,7 @@
  * migration SQL under apps/melete/drizzle is generated from this file and
  * committed, so a fresh install applies exactly the schema that was reviewed.
  */
+import { sql } from 'drizzle-orm';
 import {
   bigserial,
   boolean,
@@ -18,13 +19,17 @@ import {
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
-export const owner = pgTable('owner', {
-  id: text('id').primaryKey(),
-  email: text('email').notNull().unique(),
-  passwordHash: text('password_hash'),
-  passkey: jsonb('passkey'),
-  createdAt: created(),
-});
+export const owner = pgTable(
+  'owner',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').notNull().unique(),
+    passwordHash: text('password_hash'),
+    passkey: jsonb('passkey'),
+    createdAt: created(),
+  },
+  () => [uniqueIndex('owner_singleton_idx').on(sql`(true)`)],
+);
 
 export const space = pgTable('space', {
   id: text('id').primaryKey(),
