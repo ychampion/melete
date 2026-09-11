@@ -2,12 +2,14 @@
  * The Melete service. One process in v0.1 with separate modules and separate
  * database roles: api, jobs, broker, gateway, connectors, knowledge, events.
  *
- * This is the skeleton. It serves /health and nothing else; every other module
- * is a directory with a README describing the contract it will implement.
+ * Health and the knowledge surface are implemented; the other modules are
+ * directories with a README describing the contract they will implement.
  */
 import { Hono } from 'hono';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { type Env, loadEnv } from './env.ts';
+import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
+import { filesystemSpaces } from './knowledge/spaces.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -15,6 +17,8 @@ export type AppDeps = {
   env: Env;
   db: Database | null;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
+  /** Left out, the spaces on the volume are used, which is what a deployment wants. */
+  knowledge?: KnowledgeDeps;
 };
 
 export function createApp(deps: AppDeps) {
@@ -29,6 +33,11 @@ export function createApp(deps: AppDeps) {
       time: new Date().toISOString(),
     });
   });
+
+  app.route(
+    '/',
+    knowledgeRoutes(deps.knowledge ?? { spaces: filesystemSpaces(deps.env.MELETE_SPACES_DIR) }),
+  );
 
   app.notFound((c) =>
     c.json(

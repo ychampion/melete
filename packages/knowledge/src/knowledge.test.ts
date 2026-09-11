@@ -1,19 +1,18 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { parseRecord, serializeRecord } from './frontmatter.ts';
-import { SpaceIndex, toMatchQuery } from './fts.ts';
+import { query, SpaceIndex, toMatchQuery } from './fts.ts';
 import { recordPath, resolveInSpace, slugify, type spacePaths } from './layout.ts';
-import { ProposalStore, renderDiff } from './mediation.ts';
-import { buildIndex, hardDelete, initSpace, knownIds, loadSpace } from './store.ts';
+import { renderUnifiedDiff } from './mediation.ts';
+import { buildIndex, ensureSpaceDirs, loadSpace } from './store.ts';
 
 const ID = {
   bun: 'k_01J8ZP3QWABCDEFGHJKMNPQRST',
   flights: 'k_01J8ZP3QWABCDEFGHJKMNPQRSV',
   landlord: 'k_01J8ZP3QWABCDEFGHJKMNPQRSW',
-  missing: 'k_01J8ZP3QWABCDEFGHJKMNPQRSX',
 };
 
 const frontmatter = (over: Partial<KnowledgeFrontmatter>): KnowledgeFrontmatter => ({
@@ -49,7 +48,7 @@ let paths: ReturnType<typeof spacePaths>;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'melete-knowledge-'));
-  paths = initSpace(root, 'personal');
+  paths = ensureSpaceDirs(root, 'personal');
 
   const records: Array<[string, KnowledgeFrontmatter, string]> = [
     [
@@ -238,11 +237,59 @@ describe('the full-text index', () => {
     }
   });
 
+  test('a handle knows the one space it can ever see', () => {
+    const { index } = buildIndex(paths);
+    try {
+      expect(index.space).toBe('personal');
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a type filter narrows the hits', () => {
+    const { index } = buildIndex(paths);
+    try {
+      expect(query(index, 'flights', { type: 'fact' })).toEqual([]);
+      expect(query(index, 'flights', { type: 'preference' })).toHaveLength(1);
+      expect(query(index, 'flights', { type: ['fact', 'preference'] })).toHaveLength(1);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a tag filter matches whole tags, not substrings', () => {
+    const { index } = buildIndex(paths);
+    try {
+      expect(query(index, 'bun', { tags: ['tooling'] })).toHaveLength(1);
+      expect(query(index, 'bun', { tags: ['tool'] })).toEqual([]);
+      expect(query(index, 'bun', { tags: ['tooling', 'housing'] })).toEqual([]);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a limit is respected', () => {
+    const { index } = buildIndex(paths);
+    try {
+      expect(query(index, 'the lease renews', { limit: 1 })).toHaveLength(1);
+    } finally {
+      index.close();
+    }
+  });
+
   test('a retracted record never enters the index, before or after a rebuild', () => {
-    const index = SpaceIndex.open(':memory:');
+    const index = SpaceIndex.memory('personal');
     try {
       index.rebuild([
-        { id: ID.bun, path: 'a.md', title: 'Bun', tags: [], body: 'bun', status: 'active' },
+        {
+          id: ID.bun,
+          path: 'a.md',
+          title: 'Bun',
+          tags: [],
+          body: 'bun',
+          status: 'active',
+          type: 'preference',
+        },
         {
           id: ID.flights,
           path: 'b.md',
@@ -250,6 +297,7 @@ describe('the full-text index', () => {
           tags: [],
           body: 'flights',
           status: 'retracted',
+          type: 'preference',
         },
       ]);
       expect(index.search('flights')).toEqual([]);
@@ -259,8 +307,27 @@ describe('the full-text index', () => {
     }
   });
 
+  test('a superseded record is not indexed either', () => {
+    const index = SpaceIndex.memory('personal');
+    try {
+      index.upsert({
+        id: ID.flights,
+        path: 'b.md',
+        title: 'Flights',
+        tags: [],
+        body: 'flights',
+        status: 'superseded',
+        type: 'preference',
+      });
+      expect(index.search('flights')).toEqual([]);
+      expect(index.count()).toBe(0);
+    } finally {
+      index.close();
+    }
+  });
+
   test('removing a record takes it out of the index immediately', () => {
-    const index = SpaceIndex.open(':memory:');
+    const index = SpaceIndex.memory('personal');
     try {
       index.upsert({
         id: ID.bun,
@@ -269,10 +336,12 @@ describe('the full-text index', () => {
         tags: [],
         body: 'bun',
         status: 'active',
+        type: 'preference',
       });
       expect(index.search('bun')).toHaveLength(1);
       index.remove(ID.bun);
       expect(index.search('bun')).toEqual([]);
+      expect(index.has(ID.bun)).toBe(false);
     } finally {
       index.close();
     }
@@ -281,118 +350,172 @@ describe('the full-text index', () => {
   test('an index written to disk survives being reopened', () => {
     const { index } = buildIndex(paths);
     index.close();
-    const reopened = SpaceIndex.open(paths.indexDb);
+    const reopened = SpaceIndex.open(paths);
     try {
       expect(reopened.search('landlord')).toHaveLength(1);
     } finally {
       reopened.close();
     }
   });
-
-  test('hard deletion removes the file and the row in one operation', () => {
-    const scratchRoot = mkdtempSync(join(tmpdir(), 'melete-delete-'));
-    const scratch = initSpace(scratchRoot, 'personal');
-    writeFileSync(
-      join(scratch.knowledge, 'prefers-bun.md'),
-      serializeRecord(frontmatter({}), 'bun everywhere'),
-      'utf8',
-    );
-    const { index, contents } = buildIndex(scratch);
-    try {
-      expect(index.search('bun')).toHaveLength(1);
-      const record = contents.records[0];
-      expect(record).toBeDefined();
-      if (record) expect(hardDelete(scratch, index, record)).toBe(true);
-      expect(index.search('bun')).toEqual([]);
-      expect(loadSpace(scratch).records).toEqual([]);
-    } finally {
-      index.close();
-      rmSync(scratchRoot, { recursive: true, force: true });
-    }
-  });
 });
 
-describe('write mediation', () => {
-  const store = () =>
-    new ProposalStore({
-      paths,
-      spacesRoot: root,
-      knownIds: knownIds(loadSpace(paths)),
-      now: () => new Date('2026-09-11T00:00:00.000Z'),
-    });
-
-  test('a valid proposal is staged and rendered as a diff', () => {
-    const result = store().propose({
-      space: 'personal',
-      path: 'knowledge/new-record.md',
-      frontmatter: frontmatter({ id: ID.missing, title: 'A new thing' }),
-      body: 'Something Melete learned today.',
-      rationale: 'The owner said it in passing.',
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.diff).toContain('+++ b/knowledge/new-record.md');
-      expect(result.diff).toContain('+Something Melete learned today.');
-      expect(
-        store()
-          .list()
-          .map((p) => p.path),
-      ).toContain('knowledge/new-record.md');
-      expect(store().discard(result.proposal.id)).toBe(true);
-    }
-  });
-
-  test('a proposal that would escape the space is refused', () => {
-    const result = store().propose({
-      space: 'personal',
-      path: '../team-acme/knowledge/leak.md',
-      frontmatter: frontmatter({ id: ID.missing }),
-      body: 'x',
-      rationale: 'x',
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.findings[0]?.message).toContain('outside the space root');
-  });
-
-  test('a proposal naming another space is refused', () => {
-    const result = store().propose({
-      space: 'team-acme',
-      path: 'knowledge/x.md',
-      frontmatter: frontmatter({ id: ID.missing, space: 'team-acme' }),
-      body: 'x',
-      rationale: 'x',
-    });
-    expect(result.ok).toBe(false);
-  });
-
-  test('a proposal with a dangling supersedes is refused', () => {
-    const result = store().propose({
-      space: 'personal',
-      path: 'knowledge/x.md',
-      frontmatter: frontmatter({ id: ID.missing, supersedes: ['k_01J8ZP3QWZZZZZZZZZZZZZZZZZ'] }),
-      body: 'x',
-      rationale: 'x',
-    });
-    expect(result.ok).toBe(false);
-  });
-
-  test('applying refuses loudly rather than half-writing a space', () => {
-    expect(() => store().apply('anything')).toThrow('git store');
-  });
-});
-
-describe('renderDiff', () => {
+describe('renderUnifiedDiff', () => {
   test('shows a new file as all additions', () => {
-    const diff = renderDiff('', 'one\ntwo\n', 'a.md');
+    const diff = renderUnifiedDiff('', 'one\ntwo\n', 'a.md');
+    expect(diff).toContain('--- /dev/null');
     expect(diff).toContain('+one');
     expect(diff).toContain('+two');
     expect(diff).not.toContain('-one');
   });
 
   test('shows a changed line as a removal and an addition', () => {
-    const diff = renderDiff('one\ntwo\n', 'one\nthree\n', 'a.md');
+    const diff = renderUnifiedDiff('one\ntwo\n', 'one\nthree\n', 'a.md');
     expect(diff).toContain(' one');
     expect(diff).toContain('-two');
     expect(diff).toContain('+three');
+  });
+
+  test('counts the lines on both sides', () => {
+    expect(renderUnifiedDiff('one\n', 'one\ntwo\n', 'a.md')).toContain('@@ -1,1 +1,2 @@');
+  });
+});
+
+describe('the diff a person approves a write from', () => {
+  const body = (diff: string): string[] => diff.trimEnd().split('\n').slice(3);
+
+  test('an inserted line is one insertion, not a rewrite of everything below it', () => {
+    const before = 'alpha\nbeta\ngamma\n';
+    const after = 'alpha\ninserted\nbeta\ngamma\n';
+    expect(body(renderUnifiedDiff(before, after, 'a.md'))).toEqual([
+      ' alpha',
+      '+inserted',
+      ' beta',
+      ' gamma',
+    ]);
+  });
+
+  test('a deleted line is one deletion', () => {
+    expect(body(renderUnifiedDiff('alpha\nbeta\ngamma\n', 'alpha\ngamma\n', 'a.md'))).toEqual([
+      ' alpha',
+      '-beta',
+      ' gamma',
+    ]);
+  });
+
+  test('a moved line reads as a move, not as the whole file changing', () => {
+    const diff = body(renderUnifiedDiff('alpha\nbeta\ngamma\n', 'beta\ngamma\nalpha\n', 'a.md'));
+    expect(diff.filter((line) => line.startsWith(' ')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('removals come before additions inside one changed run', () => {
+    expect(body(renderUnifiedDiff('a\nb\nc\nd\n', 'a\nx\ny\nd\n', 'a.md'))).toEqual([
+      ' a',
+      '-b',
+      '-c',
+      '+x',
+      '+y',
+      ' d',
+    ]);
+  });
+
+  test('an unchanged file shows no change at all', () => {
+    const same = 'alpha\nbeta\n';
+    expect(body(renderUnifiedDiff(same, same, 'a.md')).every((l) => l.startsWith(' '))).toBe(true);
+  });
+
+  test('everything removed reads as every line removed', () => {
+    expect(body(renderUnifiedDiff('alpha\nbeta\n', '', 'a.md'))).toEqual(['-alpha', '-beta']);
+  });
+
+  test('the counts in the header describe both sides', () => {
+    expect(renderUnifiedDiff('a\nb\nc\n', 'a\n', 'x.md')).toContain('@@ -1,3 +1,1 @@');
+  });
+
+  test('a record edited in the middle shows only the edit', () => {
+    const before = ['---', 'id: k_1', 'title: Old title', '---', '', 'The body.'].join('\n');
+    const after = ['---', 'id: k_1', 'title: New title', '---', '', 'The body.'].join('\n');
+    const changed = body(renderUnifiedDiff(before, after, 'r.md')).filter(
+      (line) => !line.startsWith(' '),
+    );
+    expect(changed).toEqual(['-title: Old title', '+title: New title']);
+  });
+});
+
+// --------------------------------------------------------------------------
+// isolation cannot be decided by looking at the text of a path
+// --------------------------------------------------------------------------
+
+/** Creating a symlink needs a privilege on some Windows setups. Say so rather than passing. */
+const symlinksWork = (() => {
+  const probe = mkdtempSync(join(tmpdir(), 'melete-symlink-probe-'));
+  try {
+    writeFileSync(join(probe, 'target'), 'x', 'utf8');
+    symlinkSync(join(probe, 'target'), join(probe, 'link'));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
+if (!symlinksWork) {
+  process.stdout.write('symlink tests skipped: this machine will not create symlinks\n');
+}
+
+const describeSymlinks = symlinksWork ? describe : describe.skip;
+
+describeSymlinks('a symlink is a path that lies about where it goes', () => {
+  let linkRoot: string;
+  let mine: ReturnType<typeof spacePaths>;
+  let theirs: ReturnType<typeof spacePaths>;
+
+  beforeEach(() => {
+    linkRoot = mkdtempSync(join(tmpdir(), 'melete-links-'));
+    mine = ensureSpaceDirs(linkRoot, 'personal');
+    theirs = ensureSpaceDirs(linkRoot, 'team-acme');
+    writeFileSync(
+      join(theirs.knowledge, 'private.md'),
+      serializeRecord(
+        frontmatter({ id: ID.landlord, space: 'team-acme', title: 'Their private record' }),
+        'Something the other space keeps to itself.',
+      ),
+      'utf8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(linkRoot, { recursive: true, force: true });
+  });
+
+  test('a record that is really a link into another space is not read', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    expect(loadSpace(mine).records).toEqual([]);
+  });
+
+  test('and never reaches the index, so a search cannot find it', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    const { index } = buildIndex(mine);
+    try {
+      expect(index.search('private')).toEqual([]);
+      expect(index.count()).toBe(0);
+    } finally {
+      index.close();
+    }
+  });
+
+  test('a write through a linked file is refused', () => {
+    symlinkSync(join(theirs.knowledge, 'private.md'), join(mine.knowledge, 'borrowed.md'));
+    expect(resolveInSpace(mine, 'knowledge/borrowed.md')).toBeNull();
+  });
+
+  test('a write through a linked directory is refused too', () => {
+    symlinkSync(theirs.knowledge, join(mine.knowledge, 'borrowed-dir'));
+    expect(resolveInSpace(mine, 'knowledge/borrowed-dir/new.md')).toBeNull();
+  });
+
+  test('an ordinary path in the same space still resolves', () => {
+    expect(resolveInSpace(mine, 'knowledge/ordinary.md')).not.toBeNull();
+    expect(resolveInSpace(mine, 'SCHEMA.md')).not.toBeNull();
   });
 });

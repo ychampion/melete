@@ -15,6 +15,7 @@ COPY package.json bun.lock ./
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/knowledge/package.json packages/knowledge/
 COPY packages/runtime-hermes/package.json packages/runtime-hermes/
+COPY packages/skills/package.json packages/skills/
 COPY apps/melete/package.json apps/melete/
 COPY conformance/package.json conformance/
 RUN bun install --frozen-lockfile --production

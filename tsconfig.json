@@ -6,6 +6,7 @@
       "@melete/contracts": ["./packages/contracts/src/index.ts"],
       "@melete/contracts/*": ["./packages/contracts/src/*"],
       "@melete/knowledge": ["./packages/knowledge/src/index.ts"],
+      "@melete/skills": ["./packages/skills/src/index.ts"],
       "@melete/runtime-hermes": ["./packages/runtime-hermes/src/index.ts"]
     }
   },

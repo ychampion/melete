@@ -1,11 +1,21 @@
 # Markdown records, git, FTS
 
-Wraps `@melete/knowledge` for the service: reads and writes the per-space git
-repository, keeps the `knowledge_record` catalog in step with the files, and
-rebuilds the SQLite FTS5 index a space is searched through.
+Wraps `@melete/knowledge` and `@melete/skills` for the service: reads and writes
+the per-space git repository, stages and applies agent writes, and answers a
+search from the SQLite FTS5 index a space is searched through.
 
 Retrieval is scoped by the handle the caller holds, not by a filter argument the
-model supplies. A retracted record leaves the index in the same operation that
-retracts it, and stays gone after a restart.
+model supplies. A request is bound to one space before any handler runs, and a
+handler given a different space id refuses rather than serving it. A retracted
+record leaves the index in the same operation that retracts it, and stays gone
+after a restart.
 
-Not implemented yet.
+Authentication is not here. The placeholder middleware reads the space from the
+`x-melete-space` header; the session will supply it, and every handler is
+written as though it already does. Until the catalog rows exist, a space's
+identifier is derived from its directory name, so it is the same on every
+machine.
+
+Three routes are served that the OpenAPI document does not describe yet, listed
+in `.agents/notes/proposed/2026-09-11-knowledge-api-gaps.md`. A contract test
+fails if a fourth appears.
