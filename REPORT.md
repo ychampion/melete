@@ -45,3 +45,13 @@
 - Test `continuation cursors and queue repair survive lost delivery and an obsolete lease holder`: pass; cursor stays at zero until the final 20-character continuation commits.
 - Command `bun run typecheck`: pass; command `bun run lint`: pass (72 files); targeted command `bun test apps/melete/src/memory apps/melete/test/integration/memory.test.ts --max-concurrency 2 --timeout 20000`: 18 pass, 0 fail in 19.04 s.
 - Command `bun test --max-concurrency 2`: 213 pass, 1 baseline skip, 36 baseline todos, 0 fail in 20.54 s before the slice 4 push.
+
+## Slice 5
+
+- SHA `df8f7dd`: fenced extraction and transactional publication pushed to `origin/lane/w7-memory`.
+- Test `recall supplements a lagging lexical index and dates historical revisions`: pass; current August, historical July, degraded lag, complete empty search, unavailable failed search, byte-budget trimming, poisoned candidate rejection, and revoked-source rejection are distinct assertions.
+- Test `lexical and dense candidates are independent and incompatible embeddings fail closed`: pass; lexical-only July survives a dense-only August pool; mismatched embedding versions and dimensions fail without publishing an incomplete generation.
+- Test `cache identity binds audience, policy, data, access, job revision, query, and recipe`: pass.
+- Log `TypeError: The string argument must be of type string ... Received an instance of Array`: slice 5 fix cycle 1 uses explicit text-to-jsonb parameters because the installed Drizzle driver changes JSON serializers on the shared postgres.js handle; the TypeScript callback-narrowing error was fixed in the same cycle.
+- Command `bun run typecheck`: pass; targeted command `bun test apps/melete/src/memory apps/melete/test/integration/memory.test.ts --max-concurrency 2 --timeout 20000`: 22 pass, 0 fail in 28.62 s.
+- Command `bun run lint`: pass (75 files); command `bun test --max-concurrency 2`: 217 pass, 1 baseline skip, 36 baseline todos, 0 fail in 28.88 s before the slice 5 push.

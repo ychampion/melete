@@ -9,6 +9,8 @@ import { commitExtraction } from '../../src/memory/commit.ts';
 import { lockSpace } from '../../src/memory/db.ts';
 import { ingest, loadEvidence } from '../../src/memory/evidence.ts';
 import { proposeExtraction } from '../../src/memory/extract.ts';
+import { recall } from '../../src/memory/recall.ts';
+import { buildViews, type EmbeddingProvider } from '../../src/memory/views.ts';
 import { claimWork, MEMORY_EXTRACT_QUEUE, repairQueue } from '../../src/memory/work.ts';
 import { fakeProvider, tripProposal } from './fake-provider.ts';
 import { createScope, createTestDatabase } from './postgres.ts';
@@ -268,5 +270,125 @@ withDb('memory evidence ledger', () => {
       MEMORY_EXTRACT_QUEUE,
       deliveries.map((job) => job.id),
     );
+  });
+  test('recall supplements a lagging lexical index and dates historical revisions', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    await ingest(db.sql, scope, source('trip'));
+    const batch = await claimWork(db.sql, scope);
+    if (!batch) throw new Error('missing work');
+    const commit = await commitExtraction(db.sql, scope, batch, {
+      proposals: [tripProposal(batch)],
+    });
+    const id = commit.claim_ids[0];
+    if (!id) throw new Error('missing claim');
+    const initial = await recall(db.sql, scope, { query: 'trip' });
+    expect(initial.status).toBe('degraded');
+    expect(initial.items[0]?.content).toBe('July');
+    await buildViews(db.sql, scope);
+    expect((await recall(db.sql, scope, { query: 'trip' })).status).toBe('complete');
+    await correctClaim(db.sql, scope, {
+      claim_id: id,
+      expected_revision: 1,
+      content: 'August',
+      text: 'move our trip from July to August',
+      valid_from: '2026-08-01T00:00:00Z',
+      idempotency_key: 'recall-correction',
+    });
+    const current = await recall(db.sql, scope, { query: 'trip' });
+    expect(current.status).toBe('degraded');
+    expect(current.items.map((item) => item.content)).toEqual(['August']);
+    expect(current.coverage.supplemented).toBe(1);
+    await buildViews(db.sql, scope);
+    const historical = await recall(db.sql, scope, {
+      query: 'trip',
+      mode: 'historical',
+      at: '2026-07-15T00:00:00Z',
+    });
+    expect(historical.items.map((item) => item.content)).toEqual(['July']);
+    expect(historical.items[0]?.superseded_at).not.toBeNull();
+    const empty = await recall(db.sql, scope, { query: 'aardvark' });
+    expect(empty.status).toBe('complete');
+    expect(empty.items).toHaveLength(0);
+    const unavailable = await recall(
+      db.sql,
+      scope,
+      { query: 'trip' },
+      {
+        lexical: async () => {
+          throw new Error('forced index failure');
+        },
+      },
+    );
+    expect(unavailable.status).toBe('unavailable');
+    expect(unavailable.coverage.reason).toBe('index_failure');
+    expect(unavailable.items).toHaveLength(0);
+    const budget = await recall(db.sql, scope, { query: 'trip', max_tokens: 10 });
+    expect(budget.status).toBe('degraded');
+    expect(budget.coverage.reason).toBe('budget');
+    expect(budget.token_budget.used).toBeLessThanOrEqual(10);
+    const other = await createScope(db);
+    expect((await recall(db.sql, other, { query: 'trip' })).items).toHaveLength(0);
+    const poisoned = await recall(
+      db.sql,
+      other,
+      { query: 'trip' },
+      { lexical: async () => [{ claim_id: id, revision: 2, score: 1000 }] },
+    );
+    expect(poisoned.items).toHaveLength(0);
+    const stale = await recall(
+      db.sql,
+      scope,
+      { query: 'trip' },
+      { lexical: async () => [{ claim_id: id, revision: 1, score: 1000 }] },
+    );
+    expect(stale.items).toHaveLength(0);
+    await db.sql`update memory_sources set state = 'revoked' where id = ${(await claimHistory(db.sql, scope, id)).revisions[1]?.sources[0]?.source_id as string}`;
+    expect((await recall(db.sql, scope, { query: 'trip' })).items).toHaveLength(0);
+  });
+  test('lexical and dense candidates are independent and incompatible embeddings fail closed', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    for (const word of ['July', 'August']) {
+      await ingest(db.sql, scope, source(word, `trip ${word}`));
+      const batch = await claimWork(db.sql, scope);
+      if (!batch) throw new Error('missing work');
+      const base = tripProposal(batch, word);
+      const proposal = { ...base, op: 'add', expected_revision: null, domain_key: `plan.${word}` };
+      expect((await commitExtraction(db.sql, scope, batch, { proposals: [proposal] })).status).toBe(
+        'committed',
+      );
+    }
+    const embedding: EmbeddingProvider = {
+      model: 'scripted-comparison',
+      version: '1',
+      dimensions: 2,
+      recipe: 'scripted-v1',
+      async embed(texts) {
+        return texts.map((text) => (text.includes('plan July') ? [0, 1] : [1, 0]));
+      },
+    };
+    await buildViews(db.sql, scope, embedding);
+    const result = await recall(db.sql, scope, { query: 'July' }, { embedding, deadlineMs: 1500 });
+    expect(result.items.map((item) => item.content).sort()).toEqual(['August', 'July']);
+    const incompatible = await recall(
+      db.sql,
+      scope,
+      { query: 'trip' },
+      { embedding: { ...embedding, version: '2' } },
+    );
+    expect(incompatible.status).toBe('unavailable');
+    const [before] =
+      await db.sql`select generation from memory_index_manifest where space_id = ${scope.spaceId}`;
+    const invalid = await buildViews(db.sql, scope, {
+      ...embedding,
+      async embed(texts) {
+        return texts.map(() => [1]);
+      },
+    }).catch((error: Error) => error.message);
+    expect(invalid).toBe('embedding_space_mismatch');
+    const [after] =
+      await db.sql`select generation from memory_index_manifest where space_id = ${scope.spaceId}`;
+    expect(after?.generation).toBe(before?.generation);
   });
 });

@@ -326,3 +326,22 @@ export const memoryProfile = pgTable('memory_profile', {
   items: jsonb('items').notNull(),
   stale: boolean('stale').notNull().default(false),
 });
+
+/** A bounded optional dense comparison index; every vector belongs to one manifest generation. */
+export const memoryDenseEntries = pgTable(
+  'memory_dense_entries',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => memorySpaces.spaceId),
+    generation: integer('generation').notNull(),
+    claimId: text('claim_id').notNull(),
+    revision: integer('revision').notNull(),
+    model: text('model').notNull(),
+    version: text('version').notNull(),
+    dimensions: integer('dimensions').notNull(),
+    recipe: text('recipe').notNull(),
+    vector: jsonb('vector').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.spaceId, t.generation, t.claimId, t.revision] })],
+);

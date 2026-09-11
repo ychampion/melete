@@ -15,6 +15,13 @@
       "when": 1789116510570,
       "tag": "0001_ancient_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789118161849,
+      "tag": "0002_mysterious_silverclaw",
+      "breakpoints": true
     }
   ]
 }

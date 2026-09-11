@@ -159,7 +159,7 @@ export async function commitExtraction(
         validated.push(item);
       }
       if (space.require_review && !reviewed && validated.some((v) => v.proposal.op !== 'no-op')) {
-        await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${tx.json({ batch, proposals })})
+        await tx`insert into memory_proposals (id, space_id, work_id, fence, payload) values (${batch.work.id}, ${scope.spaceId}, ${batch.work.id}, ${batch.work.fence}, ${JSON.stringify({ batch, proposals })}::text::jsonb)
           on conflict (id) do update set fence = excluded.fence, payload = excluded.payload, status = 'pending'`;
         await tx`update memory_work set status = 'review', lease_until = null where id = ${batch.work.id}`;
         await enqueue(tx, scope.spaceId, 'proposal', batch.work.id);
