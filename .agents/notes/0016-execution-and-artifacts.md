@@ -56,6 +56,13 @@ the database credentials and the provider keys, which is exactly what the cell
 must never reach. The cell can run it and cannot reach anything. So the cell
 runs and the broker records.
 
+The registry refuses a connector that declares both `in_cell` and an approval,
+because approval is a gate in front of an effect and there is no gate in front
+of something that is over. That is not a hypothetical: it is the one mistake the
+two-shapes design invites, and it would park an action for a decision that
+cannot change anything while the person is asked to approve a command that has
+already run.
+
 `HERMES_EXEC_ASK` stays set and stays irrelevant. It guards the engine's own
 shell tool, which is still not in the toolset. Melete's execution needs no
 approval because there is nothing external to approve: no recipient, no
@@ -72,6 +79,8 @@ which is the same rule that lets `files.write` proceed.
 | A command past the time cap is killed and the kill recorded | the plugin | `tests/test_execution.py` |
 | Output above the cap is truncated with a marker, full output stored | the plugin | `tests/test_execution.py` |
 | The child never sees the attempt capability or the model key | the plugin's allow-list environment | `tests/test_execution.py` |
+| An in-cell tool cannot also require approval | the connector registry | `src/connectors/exec.test.ts` |
+| A declaration the service cannot read writes no file | the files connector, before opening it | `src/connectors/files-expect.test.ts` |
 | A snippet cannot write outside `/work` | **the container**, not the plugin | not tested here |
 
 The last row is the honest one. On this laptop the tests run as an ordinary
