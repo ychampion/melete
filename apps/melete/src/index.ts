@@ -9,6 +9,7 @@ import type { RuntimeAdapter } from '@melete/contracts';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
+import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
@@ -22,6 +23,7 @@ import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
+import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
 import { startQueue } from './jobs/queue.ts';
@@ -45,6 +47,7 @@ export type AppDeps = {
   replies?: ReplyService;
   operations?: OperationService;
   policy?: PolicyService;
+  attention?: AttentionService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -74,6 +77,7 @@ export function createApp(deps: AppDeps) {
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
+  if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
@@ -119,6 +123,7 @@ export async function bootstrap(
   let replies: ReplyService | undefined;
   let operations: OperationService | undefined;
   let policy: PolicyService | undefined;
+  let attention: AttentionService | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
@@ -157,6 +162,7 @@ export async function bootstrap(
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
       policy = new PolicyService(jobs, runner);
+      attention = new AttentionService(jobs, runner);
       if (options.workers !== false) {
         await operations.start();
         await triggers.start();
@@ -181,6 +187,7 @@ export async function bootstrap(
     replies,
     operations,
     policy,
+    attention,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -201,6 +208,7 @@ export async function bootstrap(
     replies,
     operations,
     policy,
+    attention,
     close,
   };
 }

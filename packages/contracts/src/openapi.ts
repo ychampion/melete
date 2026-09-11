@@ -41,6 +41,8 @@ import {
   backgroundOperation,
   connectionGeneration,
   connectionLifecycle,
+  createResponsibilityRequest,
+  jobScheduling,
   jobSubmissionResponse,
   notification,
   notificationDelivery,
@@ -54,7 +56,9 @@ import {
   policyGeneration,
   replyObligation,
   replyObligationList,
+  responsibilityJob,
   responsibilitySnapshot,
+  responsibilitySubmissionResponse,
   submissionResponse,
 } from './responsibility.ts';
 
@@ -103,6 +107,42 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/responsibilities': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Accept a responsibility with scheduling and attention preferences',
+            requestBody: json(createResponsibilityRequest),
+            responses: {
+              '201': jsonResponse('Accepted responsibility', responsibilitySubmissionResponse),
+              '409': problem('Submission conflict'),
+            },
+          },
+        },
+        '/jobs/{id}/responsibility': {
+          get: {
+            tags: ['jobs'],
+            summary: 'Read visible responsibility status and attention',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Responsibility', responsibilityJob) },
+          },
+        },
+        '/jobs/{id}/scheduling': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Choose scheduling class, importance and unread threshold',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(jobScheduling),
+            responses: { '200': jsonResponse('Updated responsibility', responsibilityJob) },
+          },
+        },
+        '/jobs/{id}/read': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Mark results read and restore the normal checking frequency',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Read', responsibilityJob) },
+          },
+        },
         '/connections/{id}/lifecycle': {
           post: {
             tags: ['connections'],

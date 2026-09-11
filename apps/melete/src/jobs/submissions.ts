@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  createJobRequest,
+  createResponsibilityRequest,
   inputDigest,
   type JsonValue,
   jsonValue,
@@ -241,7 +241,9 @@ export class SubmissionService {
       let current: JobRow | null = null;
       let rejection: ServiceError | undefined;
       const parsed =
-        kind === 'create' ? createJobRequest.safeParse(raw) : postMessageRequest.safeParse(raw);
+        kind === 'create'
+          ? createResponsibilityRequest.safeParse(raw)
+          : postMessageRequest.safeParse(raw);
       if (!parsed.success)
         rejection = new ServiceError('invalid_request', 'Submission data is invalid.', 400);
       else {
@@ -249,7 +251,10 @@ export class SubmissionService {
           // The savepoint keeps a rejected admission from leaving partial job writes.
           current = await tx.transaction((admission) =>
             kind === 'create'
-              ? this.jobs.createInTransaction(admission, createJobRequest.parse(parsed.data))
+              ? this.jobs.createInTransaction(
+                  admission,
+                  createResponsibilityRequest.parse(parsed.data),
+                )
               : this.jobs.inputInTransaction(
                   admission,
                   jobId ?? '',

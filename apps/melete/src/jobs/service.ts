@@ -1,6 +1,6 @@
 import {
-  type CreateJobRequest,
-  createJobRequest,
+  type CreateResponsibilityRequest,
+  createResponsibilityRequest,
   type JobBudget,
   type JobConstraints,
   type JobState,
@@ -8,6 +8,7 @@ import {
   jobBudget,
   jobConstraints,
   responsibilityJob,
+  schedulingClass,
   type TransitionInput,
   transition,
   type WaitSpec,
@@ -45,6 +46,13 @@ export function jobView(row: JobRow) {
     next_wake_at: row.nextWakeAt?.toISOString() ?? null,
     wait: row.wait,
     substrate_disposition: row.substrateDisposition,
+    scheduling_class: row.schedulingClass,
+    importance: row.importance,
+    unread_results: row.unreadResults,
+    unread_threshold: row.unreadThreshold,
+    cadence_multiplier: row.cadenceMultiplier,
+    attention_status: row.attentionStatus,
+    visible_status: row.attentionStatus === 'normal' ? row.state : row.attentionStatus,
     budget: row.budget,
     created_by: row.createdBy,
     created_at: row.createdAt.toISOString(),
@@ -107,13 +115,13 @@ export class JobService {
       .limit(filters.limit);
   }
 
-  async create(input: CreateJobRequest): Promise<JobRow> {
+  async create(input: CreateResponsibilityRequest): Promise<JobRow> {
     return this.transaction((tx) => this.createInTransaction(tx, input));
   }
 
   /** Submission admission composes its receipt with the same job/wake transaction. */
-  async createInTransaction(tx: Transaction, input: CreateJobRequest): Promise<JobRow> {
-    const value = createJobRequest.parse(input);
+  async createInTransaction(tx: Transaction, input: CreateResponsibilityRequest): Promise<JobRow> {
+    const value = createResponsibilityRequest.parse(input);
     const [parent] = await tx
       .select({ id: space.id })
       .from(space)
@@ -129,6 +137,9 @@ export class JobService {
         constraints: jobConstraints.parse(value.constraints ?? {}),
         budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
         nextWakeAt: new Date(),
+        schedulingClass: value.scheduling_class,
+        importance: value.importance,
+        unreadThreshold: value.unread_threshold,
       })
       .returning();
     if (!row) throw new Error('job insert returned no row');
@@ -154,6 +165,7 @@ export class JobService {
         reason,
       },
       row.nextWakeAt,
+      schedulingClass.parse(row.schedulingClass),
     );
   }
 
@@ -174,8 +186,8 @@ export class JobService {
       if (Number(used?.count ?? 0) >= jobBudget.parse(row.budget).max_attempts)
         throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     }
-    const wait = options.wait ?? { kind: 'none' };
-    const nextWakeAt =
+    let wait = options.wait ?? { kind: 'none' };
+    const baseWakeAt =
       result.value === 'queued'
         ? new Date()
         : result.value === 'waiting_for_event_or_time' && wait.kind === 'timer'
@@ -185,6 +197,16 @@ export class JobService {
               wait.deadline_at
             ? new Date(wait.deadline_at)
             : null;
+    const nextWakeAt =
+      result.value === 'waiting_for_event_or_time' &&
+      wait.kind === 'timer' &&
+      baseWakeAt &&
+      row.cadenceMultiplier > 1
+        ? new Date(
+            Date.now() + Math.max(0, baseWakeAt.getTime() - Date.now()) * row.cadenceMultiplier,
+          )
+        : baseWakeAt;
+    if (wait.kind === 'timer' && nextWakeAt) wait = { ...wait, wake_at: nextWakeAt.toISOString() };
     const [updated] = await tx
       .update(job)
       .set({
@@ -195,6 +217,7 @@ export class JobService {
         substrateDisposition:
           result.value === 'running' ? 'local_process_interrupted' : 'timer_or_event',
         nextWakeAt,
+        attentionBaseWakeAt: baseWakeAt,
         updatedAt: new Date(),
       })
       .where(eq(job.id, row.id))

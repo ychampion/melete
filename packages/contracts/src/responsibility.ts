@@ -1,6 +1,6 @@
 /** Additive v0.1 responsibility protocol; the original job/runtime contracts stay stable. */
 import { z } from 'zod';
-import { errorResponse } from './api.ts';
+import { createJobRequest, errorResponse } from './api.ts';
 import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { job } from './entities.ts';
 import { apiEvent } from './events.ts';
@@ -70,7 +70,41 @@ export const substrateDisposition = z.enum([
   'local_process_interrupted',
   'external_uncertain',
 ]);
-export const responsibilityJob = job.extend({ substrate_disposition: substrateDisposition });
+export const schedulingClass = z.enum(['interactive', 'background', 'quiet']);
+export type SchedulingClass = z.infer<typeof schedulingClass>;
+export const responsibilityImportance = z.enum(['routine', 'important']);
+export const attentionStatus = z.enum(['normal', 'frequency_reduced', 'needs_attention']);
+export const unreadThreshold = z.number().int().positive().max(1000);
+export const responsibilityJob = job.extend({
+  substrate_disposition: substrateDisposition,
+  scheduling_class: schedulingClass,
+  importance: responsibilityImportance,
+  unread_results: z.number().int().nonnegative(),
+  unread_threshold: unreadThreshold,
+  cadence_multiplier: z.number().int().positive(),
+  attention_status: attentionStatus,
+  visible_status: job.shape.state.or(z.enum(['frequency_reduced', 'needs_attention'])),
+});
+export const createResponsibilityRequest = createJobRequest.extend({
+  scheduling_class: schedulingClass.default('interactive'),
+  importance: responsibilityImportance.default('routine'),
+  unread_threshold: unreadThreshold.default(3),
+});
+export type CreateResponsibilityRequest = z.input<typeof createResponsibilityRequest>;
+export const responsibilitySubmissionResponse = jobSubmissionResponse.extend({
+  job: responsibilityJob.nullable(),
+});
+export const jobScheduling = z
+  .object({
+    scheduling_class: schedulingClass.optional(),
+    importance: responsibilityImportance.optional(),
+    unread_threshold: unreadThreshold.optional(),
+  })
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    'Provide a scheduling or attention preference.',
+  );
+export type JobScheduling = z.infer<typeof jobScheduling>;
 export const operationRegistration = z.object({
   operation_key: submissionId,
   kind: z.enum(['timer', 'remote_task', 'local_process']),

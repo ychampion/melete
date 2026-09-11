@@ -11,7 +11,7 @@ import {
 import { and, asc, eq, gt, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
-import { connection, event, space, trigger } from '../db/schema.ts';
+import { connection, event, job, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -143,6 +143,29 @@ export class TriggerService {
       .set({ cursor: String(received.seq) })
       .where(eq(trigger.id, registration.id));
     const payload = jsonObject.parse(received.payload);
+    if (
+      registration.kind === 'schedule' &&
+      payload.kind === 'schedule_event' &&
+      row.scheduleSkipRemaining > 0 &&
+      row.importance !== 'important'
+    ) {
+      const [updated] = await tx
+        .update(job)
+        .set({ scheduleSkipRemaining: row.scheduleSkipRemaining - 1 })
+        .where(eq(job.id, row.id))
+        .returning();
+      await appendEvent(tx, {
+        jobId: row.id,
+        type: 'notice',
+        payload: {
+          kind: 'routine_check_deferred',
+          trigger_id: registration.id,
+          cadence_multiplier: row.cadenceMultiplier,
+        },
+        dedupKey: `${registration.id}:deferred:${received.seq}`,
+      });
+      return updated ?? row;
+    }
     await appendEvent(tx, {
       jobId: row.id,
       type: 'notice',

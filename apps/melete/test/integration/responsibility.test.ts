@@ -2,9 +2,11 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import {
   type ContextInvalidated,
+  dedupKey,
   type OperationRegistration,
   type RuntimeAdapter,
   responsibilityAttemptBundle,
+  type SchedulingClass,
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -16,6 +18,8 @@ import {
   backgroundOperation,
   connection,
   event,
+  job,
+  notification,
   secret,
   space,
 } from '../../src/db/schema.ts';
@@ -24,6 +28,7 @@ import { appendEvent } from '../../src/events/store.ts';
 import { EventStream } from '../../src/events/stream.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { AttentionService } from '../../src/jobs/attention.ts';
 import { buildBundle } from '../../src/jobs/bundle.ts';
 import {
   requireConnectionGeneration,
@@ -32,9 +37,9 @@ import {
 } from '../../src/jobs/fence.ts';
 import { OperationService } from '../../src/jobs/operations.ts';
 import { PolicyService } from '../../src/jobs/policy.ts';
-import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
+import { attemptQueue, QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
-import { JobService } from '../../src/jobs/service.ts';
+import { JobService, jobView } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
@@ -71,7 +76,7 @@ withDb('responsibility protocol', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
-    await handle.sql`truncate "space", event_retention cascade`;
+    await handle.sql`truncate "owner", "space", event_retention cascade`;
     spaceId = newId('sp');
     await handle.db
       .insert(space)
@@ -583,5 +588,292 @@ withDb('responsibility protocol', () => {
     expect((await jobs.get(row.id)).state).toBe('running');
     await runner.stop();
     await second;
+  });
+
+  test('real pg-boss class queues serve accepted background and quiet work during interactive load', async () => {
+    const { jobs } = fixture();
+    const started: string[] = [];
+    const releases = new Map<string, () => void>();
+    const runtime = new StubRuntimeAdapter({
+      onStall: async (_key, bundle) => {
+        started.push(bundle.job.title);
+        await new Promise<void>((resolve) => releases.set(bundle.job.title, resolve));
+      },
+    });
+    const runner = new AttemptRunner(jobs, runtime, {
+      key: 'fair-queues-test-signing-key-32bytes',
+    });
+    const create = (title: string, scheduling: SchedulingClass) =>
+      jobs.create({
+        space_id: spaceId,
+        title,
+        objective: 'Make bounded progress',
+        scheduling_class: scheduling,
+        constraints: { notes: JSON.stringify({ script: [{ type: 'stall', key: 'load' }] }) },
+      });
+    for (let index = 0; index < 12; index++) await create(`interactive-${index}`, 'interactive');
+    const eventually = async (check: () => boolean) => {
+      const until = Date.now() + 4000;
+      while (!check()) {
+        if (Date.now() > until) throw new Error('Class worker did not progress');
+        await Bun.sleep(10);
+      }
+    };
+    try {
+      await runner.start();
+      await eventually(() => started.length === 2);
+      await create('background-accepted', 'background');
+      await create('quiet-accepted', 'quiet');
+      await eventually(
+        () =>
+          runner.scheduler.pendingCounts.background > 0 && runner.scheduler.pendingCounts.quiet > 0,
+      );
+      const first = started[0],
+        second = started[1];
+      if (!first || !second) throw new Error('Interactive load did not start');
+      releases.get(first)?.();
+      await eventually(() => started.length === 3);
+      releases.get(second)?.();
+      await eventually(() => started.length === 4);
+      expect(started.slice(2).sort()).toEqual(['background-accepted', 'quiet-accepted']);
+      expect(runner.scheduler.activeCount).toBe(2);
+    } finally {
+      await runner.stop();
+    }
+  }, 10_000);
+
+  for (const importance of ['routine', 'important'] as const) {
+    test(`${importance}: unread results change visible attention and preserve future work`, async () => {
+      const { handle, jobs, queue } = fixture();
+      const runtime: RuntimeAdapter = {
+        capabilities: () => new StubRuntimeAdapter().capabilities(),
+        start: async (bundle, sink) => {
+          await sink.emit({
+            type: 'text_delta',
+            attempt_id: bundle.attempt.id,
+            local_seq: 0,
+            dedup_key: dedupKey(bundle.attempt.id, 0),
+            at: new Date().toISOString(),
+            text: `Result ${bundle.attempt.epoch}`,
+          });
+          return {
+            kind: 'waiting_for_event_or_time',
+            wait: { kind: 'timer', wake_at: new Date(Date.now() + 60_000).toISOString() },
+          };
+        },
+      };
+      const runner = new AttemptRunner(jobs, runtime, {
+        key: 'attention-test-signing-key-32bytes',
+      });
+      const attention = new AttentionService(jobs, runner);
+      const created = await jobs.create({
+        space_id: spaceId,
+        title: 'Periodic responsibility',
+        objective: 'Continue checking',
+        scheduling_class: 'background',
+        importance,
+        unread_threshold: 3,
+        budget: { max_attempts: 20 },
+      });
+      for (let index = 0; index < 4; index++) {
+        await handle.db
+          .update(job)
+          .set({ nextWakeAt: new Date(0) })
+          .where(eq(job.id, created.id));
+        const current = await jobs.get(created.id);
+        await runner.handleWake({
+          job_id: current.id,
+          expected_epoch: current.leaseEpoch,
+          expected_version: current.stateVersion,
+          reason: 'timer',
+        });
+      }
+      const current = await jobs.get(created.id);
+      expect(current.unreadResults).toBe(4);
+      expect(current.state).toBe('waiting_for_event_or_time');
+      expect(current.cadenceMultiplier).toBe(importance === 'routine' ? 4 : 1);
+      expect(jobView(current).visible_status).toBe(
+        importance === 'routine' ? 'frequency_reduced' : 'needs_attention',
+      );
+      expect((current.nextWakeAt?.getTime() ?? 0) - Date.now()).toBeGreaterThan(
+        importance === 'routine' ? 230_000 : 50_000,
+      );
+      await queue.boss.deleteAllJobs(QUEUES.background);
+      // Missing queue hints never erase the class or the reduced cadence stored on the job.
+      await handle.db
+        .update(job)
+        .set({ nextWakeAt: new Date(0) })
+        .where(eq(job.id, current.id));
+      await runner.recover();
+      expect(
+        await handle.sql`select id from pgboss.job where name = ${QUEUES.background} and data->>'job_id' = ${current.id}`,
+      ).toHaveLength(1);
+      const read = await new AttentionService(jobs).markRead(current.id);
+      expect(read.unreadResults).toBe(0);
+      expect(read.cadenceMultiplier).toBe(1);
+      expect(jobView(read).visible_status).toBe('waiting_for_event_or_time');
+      expect(read.nextWakeAt?.getTime()).toBeLessThan(Date.now() + 65_000);
+      await attention.configure(read.id, { importance: 'important' });
+      expect((await jobs.get(read.id)).importance).toBe('important');
+      await runner.stop();
+    });
+  }
+
+  test('unchanged quiet checks preserve their baseline across restart without unread results or notifications', async () => {
+    const { handle, jobs } = fixture();
+    const row = await jobs.create({
+      space_id: spaceId,
+      title: 'Quiet baseline',
+      objective: 'Only report a change',
+      scheduling_class: 'quiet',
+      budget: { max_attempts: 20 },
+      constraints: {
+        notes: JSON.stringify({
+          script: [
+            { type: 'text_delta', text: 'Unchanged observation' },
+            {
+              type: 'outcome',
+              outcome: {
+                kind: 'waiting_for_event_or_time',
+                wait: { kind: 'timer', wake_at: new Date(Date.now() + 60_000).toISOString() },
+              },
+            },
+          ],
+        }),
+      },
+    });
+    for (let index = 0; index < 4; index++) {
+      const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+        key: 'quiet-attention-test-key-32bytes-long',
+      });
+      new AttentionService(jobs, runner);
+      await handle.db
+        .update(job)
+        .set({ nextWakeAt: new Date(0) })
+        .where(eq(job.id, row.id));
+      const current = await jobs.get(row.id);
+      await runner.handleWake({
+        job_id: row.id,
+        expected_epoch: current.leaseEpoch,
+        expected_version: current.stateVersion,
+        reason: 'timer',
+      });
+      await runner.stop();
+    }
+    const current = await jobs.get(row.id);
+    expect(current.lastResultHash).not.toBeNull();
+    expect(current.unreadResults).toBe(0);
+    expect(current.attentionStatus).toBe('normal');
+    expect(await handle.db.select().from(notification)).toHaveLength(0);
+  });
+
+  test('cron cadence reduction persists skipped occurrences and important schedules continue every occurrence', async () => {
+    const { handle, jobs } = fixture();
+    for (const importance of ['routine', 'important'] as const) {
+      const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+        key: 'cron-attention-test-key-32bytes-long',
+      });
+      const triggers = new TriggerService(jobs, runner);
+      const attention = new AttentionService(jobs, runner);
+      const row = await jobs.create({
+        space_id: spaceId,
+        title: importance,
+        objective: 'Check on schedule',
+        scheduling_class: 'background',
+        importance,
+      });
+      const registration = await triggers.create(row.id, {
+        kind: 'schedule',
+        cron: '* * * * *',
+        timezone: 'UTC',
+      });
+      const claimed = await runner.claim({
+        job_id: row.id,
+        expected_epoch: 0,
+        expected_version: 0,
+        reason: 'created',
+      });
+      if (!claimed) throw new Error('Scheduled attempt missing');
+      await runner.commitOutcome(claimed.claims, {
+        kind: 'waiting_for_event_or_time',
+        wait: { kind: 'event', trigger_id: registration.id, deadline_at: null },
+      });
+      await handle.db.update(job).set({ unreadResults: 3 }).where(eq(job.id, row.id));
+      await attention.configure(row.id, { unread_threshold: 3 });
+      for (let occurrence = 1; occurrence <= (importance === 'routine' ? 4 : 1); occurrence++) {
+        await triggers.fireSchedule(registration.id, `occurrence-${occurrence}`);
+        expect((await jobs.get(row.id)).state).toBe(
+          importance === 'routine' && occurrence < 4 ? 'waiting_for_event_or_time' : 'queued',
+        );
+      }
+      await runner.stop();
+    }
+  });
+
+  test('responsibility HTTP admission preserves scheduling preferences and old-class hints cannot start work', async () => {
+    const { handle, jobs } = fixture();
+    const app = createApp({
+      env: loadEnv({}),
+      db: handle.db,
+      jobs,
+      checkDatabase: async () => 'ok',
+    });
+    const setup = await app.request('/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'owner@example.test', password: 'owner-password' }),
+    });
+    const cookie = setup.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const response = await app.request('/responsibilities', {
+      method: 'POST',
+      headers: {
+        cookie,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'scheduled-admission',
+      },
+      body: JSON.stringify({
+        space_id: spaceId,
+        title: 'Accepted quiet work',
+        objective: 'Keep checking',
+        scheduling_class: 'quiet',
+        importance: 'important',
+        unread_threshold: 5,
+      }),
+    });
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as {
+      job: { id: string; scheduling_class: string; importance: string };
+      receipt: { state: string };
+    };
+    expect(body.receipt.state).toBe('accepted');
+    expect(body.job.scheduling_class).toBe('quiet');
+    const before = await jobs.get(body.job.id);
+    const settings = await app.request(`/jobs/${before.id}/scheduling`, {
+      method: 'POST',
+      headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduling_class: 'background' }),
+    });
+    expect(settings.status).toBe(200);
+    const current = await jobs.get(before.id);
+    const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+      key: 'scheduling-api-test-key-32bytes-long',
+    });
+    expect(
+      await runner.claim({
+        job_id: before.id,
+        expected_epoch: before.leaseEpoch,
+        expected_version: before.stateVersion,
+        reason: 'created',
+      }),
+    ).toBeNull();
+    const hints =
+      await handle.sql`select name from pgboss.job where data->>'job_id' = ${before.id} and (data->>'expected_version')::int = ${current.stateVersion}`;
+    expect(hints.map((hint) => hint.name)).toEqual([attemptQueue('background')]);
+    expect((await app.request(`/jobs/${before.id}/read`, { method: 'POST' })).status).toBe(401);
+    expect(
+      (await app.request(`/jobs/${before.id}/read`, { method: 'POST', headers: { cookie } }))
+        .status,
+    ).toBe(200);
+    await runner.stop();
   });
 });

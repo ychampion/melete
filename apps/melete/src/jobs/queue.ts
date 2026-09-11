@@ -4,6 +4,8 @@
  *
  * The runner registers bounded attempt and recovery workers after startup.
  */
+
+import { type SchedulingClass, schedulingClass } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import { fromDrizzle, PgBoss } from 'pg-boss';
 import type { Transaction } from '../db/transaction.ts';
@@ -11,7 +13,10 @@ import type { Transaction } from '../db/transaction.ts';
 /** The only queues v0.1 uses. Naming them here keeps the set closed. */
 export const QUEUES = {
   /** One bounded attempt for one job. */
-  attempt: 'job.wake',
+  attempt: 'job.wake.interactive',
+  background: 'job.wake.background',
+  quiet: 'job.wake.quiet',
+  legacyAttempt: 'job.wake',
   /** Re-enqueues jobs whose next_wake_at passed with no live wake. */
   recoveryScan: 'melete.recovery-scan',
   /** Polls connectors that carry a cursor instead of a webhook. */
@@ -24,6 +29,12 @@ export const QUEUES = {
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
+export const ATTEMPT_QUEUES: Record<SchedulingClass, string> = {
+  interactive: QUEUES.attempt,
+  background: QUEUES.background,
+  quiet: QUEUES.quiet,
+};
+export const attemptQueue = (value: string) => ATTEMPT_QUEUES[schedulingClass.parse(value)];
 
 export const RECOVERY_SCAN_SECONDS = 60;
 
@@ -66,8 +77,9 @@ export async function enqueueWake(
   tx: Transaction,
   wake: AttemptWake,
   at: Date,
+  scheduling: SchedulingClass = 'interactive',
 ): Promise<string | null> {
-  return boss.send(QUEUES.attempt, wake, {
+  return boss.send(attemptQueue(scheduling), wake, {
     db: fromDrizzle(tx, sql),
     startAfter: at,
     retryLimit: 0,

@@ -57,6 +57,13 @@
       "when": 1789121611310,
       "tag": "0007_context_generations",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789122429858,
+      "tag": "0008_scheduling_attention",
+      "breakpoints": true
     }
   ]
 }

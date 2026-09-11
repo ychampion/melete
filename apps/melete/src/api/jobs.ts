@@ -11,17 +11,18 @@ export function mountJobs(app: Hono, jobs?: JobService, submissions?: Submission
     return jobs;
   };
   const admissions = () => submissions ?? new SubmissionService(service());
-  app.post('/jobs', async (c) => {
-    const result = await admissions().create(await c.req.json(), c.req.header('Idempotency-Key'));
-    return c.json(
-      {
-        job: result.job ? jobView(result.job) : null,
-        receipt: result.receipt,
-        ...(result.error ? { error: result.error } : {}),
-      },
-      result.status,
-    );
-  });
+  for (const path of ['/jobs', '/responsibilities'])
+    app.post(path, async (c) => {
+      const result = await admissions().create(await c.req.json(), c.req.header('Idempotency-Key'));
+      return c.json(
+        {
+          job: result.job ? jobView(result.job) : null,
+          receipt: result.receipt,
+          ...(result.error ? { error: result.error } : {}),
+        },
+        result.status,
+      );
+    });
   app.get('/submissions/:id', async (c) =>
     c.json({ receipt: await admissions().get(c.req.param('id')) }),
   );

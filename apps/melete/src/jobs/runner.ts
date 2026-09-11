@@ -12,6 +12,7 @@ import {
   type RuntimeAdapter,
   type RuntimeEvent,
   runtimeEvent,
+  type SchedulingClass,
   type TransitionInput,
   type WaitSpec,
   waitSpec,
@@ -24,9 +25,16 @@ import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { buildBundle, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
+import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
-import { type AttemptWake, QUEUES, RECOVERY_SCAN_SECONDS } from './queue.ts';
+import {
+  ATTEMPT_QUEUES,
+  type AttemptWake,
+  attemptQueue,
+  QUEUES,
+  RECOVERY_SCAN_SECONDS,
+} from './queue.ts';
 import type { JobRow, JobService } from './service.ts';
 
 export const HEARTBEAT_MS = 15_000;
@@ -51,6 +59,9 @@ export class AttemptRunner {
     { jobId: string; attemptId: string; controller: AbortController; done: Promise<void> }
   >();
   private workerStarted = false;
+  private stopping = false;
+  scheduler = new FairScheduler(2);
+  private readonly wakes = new Set<Promise<void>>();
   /** Wait registration is supplied by the trigger service, inside the outcome transaction. */
   onWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
   onApprovalWait?: (tx: Transaction, row: JobRow) => Promise<JobRow>;
@@ -511,7 +522,7 @@ export class AttemptRunner {
         )
           return;
         const live = await tx.execute(
-          sql`select id from pgboss.job where name = ${QUEUES.attempt} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
+          sql`select id from pgboss.job where name = ${attemptQueue(row.schedulingClass)} and state in ('created', 'retry', 'active') and data->>'job_id' = ${row.id} and (data->>'expected_epoch')::int = ${row.leaseEpoch} and (data->>'expected_version')::int = ${row.stateVersion} limit 1`,
         );
         if (live.length === 0) await this.jobs.enqueue(tx, row, 'recovery');
       });
@@ -537,10 +548,21 @@ export class AttemptRunner {
     }
   }
 
-  async handleWake(wake: AttemptWake): Promise<void> {
+  handleWake(wake: AttemptWake): Promise<void> {
+    const pending = this.runWake(wake);
+    this.wakes.add(pending);
+    return pending.finally(() => this.wakes.delete(pending));
+  }
+
+  private async runWake(wake: AttemptWake): Promise<void> {
+    if (this.stopping) return;
     const claim = await this.claim(wake);
     if (!claim) return;
     const { bundle, claims } = claim;
+    if (this.stopping) {
+      await this.loseAttempt(claims.attempt_id, 'service_stopping');
+      return;
+    }
     const controller = new AbortController();
     let finished = () => {};
     const done = new Promise<void>((resolve) => {
@@ -623,12 +645,24 @@ export class AttemptRunner {
   async start(): Promise<void> {
     if (this.workerStarted) return;
     this.workerStarted = true;
+    this.stopping = false;
+    this.scheduler = new FairScheduler(2);
     await this.recover();
+    for (const [scheduling, queue] of Object.entries(ATTEMPT_QUEUES))
+      await this.jobs.boss.work<AttemptWake>(
+        queue,
+        { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
+        async (wakes) => {
+          for (const wake of wakes)
+            await this.scheduledWake(scheduling as SchedulingClass, wake.data);
+        },
+      );
+    // Existing queued hints can drain after an upgrade; all new and recovered hints use the persisted class.
     await this.jobs.boss.work<AttemptWake>(
-      QUEUES.attempt,
-      { batchSize: 1, localConcurrency: 2, pollingIntervalSeconds: 0.5 },
+      QUEUES.legacyAttempt,
+      { batchSize: 1, pollingIntervalSeconds: 0.5 },
       async (wakes) => {
-        for (const wake of wakes) await this.handleWake(wake.data);
+        for (const wake of wakes) await this.scheduledWake('interactive', wake.data);
       },
     );
     await this.jobs.boss.work(
@@ -641,14 +675,27 @@ export class AttemptRunner {
     });
   }
 
+  private async scheduledWake(scheduling: SchedulingClass, wake: AttemptWake) {
+    try {
+      await this.scheduler.run(scheduling, () => this.handleWake(wake));
+    } catch (error) {
+      if (!this.stopping) throw error;
+    }
+  }
+
   async stop(): Promise<void> {
+    this.stopping = true;
+    this.scheduler.close();
     const active = [...this.active.values()];
     for (const { controller } of active) controller.abort(new Error('Service stopping'));
     if (this.workerStarted) {
-      await this.jobs.boss.offWork(QUEUES.attempt, { wait: false });
+      for (const name of [...Object.values(ATTEMPT_QUEUES), QUEUES.legacyAttempt])
+        await this.jobs.boss.offWork(name, { wait: false });
       await this.jobs.boss.offWork(QUEUES.recoveryScan, { wait: false });
       this.workerStarted = false;
     }
     await Promise.all(active.map(({ done }) => done));
+    await Promise.allSettled([...this.wakes]);
+    await this.scheduler.idle();
   }
 }
