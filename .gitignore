@@ -17,3 +17,4 @@ deploy/config/gateway-tls/
 __pycache__/
 *.pyc
 .pytest_cache/
+conformance/memory/report.json

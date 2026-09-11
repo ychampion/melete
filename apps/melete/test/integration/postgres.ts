@@ -9,7 +9,11 @@ import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
 /** One disposable database per integration file; never migrate the caller's existing database. */
-export async function createTestDatabase(databaseUrl = process.env.DATABASE_URL) {
+export async function createTestDatabase(
+  databaseUrl = process.env.DATABASE_URL,
+  options: { port?: number } = {},
+) {
+  const port = options.port ?? 3122;
   let embedded: { stop(): Promise<void> } | undefined;
   let directory: string | undefined;
   let baseUrl = databaseUrl;
@@ -21,7 +25,7 @@ export async function createTestDatabase(databaseUrl = process.env.DATABASE_URL)
         databaseDir: join(directory, 'data'),
         user: 'postgres',
         password: 'test-local-only',
-        port: 3122,
+        port,
         persistent: true,
         postgresFlags: ['-h', '127.0.0.1', '-c', 'max_connections=30'],
         onLog: () => {},
@@ -30,7 +34,7 @@ export async function createTestDatabase(databaseUrl = process.env.DATABASE_URL)
       embedded = instance;
       await instance.initialise();
       await instance.start();
-      baseUrl = 'postgres://postgres:test-local-only@127.0.0.1:3122/postgres';
+      baseUrl = `postgres://postgres:test-local-only@127.0.0.1:${port}/postgres`;
     } catch (error) {
       await embedded?.stop().catch(() => {});
       if (
