@@ -23,6 +23,7 @@ export function createInternalServer(options: {
   resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
   catalog?: BrokerOptions['catalog'];
+  composeExecutor?: BrokerOptions['composeExecutor'];
   gatewayFetch?: GatewayOptions['fetch'];
   gatewayFake?: GatewayOptions['fake'];
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
@@ -36,6 +37,7 @@ export function createInternalServer(options: {
     resolveTrust: options.resolveTrust,
     approvalTtlMs: options.approvalTtlMs,
     catalog: options.catalog,
+    composeExecutor: options.composeExecutor,
   });
   const app = createBrokerApp({
     broker,

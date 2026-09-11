@@ -111,3 +111,5 @@
 - `openConfiguredMcpConnector`: production stdio remains refused pending an isolated OS launcher. The defensive launch-refusal tests pass; configured HTTP registration is implemented. `BrokerOptions.composeExecutor`: W10a cell wiring remains pending as specified in slice 4; the test-only fallback is not a production sandbox.
 - `bun run typecheck` and `bun run lint`: final checks passed after the runtime finalization and large-manifest fixes; Biome checked 322 files. `git -C C:/Users/gamin/melete-oss-w10c diff --check` passed.
 - `git -C C:/Users/gamin/melete-oss-w10c push -u origin lane/w10c-discovery`: pushed runtime slice `ca3cb06` after the final 982-pass full suite and static checks.
+- `7296813` (`Broker operator-installed MCP tools with scoped authority`): committed the additive provider, operator HTTP registration, audience/schema gates, defensive stdio refusal and associated tests; pushed to `origin/lane/w10c-discovery`.
+- `bun test --max-concurrency=2 > .agents/w10c-full-tests-marked-lock.log`: the same final source run includes the completed composition HTTP path and all composition tests; no composition source changed afterward.

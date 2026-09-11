@@ -12,10 +12,12 @@ import { Hono } from 'hono';
 import { ZodError, z } from 'zod';
 import { AuthenticationError, matchesServiceKey, verifyCapability } from './capability.ts';
 import type { ToolCatalog } from './catalog.ts';
+import type { ComposeService } from './compose.ts';
 import { BrokerFault } from './errors.ts';
 
 export interface BrokerOperations {
   discovery?: ToolCatalog;
+  compose?: Pick<ComposeService, 'run'>;
   authorize(claims: CapabilityClaims): Promise<void>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
@@ -108,6 +110,18 @@ export function createBrokerApp(options: {
       .strict()
       .parse(await c.req.json());
     if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
+    if (body.name === 'compose') {
+      const claims = c.get('claims');
+      const catalog = await options.broker.catalog(claims);
+      if (
+        !options.broker.compose ||
+        !catalog.some((tool) => tool.name === 'compose' && tool.connection_id === null)
+      ) {
+        throw new BrokerFault('unknown_tool');
+      }
+      // Avoid Hono recursively expanding the arbitrary JSON result type.
+      return Response.json(await options.broker.compose.run(claims, body.arguments));
+    }
     return c.json(
       await options.broker.discovery.callSkill(c.get('claims'), body.name, body.arguments),
     );

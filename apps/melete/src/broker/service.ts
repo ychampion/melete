@@ -43,6 +43,7 @@ import {
 } from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import { type CatalogOptions, resolveToolAlias, ToolCatalog } from './catalog.ts';
+import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { BrokerFault } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import {
@@ -82,6 +83,8 @@ export type BrokerOptions = {
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
+  /** W10a supplies the cell executor; omission keeps composition unavailable. */
+  composeExecutor?: ComposeExecutor;
 };
 
 export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
@@ -140,6 +143,7 @@ function dispositionMessage(action: Action, repeated: boolean): string {
 export class BrokerService implements BrokerOperations {
   readonly sql: Sql;
   readonly discovery: ToolCatalog;
+  readonly compose?: ComposeService;
   private readonly validator = new Ajv({ strict: false, allErrors: false, addUsedSchema: false });
   private readonly validator2020 = new Ajv2020({
     strict: false,
@@ -154,7 +158,15 @@ export class BrokerService implements BrokerOperations {
       sql: options.sql,
       connectors: options.connectors,
       ...options.catalog,
+      nativeTools: options.composeExecutor ? [COMPOSE_TOOL] : [],
     });
+    if (options.composeExecutor) {
+      this.compose = new ComposeService({
+        broker: this,
+        catalog: (claims) => this.discovery.available(claims),
+        executor: options.composeExecutor,
+      });
+    }
     this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     if (
       options.approvalTtlMs !== undefined &&

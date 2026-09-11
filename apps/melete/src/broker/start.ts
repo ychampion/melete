@@ -10,6 +10,7 @@ import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
+import type { ComposeExecutor } from './compose.ts';
 import { createInternalServer } from './internal-server.ts';
 import type { TrustResolver } from './trust.ts';
 
@@ -21,6 +22,8 @@ export async function startEffectBoundary(
     resolveAuthority?: EffectAuthorityResolver;
     /** Left out, memory answers. Pass one to isolate the broker in a test. */
     resolveTrust?: TrustResolver;
+    /** Service-owned cell execution; never selected by runtime tool arguments. */
+    composeExecutor?: ComposeExecutor;
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -87,6 +90,7 @@ export async function startEffectBoundary(
       connectTls: (host) => certificates.get(host),
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
+      composeExecutor: dependencies.composeExecutor,
       catalog: {
         skills: async (spaceId) =>
           loadSkills({ spaceSkillsDirectory: (await spaces.byId(spaceId))?.paths.skills }).skills,
