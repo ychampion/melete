@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { connectorManifest } from '@melete/contracts';
+import { type ConnectorTool, connectorManifest } from '@melete/contracts';
 import { createExecConnector, execManifest } from './exec.ts';
+import { ConnectorRegistry } from './registry.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
+import type { Connector } from './types.ts';
 
 let root: string;
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -146,4 +148,32 @@ test('an execution that stored nothing cannot be verified after an unknown dispa
 test('a record the schema does not allow never reaches a receipt', async () => {
   const refused = await run(record({ output_digest: 'not-a-digest' }));
   expect(refused.outcome).toBe('failed');
+});
+
+test('an in-cell tool that requires approval is refused at registration', () => {
+  const registry = () => new ConnectorRegistry();
+  const withTool = (over: Partial<ConnectorTool>): Connector => ({
+    ...createExecConnector({ workRoot: path.join(root, 'work') }),
+    manifest: {
+      ...execManifest,
+      tools: [{ ...(execManifest.tools[0] as ConnectorTool), ...over }],
+    },
+  });
+  // Approval is a gate in front of an effect, and there is no gate in front of
+  // something that is over by the time the broker reads the record.
+  expect(() => registry().register('conn_01', withTool({ requires_approval: true }))).toThrow(
+    'cannot also require approval',
+  );
+  expect(() =>
+    registry().register('conn_01', withTool({ effect_class: 'write_external' })),
+  ).toThrow('cannot also require approval');
+  // And a record the broker has no schema for cannot be validated at all.
+  expect(() => registry().register('conn_01', withTool({ record_schema: null }))).toThrow(
+    'declares no record schema',
+  );
+  // The shipped manifest registers, which is what makes the three above a
+  // statement about the rule and not about the fixture.
+  expect(() =>
+    registry().register('conn_01', createExecConnector({ workRoot: path.join(root, 'work') })),
+  ).not.toThrow();
 });
