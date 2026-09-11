@@ -10,11 +10,7 @@
 # Conformance scenario 6 asserts that from inside the container, and this file
 # assumes it.
 #
-# NOT BUILT. The machine this was written on has no Docker. The install path
-# follows upstream's own container build at the tag and the syntax is checked,
-# but no image has been produced from it and no probe has been run against one.
-
-FROM python:3.12-slim AS base
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS base
 
 ARG HERMES_TAG=v2026.9.7
 ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
@@ -23,12 +19,15 @@ ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # produces something else is visible rather than silent: a moved tag is the one
 # way a "pinned, unmodified release" stops being either.
 ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
+ARG MELETE_PLUGIN_SHA=181a9f349c5b3dbbc42d70d446a0f89124b8151cec5ab776f2bdd2992e9d9e3b
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HERMES_HOME=/var/lib/hermes \
     UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv \
-    PATH=/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin
+    UV_PYTHON=/usr/local/bin/python3.12 \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH=/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # git to fetch the pinned tag; ca-certificates for the clone; nothing else.
 # No shell tooling the agent could reach for, no package manager left behind.
@@ -36,7 +35,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.6@sha256:b1e699368d24c57cda93c338a57a8c5a119009ba809305cc8e86986d4a006754 /uv /usr/local/bin/uv
 
 WORKDIR /opt/hermes
 
@@ -48,7 +47,8 @@ RUN git clone --depth 1 --branch "${HERMES_TAG}" "${HERMES_REPO}" /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_COMMIT}" \
     && git -C /opt/hermes rev-parse HEAD > /opt/hermes/.melete-hermes-commit \
     && uv sync --frozen --no-install-project \
-    && uv pip install --no-cache-dir --no-deps -e "."
+    && uv pip install --no-cache-dir --no-deps -e "." \
+    && rm -rf /root/.cache/uv
 
 # The plugin and the config, staged where the entrypoint can sync them into the
 # writable HERMES_HOME. They are not copied straight there because that path is
@@ -57,6 +57,8 @@ RUN git clone --depth 1 --branch "${HERMES_TAG}" "${HERMES_REPO}" /opt/hermes \
 COPY melete_plugin/ /opt/melete-runtime/melete_plugin/
 COPY config/config.yaml /opt/melete-runtime/config.yaml
 COPY entrypoint.sh /usr/local/bin/melete-runtime-entrypoint
+COPY build-metadata.py /opt/melete-runtime/build-metadata.py
+RUN python /opt/melete-runtime/build-metadata.py "${HERMES_COMMIT}" "${MELETE_PLUGIN_SHA}"
 RUN chmod +x /usr/local/bin/melete-runtime-entrypoint
 
 # Approvals for the shell-command guard must surface over HTTP rather than
@@ -90,6 +92,7 @@ LABEL org.opencontainers.image.title="melete-runtime" \
       org.opencontainers.image.description="Pinned Hermes release configured thin behind Melete's RuntimeAdapter" \
       com.melete.hermes.tag="${HERMES_TAG}" \
       com.melete.hermes.commit="${HERMES_COMMIT}" \
+      com.melete.plugin.sha256="${MELETE_PLUGIN_SHA}" \
       com.melete.hermes.repository="${HERMES_REPO}"
 
 USER runtime

@@ -1,0 +1,13 @@
+.git
+.env*
+**/.env*
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/__pycache__
+**/.pytest_cache
+.hermes-*
+.omx
+.gstack
+deploy/config/gateway-tls
+conformance/memory/report.json
