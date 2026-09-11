@@ -15,7 +15,21 @@ import {
 
 /** Projection has its own durable rows on the existing stream; reconnects never re-label history. */
 export class ExperienceEvents {
-  constructor(readonly db: Database) {}
+  constructor(
+    readonly db: Database,
+    readonly projections?: {
+      permission: (
+        spaceId: string,
+        id: string,
+      ) => Promise<
+        Extract<ExperienceEvent['item'], { type: 'permission' }>['permission'] | undefined
+      >;
+      question: (
+        spaceId: string,
+        id: string,
+      ) => Promise<Extract<ExperienceEvent['item'], { type: 'question' }>['question'] | undefined>;
+    },
+  ) {}
 
   async sync(spaceId: string, jobId?: string): Promise<void> {
     const ids = await this.db
@@ -116,6 +130,15 @@ export class ExperienceEvents {
           if (payload.kind === 'experience_say') {
             const text = plainText(payload.text, '', 600);
             if (text) await emit(source, { type: 'say', text });
+          } else if (
+            source.type === 'approval_requested' &&
+            typeof payload.approval_id === 'string'
+          ) {
+            const permission = await this.projections?.permission(spaceId, payload.approval_id);
+            if (permission) await emit(source, { type: 'permission', permission });
+          } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
+            const question = await this.projections?.question(spaceId, payload.question_id);
+            if (question) await emit(source, { type: 'question', question });
           } else if (source.type === 'text_delta') {
             await emit(source, { type: 'text_delta', text: answerText(payload.text) });
           } else if (

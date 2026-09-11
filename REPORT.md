@@ -51,3 +51,11 @@
 - `a rule cannot exceed its count cap or survive expiry and re-consent`: all three bounds passed.
 - `POST /receipts/{id}/undo`: calendar create reverses through a distinct brokered delete; sends and file writes with no stored reversal return not_available.
 - `POST /permissions/{id}`: the reviewed action uses allow-once; the new rule count applies to subsequent actions. An admitted use consumes the cap conservatively, even when later execution is refused.
+
+## Quick answers and saved details
+
+- `0913711`: committed reviewed sending, conditional calendar undo, and bounded standing rules.
+- `until mkdir C:/Users/gamin/.melete-test.lock`: third wait cancelled before acquiring the shared lock; no full run or push has occurred yet.
+- `bun run openapi; bun run client:generate`: regenerated the optional quick-answer choices in runtime and owner-question contracts.
+- `bun run typecheck`: passed for quick answers and plain-language memory projection.
+- `bun test apps/melete/test/integration/experience.test.ts --max-concurrency=2`: 7 passed, 0 failed, 59 assertions in 28.60 seconds; offered choices, duplicate answers, real correction revisions, dependency explanations and the existing forget journal path passed.

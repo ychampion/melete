@@ -50,6 +50,7 @@ export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQu
     space_id: row.spaceId,
     key: row.key,
     text: row.text,
+    ...(row.options.length ? { options: row.options } : {}),
     because: row.because,
     if_ignored: row.ifIgnored,
     blocks_external_effect: row.blocksExternalEffect,
@@ -209,6 +210,7 @@ export async function persistQuestions(
       ifIgnored: asked.if_ignored,
       blocksExternalEffect: asked.blocks_external_effect,
       deadlineAt: asked.deadline_at ? new Date(asked.deadline_at) : null,
+      options: asked.options ?? [],
       // A deferred question keeps the moment it was first raised, so waiting counts.
       createdAt: new Date(asked.created_at),
     });

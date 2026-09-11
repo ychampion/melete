@@ -4,6 +4,7 @@ import { ServiceError } from '../api/errors.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
+import { explainHandles } from './evidence.ts';
 import { plainText, projectPermission, recipientText } from './projectors.ts';
 import { permissionVersion, ruleKinds, ruleRecipient, ruleView } from './rules.ts';
 import { experienceMissing } from './service.ts';
@@ -31,6 +32,13 @@ export class ExperiencePermissions {
     const reasons = warnings.length
       ? warnings.map(() => 'This destination has not been confirmed by you or the connected app.')
       : ['This change needs your permission before it happens.'];
+    reasons.push(
+      ...(await explainHandles(
+        this.sql,
+        spaceId,
+        warnings.flatMap((warning) => (typeof warning.handle === 'string' ? [warning.handle] : [])),
+      )),
+    );
     const [parent] = await this
       .sql`select title from job where id = ${row.experience_parent_id ?? row.job_id} and space_id = ${spaceId}`;
     if (parent) reasons.push(`For ${plainText(parent.title, 'your request')}.`);

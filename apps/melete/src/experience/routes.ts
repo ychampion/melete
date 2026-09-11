@@ -10,12 +10,16 @@ import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import { action, artifact, connection, experienceDraftSend } from '../db/schema.ts';
+import type { QuestionService } from '../jobs/questions.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
+import { MemoryError } from '../memory/db.ts';
+import type { RestrictionJournal } from '../memory/restore.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceEffects } from './effects.ts';
 import { ExperienceEvents } from './events.ts';
+import { ExperienceMemory } from './memory.ts';
 import { ExperiencePermissions } from './permissions.ts';
 import {
   object,
@@ -25,6 +29,7 @@ import {
   projectReceipt,
   recipientText,
 } from './projectors.ts';
+import { ExperienceQuestions } from './questions.ts';
 import { ExperienceService } from './service.ts';
 
 export type ExperienceDeps = {
@@ -35,10 +40,13 @@ export type ExperienceDeps = {
   sql?: Sql;
   broker?: BrokerService;
   registry?: ConnectorRegistry;
+  questions?: QuestionService;
+  memoryJournal?: RestrictionJournal;
 };
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
-  const events = new ExperienceEvents(deps.db);
+  const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
+  const memory = deps.sql ? new ExperienceMemory(deps.sql, deps.memoryJournal) : undefined;
   const ownerEffects =
     deps.sql && deps.broker && deps.registry
       ? new ExperienceEffects(deps.sql, deps.broker, deps.registry)
@@ -47,6 +55,11 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     deps.sql && deps.broker && ownerEffects
       ? new ExperiencePermissions(deps.sql, deps.broker, ownerEffects)
       : undefined;
+  const events = new ExperienceEvents(deps.db, {
+    permission: (spaceId, id) => permissions?.card(spaceId, id) ?? Promise.resolve(undefined),
+    question: async (spaceId, id) =>
+      (await questions.list(spaceId)).questions.find((item) => item.id === id),
+  });
   const effects = async (spaceId: string, id: string) => {
     await service.requireConversation(spaceId, id);
     const linked = deps.sql
@@ -68,6 +81,21 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     string,
     (spaceId: string, c: Context, input: Record<string, unknown>) => Promise<unknown> | unknown
   > = {
+    'GET /quick-answers': (spaceId) => questions.list(spaceId),
+    'POST /quick-answers/{id}': (spaceId, c, input) =>
+      questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),
+    'GET /memory/items': (spaceId, c) =>
+      memory?.list(spaceId, c.get('owner').id) ??
+      unavailable('Your saved details are not connected yet.'),
+    'PATCH /memory/items/{id}': (spaceId, c, input) =>
+      memory?.edit(spaceId, c.get('owner').id, c.req.param('id') ?? '', input) ??
+      unavailable('Your saved details are not connected yet.'),
+    'DELETE /memory/items/{id}': (spaceId, c) =>
+      memory?.forget(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable('Your saved details are not connected yet.'),
+    'GET /memory/items/{id}/why': (spaceId, c) =>
+      memory?.why(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable('Your saved details are not connected yet.'),
     'GET /permissions': (spaceId) =>
       permissions?.list(spaceId) ?? unavailable('Permissions are not connected yet.'),
     'POST /permissions/{id}': (spaceId, c, input) =>
@@ -194,6 +222,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
                     : 'This feature is not connected yet.',
             );
       } catch (error) {
+        if (error instanceof MemoryError)
+          throw new ServiceError(
+            'saved_detail_unavailable',
+            'This detail is no longer available or has changed.',
+            error.code.includes('not_found') ? 404 : 409,
+          );
         if (!(error instanceof BrokerFault)) throw error;
         throw new ServiceError(
           'permission_changed',

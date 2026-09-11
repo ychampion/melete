@@ -104,7 +104,9 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
   if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
-  if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
+  const questions =
+    deps.questions ?? (deps.jobs ? new QuestionService(deps.jobs, submissions) : undefined);
+  if (questions) mountQuestions(app, questions);
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.db)
@@ -116,6 +118,8 @@ export function createApp(deps: AppDeps) {
       sql: deps.sql,
       broker: deps.broker,
       registry: deps.registry,
+      questions,
+      memoryJournal: deps.memory?.journal,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory) app.route('/', createMemoryRouter(deps.memory));

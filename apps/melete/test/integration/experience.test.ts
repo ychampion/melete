@@ -4,6 +4,8 @@ import {
   agentResponse,
   conversationResponse,
   dedupKey,
+  experienceQuestion,
+  memoryItemList,
   messageAcceptance,
   turnList,
 } from '@melete/contracts';
@@ -28,10 +30,22 @@ import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { publishRevision } from '../../src/memory/claims.ts';
+import { lockSpace, type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
+import { ingest } from '../../src/memory/evidence.ts';
+import { recordOutput } from '../../src/memory/outputs.ts';
+import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
+const forgotten: RestrictionRecord[] = [];
+const journal: RestrictionJournal = {
+  read: async () => forgotten,
+  append: async (record) => {
+    forgotten.push(record);
+  },
+};
 const queue = handle ? await startQueue(handle.url) : null;
 const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
 const runner = jobs
@@ -45,6 +59,8 @@ const app = handle
       env: loadEnv({ NODE_ENV: 'test' }),
       jobs: jobs ?? undefined,
       runner: runner ?? undefined,
+      sql: handle.sql,
+      memory: { sql: handle.sql, journal },
       checkDatabase: async () => 'ok',
     })
   : null;
@@ -174,6 +190,131 @@ withDb('experience rows and authenticated scope', () => {
         )
       ).status,
     ).toBe(200);
+  });
+  test('quick answers persist the offered choices and reject invented option ids', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Find dinner' });
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    await required(runner).commitOutcome(claimed.claims, {
+      outcome: { kind: 'waiting_for_input', question: 'Eat out or cook?' },
+      questions: [
+        {
+          text: 'Eat out or cook?',
+          because: [`attempt:${claimed.claims.attempt_id}`],
+          if_ignored: 'I will wait.',
+          options: [
+            { id: 'cook', label: 'Cook at home' },
+            { id: 'out', label: 'Eat out' },
+          ],
+        },
+      ],
+    });
+    const body = (await (await request('/quick-answers')).json()) as { questions: unknown[] };
+    const question = required(
+      body.questions
+        .map((value) => experienceQuestion.parse(value))
+        .find((item) => item.conversation_id === chat.id),
+    );
+    expect(question.options).toHaveLength(2);
+    expect(question.why).toEqual(['For Dinner.']);
+    expect(
+      (await request(`/quick-answers/${question.id}`, 'POST', { option_id: 'invented' })).status,
+    ).toBe(400);
+    expect(
+      (await request(`/quick-answers/${question.id}`, 'POST', { option_id: 'cook' })).status,
+    ).toBe(200);
+    expect(
+      (await request(`/quick-answers/${question.id}`, 'POST', { option_id: 'cook' })).status,
+    ).toBe(200);
+    const turns = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(turns.turns.filter((turn) => turn.text === 'Cook at home')).toHaveLength(1);
+  });
+  test('saved details use plain keys, correction history, dependency explanations and durable forgetting', async () => {
+    const sql = required(handle).sql;
+    const scope: MemoryScope = {
+      ownerId,
+      spaceId,
+      publisher: 'experience',
+      audience: 'private',
+      role: 'owner',
+    };
+    await provisionMemorySpace(sql, ownerId, spaceId);
+    await sql`update memory_spaces set restore_ready = true where space_id = ${spaceId}`;
+    const source = await ingest(sql, scope, {
+      stream: 'onboarding',
+      source_identity: 'diet',
+      source_version: '1',
+      source_type: 'message',
+      author: 'owner',
+      event_at: new Date().toISOString(),
+      text: 'I prefer vegetarian meals.',
+    });
+    const first = await sql.begin(async (tx) => {
+      await lockSpace(tx, scope);
+      return publishRevision(tx, scope, 'pref.food.diet', null, {
+        key: 'pref.food.diet',
+        content: 'Vegetarian',
+        kind: 'preference',
+        factual_status: 'attributed',
+        protected: false,
+        valid_from: new Date().toISOString(),
+        valid_until: null,
+        sources: [{ source_id: source.source.source_id, source_version: '1', start: 0, end: 26 }],
+      });
+    });
+    const chat = await createConversation();
+    await recordOutput(sql, scope, {
+      job_id: chat.id,
+      kind: 'plan_step',
+      output_id: 'dinner-choice',
+      output_version: '1',
+      uses: [`${first.claim_id}@${first.revision}`],
+    });
+    const before = memoryItemList.parse(await (await request('/memory/items')).json());
+    const item = required(before.items.find((value) => value.id === first.claim_id));
+    expect(item).toMatchObject({
+      key: 'food: diet',
+      value: 'Vegetarian',
+      source: 'onboarding',
+      editable: true,
+    });
+    expect(item.last_used).not.toBeNull();
+    const why = await (await request(`/memory/items/${item.id}/why`)).json();
+    expect(why).toMatchObject({ reasons: ['food: diet: Vegetarian'], output: 'Used for Dinner.' });
+    expect(JSON.stringify(why)).not.toContain(first.claim_id);
+    const edited = await request(`/memory/items/${item.id}`, 'PATCH', {
+      value: 'Vegan',
+      version: item.version,
+    });
+    expect(edited.status).toBe(200);
+    expect(
+      (
+        await request(`/memory/items/${item.id}`, 'PATCH', {
+          value: 'Old choice',
+          version: item.version,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      memoryItemList
+        .parse(await (await request('/memory/items')).json())
+        .items.find((value) => value.id === item.id)?.value,
+    ).toBe('Vegan');
+    const revisions = await sql`select revision from memory_revisions where claim_id = ${item.id}`;
+    expect(revisions).toHaveLength(2);
+    expect((await request(`/memory/items/${item.id}`, 'DELETE')).status).toBe(200);
+    expect(memoryItemList.parse(await (await request('/memory/items')).json()).items).toEqual([]);
+    expect(forgotten.some((record) => record.claim_ids.includes(item.id))).toBe(true);
   });
   test('stopping fences further text and retains the partial answer', async () => {
     const chat = await createConversation();
