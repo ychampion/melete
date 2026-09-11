@@ -6,7 +6,10 @@ import {
   type RecallResult,
   type RuntimeAdapter,
   recallRequest,
+  type StyleViolation,
+  styleViolations as styleViolationsSchema,
 } from '@melete/contracts';
+import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
 import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
 import { notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
@@ -61,6 +64,7 @@ export async function recordAttemptContext(
         sources: item.sources,
       })),
       unattributed: [],
+      style_violations: [],
       disputed_keys: result.disputed_keys,
       recipe: result.recipe,
       token_budget: result.token_budget,
@@ -85,6 +89,23 @@ export async function recordAttemptContext(
     return context;
   });
 }
+/**
+ * Write down how the attempt talked. Measured, never enforced: the update runs
+ * after the outcome is durable, touches one column, and cannot change what the
+ * attempt did. A context that has already been invalidated keeps the record it
+ * had, because a measurement of a discarded context proves nothing.
+ */
+export async function recordStyleViolations(
+  sql: MemorySql,
+  scope: MemoryScope,
+  attemptId: string,
+  violations: readonly StyleViolation[],
+): Promise<void> {
+  const value = styleViolationsSchema.parse([...violations]);
+  await sql`update memory_contexts set style_violations = ${JSON.stringify(value)}::text::jsonb
+    where attempt_id = ${attemptId} and space_id = ${scope.spaceId} and invalidated_at is null`;
+}
+
 /** Call before a consequential use; a normal unrelated fact does not invalidate this context. */
 export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, attemptId: string) {
   return sql.begin(async (tx) => {
@@ -124,6 +145,7 @@ export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, a
       token_budget: row.token_budget,
       recall_status: row.recall_status,
       unattributed: row.unattributed,
+      style_violations: row.style_violations ?? [],
       disputed_keys: row.disputed_keys,
       invalidated_at: null,
       created_at: iso(row.created_at),
@@ -205,7 +227,12 @@ export function withMemoryRuntime(
       timer.unref();
       try {
         await assertContextCurrent(sql, scope, bundle.attempt.id);
-        const outcome = await runtime.start(
+        // How the attempt talked is written on the same context record that says
+        // what it was given, so drift in one is readable beside the other.
+        const measured = withStyleCheck(runtime, (attemptId, violations) =>
+          recordStyleViolations(sql, scope, attemptId, violations),
+        );
+        const outcome = await measured.start(
           next,
           {
             async emit(event) {

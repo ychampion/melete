@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { prefixedId, timestamp } from './common.ts';
 import { knowledgeFrontmatter } from './knowledge.ts';
+import { styleViolations } from './style.ts';
 
 const counter = z.number().int().nonnegative();
 const positive = z.number().int().positive();
@@ -381,6 +382,13 @@ export const contextRecord = z.strictObject({
    * precise rule did not apply to them.
    */
   unattributed: z.array(boundedIdentity).default([]),
+  /**
+   * What the deterministic reply-style check saw in this attempt's own outgoing
+   * text. Recorded, never enforced: a violation is a measurement of drift, and
+   * blocking an answer because it opened with the wrong word would be a worse
+   * failure than the word.
+   */
+  style_violations: styleViolations,
   disputed_keys: z.array(memoryKey).default([]),
   recipe: boundedIdentity,
   token_budget: recallResult.shape.token_budget,

@@ -20,3 +20,4 @@ export * from './provenance.ts';
 export * from './responsibility.ts';
 export * from './runtime.ts';
 export * from './skills.ts';
+export * from './style.ts';

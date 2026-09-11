@@ -73,6 +73,7 @@
       "version": "0.1.0-pre",
       "dependencies": {
         "@melete/contracts": "workspace:*",
+        "@melete/skills": "workspace:*",
         "zod": "4.6.2",
       },
       "devDependencies": {
