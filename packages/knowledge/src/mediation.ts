@@ -232,30 +232,92 @@ export function validateProposal(write: ProposedWrite, context: MediationContext
   return findings;
 }
 
+export type DiffLine = { kind: ' ' | '-' | '+'; text: string };
+
 /**
- * A unified diff with no context lines elided: a knowledge record is small, and
- * a person approving a write should see the whole of it.
+ * Longest common subsequence over lines, so an inserted line reads as one
+ * insertion.
+ *
+ * Lining the two sides up by line number instead is a few lines shorter and
+ * badly wrong for the job this diff does: insert a sentence at the top of a
+ * record and every line below it reads as rewritten. A person shown that has no
+ * way to see what actually changed, and a person who cannot see what changed
+ * approves everything.
+ */
+export function diffLines(before: readonly string[], after: readonly string[]): DiffLine[] {
+  const width = after.length + 1;
+  const common = new Uint32Array((before.length + 1) * width);
+  for (let i = before.length - 1; i >= 0; i -= 1) {
+    for (let j = after.length - 1; j >= 0; j -= 1) {
+      common[i * width + j] =
+        before[i] === after[j]
+          ? (common[(i + 1) * width + (j + 1)] ?? 0) + 1
+          : Math.max(common[(i + 1) * width + j] ?? 0, common[i * width + (j + 1)] ?? 0);
+    }
+  }
+
+  const lines: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < before.length && j < after.length) {
+    if (before[i] === after[j]) {
+      lines.push({ kind: ' ', text: before[i] ?? '' });
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if ((common[(i + 1) * width + j] ?? 0) >= (common[i * width + (j + 1)] ?? 0)) {
+      lines.push({ kind: '-', text: before[i] ?? '' });
+      i += 1;
+    } else {
+      lines.push({ kind: '+', text: after[j] ?? '' });
+      j += 1;
+    }
+  }
+  for (; i < before.length; i += 1) lines.push({ kind: '-', text: before[i] ?? '' });
+  for (; j < after.length; j += 1) lines.push({ kind: '+', text: after[j] ?? '' });
+
+  return groupChanges(lines);
+}
+
+/** Removals before additions within each changed run, as git prints them. */
+function groupChanges(lines: readonly DiffLine[]): DiffLine[] {
+  const out: DiffLine[] = [];
+  let run: DiffLine[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    out.push(...run.filter((l) => l.kind === '-'), ...run.filter((l) => l.kind === '+'));
+    run = [];
+  };
+  for (const line of lines) {
+    if (line.kind === ' ') {
+      flush();
+      out.push(line);
+      continue;
+    }
+    run.push(line);
+  }
+  flush();
+  return out;
+}
+
+const splitLines = (text: string): string[] =>
+  text === '' ? [] : text.replace(/\n$/, '').split('\n');
+
+/**
+ * A unified diff with no context elided: a knowledge record is small, and a
+ * person approving a write should see the whole of it.
  */
 export function renderUnifiedDiff(before: string, after: string, path: string): string {
-  const beforeLines = before === '' ? [] : before.replace(/\n$/, '').split('\n');
-  const afterLines = after === '' ? [] : after.replace(/\n$/, '').split('\n');
-  const lines: string[] = [
-    `--- a/${before === '' ? 'dev/null' : path}`,
+  const beforeLines = splitLines(before);
+  const afterLines = splitLines(after);
+  const header = [
+    `--- ${before === '' ? '/dev/null' : `a/${path}`}`,
     `+++ b/${path}`,
     `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
   ];
-  const max = Math.max(beforeLines.length, afterLines.length);
-  for (let i = 0; i < max; i += 1) {
-    const b = beforeLines[i];
-    const a = afterLines[i];
-    if (b === a) {
-      if (b !== undefined) lines.push(` ${b}`);
-      continue;
-    }
-    if (b !== undefined) lines.push(`-${b}`);
-    if (a !== undefined) lines.push(`+${a}`);
-  }
-  return `${lines.join('\n')}\n`;
+  const body = diffLines(beforeLines, afterLines).map((line) => `${line.kind}${line.text}`);
+  return `${[...header, ...body].join('\n')}\n`;
 }
 
 /** The diff a person is shown: this proposal against what is in the space now. */

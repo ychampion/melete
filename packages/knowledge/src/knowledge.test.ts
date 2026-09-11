@@ -362,7 +362,7 @@ describe('the full-text index', () => {
 describe('renderUnifiedDiff', () => {
   test('shows a new file as all additions', () => {
     const diff = renderUnifiedDiff('', 'one\ntwo\n', 'a.md');
-    expect(diff).toContain('--- a/dev/null');
+    expect(diff).toContain('--- /dev/null');
     expect(diff).toContain('+one');
     expect(diff).toContain('+two');
     expect(diff).not.toContain('-one');
@@ -377,5 +377,66 @@ describe('renderUnifiedDiff', () => {
 
   test('counts the lines on both sides', () => {
     expect(renderUnifiedDiff('one\n', 'one\ntwo\n', 'a.md')).toContain('@@ -1,1 +1,2 @@');
+  });
+});
+
+describe('the diff a person approves a write from', () => {
+  const body = (diff: string): string[] => diff.trimEnd().split('\n').slice(3);
+
+  test('an inserted line is one insertion, not a rewrite of everything below it', () => {
+    const before = 'alpha\nbeta\ngamma\n';
+    const after = 'alpha\ninserted\nbeta\ngamma\n';
+    expect(body(renderUnifiedDiff(before, after, 'a.md'))).toEqual([
+      ' alpha',
+      '+inserted',
+      ' beta',
+      ' gamma',
+    ]);
+  });
+
+  test('a deleted line is one deletion', () => {
+    expect(body(renderUnifiedDiff('alpha\nbeta\ngamma\n', 'alpha\ngamma\n', 'a.md'))).toEqual([
+      ' alpha',
+      '-beta',
+      ' gamma',
+    ]);
+  });
+
+  test('a moved line reads as a move, not as the whole file changing', () => {
+    const diff = body(renderUnifiedDiff('alpha\nbeta\ngamma\n', 'beta\ngamma\nalpha\n', 'a.md'));
+    expect(diff.filter((line) => line.startsWith(' ')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('removals come before additions inside one changed run', () => {
+    expect(body(renderUnifiedDiff('a\nb\nc\nd\n', 'a\nx\ny\nd\n', 'a.md'))).toEqual([
+      ' a',
+      '-b',
+      '-c',
+      '+x',
+      '+y',
+      ' d',
+    ]);
+  });
+
+  test('an unchanged file shows no change at all', () => {
+    const same = 'alpha\nbeta\n';
+    expect(body(renderUnifiedDiff(same, same, 'a.md')).every((l) => l.startsWith(' '))).toBe(true);
+  });
+
+  test('everything removed reads as every line removed', () => {
+    expect(body(renderUnifiedDiff('alpha\nbeta\n', '', 'a.md'))).toEqual(['-alpha', '-beta']);
+  });
+
+  test('the counts in the header describe both sides', () => {
+    expect(renderUnifiedDiff('a\nb\nc\n', 'a\n', 'x.md')).toContain('@@ -1,3 +1,1 @@');
+  });
+
+  test('a record edited in the middle shows only the edit', () => {
+    const before = ['---', 'id: k_1', 'title: Old title', '---', '', 'The body.'].join('\n');
+    const after = ['---', 'id: k_1', 'title: New title', '---', '', 'The body.'].join('\n');
+    const changed = body(renderUnifiedDiff(before, after, 'r.md')).filter(
+      (line) => !line.startsWith(' '),
+    );
+    expect(changed).toEqual(['-title: Old title', '+title: New title']);
   });
 });
