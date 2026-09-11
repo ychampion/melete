@@ -75,8 +75,12 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
         # arguments in one positional dict (`tools/registry.py:822`), not as
         # keyword arguments. A `**kwargs`-only signature raises TypeError before
         # the broker is ever called, and the model is told the tool is broken.
-        arguments: Dict[str, Any] = dict(args or {})
-        arguments.update(extra)
+        # model_tools.py:758-767 puts task_id, session_id and user_task in
+        # kwargs as execution context. Only the positional dict is model
+        # input, including when empty; context must not change the proposed
+        # payload, approval hash, or stable proposal reference. Keyword-only
+        # calls remain a convenience for direct callers outside the engine.
+        arguments: Dict[str, Any] = dict(args if args is not None else extra)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.

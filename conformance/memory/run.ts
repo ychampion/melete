@@ -190,7 +190,11 @@ async function main() {
     out(`failed: ${failed.map((run) => run.id).join(', ')}`);
     return 1;
   }
-  out('every family passed, and every one of them needed memory to.');
+  const deferred = runs.filter((run) => run.arm === 'memory' && run.outcome === 'todo').length;
+  out(
+    `All ${runs.filter((run) => run.arm === 'memory' && run.outcome === 'passed').length} active memory scenarios passed; ` +
+      `${deferred} deferred. ${report.counterfactual.checked} counterfactual checks exercised memory.`,
+  );
   return 0;
 }
 

@@ -124,6 +124,64 @@ The first standalone flow initially exceeded its 5,000-token test budget because
 the gateway reserves serialized input bytes plus completion allowance. Its
 explicit fixture budget is now 250,000; the enforcement limit was not relaxed.
 
+## Full conformance
+
+`MELETE_CONFORMANCE_COMPOSE=1 bun run conformance`: 43 passed, 1 explicitly
+skipped, 0 failed; 266 assertions in 126.61 seconds. Scenarios 1–5 use isolated
+databases on the Compose Postgres host and in-process services/scripted runtimes.
+Scenarios 6–8 use the deployed web, API, broker and real Hermes containers.
+
+| Scenario | Passed | Skipped | What ran |
+| --- | ---: | ---: | --- |
+| 1 durable wakes | 4 | 0 | Lost/duplicate wake recovery |
+| 2 lease fencing | 4 | 0 | Expired attempt admission and late receipts |
+| 3 unknown outcomes | 6 | 0 | One destination acceptance, verify and unresolved states |
+| 4 approval binding | 8 | 0 | Changed hash/revision, cancellation and truthful dispositions |
+| 5 runtime death | 4 | 0 | Replacement attempt and no duplicate completed action |
+| 6 no route out | 9 | 0 | Warm cell and actual claimed-cell Linux probes |
+| 7 retraction | 4 | 0 | Real context before/after removal, FTS rows, Git and restart |
+| 8 provider policy | 4 | 1 | Fake model, approval hash, actual model metadata and cell denial |
+
+Scenario 7's final restart took 12,807 ms. Its first attempt actually received
+the record; the later attempt omitted it. Both attempts emitted runtime events.
+Scenario 8's running-cell capability could read the tool catalog (200), but
+could not approve an action (401). Altering the owner approval hash returned 409;
+the valid decision yielded exactly one destination effect. No real-provider
+credential was configured, so the second-provider comparison is unverified.
+
+The first whole conformance run found Hermes execution-context keywords merged
+into tool arguments. The plugin now forwards the authoritative positional model
+payload; session metadata cannot alter approval hashes or proposal identity.
+Three regression cases reproduced that defect; the complete Python plugin suite
+passed 23 tests in 9.16 seconds. The runtime was repinned to plugin SHA-256
+`742ebece0315ab89309b92ab75cd449d572556fda1771a135742095db609f7c9` and rebuilt in
+51.41 seconds. Its 200-component SBOM hash is now
+`4424628aac0b3f9a5bd5d05461fd7ca19fdd4ab1e0f4a2b5e9aac0ebd6ce522a`.
+
+Memory conformance used disposable databases on the Compose Postgres host and
+real memory routes with scripted extraction/answering. Ten active scenarios and
+all ten withheld-memory counterfactuals passed their intended checks; their
+combined scenario time was 4,182 ms. `procedure-transfer` remains the existing
+explicit todo because candidate-procedure promotion is not enabled in v0.1.
+
+| Memory family | Active passed | Recall p50/p95 ms | Correction to serving ms |
+| --- | ---: | ---: | ---: |
+| Stable personalization | 1/1 | 3.64 / 4.98 | — |
+| Corrections and time | 2/2 | 8.23 / 18.36 | 44 |
+| Continuing work | 1/1 | 8.78 / 15.74 | — |
+| Relationships | 1/1 | 3.16 / 4.31 | — |
+| Source authority | 2/2 | 3.56 / 4.65 | — |
+| Forgetting and access | 2/2 | 5.08 / 7.37 | — |
+| Low-value memory | 1/1 | 3.09 / 3.09 | — |
+| Procedure transfer | deferred | — | — |
+
+Obsolete facts, unsupported claims and needless questions were all zero in the
+active scenarios. The runner now prints the deferred count instead of claiming
+every family passed. Final repository verification: 937 passed, 24 explicit
+skips, 0 failures, 3,914 assertions in 77.37 seconds; typecheck and lint passed.
+A separate review of supervisor ownership, context, startup gates and restore
+guards found no concrete defects.
+
 ## Remaining checks
 
 The four-service stack is healthy; remaining suite, clean-host and restore

@@ -4,8 +4,8 @@
  * model, so the suite is deterministic and costs nothing.
  *
  * These are the differentiator: anyone can run them and see for themselves.
- * Until the service exists they are `test.todo` with the exact assertion each
- * one will make, so the shape of the proof is reviewable now.
+ * The deployment scenarios require an explicitly opted-in disposable stack;
+ * a skipped optional provider comparison is never reported as proof.
  */
 
 export type Scenario = {
@@ -14,7 +14,7 @@ export type Scenario = {
   title: string;
   /** What is done to the system. */
   text: string;
-  /** Each becomes one `test.todo`. Written as the assertion, not as a hope. */
+  /** The observable assertions each scenario checks. */
   assertions: string[];
 };
 
@@ -95,13 +95,15 @@ export const SCENARIOS: readonly Scenario[] = [
     title: 'The runtime container has no route to anything but the broker',
     text:
       'From inside the runtime container, try the internet, the Postgres port, the host metadata ' +
-      'address, and a sibling container path.',
+      'address, a live host listener, and a sibling job path in both the warm cell and a claimed attempt.',
     assertions: [
-      'curl to a public address fails: there is no default route, not a blocked request',
-      'a connection to postgres:5432 fails',
+      'Python TCP to a public address fails and the routing table has no default route',
+      'Postgres is unreachable by DNS and its actual container IP',
       'a connection to 169.254.169.254 fails',
       'a connection to a sibling service on the edge network fails',
-      'a connection to the broker on the internal network succeeds',
+      'a sibling job canary is absent while the current workspace is writable',
+      'a positively verified host listener is unreachable',
+      'the broker and model gateway answer and are the only attached peer',
       'the container runs as a non-root user with a read-only root filesystem',
     ],
   },
