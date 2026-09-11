@@ -26,6 +26,12 @@ The three additive knowledge operations follow the existing `ProposalStore`
 surface: list pending proposals, apply one, and discard one. Reconcile their
 route names with W4 when its proposed note is available.
 
+The core's call reservation is a bounded test policy, not actual provider billing.
+The gateway integration must reserve/enforce real token and cost limits before
+accepting a call. Scope provisioning and the router resolver must come from
+verified authentication/membership, never a caller-supplied space header. The
+default bootstrap remains health-only until those dependencies are wired.
+
 ## Evidence
 
 `rg --files apps/melete/src .agents/notes` and `rg -n PENDING_CONTRACT .` on the

@@ -24,7 +24,11 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
     next,
   ) => {
     const scope = await options.resolveScope?.(c.req.raw);
-    if (!scope) return c.json({ error: { code: 'unauthenticated' } }, 401);
+    if (!scope)
+      return c.json(
+        { error: { code: 'unauthenticated', message: 'Authentication is required.' } },
+        401,
+      );
     c.set('memoryScope', scope);
     await next();
   };
@@ -37,22 +41,54 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
         : error instanceof ZodError || error instanceof SyntaxError
           ? 'invalid_request'
           : 'memory_unavailable';
-    const status =
-      code === 'invalid_request'
-        ? 400
-        : code === 'scope_denied'
-          ? 403
-          : code.endsWith('_not_found')
-            ? 404
-            : ['stale_revision', 'owner_edit_pending'].includes(code)
-              ? 409
-              : 503;
-    return c.json({ error: { code } }, status);
+    const status = ['invalid_request', 'invalid_forget_target', 'invalid_validity'].includes(code)
+      ? 400
+      : code === 'scope_denied'
+        ? 403
+        : code.endsWith('_not_found')
+          ? 404
+          : [
+                'stale_revision',
+                'owner_edit_pending',
+                'source_version_conflict',
+                'idempotency_conflict',
+              ].includes(code)
+            ? 409
+            : 503;
+    const message =
+      status === 400
+        ? 'The memory request is invalid.'
+        : status === 403
+          ? 'This operation is outside your memory access scope.'
+          : status === 404
+            ? 'The requested memory is not accessible.'
+            : status === 409
+              ? 'Memory changed. Inspect the current record before retrying.'
+              : 'Memory is temporarily unavailable.';
+    return c.json({ error: { code, message } }, status);
   });
   const body = async (request: Request) => {
-    const text = await request.text();
-    if (text.length > 1048576) throw new MemoryError('invalid_request');
-    return JSON.parse(text) as unknown;
+    const reader = request.body?.getReader();
+    if (!reader) throw new MemoryError('invalid_request');
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let text = '';
+    let bytes = 0;
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > 1048576) throw new MemoryError('invalid_request');
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+      return JSON.parse(text) as unknown;
+    } catch (error) {
+      if (error instanceof TypeError) throw new MemoryError('invalid_request');
+      throw error;
+    } finally {
+      await reader.cancel();
+    }
   };
   const markdown = () => {
     if (!options.markdown) throw new MemoryError('view_not_configured');

@@ -100,3 +100,23 @@
 - Log `memory comparison`: six scripted fixture outcomes pass for each strategy; compact profile/source baseline p50 3.74 ms, p95 6.08 ms, max 295 context bytes; lexical p50 5.14 ms, p95 6.07 ms, max 866 bytes; pinned dense union p50 9.89 ms, p95 13.87 ms, max 866 bytes. One gateway call reserves USD 0.01; scripted charged cost is USD 0. These six samples do not establish an answer-quality or performance advantage.
 - Command `bun run typecheck`: pass; command `bun run lint`: pass (91 files); command `bun test --max-concurrency 2`: 242 pass, 1 baseline DB skip, 36 baseline conformance todos, 0 fail, 930 assertions in 16.91 s.
 - Command `git -C C:/Users/gamin/melete-oss-w7 diff --check`: pass; command `bun run openapi`: regenerated after the additive source-inspection route.
+
+## Slice 9 at 16:15 +05:30
+
+- Log `handover`: the codex agent that built slices 1-8 stopped at its usage limit during slice 9. This section is written by the finishing agent from the state on disk at SHA `9857ea9`.
+- Command `git -C C:/Users/gamin/melete-oss-w7 diff`: the inherited uncommitted work is three files. `apps/melete/src/memory/routes.ts` adds the `message` field that the frozen `errorResponse` contract requires and that the previous handler omitted, maps `invalid_forget_target` and `invalid_validity` to 400 and `source_version_conflict` and `idempotency_conflict` to 409 instead of 503, and reads a request body through a streaming byte cap with a fatal UTF-8 decoder. `apps/melete/test/integration/markdown-tests.ts` covers the 401 body shape, the 400 for an empty forget target, and the 400 for an oversized body. `.agents/notes/proposed/2026-09-11-memory-integration-hooks.md` records that the call reservation is a test policy and that scope must come from verified membership. All three are kept: they are coherent with the committed code and covered by the tests below.
+- Command `bun run openapi`: regenerated; `packages/contracts/openapi.json` is unchanged, so the status and message work matches the already committed contract.
+- File `docs/MEMORY.md`: finished for a self-hosting reader. Added the relationship to the `docs/ARCHITECTURE.md` files principle, `memory_streams` and `memory_proposals` in the location table, a worked trip correction with real request bodies on the default port 8787, the HTTP status meanings, the coverage reasons `ready`, `index_lag`, `budget`, `timeout`, `index_failure`, `restore_pending` and `public_compartment`, and a section on how restoring a backup replays removals before serving resumes.
+- File `README.md`: the docs row now links `docs/MEMORY.md`.
+- Command `bun run typecheck`: pass.
+- Command `bun run lint`: pass, 91 files checked.
+- Command `bun test --max-concurrency=2`: 242 pass, 1 baseline DB skip, 36 baseline conformance todos, 0 fail, 933 assertions, 279 tests across 23 files in 21.76 s.
+- Test `trip acceptance`: pass; log line `current August, dated July, 2 process kills, stale proposal rejected, no cross-space delivery, suppression replayed; parent scripted calls=2`.
+- Log `memory comparison`: `{"fixtures":6,"strategies":{"baseline":{"checks_passed":6,"p50_ms":2.73,"p95_ms":3.22,"max_context_bytes":295},"lexical":{"checks_passed":6,"p50_ms":3.86,"p95_ms":4.35,"max_context_bytes":866},"hybrid":{"checks_passed":6,"p50_ms":6.16,"p95_ms":7.54,"max_context_bytes":866}},"extraction_calls":1,"reserved_usd":"0.01","charged_usd":0,"provider":"scripted"}`. Six scripted fixtures are not evidence of a retrieval advantage.
+- Command `bun run compose:check`: pass, 11 checks, including `the internal network has no route out` and `the runtime publishes no ports`.
+- Log `fix cycles`: none were needed in this slice; every check passed on its first run.
+
+## Assumptions continued for slice 9
+
+- File `docs/ARCHITECTURE.md`: left unchanged because the brief freezes it. Its files principle and the Postgres authority are reconciled in `docs/MEMORY.md` instead of by editing the frozen file.
+- File `docs/MEMORY.md`: the curl examples use the default `PORT` of 8787 from `apps/melete/src/env.ts` and a claim ID in the `k_` ULID form the contracts require. They are illustrative; no authentication header is shown because this checkout's authentication module is still a stub.

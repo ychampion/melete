@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
   claimRevision,
+  errorResponse,
   ingestSourceResponse,
   knowledgeProposalList,
   knowledgeProposalView,
@@ -97,7 +98,16 @@ export function registerMarkdownTests(db: TestDatabase | null) {
       if (!db) return;
       const f = await fixture(db);
       try {
-        expect((await f.request('/memory/claims', 'GET', undefined, '')).status).toBe(401);
+        const unauthenticated = await f.request('/memory/claims', 'GET', undefined, '');
+        expect(unauthenticated.status).toBe(401);
+        expect(errorResponse.parse(await unauthenticated.json()).error.code).toBe(
+          'unauthenticated',
+        );
+        expect((await f.request('/memory/forget', 'POST', {})).status).toBe(400);
+        expect(
+          (await f.request('/memory/sources', 'POST', source('oversized', 'x'.repeat(1048576))))
+            .status,
+        ).toBe(400);
         for (const key of ['space_id', 'owner_id', 'publisher', 'metadata', 'audience']) {
           expect(
             (await f.request('/memory/sources', 'POST', { ...source(key), [key]: newId('sp') }))
