@@ -428,7 +428,7 @@ describe('retracting and deleting', () => {
 // --------------------------------------------------------------------------
 
 describe('the knowledge module inside the service', () => {
-  test('health still answers, and the knowledge routes are mounted', async () => {
+  test('health still answers, and the knowledge routes sit behind the session gate', async () => {
     const service = createApp({
       env: loadEnv({ MELETE_SPACES_DIR: root }),
       db: null,
@@ -439,19 +439,24 @@ describe('the knowledge module inside the service', () => {
     const health = await service.request('/health');
     expect(((await health.json()) as HealthBody).version).toBe(VERSION);
 
+    // The knowledge routes are mounted, but W1's auth runs ahead of them, so
+    // reaching them needs a session. The route behaviour itself is covered
+    // above, against knowledgeRoutes() directly.
     const search = await service.request(`/knowledge/search?space_id=${spaceId}&q=bun`, {
       headers: headers(),
     });
-    expect(search.status).toBe(200);
+    expect(search.status).toBe(401);
+    expect(((await search.json()) as ErrorBody).error.code).toBe('unauthorized');
   });
 
-  test('a module that is still a README says so instead of pretending', async () => {
+  test('a module that is still a README is gated like every other protected path', async () => {
     const service = createApp({
       env: loadEnv({ MELETE_SPACES_DIR: root }),
       db: null,
       checkDatabase: async () => 'not_configured',
     });
     const res = await service.request('/jobs');
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as ErrorBody).error.code).toBe('unauthorized');
   });
 });

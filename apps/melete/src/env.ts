@@ -17,6 +17,10 @@ export const envSchema = z.object({
   MELETE_MASTER_KEY: z.string().min(32).optional(),
 
   DATABASE_URL: z.string().min(1).optional(),
+  /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
+  MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
+  /** Stub is an explicit local development choice; runtime adapters are injected by callers. */
+  MELETE_RUNTIME_ADAPTER: z.enum(['stub', 'external']).default('external'),
 
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
@@ -24,7 +28,6 @@ export const envSchema = z.object({
 
   /** The address the runtime container reaches the broker on, internal network only. */
   MELETE_BROKER_BIND: z.string().default('127.0.0.1:3112'),
-  MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   MELETE_APPROVAL_KEY: z.string().min(32).optional(),
   MELETE_WORK_DIR: z.string().default('/work'),
   MELETE_CONNECTIONS_FILE: z.string().optional(),

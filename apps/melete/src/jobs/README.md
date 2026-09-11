@@ -14,4 +14,7 @@ responsibility alive across restarts.
 - Every wake runs exactly one bounded attempt and then commits an outcome.
   Waiting never holds a process.
 
-Not implemented yet.
+`JobService` exposes create/read/list/input/cancel and objective revisions.
+State changes use `contracts.transition` and pg-boss's Drizzle transaction adapter.
+Both `/jobs/:id/input` and the frozen `/jobs/:id/messages` spelling accept input.
+The integration tests walk every legal edge and reject every illegal input.

@@ -6,6 +6,7 @@ import { startEffectBoundary } from '../../src/broker/start.ts';
 import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
 import { loadEnv } from '../../src/env.ts';
 import { fakeProvider } from '../../src/gateway/fake.ts';
+import { QUEUES } from '../../src/jobs/queue.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
@@ -222,8 +223,8 @@ databaseTest(
         tools: [{ name: 'test.send', connection_id: seed.connectionId }],
       });
       const [queue] =
-        await fixture.sql`select name from pgboss.queue where name = 'melete.attempt'`;
-      expect(queue?.name).toBe('melete.attempt');
+        await fixture.sql`select name from pgboss.queue where name = ${QUEUES.attempt}`;
+      expect(queue?.name).toBe(QUEUES.attempt);
     } finally {
       await internal.close();
     }

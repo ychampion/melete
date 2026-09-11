@@ -2,8 +2,8 @@
  * `bun run conformance` lists the eight scenarios and what each one will
  * assert, then runs the suite.
  *
- * Scenarios 3 and 4 use a real Postgres and test destination. Other scenario
- * files retain their explicit todos until their implementations land.
+ * Scenarios 1 through 5 execute against disposable Postgres with scripted
+ * runtimes and the test destination; 6, 7 and 8 stay visibly marked as todo.
  */
 import { fileURLToPath } from 'node:url';
 import { SCENARIOS } from './scenarios.ts';
@@ -25,8 +25,8 @@ for (const scenario of SCENARIOS) {
 
 out(`${SCENARIOS.length} scenarios, ${assertions} assertions.`);
 out();
-out('Scenarios 3 and 4 execute against isolated Postgres and the test destination.');
-out('Scenarios 1, 2, 5, 6, 7 and 8 still contain explicit todos in this checkout.');
+out('Scenarios 1, 2, 3, 4 and 5 execute against isolated Postgres, scripted runtimes');
+out('and the test destination. Scenarios 6, 7 and 8 still contain explicit todos.');
 out(
   'Without DATABASE_URL, tests start embedded Postgres 17; unavailable binaries produce explicit skips.',
 );

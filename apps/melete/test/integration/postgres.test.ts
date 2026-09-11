@@ -42,6 +42,7 @@ describe('isolated Postgres and durable queue', () => {
       const payload: AttemptWake = {
         job_id: 'fixture-job',
         expected_epoch: 1,
+        expected_version: 1,
         reason: 'created',
       };
       const id = await boss.send(QUEUES.attempt, payload);

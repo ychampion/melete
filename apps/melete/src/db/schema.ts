@@ -3,7 +3,9 @@
  * migration SQL under apps/melete/drizzle is generated from this file and
  * committed, so a fresh install applies exactly the schema that was reviewed.
  */
+import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   doublePrecision,
@@ -18,17 +20,22 @@ import {
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
-export const owner = pgTable('owner', {
-  id: text('id').primaryKey(),
-  email: text('email').notNull().unique(),
-  passwordHash: text('password_hash'),
-  passkey: jsonb('passkey'),
-  createdAt: created(),
-});
+export const owner = pgTable(
+  'owner',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').notNull().unique(),
+    passwordHash: text('password_hash'),
+    passkey: jsonb('passkey'),
+    createdAt: created(),
+  },
+  () => [uniqueIndex('owner_singleton_idx').on(sql`(true)`)],
+);
 
 export const space = pgTable('space', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
+  policyGeneration: integer('policy_generation').notNull().default(0),
   kind: text('kind').notNull().default('personal'),
   // Reserved so shared spaces can arrive without a rewrite. Always "owner" in v0.1.
   audience: text('audience').notNull().default('owner'),
@@ -62,6 +69,7 @@ export const connection = pgTable(
     secretRef: text('secret_ref').references(() => secret.id, { onDelete: 'set null' }),
     scopes: jsonb('scopes').$type<string[]>().notNull().default([]),
     status: text('status').notNull().default('active'),
+    generation: integer('generation').notNull().default(0),
     health: text('health').notNull().default('unknown'),
     lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
     createdAt: created(),
@@ -86,6 +94,17 @@ export const job = pgTable(
     // Due time lives here, not only in the queue, so a lost timer is recoverable.
     nextWakeAt: timestamp('next_wake_at', { withTimezone: true }),
     wait: jsonb('wait').notNull().default({ kind: 'none' }),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
+    schedulingClass: text('scheduling_class').notNull().default('interactive'),
+    importance: text('importance').notNull().default('routine'),
+    unreadResults: integer('unread_results').notNull().default(0),
+    unreadThreshold: integer('unread_threshold').notNull().default(3),
+    cadenceMultiplier: integer('cadence_multiplier').notNull().default(1),
+    attentionStatus: text('attention_status').notNull().default('normal'),
+    attentionBaseWakeAt: timestamp('attention_base_wake_at', { withTimezone: true }),
+    scheduleSkipRemaining: integer('schedule_skip_remaining').notNull().default(0),
+    lastResultHash: text('last_result_hash'),
+    lastAttentionAttemptId: text('last_attention_attempt_id'),
     budget: jsonb('budget').notNull().default({}),
     createdBy: text('created_by').notNull().default('owner'),
     createdAt: created(),
@@ -117,6 +136,19 @@ export const attempt = pgTable(
     outcome: text('outcome'),
     outcomeDetail: jsonb('outcome_detail'),
     contextSnapshotRef: text('context_snapshot_ref'),
+    policyGeneration: integer('policy_generation').notNull().default(0),
+    connectionGenerations: jsonb('connection_generations')
+      .$type<Record<string, number>>()
+      .notNull()
+      .default({}),
+    revision: integer('revision').notNull().default(0),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    leaseStatus: text('lease_status').notNull().default('active'),
+    substrateDisposition: text('substrate_disposition')
+      .notNull()
+      .default('local_process_interrupted'),
+    runtimeCursor: integer('runtime_cursor').notNull().default(-1),
+    inputCursor: bigint('input_cursor', { mode: 'number' }).notNull().default(0),
   },
   (t) => [uniqueIndex('attempt_job_epoch_idx').on(t.jobId, t.epoch)],
 );
@@ -167,6 +199,7 @@ export const approval = pgTable(
     requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
     decision: text('decision'),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     decidedBy: text('decided_by'),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
   },
@@ -182,6 +215,8 @@ export const event = pgTable(
     jobId: text('job_id').references(() => job.id, { onDelete: 'cascade' }),
     attemptId: text('attempt_id').references(() => attempt.id, { onDelete: 'cascade' }),
     type: text('type').notNull(),
+    // Null on pre-protocol events: migration must not invent a historical lease.
+    epoch: integer('epoch'),
     payload: jsonb('payload').notNull().default({}),
     // Duplicate delivery of the same runtime event writes one row, not two.
     dedupKey: text('dedup_key').notNull(),
@@ -242,6 +277,7 @@ export const trigger = pgTable(
     spec: jsonb('spec').notNull(),
     cursor: text('cursor'),
     enabled: boolean('enabled').notNull().default(true),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
     createdAt: created(),
   },
   (t) => [index('trigger_job_idx').on(t.jobId)],
@@ -279,6 +315,108 @@ export const skill = pgTable(
   (t) => [uniqueIndex('skill_space_name_idx').on(t.spaceId, t.name)],
 );
 
+export const submission = pgTable('submission', {
+  submissionId: text('submission_id').primaryKey(),
+  inputDigest: text('input_digest').notNull(),
+  jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+  jobRevision: integer('job_revision'),
+  eventCursor: bigint('event_cursor', { mode: 'number' }),
+  state: text('state').notNull(),
+  httpStatus: integer('http_status').notNull(),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  createdAt: created(),
+});
+
+/** Independent of the receipt row and retained beyond event-stream pruning. */
+export const acceptanceJournal = pgTable('acceptance_journal', {
+  submissionId: text('submission_id').primaryKey(),
+  jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+  receipt: jsonb('receipt').notNull(),
+  receiptHash: text('receipt_hash').notNull(),
+  createdAt: created(),
+});
+
+export const replyObligation = pgTable(
+  'reply_obligation',
+  {
+    id: text('id').primaryKey(),
+    submissionId: text('submission_id').notNull().unique(),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    kind: text('kind').notNull(),
+    state: text('state').notNull().default('owed'),
+    substrateDisposition: text('substrate_disposition').notNull().default('timer_or_event'),
+    coalesceKey: text('coalesce_key').notNull(),
+    eventCursor: bigint('event_cursor', { mode: 'number' }).notNull(),
+    content: jsonb('content'),
+    contentHash: text('content_hash'),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+    message: text('message'),
+    createdAt: created(),
+  },
+  (t) => [index('reply_owed_idx').on(t.state, t.jobId)],
+);
+
+export const notification = pgTable(
+  'notification',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    coalesceKey: text('coalesce_key').notNull(),
+    deliveryKey: text('delivery_key').notNull(),
+    obligationIds: jsonb('obligation_ids').notNull(),
+    content: jsonb('content'),
+    contentHash: text('content_hash').notNull(),
+    deliveryAttempt: integer('delivery_attempt').notNull(),
+    state: text('state').notNull().default('pending'),
+    substrateDisposition: text('substrate_disposition').notNull().default('external_uncertain'),
+    attemptedAt: timestamp('attempted_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    uniqueIndex('notification_attempt_idx').on(t.deliveryKey, t.deliveryAttempt),
+    index('notification_pending_idx').on(t.state),
+  ],
+);
+
+/** Durable registrations are the recovery source; queue messages are disposable hints. */
+export const backgroundOperation = pgTable(
+  'background_operation',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    operationKey: text('operation_key').notNull(),
+    inputDigest: text('input_digest').notNull(),
+    policyGeneration: integer('policy_generation').notNull().default(0),
+    kind: text('kind').notNull(),
+    substrateDisposition: text('substrate_disposition').notNull(),
+    state: text('state').notNull().default('registered'),
+    version: integer('version').notNull().default(0),
+    ownerInstance: text('owner_instance'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    dueAt: timestamp('due_at', { withTimezone: true }).notNull().defaultNow(),
+    remoteRef: text('remote_ref'),
+    triggerId: text('trigger_id').references(() => trigger.id, { onDelete: 'set null' }),
+    result: jsonb('result'),
+    createdAt: created(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('operation_job_key_idx').on(t.jobId, t.operationKey),
+    index('operation_ready_idx').on(t.state, t.dueAt),
+  ],
+);
+
+/** Transport retention is separate from the durable event/transcript ledger. */
+export const eventRetention = pgTable('event_retention', {
+  id: text('id').primaryKey(),
+  retainedAfter: bigint('retained_after', { mode: 'number' }).notNull().default(0),
+});
+
 export const schema = {
   owner,
   space,
@@ -294,4 +432,10 @@ export const schema = {
   trigger,
   budgetLedger,
   skill,
+  submission,
+  acceptanceJournal,
+  replyObligation,
+  notification,
+  backgroundOperation,
+  eventRetention,
 };

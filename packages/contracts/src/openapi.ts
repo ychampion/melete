@@ -37,6 +37,30 @@ import {
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
+import {
+  backgroundOperation,
+  connectionGeneration,
+  connectionLifecycle,
+  createResponsibilityRequest,
+  jobScheduling,
+  jobSubmissionResponse,
+  notification,
+  notificationDelivery,
+  notificationList,
+  operationList,
+  operationRearm,
+  operationRegistration,
+  operationSettlement,
+  operationVersion,
+  policyChange,
+  policyGeneration,
+  replyObligation,
+  replyObligationList,
+  responsibilityJob,
+  responsibilitySnapshot,
+  responsibilitySubmissionResponse,
+  submissionResponse,
+} from './responsibility.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -83,6 +107,205 @@ export function buildOpenApiDocument() {
         { name: 'skills' },
       ],
       paths: {
+        '/responsibilities': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Accept a responsibility with scheduling and attention preferences',
+            requestBody: json(createResponsibilityRequest),
+            responses: {
+              '201': jsonResponse('Accepted responsibility', responsibilitySubmissionResponse),
+              '409': problem('Submission conflict'),
+            },
+          },
+        },
+        '/jobs/{id}/responsibility': {
+          get: {
+            tags: ['jobs'],
+            summary: 'Read visible responsibility status and attention',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Responsibility', responsibilityJob) },
+          },
+        },
+        '/jobs/{id}/scheduling': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Choose scheduling class, importance and unread threshold',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(jobScheduling),
+            responses: { '200': jsonResponse('Updated responsibility', responsibilityJob) },
+          },
+        },
+        '/jobs/{id}/read': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Mark results read and restore the normal checking frequency',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Read', responsibilityJob) },
+          },
+        },
+        '/connections/{id}/lifecycle': {
+          post: {
+            tags: ['connections'],
+            summary: 'Switch or revoke credentials and fence previous context generations',
+            requestParams: idParam('id', 'Connection id'),
+            requestBody: json(connectionLifecycle),
+            responses: {
+              '200': jsonResponse('New generation', connectionGeneration),
+              '409': problem('Generation changed'),
+            },
+          },
+        },
+        '/spaces/{id}/policy-generation': {
+          post: {
+            tags: ['spaces'],
+            summary: 'Advance policy and restart attempts with fresh context',
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(policyChange),
+            responses: {
+              '200': jsonResponse('Policy generation', policyGeneration),
+              '409': problem('Generation changed'),
+            },
+          },
+        },
+        '/jobs/{id}/snapshot': {
+          get: {
+            tags: ['events'],
+            summary: 'Current job and external-effect truth at one event cursor',
+            requestParams: idParam('id', 'Job id'),
+            responses: { '200': jsonResponse('Snapshot', responsibilitySnapshot) },
+          },
+        },
+        '/snapshot': {
+          get: {
+            tags: ['events'],
+            summary: 'Current state for an explicit event-stream resync',
+            responses: { '200': jsonResponse('Snapshot', responsibilitySnapshot) },
+          },
+        },
+        '/operations': {
+          get: {
+            tags: ['jobs'],
+            summary: 'List durable background operations and their recovery dispositions',
+            responses: { '200': jsonResponse('Operations', operationList) },
+          },
+        },
+        '/jobs/{id}/operations': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Register a durable timer, remote reference or local process',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(operationRegistration),
+            responses: {
+              '201': jsonResponse('Registered', backgroundOperation),
+              '409': problem('Operation key conflict'),
+            },
+          },
+        },
+        '/operations/{id}/claim': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Claim ready operation work',
+            requestParams: idParam('id', 'Operation id'),
+            requestBody: json(operationVersion),
+            responses: {
+              '200': jsonResponse('Claimed', backgroundOperation),
+              '409': problem('Stale operation'),
+            },
+          },
+        },
+        '/operations/{id}/rearm': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Rearm a currently owned live operation',
+            requestParams: idParam('id', 'Operation id'),
+            requestBody: json(operationRearm),
+            responses: {
+              '200': jsonResponse('Registered', backgroundOperation),
+              '409': problem('Stale operation'),
+            },
+          },
+        },
+        '/operations/{id}/settle': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Persist an operation result',
+            requestParams: idParam('id', 'Operation id'),
+            requestBody: json(operationSettlement),
+            responses: {
+              '200': jsonResponse('Settled', backgroundOperation),
+              '409': problem('Stale operation'),
+            },
+          },
+        },
+        '/reply-obligations': {
+          get: {
+            tags: ['jobs'],
+            summary: 'List replies still owed to the owner',
+            responses: {
+              '200': jsonResponse('Outstanding reply obligations', replyObligationList),
+            },
+          },
+        },
+        '/reply-obligations/{id}/acknowledge': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Acknowledge acceptance without claiming reply delivery',
+            requestParams: idParam('id', 'Reply obligation ID'),
+            responses: { '200': jsonResponse('Acknowledged obligation', replyObligation) },
+          },
+        },
+        '/notifications': {
+          get: {
+            tags: ['events'],
+            summary: 'Read the pending notification outbox',
+            responses: { '200': jsonResponse('Pending deliveries', notificationList) },
+          },
+        },
+        '/notifications/{id}/attempt': {
+          post: {
+            tags: ['events'],
+            summary: 'Record a notification delivery attempt',
+            requestParams: idParam('id', 'Notification ID'),
+            responses: { '200': jsonResponse('Delivery attempt', notification) },
+          },
+        },
+        '/notifications/{id}/delivered': {
+          post: {
+            tags: ['events'],
+            summary: 'Acknowledge delivery of the exact notification content',
+            requestParams: idParam('id', 'Notification ID'),
+            requestBody: json(notificationDelivery),
+            responses: { '200': jsonResponse('Delivered notification', notification) },
+          },
+        },
+        '/submissions/{id}': {
+          get: {
+            tags: ['jobs'],
+            summary: 'Look up a durable submission receipt after losing a reply',
+            requestParams: idParam('id', 'Client idempotency key or server ULID'),
+            responses: {
+              '200': jsonResponse(
+                'Acceptance, rejection, or unknown durability',
+                submissionResponse,
+              ),
+            },
+          },
+        },
+        '/jobs/{id}/input': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Submit an input once and receive its durable receipt',
+            requestParams: idParam('id', 'Job ID'),
+            requestBody: json(postMessageRequest),
+            responses: {
+              '200': jsonResponse('Input submission receipt', jobSubmissionResponse),
+              '409': jsonResponse(
+                'Submission conflict or rejected transition',
+                jobSubmissionResponse,
+              ),
+            },
+          },
+        },
         '/health': {
           get: {
             tags: ['health'],
