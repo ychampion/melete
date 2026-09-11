@@ -1,110 +1,117 @@
-# Melete, self-hosted. `docker compose up` from this directory.
-#
-# The shape of this file is the security boundary. The runtime container is
-# attached only to `internal`, which is declared `internal: true`, so the kernel
-# gives it no default route. The Melete broker is the only peer it can reach.
-# Scenario 6 of the conformance suite asserts exactly that from inside the
-# container: the internet, the Postgres port, the host metadata address, and a
-# sibling path are all unreachable.
-
-name: melete
+# Linux deployment. Run from the repository root using the README commands.
+name: ${COMPOSE_PROJECT_NAME:-melete}
 
 networks:
-  # Reachable from the host: the web client and the API.
   edge:
     driver: bridge
-  # No route out. Everything the runtime can see lives here.
+  database:
+    driver: bridge
+    internal: true
+  # A warm capability/probe cell. Actual attempts get separate networks with
+  # these same settings and only the trusted Melete service as a peer.
   internal:
     driver: bridge
     internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated
 
 volumes:
   pgdata:
   spaces:
   artifacts:
   work:
-  # HERMES_HOME. The root filesystem is read-only, but the API server's
-  # run-idempotency reservations are a SQLite file under HERMES_HOME: without a
-  # writable path the store falls back to process memory, /v1/capabilities
-  # reports runs_idempotency.durable=false, and the adapter refuses to start
-  # rather than risk a retried start becoming a second run. The entrypoint syncs
-  # the image's config and plugin into this volume on every boot, so an upgraded
-  # image wins over whatever an older container left here.
   runtime-home:
+  # Keep this independently of database snapshots: removals must survive restore.
+  restrictions:
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
-    networks: [internal]
+    networks: [database]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-melete}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run bun run deploy/scripts/configure.ts}
       POSTGRES_DB: ${POSTGRES_DB:-melete}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-melete}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-melete} -d ${POSTGRES_DB:-melete}"]
+      interval: 2s
       timeout: 5s
-      retries: 10
+      retries: 30
 
   melete:
+    image: melete-service:local
     build:
       context: ..
       dockerfile: deploy/Dockerfile.melete
     restart: unless-stopped
-    # On edge to serve the API, on internal to reach Postgres and to be the
-    # runtime's only peer.
-    networks: [edge, internal]
+    networks: [edge, database, internal]
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 8787
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
-      MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?set MELETE_MASTER_KEY in .env}
-      MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?set MELETE_CAPABILITY_KEY in .env}
-      MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?set MELETE_APPROVAL_KEY in .env}
+      DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
+      MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?run bun run deploy/scripts/configure.ts}
+      MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?run bun run deploy/scripts/configure.ts}
+      MELETE_APPROVAL_KEY: ${MELETE_APPROVAL_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_SPACES_DIR: /data/spaces
       MELETE_ARTIFACTS_DIR: /data/artifacts
+      MELETE_RESTRICTIONS_DIR: /data/restrictions
       MELETE_BROKER_BIND: 0.0.0.0:8788
       MELETE_WORK_DIR: /work
       MELETE_CONNECTIONS_FILE: /etc/melete/connections.json
       MELETE_GATEWAY_TLS_DIR: /etc/melete/gateway-tls
+      MELETE_RUNTIME_ADAPTER: docker
       MELETE_RUNTIME_URL: http://runtime:8790
-      MELETE_RUNTIME_KEY: ${MELETE_RUNTIME_KEY:?set MELETE_RUNTIME_KEY in .env}
+      MELETE_RUNTIME_KEY: ${MELETE_RUNTIME_KEY:?run bun run deploy/scripts/configure.ts}
+      MELETE_RUNTIME_IMAGE: melete-runtime:local
+      MELETE_DOCKER_SOCKET: /var/run/docker.sock
+      MELETE_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-melete}
+      MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
+      MELETE_DEFAULT_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fake}
+      MELETE_DEFAULT_MODEL: ${MELETE_DEFAULT_MODEL:-scripted}
+      MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}
+      MELETE_ENABLE_TEST_CONNECTOR: ${MELETE_ENABLE_TEST_CONNECTOR:-false}
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
       OPENAI_COMPAT_API_KEY: ${OPENAI_COMPAT_API_KEY:-}
+    group_add: ["10001", "${DOCKER_GID:?run bun run deploy/scripts/configure.ts}"]
     volumes:
       - spaces:/data/spaces
       - artifacts:/data/artifacts
       - work:/work
+      - restrictions:/data/restrictions
       - ./config:/etc/melete:ro
+      # Trusted supervisor only. No runtime cell is given this socket.
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "${MELETE_PORT:-8787}:8787"
+      - "127.0.0.1:${MELETE_PORT:-3100}:8787"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:8787/health || exit 1"]
-      interval: 15s
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8787/health');const b=await r.json();process.exit(r.ok&&b.database==='ok'?0:1)"]
+      interval: 2s
       timeout: 5s
-      retries: 5
+      start_period: 30s
+      retries: 30
+    stop_grace_period: 40s
 
   runtime:
+    image: melete-runtime:local
     build:
       context: ../packages/runtime-hermes
       dockerfile: Dockerfile
     restart: unless-stopped
-    # The whole point: internal only. Adding `edge` here would undo the boundary
-    # this release claims, and the compose check refuses it.
     networks: [internal]
     depends_on:
       melete:
-        condition: service_started
+        condition: service_healthy
     environment:
       MELETE_BROKER_URL: http://melete:8788
       HTTP_PROXY: http://melete:8788
@@ -115,56 +122,55 @@ services:
       API_SERVER_ENABLED: "1"
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_PORT: "8790"
-      # Not optional. Without a usable key the api_server platform is never
-      # enabled at all (gateway/config_env.py:_api_server returns early), so the
-      # container starts, logs nothing alarming, and never listens.
-      API_SERVER_KEY: ${MELETE_RUNTIME_KEY:?set MELETE_RUNTIME_KEY in .env}
-      # The surrogate the gateway swaps for a real provider key.
-      MELETE_MODEL_KEY: ${MELETE_RUNTIME_MODEL_KEY:?set MELETE_RUNTIME_MODEL_KEY in .env}
-      # Per attempt, and required: the entrypoint refuses to start without them.
-      # A long-lived container is a placeholder for the per-attempt container the
-      # service will start once W1 owns the lifecycle; these are the values it
-      # will pass, and the ones the local end-to-end passes today.
-      MELETE_ATTEMPT_TOKEN: ${MELETE_ATTEMPT_TOKEN:-}
-      MELETE_ATTEMPT_ID: ${MELETE_ATTEMPT_ID:-}
-      MELETE_JOB_ID: ${MELETE_JOB_ID:-}
+      API_SERVER_KEY: ${MELETE_RUNTIME_KEY:?run bun run deploy/scripts/configure.ts}
+      # This warm cell has no valid capability and cannot act on a job.
+      MELETE_MODEL_KEY: melete-surrogate-probe
+      MELETE_ATTEMPT_TOKEN: probe-without-authority
+      MELETE_ATTEMPT_ID: att_probe
+      MELETE_JOB_ID: job_probe
+      MELETE_MODEL_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fake}
+      MELETE_MODEL_NAME: ${MELETE_DEFAULT_MODEL:-scripted}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
+    security_opt: [no-new-privileges:true]
     pids_limit: 256
     mem_limit: 2g
     tmpfs:
       - /tmp:size=64m,mode=1777
     volumes:
-      # The only writable paths. /work is shared with the service; the Hermes
-      # home holds the idempotency reservations and nothing else that matters.
-      - work:/work
+      - type: volume
+        source: work
+        target: /work
+        volume:
+          nocopy: true
+          subpath: _probe
       - runtime-home:/var/lib/hermes
+    healthcheck:
+      test: ["CMD", "python", "/opt/melete-runtime/healthcheck.py"]
+      interval: 2s
+      timeout: 5s
+      start_period: 60s
+      retries: 30
 
-  # apps/web is a small reference client for the API, not the product interface,
-  # so it sits behind a profile: `docker compose up` brings up the service, and
-  # `docker compose --profile web up` adds a browsable client on top of it.
-  #
-  # The API address is a build argument, not an environment variable, because
-  # Vite inlines it into the bundle. Changing it means rebuilding the image.
   web:
-    profiles: [web]
+    image: melete-web:local
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
       args:
-        VITE_MELETE_API: ${MELETE_API_URL:-http://localhost:8787}
+        VITE_MELETE_API: /api
     restart: unless-stopped
     networks: [edge]
     depends_on:
       melete:
-        condition: service_started
+        condition: service_healthy
+    environment:
+      MELETE_WEB_ORIGIN: ${MELETE_WEB_ORIGIN:-}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3101}:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/ || exit 1"]
-      interval: 30s
+      test: ["CMD", "bun", "-e", "process.exit((await fetch('http://127.0.0.1:3000/')).ok?0:1)"]
+      interval: 2s
       timeout: 5s
-      retries: 3
+      retries: 30

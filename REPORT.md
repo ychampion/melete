@@ -80,6 +80,30 @@ memory only after replaying its independent restriction journal. Per-attempt
 context uses the existing memory eligibility/invalidation path and bounded
 Markdown retrieval; context records use separate durable audit identities.
 
+## Healthy stack
+
+Compose separates Postgres from the runtime bridge. The default stack now
+starts all four services, including the web client with a fixed same-origin
+API proxy. Configuration is generated at `deploy/.env` with mode 0600; provider
+keys stay in the trusted service. The configuration checker passes all 16 checks.
+
+A cold-container start with existing images and volumes took 20.287 seconds.
+Docker events measured each process from start to first healthy event:
+
+| Service | Process to healthy milliseconds | Healthy after compose up milliseconds |
+| --- | ---: | ---: |
+| Postgres | 2,078 | 2,684 |
+| Melete | 5,083 | 8,452 |
+| Web | 2,079 | 11,166 |
+| Runtime | 10,794 | 19,841 |
+
+The final Bun image rebuild completed both images in 26.99 seconds. Melete
+compressed content is 122,029,764 bytes; web is 70,180,910 bytes. Melete's restore
+proof module was imported successfully inside its deployed non-root container.
+The proxy tests, browser hook tests and global typecheck pass. The full repository
+suite passed 937 tests and 3,914 assertions in 80.48 seconds; 24 deployment-only
+or opt-in cases were explicitly skipped in that separate fixture-database run.
+
 ## Remaining checks
 
 The four-service stack is healthy; remaining suite, clean-host and restore
