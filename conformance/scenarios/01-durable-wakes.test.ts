@@ -60,8 +60,9 @@ withDb(`conformance 1: ${s.title}`, () => {
     await eventually(async () => (await fixture.jobs.get(row.id)).state === 'completed');
   }, 20_000);
   afterAll(async () => {
+    // Draining the real queue and dropping its durable database can outlast Bun's default hook budget.
     await fixture?.close();
-  });
+  }, 15_000);
   test(s.assertions[0] ?? '', async () => {
     if (!fixture) return;
     expect(

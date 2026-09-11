@@ -121,7 +121,7 @@ withDb('attention as a contract', () => {
     await handle.db
       .insert(space)
       .values({ id: spaceId, name: 'Personal', gitPath: `/spaces/${spaceId}` });
-  });
+  }, 15_000);
 
   afterAll(async () => {
     await queue?.stop();

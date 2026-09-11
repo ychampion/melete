@@ -118,3 +118,50 @@
 - Command `docker compose`: unavailable on this Windows host; `docs/browser-worker.md` and `docs/THREAT-MODEL.md` distinguish these static checks from the unexecuted image, volume-permission, and Linux network checks.
 - Test `worker receives OS essentials without database, vault or provider credentials`: passed; Windows development remains a same-user process, while production requires an explicitly configured isolated endpoint.
 - Test `takeover`: fencing is implemented, but interactive sign-in remains unsupported because unbrokered networking stays closed during human control; the documentation states this limit and the native URL-encoded POST boundary.
+
+## Slice 6 verification in progress
+
+- SHA `e77056a`: isolated deployment configuration and documentation committed and pushed to `origin/lane/w10b-browser`.
+- Command `bun test --max-concurrency=2 > .agents/w10b-final-full.log`: acquired the shared lock at 22:00:14 UTC after waiting through the other lanes; the full run now includes all fixture improvements and the tenth controller test.
+- Log `.agents/w10b-measurements-verified.log`: the successful 20:41 UTC browser matrix was copied before a later run could replace its timing sample; `.agents/notes/0017-browser-worker.md` records its twelve rows, fixed mode order, and exclusion of browser launch and model latency.
+
+## Full-suite correction at 22:14 UTC
+
+- Command `bun test --max-concurrency=2` under the shared lock: 1,048 pass, 14 existing todo, 1 fail, 4,561 assertions, 1,063 tests across 84 files, 476.49 seconds; log `.agents/w10b-final-full.log`, exit 1 in `.agents/w10b-final-full.exit.log`.
+- Log `.agents/w10b-final-full.log`: the only failure was the unnamed cleanup hook in `conformance 1: Due work survives a kill between the transition and the enqueue`, at 5,015 ms; all four scenario assertions and all browser checks passed.
+- Command `rmdir C:/Users/gamin/.melete-test.lock`: the full-run EXIT trap completed without a lock-removal error; the next full run uses the same acquire/wait/release protocol.
+- Test `conformance/scenarios/01-durable-wakes.test.ts`: full-suite fix cycle 2 grants its real queue drain and durable database cleanup 15 seconds; the focused rerun passed all 4 tests and 12 assertions in 33.53 seconds, log `.agents/w10b-cleanup-hook.log`.
+- Command `bun run typecheck`: passed after the cleanup-hook change, log `.agents/w10b-clean-typecheck.log`; command `bun run lint`: passed, 337 files checked, log `.agents/w10b-clean-lint.log`.
+- Command `bun test --max-concurrency=2 > .agents/w10b-clean-full.log`: queued behind the shared full-suite lock for the final verification after the second bounded fix cycle.
+- Log `.agents/w10b-final-full.log`: the 180-second suite target remains unmet after both bounded fixture optimizations; no timing claim treats lock-wait time as execution time or removes durability assertions.
+
+## Shared-suite queue checkpoint at 22:42 UTC
+
+- Command `bun test --max-concurrency=2 > .agents/w10b-clean-full.log`: still waiting for `mkdir C:/Users/gamin/.melete-test.lock` at this checkpoint; the test log does not exist yet and this lane has not started another full test process.
+- Command `Get-Item C:/Users/gamin/.melete-test.lock`: observed lock creation times of 22:08:21, 22:19:19, and 22:29:42 UTC as other lanes acquired it; no other lane's lock was removed.
+- Command `git -C C:/Users/gamin/melete-oss-w10b diff --cached --check`: passed for the fourteen staged measurement and fixture files; the sixth commit and PR remain pending the final full-suite result.
+
+## Shared-suite queue checkpoint at 23:10 UTC
+
+- Command `bun test --max-concurrency=2 > .agents/w10b-clean-full.log`: remains queued behind the shared lock; no final-run log exists yet and no additional test process was started by this lane.
+- Command `Get-ChildItem C:/Users/gamin/.melete-test.lock`: the current lock contains `orchestrator-w6`, dated 22:29:42 UTC; command `Get-CimInstance Win32_Process` at 22:59 UTC confirmed full-suite Bun PID 16844, started 22:30:09 UTC, outside this lane.
+- Command `git -C C:/Users/gamin/melete-oss-w10b diff --cached --check`: the staged final slice remains ready; both bounded fixture-fix cycles are complete, and the report will preserve the final rerun result or campaign-cap stop.
+
+## Final full-suite run started at 23:14 UTC
+
+- Command `bun test --max-concurrency=2 > .agents/w10b-clean-full.log`: acquired the shared lock at 23:14:27 UTC and started the final full run; the queue wait is excluded from the suite's execution time.
+
+## Final outcome at 23:19 UTC
+
+- Command `bun test --max-concurrency=2` under the shared lock: exit 0, 1,048 pass, 14 existing todo, 0 fail, 4,561 assertions, 1,062 tests across 84 files, 193.92 seconds; logs `.agents/w10b-clean-full.log` and `.agents/w10b-clean-full.exit.log`.
+- Command `rmdir C:/Users/gamin/.melete-test.lock`: the final full-run EXIT trap completed without a lock-removal error; this lane has no remaining full-suite process.
+- Test `conformance 1: Due work survives a kill between the transition and the enqueue`: all four assertions and cleanup passed in the final full run; both bounded full-suite fix cycles are complete.
+- Test `Chromium controller`: all 10 tests passed, including rejection of the dispatched stale second fill, fresh observation after handback, hidden fields, native multiline bytes, credential refusal, and tampered submit refusal.
+- Test `local forms through the browser broker`: all 14 tests passed, including 12 correct mode/variant dispositions; completed recipes used 4 observations versus 7 with exactly one effect, and unknown-field, ambiguous-control, and takeover rows each had zero effects.
+- Log `.agents/w10b-measurements-final.log`: retained the final 23:16 UTC matrix sample; `.agents/notes/0017-browser-worker.md` now records this successful final-run sample, superseding the earlier timing table while `.agents/w10b-measurements-verified.log` preserves the 20:41 UTC data.
+- Command `bun run typecheck` and command `bun run lint`: both passed on the final code, logs `.agents/w10b-clean-typecheck.log` and `.agents/w10b-clean-lint.log`; only report and measurement prose changed afterward.
+- Command `bun run test:plugin`: 20 passed; command `bun run compose:check`: 12 checks passed; command `bun run browser:compose:check`: 11 checks passed; command `bun run conformance:memory`: all 10 implemented scenarios and required counterfactuals passed, with the existing procedure-transfer todo.
+- Log `.agents/w10b-clean-full.log`: the 180-second whole-suite target remains unmet by 13.92 seconds after two bounded fixture optimizations; no further timing changes were made.
+- Command `docker compose`: unavailable on this host, so image build, volume ownership, combined startup, and Linux packet isolation remain unverified; static deployment checks passed, and `docs/browser-worker.md` records this boundary.
+- Test `takeover` and `docs/browser-worker.md`: controller fencing and owner control routes work; interactive sign-in and a remote desktop transport remain unsupported, and consequential commits are limited to native URL-encoded POST.
+- SHA `e77056a`: slices 1 through 5 are already on `origin/lane/w10b-browser`; command `git -C C:/Users/gamin/melete-oss-w10b commit` will record the final measurement note, fixture improvements, and this report as slice 6 before opening the PR to `integration`.

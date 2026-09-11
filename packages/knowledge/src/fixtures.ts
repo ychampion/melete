@@ -3,7 +3,12 @@
  * Not exported from the package barrel, because nothing outside the tests
  * should be building records from a template.
  */
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
+import { type SpacePaths, spacePaths } from './layout.ts';
+import { initSpace } from './space.ts';
 
 export const IDS = {
   bun: 'k_01J8ZP3QWABCDEFGHJKMNPQRST',
@@ -46,3 +51,32 @@ export const fixedClock =
   (iso = '2026-09-11T09:00:00.000Z') =>
   (): Date =>
     new Date(iso);
+
+/**
+ * Seed real committed files once, then copy them into an independent directory
+ * for every test. No Git process or index handle remains open in the template.
+ * The space initialization suite still exercises initSpace directly.
+ */
+export async function createSpaceTemplate(
+  prefix: string,
+  seed?: (paths: SpacePaths) => Promise<void>,
+) {
+  const template = mkdtempSync(join(tmpdir(), `${prefix}template-`));
+  try {
+    const paths = await initSpace(template, 'personal');
+    await seed?.(paths);
+  } catch (error) {
+    rmSync(template, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    copy() {
+      const root = mkdtempSync(join(tmpdir(), prefix));
+      cpSync(template, root, { recursive: true });
+      return { root, paths: spacePaths(root, 'personal') };
+    },
+    close() {
+      rmSync(template, { recursive: true, force: true });
+    },
+  };
+}

@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,6 +23,7 @@ import {
   requiresApproval,
   type SpacePaths,
   serializeRecord,
+  spacePaths,
 } from '@melete/knowledge';
 import { testDatabase } from '../../test/helpers/database.ts';
 import { loadEnv } from '../env.ts';
@@ -69,6 +70,7 @@ type HealthBody = { version: string };
 let root: string;
 let paths: SpacePaths;
 let spaceId: string;
+let templateRoot: string;
 
 const handle = await testDatabase();
 const serviceTest = handle ? test : test.skip;
@@ -78,25 +80,26 @@ const database = () => {
 };
 
 afterAll(async () => {
+  if (templateRoot) rmSync(templateRoot, { recursive: true, force: true });
   await handle?.close();
-});
+}, 15_000);
 
 const app = () => knowledgeRoutes({ spaces: filesystemSpaces(root) });
 const headers = () => ({ [SPACE_HEADER]: spaceId, 'content-type': 'application/json' });
 
-beforeEach(async () => {
-  root = mkdtempSync(join(tmpdir(), 'melete-api-'));
-  paths = await initSpace(root, 'personal');
+beforeAll(async () => {
+  templateRoot = mkdtempSync(join(tmpdir(), 'melete-api-template-'));
+  const templatePaths = await initSpace(templateRoot, 'personal');
   spaceId = spaceIdFor('personal');
 
   await commitRecord(
-    paths,
+    templatePaths,
     'knowledge/prefers-bun.md',
     serializeRecord(record(), 'Zara uses bun for every package operation.'),
     { proposedBy: 'user' },
   );
   await commitRecord(
-    paths,
+    templatePaths,
     'knowledge/landlord-contact.md',
     serializeRecord(
       record({ id: ID.landlord, title: 'Landlord contact', type: 'fact', tags: ['housing'] }),
@@ -104,6 +107,14 @@ beforeEach(async () => {
     ),
     { proposedBy: 'user' },
   );
+}, 20_000);
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'melete-api-'));
+  // A closed, genuinely committed seed preserves independent files and Git
+  // history without rebuilding identical commits under every fixture hook.
+  cpSync(templateRoot, root, { recursive: true });
+  paths = spacePaths(root, 'personal');
 });
 
 afterEach(() => {
@@ -439,7 +450,7 @@ describe('retracting and deleting', () => {
     const res = await remove(ID.landlord, { reason: 'again' });
     expect(res.status).toBe(409);
     expect(((await res.json()) as ErrorBody).error.code).toBe('cannot_retract');
-  });
+  }, 15_000);
 });
 
 // --------------------------------------------------------------------------

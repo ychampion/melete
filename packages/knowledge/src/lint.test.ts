@@ -1,18 +1,18 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { runLint } from './cli/lint.ts';
 import type { Check } from './findings.ts';
-import { aRecord, fixedClock, IDS } from './fixtures.ts';
+import { aRecord, createSpaceTemplate, fixedClock, IDS } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
 import type { SpacePaths } from './layout.ts';
 import { lintSpace } from './lint.ts';
-import { commitRecord, initSpace, refreshCatalog } from './space.ts';
+import { commitRecord, refreshCatalog } from './space.ts';
 
 let root: string;
 let paths: SpacePaths;
+let template: Awaited<ReturnType<typeof createSpaceTemplate>>;
 const now = fixedClock();
 
 const put = (name: string, frontmatter: KnowledgeFrontmatter, body: string): void => {
@@ -22,16 +22,22 @@ const put = (name: string, frontmatter: KnowledgeFrontmatter, body: string): voi
 const checksOf = (findings: readonly { check: Check }[]): Check[] =>
   [...new Set(findings.map((f) => f.check))].sort();
 
-beforeEach(async () => {
-  root = mkdtempSync(join(tmpdir(), 'melete-lint-'));
-  paths = await initSpace(root, 'personal');
-  await commitRecord(
-    paths,
-    'knowledge/prefers-bun.md',
-    serializeRecord(aRecord({}), 'Zara uses bun for every package operation.'),
-    { proposedBy: 'user', now },
-  );
+beforeAll(async () => {
+  template = await createSpaceTemplate('melete-lint-', async (paths) => {
+    await commitRecord(
+      paths,
+      'knowledge/prefers-bun.md',
+      serializeRecord(aRecord({}), 'Zara uses bun for every package operation.'),
+      { proposedBy: 'user', now },
+    );
+  });
+}, 20_000);
+
+beforeEach(() => {
+  ({ root, paths } = template.copy());
 });
+
+afterAll(() => template?.close());
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });

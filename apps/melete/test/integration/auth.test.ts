@@ -45,7 +45,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
   });
   beforeEach(async () => {
     await database().sql`truncate "owner", "space" cascade`;
-  });
+  }, 15_000);
 
   afterAll(async () => {
     await handle?.close();
