@@ -4,8 +4,8 @@
  * Hermes appends the run's `instructions` into the context tier of its own
  * system prompt rather than replacing it (`agent/system_prompt.py:638`), so
  * everything here is additive: the engine's preamble is underneath, and this is
- * the part Melete owns. Measured at the pinned tag, the engine contributes about
- * 2,700 tokens and this contributes the rest, inside the 4,000 budget.
+ * the part Melete owns. The engine contributes its own preamble in addition to
+ * the bounded skills and recalled knowledge supplied by the service.
  *
  * Order matters for prompt caching. The identity never changes, the skills
  * change rarely, the knowledge changes per attempt, and the volatile inputs go

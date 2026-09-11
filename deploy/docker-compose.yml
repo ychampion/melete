@@ -15,6 +15,7 @@ networks:
     driver: bridge
   # No route out. Everything the runtime can see lives here.
   internal:
+    name: melete_internal
     driver: bridge
     internal: true
 
@@ -23,6 +24,7 @@ volumes:
   spaces:
   artifacts:
   work:
+    name: melete_work
   # HERMES_HOME. The root filesystem is read-only, but the API server's
   # run-idempotency reservations are a SQLite file under HERMES_HOME: without a
   # writable path the store falls back to process memory, /v1/capabilities
@@ -60,6 +62,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      runtime-image:
+        condition: service_completed_successfully
+    group_add: ["${DOCKER_GID:-0}"]
     environment:
       NODE_ENV: production
       PORT: 8787
@@ -73,8 +78,12 @@ services:
       MELETE_WORK_DIR: /work
       MELETE_CONNECTIONS_FILE: /etc/melete/connections.json
       MELETE_GATEWAY_TLS_DIR: /etc/melete/gateway-tls
-      MELETE_RUNTIME_URL: http://runtime:8790
-      MELETE_RUNTIME_KEY: ${MELETE_RUNTIME_KEY:?set MELETE_RUNTIME_KEY in .env}
+      MELETE_RUNTIME_ADAPTER: hermes
+      MELETE_RUNTIME_SUPERVISOR: docker
+      MELETE_BROKER_URL: http://melete:8788
+      MELETE_RUNTIME_IMAGE: melete-runtime:local
+      MELETE_RUNTIME_NETWORK: melete_internal
+      MELETE_RUNTIME_WORK_VOLUME: melete_work
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -86,6 +95,7 @@ services:
       - artifacts:/data/artifacts
       - work:/work
       - ./config:/etc/melete:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${MELETE_PORT:-8787}:8787"
     healthcheck:
@@ -94,11 +104,21 @@ services:
       timeout: 5s
       retries: 5
 
-  runtime:
+  # Builds the image before the service can launch an attempt. No engine or credentials run here.
+  runtime-image:
+    image: melete-runtime:local
     build:
       context: ../packages/runtime-hermes
       dockerfile: Dockerfile
-    restart: unless-stopped
+    entrypoint: ["/bin/true"]
+    network_mode: none
+
+  # An idle inspection container, enabled only with --profile runtime-dev.
+  # Real attempts are launched and removed by the service's supervisor.
+  runtime:
+    profiles: [runtime-dev]
+    image: melete-runtime:local
+    entrypoint: ["/bin/sleep", "infinity"]
     # The whole point: internal only. Adding `edge` here would undo the boundary
     # this release claims, and the compose check refuses it.
     networks: [internal]
@@ -115,19 +135,6 @@ services:
       API_SERVER_ENABLED: "1"
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_PORT: "8790"
-      # Not optional. Without a usable key the api_server platform is never
-      # enabled at all (gateway/config_env.py:_api_server returns early), so the
-      # container starts, logs nothing alarming, and never listens.
-      API_SERVER_KEY: ${MELETE_RUNTIME_KEY:?set MELETE_RUNTIME_KEY in .env}
-      # The surrogate the gateway swaps for a real provider key.
-      MELETE_MODEL_KEY: ${MELETE_RUNTIME_MODEL_KEY:?set MELETE_RUNTIME_MODEL_KEY in .env}
-      # Per attempt, and required: the entrypoint refuses to start without them.
-      # A long-lived container is a placeholder for the per-attempt container the
-      # service will start once W1 owns the lifecycle; these are the values it
-      # will pass, and the ones the local end-to-end passes today.
-      MELETE_ATTEMPT_TOKEN: ${MELETE_ATTEMPT_TOKEN:-}
-      MELETE_ATTEMPT_ID: ${MELETE_ATTEMPT_ID:-}
-      MELETE_JOB_ID: ${MELETE_JOB_ID:-}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]

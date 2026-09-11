@@ -53,6 +53,13 @@ describe('environment', () => {
   test('a nonsense port is refused', () => {
     expect(readEnv({ PORT: 'eight' }).ok).toBe(false);
   });
+  test('unknown runtime adapters and supervisors fail fast with the field named', () => {
+    for (const field of ['MELETE_RUNTIME_ADAPTER', 'MELETE_RUNTIME_SUPERVISOR']) {
+      const result = readEnv({ [field]: 'unknown' });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.issues.join()).toContain(field);
+    }
+  });
 });
 
 describe('schema', () => {

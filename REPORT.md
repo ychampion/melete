@@ -76,3 +76,8 @@
 - Log `wired Hermes att_01M29BZ9JV3H75BVZ7JD0074ES: cold=10067ms wall=19980ms`; log `wired Hermes att_01M29BZXN21CCWWPQVEE466XBX: cold=8426ms wall=14951ms`.
 - Command `bun test --max-concurrency=2`: the requested 180-second duration target remains **unmet** on this host. Time outside the 37.032-second HTTP proof was approximately 220.17 seconds. This is a timing limitation; the locked run had no failed tests.
 - Command `bun run typecheck`: passed after the workspace permission fix; the supervisor's focused checks passed with the explicit Windows skip described above. Docker build, socket access, volume-subpath behavior and actual network isolation remain **unverified** because Docker is unavailable here.
+
+## Slice publication
+
+- SHA `02d7f6a`: bundle assembly pushed to `origin/lane/w15-wire` after the locked full suite passed.
+- SHA `731bdbe`: entry point, memory startup, context diagnostics and generated contracts committed and pushed. Its intermediate adapter uses the existing static endpoint; the following launcher slice replaces that endpoint with supervised instances. The focused entry-point tests and final-working-tree locked suite passed.

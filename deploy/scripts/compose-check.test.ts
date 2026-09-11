@@ -24,6 +24,23 @@ describe('the shipped compose file', () => {
 });
 
 describe('the check catches the mistakes that would matter', () => {
+  test('enabling the static runtime by default', () => {
+    const broken = structuredClone(compose);
+    if (broken.services?.runtime) broken.services.runtime.profiles = [];
+    expect(failures(broken)).toContain('the static runtime is an explicit development profile');
+  });
+  test('selecting the stub for ordinary deployments', () => {
+    const broken = structuredClone(compose);
+    if (broken.services?.melete?.environment)
+      broken.services.melete.environment.MELETE_RUNTIME_ADAPTER = 'stub';
+    expect(failures(broken)).toContain('the default service supervises Hermes attempts');
+  });
+  test('reintroducing a static attempt token', () => {
+    const broken = structuredClone(compose);
+    if (broken.services?.runtime?.environment)
+      broken.services.runtime.environment.MELETE_ATTEMPT_TOKEN = 'static';
+    expect(failures(broken)).toContain('no static attempt credential is configured');
+  });
   test('giving the runtime an edge network', () => {
     const broken: ComposeFile = structuredClone(compose);
     const runtime = broken.services?.runtime;

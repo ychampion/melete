@@ -135,6 +135,17 @@ def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
     return f"{scope}:{name}:{digest}"
 
 
+def _wire_handler(handler: Callable[..., Dict[str, Any]]) -> Callable[..., str]:
+    """Hermes tools/registry.py accepts text results, not bare dictionaries.
+
+    Serialize only at the engine boundary so broker status and receipt fields
+    arrive intact instead of becoming a tool_result_contract error.
+    """
+    def invoke(args: Optional[Dict[str, Any]] = None, **extra: Any) -> str:
+        return json.dumps(handler(args, **extra), ensure_ascii=False)
+    return invoke
+
+
 def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
     """Register the broker's tools. Called once by the plugin loader.
 
@@ -166,7 +177,7 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
             name=name,
             toolset=TOOLSET,
             schema=tool_schema(tool),
-            handler=build_handler(client, tool),
+            handler=_wire_handler(build_handler(client, tool)),
             description=str(tool.get("description", "")),
             emoji="",
         )

@@ -26,6 +26,9 @@ export type ComposeService = {
   volumes?: string[];
   ports?: string[];
   profiles?: string[];
+  environment?: Record<string, string | number | boolean>;
+  image?: string;
+  network_mode?: string;
 };
 
 export type CheckResult = {
@@ -55,6 +58,35 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   }
 
   const networks = runtime.networks ?? [];
+  say(
+    'the static runtime is an explicit development profile',
+    runtime.profiles?.includes('runtime-dev') === true,
+    'runtime.profiles must include runtime-dev; ordinary jobs use the supervisor',
+  );
+  const melete = compose.services?.melete;
+  say(
+    'the default service supervises Hermes attempts',
+    melete?.environment?.MELETE_RUNTIME_ADAPTER === 'hermes' &&
+      melete.environment.MELETE_RUNTIME_SUPERVISOR === 'docker',
+    'melete must select the hermes adapter and docker supervisor',
+  );
+  say(
+    'no static attempt credential is configured',
+    ![
+      'MELETE_ATTEMPT_TOKEN',
+      'MELETE_ATTEMPT_ID',
+      'MELETE_JOB_ID',
+      'API_SERVER_KEY',
+      'MELETE_MODEL_KEY',
+    ].some((key) => key in (runtime.environment ?? {})),
+    'attempt credentials are minted by the service and passed only to their container',
+  );
+  const image = compose.services?.['runtime-image'];
+  say(
+    'the supervisor image is built without a running engine',
+    image?.network_mode === 'none' && image.image === melete?.environment?.MELETE_RUNTIME_IMAGE,
+    'runtime-image must build the selected image without joining any network',
+  );
   say(
     'the runtime is on the internal network only',
     networks.length === 1 && networks[0] === 'internal',

@@ -30,6 +30,11 @@ import os, sys, yaml
 
 config = yaml.safe_load(open("/opt/melete-runtime/config.yaml", encoding="utf-8"))
 provider = config.setdefault("providers", {}).setdefault("melete-gateway", {})
+config["provider"] = "melete-gateway"
+config["model"] = os.environ["MELETE_MODEL_NAME"]
+provider["base_url"] = os.environ["MELETE_BROKER_URL"].rstrip("/") + "/providers/" + os.environ["MELETE_MODEL_PROVIDER"] + "/v1"
+provider["default_model"] = os.environ["MELETE_MODEL_NAME"]
+provider["api_mode"] = os.environ["MELETE_MODEL_API_MODE"]
 # The capability is a per-attempt secret and is never written into the image.
 provider.setdefault("extra_headers", {})["x-melete-capability"] = os.environ["MELETE_ATTEMPT_TOKEN"]
 with open(sys.argv[1], "w", encoding="utf-8") as out:

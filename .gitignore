@@ -6,12 +6,14 @@ dist/
 .DS_Store
 spaces/
 artifacts/
+work/
 **/.index/
 .gstack/
 .omx/
 .agents/w2-tests.log
 deploy/config/gateway-tls/
 .agents/w7-tests.log
+.agents/w15-*.log
 .hermes-src/
 .hermes-venv/
 __pycache__/

@@ -4,6 +4,7 @@ import {
   type ActionStatus,
   type ApprovalDecisionRequest,
   type CapabilityClaims,
+  CONTEXT_LIMITS,
   type ConnectorTool,
   canonicalizePayload,
   type DispatchResult,
@@ -75,6 +76,8 @@ export type BrokerOptions = {
   resolveStandingGrant?: StandingGrantResolver;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
+  /** The service runner must finalize its attempt before changing the job state. */
+  deferApprovalWaitToRunner?: boolean;
 };
 
 export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
@@ -204,13 +207,15 @@ export class BrokerService implements BrokerOperations {
           });
         }
       }
-      return tools.sort((a, b) =>
-        a.name < b.name
-          ? -1
-          : a.name > b.name
-            ? 1
-            : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
-      );
+      return tools
+        .sort((a, b) =>
+          a.name < b.name
+            ? -1
+            : a.name > b.name
+              ? 1
+              : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
+        )
+        .slice(0, CONTEXT_LIMITS.max_tools);
     });
   }
 
@@ -317,7 +322,7 @@ export class BrokerService implements BrokerOperations {
       origin_warnings: classified.warnings,
       origin_warnings_hash: classified.warnings_hash,
     });
-    if (job.state === 'running')
+    if (job.state === 'running' && !this.options.deferApprovalWaitToRunner)
       await this.moveJob(tx, job, 'waiting_for_approval', {
         kind: 'approval',
         action_ids: [action.id],
@@ -392,25 +397,45 @@ export class BrokerService implements BrokerOperations {
         kind: request.kind,
         payload_hash: canonical.hash,
       });
-      const ref =
+      const refBase =
         request.client_ref === undefined
           ? null
           : `broker:proposal:${job.id}:${createHash('sha256').update(request.client_ref).digest('hex')}`;
-      if (ref) {
-        const [event] = await tx`select payload from event where dedup_key = ${ref}`;
+      const ref = refBase ? `${refBase}:revision:${job.revision}` : null;
+      if (refBase) {
+        const [event] = await tx`select payload from event where job_id = ${job.id}
+          and (dedup_key = ${refBase} or dedup_key like ${`${refBase}:revision:%`})
+          order by seq desc limit 1`;
         if (event) {
           const existing = await loadAction(tx, event.payload.action_id);
-          if (
-            existing.payload_hash !== canonical.hash ||
-            existing.kind !== request.kind ||
-            existing.connection_id !== request.connection_id
-          ) {
-            throw new BrokerFault(
-              'approval_hash_mismatch',
-              'A retried proposal must use the same content',
-            );
+          const currentIdentity = intentKey({
+            job_id: job.id,
+            job_revision: job.revision,
+            connection_id: existing.connection_id,
+            kind: existing.kind,
+            payload_hash: existing.payload_hash,
+          });
+          const obsoleteUnadmitted =
+            existing.intent_key !== currentIdentity &&
+            ['proposed', 'needs_approval', 'approved', 'denied'].includes(existing.status);
+          if (obsoleteUnadmitted) {
+            // A correction revokes an unadmitted approval. Preserve the old
+            // record, refuse its dispatch, and create a binding for this revision.
+            if (['proposed', 'needs_approval', 'approved'].includes(existing.status))
+              await this.rejectDispatch(tx, job, existing, 'job_revision_changed');
+          } else {
+            if (
+              existing.payload_hash !== canonical.hash ||
+              existing.kind !== request.kind ||
+              existing.connection_id !== request.connection_id
+            ) {
+              throw new BrokerFault(
+                'approval_hash_mismatch',
+                'A retried proposal must use the same content',
+              );
+            }
+            return { action: existing, key, repeated: true };
           }
-          return { action: existing, key, repeated: true };
         }
       }
       // The unique index is the durable half of this; the job row lock is what

@@ -1,0 +1,47 @@
+import type { AttemptBundle, EventSink, RuntimeAdapter } from '@melete/contracts';
+import { HermesRuntimeAdapter, RUNTIME_VERSION } from '@melete/runtime-hermes';
+import type { MemorySql } from '../memory/db.ts';
+import type { RuntimeSupervisor } from './supervisor.ts';
+
+export type AttemptTiming = { attemptId: string; coldStartMs: number; wallMs: number };
+
+/** One engine per attempt; only the service can inspect the parked-action ledger. */
+export class SupervisedHermesRuntime implements RuntimeAdapter {
+  constructor(
+    readonly supervisor: RuntimeSupervisor,
+    readonly sql: MemorySql,
+    readonly onTiming: (timing: AttemptTiming) => void = () => {},
+  ) {}
+  async capabilities() {
+    // No attempt identity exists at lease reservation time. Validate the live
+    // server's capabilities again after launch, before sending it the bundle.
+    return { streaming: true, tools: true, interrupt: true, version: RUNTIME_VERSION };
+  }
+  async start(bundle: AttemptBundle, sink: EventSink, signal: AbortSignal) {
+    const started = Date.now();
+    const instance = await this.supervisor.launch(bundle, signal);
+    try {
+      const adapter = new HermesRuntimeAdapter({
+        baseUrl: instance.baseUrl,
+        token: instance.token,
+        parkedActions: async (current) => {
+          const rows = await this
+            .sql`select a.id from action a join approval p on p.action_id = a.id
+              where a.job_id = ${current.attempt.job_id} and a.status = 'needs_approval'
+              and p.job_revision = ${current.attempt.revision} and p.decision is null order by a.id`;
+          return rows.map((row) => row.id as string);
+        },
+      });
+      await adapter.capabilities();
+      signal.throwIfAborted();
+      return await adapter.start(bundle, sink, signal);
+    } finally {
+      await instance.stop();
+      this.onTiming({
+        attemptId: bundle.attempt.id,
+        coldStartMs: instance.coldStartMs,
+        wallMs: Date.now() - started,
+      });
+    }
+  }
+}

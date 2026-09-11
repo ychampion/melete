@@ -22,7 +22,9 @@ export function createInternalServer(options: {
   resolveAuthority?: BrokerOptions['resolveAuthority'];
   resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
+  deferApprovalWaitToRunner?: boolean;
   gatewayFetch?: GatewayOptions['fetch'];
+  fake?: GatewayOptions['fake'];
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
 }) {
   const broker = new BrokerService({
@@ -33,6 +35,7 @@ export function createInternalServer(options: {
     resolveAuthority: options.resolveAuthority,
     resolveTrust: options.resolveTrust,
     approvalTtlMs: options.approvalTtlMs,
+    deferApprovalWaitToRunner: options.deferApprovalWaitToRunner,
   });
   const app = createBrokerApp({
     broker,
@@ -63,6 +66,7 @@ export function createInternalServer(options: {
     defaultProvider: options.defaultProvider,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
+    fake: options.fake,
     brokerFetch: (request) =>
       request.method === 'GET' && new URL(request.url).pathname === '/actions'
         ? reads.fetch(request)

@@ -3,7 +3,11 @@
  * is validated once at start-up, so a missing master key is a clear message on
  * boot rather than a decryption failure three hours into a job.
  */
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+
+const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -21,12 +25,29 @@ export const envSchema = z.object({
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /** Hermes is the product path; stub is an explicit scripted development choice. */
   MELETE_RUNTIME_ADAPTER: z.enum(['hermes', 'stub']).default('hermes'),
+  MELETE_RUNTIME_SUPERVISOR: z.enum(['process', 'docker']).default('process'),
+  MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
+  MELETE_HERMES_PYTHON: z
+    .string()
+    .default(
+      join(
+        root,
+        '.hermes-venv',
+        process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python',
+      ),
+    ),
+  MELETE_RUNTIME_PACKAGE: z.string().default(join(root, 'packages/runtime-hermes')),
+  MELETE_RUNTIME_IMAGE: z.string().default('melete-runtime:local'),
+  MELETE_RUNTIME_NETWORK: z.string().default('melete_internal'),
+  MELETE_RUNTIME_WORK_VOLUME: z.string().default('melete_work'),
+
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
   MELETE_ARTIFACTS_DIR: z.string().default('/data/artifacts'),
 
   /** The address the runtime container reaches the broker on, internal network only. */
   MELETE_BROKER_BIND: z.string().default('127.0.0.1:3112'),
+  MELETE_BROKER_URL: z.string().url().default('http://127.0.0.1:3112'),
   MELETE_APPROVAL_KEY: z.string().min(32).optional(),
   MELETE_WORK_DIR: z.string().default('/work'),
   MELETE_CONNECTIONS_FILE: z.string().optional(),
@@ -39,9 +60,6 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-
-  MELETE_RUNTIME_URL: z.string().default('http://runtime:8790'),
-  MELETE_RUNTIME_KEY: z.string().min(32).optional(),
 
   /** Provider keys. The gateway injects these; the runtime never sees them. */
   FIREWORKS_API_KEY: z.string().optional(),

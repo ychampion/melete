@@ -48,7 +48,8 @@ RUN git clone --depth 1 --branch "${HERMES_TAG}" "${HERMES_REPO}" /opt/hermes \
     && test "$(git -C /opt/hermes rev-parse HEAD)" = "${HERMES_COMMIT}" \
     && git -C /opt/hermes rev-parse HEAD > /opt/hermes/.melete-hermes-commit \
     && uv sync --frozen --no-install-project \
-    && uv pip install --no-cache-dir --no-deps -e "."
+    && uv pip install --no-cache-dir --no-deps -e "." \
+    && uv pip install --no-cache-dir aiohttp==3.14.3
 
 # The plugin and the config, staged where the entrypoint can sync them into the
 # writable HERMES_HOME. They are not copied straight there because that path is

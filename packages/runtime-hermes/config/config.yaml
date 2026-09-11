@@ -39,6 +39,15 @@ memory:
   # platform_toolsets above, which is the other half of this.
   enabled: false
 
+# Melete owns job titles and learning. These side calls do not carry the main
+# provider's per-attempt header, so they must not enter an auxiliary fallback
+# chain (hermes_cli/config_defaults.py:711,742 at the pinned release).
+auxiliary:
+  title_generation:
+    enabled: false
+  background_review:
+    enabled: false
+
 approvals:
   # Melete does not use Hermes's approval gate: api_server is in
   # _UNATTENDED_APPROVAL_PLATFORMS (tools/approval_context.py:134), so a

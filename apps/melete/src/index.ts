@@ -9,8 +9,7 @@
  * directories with a README describing the contract they will implement.
  */
 
-import type { RuntimeAdapter } from '@melete/contracts';
-import { HermesRuntimeAdapter } from '@melete/runtime-hermes';
+import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
@@ -32,6 +31,7 @@ import { migrateDatabase } from './db/migrate.ts';
 import { connection } from './db/schema.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import type { GatewayOptions } from './gateway/index.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
 import { OperationService } from './jobs/operations.ts';
@@ -50,7 +50,13 @@ import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
+import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
+import {
+  DockerRuntimeSupervisor,
+  ProcessRuntimeSupervisor,
+  type RuntimeSupervisor,
+} from './runtime/supervisor.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -140,12 +146,22 @@ export function createApp(deps: AppDeps) {
 
 /** Wire the real dependencies. Called only when this file is the entry point. */
 export async function bootstrap(
-  options: { env?: Env; runtime?: RuntimeAdapter; workers?: boolean } = {},
+  options: {
+    env?: Env;
+    runtime?: RuntimeAdapter;
+    workers?: boolean;
+    /** Observers exercise the real entry point without replacing the runtime. */
+    onBundle?: (bundle: AttemptBundle) => void;
+    onTiming?: (timing: AttemptTiming) => void;
+    fakeProvider?: GatewayOptions['fake'];
+  } = {},
 ) {
   const env = options.env ?? loadEnv();
   if (!options.runtime && !['hermes', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
     throw new Error('MELETE_RUNTIME_ADAPTER must be hermes or stub.');
   }
+  if (!['process', 'docker'].includes(env.MELETE_RUNTIME_SUPERVISOR))
+    throw new Error('MELETE_RUNTIME_SUPERVISOR must be process or docker.');
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
@@ -161,6 +177,7 @@ export async function bootstrap(
   let questions: QuestionService | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let boundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
+  let supervisor: RuntimeSupervisor | undefined;
   let closing: Promise<void> | undefined;
   const close = () =>
     (closing ??= (async () => {
@@ -172,6 +189,7 @@ export async function bootstrap(
       // Every owned dependency gets its shutdown even when a sibling fails.
       // Runtimes must stop while their broker and database still exist.
       await settle([triggers?.stop(), runner?.stop(), operations?.stop()]);
+      await settle([supervisor?.close()]);
       await settle([memory?.stop(), boundary?.close(), events?.close()]);
       await settle([queue?.stop()]);
       await settle([handle?.close()]);
@@ -205,24 +223,38 @@ export async function bootstrap(
               });
             },
       );
-      if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime)
-        boundary = await startEffectBoundary(handle, env);
+      if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime) {
+        boundary = await startEffectBoundary(handle, env, { fakeProvider: options.fakeProvider });
+        const Supervisor =
+          env.MELETE_RUNTIME_SUPERVISOR === 'docker'
+            ? DockerRuntimeSupervisor
+            : ProcessRuntimeSupervisor;
+        supervisor = new Supervisor({
+          workRoot: env.MELETE_WORK_DIR,
+          brokerUrl: env.MELETE_BROKER_URL,
+          engineRoot: env.MELETE_HERMES_ROOT,
+          python: env.MELETE_HERMES_PYTHON,
+          runtimePackage: env.MELETE_RUNTIME_PACKAGE,
+          dockerImage: env.MELETE_RUNTIME_IMAGE,
+          dockerNetwork: env.MELETE_RUNTIME_NETWORK,
+          dockerWorkVolume: env.MELETE_RUNTIME_WORK_VOLUME,
+        });
+      }
       const runtime =
         options.runtime ??
-        (env.MELETE_RUNTIME_ADAPTER === 'stub'
-          ? new StubRuntimeAdapter()
-          : new HermesRuntimeAdapter({
-              baseUrl: env.MELETE_RUNTIME_URL,
-              token: env.MELETE_RUNTIME_KEY,
-              parkedActions: async (bundle) => {
-                const rows =
-                  await handle.sql`select id from action where job_id = ${bundle.attempt.job_id} and status = 'needs_approval' order by id`;
-                return rows.map((row) => row.id as string);
-              },
-            }));
+        (supervisor
+          ? new SupervisedHermesRuntime(supervisor, handle.sql, options.onTiming)
+          : new StubRuntimeAdapter());
+      const observed: RuntimeAdapter = {
+        capabilities: () => runtime.capabilities(),
+        start: (bundle, sink, signal) => {
+          options.onBundle?.(structuredClone(bundle));
+          return runtime.start(bundle, sink, signal);
+        },
+      };
       runner = new AttemptRunner(
         jobs,
-        withMemoryRuntime(runtime, handle.sql, memory.scopeForJob, {
+        withMemoryRuntime(observed, handle.sql, memory.scopeForJob, {
           catalog: async (bundle) =>
             boundary
               ? boundary.broker.catalog(verifyCapability(bundle.attempt.token, capabilityKey))
@@ -312,6 +344,7 @@ export async function bootstrap(
     questions,
     memory,
     boundary,
+    supervisor,
     close,
   };
 }
