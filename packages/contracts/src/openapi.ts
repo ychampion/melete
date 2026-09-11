@@ -128,6 +128,9 @@ export function buildOpenApiDocument() {
         license: { name: 'Apache-2.0', identifier: 'Apache-2.0' },
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
+      components: {
+        securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: 'melete_session' } },
+      },
       tags: [
         { name: 'health' },
         { name: 'spaces' },
@@ -136,6 +139,7 @@ export function buildOpenApiDocument() {
         { name: 'events' },
         { name: 'reactions' },
         { name: 'actions' },
+        { name: 'artifacts' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'knowledge' },
@@ -875,6 +879,38 @@ export function buildOpenApiDocument() {
             tags: ['skills'],
             summary: 'List built-in and space skills',
             responses: { '200': jsonResponse('Skills', skillListResponse) },
+          },
+        },
+        '/artifacts/{id}/content': {
+          get: {
+            tags: ['artifacts'],
+            summary: 'Retrieve an artifact in the authenticated space',
+            description:
+              'Returns the recorded bytes only while their hash matches the artifact receipt. Audio can be played directly; a single byte range can be requested for seeking.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'Artifact id from the action receipt'),
+              header: z.object({ Range: z.string().optional() }),
+            },
+            responses: {
+              '200': {
+                description: 'Artifact bytes',
+                content: {
+                  'audio/wav': { schema: z.string().meta({ format: 'binary' }) },
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '206': {
+                description: 'Requested byte range',
+                content: {
+                  'audio/wav': { schema: z.string().meta({ format: 'binary' }) },
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No matching artifact in this space'),
+              '416': { description: 'Requested range is outside the artifact' },
+            },
           },
         },
       },

@@ -4,6 +4,7 @@
  * something the contract describes" are the same assertion.
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
   actionListResponse,
   actionResponse,
@@ -29,9 +30,10 @@ import {
   THUMBS_DOWN,
   THUMBS_UP,
 } from '@melete/contracts';
+import { silentWav } from '../../melete/src/connectors/wav.ts';
 import { createMock } from './index.ts';
 import type { Runner } from './runner.ts';
-import type { Store } from './store.ts';
+import { newId, type Store } from './store.ts';
 
 type Mock = ReturnType<typeof createMock>;
 
@@ -71,6 +73,44 @@ const toApproval = async (mock: Mock, objective: string) => {
 
 beforeEach(() => {
   mock = createMock({ speed: 0 });
+});
+
+test('the mock content endpoint serves WAV bytes only for its session space', async () => {
+  const created = await call(mock.app, 'POST', '/jobs', {
+    space_id: mock.spaceId,
+    title: 'Audio',
+    objective: 'Audio fixture',
+  });
+  const jobId = jobResponse.parse(created.json).job.id;
+  const id = newId('art');
+  const bytes = silentWav({ script: 'Mock artifact.' });
+  mock.store.artifacts.set(id, {
+    artifact: {
+      id,
+      space_id: mock.spaceId,
+      job_id: jobId,
+      path: 'artifacts/episode.wav',
+      content_hash: createHash('sha256').update(bytes).digest('hex'),
+      mime: 'audio/wav',
+      size: bytes.length,
+      audience: 'owner',
+      created_at: new Date().toISOString(),
+    },
+    bytes,
+  });
+  const session = await mock.app.request('/spaces');
+  const cookie = session.headers.get('set-cookie')?.split(';')[0] ?? '';
+  const response = await mock.app.request(`/artifacts/${id}/content`, { headers: { cookie } });
+  expect(response.status).toBe(200);
+  expect(response.headers.get('content-type')).toBe('audio/wav');
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array(bytes));
+  expect((await mock.app.request(`/artifacts/${id}/content`)).status).toBe(401);
+  const entry = mock.store.artifacts.get(id);
+  if (!entry) throw new Error('Missing fixture artifact');
+  entry.artifact.space_id = newId('sp');
+  expect((await mock.app.request(`/artifacts/${id}/content`, { headers: { cookie } })).status).toBe(
+    404,
+  );
 });
 
 describe('every route answers with a body the contract describes', () => {

@@ -23,7 +23,12 @@ import type {
   Receipt,
   VerifyResult,
 } from '@melete/contracts';
-import { canonicalizePayload, capabilityTool, receipt } from '@melete/contracts';
+import {
+  artifactIdForAction,
+  canonicalizePayload,
+  capabilityTool,
+  receipt,
+} from '@melete/contracts';
 import { z } from 'zod';
 import type { Connector, ConnectorContext } from './types.ts';
 import { silentWav, WAV_MIME } from './wav.ts';
@@ -235,6 +240,7 @@ export function createCapabilityConnector(options: CapabilityConnectorOptions): 
         external_ref: hash,
         detail: {
           kind: 'artifact',
+          artifact_id: artifactIdForAction(action.id),
           path: `artifacts/${safeName(name)}`,
           mime: capability.produces,
           bytes: bytes.length,

@@ -278,6 +278,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/artifacts/{id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve an artifact in the authenticated space
+         * @description Returns the recorded bytes only while their hash matches the artifact receipt. Audio can be played directly; a single byte range can be requested for seeking.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: {
+                    Range?: string;
+                };
+                path: {
+                    /** @description Artifact id from the action receipt */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Artifact bytes */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/octet-stream": string;
+                        "audio/wav": string;
+                    };
+                };
+                /** @description Requested byte range */
+                206: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/octet-stream": string;
+                        "audio/wav": string;
+                    };
+                };
+                /** @description A session is required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema58"];
+                    };
+                };
+                /** @description No matching artifact in this space */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema58"];
+                    };
+                };
+                /** @description Requested range is outside the artifact */
+                416: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/attempts/{attemptId}": {
         parameters: {
             query?: never;

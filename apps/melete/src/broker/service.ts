@@ -31,6 +31,7 @@ import { type ConnectionGrant, grantedToolCatalog } from '../connectors/catalog.
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { QUEUES } from '../jobs/queue.ts';
+import { recordGeneratedArtifact } from './artifacts.ts';
 import {
   bindEffect,
   type EffectAuthorityResolver,
@@ -777,7 +778,8 @@ export class BrokerService implements BrokerOperations {
             outcome: 'unknown',
             reason: 'Receipt identity did not match the dispatched action',
           };
-        } else receipt = { ...result.receipt, late };
+        } else
+          receipt = await recordGeneratedArtifact(tx, job, action, { ...result.receipt, late });
       }
       if (wasUncertain && result.outcome === 'unknown') return action;
       await this.setStatus(tx, action, result.outcome);
@@ -858,7 +860,9 @@ export class BrokerService implements BrokerOperations {
       const status = resolved ? (result.decision as 'succeeded' | 'failed') : 'unresolved';
       await this.setStatus(tx, current, status);
       const receipt =
-        result.decision === 'succeeded' && result.receipt ? { ...result.receipt, late } : null;
+        result.decision === 'succeeded' && result.receipt
+          ? await recordGeneratedArtifact(tx, currentJob, current, { ...result.receipt, late })
+          : null;
       await tx`update action set reconciliation = ${JSON.stringify({ ...result, question: resolved ? null : question, late })}::jsonb,
         resolved_at = ${resolved ? new Date().toISOString() : null},
         receipt = coalesce(${receipt ? JSON.stringify(receipt) : null}::jsonb, receipt) where id = ${id}`;

@@ -14,6 +14,7 @@ import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
+import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
@@ -97,6 +98,20 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
+  // One owner, one personal space: use session authority and never a request header.
+  const personalSpace: SpaceResolver =
+    deps.resolveSpace ??
+    (async (c) => {
+      if (!deps.db || !c.get('owner')) return null;
+      const [row] = await deps.db
+        .select({ id: space.id })
+        .from(space)
+        .where(eq(space.kind, 'personal'))
+        .orderBy(space.createdAt, space.id)
+        .limit(1);
+      return row ? { spaceId: row.id } : null;
+    });
+  if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -109,20 +124,6 @@ export function createApp(deps: AppDeps) {
   const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);
   if (deps.jobs && attention) mountAttention(app, attention);
   if (deps.jobs) {
-    // One owner, one personal space: the oldest personal row is the one /setup
-    // made. A message outside it is not this caller's to read or react to.
-    const personalSpace: SpaceResolver =
-      deps.resolveSpace ??
-      (async (c) => {
-        if (!deps.db || !c.get('owner')) return null;
-        const [row] = await deps.db
-          .select({ id: space.id })
-          .from(space)
-          .where(eq(space.kind, 'personal'))
-          .orderBy(space.createdAt, space.id)
-          .limit(1);
-        return row ? { spaceId: row.id } : null;
-      });
     mountReactions(app, deps.reactions ?? new ReactionService(deps.jobs, attention), personalSpace);
   }
   if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));

@@ -361,3 +361,34 @@ green; the groups above are the part I can state as verified.
 - `QUEUES.triggerScan`: pg-boss continuation and the scan cursor commit in the same transaction; the bounded worker checks the job epoch, wait version, trigger identity and enabled state before continuing.
 - `bun test apps/melete/test/integration/watch.test.ts --max-concurrency=2`: GREEN, 6 pass, 0 fail, 29 assertions, 26.59s; a reconstructed service consumes observation 201 exactly once with no new feed delivery and no extra model attempt.
 - `bun run typecheck` and changed-file `biome check`: passed.
+
+## Finding 11
+
+- `b71b990`: finding 9 committed and pushed.
+- `successful broker synthesis persists the artifact identity named by its receipt`: RED at b71b990, artifact_id was absent; `authenticated playback returns generated WAV bytes and byte ranges`: RED, the authorized content route returned 404.
+- `the audio player retrieves the artifact by ID through its content endpoint`: RED at b71b990, rendered /artifacts/artifacts/episode.wav. `a receipt without a retrievable artifact ID does not offer a broken player`: RED, a broken audio element was rendered.
+- `the mock content endpoint serves WAV bytes only for its session space`: RED at b71b990, expected 200 but received 404.
+- `bun test apps/web/src/screens/JobDetail.test.tsx apps/melete/test/integration/artifacts.test.ts apps/mock-api/src/app.test.ts --max-concurrency=2`: initial GREEN, 41 pass, 0 fail, 123 assertions, 26.19s; session, artifact/job space, traversal, changed bytes and range checks passed.
+- `bun run openapi` and `bun run client:generate`: passed; additive retrieval schema and security scheme recorded in the contract-additions note. Reconciliation and final checks remain in progress.
+- `reconciliation restores the same retrievable artifact after a lost database receipt`: GREEN; receipt and retrieval row are recovered from action-bound disk evidence without synthesis replay.
+- `bun test apps/melete/test/integration/artifacts.test.ts apps/melete/src/connectors/tts.test.ts --max-concurrency=2`: 18 pass, 1 skipped: no key, 0 fail, 53 assertions, 20.25s.
+- `browser playback at localhost:3190`: the real ArtifactPlayer rendered against a disposable authenticated service received audio/wav with HTTP 206 and displayed `Playback completed: 5.20 seconds`; test tab closed and fixture shutdown requested.
+- `bun test --max-concurrency=2`: final run queued since 2026-09-11 21:48 UTC behind the shared lock; at 22:11 UTC the lock is still held by another run. The queued wrapper will use one throwaway Postgres 17 through DATABASE_URL while keeping each fixture database isolated.
+- `bun test --max-concurrency=2`: at 2026-09-11 22:39 UTC the final suite is still queued; the shared lock has passed between active runs. `git diff --check`: clean, and finding 11 is staged pending the locked result.
+- `bun test --max-concurrency=2`: at 2026-09-11 23:06 UTC the final run remains queued. Read-only process inspection confirmed an active test process outside this run; its lock is preserved. No full-suite timeout is claimed because this queued run has not acquired the lock.
+- `bun C:/Users/gamin/AppData/Local/Temp/melete-w9-suite.ts`: final suite acquired the shared lock at 2026-09-11 23:29:29 UTC and is running against one throwaway Postgres 17 with isolated fixture databases and max concurrency 2.
+- `bun test --max-concurrency=2` under the shared lock: GREEN, 1015 pass, 1 skipped: no key, 14 existing todo, 0 fail, 4210 assertions, 1030 tests across 87 files, 204.74s. The three-minute target is still exceeded.
+- `bun test --help`: the installed runner supports --parallel=2, which isolates test files in two worker processes. A final timing attempt will pair this with --max-concurrency=1 so at most two tests run at once; fixtures retain separate databases, and fixed listening ports do not conflict.
+
+## Final verification — W9-fix
+
+- `bun test --parallel=2 --max-concurrency=1` under the shared lock: GREEN, 1015 pass, 1 skipped: no key, 14 existing todo, 0 fail, 4210 assertions, 1030 tests across 87 files, 146.83s. The three-minute target is met with two isolated worker processes and one test at a time per worker.
+- `bun C:/Users/gamin/AppData/Local/Temp/melete-w9-suite-parallel.ts`: exit 0; one throwaway Postgres 17 served separate fixture databases, with durability settings at their defaults. The wrapper stopped its server and released its lock.
+- `bun run typecheck`: passed on the final source and regenerated types. `bun run lint`: passed, 338 files checked.
+- `bun run openapi` and `bun run client:generate`: passed; the final artifact path adds 102 OpenAPI lines and 80 client lines without changing existing generated declarations. Contract additions are recorded in .agents/notes/proposed/2026-09-12-w9-fix-contract-additions.md.
+- `bun run compose:check`: passed all 12 configuration checks. Docker networking was not run on this Windows host.
+- `bun run test:plugin`: 22 passed in 13.48s, including both registered reaction-handler probes.
+- `browser playback at localhost:3190`: authenticated HTTP 206 audio/wav retrieval completed 5.20 seconds of playback in the real ArtifactPlayer; the browser fixture and its server were closed.
+- `tts.test.ts` real-provider smoke: skipped: no key. The full suite used scripted fake providers.
+- `git -C C:/Users/gamin/melete-oss-w9 status --short`: all added tests and the two preserved reaction draft tests are finished; no abandoned worktree drafts remain.
+- `gh pr view 14 --repo ychampion/melete`: confirmed the existing open PR uses lane/w9-product against integration; the recorded assumption to retain that PR still applies.

@@ -7,6 +7,7 @@
  * out, so a body the mock invents that the document does not describe is a 500
  * here rather than a surprise in the real service later.
  */
+import { createHash, randomUUID } from 'node:crypto';
 import {
   type ApiEvent,
   type ApprovalRequestView,
@@ -54,6 +55,7 @@ import {
   sseFrame,
 } from '@melete/contracts';
 import { Hono } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
 import type { Runner } from './runner.ts';
@@ -89,6 +91,7 @@ const KEEPALIVE_MS = 20_000;
 export function createMockApp(deps: AppDeps) {
   const { store, runner, scenarios } = deps;
   const app = new Hono();
+  const mockSession = randomUUID();
 
   // The reference client is served from another port in development, and the
   // session cookie has to survive that, so the origin is reflected rather than
@@ -165,7 +168,36 @@ export function createMockApp(deps: AppDeps) {
     }),
   );
 
-  app.get('/spaces', () => send(spaceListResponse, { spaces: [...store.spaces.values()] }));
+  app.get('/spaces', (c) => {
+    // The demo's existing space bootstrap supplies a session for its fixed space.
+    setCookie(c, 'melete_mock_session', mockSession, {
+      httpOnly: true,
+      sameSite: 'Lax',
+      path: '/',
+    });
+    return send(spaceListResponse, { spaces: [...store.spaces.values()] });
+  });
+
+  app.get('/artifacts/:id/content', (c) => {
+    if (getCookie(c, 'melete_mock_session') !== mockSession)
+      return c.json(fail('unauthorized', 'A session is required.'), 401);
+    const entry = store.artifacts.get(c.req.param('id'));
+    if (
+      !entry ||
+      entry.artifact.space_id !== deps.spaceId ||
+      (entry.artifact.job_id && store.jobs.get(entry.artifact.job_id)?.space_id !== deps.spaceId) ||
+      createHash('sha256').update(entry.bytes).digest('hex') !== entry.artifact.content_hash
+    )
+      return c.json(fail('not_found', 'No such artifact.'), 404);
+    return new Response(Uint8Array.from(entry.bytes), {
+      headers: {
+        'content-type': entry.artifact.mime,
+        'content-length': String(entry.bytes.length),
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  });
 
   app.post('/spaces', async (c) => {
     const parsed = await parseBody(c.req.raw, createSpaceRequest);

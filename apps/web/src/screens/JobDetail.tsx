@@ -258,11 +258,14 @@ const summarise = (type: string, payload: unknown): string => {
  * receipt names a file the browser can play, offer the player; when it names
  * one it cannot, say what was written and stop there rather than pretending.
  */
-function ArtifactPlayer({ receipt }: { receipt: Record<string, unknown> | null }) {
+export function ArtifactPlayer({ receipt }: { receipt: Record<string, unknown> | null }) {
   const detail = (receipt?.detail ?? null) as Record<string, unknown> | null;
   if (detail?.kind !== 'artifact' || typeof detail.path !== 'string') return null;
   const mime = typeof detail.mime === 'string' ? detail.mime : '';
-  const source = `${API_BASE_URL}/artifacts/${encodeURI(detail.path)}`;
+  const source =
+    typeof detail.artifact_id === 'string'
+      ? `${API_BASE_URL}/artifacts/${encodeURIComponent(detail.artifact_id)}/content`
+      : null;
   return (
     <div className="stack" style={{ marginTop: 8 }}>
       <p className="muted">
@@ -270,7 +273,7 @@ function ArtifactPlayer({ receipt }: { receipt: Record<string, unknown> | null }
         {typeof detail.bytes === 'number' ? ` · ${Math.round(detail.bytes / 1024)} kB` : ''}
         {mime ? ` · ${mime}` : ''}
       </p>
-      {mime.startsWith('audio/') ? (
+      {source && mime.startsWith('audio/') ? (
         // biome-ignore lint/a11y/useMediaCaption: the script is the artifact beside it.
         <audio className="artifact-audio" controls preload="none" src={source}>
           <a href={source}>Download the audio</a>

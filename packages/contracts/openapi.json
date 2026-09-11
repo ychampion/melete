@@ -39,6 +39,9 @@
       "name": "actions"
     },
     {
+      "name": "artifacts"
+    },
+    {
       "name": "approvals"
     },
     {
@@ -4631,6 +4634,98 @@
           }
         }
       }
+    },
+    "/artifacts/{id}/content": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Retrieve an artifact in the authenticated space",
+        "description": "Returns the recorded bytes only while their hash matches the artifact receipt. Audio can be played directly; a single byte range can be requested for seeking.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Artifact id from the action receipt"
+            },
+            "required": true,
+            "description": "Artifact id from the action receipt"
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artifact bytes",
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Requested byte range",
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A session is required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema58"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No matching artifact in this space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema58"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "Requested range is outside the artifact"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7813,6 +7908,13 @@
       "__schema113": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "melete_session"
       }
     }
   }
