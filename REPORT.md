@@ -20,3 +20,12 @@
 - Command `bun test --max-concurrency 2`: 195 pass, 1 baseline DB skip, 36 baseline conformance todos, 0 fail in 995 ms.
 - Test `memory authority contracts`: strict scope rejection, typed proposals, empty versus unavailable, and additive OpenAPI operations pass.
 - Command `bun run openapi`: regenerated the committed document from the additive schemas.
+
+## Slice 2
+
+- SHA `651df9d`: slice 1 pushed to `origin/lane/w7-memory`.
+- Command `bun run db:generate`: new memory tables only; migration `0001_ancient_impossible_man.sql` leaves existing authority tables unchanged.
+- Command `bun add -d --exact embedded-postgres@17.10.0-beta.17`: pinned Postgres 17 binaries; fixture listens on 127.0.0.1:3122 and creates a disposable database even with DATABASE_URL supplied.
+- Test `persist before acknowledgment, dedup, immutable versions, separate streams`: initial 60 s / 20 s timeouts isolated to Bun's async rejection matcher waiting on a rollback. Fix cycle 1 awaits the rejection before asserting; the test passes in 125 ms.
+- Test `concurrent inputs commit contiguous stream sequences and reject cross-space metadata`: pass; test `pg-boss uses the embedded database`: pass.
+- Command `bun run typecheck`: pass; command `bun run lint`: pass (65 files); command `bun test --max-concurrency 2`: 198 pass, 1 baseline skip, 36 baseline todos, 0 fail in 18.82 s.

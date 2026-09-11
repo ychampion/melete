@@ -7,3 +7,4 @@ dist/
 spaces/
 artifacts/
 **/.index/
+.agents/w7-tests.log
