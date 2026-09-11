@@ -113,12 +113,35 @@ export const artifactCheck = z.discriminatedUnion('kind', [
 export type ArtifactCheck = z.infer<typeof artifactCheck>;
 
 /**
+ * The name a check's result is recorded under. Two checks with the same name
+ * are the same claim about the file, and only one of them can be true, so the
+ * declaration is refused rather than one of them being dropped on the floor.
+ */
+export const artifactCheckName = (check: ArtifactCheck): string =>
+  check.kind === 'totals' ? `totals:${check.column.trim().toLowerCase()}` : check.kind;
+
+/**
  * What a write says the file is meant to be. Optional on every write: a
  * scratch file declares nothing and is not an artifact.
  */
+const uniqueChecks = (checks: ArtifactCheck[], ctx: z.RefinementCtx): void => {
+  const seen = new Set<string>();
+  for (const [index, check] of checks.entries()) {
+    const name = artifactCheckName(check);
+    if (seen.has(name)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['checks', index],
+        message: `two checks would both be recorded as ${name}; declare each one once`,
+      });
+    }
+    seen.add(name);
+  }
+};
+
 export const artifactExpectation = z.object({
   kind: artifactKind,
-  checks: z.array(artifactCheck).max(25).default([]),
+  checks: z.array(artifactCheck).max(25).default([]).superRefine(uniqueChecks),
   /** Open it with a renderer as well. Default on: it is cheap and it catches a lot. */
   render: z.boolean().default(true),
   /** Ask a model to read it. Advisory, recorded, never a gate. */
@@ -159,13 +182,17 @@ export type ArtifactValidation = z.infer<typeof artifactValidation>;
 export const pendingArtifactValidation = artifactValidation.omit({ artifact_id: true });
 export type PendingArtifactValidation = z.infer<typeof pendingArtifactValidation>;
 
-/** Does this set of results let a job say it is done? */
+/**
+ * Does this set of results let a job say it is done?
+ *
+ * Only a pass counts. `unavailable` is not a pass: a validator that could not
+ * run has not established anything, and treating it as success is how a job
+ * completes on a check nobody made. A validator whose absence is genuinely
+ * acceptable says so by marking its result advisory.
+ */
 export const artifactValidationsHold = (
   validations: readonly Pick<ArtifactValidation, 'status' | 'advisory'>[],
-): boolean =>
-  validations.every(
-    (result) => result.advisory || result.status === 'passed' || result.status === 'unavailable',
-  );
+): boolean => validations.every((result) => result.advisory || result.status === 'passed');
 
 // --------------------------------------------------------------------------
 // publishing

@@ -128,10 +128,19 @@ test('image dimensions come from the header, and a mismatch fails', () => {
   expect(named(results, 'image_dimensions').detail).toContain('under 800');
 });
 
-test('a kind with no renderer records unavailable rather than a pass', () => {
-  const results = validateArtifact(artifactExpectation.parse({ kind: 'xlsx' }), utf8('PK'));
+test('a kind with no renderer records unavailable, and advisory so it cannot block', () => {
+  const results = validateArtifact(artifactExpectation.parse({ kind: 'xlsx' }), utf8('PK'));
   expect(named(results, 'render:xlsx').status).toBe('unavailable');
-  expect(named(results, 'render:xlsx').advisory).toBe(false);
+  // A renderer that does not exist establishes nothing about the file, so it
+  // must not be able to stop a job. A renderer that runs and fails still can,
+  // because that is a fact about the bytes.
+  expect(named(results, 'render:xlsx').advisory).toBe(true);
+  const broken = validateArtifact(
+    artifactExpectation.parse({ kind: 'markdown' }),
+    utf8('```\nx\n'),
+  );
+  expect(named(broken, 'render:markdown').status).toBe('failed');
+  expect(named(broken, 'render:markdown').advisory).toBe(false);
 });
 
 test('a declared critique and a declared acceptance start out pending', () => {

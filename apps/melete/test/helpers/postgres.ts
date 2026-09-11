@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import postgres from 'postgres';
+import { z } from 'zod';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 
 export type PostgresFixture = DatabaseHandle & {
@@ -16,7 +17,28 @@ export type PostgresFixtureOptions = {
   migrations?: Array<string | URL>;
 };
 
-const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
+const journalUrl = new URL('../../drizzle/meta/_journal.json', import.meta.url);
+const journal = z
+  .object({ entries: z.array(z.object({ idx: z.number().int(), tag: z.string().min(1) })) })
+  .parse(JSON.parse(await readFile(journalUrl, 'utf8')));
+
+/**
+ * Resolve a migration through the journal rather than by typing its filename.
+ * Drizzle names a migration after a word it chose, and a later rename or
+ * regeneration leaves a literal path pointing at nothing; this throws instead
+ * of silently applying one migration fewer than the fixture claims.
+ */
+function migration(tag: string): URL {
+  const entry = journal.entries.find((candidate) => candidate.tag === tag);
+  if (!entry) {
+    throw new Error(
+      `migration ${tag} is not in drizzle/meta/_journal.json; the fixture would apply a schema it does not describe`,
+    );
+  }
+  return new URL(`../../drizzle/${entry.tag}.sql`, import.meta.url);
+}
+
+const initialMigration = migration('0000_initial_schema');
 /**
  * The frozen initial schema, plus the later migrations the broker's own
  * invariants live in. A fixture that stops at 0000 cannot exercise a unique
@@ -24,11 +46,11 @@ const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import
  * not evidence of anything.
  */
 const brokerMigrations = [
-  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
+  migration('0012_effect_identity'),
   // Artifact validation tables and the columns a declared write fills in. A
   // fixture without this cannot record an artifact, and a test that cannot
   // record one proves nothing about the gate that reads them.
-  new URL('../../drizzle/0015_artifact_validation.sql', import.meta.url),
+  migration('0015_artifact_validation'),
 ];
 const tempPrefix = 'melete-w2-postgres-';
 

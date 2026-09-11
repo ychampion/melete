@@ -8,11 +8,12 @@
  * says why, because "could not tell" presented as a pass is the failure this
  * whole file exists to prevent.
  */
-import type {
-  ArtifactCheck,
-  ArtifactExpectation,
-  ArtifactKind,
-  PendingArtifactValidation,
+import {
+  type ArtifactCheck,
+  type ArtifactExpectation,
+  type ArtifactKind,
+  artifactCheckName,
+  type PendingArtifactValidation,
 } from '@melete/contracts';
 import { Ajv } from 'ajv';
 
@@ -276,7 +277,7 @@ function runCheck(check: ArtifactCheck, kind: ArtifactKind, parsed: Parsed, byte
       return pass('deterministic', 'row_count', { count });
     }
     case 'totals': {
-      const name = `totals:${check.column}`;
+      const name = artifactCheckName(check);
       if (parsed.kind !== 'csv')
         return fail('deterministic', name, 'a totals check needs a tabular artifact');
       const index = parsed.table.header.findIndex(
@@ -475,11 +476,18 @@ function render(kind: ArtifactKind, parsed: Parsed, bytes: Uint8Array): Result {
         // DOCX, XLSX and PDF need a maintained reader. Bun ships none and this
         // release adds no dependency for it, so the honest result is the word
         // `unavailable` rather than a pass nobody earned.
-        return unavailable(
-          'render',
-          `render:${kind}`,
-          'no renderer for this kind is available in this release',
-        );
+        // Advisory on purpose. A missing renderer says nothing about the file,
+        // and a validator that establishes nothing must not be able to block a
+        // job; a renderer that runs and fails still does, because that is a
+        // fact about the bytes.
+        return {
+          ...unavailable(
+            'render',
+            `render:${kind}`,
+            'no renderer for this kind is available in this release',
+          ),
+          advisory: true,
+        };
     }
   } catch (error) {
     return fail('render', `render:${kind}`, (error as Error).message);
@@ -513,7 +521,7 @@ export function validateArtifact(
       results.push(
         fail(
           'deterministic',
-          check.kind === 'totals' ? `totals:${check.column}` : check.kind,
+          artifactCheckName(check),
           'the file did not parse, so this check could not be computed',
         ),
       );
@@ -542,8 +550,13 @@ export function validateArtifact(
       advisory: false,
     });
   }
-  // One row per name: a later check of the same name replaces an earlier one.
-  const byName = new Map<string, Result>();
-  for (const result of results) byName.set(result.name, result);
-  return [...byName.values()].map((result) => ({ ...result, checked_at: checkedAt }));
+  // Names are unique by construction: `artifactExpectation` refuses two checks
+  // that would be recorded under the same name, so nothing is dropped here.
+  // A collision at this point is a bug in the namer and is worth a crash.
+  const seen = new Set<string>();
+  for (const result of results) {
+    if (seen.has(result.name)) throw new Error(`two validations named ${result.name}`);
+    seen.add(result.name);
+  }
+  return results.map((result) => ({ ...result, checked_at: checkedAt }));
 }
