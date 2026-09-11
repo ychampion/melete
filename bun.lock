@@ -29,6 +29,7 @@
         "nodemailer": "10.0.3",
         "pg-boss": "12.31.0",
         "postgres": "3.4.9",
+        "ulid": "3.0.2",
         "zod": "4.6.2",
       },
       "devDependencies": {

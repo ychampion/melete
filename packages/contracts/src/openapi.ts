@@ -38,6 +38,22 @@ import {
 import { approvalDecisionRequest } from './broker.ts';
 import { eventPage, eventQuery } from './events.ts';
 import {
+  claimHistoryResponse,
+  claimListResponse,
+  claimRevision,
+  correctionRequest,
+  forgetRequest,
+  ingestSourceRequest,
+  ingestSourceResponse,
+  knowledgeProposalList,
+  knowledgeProposalView,
+  memoryOperationResponse,
+  ownerKnowledgeEdit,
+  recallRequest,
+  recallResult,
+  sourceEvidenceResponse,
+} from './memory.ts';
+import {
   backgroundOperation,
   connectionGeneration,
   connectionLifecycle,
@@ -105,6 +121,7 @@ export function buildOpenApiDocument() {
         { name: 'connections' },
         { name: 'knowledge' },
         { name: 'skills' },
+        { name: 'memory' },
       ],
       paths: {
         '/responsibilities': {
@@ -303,6 +320,119 @@ export function buildOpenApiDocument() {
                 'Submission conflict or rejected transition',
                 jobSubmissionResponse,
               ),
+            },
+          },
+        },
+        '/memory/sources': {
+          post: {
+            tags: ['memory'],
+            summary: 'Persist authenticated evidence and durable extraction work',
+            requestBody: json(ingestSourceRequest),
+            responses: {
+              '201': jsonResponse('Committed stream sequence', ingestSourceResponse),
+              '400': problem('Invalid evidence'),
+              '403': problem('Scope denied'),
+            },
+          },
+        },
+        '/memory/recall': {
+          post: {
+            tags: ['memory'],
+            summary: 'Recall current or historical evidence in the authenticated audience',
+            requestBody: json(recallRequest),
+            responses: {
+              '200': jsonResponse('Recall and coverage', recallResult),
+              '403': problem('Scope denied'),
+            },
+          },
+        },
+        '/memory/corrections': {
+          post: {
+            tags: ['memory'],
+            summary: 'Immediately publish a protected owner correction',
+            requestBody: json(correctionRequest),
+            responses: {
+              '200': jsonResponse('Protected revision', claimRevision),
+              '409': problem('Stale revision'),
+            },
+          },
+        },
+        '/memory/forget': {
+          post: {
+            tags: ['memory'],
+            summary: 'Suppress memory use and automatic reconstruction from covered evidence',
+            requestBody: json(forgetRequest),
+            responses: {
+              '200': jsonResponse('Restriction and cleanup state', memoryOperationResponse),
+            },
+          },
+        },
+        '/memory/sources/{id}': {
+          get: {
+            tags: ['memory'],
+            summary: 'Inspect accessible source evidence with suppressed spans masked',
+            requestParams: idParam('id', 'Source id'),
+            responses: {
+              '200': jsonResponse('Source evidence', sourceEvidenceResponse),
+              '404': problem('No accessible source'),
+            },
+          },
+          delete: {
+            tags: ['memory'],
+            summary: 'Delete an imported source and invalidate its descendants',
+            requestParams: idParam('id', 'Source id'),
+            responses: {
+              '200': jsonResponse('Restriction and cleanup state', memoryOperationResponse),
+              '404': problem('No such source'),
+            },
+          },
+        },
+        '/memory/claims': {
+          get: {
+            tags: ['memory'],
+            summary: 'Inspect current claims and their support',
+            responses: { '200': jsonResponse('Claims', claimListResponse) },
+          },
+        },
+        '/memory/claims/{id}/history': {
+          get: {
+            tags: ['memory'],
+            summary: 'Inspect dated claim revisions and their support',
+            requestParams: idParam('id', 'Claim id'),
+            responses: {
+              '200': jsonResponse('Claim history', claimHistoryResponse),
+              '404': problem('No such claim'),
+            },
+          },
+        },
+        '/knowledge/proposals/{id}/apply': {
+          post: {
+            tags: ['knowledge'],
+            summary: 'Validate and apply an owner-reviewed memory proposal',
+            requestParams: idParam('id', 'Proposal id'),
+            responses: {
+              '200': jsonResponse('Applied proposal', knowledgeProposalView),
+              '409': problem('Proposal is stale'),
+            },
+          },
+        },
+        '/knowledge/proposals/{id}': {
+          delete: {
+            tags: ['knowledge'],
+            summary: 'Discard a pending proposal',
+            requestParams: idParam('id', 'Proposal id'),
+            responses: { '200': jsonResponse('Discarded proposal', knowledgeProposalView) },
+          },
+        },
+        '/knowledge/{recordId}/edit': {
+          post: {
+            tags: ['knowledge'],
+            summary: 'Ingest an owner edit as a protected correction',
+            requestParams: idParam('recordId', 'Claim id'),
+            requestBody: json(ownerKnowledgeEdit),
+            responses: {
+              '200': jsonResponse('Protected revision', claimRevision),
+              '409': problem('Stale revision'),
             },
           },
         },
@@ -566,6 +696,11 @@ export function buildOpenApiDocument() {
         },
 
         '/knowledge/proposals': {
+          get: {
+            tags: ['knowledge'],
+            summary: 'List pending memory proposal diffs',
+            responses: { '200': jsonResponse('Proposals', knowledgeProposalList) },
+          },
           post: {
             tags: ['knowledge'],
             summary: 'Propose a knowledge write',

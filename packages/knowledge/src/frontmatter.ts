@@ -1,7 +1,6 @@
 /**
- * Reading and writing knowledge records. The file is the source of truth, so
- * parsing has to be forgiving about how a person wrote the YAML and strict
- * about what the record means once parsed.
+ * Read and write the Markdown inspection surface. Memory records are derived
+ * from Postgres; an owner edit must enter the protected correction protocol.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -11,11 +10,13 @@ import {
   type LintContext,
   type LintFinding,
   lintRecord,
+  type MemoryKnowledgeFrontmatter,
+  memoryKnowledgeFrontmatter,
 } from '@melete/contracts';
 import matter from 'gray-matter';
 
 export type ParsedRecord = {
-  frontmatter: KnowledgeFrontmatter;
+  frontmatter: KnowledgeFrontmatter | MemoryKnowledgeFrontmatter;
   body: string;
   /** Over the body only, so reformatting the frontmatter does not look like an edit. */
   contentHash: string;
@@ -40,15 +41,17 @@ const pad = (n: number): string => String(n).padStart(2, '0');
  * person typed, so dates go back to `YYYY-MM-DD` before validation and the
  * record round-trips unchanged.
  */
-function normalizeDates(value: unknown): unknown {
+function normalizeDates(value: unknown, key = ''): unknown {
   if (value instanceof Date) {
+    if (!['observed_at', 'valid_from', 'valid_until', 'created', 'updated'].includes(key))
+      return value.toISOString();
     return `${value.getUTCFullYear()}-${pad(value.getUTCMonth() + 1)}-${pad(value.getUTCDate())}`;
   }
-  if (Array.isArray(value)) return value.map(normalizeDates);
+  if (Array.isArray(value)) return value.map((item) => normalizeDates(item));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = normalizeDates(v);
+      out[k] = normalizeDates(v, k);
     }
     return out;
   }
@@ -86,7 +89,8 @@ export function parseRecord(source: string): ParseResult {
     return { ok: false, issues: ['the frontmatter block is not a mapping'] };
   }
 
-  const validated = knowledgeFrontmatter.safeParse(data);
+  const schema = 'memory_revision' in data ? memoryKnowledgeFrontmatter : knowledgeFrontmatter;
+  const validated = schema.safeParse(data);
   if (!validated.success) {
     return {
       ok: false,
@@ -103,7 +107,9 @@ export function parseRecord(source: string): ParseResult {
 
 /** Write a record back out. The output parses back to the same record. */
 export function serializeRecord(frontmatter: KnowledgeFrontmatter, body: string): string {
-  const ordered = knowledgeFrontmatter.parse(frontmatter);
+  const schema =
+    'memory_revision' in frontmatter ? memoryKnowledgeFrontmatter : knowledgeFrontmatter;
+  const ordered = schema.parse(frontmatter);
   const text = matter.stringify(`\n${body.trim()}\n`, ordered, { lineWidth: -1 } as never);
   return text.endsWith('\n') ? text : `${text}\n`;
 }

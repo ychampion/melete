@@ -1,7 +1,8 @@
 /**
  * @melete/knowledge turns a directory of Markdown files into something a job
  * can search, and turns an agent's wish to write into a diff a person approves.
- * The files are the system of record; everything else here is derived.
+ * For memory records, Postgres owns evidence and claims; these files and their
+ * SQLite search index are rebuildable views and never authorize model context.
  */
 export * from './catalog.ts';
 export * from './findings.ts';

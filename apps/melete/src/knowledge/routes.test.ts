@@ -100,8 +100,20 @@ const toOpenApiPath = (path: string): string =>
  */
 const PENDING_CONTRACT = new Set([
   'GET /knowledge',
-  'GET /knowledge/proposals',
+  // W7 declared the apply operation as /knowledge/proposals/{id}/apply; this
+  // module still serves it under {proposalId}.
   'POST /knowledge/proposals/{proposalId}/apply',
+]);
+
+/**
+ * Knowledge operations the document declares that the memory module serves,
+ * not this one. W7 owns proposal apply, proposal removal, and owner edits of a
+ * record; this module owns search, listing, reading and retraction.
+ */
+const SERVED_BY_MEMORY = new Set([
+  'POST /knowledge/proposals/{id}/apply',
+  'DELETE /knowledge/proposals/{id}',
+  'POST /knowledge/{recordId}/edit',
 ]);
 
 const declaredOperations = (): Set<string> => {
@@ -130,7 +142,9 @@ const servedOperations = (): Set<string> =>
 describe('the routes and the OpenAPI document agree', () => {
   test('every knowledge and skills operation in the document is served', () => {
     const served = servedOperations();
-    const missing = [...declaredOperations()].filter((operation) => !served.has(operation));
+    const missing = [...declaredOperations()].filter(
+      (operation) => !served.has(operation) && !SERVED_BY_MEMORY.has(operation),
+    );
     expect(missing).toEqual([]);
   });
 

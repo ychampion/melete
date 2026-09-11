@@ -39,6 +39,7 @@ import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { filesystemSpaces } from './knowledge/spaces.ts';
+import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 
 export const VERSION = '0.1.0-pre';
@@ -58,6 +59,7 @@ export type AppDeps = {
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
+  memory?: MemoryRouteOptions;
 };
 
 export function createApp(deps: AppDeps) {
@@ -90,6 +92,7 @@ export function createApp(deps: AppDeps) {
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
+  if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();

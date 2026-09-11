@@ -97,7 +97,7 @@ tools you already have.
 | `apps/web` | A small reference client, to show the API is enough to build one |
 | `deploy` | `docker-compose.yml`, `.env.example`, and the check that the sandbox is really a sandbox |
 | `conformance` | Eight scenarios that prove the durability and boundary claims |
-| `docs` | [Architecture](docs/ARCHITECTURE.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [building a client](docs/CLIENT.md) |
+| `docs` | [Architecture](docs/ARCHITECTURE.md), [memory](docs/MEMORY.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [building a client](docs/CLIENT.md) |
 | `.agents/notes` | Why things are the way they are, one decision per file |
 
 ## Working on it
