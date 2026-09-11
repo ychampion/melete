@@ -12,6 +12,21 @@ import { z } from 'zod';
 
 const label = z.string().min(1).max(60);
 
+/** Where an action's evidence came from, for the trail's source chips. */
+const source = z.object({
+  app: z.string().min(1),
+  label: z.string().min(1),
+  url: z.string().optional(),
+});
+
+const cardAction = z.object({
+  label: z.string().min(1),
+  icon: z.string().optional(),
+  /** The proposal ref this button decides, when pressing it is an approval. */
+  approves: label.optional(),
+  done_label: z.string().optional(),
+});
+
 export const scenarioStep = z.discriminatedUnion('step', [
   /** Streamed assistant text. Transient: not replayed after a reconnect. */
   z.object({
@@ -19,13 +34,76 @@ export const scenarioStep = z.discriminatedUnion('step', [
     delay_ms: z.number().int().nonnegative().default(400),
     text: z.string().min(1),
   }),
-  /** A tool call and its result, both durable. */
+  /** A tool call and its result, both durable. The human label, the short
+   *  meta and the sources are what the interface shows; the name stays inside. */
   z.object({
     step: z.literal('tool'),
     delay_ms: z.number().int().nonnegative().default(300),
     name: z.string().min(1),
     arguments: z.record(z.string(), z.unknown()).default({}),
     result: z.record(z.string(), z.unknown()).default({}),
+    title: z.string().optional(),
+    active_title: z.string().optional(),
+    meta: z.string().default(''),
+    sources: z.array(source).default([]),
+  }),
+  /** One or two plain sentences the agent says to the person about the task. */
+  z.object({
+    step: z.literal('say'),
+    delay_ms: z.number().int().nonnegative().default(400),
+    text: z.string().min(1),
+  }),
+  /** A structured result card. */
+  z.object({
+    step: z.literal('card'),
+    delay_ms: z.number().int().nonnegative().default(300),
+    id: label,
+    overline: z.string().default(''),
+    title: z.string().min(1),
+    rating: z.string().nullable().default(null),
+    facts: z.array(z.string()).default([]),
+    description: z.string().default(''),
+    chips: z.array(z.string()).default([]),
+    image: z.object({ src: z.string(), alt: z.string() }).nullable().default(null),
+    primary: cardAction,
+    example: z.boolean().default(false),
+  }),
+  /** A message draft. Nothing is sent until a person presses send. */
+  z.object({
+    step: z.literal('draft'),
+    delay_ms: z.number().int().nonnegative().default(300),
+    id: label,
+    recipient: z.object({ name: z.string(), initials: z.string() }),
+    channel: z.string().min(1),
+    channel_label: z.string().min(1),
+    body: z.string().min(1),
+  }),
+  /** A question with up to four answers a keyboard number can pick. */
+  z.object({
+    step: z.literal('ask'),
+    delay_ms: z.number().int().nonnegative().default(200),
+    question: z.string().min(1),
+    options: z
+      .array(z.object({ label: z.string(), description: z.string().default('') }))
+      .min(1)
+      .max(4),
+  }),
+  /** A sandboxed browser session, shown only when the capability exists. */
+  z.object({
+    step: z.literal('browser'),
+    delay_ms: z.number().int().nonnegative().default(300),
+    id: label,
+    status: z.enum(['working', 'needs-you', 'done', 'stopped']).default('working'),
+    url: z.string().min(1),
+    task: z.string().min(1),
+    attention: z.string().nullable().default(null),
+    preview: z.object({
+      title: z.string(),
+      sub: z.string(),
+      chips: z.array(z.string()).default([]),
+      slots: z.array(z.string()).default([]),
+      chosen: z.string().default(''),
+    }),
   }),
   /** The runtime proposes an external effect. The broker canonicalises it. */
   z.object({

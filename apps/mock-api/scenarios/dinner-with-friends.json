@@ -1,0 +1,208 @@
+{
+  "id": "dinner-with-friends",
+  "title": "Find a dinner spot, draft a note, add the event once allowed",
+  "summary": "Nova checks the calendar, searches the web and Maps, picks one place, drafts a message, and asks before adding the event to the calendar.",
+  "match": ["dinner", "restaurant", "spot for tonight"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "say",
+      "delay_ms": 900,
+      "text": "Checking who’s free tonight before I look at places, so the slot doesn’t clash with anything."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 700,
+      "name": "calendar.read",
+      "title": "Read your calendar, checked Alex and Priya’s shared availability",
+      "active_title": "Reading your calendar",
+      "meta": "free after 7:00 PM",
+      "sources": [
+        {
+          "app": "gcal",
+          "label": "Deep work · 11:00 AM"
+        },
+        {
+          "app": "gcal",
+          "label": "No conflicts tonight"
+        },
+        {
+          "app": "gcal",
+          "label": "Priya · free from 6:30"
+        }
+      ],
+      "result": {
+        "free_after": "19:00"
+      }
+    },
+    {
+      "step": "say",
+      "delay_ms": 800,
+      "text": "Alex mentioned pasta last time, so I’m looking for quiet Italian places that are a short walk for both of them."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "web.search",
+      "title": "Searched the web, read reviews",
+      "active_title": "Searching the web",
+      "meta": "4 sources",
+      "sources": [
+        {
+          "app": "google",
+          "label": "Quiet Italian, West Village"
+        },
+        {
+          "app": "reddit",
+          "label": "r/FoodNYC · date-night threads"
+        },
+        {
+          "app": "yelp",
+          "label": "Luna Trattoria · 4.7 (2,341)"
+        },
+        {
+          "app": "youtube",
+          "label": "Luna Trattoria kitchen tour"
+        }
+      ],
+      "result": {
+        "candidates": 6
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 1000,
+      "name": "maps.compare",
+      "title": "Compared places near Alex and Priya, checked walking times",
+      "active_title": "Comparing places near Alex and Priya",
+      "meta": "6 places",
+      "sources": [
+        {
+          "app": "gmaps",
+          "label": "Luna Trattoria · 12 min"
+        },
+        {
+          "app": "gmaps",
+          "label": "Via Carota · 18 min"
+        },
+        {
+          "app": "tripadvisor",
+          "label": "L’Artusi · 4.5"
+        }
+      ],
+      "result": {
+        "best": "Luna Trattoria"
+      }
+    },
+    {
+      "step": "say",
+      "delay_ms": 800,
+      "text": "Luna Trattoria is the quietest room within 15 minutes of both, and it has a 7:30 for three. Writing a note to Alex in your voice."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "messages.draft",
+      "title": "Drafted a message to Alex",
+      "active_title": "Drafting a message to Alex",
+      "meta": "not sent",
+      "sources": [
+        {
+          "app": "imessage",
+          "label": "Alex Chen · iMessage"
+        }
+      ],
+      "result": {
+        "draft": true
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 600,
+      "text": "Here’s a spot for tonight, and a message you can send Alex."
+    },
+    {
+      "step": "propose",
+      "delay_ms": 900,
+      "ref": "event",
+      "kind": "calendar.event.create",
+      "connection": "test-destination",
+      "effect_class": "write_external",
+      "payload": {
+        "title": "Dinner with Alex & Priya",
+        "when": "Tonight 7:30 PM",
+        "duration": "1.5 hours",
+        "place": "Luna Trattoria"
+      }
+    },
+    {
+      "step": "card",
+      "delay_ms": 100,
+      "id": "luna",
+      "overline": "Italian · Greenwich Village",
+      "title": "Luna Trattoria",
+      "rating": "4.7",
+      "facts": ["$$", "12 min away", "Open until 11"],
+      "description": "Handmade pasta, long tables, no rush.",
+      "chips": ["Tonight, 7:30 PM", "Table for 3"],
+      "image": {
+        "src": "/restaurant.jpg",
+        "alt": "Luna Trattoria dining room"
+      },
+      "primary": {
+        "label": "Add to calendar",
+        "icon": "calendar",
+        "approves": "event",
+        "done_label": "Added"
+      },
+      "example": true
+    },
+    {
+      "step": "draft",
+      "delay_ms": 700,
+      "id": "alex",
+      "recipient": {
+        "name": "Alex",
+        "initials": "AC"
+      },
+      "channel": "imessage",
+      "channel_label": "Messages",
+      "body": "A little dinner plan? I found a lovely spot called Luna Trattoria. Tonight at 7:30, good food, and a proper catch-up. Are you in?"
+    },
+    {
+      "step": "await_approval",
+      "delay_ms": 200,
+      "ref": "event",
+      "on_denied": "skipped"
+    },
+    {
+      "step": "dispatch",
+      "delay_ms": 700,
+      "ref": "event",
+      "outcome": "succeeded",
+      "external_ref": "gcal:evt_luna_730",
+      "detail": {
+        "calendar": "primary"
+      }
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Here’s a spot for tonight, and a message you can send Alex."
+    },
+    {
+      "label": "skipped",
+      "step": "say",
+      "delay_ms": 300,
+      "text": "Left the calendar alone. The place and the note are still here if you change your mind."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Here’s a spot for tonight, and a message you can send Alex."
+    }
+  ]
+}

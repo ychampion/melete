@@ -9,3 +9,4 @@ Append-only. Every line names a SHA, a command, a test, or a log excerpt.
 - Screenshots are taken with Playwright 1.63 (already installed on this machine) via `bun run --cwd apps/web screens`, rather than the gstack browse skill, so the run is a committed script anyone can repeat.
 
 ## Log
+- 23dc3fb design system: tokens.css, base.css, primitives.tsx, icons.tsx (78 icons), logos.tsx (19 logos), face.tsx, mark.tsx, Sheet.tsx at #/design. `bun run --cwd apps/web typecheck` and `bunx biome check apps/web` clean.

@@ -1,0 +1,37 @@
+{
+  "id": "passport-renewal",
+  "title": "Answer a plain question with sources",
+  "summary": "A question that needs no action: the answer comes with where it was read.",
+  "match": ["passport", "documents", "renew"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "tool",
+      "delay_ms": 800,
+      "name": "web.search",
+      "title": "Read the official renewal page",
+      "active_title": "Reading the official page",
+      "meta": "1 source",
+      "sources": [
+        {
+          "app": "google",
+          "label": "travel.state.gov · renew in person"
+        }
+      ],
+      "result": {}
+    },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "Bring your current passport, one new photo, the DS-11 form filled in but unsigned, and a card for the fee. Renewing in person takes about six weeks, so the Oct 3 task on your list is the right deadline."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Bring your current passport, one new photo, the DS-11 form, and a card for the fee."
+    }
+  ]
+}
