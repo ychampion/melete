@@ -38,7 +38,9 @@ import {
   spaceListResponse,
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
+import { space } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
+import { hookObservation } from './hooks.ts';
 import {
   claimHistoryResponse,
   claimListResponse,
@@ -55,6 +57,13 @@ import {
   recallResult,
   sourceEvidenceResponse,
 } from './memory.ts';
+import {
+  createPrincipalRequest,
+  createSharedSpaceRequest,
+  grantMembershipRequest,
+  principal,
+  spaceMembership,
+} from './principals.ts';
 import {
   attributionReport,
   attributionRequest,
@@ -94,6 +103,7 @@ import {
   responsibilitySubmissionResponse,
   submissionResponse,
 } from './responsibility.ts';
+import { runtimeEvent } from './runtime.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -127,6 +137,7 @@ export function buildOpenApiDocument() {
         license: { name: 'Apache-2.0', identifier: 'Apache-2.0' },
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
+      components: { schemas: { RuntimeEvent: runtimeEvent, HookObservation: hookObservation } },
       tags: [
         { name: 'health' },
         { name: 'spaces' },
@@ -141,6 +152,55 @@ export function buildOpenApiDocument() {
         { name: 'memory' },
       ],
       paths: {
+        '/principals': {
+          post: {
+            tags: ['spaces'],
+            summary: 'Provision an additional account as the setup owner',
+            requestBody: json(createPrincipalRequest),
+            responses: {
+              '201': jsonResponse('Principal created', z.object({ principal })),
+              '403': problem('Setup owner required'),
+              '409': problem('Email already registered'),
+            },
+          },
+        },
+        '/spaces/shared': {
+          post: {
+            tags: ['spaces'],
+            summary: 'Create a shared space owned by the authenticated principal',
+            requestBody: json(createSharedSpaceRequest),
+            responses: { '201': jsonResponse('Shared space created', z.object({ space })) },
+          },
+        },
+        '/spaces/{id}/memberships': {
+          post: {
+            tags: ['spaces'],
+            summary: 'Grant membership or regrant with a fresh generation',
+            requestParams: idParam('id', 'Shared space id'),
+            requestBody: json(grantMembershipRequest),
+            responses: {
+              '201': jsonResponse('Membership', z.object({ membership: spaceMembership })),
+              '403': problem('Space owner required'),
+            },
+          },
+        },
+        '/spaces/{id}/memberships/{principalId}': {
+          delete: {
+            tags: ['spaces'],
+            summary: 'Revoke membership, advance context generation and fence work',
+            requestParams: { path: z.object({ id: z.string(), principalId: z.string() }) },
+            responses: {
+              '200': jsonResponse(
+                'Membership revoked',
+                z.object({
+                  membership: spaceMembership,
+                  policy_generation: z.number().int().nonnegative(),
+                }),
+              ),
+              '403': problem('Space owner required'),
+            },
+          },
+        },
         '/responsibilities': {
           post: {
             tags: ['jobs'],

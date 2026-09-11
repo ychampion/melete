@@ -5,10 +5,10 @@ An open-source, self-hosted, model-agnostic personal assistant.
 **Give Melete a responsibility, close the tab, come back to progress, a result,
 or one precise question.**
 
-> **Status: pre-release. Nothing works yet.**
-> This repository currently contains the contracts, the schema, the deployment
-> shape, and the conformance scenarios. There is no working assistant here to
-> install. Watch the repository if you want to know when there is.
+> **Status: pre-release. The complete assistant is not ready to install.**
+> Core service primitives have tests; the combined runtime capability proof is
+> still pending. See the [capability matrix](docs/CAPABILITIES.md) for what works
+> and what remains unverified.
 
 ## What it is
 
@@ -56,8 +56,10 @@ tools you already have.
 
 ## In scope for v0.1
 
-- Single-owner self-hosting with `docker compose up`, on Linux. macOS and Windows
+- Self-hosting with `docker compose up`, on Linux. macOS and Windows
   through Docker Desktop, documented as a trial.
+- Additional accounts and shared spaces as API primitives, with membership
+  revocation and private personal spaces.
 - Durable jobs with waits, schedules, approvals, and recovery after a restart.
 - A thin runtime in a sandboxed container with no route to the internet. Tool
   calls only through the broker.
@@ -77,9 +79,9 @@ tools you already have.
 
 ## Out of scope for v0.1
 
-- **An invitation UI.** Not in v0.1. Shared-space and membership-revocation
-  primitives are planned but remain unimplemented in this revision; see the
-  [capability matrix](docs/CAPABILITIES.md) for the contract blockers and proof status.
+- **An invitation UI.** Not in v0.1. Shared spaces, additional accounts and
+  membership revocation exist as API primitives; see the
+  [capability matrix](docs/CAPABILITIES.md) for their tests and proof limits.
 - **Google and Microsoft OAuth.** Restricted scopes need weeks of verification.
   IMAP, SMTP, and CalDAV instead.
 - **Virtual-machine isolation.** A Firecracker microVM is the target and gVisor

@@ -124,13 +124,14 @@ withDb('durable waits, triggers and approval inputs', () => {
     const { handle, queue, jobs } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
     await queue.boss.deleteAllJobs(QUEUES.triggerSchedule);
-    await handle.sql`truncate "owner", "space" cascade`;
+    await handle.sql`truncate "principal", "owner", "space" cascade`;
     spaceId = newId('sp');
     ownerId = newId('own');
     connectionId = newId('conn');
     await handle.db
       .insert(owner)
       .values({ id: ownerId, email: 'owner@example.test', passwordHash: 'fixture' });
+    await handle.sql`insert into principal (id, email, password_hash) select id, email, password_hash from owner`;
     await handle.db
       .insert(space)
       .values({ id: spaceId, name: 'Personal', gitPath: `/spaces/${spaceId}` });

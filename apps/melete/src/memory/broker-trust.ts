@@ -35,9 +35,33 @@ export async function handlesForJob(tx: Query, spaceId: string, jobId: string): 
  * The owner of the space, read rather than asserted. A space memory has no row
  * for yields no scope, and the resolver answers for nothing.
  */
-export async function memoryScopeForSpace(tx: Query, spaceId: string): Promise<MemoryScope | null> {
+export async function memoryScopeForSpace(
+  tx: Query,
+  spaceId: string,
+  principalId?: string | null,
+): Promise<MemoryScope | null> {
   const [row] = await tx`select owner_id from memory_spaces where space_id = ${spaceId}`;
   if (!row) return null;
+  if (principalId) {
+    const [parent] =
+      await tx`select kind, owner_principal_id from space where id = ${spaceId} for share`;
+    if (!parent) return null;
+    const [membership] =
+      parent.kind === 'shared'
+        ? await tx`select role, generation from space_membership where space_id = ${spaceId} and principal_id = ${principalId} and revoked_at is null for share`
+        : [];
+    const isOwner = parent.owner_principal_id === principalId;
+    if (parent.kind === 'shared' ? !membership : !isOwner) return null;
+    return {
+      ownerId: row.owner_id as string,
+      principalId,
+      membershipGeneration: Number(membership?.generation ?? 0),
+      spaceId,
+      publisher: 'broker',
+      audience: isOwner ? 'private' : 'space',
+      role: isOwner ? 'owner' : 'reader',
+    };
+  }
   return {
     ownerId: row.owner_id as string,
     spaceId,
@@ -75,7 +99,14 @@ function align(input: TrustResolutionInput, resolution: TrustResolution): Origin
 export function createMemoryTrustResolver(): TrustResolver {
   return {
     async resolve(tx, input) {
-      const scope = await memoryScopeForSpace(tx, input.space_id);
+      const [job] =
+        await tx`select * from job where id = ${input.job_id} and space_id = ${input.space_id}`;
+      if (!job) return [];
+      const scope = await memoryScopeForSpace(
+        tx,
+        input.space_id,
+        job.principal_id as string | null | undefined,
+      );
       if (!scope) return [];
       const handles = await handlesForJob(tx, input.space_id, input.job_id);
       const resolution = await resolveTrustIn(tx as MemoryTx, scope, {

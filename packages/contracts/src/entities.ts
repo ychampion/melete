@@ -14,7 +14,7 @@ import { knowledgeRecordStatus } from './knowledge.ts';
 // owner, space
 // --------------------------------------------------------------------------
 
-/** v0.1 holds exactly one owner row. Multi-user is out of scope. */
+/** The installation keeps one owner row as its setup guard. */
 export const owner = z.object({
   id: prefixedId(ID_PREFIXES.owner),
   email: z.email(),
@@ -24,15 +24,14 @@ export const owner = z.object({
 });
 export type Owner = z.infer<typeof owner>;
 
-export const SPACE_KINDS = ['personal'] as const;
+export const SPACE_KINDS = ['personal', 'shared'] as const;
 export const spaceKind = z.enum(SPACE_KINDS);
 export type SpaceKind = z.infer<typeof spaceKind>;
 
 /**
- * `audience` is reserved so shared spaces can arrive later without rewriting
- * every record. In v0.1 it is always `owner`.
+ * Personal spaces are owner-only; shared spaces are visible to active members.
  */
-export const SPACE_AUDIENCES = ['owner'] as const;
+export const SPACE_AUDIENCES = ['owner', 'space'] as const;
 export const spaceAudience = z.enum(SPACE_AUDIENCES);
 export type SpaceAudience = z.infer<typeof spaceAudience>;
 
@@ -41,6 +40,7 @@ export const space = z.object({
   name: z.string().min(1).max(120),
   kind: spaceKind,
   audience: spaceAudience,
+  owner_principal_id: prefixedId(ID_PREFIXES.owner).nullable().optional(),
   /** Path of this space's git repository on the `spaces` volume. */
   git_path: z.string().min(1),
   created_at: timestamp,
@@ -134,6 +134,7 @@ export type WaitSpec = z.infer<typeof waitSpec>;
 export const job = z.object({
   id: prefixedId(ID_PREFIXES.job),
   space_id: prefixedId(ID_PREFIXES.space),
+  principal_id: prefixedId(ID_PREFIXES.owner).nullable().optional(),
   title: z.string().min(1).max(200),
   objective: z.string().min(1),
   constraints: jobConstraints,
@@ -269,6 +270,8 @@ export const EVENT_TYPES = [
   'approval_decided',
   'knowledge_changed',
   'notice',
+  'hook_event',
+  'hook_error',
 ] as const;
 export const eventType = z.enum(EVENT_TYPES);
 export type EventType = z.infer<typeof eventType>;
@@ -402,7 +405,9 @@ export type Secret = z.infer<typeof secret>;
 /** Every table in v0.1, in dependency order. Used by the migration test. */
 export const TABLES = [
   'owner',
+  'principal',
   'space',
+  'space_membership',
   'secret',
   'connection',
   'job',

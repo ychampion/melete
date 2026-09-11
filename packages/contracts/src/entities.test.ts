@@ -24,7 +24,7 @@ const NOW = '2026-09-11T00:00:00.000Z';
 const HASH = canonicalizePayload({ to: 'a@example.com' }).hash;
 
 describe('the schema covers every table in the specification', () => {
-  test('fourteen tables, named exactly once', () => {
+  test('tables are named exactly once', () => {
     expect(new Set(TABLES).size).toBe(TABLES.length);
     expect(TABLES).toContain('knowledge_record');
     expect(TABLES).toContain('budget_ledger');

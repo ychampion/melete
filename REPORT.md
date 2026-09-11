@@ -71,3 +71,70 @@
 - Log `final stop`: resume slices 2/3 only after the frozen-contract additions are available; integrate W10c/W11/W12 before slices 4/5; resolve the recorded fixture timeout and run the full suite plus the single real-Hermes capability-chain proof. No passing end-to-end claim or merge is made.
 
 PROOF PENDING: waiting for W10c/W11 to merge
+
+## Resumed authorization — 2026-09-11 20:19 UTC
+
+- Log `orchestrator steering`: additive contract changes are now authorized, including `hook_event`, `hook_error`, principals, memberships, shared spaces and the skill-selector bundle wiring. This supersedes the earlier additive-contract stop; breaking changes still require a proposal and stop.
+- Command `until mkdir C:/Users/gamin/.melete-test.lock 2>/dev/null; do sleep 15; done`: every subsequent full `bun test` run will acquire the shared directory lock and release it with `rmdir` on success or failure. Focused runs remain unlocked.
+- Log `timeout qualification`: the earlier full-suite and focused teardown timings were obtained without the new full-suite lock. They are historical observations, not a reproduced serialized-suite timeout; only a timeout reproduced under the lock will be reported as a current suite failure.
+- SHA `2d3ca94eb5c07d8ddb662d22ce35d203e61b4972`: resumed from the clean pushed W14 branch, solo at xhigh, with draft PR #13 already open to integration.
+
+## Slice 2 implementation checks — 2026-09-11 20:46 UTC
+
+- Command `bun run test:plugin`: `24 passed in 10.35s`, including registered hook ordering, erased payload values, observer exception isolation and copied thread-context isolation.
+- Command `bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=2`: exit 0; `47 pass`, `0 fail`, `124 expect() calls`, `[32.37s]`. The database test persists adapter observations, redelivers each event and replays from a stored cursor.
+- Command `python packages/runtime-hermes/patches/observer_bridge.py .hermes-src`: applied the three hash-checked observer seams and shared capture module. The source patch adds actual committed compaction observation and per-run HTTP queue binding; it does not change tool decisions.
+- Command `uv venv .hermes-venv --python 3.12`, followed by `uv pip install --python .hermes-venv/Scripts/python.exe -e ./.hermes-src` and the pin's `aiohttp==3.14.3`: prepared the local real-server environment. Provider secrets are removed from its child environment; title generation and background review are disabled.
+- Test `real Hermes persists lifecycle hooks and a throwing observer without stopping the tool run`: two attempts exposed an empty test catalog. Logs showed `melete: the broker served no tools`; the fixture had requested nonexistent `test.read`. A speculative startup-preload change was removed; the final fixture uses the existing `files.read` connector and checks its catalog before launching Hermes. This is the second and final allowed fix cycle for this check.
+
+- Command `MELETE_HERMES_E2E=1 bun test apps/melete/test/integration/hooks-real.test.ts --max-concurrency=2`: final permitted rerun exit 1, `[61.76s]`; 16 assertions reached, including real session/turn/pre-tool/post-tool/end hooks, persisted `hook_error`, duplicate redelivery and redaction. The final action count was `0`, expected `1`.
+- Log `%TEMP%/melete-e2e-home-GREKKk/logs/agent.log:89`: `Tool files.read handler returned unsupported result type: dict`; the existing forwarder returns dictionaries while the pinned registry requires its supported tool-result representation. No successful broker effect or green real-server test is claimed. Two fix cycles are exhausted; this remaining failure is recorded while W14 proceeds to slice 3.
+
+## Slice 3 authority and bundle checks — 2026-09-11 21:15 UTC
+
+- Command `bun run db:generate`: generated `0015_petite_demogoblin.sql` and its snapshot; the reviewed migration adds principals, memberships and optional bindings, then backfills the installation owner, spaces, jobs, sessions and submission ownership. Old attempts retain null bindings so an already issued personal-space capability remains compatible.
+- Log `principal authority`: authenticated request identity now scopes job lists, detail reads, event pages, reset snapshots, knowledge/skill headers, approvals and related resources. New jobs, attempts and capability tokens carry the principal and membership generation; shared admission rejects missing or mismatched bindings.
+- Log `membership revocation`: the service transaction advances space policy and membership generation, invalidates memory contexts/prepared outputs, persists `context_invalidated`, fences active attempts and cancels the revoked member's queued/waiting work. Regrant advances membership generation again; old capabilities remain stale.
+- Test `single-owner authentication against Postgres`: all ten existing authentication cases passed in the initial focused run, including racing setup, password verification, persistent sessions, cookie flags and origin rejection. The combined command did not finish green because the new test's asynchronous rejection matcher required diagnosis.
+- Log `principal test diagnosis`: PostgreSQL reported `idle in transaction`, `ClientRead`, query `begin`, and no blocking PIDs while the asynchronous rejection matcher waited. Explicitly awaiting each operation and asserting the caught error code restored progress; the first implementation fix cycle passed the whole scenario in `2109.00ms` with `61 expect() calls`.
+- Command `bun test apps/melete/test/integration/principals.test.ts packages/contracts/src/principals.test.ts --max-concurrency=2`: exit 0; `2 pass`, `0 fail`, `73 expect() calls`, `[13.78s]`. The extended scenario checks three selected skills, private-space/API isolation, broker and gateway refusal, stale queued work, regrant, private memory-source handles and invalidated delivered context.
+- Command `bun run typecheck`: exit 0 after principal/API/bundle authority wiring; subsequent memory and migration-compatibility edits will receive final checks.
+- Command `bun run openapi` and command `bun run client:generate`: both exit 0; the new principal/shared-space/membership paths and optional fields are generated into the published schemas and client types.
+- Log `proof boundary`: the lifecycle real-server action assertion remains unverified; the new principal scenario uses the real service, broker, gateway budget, pg-boss and PostgreSQL with the scripted adapter. It does not establish the gated MCP/learning chain.
+
+## Final review and serialized-suite queue — 2026-09-11 21:40 UTC
+
+- Command `bun test apps/melete/test/integration/principals.test.ts --max-concurrency=2`: migration and membership scenarios passed, `2 pass`, `0 fail`, `75 expect() calls`, `[16.00s]`; later private-timeline and receipt-history guards await the final suite.
+- Command `bun run typecheck`: exit 0 after the private-timeline and receipt-history changes. Command `bun run lint`: final review exit 0, `Checked 318 files in 1324ms. No fixes applied.` Command `git -C C:/Users/gamin/melete-oss-w14 diff --check`: exit 0.
+- Command `bun run compose:check`: exit 0, all 12 configuration assertions pass; this is not a Docker network test. Command `python packages/runtime-hermes/scripts/audit-pin.py .hermes-src`: exit 0, the patched source exposes 38 hook names including `on_compaction`.
+- Log `full-suite queue`: the guarded `bun test --max-concurrency=2` command is still waiting for `C:/Users/gamin/.melete-test.lock`. Live process inspection shows another lane's Bun test process; W14 has neither removed its lock nor interrupted it. No serialized-suite timeout is claimed before W14 acquires the lock and runs.
+- SHA `9484023cabd32b786cb4d336dec818f441cd0cc1`: a fresh `git -C C:/Users/gamin/melete-oss-w14 fetch origin integration` leaves integration at the same base. Command `gh pr list --repo ychampion/melete --state all --limit 60 --json number,title,headRefName,baseRefName,state,mergedAt` now shows W10c PR #15 open, W12 PR #12 open, and no merged W11. Slices 4 and 5 remain dependency-gated.
+
+## Assumptions — reviewed implementation
+
+- Log `shared audience`: shared-space membership exposes published skills and knowledge; each job and its timeline remain private to its own principal, including within a shared space. This prevents membership from exposing an owner's private attempt context before the evaluated-sharing pipeline exists.
+- Log `additive migration compatibility`: old personal-space attempts keep null principal bindings so pre-upgrade signed capabilities remain usable; new shared-space attempts require both principal and membership generation, and all newly issued attempts record their binding.
+
+## Serialized full-suite result — 2026-09-11 22:01 UTC
+
+- Command `bun test --max-concurrency=2` acquired `C:/Users/gamin/.melete-test.lock` at approximately 21:57 UTC and ran as W14 PID `39596`. The watchdog stopped that test tree after the 180-second budget; exit `124`. The wrapper released its own lock in `finally`.
+- Log `%TEMP%/melete-w14-locked-full.stderr.log`: `376` passing test lines, `0` failing test lines and `0` error lines before the budget stop, ending during `packages/knowledge/src/retraction.test.ts`. This is a reproduced serialized-suite budget failure, not a completed green suite. The run had not yet reached the new principal integration test.
+- Log `process cleanup`: the tracked Bun PID `39596`, embedded PostgreSQL parent `32876`, and transient child `6788` are absent after the watchdog. No other lane's test process or lock was interrupted.
+- Command `bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/hooks.test.ts packages/contracts/src/principals.test.ts --max-concurrency=2`: started the final focused run after the full-suite wrapper exited. It includes private shared-job timelines and submission receipt isolation, including marker-only recovery after fixture receipt rows are removed.
+
+## Final W14 focused proof — 2026-09-11 22:03 UTC
+
+- Command `bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/hooks.test.ts packages/contracts/src/principals.test.ts --max-concurrency=2`: exit 0, `4 pass`, `0 fail`, `96 expect() calls`, `[79.59s]`. This executed the latest private shared-job timeline and marker-only submission receipt assertions as well as the migration, membership, stale capability, bundle selection, invalidation, deduplication and replay checks.
+- Test `additive migration preserves the setup guard, login and an issued personal-space capability`: passed in `2344.00ms`. Test `member bundles select at most three shared skills; revocation fences work, replay, knowledge and old capabilities`: passed in `1547.00ms`. Test `adapter capture persists in order, deduplicates delivery and replays from the stored cursor`: passed in `1329.00ms`.
+- Log `full-suite budget`: the serialized run had no assertion failure to repair before the budget stop. W14 is checking the affected existing API, job, event and broker suites separately; the incomplete full result remains explicitly red in `docs/CAPABILITIES.md` and the draft PR description.
+
+## Existing-suite regression and first fix cycle — 2026-09-11 22:06 UTC
+
+- Command `bun test` with the selected authentication, jobs, runner, events, replies, submissions, waits, attention, responsibility, broker and knowledge-route files: the knowledge, attention, authentication and broker checks pass. Event-router cases fail with `TypeError: undefined is not an object (evaluating c.get("owner").id)` because those standalone module fixtures do not mount the authentication middleware.
+- Log `event identity fix cycle 1`: `apps/melete/src/api/events.ts` now captures `requestPrincipal()` from the same server-owned async context used by the service filters. The real app's authentication middleware establishes that identity; background stream delivery retains the captured principal. Direct internal module fixtures remain usable without an HTTP authentication fixture. The running command had already imported the old module; its event/reconnect failures will be rerun in a fresh process alongside the actual authenticated principal-isolation test.
+
+## Receipt recovery binding and affected rerun — 2026-09-11 22:09 UTC
+
+- Command `bun test` for the 11 selected existing suites completed with `153 pass`, `15 fail`, `1 error`, `1045 expect() calls`, `[254.47s]`. Thirteen failures share the event module's missing-context error; two receipt recovery cases returned `403` instead of their established `503 unknown_durability` response. Authentication, knowledge routes, attention, broker admission, job transitions, attempt execution, replies and waits passed.
+- Test `receipt_missing yields unknown durability and never admits another job` and test `marker_only yields unknown durability and never admits another job`: internal `SubmissionService.get` reconstructed the receipt without a principal, then the authenticated retry was refused. First fix cycle: carry the recorded principal from the receipt, journal or admission marker into the uncertainty row. Recovery never adopts an arbitrary request's identity.
+- Test `member bundles select at most three shared skills; revocation fences work, replay, knowledge and old capabilities`: the marker-only fixture now also performs internal recovery before confirming that another principal is still refused. Command `bun test apps/melete/test/integration/events.test.ts apps/melete/test/integration/submissions.test.ts apps/melete/test/integration/responsibility.test.ts apps/melete/test/integration/principals.test.ts --max-concurrency=2` is the fresh affected rerun after both first-cycle fixes.

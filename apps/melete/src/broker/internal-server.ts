@@ -23,6 +23,7 @@ export function createInternalServer(options: {
   resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
   gatewayFetch?: GatewayOptions['fetch'];
+  fake?: GatewayOptions['fake'];
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
 }) {
   const broker = new BrokerService({
@@ -63,6 +64,7 @@ export function createInternalServer(options: {
     defaultProvider: options.defaultProvider,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,
+    fake: options.fake,
     brokerFetch: (request) =>
       request.method === 'GET' && new URL(request.url).pathname === '/actions'
         ? reads.fetch(request)

@@ -247,6 +247,11 @@ const summarise = (type: string, payload: unknown): string => {
   if (type === 'action_requested') return `${pick('kind')} proposed`;
   if (type === 'approval_requested') return 'an approval was raised';
   if (type === 'approval_decided') return `${pick('decision')}`;
+  if (type === 'hook_event' || type === 'hook_error') {
+    return [pick('name'), pick('tool_name'), pick('error_code') ?? pick('outcome')]
+      .filter(Boolean)
+      .join(' · ');
+  }
   if (type === 'notice') return `${pick('title')}. ${pick('body') ?? ''}`.trim();
   if (type === 'tool_call_proposed' || type === 'tool_result') return pick('name') ?? '';
   return JSON.stringify(fields).slice(0, 160);

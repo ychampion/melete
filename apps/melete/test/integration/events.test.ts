@@ -135,15 +135,17 @@ withDb('persisted event streams', () => {
     ]);
   });
   afterEach(async () => {
+    // Stream shutdown drains pending queries before releasing the shared listener.
     for (const value of readers) await value.cancel().catch(() => {});
     readers.clear();
     for (const value of streams) await value.close();
     streams.clear();
-  });
+  }, 15_000);
   afterAll(async () => {
+    // Both pools can consume their five-second drain allowance during shutdown.
     await second?.close();
     await handle?.close();
-  });
+  }, 15_000);
 
   test('replays actual global rows and isolates the job stream across sequence gaps', async () => {
     const first = await write(jobA, { text: 'A1' }, { type: 'text_delta' });

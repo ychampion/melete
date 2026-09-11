@@ -21,6 +21,12 @@ import { attempt, job, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import {
+  requestPrincipal,
+  requireJobAccess,
+  spaceAuthority,
+  visibleJob,
+} from '../principals/authority.ts';
 import { type AttemptWake, enqueueWake } from './queue.ts';
 
 export type JobRow = typeof job.$inferSelect;
@@ -37,6 +43,7 @@ export function jobView(row: JobRow) {
   return responsibilityJob.parse({
     id: row.id,
     space_id: row.spaceId,
+    principal_id: row.principalId,
     title: row.title,
     objective: row.objective,
     constraints: row.constraints,
@@ -93,13 +100,12 @@ export class JobService {
       .from(job)
       .where(eq(job.id, id))
       .for('update', skipLocked ? { skipLocked: true } : {});
+    if (row && requestPrincipal()) await spaceAuthority(tx, row.spaceId, requestPrincipal(), true);
     return row;
   }
 
   async get(id: string): Promise<JobRow> {
-    const [row] = await this.db.select().from(job).where(eq(job.id, id));
-    if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
-    return row;
+    return requireJobAccess(this.db, id);
   }
 
   async list(filters: { space_id?: string; state?: string; limit: number }): Promise<JobRow[]> {
@@ -108,6 +114,7 @@ export class JobService {
       .from(job)
       .where(
         and(
+          visibleJob(job.id),
           filters.space_id ? eq(job.spaceId, filters.space_id) : undefined,
           filters.state ? eq(job.state, filters.state) : undefined,
         ),
@@ -128,11 +135,13 @@ export class JobService {
       .from(space)
       .where(eq(space.id, value.space_id));
     if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
+    const access = await spaceAuthority(tx, value.space_id, requestPrincipal(), true);
     const [row] = await tx
       .insert(job)
       .values({
         id: newId('job'),
         spaceId: value.space_id,
+        principalId: access.principalId,
         title: value.title,
         objective: value.objective,
         constraints: jobConstraints.parse(value.constraints ?? {}),

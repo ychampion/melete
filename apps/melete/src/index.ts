@@ -9,7 +9,10 @@
  * directories with a README describing the contract they will implement.
  */
 
+import { basename, dirname } from 'node:path';
 import type { RuntimeAdapter } from '@melete/contracts';
+import { spacePaths } from '@melete/knowledge';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
@@ -26,6 +29,7 @@ import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { space } from './db/schema.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
@@ -44,6 +48,8 @@ import { filesystemSpaces } from './knowledge/spaces.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
+import { requestPrincipal, spaceAuthority } from './principals/authority.ts';
+import { mountPrincipals } from './principals/routes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 
 export const VERSION = '0.1.0-pre';
@@ -68,6 +74,7 @@ export type AppDeps = {
 };
 
 export function createApp(deps: AppDeps) {
+  const db = deps.db;
   const app = new Hono();
   app.onError((error, c) => {
     if (error instanceof ServiceError)
@@ -84,6 +91,7 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
+  mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -98,7 +106,26 @@ export function createApp(deps: AppDeps) {
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
-  if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
+  if (deps.memory)
+    app.route(
+      '/',
+      createMemoryRouter({
+        ...deps.memory,
+        resolveScope: async (request) => {
+          const scope = await deps.memory?.resolveScope?.(request);
+          const actor = requestPrincipal();
+          if (!scope || !actor || !deps.db) return null;
+          const access = await spaceAuthority(deps.db, scope.spaceId, actor);
+          return {
+            ...scope,
+            principalId: actor,
+            membershipGeneration: access.generation,
+            role: access.role === 'owner' ? 'owner' : 'reader',
+            audience: access.role === 'owner' ? scope.audience : 'space',
+          };
+        },
+      }),
+    );
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -112,7 +139,28 @@ export function createApp(deps: AppDeps) {
 
   app.route(
     '/',
-    knowledgeRoutes(deps.knowledge ?? { spaces: filesystemSpaces(deps.env.MELETE_SPACES_DIR) }),
+    knowledgeRoutes({
+      ...(deps.knowledge ?? { spaces: filesystemSpaces(deps.env.MELETE_SPACES_DIR) }),
+      ...(db
+        ? {
+            spaces: {
+              ...(deps.knowledge?.spaces ?? filesystemSpaces(deps.env.MELETE_SPACES_DIR)),
+              byId: async (id: string) => {
+                const [row] = await db.select().from(space).where(eq(space.id, id));
+                if (!row) return null;
+                return {
+                  id: row.id,
+                  name: basename(row.gitPath),
+                  paths: spacePaths(dirname(row.gitPath), basename(row.gitPath)),
+                };
+              },
+            },
+            authorizeSpace: async (id: string) => ({
+              owner: (await spaceAuthority(db, id, requestPrincipal())).role === 'owner',
+            }),
+          }
+        : {}),
+    }),
   );
 
   app.notFound((c) =>

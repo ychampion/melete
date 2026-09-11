@@ -9,6 +9,7 @@ import type { Database } from '../db/client.ts';
 import { action, event, eventRetention, job } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { jobView } from '../jobs/service.ts';
+import { requireJobAccess, visibleJob } from '../principals/authority.ts';
 
 type Position = { cursor: number; epoch: number | null; retainedAfter: number };
 export type StreamHandshake = Position & { frames: string[] };
@@ -38,15 +39,18 @@ export class EventProtocol {
     tx: Transaction,
     position: Position,
     jobId?: string,
+    principalId?: string,
   ): Promise<ResponsibilitySnapshot> {
     const jobs = await tx
       .select()
       .from(job)
-      .where(jobId ? eq(job.id, jobId) : undefined);
+      .where(and(jobId ? eq(job.id, jobId) : undefined, visibleJob(job.id, principalId)));
     const actions = await tx
       .select()
       .from(action)
-      .where(jobId ? eq(action.jobId, jobId) : undefined);
+      .where(
+        and(jobId ? eq(action.jobId, jobId) : undefined, visibleJob(action.jobId, principalId)),
+      );
     return responsibilitySnapshot.parse({
       cursor: position.cursor,
       epoch: position.epoch,
@@ -60,18 +64,21 @@ export class EventProtocol {
       })),
     });
   }
-  async snapshot(jobId?: string) {
-    return serviceTransaction(this.db, async (tx) =>
-      this.capture(tx, await this.position(tx, jobId), jobId),
-    );
+  async snapshot(jobId?: string, principalId?: string) {
+    return serviceTransaction(this.db, async (tx) => {
+      if (jobId && principalId) await requireJobAccess(tx, jobId, principalId);
+      return this.capture(tx, await this.position(tx, jobId), jobId, principalId);
+    });
   }
   async handshake(
     after: number,
     jobId?: string,
     epoch?: number | null,
     resync = false,
+    principalId?: string,
   ): Promise<StreamHandshake> {
     return serviceTransaction(this.db, async (tx) => {
+      if (jobId && principalId) await requireJobAccess(tx, jobId, principalId);
       const position = await this.position(tx, jobId);
       let observedEpoch = epoch;
       if (jobId && after > 0 && observedEpoch === undefined) {
@@ -116,7 +123,7 @@ export class EventProtocol {
               reason,
               cursor: position.cursor,
               epoch: position.epoch,
-              snapshot: await this.capture(tx, position, jobId),
+              snapshot: await this.capture(tx, position, jobId, principalId),
             }),
             position.cursor,
           ),

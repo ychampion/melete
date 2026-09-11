@@ -14,6 +14,7 @@ import { backgroundOperation, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { visibleJob } from '../principals/authority.ts';
 import { QUEUES } from './queue.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobService } from './service.ts';
@@ -59,7 +60,12 @@ export class OperationService {
     return this.jobs.db
       .select()
       .from(backgroundOperation)
-      .where(jobId ? eq(backgroundOperation.jobId, jobId) : undefined);
+      .where(
+        and(
+          jobId ? eq(backgroundOperation.jobId, jobId) : undefined,
+          visibleJob(backgroundOperation.jobId),
+        ),
+      );
   }
   async get(id: string) {
     const [row] = await this.jobs.db

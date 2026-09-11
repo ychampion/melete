@@ -116,7 +116,7 @@ withDb('attention as a contract', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
-    await handle.sql`truncate "owner", "space", event_retention cascade`;
+    await handle.sql`truncate "principal", "owner", "space", event_retention cascade`;
     spaceId = newId('sp');
     await handle.db
       .insert(space)

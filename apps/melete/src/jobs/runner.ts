@@ -30,6 +30,7 @@ import { attempt, event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { spaceAuthority } from '../principals/authority.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import { buildBundle, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
@@ -120,6 +121,7 @@ export class AttemptRunner {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
       }
       if (row.state !== 'queued') return null;
+      const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
       const budget = jobBudget.parse(row.budget);
       const [previous] = await tx
         .select()
@@ -134,6 +136,9 @@ export class AttemptRunner {
       const attemptId = newId('att');
       const epoch = row.leaseEpoch + 1;
       const claims: CapabilityClaims = {
+        ...(access.principalId
+          ? { principal_id: access.principalId, membership_generation: access.generation }
+          : {}),
         job_id: row.id,
         attempt_id: attemptId,
         space_id: row.spaceId,
@@ -168,6 +173,8 @@ export class AttemptRunner {
       );
       await tx.insert(attempt).values({
         id: attemptId,
+        principalId: access.principalId,
+        membershipGeneration: access.generation,
         jobId: row.id,
         epoch,
         revision: row.revision,

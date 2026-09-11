@@ -1,7 +1,7 @@
 # @melete/runtime-hermes
 
-The v0.1 execution engine: a pinned, unmodified [Hermes](https://github.com/NousResearch/hermes-agent)
-release, configured thin, behind the `RuntimeAdapter` interface from
+The v0.1 execution engine: a pinned [Hermes](https://github.com/NousResearch/hermes-agent)
+release with a small observer bridge, configured thin behind the `RuntimeAdapter` interface from
 `@melete/contracts`.
 
 Pinned release: **`v2026.9.7`** (MIT, Nous Research). The image builds from that
@@ -10,8 +10,11 @@ running container can say exactly what it is.
 
 ## What "thin" means here
 
-Melete does not fork Hermes. Everything below is configuration, which is what
-makes upgrading the pin a one-line change instead of a rebase.
+The thin settings below are configuration. The image also applies
+`patches/observer_bridge.py`: three source hashes must match the audited pin or
+the identical reviewed patch. This adds a real compaction dispatch and binds
+plugin observations to the current HTTP run queue. Updating the pin requires
+reviewing those seams again.
 
 | Switch | Where | Why |
 |---|---|---|
@@ -49,7 +52,7 @@ floor on this engine and the first thing a native loop would recover.
 ## The plugin contract
 
 `melete_plugin/` registers one tool per entry in the broker's catalog and
-nothing else. Every handler is a forwarder: it posts the proposed payload to the
+bounded lifecycle observers. Every tool handler is a forwarder: it posts the proposed payload to the
 broker over the internal network and returns what the broker says.
 
 The plugin holds no credentials, contains no connector code, and makes no
@@ -112,6 +115,22 @@ A standing allowance would outlive the attempt it was granted for, which is the
 exact property the broker exists to prevent.
 
 ## The client
+
+Lifecycle observations become `hook_event` or `hook_error`, use the adapter's
+ordinary event sequence, and are persisted before timeline fan-out and replay.
+Retried captures keep their identity. Only fixed metadata and a digest of
+redacted argument shape survive; values, messages, results and exception text
+are omitted. Hooks return no directive and never enforce authorization.
+`on_session_end` retains Hermes's turn-finalization meaning. The compaction
+patch dispatches only after committed progress.
+
+Run `bun run test:plugin` and
+`bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=2`
+for the observer and persistence checks. The optional real-server check is
+`MELETE_HERMES_E2E=1 bun test apps/melete/test/integration/hooks-real.test.ts --max-concurrency=2`;
+prepare `.hermes-venv` using note 0009 and install the pin's `aiohttp==3.14.3`.
+That check currently reaches the real hooks but fails its final broker-action
+assertion; see `REPORT.md`. It is not a passing end-to-end capability proof.
 
 `src/client.ts` builds requests and parses responses. It opens no sockets, so it
 is fully testable without a container:

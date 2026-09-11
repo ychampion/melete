@@ -146,7 +146,7 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     const { handle, queue } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
     await queue.boss.deleteAllJobs(QUEUES.recoveryScan);
-    await handle.sql`truncate "owner", "space" cascade`;
+    await handle.sql`truncate "principal", "owner", "space" cascade`;
     spaceId = newId('sp');
     await handle.db
       .insert(space)

@@ -1,15 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { ID_PREFIXES, spaceListResponse } from '@melete/contracts';
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { session } from '../db/auth-schema.ts';
 import type { Database } from '../db/client.ts';
-import { owner, space } from '../db/schema.ts';
+import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
+import { principalContext, visibleSpace } from '../principals/authority.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -37,13 +38,14 @@ const publicOwner = (row: typeof owner.$inferSelect): SessionOwner => ({
 
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 
-function newSession(ownerId: string) {
+function newSession(ownerId: string, principalId = ownerId) {
   const token = randomBytes(32).toString('base64url');
   return {
     token,
     row: {
       tokenHash: tokenHash(token),
       ownerId,
+      principalId,
       expiresAt: new Date(Date.now() + SESSION_TTL_SECONDS * 1000),
     },
   };
@@ -97,16 +99,19 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
       );
     }
     const [active] = await db
-      .select({ owner })
+      .select({ owner: principal })
       .from(session)
-      .innerJoin(owner, eq(session.ownerId, owner.id))
+      .innerJoin(
+        principal,
+        eq(principal.id, sql`coalesce(${session.principalId}, ${session.ownerId})`),
+      )
       .where(and(eq(session.tokenHash, tokenHash(token)), gt(session.expiresAt, new Date())))
       .limit(1);
     if (!active) {
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
-    return next();
+    return principalContext.run(active.owner.id, next);
   });
 
   app.post('/setup', async (c) => {
@@ -135,8 +140,10 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
         .onConflictDoNothing()
         .returning();
       if (!createdOwner) return null;
+      await tx.insert(principal).values(createdOwner);
       await tx.insert(space).values({
         id: personalId,
+        ownerPrincipalId: ownerId,
         name: 'Personal',
         kind: 'personal',
         audience: 'owner',
@@ -169,14 +176,21 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
         400,
       );
     }
-    const [found] = await db.select().from(owner).where(eq(owner.email, input.email)).limit(1);
+    const [found] = await db
+      .select()
+      .from(principal)
+      .where(eq(principal.email, input.email))
+      .limit(1);
     if (!found?.passwordHash || !(await Bun.password.verify(input.password, found.passwordHash))) {
       return c.json(
         { error: { code: 'invalid_credentials', message: 'Email or password is wrong.' } },
         401,
       );
     }
-    const authenticated = newSession(found.id);
+    const [installation] = await db.select({ id: owner.id }).from(owner).limit(1);
+    if (!installation)
+      return c.json({ error: { code: 'unauthorized', message: 'Setup is required.' } }, 401);
+    const authenticated = newSession(installation.id, found.id);
     await db.insert(session).values(authenticated.row);
     sessionCookie(c, authenticated.token, env);
     return c.json({ owner: publicOwner(found) });
@@ -191,7 +205,11 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
         503,
       );
     }
-    const rows = await db.select().from(space).orderBy(space.createdAt, space.id);
+    const rows = await db
+      .select()
+      .from(space)
+      .where(visibleSpace(space.id))
+      .orderBy(space.createdAt, space.id);
     return c.json(
       spaceListResponse.parse({
         spaces: rows.map((row) => ({
@@ -199,6 +217,7 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
           name: row.name,
           kind: row.kind,
           audience: row.audience,
+          owner_principal_id: row.ownerPrincipalId,
           git_path: row.gitPath,
           created_at: row.createdAt.toISOString(),
         })),

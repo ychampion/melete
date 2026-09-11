@@ -28,6 +28,8 @@ import {
   question,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { spaceAuthority } from '../principals/authority.ts';
+import { selectedContext } from '../principals/context.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -195,6 +197,7 @@ export async function buildBundle(
   afterSeq: number,
   expected?: ContextGenerations,
 ): Promise<ResponsibilityAttemptBundle> {
+  const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
   const generations = expected
     ? await requireGenerations(tx, row.spaceId, expected)
     : await readGenerations(tx, row.spaceId);
@@ -269,6 +272,14 @@ export async function buildBundle(
   });
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
   const constraints = jobConstraints.parse(row.constraints);
+  const context = await selectedContext(
+    tx,
+    row.spaceId,
+    access.principalId,
+    row.objective,
+    history.inputs.new_user_messages.at(-1)?.content ?? '',
+    constraints.public_compartment,
+  );
   const wait = waitSpec.parse(row.wait);
   const [open] = await tx
     .select()
@@ -276,6 +287,9 @@ export async function buildBundle(
     .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
     .limit(1);
   return responsibilityAttemptBundle.parse({
+    ...(access.principalId
+      ? { principal_id: access.principalId, membership_generation: access.generation }
+      : {}),
     ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
@@ -289,8 +303,8 @@ export async function buildBundle(
     inputs: history.inputs,
     transcript: history.transcript,
     tools: [],
-    skills: [],
-    knowledge: [],
+    skills: context.skills,
+    knowledge: context.knowledge,
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
     attention: {

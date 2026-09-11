@@ -18,7 +18,9 @@ git -C C:/Users/gamin/melete-oss-w14 --git-dir=C:/Users/gamin/melete-oss-w14/.he
 python packages/runtime-hermes/scripts/audit-pin.py .hermes-src
 ```
 
-The AST probe reports **37** `VALID_HOOKS` names and their literal dispatch sites.
+Against the original pin, the AST probe reports **37** `VALID_HOOKS` names and
+their literal dispatch sites. After W14's observer patch it additionally reports
+`on_compaction`; the source references below remain references to the original pin.
 It imports no upstream modules, opens no provider connections, and does not claim
 that every conditional dispatch runs on the HTTP surface. Its locations can be
 read at `https://github.com/NousResearch/hermes-agent/blob/2237be355906fbe6065ce1815711eee52b2d646e/<file>#L<line>`.
@@ -259,11 +261,21 @@ sections or engine tools must not introduce knowledge outside a current Melete
 bundle. The thin runtime keeps memory off and contextual files absent; do not
 treat upstream provider availability as a delivered Melete memory feature.
 
-## W14 implementation boundaries
+## W14 implementation after the additive-contract authorization
 
-The requested durable hook types are absent from the frozen runtime and event
-contracts. Shared space kinds, a second principal and membership authority are
-also absent. The brief requires proposals and a stop of the affected slices;
-W14 does not widen the types, cast around them, or hide hook events as notices.
-The capability matrix in [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md) records
-the actual Melete delivery status and the remaining integration proof.
+The base-revision gaps above are historical audit findings. The resumed brief
+permits additive contracts and supersedes the original freeze stop. W14 adds
+typed `hook_event` and `hook_error`, plugin observers, the hash-checked HTTP and
+compaction patch, and adapter deduplication into the durable event stream.
+Enforcement stays in the broker. Recorded-stream and observer tests pass; the
+real-Hermes check reaches hooks but still fails its broker-action assertion.
+
+W14 also adds principals, shared membership with monotonic generation, API and
+capability authorization, revocation fences, and the skill-selector wiring in
+`apps/melete/src/jobs/bundle.ts`. The principal integration scenario passes
+against PostgreSQL and pg-boss, including private-space refusal and regrant.
+This does not supply W11's evaluated promotion or the gated MCP chain.
+
+The [contract-additions note](proposed/2026-09-12-w14-contract-additions.md)
+records compatibility details. The current three-state matrix is in
+[docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).

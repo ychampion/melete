@@ -14,9 +14,10 @@ const hook = {
   local_seq: 0,
   dedup_key: `${attemptId}:0`,
   at: '2026-09-12T00:00:00.000Z',
+  capture_id: `${attemptId}:hook:0`,
   name: 'pre_tool_call',
   tool_name: 'test.read',
-  timing: { duration_ms: 0 },
+  timing: { captured_at: '2026-09-12T00:00:00.000Z', duration_ms: 0 },
   outcome: 'observed',
   redacted_args_digest: '0'.repeat(64),
 };
@@ -33,7 +34,11 @@ runtimeEvent.parse({ ...hook, type: 'turn_started', turn: 0 });
 process.stdout.write(
   `${JSON.stringify({
     runtime_hook_event: runtimeEvent.safeParse({ ...hook, type: 'hook_event' }).success,
-    runtime_hook_error: runtimeEvent.safeParse({ ...hook, type: 'hook_error' }).success,
+    runtime_hook_error: runtimeEvent.safeParse({
+      ...hook,
+      type: 'hook_error',
+      error_code: 'observer_failed',
+    }).success,
     persisted_hook_event: eventType.safeParse('hook_event').success,
     responsibility_hook_event: responsibilityEvent.shape.type.safeParse('hook_event').success,
     shared_space_kind: spaceKind.safeParse('shared').success,

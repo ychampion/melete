@@ -11,6 +11,7 @@ import { BrokerFault } from './errors.ts';
 
 export type Query = Sql | TransactionSql;
 export type LockedJob = {
+  principal_id?: string | null;
   id: string;
   space_id: string;
   state: string;
@@ -33,6 +34,8 @@ export function recordId(prefix: string): string {
 }
 
 export async function lockJob(tx: Query, id: string): Promise<LockedJob> {
+  // Share the service's commit-order fence so policy revocation and admission cannot interleave.
+  await tx`select pg_advisory_xact_lock(31003103)`;
   const [job] = await tx<LockedJob[]>`select * from job where id = ${id} for update`;
   if (!job) throw new BrokerFault('stale_epoch', 'Job is not available');
   return job;
@@ -51,8 +54,7 @@ export async function checkAttempt(
     throw new BrokerFault('stale_epoch');
   if (job.revision !== claims.revision) throw new BrokerFault('revision_mismatch');
   if (job.space_id !== claims.space_id) throw new BrokerFault('scope_denied');
-  const [attempt] =
-    await tx`select job_id, epoch, outcome from attempt where id = ${claims.attempt_id}`;
+  const [attempt] = await tx`select * from attempt where id = ${claims.attempt_id}`;
   if (
     !attempt ||
     attempt.job_id !== job.id ||
@@ -61,6 +63,39 @@ export async function checkAttempt(
   ) {
     throw new BrokerFault('stale_epoch');
   }
+  // Legacy capabilities remain compatible only with personal-space work;
+  // every shared admission requires the persisted principal and generation.
+  const [parent] = await tx`select * from space where id = ${job.space_id} for share`;
+  if (!parent) throw new BrokerFault('scope_denied');
+  const legacyPersonal =
+    parent.kind === 'personal' && !attempt.principal_id && claims.principal_id === undefined;
+  if (job.principal_id && claims.principal_id !== job.principal_id && !legacyPersonal)
+    throw new BrokerFault('scope_denied', 'principal_binding');
+  if (
+    attempt.principal_id &&
+    (attempt.principal_id !== claims.principal_id ||
+      attempt.membership_generation !== claims.membership_generation)
+  )
+    throw new BrokerFault('scope_denied', 'attempt_principal_binding');
+  if (parent.kind === 'shared') {
+    if (!job.principal_id || !claims.principal_id)
+      throw new BrokerFault('scope_denied', 'shared_principal_required');
+    const [membership] =
+      await tx`select * from space_membership where space_id = ${job.space_id} and principal_id = ${claims.principal_id} and revoked_at is null for share`;
+    if (!membership || membership.generation !== claims.membership_generation)
+      throw new BrokerFault('scope_denied', 'membership_revoked');
+  } else if (
+    claims.principal_id &&
+    parent.owner_principal_id &&
+    claims.principal_id !== parent.owner_principal_id
+  )
+    throw new BrokerFault('scope_denied', 'personal_space');
+  if (
+    attempt.policy_generation !== undefined &&
+    parent.policy_generation !== undefined &&
+    attempt.policy_generation !== parent.policy_generation
+  )
+    throw new BrokerFault('scope_denied', 'policy_generation');
 }
 
 export function actionFromRow(row: Record<string, unknown>): Action {

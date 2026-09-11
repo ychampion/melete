@@ -1,9 +1,8 @@
 # Hermes configuration for the Melete runtime.
 #
-# Nothing here patches Hermes. Everything that makes the engine thin is a
-# setting, so upgrading the pinned tag is a one-line change in the Dockerfile
-# rather than a rebase of a fork. Every key was checked against the pinned
-# source; the citations are in .agents/notes/0009-hermes-surface.md.
+# Thin behavior is configured here; the image additionally applies the checked
+# observer bridge in patches/observer_bridge.py. Configuration citations are in
+# .agents/notes/0009-hermes-surface.md and the W14 capability audit.
 
 # The API server agent is built with exactly these toolsets
 # (gateway/platforms/api_server.py:2122 -> hermes_cli/tools_config.py:550). An
@@ -38,6 +37,19 @@ memory:
   # engine-side store would quietly undo. The `memory` toolset is absent from
   # platform_toolsets above, which is the other half of this.
   enabled: false
+
+# Evaluated skill learning belongs to Melete. No independent runtime mutations
+# or title-generation requests may spend a job's model budget in the background.
+curator:
+  enabled: false
+auxiliary:
+  title_generation:
+    enabled: false
+  background_review:
+    enabled: false
+  compression:
+    provider: melete-gateway
+    fallback_chain: []
 
 approvals:
   # Melete does not use Hermes's approval gate: api_server is in

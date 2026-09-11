@@ -13,7 +13,7 @@
  *
  *   bun run packages/runtime-hermes/scripts/e2e.ts
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +33,7 @@ const HERMES_SRC = join(ROOT, '.hermes-src');
 const PYTHON = join(ROOT, '.hermes-venv', 'Scripts', 'python.exe');
 const CAPABILITY_KEY = 'e2e-capability-key-e2e-capability-key';
 const APPROVAL_KEY = 'e2e-approval-key-e2e-approval-key-xx';
-const API_KEY = 'e2e-api-server-key-0123456789abcdef';
+export const API_KEY = 'e2e-api-server-key-0123456789abcdef';
 
 const log = (line: string) => process.stdout.write(`${line}\n`);
 
@@ -46,7 +46,7 @@ async function freePort(): Promise<number> {
 }
 
 /** A HERMES_HOME with the thin config and the plugin, built fresh each run. */
-function hermesHome(brokerPort: number, apiPort: number, token: string): string {
+export function hermesHome(brokerPort: number, apiPort: number, token: string): string {
   const home = mkdtempSync(join(tmpdir(), 'melete-e2e-home-'));
   mkdirSync(join(home, 'plugins'), { recursive: true });
   cpSync(
@@ -63,11 +63,17 @@ function hermesHome(brokerPort: number, apiPort: number, token: string): string 
       plugins: { enabled: ['melete'], allow_deprecated_imports: false },
       tools: { tool_search: { enabled: 'off' } },
       memory: { enabled: false },
+      curator: { enabled: false },
+      auxiliary: {
+        title_generation: { enabled: false },
+        background_review: { enabled: false },
+        compression: { provider: 'melete-gateway', model: 'scripted', fallback_chain: [] },
+      },
       approvals: { unattended_mode: 'deny', timeout: 300 },
       provider: 'melete-gateway',
       // The gateway's budget adapter allows only the provider/model recorded on
       // the attempt row, so these have to be the seeded pair, not a nice name.
-      model: 'scripted',
+      model: { default: 'scripted', context_length: 256_000 },
       providers: {
         'melete-gateway': {
           base_url: `http://127.0.0.1:${brokerPort}/providers/fake/v1`,
@@ -88,15 +94,22 @@ function hermesHome(brokerPort: number, apiPort: number, token: string): string 
   return home;
 }
 
-type Runtime = { stop: () => void; log: () => string };
+type Runtime = { stop: () => Promise<void>; log: () => string };
 
-function startRuntime(
+export function startRuntime(
   home: string,
   port: number,
   token: string,
   attemptId: string,
   jobId: string,
 ): Runtime {
+  const patched = spawnSync(
+    PYTHON,
+    [join(ROOT, 'packages/runtime-hermes/patches/observer_bridge.py'), HERMES_SRC],
+    { encoding: 'utf8', windowsHide: true },
+  );
+  if (patched.status !== 0)
+    throw new Error(`Observer patch refused: ${patched.stderr || patched.error}`);
   const lines: string[] = [];
   // The container inherits none of the operator's provider keys; this process
   // would, and a stray GOOGLE_API_KEY silently wins the provider race.
@@ -106,6 +119,7 @@ function startRuntime(
     ),
   );
   const child = spawn(PYTHON, ['-m', 'hermes_cli.main', 'gateway', 'run'], {
+    windowsHide: true,
     cwd: HERMES_SRC,
     env: {
       ...clean,
@@ -130,10 +144,18 @@ function startRuntime(
   });
   child.stdout.on('data', (d: Buffer) => lines.push(d.toString()));
   child.stderr.on('data', (d: Buffer) => lines.push(d.toString()));
-  return { stop: () => child.kill('SIGTERM'), log: () => lines.join('') };
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  return {
+    stop: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill('SIGTERM');
+      await exited;
+    },
+    log: () => lines.join(''),
+  };
 }
 
-async function waitForApi(port: number, deadlineMs = 120_000): Promise<number> {
+export async function waitForApi(port: number, deadlineMs = 120_000): Promise<number> {
   const started = Date.now();
   while (Date.now() - started < deadlineMs) {
     try {
@@ -265,8 +287,7 @@ async function main() {
     const secondClaims = { ...claims, attempt_id: secondId, epoch: 2 };
     const secondToken = signCapability(secondClaims, CAPABILITY_KEY);
 
-    runtime.stop();
-    await Bun.sleep(2000);
+    await runtime.stop();
     const runtime2 = startRuntime(
       hermesHome(brokerPort, apiPort, secondToken),
       apiPort,
@@ -295,10 +316,10 @@ async function main() {
         from action where job_id = ${claims.job_id} order by created_at`;
       log(`actions after approval: ${JSON.stringify(settled)}`);
     } finally {
-      runtime2.stop();
+      await runtime2.stop();
     }
   } finally {
-    runtime.stop();
+    await runtime.stop();
     writeFileSync(join(home, 'runtime.log'), runtime.log(), 'utf8');
     log(`runtime log: ${join(home, 'runtime.log')}`);
     await new Promise<void>((resolve) => internal.server.close(() => resolve()));
@@ -306,4 +327,4 @@ async function main() {
   }
 }
 
-await main();
+if (import.meta.main) await main();

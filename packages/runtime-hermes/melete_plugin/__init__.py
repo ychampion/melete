@@ -1,6 +1,6 @@
 """The only plugin the Melete runtime loads.
 
-It registers one tool per entry in the broker's catalog and nothing else. Every
+It registers broker tools and bounded lifecycle observers. Every tool
 handler is a forwarder: it posts the proposed payload to the broker over the
 internal network and returns what the broker says.
 
@@ -143,6 +143,10 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
     start: the model can still answer a question or ask one, and refusing to
     load would turn a scope-less job into a crash rather than a conversation.
     """
+    # The pinned HTTP bridge supplies a per-run queue; these observers never
+    # veto tools or return modified arguments. Enforcement stays in the broker.
+    from melete_runtime_hooks import register_observers
+    register_observers(ctx)
     client = client or BrokerClient()
     if not client.base_url:
         logger.error("melete: %s is not set; no tools will be registered", BROKER_URL_ENV)

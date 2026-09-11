@@ -74,12 +74,13 @@ withDb('reply obligations and notification outbox', () => {
   beforeEach(async () => {
     const { handle, jobs, queue } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
-    await handle.sql`truncate "owner", "space" cascade`;
+    await handle.sql`truncate "principal", "owner", "space" cascade`;
     const ownerId = newId('own');
     spaceId = newId('sp');
     await handle.db
       .insert(owner)
       .values({ id: ownerId, email: 'owner@example.test', passwordHash: 'fixture' });
+    await handle.sql`insert into principal (id, email, password_hash) select id, email, password_hash from owner`;
     await handle.db
       .insert(space)
       .values({ id: spaceId, name: 'Personal', gitPath: `/spaces/${spaceId}` });

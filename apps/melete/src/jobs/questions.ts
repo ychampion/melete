@@ -24,6 +24,13 @@ import { job, question } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import {
+  ownedSpace,
+  requestPrincipal,
+  requireJobAccess,
+  spaceAuthority,
+  visibleJob,
+} from '../principals/authority.ts';
 import type { JobRow, JobService } from './service.ts';
 import type { SubmissionService } from './submissions.ts';
 
@@ -316,6 +323,12 @@ export class QuestionService {
       .where(eq(question.id, id))
       .limit(1);
     if (!found) throw new ServiceError('not_found', 'Question not found.', 404);
+    if (requestPrincipal()) {
+      if (found.question.jobId) await requireJobAccess(this.jobs.db, found.question.jobId);
+      else if (found.question.spaceId)
+        await spaceAuthority(this.jobs.db, found.question.spaceId, requestPrincipal());
+      else throw new ServiceError('scope_denied', 'Question is not accessible.', 403);
+    }
     return { row: found.question, view: questionView(found.question, found.title) };
   }
 
@@ -337,6 +350,12 @@ export class QuestionService {
       .where(
         and(
           eq(question.state, 'open'),
+          requestPrincipal()
+            ? or(
+                visibleJob(question.jobId),
+                and(isNull(question.jobId), ownedSpace(question.spaceId)),
+              )
+            : undefined,
           or(isNull(question.jobId), notInArray(job.state, [...TERMINAL_STATES])),
         ),
       );
