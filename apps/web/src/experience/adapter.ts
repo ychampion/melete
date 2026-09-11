@@ -37,7 +37,11 @@ export const API_BASE_URL: string =
 
 const base = API_BASE_URL.replace(/\/+$/, '');
 
-async function call<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<Result<T>> {
+async function call<T>(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<Result<T>> {
   try {
     const response = await fetch(`${base}/experience${path}`, {
       method,
@@ -76,7 +80,8 @@ export const adapter = {
   /** The magic link the mock answers with. A real service sends mail. */
   completeSignIn: (email: string) => post<Session>('/session/complete', { email }),
   saveProfile: (profile: Partial<Profile>) => post<Session>('/session/profile', profile),
-  saveAnswers: (answers: OnboardingAnswer[]) => post<{ items: MemoryItem[] }>('/onboarding/answers', { answers }),
+  saveAnswers: (answers: OnboardingAnswer[]) =>
+    post<{ items: MemoryItem[] }>('/onboarding/answers', { answers }),
   completeOnboarding: (body: { agent_id: string | null; first_message: string | null }) =>
     post<{ session: Session; conversation_id: string | null }>('/onboarding/complete', body),
 
@@ -89,7 +94,8 @@ export const adapter = {
   conversation: (id: string) => get<Conversation>(`/conversations/${id}`),
   startConversation: (body: { text: string; agent_id: string | null; plan_id?: string }) =>
     post<{ conversation: Conversation }>('/conversations', body),
-  send: (id: string, text: string) => post<{ conversation: Conversation }>(`/conversations/${id}/messages`, { text }),
+  send: (id: string, text: string) =>
+    post<{ conversation: Conversation }>(`/conversations/${id}/messages`, { text }),
   pause: (id: string) => post<{ ok: true }>(`/conversations/${id}/pause`),
   resume: (id: string) => post<{ ok: true }>(`/conversations/${id}/resume`),
   stop: (id: string) => post<{ ok: true }>(`/conversations/${id}/stop`),
@@ -97,16 +103,23 @@ export const adapter = {
     post<{ conversation: Conversation }>(`/conversations/${id}/agent`, { agent_id }),
   react: (id: string, turn_id: string, reaction: Reaction) =>
     post<{ ok: true }>(`/conversations/${id}/reactions`, { turn_id, reaction }),
-  rename: (id: string, title: string) => post<{ conversation: Conversation }>(`/conversations/${id}/rename`, { title }),
-  pin: (id: string, pinned: boolean) => post<{ conversation: Conversation }>(`/conversations/${id}/pin`, { pinned }),
+  rename: (id: string, title: string) =>
+    post<{ conversation: Conversation }>(`/conversations/${id}/rename`, { title }),
+  pin: (id: string, pinned: boolean) =>
+    post<{ conversation: Conversation }>(`/conversations/${id}/pin`, { pinned }),
   deleteConversation: (id: string) => del<{ ok: true }>(`/conversations/${id}`),
 
-  decide: (permission_id: string, decision: 'allow_once' | 'always' | 'deny', payload_hash: string) =>
-    post<{ ok: true }>(`/permissions/${permission_id}`, { decision, payload_hash }),
+  decide: (
+    permission_id: string,
+    decision: 'allow_once' | 'always' | 'deny',
+    payload_hash: string,
+  ) => post<{ ok: true }>(`/permissions/${permission_id}`, { decision, payload_hash }),
   undo: (receipt_id: string) => post<{ ok: true }>(`/receipts/${receipt_id}/undo`),
   sendDraft: (draft_id: string) => post<{ ok: true }>(`/drafts/${draft_id}/send`),
-  editDraft: (draft_id: string, body: string) => post<{ ok: true }>(`/drafts/${draft_id}`, { body }),
-  answer: (question_id: string, text: string) => post<{ ok: true }>(`/questions/${question_id}/answer`, { text }),
+  editDraft: (draft_id: string, body: string) =>
+    post<{ ok: true }>(`/drafts/${draft_id}`, { body }),
+  answer: (question_id: string, text: string) =>
+    post<{ ok: true }>(`/questions/${question_id}/answer`, { text }),
   resolveUnknown: (id: string, resolution: 'succeeded' | 'failed' | 'unresolved', note: string) =>
     post<{ ok: true }>(`/unknown/${id}/resolve`, { resolution, note }),
 
@@ -116,20 +129,25 @@ export const adapter = {
 
   plans: () => get<{ plans: Plan[]; templates: PlanTemplate[] }>('/plans'),
   plan: (id: string) => get<Plan>(`/plans/${id}`),
-  createPlan: (body: { title: string; category: string; why: string }) => post<{ plan: Plan }>('/plans', body),
+  createPlan: (body: { title: string; category: string; why: string }) =>
+    post<{ plan: Plan }>('/plans', body),
   toggleMilestone: (plan_id: string, id: string, done: boolean) =>
     post<Plan>(`/plans/${plan_id}/milestones/${id}`, { done }),
-  addMilestone: (plan_id: string, text: string) => post<Plan>(`/plans/${plan_id}/milestones`, { text }),
+  addMilestone: (plan_id: string, text: string) =>
+    post<Plan>(`/plans/${plan_id}/milestones`, { text }),
   completePlan: (plan_id: string) => post<Plan>(`/plans/${plan_id}/complete`),
 
   agents: () => get<{ agents: Agent[]; templates: AgentTemplate[] }>('/agents'),
-  saveAgent: (agent: Omit<Agent, 'stats'> & { id: string | null }) => post<{ agent: Agent }>('/agents', agent),
+  saveAgent: (agent: Omit<Agent, 'stats' | 'id'> & { id: string | null }) =>
+    post<{ agent: Agent }>('/agents', agent),
   deleteAgent: (id: string) => del<{ ok: true }>(`/agents/${id}`),
 
   automations: () => get<{ automations: Automation[] }>('/automations'),
-  toggleAutomation: (id: string, enabled: boolean) => post<Automation>(`/automations/${id}`, { enabled }),
+  toggleAutomation: (id: string, enabled: boolean) =>
+    post<Automation>(`/automations/${id}`, { enabled }),
   testRun: (id: string) => post<Automation>(`/automations/${id}/test-run`),
-  retryRun: (id: string, run_id: string) => post<Automation>(`/automations/${id}/runs/${run_id}/retry`),
+  retryRun: (id: string, run_id: string) =>
+    post<Automation>(`/automations/${id}/runs/${run_id}/retry`),
 
   memory: () => get<{ items: MemoryItem[] }>('/memory'),
   updateMemory: (id: string, value: string) => post<MemoryItem>(`/memory/${id}`, { value }),
@@ -168,18 +186,22 @@ export async function* subscribeConversation(
     }
     let body: ReadableStream<Uint8Array> | null = null;
     try {
-      const response = await fetch(`${base}/experience/conversations/${encodeURIComponent(id)}/events?after=${cursor}`, {
-        headers: {
-          accept: 'text/event-stream',
-          ...(cursor > 0 ? { 'last-event-id': String(cursor) } : {}),
+      const response = await fetch(
+        `${base}/experience/conversations/${encodeURIComponent(id)}/events?after=${cursor}`,
+        {
+          headers: {
+            accept: 'text/event-stream',
+            ...(cursor > 0 ? { 'last-event-id': String(cursor) } : {}),
+          },
+          credentials: 'include',
+          ...(options.signal ? { signal: options.signal } : {}),
         },
-        credentials: 'include',
-        ...(options.signal ? { signal: options.signal } : {}),
-      });
+      );
       if (!response.ok || !response.body) throw new Error(`stream returned ${response.status}`);
       body = response.body;
     } catch (error) {
-      if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) return;
+      if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError'))
+        return;
       continue;
     }
     yield { type: 'open' };
@@ -201,7 +223,8 @@ export async function* subscribeConversation(
         yield { type: 'event', event };
       }
     } catch (error) {
-      if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) return;
+      if (options.signal?.aborted || (error instanceof Error && error.name === 'AbortError'))
+        return;
     }
     if (options.signal?.aborted) return;
   }

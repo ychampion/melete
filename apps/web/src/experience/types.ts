@@ -94,7 +94,10 @@ export type CardAction = {
   label: string;
   icon?: string;
   /** What pressing it does: decide a pending permission, open a link, or nothing yet. */
-  effect: { kind: 'permission'; permission_id: string } | { kind: 'link'; url: string } | { kind: 'none' };
+  effect:
+    | { kind: 'permission'; permission_id: string }
+    | { kind: 'link'; url: string }
+    | { kind: 'none' };
   done_label?: string;
 };
 
@@ -175,7 +178,16 @@ export type Block =
   | { kind: 'notice'; level: 'info' | 'attention' | 'problem'; title: string; body: string }
   | { kind: 'error'; what: string; done_about_it: string };
 
-export type TurnStatus = 'queued' | 'running' | 'streaming' | 'paused' | 'done' | 'failed' | 'stopped';
+export type TurnStatus =
+  | 'queued'
+  | 'running'
+  | 'streaming'
+  | 'paused'
+  /** Parked on a decision or an answer only the person can give. */
+  | 'waiting'
+  | 'done'
+  | 'failed'
+  | 'stopped';
 
 export type Reaction = 'up' | 'down' | null;
 
@@ -242,7 +254,11 @@ export type ConversationEvent = {
   created_at: string;
 };
 
-export type StreamGap = { after: number; next: number | null; reason: 'reconnect' | 'sequence_skip' };
+export type StreamGap = {
+  after: number;
+  next: number | null;
+  reason: 'reconnect' | 'sequence_skip';
+};
 
 export type StreamItem =
   | { type: 'open' }
@@ -306,11 +322,21 @@ export type Plan = {
   needs_you: string | null;
 };
 
-export type PlanTemplate = { id: string; category: PlanCategory; title: string; description: string };
+export type PlanTemplate = {
+  id: string;
+  category: PlanCategory;
+  title: string;
+  description: string;
+};
 
 /* ---------- automations ---------- */
 
-export type AutomationRun = { id: string; status: 'running' | 'ok' | 'failed'; when: string; note: string };
+export type AutomationRun = {
+  id: string;
+  status: 'running' | 'ok' | 'failed';
+  when: string;
+  note: string;
+};
 
 export type Automation = {
   id: string;

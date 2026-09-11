@@ -70,7 +70,7 @@ const KINDS: Record<
     verb: 'send an email from your mailbox',
     past: 'Sent from your mailbox',
     app: 'gmail',
-    label: 'your mailbox',
+    label: 'mailbox',
     where: 'Mail',
   },
   'messages.send': {
@@ -84,14 +84,14 @@ const KINDS: Record<
     verb: 'write one line to the test destination',
     past: 'Written to the test destination',
     app: 'globe',
-    label: 'the test destination',
+    label: 'test destination',
     where: 'Test destination',
   },
   'browser.reserve': {
     verb: 'reserve a table through the sandboxed browser',
     past: 'Reserved',
     app: 'globe',
-    label: 'the sandboxed browser',
+    label: 'sandboxed browser',
     where: 'Resy',
   },
 };
@@ -1039,7 +1039,7 @@ export function createExperience(deps: ExperienceDeps) {
         const kind = humanKind(action.kind);
         const fields = action.canonical_payload as Json;
         if (action.status === 'succeeded') {
-          receiptState.set(action.id, { undone: false });
+          receiptState.set(`rcpt_${action.id}`, { undone: false });
           const when = [formatWhen(fields.when), formatWhen(fields.duration)]
             .filter(Boolean)
             .join(' · ');
@@ -1048,7 +1048,7 @@ export function createExperience(deps: ExperienceDeps) {
             block: {
               kind: 'receipt',
               receipt: {
-                id: action.id,
+                id: `rcpt_${action.id}`,
                 what: kind.past,
                 where: kind.where,
                 when: when || 'just now',
@@ -1679,7 +1679,7 @@ export function createExperience(deps: ExperienceDeps) {
   app.post('/receipts/:id/undo', (c) => {
     const id = c.req.param('id');
     const receipt = receiptState.get(id);
-    const action = store.actions.get(id);
+    const action = store.actions.get(id.replace(/^rcpt_/, ''));
     if (!receipt || !action) return fail(404, 'Nothing to undo.');
     if (receipt.undone) return fail(409, 'Already undone.');
     receipt.undone = true;

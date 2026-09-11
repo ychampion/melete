@@ -84,6 +84,16 @@ img {
   border-radius: 8px;
 }
 
+/* Composite fields carry the ring on their frame, not on the inner control. */
+.input > input:focus-visible,
+.input > select:focus-visible,
+.composer-row textarea:focus-visible,
+.palette-input input:focus-visible,
+.draft-body textarea:focus-visible,
+.question-own input:focus-visible {
+  box-shadow: none;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
