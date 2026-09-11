@@ -67,19 +67,19 @@ export function describeOrigin(source: SourceOrigin & { event_at: string }): str
   const day = describeDay(source.event_at);
   switch (source.source_type) {
     case 'owner_edit':
-      return `you wrote it yourself on ${day}`;
+      return `something you wrote yourself on ${day}`;
     case 'message':
       return source.author === 'owner'
-        ? `you said it on ${day}`
+        ? `something you said on ${day}`
         : `a message someone else sent on ${day}`;
     case 'observation':
-      return `a connected account observed it on ${day}`;
+      return `a connected account's record from ${day}`;
     case 'receipt':
-      return `a receipt recorded on ${day}`;
+      return `a receipt from ${day}`;
     case 'document':
       return `a web page fetched on ${day}`;
     case 'assistant':
-      return `Melete's own working notes on ${day}`;
+      return `Melete's own working notes from ${day}`;
   }
 }
 
