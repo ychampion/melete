@@ -104,6 +104,26 @@ The proxy tests, browser hook tests and global typecheck pass. The full reposito
 suite passed 937 tests and 3,914 assertions in 80.48 seconds; 24 deployment-only
 or opt-in cases were explicitly skipped in that separate fixture-database run.
 
+## Compose restart vertical slice
+
+`MELETE_CONFORMANCE_COMPOSE=1 bun run deploy/scripts/compose-vertical.ts` submitted
+through the deployed web/API, stopped a claimed cell's engine, and restarted
+all four services. After lease expiry the job obtained a fresh attempt. A second
+restart during `waiting_for_approval` preserved the action, approval ID and
+payload hash. Owner approval then completed the job with one succeeded action,
+one receipt and one row at the test destination.
+
+The active restart took 12,977 ms, the parked restart 13,023 ms, and the entire
+flow 119,732 ms including lease recovery. It recorded three distinct attempts
+and 44 durable events. The first attempt was fenced/lost and never resumed.
+The parked restart left the prior epoch's attempt row without an end timestamp;
+the current job epoch fenced it, its container was removed, and the replacement
+completed. This is a historical attempt-status limitation, not a duplicate effect.
+
+The first standalone flow initially exceeded its 5,000-token test budget because
+the gateway reserves serialized input bytes plus completion allowance. Its
+explicit fixture budget is now 250,000; the enforcement limit was not relaxed.
+
 ## Remaining checks
 
 The four-service stack is healthy; remaining suite, clean-host and restore
