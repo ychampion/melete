@@ -24,3 +24,12 @@
 - Command `bun run lint`: passed (`Checked 78 files in 124ms. No fixes applied.`); `.omx` runtime state is excluded from source lint and Git.
 - Command `bun test --dots`: `283 pass`, `36 todo`, `0 fail`, `908 expect() calls`, `Ran 319 tests across 24 files. [24.38s]`; this working-tree run also exercised the prepared job and runtime unit slices, whose commits follow separately.
 - Test `illegal inputs from queued`: initial rejection-matcher loop timed out at 5 seconds; first fix split state cases, second fix used native await/catch after Postgres showed `ClientRead` with no blockers. Final focused run: `14 pass`, `0 fail`, `252 expect() calls`, `12.99s`.
+
+## Slice 2: jobs and state transitions
+
+- SHA `88b6dd4`: auth/space slice committed and pushed to `origin/lane/w1-service`.
+- Test `every legal edge`: persisted transitions, domain events, and next wakes use `contracts.transition` with `pg-boss.fromDrizzle(tx, sql)` on the same client.
+- Test `fault between transition and enqueue`: rollback preserves the original state, event count, and queue count; every illegal source/input pair rejects without mutation.
+- Test `authenticated HTTP`: create/list/read/input/cancel responses use frozen Zod schemas; `/input` aliases the frozen `/messages` path; objective/constraint revisions invalidate approval bindings.
+- Command `bun test --dots`: `304 pass`, `36 todo`, `0 fail`, `1052 expect() calls`, `Ran 340 tests across 25 files. [40.77s]`, including the prepared runner tests.
+- Command `bun run typecheck`: one concurrent runner-test draft had an unused import; command `bunx biome check --write apps/melete/test/integration/runner.test.ts` removed it before final verification.

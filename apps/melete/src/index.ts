@@ -2,22 +2,25 @@
  * The Melete service. One process in v0.1 with separate modules and separate
  * database roles: api, jobs, broker, gateway, connectors, knowledge, events.
  *
- * This is the skeleton. It serves /health and nothing else; every other module
- * is a directory with a README describing the contract it will implement.
+ * Modules register their API surfaces against injected durable dependencies.
  */
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
+import { mountJobs } from './api/jobs.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { type Env, loadEnv } from './env.ts';
+import { startQueue } from './jobs/queue.ts';
+import { JobService } from './jobs/service.ts';
 
 export const VERSION = '0.1.0-pre';
 
 export type AppDeps = {
   env: Env;
   db: Database | null;
+  jobs?: JobService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
 };
 
@@ -38,6 +41,7 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
+  if (deps.jobs) mountJobs(app, deps.jobs);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -69,17 +73,30 @@ export async function bootstrap() {
   const env = loadEnv();
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
   if (handle) await migrateDatabase(handle);
+  const queue = env.DATABASE_URL ? await startQueue(env.DATABASE_URL) : null;
+  const jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
 
   const app = createApp({
     env,
     db: handle?.db ?? null,
+    jobs,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
     },
   });
 
-  return { app, env, handle };
+  return {
+    app,
+    env,
+    handle,
+    jobs,
+    queue,
+    close: async () => {
+      await queue?.stop();
+      await handle?.close();
+    },
+  };
 }
 
 if (import.meta.main) {
