@@ -23,9 +23,7 @@ const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import
  * index that was added in 0009, and a test that cannot exercise the index is
  * not evidence of anything.
  */
-const brokerMigrations = [
-  new URL('../../drizzle/0009_effect_identity_and_trust.sql', import.meta.url),
-];
+const brokerMigrations = [new URL('../../drizzle/0010_effect_identity.sql', import.meta.url)];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {

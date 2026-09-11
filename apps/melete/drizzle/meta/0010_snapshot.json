@@ -1,6 +1,6 @@
 {
-  "id": "e822a452-8e50-42e5-9eb7-88f58e169dcf",
-  "prevId": "1d67ea09-011e-4a38-98ab-0ec5cd70a9cf",
+  "id": "b1a3057f-5223-46a0-815c-37cd2601b30b",
+  "prevId": "e822a452-8e50-42e5-9eb7-88f58e169dcf",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -114,6 +114,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "intent_key": {
+          "name": "intent_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "text",
@@ -198,6 +204,21 @@
           "columns": [
             {
               "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "action_intent_key_idx": {
+          "name": "action_intent_key_idx",
+          "columns": [
+            {
+              "expression": "intent_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -321,6 +342,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "origin_warnings": {
+          "name": "origin_warnings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         }
       },
       "indexes": {

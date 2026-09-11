@@ -11,3 +11,4 @@ artifacts/
 .omx/
 .agents/w2-tests.log
 deploy/config/gateway-tls/
+.agents/w7-tests.log
