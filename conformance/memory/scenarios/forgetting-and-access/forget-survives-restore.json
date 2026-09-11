@@ -1,0 +1,91 @@
+{
+  "id": "forget-survives-restore",
+  "family": "forgetting-and-access",
+  "title": "A forgotten number stays gone after an older snapshot is restored",
+  "narrative": "A phone number is forgotten after a snapshot was taken; restoring that snapshot replays the retained journal first, so the number does not come back and the unrelated preference does.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "clinic-phone",
+      "event_time": "2026-07-15T09:00:00Z",
+      "text": "The clinic reception is +351 21 123 4567.",
+      "claim": {
+        "key": "contact.clinic.phone",
+        "content": "+351211234567",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "seat-pref",
+      "event_time": "2026-07-16T09:00:00Z",
+      "text": "I prefer an aisle seat.",
+      "claim": {
+        "key": "pref.travel.seat",
+        "content": "aisle seat",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "snapshot",
+      "name": "before-forget"
+    },
+    {
+      "step": "ask",
+      "name": "phone-served",
+      "query": "clinic phone",
+      "key": "contact.clinic.phone",
+      "expect": {
+        "kind": "answer",
+        "content": "+351211234567"
+      }
+    },
+    {
+      "step": "forget",
+      "key": "contact.clinic.phone"
+    },
+    {
+      "step": "ask",
+      "name": "phone-gone",
+      "query": "clinic phone",
+      "key": "contact.clinic.phone",
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "seat-intact",
+      "query": "travel seat",
+      "key": "pref.travel.seat",
+      "expect": {
+        "kind": "answer",
+        "content": "aisle seat"
+      }
+    },
+    {
+      "step": "restore_from",
+      "snapshot": "before-forget"
+    },
+    {
+      "step": "ask",
+      "name": "phone-still-gone",
+      "query": "clinic phone",
+      "key": "contact.clinic.phone",
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "seat-still-there",
+      "query": "travel seat",
+      "key": "pref.travel.seat",
+      "expect": {
+        "kind": "answer",
+        "content": "aisle seat"
+      }
+    }
+  ]
+}

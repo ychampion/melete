@@ -28,6 +28,7 @@ import {
 import { toSource } from './evidence.ts';
 import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
+import { memorySeams } from './seams.ts';
 import { type Tier1Rejection, validateTier1 } from './validate.ts';
 import { checkLease, type ExtractionBatch, finishWork, retryWork } from './work.ts';
 
@@ -85,11 +86,12 @@ async function validateProposal(
   for (const span of proposal.sources) {
     // Only evidence delivered to this invocation may be cited, even if another source is nearby.
     if (
-      span.source_id !== batch.source.source_id ||
-      span.source_version !== batch.source.source_version ||
-      span.start < batch.work.segment_start ||
-      span.end > batch.work.segment_end ||
-      span.start >= span.end
+      !memorySeams().acceptForeignCitation &&
+      (span.source_id !== batch.source.source_id ||
+        span.source_version !== batch.source.source_version ||
+        span.start < batch.work.segment_start ||
+        span.end > batch.work.segment_end ||
+        span.start >= span.end)
     )
       throw new MemoryError('invalid_source_span');
     const [row] =
@@ -203,7 +205,7 @@ async function publishKeyed(
     return revision.claim_id;
   }
   const proposalTrust = await revisionTrustFor(tx, proposal.kind, refs);
-  const decision = resolveKeyedHead(
+  const table = resolveKeyedHead(
     {
       precedence: keyPrecedence({
         origin_trust: proposalTrust,
@@ -224,6 +226,7 @@ async function publishKeyed(
       content: head.current.content ?? '',
     },
   );
+  const decision = memorySeams().keyedHeadDecision?.(table) ?? table;
   if (decision.decision === 'no-op') return null;
   if (decision.decision === 'historical') {
     await publishRevision(tx, { ...scope, audience }, key, head, draft, 'historical');

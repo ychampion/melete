@@ -5,6 +5,7 @@ import { prefixedId, timestamp } from '@melete/contracts';
 import { z } from 'zod';
 import { MemoryError, type MemorySql } from './db.ts';
 import { applyRestriction } from './forget.ts';
+import { memorySeams } from './seams.ts';
 
 const target = z.strictObject({
   source_id: prefixedId('src'),
@@ -96,6 +97,12 @@ export async function restoreMemory(sql: MemorySql, journal: RestrictionJournal)
   return sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
     const records = await journal.read();
+    // Test-only: the conformance runner's deliberate break skips the replay to
+    // prove the scenario that keeps a forgotten fact gone goes red without it.
+    if (memorySeams().skipRestrictionReplay) {
+      await tx`update memory_spaces set restore_ready = true where not revoked`;
+      return 0;
+    }
     for (const record of records) {
       const [space] =
         await tx`select * from memory_spaces where space_id = ${record.space_id} and owner_id = ${record.owner_id} for update`;

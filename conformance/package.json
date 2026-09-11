@@ -9,7 +9,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@melete/contracts": "workspace:*"
+    "@melete/contracts": "workspace:*",
+    "zod": "4.6.2"
   },
   "devDependencies": {
     "drizzle-orm": "0.45.2"

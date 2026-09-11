@@ -1,0 +1,66 @@
+{
+  "id": "revoked-source-leaves-retrieval",
+  "family": "forgetting-and-access",
+  "title": "Revoking a source takes its claim out of retrieval and leaves everything else",
+  "narrative": "An imported invitation supports a workshop date; revoking the source removes the date from retrieval while an unrelated preference keeps answering.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "import",
+      "name": "workshop-invite",
+      "event_time": "2026-07-18T09:00:00Z",
+      "text": "The workshop is on 8 August 2026.",
+      "source_type": "document",
+      "author": "external",
+      "claim": {
+        "key": "event.workshop.date",
+        "content": "8 August 2026",
+        "kind": "document_assertion"
+      }
+    },
+    {
+      "step": "say",
+      "name": "reading-pref",
+      "event_time": "2026-07-18T10:00:00Z",
+      "text": "I prefer long-form summaries.",
+      "claim": {
+        "key": "pref.reading.format",
+        "content": "long-form summaries",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "workshop-served",
+      "query": "workshop date",
+      "key": "event.workshop.date",
+      "expect": {
+        "kind": "answer",
+        "content": "8 August 2026"
+      }
+    },
+    {
+      "step": "revoke",
+      "source": "workshop-invite"
+    },
+    {
+      "step": "ask",
+      "name": "workshop-gone",
+      "query": "workshop date",
+      "key": "event.workshop.date",
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "reading-intact",
+      "query": "reading format",
+      "key": "pref.reading.format",
+      "expect": {
+        "kind": "answer",
+        "content": "long-form summaries"
+      }
+    }
+  ]
+}
