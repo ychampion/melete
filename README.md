@@ -127,9 +127,9 @@ replacement with a delta and a repair brief.
 
 On a Docker host, fill in `deploy/.env.example` as `deploy/.env`, set `DOCKER_GID`
 to the group owning the local Docker socket, then run `docker compose up --build`
-from `deploy`. Docker 27 or later is required for per-job volume subpaths. The
-Compose builds the runtime image and the service launches attempts; the `runtime-dev` profile adds
-only an idle inspection container. This wiring has static checks here; image
+from `deploy`. Docker 27 or later is required for per-job volume subpaths.
+Compose builds the runtime image and the service launches attempts; the
+`runtime-dev` profile adds only an idle inspection container. This wiring has static checks here; image
 builds and the container network boundary still need verification on a Docker
 host. See [the wiring note](.agents/notes/0022-wired-assistant.md).
 

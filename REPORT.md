@@ -83,3 +83,13 @@
 - SHA `731bdbe`: entry point, memory startup, context diagnostics and generated contracts committed and pushed. Its intermediate adapter uses the existing static endpoint; the following launcher slice replaces that endpoint with supervised instances. The focused entry-point tests and final-working-tree locked suite passed.
 - SHA `76dccfe`: process and Docker supervisors, default Compose wiring, per-attempt credentials, process-tree teardown, broker handoff and retry identity guards committed and pushed. The locked suite, Python plugin checks and static Compose checks passed; Docker execution remains unverified.
 - SHA `18c6724`: the passing HTTP-to-Hermes integration proof committed and pushed. Commands and measured cold-start and attempt times are recorded in the locked-suite section above.
+- SHA `46175f2`: architecture section 6, README startup guidance, memory entry-point documentation, runtime continuity guidance and note `0022-wired-assistant.md` committed and pushed.
+
+## Final state
+
+- Command `gh pr create --repo ychampion/melete --base integration --head lane/w15-wire`: opened [PR 21](https://github.com/ychampion/melete/pull/21). Command `gh pr view 21` verified `OPEN`, base `integration`, head `lane/w15-wire`, and no reported automated status checks.
+- SHA `46175f2`: all five requested slices are published in order. The functional HTTP-to-Hermes path is verified by the locked suite: 915 passing tests, 0 failures, one explicit Windows skip and 14 existing todos.
+- Command `bun test --max-concurrency=2`: the suite's 257.20-second duration exceeds the 180-second target. That timing requirement remains unmet; Docker execution remains unverified on this Windows host as expected by the brief.
+- Test `skills, handled recall, delta and correction repair reach the model from bootstrap`: uses the scripted provider and an explicit 200,000-token reservation. The gateway's current 8,000 default can reject the Hermes prompt. Context `style_violations` is recorded as an empty array; no prose style checker is configured.
+- Commands `bun run typecheck`, `bun run lint`, `bun run openapi`, `bun run client:generate`, `bun run compose:check`, `bun run test:plugin` and the locked full test command passed their functional checks. The later changes are documentation and this report only; no additional full-suite run was required.
+- Log `2026-09-11 23:21:04 UTC`: final publication verification occurred within the five-hour campaign cap. No other worktree, shared lock owner or unrelated process was modified; no force push or merge was performed.
