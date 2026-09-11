@@ -9,8 +9,8 @@
  *
  * Two rules make the approval mean something.
  *
- * The bytes are never in the payload. The payload names a path; the service
- * looks up the artifact it recorded for that path and reads the file itself. A
+ * The bytes are never in the payload. Before approval the service binds the
+ * recorded artifact ID and hash; dispatch reads that exact version itself. A
  * file that changed since it was recorded fails the publish rather than being
  * sent, because the content hash the owner approved is the one on the record.
  *
@@ -127,6 +127,8 @@ export const artifactsManifest: ConnectorManifest = {
           destination: destinationSchema,
           mailbox_connection_id: { type: 'string', minLength: 1 },
           mailbox_generation: { type: 'integer', minimum: 0 },
+          artifact_id: { type: 'string', minLength: 1 },
+          content_hash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
         },
       },
       effect_class: 'write_external',
@@ -182,11 +184,13 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
 
   const latest = async (
     jobId: string,
+    spaceId: string,
     area: string,
     relative: string,
+    tx: Query,
   ): Promise<ArtifactRow | undefined> => {
-    const [row] = await options.sql`select id, area, path, kind, mime, content_hash, size
-      from artifact where job_id = ${jobId} and area = ${area} and path = ${relative}
+    const [row] = await tx`select id, area, path, kind, mime, content_hash, size
+      from artifact where job_id = ${jobId} and space_id = ${spaceId} and area = ${area} and path = ${relative}
       and expectation is not null order by created_at desc, id desc limit 1`;
     return row as ArtifactRow | undefined;
   };
@@ -221,20 +225,34 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
   };
 
   /** Resolve the payload to a recorded artifact and its unchanged bytes. */
-  const load = async (action: Action, ctx: ConnectorContext) => {
+  const load = async (action: Action, ctx: ConnectorContext, tx: Query = options.sql) => {
     const payload = action.canonical_payload;
     const relative = typeof payload.path === 'string' ? payload.path : '';
     const area = payload.area === 'artifacts' ? 'artifacts' : 'work';
     if (!relative) throw new Error('path must be a string');
-    const record = await latest(ctx.job_id, area, relative);
-    if (!record)
-      throw new Error(
-        `${relative} has no artifact record; declare expect on the write before publishing it`,
+    if (typeof payload.artifact_id !== 'string' || typeof payload.content_hash !== 'string')
+      throw new BrokerFault(
+        'payload_invalid',
+        'Publication needs a bound artifact ID and content hash',
       );
-    const bytes = await read(await source(ctx, area, relative));
+    const [row] = await tx`select id, area, path, kind, mime, content_hash, size from artifact
+      where id = ${payload.artifact_id} and content_hash = ${payload.content_hash}
+      and job_id = ${ctx.job_id} and space_id = ${ctx.space_id} and area = ${area} and path = ${relative}
+      and expectation is not null`;
+    const record = row as ArtifactRow | undefined;
+    if (!record)
+      throw new BrokerFault('payload_invalid', 'The approved artifact version is unavailable');
+    const bytes = await source(ctx, area, relative)
+      .then(read)
+      .catch(() => {
+        throw new BrokerFault('payload_invalid', 'The approved artifact file is unavailable');
+      });
     const hash = digest(bytes);
     if (hash !== record.content_hash)
-      throw new Error('the file has changed since it was recorded; write and check it again');
+      throw new BrokerFault(
+        'payload_invalid',
+        'The file differs from the approved artifact version; write and check it again',
+      );
     return { record, bytes, hash, area, relative };
   };
 
@@ -254,16 +272,34 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
   return {
     manifest: artifactsManifest,
     async prepare(payload, ctx, tx) {
+      const relative = typeof payload.path === 'string' ? payload.path : '';
+      const area = payload.area === 'artifacts' ? 'artifacts' : 'work';
+      const record = await latest(ctx.job_id, ctx.space_id, area, relative, tx);
+      if (!record)
+        throw new BrokerFault(
+          'payload_invalid',
+          `${relative} has no artifact record; declare expect before publishing`,
+        );
+      if (
+        (payload.artifact_id && payload.artifact_id !== record.id) ||
+        (payload.content_hash && payload.content_hash !== record.content_hash)
+      )
+        throw new BrokerFault(
+          'payload_invalid',
+          'The requested artifact version is no longer current',
+        );
+      const bound = { ...payload, artifact_id: record.id, content_hash: record.content_hash };
       const destination = publishDestination.parse(payload.destination);
-      if (destination.kind !== 'email') return payload;
+      if (destination.kind !== 'email') return bound;
       const selected = await mailbox(payload, ctx, tx, false);
       return {
-        ...payload,
+        ...bound,
         mailbox_connection_id: selected.id,
         mailbox_generation: selected.generation,
       };
     },
     async validateBinding(action, ctx, tx) {
+      await load(action, ctx, tx);
       if (publishDestination.parse(action.canonical_payload.destination).kind === 'email')
         await mailbox(action.canonical_payload, ctx, tx, true);
     },

@@ -26,7 +26,7 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
 import { artifact as artifactTable, job as jobTable } from '../../src/db/schema.ts';
 import { completionFacts } from '../../src/jobs/bundle.ts';
-import { seedJob } from '../helpers/broker.ts';
+import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 // The shared server, not a second embedded cluster: every integration suite
@@ -127,6 +127,52 @@ const totalsExpectation: JsonValue = {
     { kind: 'required_columns', columns: ['item', 'amount'] },
   ],
 };
+
+databaseTest(
+  'an approval for version A publishes recorded version B',
+  async () => {
+    const ctx = await setup();
+    const write = (content: string) =>
+      ctx.broker.propose(ctx.claims, {
+        kind: 'files.write',
+        connection_id: ctx.connectionId,
+        payload: { path: 'approved.txt', content, expect: { kind: 'text', render: false } },
+      });
+    await write('version A');
+    const proposal = await ctx.broker.propose(ctx.claims, {
+      kind: 'artifact.publish',
+      connection_id: ctx.publishConnection,
+      payload: { path: 'approved.txt', destination: { kind: 'space_artifacts' } },
+    });
+    await ctx.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await ctx.broker.admit(ctx.claims, proposal.action_id, proposal.payload_hash);
+    await write('version B');
+    const dispatched = await ctx.broker.dispatch(proposal.action_id);
+    expect(dispatched.status).toBe('failed');
+    expect(
+      await Bun.file(
+        path.join(ctx.spacesRoot, ctx.claims.space_id, 'artifacts', 'approved.txt'),
+      ).exists(),
+    ).toBe(false);
+    const [versionA] =
+      await ctx.sql`select id, content_hash from artifact where job_id = ${ctx.claims.job_id} and path = 'approved.txt' order by created_at, id limit 1`;
+    expect(proposal.canonical_payload).toMatchObject({
+      artifact_id: versionA?.id,
+      content_hash: versionA?.content_hash,
+    });
+    const fresh = await ctx.broker.propose(ctx.claims, {
+      kind: 'artifact.publish',
+      connection_id: ctx.publishConnection,
+      payload: { path: 'approved.txt', destination: { kind: 'space_artifacts' } },
+    });
+    expect(fresh.status).toBe('needs_approval');
+    expect(fresh.payload_hash).not.toBe(proposal.payload_hash);
+  },
+  SLOW,
+);
 
 for (const phase of ['admission', 'dispatch']) {
   databaseTest(
@@ -548,10 +594,10 @@ databaseTest(
       decision: 'approved',
       payload_hash: parked.payload_hash,
     });
-    const attempted = await context.broker.propose(context.claims, request);
-    expect(attempted.status).toBe('unknown');
+    const attempted = await rejectionOf(context.broker.propose(context.claims, request));
+    expect(attempted).toMatchObject({ code: 'payload_invalid' });
     const [action] = await context.sql`select status from action where id = ${parked.action_id}`;
-    expect(action?.status).toBe('unknown');
+    expect(action?.status).toBe('approved');
   },
   SLOW,
 );
@@ -615,13 +661,8 @@ databaseTest(
       payload: { path: 'scratch.txt', destination: { kind: 'space_artifacts', path: null } },
       client_ref: 'publish-scratch',
     };
-    const parked = await context.broker.propose(context.claims, request);
-    await context.broker.decide(parked.action_id, {
-      decision: 'approved',
-      payload_hash: parked.payload_hash,
-    });
-    const attempted = await context.broker.propose(context.claims, request);
-    expect(attempted.status).toBe('unknown');
+    const attempted = await rejectionOf(context.broker.propose(context.claims, request));
+    expect(attempted).toMatchObject({ code: 'payload_invalid' });
     const stored = await fixture?.db
       .select()
       .from(artifactTable)

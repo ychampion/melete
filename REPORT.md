@@ -46,3 +46,12 @@
 - Test cross_space_mailbox: asMailer refusal was red (Expected sends 0; Received 1); now rejects the wrong space before opening the transport.
 - Test cross_space_mailbox: mailbox generation is checked at admission and at dispatch; stale generation rejects without sending.
 - Command bun test apps/melete/test/integration/artifacts.test.ts apps/melete/src/connectors/email.test.ts --max-concurrency=2: 20 passed in 24.14s; command bun run typecheck passed.
+
+## Finding 5
+
+- SHA 4e1af68: finding 1 committed and pushed.
+- Test an approval for version A publishes recorded version B: red (Expected failed; Received succeeded), then green after binding artifact_id and content_hash at proposal.
+- Test an approval for version A publishes recorded version B: dispatch of A rejects replaced bytes; a fresh B proposal has a new payload hash and needs approval.
+- Command bun test apps/melete/test/integration/artifacts.test.ts --max-concurrency=2: 14 passed in 36.47s.
+- Command bun run typecheck, command bun run openapi and command bun run client:generate passed.
+- Test raw file drift now rejects during admission as payload_invalid; an undeclared file rejects before approval. Frozen note 0016's approved-content claim is corrected by the immutable payload binding.
