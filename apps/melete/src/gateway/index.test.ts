@@ -108,7 +108,7 @@ async function start(overrides: Partial<GatewayOptions> = {}) {
       },
       body: JSON.stringify({ model: 'fake-scripted', max_tokens: 100, ...body }),
     });
-  return { base, port: address.port, budget, post };
+  return { base, port: address.port, budget, post, server };
 }
 
 describe('model gateway effect boundary', () => {
@@ -168,6 +168,26 @@ describe('model gateway effect boundary', () => {
     expect((await post('/v1/files', {})).status).toBe(404);
     expect((await fetch(`${base}/v1/chat/completions`)).status).toBe(405);
     expect(budget.reservations).toHaveLength(0);
+  });
+
+  test('finishes closing after a rejection that answered before reading the body', async () => {
+    const { post, server } = await start({
+      // Authorization that awaits real work leaves the POST body unread when it
+      // rejects, and an unread body used to keep close() from ever calling back.
+      authenticate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        throw new GatewayError(403, 'stale_epoch');
+      },
+    });
+    servers.splice(servers.indexOf(server), 1);
+    const rejected = await post('/v1/chat/completions', { stream: true, messages: [] });
+    expect(rejected.status).toBe(403);
+    expect(await rejected.json()).toMatchObject({ error: { code: 'stale_epoch' } });
+    const outcome = await Promise.race([
+      new Promise<string>((resolve) => server.close(() => resolve('closed'))),
+      new Promise<string>((resolve) => setTimeout(() => resolve('still closing'), 2000)),
+    ]);
+    expect(outcome).toBe('closed');
   });
 
   test('reserves before injecting credentials and strips capability and caller headers', async () => {

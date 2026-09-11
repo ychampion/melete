@@ -147,3 +147,14 @@
 - Command `git -C C:/Users/gamin/melete-oss-w2 log 65e26f1438cd5c8e95e7bf160f456be07d8cb534..HEAD`: every implementation commit uses ychampion <68075205+ychampion@users.noreply.github.com>; earlier commits preserved.
 - Command `git -C C:/Users/gamin/melete-oss-w2 status --short --branch`: clean at the implementation head and tracking origin/lane/w2-broker before this report-only commit.
 - Log `campaign stop 2026-09-11 09:03 UTC`: within the five-hour cap; one failing check remains under the two-fix-cycle stop rule, so the draft PR is a partial handoff and DONE is not claimed.
+
+## Slice 9 — gateway teardown root cause, 2026-09-11
+
+- Test `cancellation fences both broker and provider HTTP routes without a request record`: passes; `bun test apps/melete/test/integration/gateway.test.ts --max-concurrency=2` is 4 pass, 0 fail.
+- Log `close callback never fired`: instrumentation showed `listening=false` and zero live sockets while `server.close(callback)` still never ran its callback, so the wait was not a socket that stayed open.
+- Log `bun 1.3.13 node:http`: a minimal server reproduces it with no project code. A handler that awaits, then answers a POST without reading the request body, leaves `server.close` pending forever; draining the body first closes immediately, and draining after `response.end` is already too late.
+- Root cause `apps/melete/src/gateway/index.ts`: the rejection path answered before reading the body, because `authenticate` rejects with `stale_epoch` after real database work. The previous `request.resume()` only schedules flowing mode, and `fail` ended the response in the same tick, so the body stayed unread and Bun kept counting the request as in flight.
+- Command `drainRequest(request, maxRequestBytes)`: both failure paths now await a byte-capped drain before answering; the cap reuses the request limit so an already-refused request cannot hold the internal exit open indefinitely.
+- Test `finishes closing after a rejection that answered before reading the body`: new unit coverage in `apps/melete/src/gateway/index.test.ts` fails with `still closing` when the drain is reverted, and passes with it.
+- Command `bun run typecheck`: passed. Command `bun run lint`: passed, 107 files.
+- Command `bun test --max-concurrency=2`: 299 pass, 1 pre-existing DATABASE_URL ping skip, 26 pre-existing todos, 0 fail, 1033 assertions, 156.47 seconds.

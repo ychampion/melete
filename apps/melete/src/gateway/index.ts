@@ -106,6 +106,7 @@ export function createModelGateway(options: GatewayOptions): Server {
   }
   const fake = options.fake ?? createScriptedProvider();
   const transport = options.fetch ?? ((request: Request) => fetch(request));
+  const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
   const secrets = providers
     .map((provider) => provider.apiKey)
     .filter((key): key is string => !!key);
@@ -156,7 +157,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       if (!/^melete-surrogate-[A-Za-z0-9_-]+$/.test(surrogate)) {
         throw new GatewayError(401, 'surrogate_required');
       }
-      const body = await readBody(request, options.maxRequestBytes ?? 1024 * 1024);
+      const body = await readBody(request, maxRequestBytes);
       const model = body.model;
       if (typeof model !== 'string' || !model || model.length > 300) {
         throw new GatewayError(400, 'model_required');
@@ -301,9 +302,9 @@ export function createModelGateway(options: GatewayOptions): Server {
         response.end(buffered.join('') + tail);
       }
     } catch (error) {
-      // Authentication can reject before reading a POST body. Drain it so the
-      // HTTP adapter can finish the request and release its shutdown counter.
-      request.resume();
+      // Rejections can answer before the POST body was read, and an unread body
+      // outlives the response on Bun's HTTP server (see drainRequest).
+      await drainRequest(request, maxRequestBytes);
       if (reservation && settlement && !settled) {
         settlement.latencyMs = Math.round(performance.now() - started);
         try {
@@ -321,9 +322,10 @@ export function createModelGateway(options: GatewayOptions): Server {
 
   const server = createServer((request, response) => {
     if (options.brokerFetch && /^\/(tools|actions)(?:\/|$|\?)/.test(request.url ?? '')) {
-      void forwardToBroker(request, response, options.brokerFetch).catch((error) =>
-        fail(response, error),
-      );
+      void forwardToBroker(request, response, options.brokerFetch).catch(async (error) => {
+        await drainRequest(request, maxRequestBytes);
+        fail(response, error);
+      });
     } else void handle(request, response);
   });
   server.requestTimeout = options.timeoutMs ?? 60_000;
@@ -383,17 +385,38 @@ export function createModelGateway(options: GatewayOptions): Server {
       }
     })();
   });
-  // Node's closeAllConnections excludes upgraded CONNECT sockets.
+  // closeAllConnections drops idle keep-alive clients that would otherwise hold
+  // the listener open; it excludes upgraded CONNECT sockets, so those are next.
   const close = server.close.bind(server);
   server.close = (callback?: (error?: Error) => void) => {
     const closing = close(callback);
-    // Close HTTP parser connections too: destroying only the socket can leave
-    // an unread rejected request counted as active by Bun's Node HTTP adapter.
     server.closeAllConnections();
     for (const socket of sockets) socket.destroy();
     return closing;
   };
   return server;
+}
+
+/**
+ * Bun's HTTP server keeps a request on its in-flight list until the body is
+ * read, and server.close() never runs its callback while one is still listed,
+ * even after the listener stops and every socket is destroyed. A response that
+ * rejects before reading the body therefore has to drain it, and has to finish
+ * draining before it ends the response: request.resume() only schedules flowing
+ * mode, so response.end() in the same tick still leaves the body unread.
+ */
+async function drainRequest(request: IncomingMessage, limitBytes: number): Promise<void> {
+  if (request.readableEnded || request.destroyed) return;
+  let size = 0;
+  try {
+    for await (const chunk of request) {
+      size += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      // An already-refused request may not hold the internal exit open forever.
+      if (size > limitBytes) break;
+    }
+  } catch {
+    // A client that disconnects mid-body has already released the request.
+  }
 }
 
 async function forwardToBroker(
