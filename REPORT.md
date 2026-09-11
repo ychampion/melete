@@ -106,3 +106,11 @@
 - `bun test --max-concurrency=2`: 936 passed, 0 failed, 14 existing todos, 4060 assertions across 80 files in 264.02 seconds. The lock was released by the exit trap.
 - `/tmp/w16a-full-tests.log`: captured the complete run; the three-minute duration target was not met despite all executed tests passing.
 - `python` duration summary of the full-suite log: recorded test bodies used about 164 seconds; setup and cleanup account for much of the remaining time. Checking the separate memory fixture's repeated embedded-server startup before changing it.
+
+## Suite duration follow-up
+
+- `bun run .w16a-db-bench.ts`: a standalone fixture started in 8965 ms and closed in 615 ms; a repeated shared-server fixture started in 967 ms and closed in 95 ms. The temporary benchmark file was removed after use.
+- `bun run .w16a-db-bench.ts`: five cascading truncates took 304–458 ms each; row deletion took 2–28 ms. Ordinary deletes initially left detached records that cascading truncation had cleared.
+- `bun test` on the affected fixture suites: 126 passed and 40 failed after the initial row reset; failures exposed detached reply/outbox and global-event records. The reset now derives the same dependent table set from foreign keys, clears children first under the original exclusive-lock boundary, and refuses non-disposable databases.
+- `bun test` on attention, events, replies, waits, responsibility, submissions, and runner integration suites: 96 passed, 0 failed, 684 assertions in 48.81 seconds after the reset correction.
+- `bun run typecheck` and `bun run lint`: passed after the fixture changes; the full duration check is next under the shared lock.

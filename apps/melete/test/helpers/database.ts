@@ -3,6 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Sql } from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { migrateDatabase } from '../../src/db/migrate.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
@@ -151,4 +152,44 @@ export async function testDatabase(): Promise<TestDatabase | null> {
     await close();
     throw error;
   }
+}
+
+type ResetTable = { schema: string; name: string };
+const resetTables = new WeakMap<Sql, Map<string, ResetTable[]>>();
+
+/** Preserve TRUNCATE CASCADE's table set, including detached rows, without rewriting table files. */
+export async function resetTestRows(
+  sql: Sql,
+  options: { owner?: boolean; retention?: boolean } = {},
+) {
+  const roots = [
+    'space',
+    ...(options.owner === false ? [] : ['owner']),
+    ...(options.retention ? ['event_retention'] : []),
+  ];
+  const key = roots.join(',');
+  let tables = resetTables.get(sql)?.get(key);
+  if (!tables) {
+    const [database] = await sql`select current_database() as name`;
+    if (!/^(melete_test_|w7_)/.test(String(database?.name)))
+      throw new Error('Test resets require a disposable database.');
+    tables = await sql<ResetTable[]>`with recursive related as (
+      select c.oid, array[c.oid] as path, 0 as depth from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relname = any(${roots})
+      union all
+      select c.conrelid, r.path || c.conrelid, r.depth + 1 from pg_constraint c join related r on c.confrelid = r.oid
+      where c.contype = 'f' and not c.conrelid = any(r.path)
+    ) select n.nspname as schema, c.relname as name from related r join pg_class c on c.oid = r.oid
+      join pg_namespace n on n.oid = c.relnamespace group by n.nspname, c.relname order by max(r.depth) desc, c.relname`;
+    const cached = resetTables.get(sql) ?? new Map<string, ResetTable[]>();
+    cached.set(key, tables);
+    resetTables.set(sql, cached);
+  }
+  const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
+  const names = tables.map((table) => `${quote(table.schema)}.${quote(table.name)}`);
+  await sql.begin(async (tx) => {
+    // The lock matches the old reset boundary while the small row sets use ordinary deletes.
+    await tx.unsafe(`lock table ${names.join(',')} in access exclusive mode;
+${names.map((name) => `delete from ${name};`).join('\n')}`);
+  });
 }

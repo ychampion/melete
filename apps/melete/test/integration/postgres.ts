@@ -1,93 +1,71 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { PgBoss } from 'pg-boss';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/db.ts';
+import { testDatabase } from '../helpers/database.ts';
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
-/** One disposable database per integration file; never migrate the caller's existing database. */
-export async function createTestDatabase(
-  databaseUrl = process.env.DATABASE_URL,
-  options: { port?: number } = {},
-) {
-  const port = options.port ?? 3122;
-  let embedded: { stop(): Promise<void> } | undefined;
-  let directory: string | undefined;
-  let baseUrl = databaseUrl;
-  if (!baseUrl) {
-    try {
-      const { default: EmbeddedPostgres } = await import('embedded-postgres');
-      directory = await mkdtemp(join(tmpdir(), 'melete-w7-pg-'));
-      const instance = new EmbeddedPostgres({
-        databaseDir: join(directory, 'data'),
-        user: 'postgres',
-        password: 'test-local-only',
-        port,
-        persistent: true,
-        postgresFlags: ['-h', '127.0.0.1', '-c', 'max_connections=30'],
-        onLog: () => {},
-        onError: () => {},
-      });
-      embedded = instance;
-      await instance.initialise();
-      await instance.start();
-      baseUrl = `postgres://postgres:test-local-only@127.0.0.1:${port}/postgres`;
-    } catch (error) {
-      await embedded?.stop().catch(() => {});
-      if (
-        !(error instanceof Error) ||
-        !/module|binary|download|ENOENT|Cannot find/i.test(error.message)
-      )
-        throw error;
-      process.stdout.write(
-        'db tests skipped: set DATABASE_URL to run them against a real Postgres\n',
-      );
-      return null;
-    }
-  }
-  const admin = postgres(baseUrl, { max: 1, onnotice: () => {} });
-  const name = `w7_${newId('test').toLowerCase()}`;
-  // Windows initdb can inherit WIN1252. Exact source spans require a Unicode database.
-  await admin.unsafe(
-    `create database "${name}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
-  );
-  const url = new URL(baseUrl);
-  url.pathname = `/${name}`;
-  const connectionString = url.toString();
-  const sql = postgres(connectionString, { max: 2, onnotice: () => {} });
-  await migrate(drizzle(sql), { migrationsFolder: resolve(import.meta.dir, '../../drizzle') });
-  const boss = new PgBoss({ connectionString, schema: 'pgboss', max: 2 });
+
+async function withQueue(sql: Sql, url: string, closeDatabase: () => Promise<void>) {
+  const boss = new PgBoss({ connectionString: url, schema: 'pgboss', max: 2 });
   boss.on('error', () => {});
-  await boss.start();
+  try {
+    await boss.start();
+  } catch (error) {
+    await closeDatabase();
+    throw error;
+  }
+  let closed = false;
   return {
     sql,
     boss,
-    url: connectionString,
+    url,
     async close() {
+      if (closed) return;
+      closed = true;
       await boss.stop({ graceful: true });
-      await sql.end({ timeout: 2 });
-      await admin.unsafe(`drop database "${name}" with (force)`);
-      await admin.end();
-      await embedded?.stop();
-      // The path is created above, outside user repositories. Preserve it if shutdown is incomplete.
-      if (
-        directory &&
-        resolve(directory).startsWith(
-          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-w7-pg-`,
-        )
-      ) {
-        await rm(directory, {
-          recursive: true,
-          force: true,
-          maxRetries: 10,
-          retryDelay: 100,
-        }).catch(() => {});
-      }
+      await closeDatabase();
     },
   };
+}
+
+/** Isolated databases share the preload's server; caller databases are never migrated in place. */
+export async function createTestDatabase(
+  databaseUrl = process.env.DATABASE_URL,
+  _options: { port?: number } = {},
+) {
+  if (!databaseUrl) {
+    // The shared server selects an unused port, so focused suites cannot collide on fixed ports.
+    const handle = await testDatabase();
+    if (!handle) return null;
+    return withQueue(handle.sql, handle.url, handle.close);
+  }
+  const admin = postgres(databaseUrl, { max: 1, onnotice: () => {} });
+  const name = `w7_${newId('test').toLowerCase()}`;
+  await admin.unsafe(
+    `create database "${name}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
+  );
+  const target = new URL(databaseUrl);
+  target.pathname = `/${name}`;
+  const url = target.toString();
+  const sql = postgres(url, { max: 2, onnotice: () => {} });
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await sql.end({ timeout: 2 });
+    await admin.unsafe(`drop database "${name}" with (force)`);
+    await admin.end();
+  };
+  try {
+    await migrate(drizzle(sql), { migrationsFolder: resolve(import.meta.dir, '../../drizzle') });
+    return await withQueue(sql, url, close);
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
 export async function createScope(db: TestDatabase): Promise<MemoryScope> {
   const spaceId = newId('sp');

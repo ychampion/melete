@@ -22,7 +22,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
@@ -116,7 +116,7 @@ withDb('attention as a contract', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
-    await handle.sql`truncate "owner", "space", event_retention cascade`;
+    await resetTestRows(handle.sql, { retention: true });
     spaceId = newId('sp');
     await handle.db
       .insert(space)

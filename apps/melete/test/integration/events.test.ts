@@ -11,7 +11,7 @@ import { appendEvent } from '../../src/events/store.ts';
 import { EventStream } from '../../src/events/stream.ts';
 import { newId } from '../../src/ids.ts';
 import { JobService } from '../../src/jobs/service.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const second = handle ? openDatabase(handle.url, 1) : null;
@@ -122,7 +122,7 @@ async function eventually(check: () => boolean | Promise<boolean>) {
 withDb('persisted event streams', () => {
   beforeEach(async () => {
     const { handle } = database();
-    await handle.sql`truncate "space" cascade`;
+    await resetTestRows(handle.sql, { owner: false });
     const spaceId = newId('sp');
     await handle.db
       .insert(space)
