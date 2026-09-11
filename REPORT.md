@@ -36,3 +36,12 @@
 - Test `memory resolve rules`: 11 rules pass, including source event time, protected corrections, attributed disagreement, source identity deduplication, temporary exceptions, preference precedence, and reserved job/action authority rejection.
 - Test `claim revisions retain exact support and direct corrections are immediate and idempotent`: pass; July remains inspectable with validity and supersession times; August is protected; stale correction evidence rolls back; one active head remains.
 - Command `bun run typecheck`: pass; command `bun run lint`: pass (68 files); command `bun test --max-concurrency 2`: 210 pass, 1 baseline skip, 36 baseline todos, 0 fail in 17.40 s.
+
+## Slice 4
+
+- SHA `e1f2e67`: versioned claims and resolve rules pushed to `origin/lane/w7-memory`.
+- Test `HTTP extraction racing a correction retries from a fresh fenced snapshot`: pass against the scripted HTTP gateway on 3120; stale revision rejected, replacement fence increased, protected August remains the sole active head.
+- Test `whole-set validation rejects wrong spans, spoofed attribution, and conflicting creates`: pass; no partial claim mutation and original evidence remains inspectable.
+- Test `continuation cursors and queue repair survive lost delivery and an obsolete lease holder`: pass; cursor stays at zero until the final 20-character continuation commits.
+- Command `bun run typecheck`: pass; command `bun run lint`: pass (72 files); targeted command `bun test apps/melete/src/memory apps/melete/test/integration/memory.test.ts --max-concurrency 2 --timeout 20000`: 18 pass, 0 fail in 19.04 s.
+- Command `bun test --max-concurrency 2`: 213 pass, 1 baseline skip, 36 baseline todos, 0 fail in 20.54 s before the slice 4 push.
