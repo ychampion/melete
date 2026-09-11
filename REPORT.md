@@ -38,3 +38,11 @@
 - Command bun run test:plugin: 42 passed in 23.34s.
 - Command bun test apps/melete/src/connectors/exec.test.ts apps/melete/test/integration/execution-admission.test.ts --max-concurrency=2: 16 passed; command bun run typecheck passed.
 - Command bun run openapi and command bun run client:generate passed; new optional capture counters are recorded in the contract additions note.
+
+## Finding 1
+
+- SHA 8afebf5: finding 4 committed and pushed.
+- Test cross_space_mailbox: red against configuredConnectors with two spaces; space B published using space A transport (Expected calls 0; Received 1).
+- Test cross_space_mailbox: asMailer refusal was red (Expected sends 0; Received 1); now rejects the wrong space before opening the transport.
+- Test cross_space_mailbox: mailbox generation is checked at admission and at dispatch; stale generation rejects without sending.
+- Command bun test apps/melete/test/integration/artifacts.test.ts apps/melete/src/connectors/email.test.ts --max-concurrency=2: 20 passed in 24.14s; command bun run typecheck passed.

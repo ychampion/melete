@@ -407,12 +407,33 @@ export class BrokerService implements BrokerOperations {
     claims: CapabilityClaims,
     request: ProposeActionRequest,
   ): Promise<EffectProposalResponse> {
-    const canonical = canonicalizePayload(request.payload);
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const { tool } = await this.tool(tx, job, claims, request.connection_id, request.kind);
+      const { tool, connector } = await this.tool(
+        tx,
+        job,
+        claims,
+        request.connection_id,
+        request.kind,
+      );
+      let canonical = canonicalizePayload(request.payload);
       this.validatePayload(tool, canonical.canonical);
+      if (connector.prepare) {
+        canonical = canonicalizePayload(
+          await connector.prepare(
+            canonical.canonical,
+            {
+              job_id: job.id,
+              space_id: job.space_id,
+              idempotency_key: '',
+              constraints: jobConstraints.parse(job.constraints),
+            },
+            tx,
+          ),
+        );
+        this.validatePayload(tool, canonical.canonical);
+      }
       // The identity of the effect itself, independent of which attempt is
       // alive. A runtime that died between proposing and hearing back proposes
       // the same key and is handed the action it already made.
@@ -487,7 +508,7 @@ export class BrokerService implements BrokerOperations {
     const { action, key, repeated } = proposal;
     // Repeated proposals retrieve the durable disposition; unknown is never replayed.
     if (action.status === 'proposed' || action.status === 'approved') {
-      await this.admit(claims, action.id, canonical.hash);
+      await this.admit(claims, action.id, action.payload_hash);
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     }
     // A crash between the two durable steps has not sent anything yet.
@@ -568,7 +589,14 @@ export class BrokerService implements BrokerOperations {
         await checkAttempt(tx, job, claims);
         const action = await loadAction(tx, id, true);
         if (action.job_id !== job.id) throw new BrokerFault('action_not_found');
-        const { tool } = await this.tool(tx, job, claims, action.connection_id, action.kind);
+        const { tool, connector } = await this.tool(
+          tx,
+          job,
+          claims,
+          action.connection_id,
+          action.kind,
+        );
+        await connector.validateBinding?.(action, this.context(job, action), tx);
         if (
           canonicalizePayload(action.canonical_payload).hash !== action.payload_hash ||
           action.payload_hash !== expectedHash ||
@@ -716,6 +744,7 @@ export class BrokerService implements BrokerOperations {
           };
         const connector = this.options.connectors.get(action.connection_id);
         const tool = connector && findTool(connector.manifest, action.kind);
+        await connector?.validateBinding?.(action, this.context(job, action), tx);
         if (
           !connector ||
           connector.manifest.provider !== connection?.provider ||

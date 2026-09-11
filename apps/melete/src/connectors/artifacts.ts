@@ -25,24 +25,32 @@ import path from 'node:path';
 import {
   type Action,
   type ConnectorManifest,
+  type JsonObject,
   type JsonValue,
   publishDestination,
   type Receipt,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { BrokerFault } from '../broker/errors.ts';
+import type { Query } from '../broker/records.ts';
 import { noLinks, segmentsFor } from './files.ts';
 import type { MailAttachment } from './mail-transport.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 /** What the email destination needs, and nothing more. */
 export interface ArtifactMailer {
-  send(message: {
-    to: string[];
-    subject: string;
-    body: string;
-    messageId: string;
-    attachments: MailAttachment[];
-  }): Promise<{ messageId: string; accepted?: string[]; rejected?: string[] }>;
+  connectionId: string;
+  spaceId: string;
+  send(
+    message: {
+      to: string[];
+      subject: string;
+      body: string;
+      messageId: string;
+      attachments: MailAttachment[];
+    },
+    context: { space_id: string; connection_id: string },
+  ): Promise<{ messageId: string; accepted?: string[]; rejected?: string[] }>;
 }
 
 export type ArtifactsOptions = {
@@ -52,6 +60,7 @@ export type ArtifactsOptions = {
   maxBytes?: number;
   /** Absent means the email destination is refused rather than faked. */
   mailer?: ArtifactMailer;
+  mailers?: ReadonlyMap<string, ArtifactMailer>;
 };
 
 const digest = (value: Buffer): string => createHash('sha256').update(value).digest('hex');
@@ -116,6 +125,8 @@ export const artifactsManifest: ConnectorManifest = {
           path: { type: 'string', minLength: 1, maxLength: 1024 },
           area: { type: 'string', enum: ['work', 'artifacts'] },
           destination: destinationSchema,
+          mailbox_connection_id: { type: 'string', minLength: 1 },
+          mailbox_generation: { type: 'integer', minimum: 0 },
         },
       },
       effect_class: 'write_external',
@@ -138,6 +149,36 @@ type ArtifactRow = {
 
 export function createArtifactsConnector(options: ArtifactsOptions): Connector {
   const limit = options.maxBytes ?? 8 * 1024 * 1024;
+  const mailers =
+    options.mailers ??
+    new Map(options.mailer ? [[options.mailer.connectionId, options.mailer]] : []);
+
+  const mailbox = async (
+    payload: JsonObject,
+    ctx: ConnectorContext,
+    tx: Query,
+    binding: boolean,
+  ) => {
+    const rows = await tx`select id, generation from connection where space_id = ${ctx.space_id}
+      and provider = 'imap' and status = 'active' and scopes @> '["email.send"]'::jsonb order by id for share`;
+    const selected = rows.find(
+      (row) =>
+        (!payload.mailbox_connection_id || row.id === payload.mailbox_connection_id) &&
+        mailers.get(row.id)?.spaceId === ctx.space_id &&
+        mailers.get(row.id)?.connectionId === row.id,
+    );
+    if (
+      !selected ||
+      (binding &&
+        (payload.mailbox_connection_id !== selected.id ||
+          payload.mailbox_generation !== selected.generation))
+    )
+      throw new BrokerFault(
+        'scope_denied',
+        'No authorized mailbox with the approved generation in this artifact space',
+      );
+    return selected;
+  };
 
   const latest = async (
     jobId: string,
@@ -212,6 +253,20 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
 
   return {
     manifest: artifactsManifest,
+    async prepare(payload, ctx, tx) {
+      const destination = publishDestination.parse(payload.destination);
+      if (destination.kind !== 'email') return payload;
+      const selected = await mailbox(payload, ctx, tx, false);
+      return {
+        ...payload,
+        mailbox_connection_id: selected.id,
+        mailbox_generation: selected.generation,
+      };
+    },
+    async validateBinding(action, ctx, tx) {
+      if (publishDestination.parse(action.canonical_payload.destination).kind === 'email')
+        await mailbox(action.canonical_payload, ctx, tx, true);
+    },
     async execute(action, ctx) {
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();
@@ -244,23 +299,27 @@ export function createArtifactsConnector(options: ArtifactsOptions): Connector {
         externalRef = target;
         detail = { destination: 'space_artifacts', path: target, bytes: bytes.byteLength };
       } else {
-        if (!options.mailer)
-          throw new Error('no mailbox is configured, so this artifact cannot be emailed');
+        const selected = await mailbox(action.canonical_payload, ctx, options.sql, true);
+        const mailer = mailers.get(selected.id);
+        if (!mailer) throw new BrokerFault('scope_denied');
         const recipients = Array.isArray(destination.to) ? destination.to : [destination.to];
         const messageId = messageIdFor(action.id);
-        const sent = await options.mailer.send({
-          to: recipients,
-          subject: destination.subject,
-          body: destination.body,
-          messageId,
-          attachments: [
-            {
-              filename: destination.filename ?? path.posix.basename(relative),
-              content: bytes,
-              contentType: record.mime,
-            },
-          ],
-        });
+        const sent = await mailer.send(
+          {
+            to: recipients,
+            subject: destination.subject,
+            body: destination.body,
+            messageId,
+            attachments: [
+              {
+                filename: destination.filename ?? path.posix.basename(relative),
+                content: bytes,
+                contentType: record.mime,
+              },
+            ],
+          },
+          { space_id: ctx.space_id, connection_id: selected.id },
+        );
         externalRef = sent.messageId;
         detail = {
           destination: 'email',

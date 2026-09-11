@@ -177,17 +177,26 @@ export class EmailConnector implements Connector {
    * not a second way to send a message, it is the same way used once more.
    */
   asMailer(): {
-    send(message: {
-      to: string[];
-      subject: string;
-      body: string;
-      messageId: string;
-      attachments: MailAttachment[];
-    }): Promise<{ messageId: string; accepted?: string[]; rejected?: string[] }>;
+    connectionId: string;
+    spaceId: string;
+    send(
+      message: {
+        to: string[];
+        subject: string;
+        body: string;
+        messageId: string;
+        attachments: MailAttachment[];
+      },
+      context: { space_id: string; connection_id: string },
+    ): Promise<{ messageId: string; accepted?: string[]; rejected?: string[] }>;
   } {
     return {
-      send: (message) =>
-        this.use(async (transport) => {
+      connectionId: this.config.id,
+      spaceId: this.config.spaceId,
+      send: async (message, context) => {
+        if (context?.space_id !== this.config.spaceId || context.connection_id !== this.config.id)
+          throw new Error('Mail action context mismatch');
+        return this.use(async (transport) => {
           const result = await transport.send({
             to: message.to,
             cc: [],
@@ -202,7 +211,8 @@ export class EmailConnector implements Connector {
             accepted: result.accepted,
             rejected: result.rejected,
           };
-        }),
+        });
+      },
     };
   }
 

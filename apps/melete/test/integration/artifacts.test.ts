@@ -7,7 +7,7 @@
  * The falsifier this file exists for: a CSV whose totals do not add up cannot
  * complete the job, and the same job completes once the numbers are right.
  */
-import { afterAll, expect, test } from 'bun:test';
+import { afterAll, expect, spyOn, test } from 'bun:test';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,9 +18,12 @@ import { acceptArtifact, createArtifactRecorder } from '../../src/artifact/recor
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createArtifactsConnector } from '../../src/connectors/artifacts.ts';
+import { configuredConnectors } from '../../src/connectors/configured.ts';
 import { createExecConnector } from '../../src/connectors/exec.ts';
 import { createFilesConnector } from '../../src/connectors/files.ts';
+import { ImapSmtpTransport } from '../../src/connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
 import { artifact as artifactTable, job as jobTable } from '../../src/db/schema.ts';
 import { completionFacts } from '../../src/jobs/bundle.ts';
 import { seedJob } from '../helpers/broker.ts';
@@ -65,6 +68,8 @@ async function setup() {
   await Bun.write(path.join(spacesRoot, seed.claims.space_id, 'artifacts', '.keep'), '');
   const execConnection = recordId('conn');
   const publishConnection = recordId('conn');
+  const mailConnection = recordId('conn');
+  await sql`insert into connection (id, space_id, provider, label, scopes) values (${mailConnection}, ${seed.claims.space_id}, 'imap', 'Fixture mailbox', '["email.send"]'::jsonb)`;
   for (const [id, provider] of [
     [execConnection, 'exec'],
     [publishConnection, 'artifacts'],
@@ -82,6 +87,8 @@ async function setup() {
         workRoot,
         spacesRoot,
         mailer: {
+          connectionId: mailConnection,
+          spaceId: seed.claims.space_id,
           async send(message) {
             sent.push({
               to: message.to,
@@ -98,7 +105,16 @@ async function setup() {
     connectors: registry,
     recordArtifact: createArtifactRecorder(),
   });
-  return { ...seed, broker, execConnection, publishConnection, workRoot, spacesRoot, sql };
+  return {
+    ...seed,
+    broker,
+    execConnection,
+    publishConnection,
+    mailConnection,
+    workRoot,
+    spacesRoot,
+    sql,
+  };
 }
 
 const csv = (chairAmount: string) =>
@@ -111,6 +127,124 @@ const totalsExpectation: JsonValue = {
     { kind: 'required_columns', columns: ['item', 'amount'] },
   ],
 };
+
+for (const phase of ['admission', 'dispatch']) {
+  databaseTest(
+    `cross_space_mailbox: mailbox generation is checked at ${phase}`,
+    async () => {
+      const ctx = await setup();
+      await ctx.broker.propose(ctx.claims, {
+        kind: 'files.write',
+        connection_id: ctx.connectionId,
+        payload: {
+          path: 'generation.txt',
+          content: 'checked',
+          expect: { kind: 'text', render: false },
+        },
+      });
+      const proposal = await ctx.broker.propose(ctx.claims, {
+        kind: 'artifact.publish',
+        connection_id: ctx.publishConnection,
+        payload: {
+          path: 'generation.txt',
+          destination: { kind: 'email', to: 'owner@example.test', subject: 'generation' },
+        },
+      });
+      expect(proposal.canonical_payload).toMatchObject({
+        mailbox_connection_id: ctx.mailConnection,
+        mailbox_generation: 0,
+      });
+      await ctx.broker.decide(proposal.action_id, {
+        decision: 'approved',
+        payload_hash: proposal.payload_hash,
+      });
+      if (phase === 'dispatch')
+        await ctx.broker.admit(ctx.claims, proposal.action_id, proposal.payload_hash);
+      await ctx.sql`update connection set generation = generation + 1 where id = ${ctx.mailConnection}`;
+      const before = sent.length;
+      if (phase === 'admission') {
+        let refusal: unknown;
+        try {
+          await ctx.broker.admit(ctx.claims, proposal.action_id, proposal.payload_hash);
+        } catch (error) {
+          refusal = error;
+        }
+        expect(refusal).toMatchObject({ code: 'scope_denied' });
+      } else expect((await ctx.broker.dispatch(proposal.action_id)).status).toBe('failed');
+      expect(sent.length).toBe(before);
+    },
+    SLOW,
+  );
+}
+
+databaseTest(
+  'cross_space_mailbox',
+  async () => {
+    const context = await setup();
+    await context.broker.propose(context.claims, {
+      kind: 'files.write',
+      connection_id: context.connectionId,
+      payload: { path: 'mail.txt', content: 'space B', expect: { kind: 'text', render: false } },
+    });
+    const a = await seedJob(context.sql, { scopes: ['email.send'], provider: 'imap' });
+    const masterKey = 'ab'.repeat(32);
+    const secrets = new SealedSecretStore(
+      new PostgresSecretRepository(context.sql),
+      () => masterKey,
+    );
+    const secret = await secrets.put(a.claims.space_id, 'fake-password');
+    await context.sql`update connection set secret_ref = ${secret} where id = ${a.connectionId}`;
+    const send = spyOn(ImapSmtpTransport.prototype, 'send').mockImplementation(async (message) => ({
+      messageId: message.messageId,
+      sentCopy: true,
+      accepted: message.to,
+      rejected: [],
+    }));
+    try {
+      const registry = await configuredConnectors({
+        sql: context.sql,
+        workRoot: context.workRoot,
+        spacesRoot: context.spacesRoot,
+        masterKey,
+        connections: [
+          {
+            kind: 'email',
+            id: a.connectionId,
+            username: 'a@example.test',
+            from: 'a@example.test',
+            imap: { host: 'imap.example.test', port: 993, secure: true },
+            smtp: { host: 'smtp.example.test', port: 465, secure: true },
+          },
+        ],
+      });
+      const broker = new BrokerService({ sql: context.sql, connectors: registry });
+      const request = {
+        kind: 'artifact.publish',
+        connection_id: context.publishConnection,
+        payload: {
+          path: 'mail.txt',
+          destination: { kind: 'email', to: 'owner@example.test', subject: 'B artifact' },
+        },
+      };
+      let refusal: unknown;
+      try {
+        const proposal = await broker.propose(context.claims, request);
+        await broker.decide(proposal.action_id, {
+          decision: 'approved',
+          payload_hash: proposal.payload_hash,
+        });
+        await broker.propose(context.claims, request);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(send).not.toHaveBeenCalled();
+      expect(refusal).toMatchObject({ code: 'scope_denied' });
+    } finally {
+      send.mockRestore();
+    }
+  },
+  SLOW,
+);
 
 databaseTest(
   'a CSV whose totals do not add up cannot complete the job',

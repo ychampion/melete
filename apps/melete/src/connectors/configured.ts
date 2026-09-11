@@ -61,7 +61,7 @@ export async function configuredConnectors(options: {
   // artifacts connector is therefore registered after the loop, so the order
   // connections happen to appear in does not decide whether it can mail.
   const pending: Array<() => void> = [];
-  let mailer: ReturnType<EmailConnector['asMailer']> | undefined;
+  const mailers = new Map<string, ReturnType<EmailConnector['asMailer']>>();
   const secrets = new SealedSecretStore(
     new PostgresSecretRepository(options.sql),
     () => options.masterKey,
@@ -85,7 +85,7 @@ export async function configuredConnectors(options: {
             sql: options.sql,
             workRoot: options.workRoot,
             spacesRoot: options.spacesRoot,
-            mailer,
+            mailers,
           }),
         ),
       );
@@ -98,7 +98,7 @@ export async function configuredConnectors(options: {
         secrets,
       );
       registry.register(row.id, email);
-      mailer ??= email.asMailer();
+      mailers.set(row.id, email.asMailer());
     } else if (row.provider === 'caldav' && setting?.kind === 'caldav' && row.secret_ref) {
       registry.register(
         row.id,
