@@ -367,3 +367,42 @@ names a possible lost/recreated file or different stack, and the recovery
 setting `MELETE_CONFORMANCE_STATE_FILE`. Neither diagnostic includes a password.
 An isolated missing-file fixture against the existing stack passed four
 assertions, exit 0; the original owner credentials were retained.
+
+### LOW (d): deferred deployment scenarios
+
+Without Compose opt-in, the runner now prints five enabled scenarios and three
+deferred deployment scenarios both before execution and at exit. It distinguishes
+the declared checks from Bun's executed assertion count.
+
+`bun run conformance` without Compose opt-in, using the private test database
+connection: exit 0, 26 passed, 25 explicit skips, 168 assertions, 7.53 s.
+Footer: `5 scenarios enabled, 3 deployment scenarios deferred`.
+
+### Final verification
+
+| Command | Exit | Result |
+| --- | ---: | --- |
+| `bun run typecheck` | 0 | Passed |
+| `bun run lint` | 0 | 323 files checked, no fixes |
+| `bun run openapi && bun run client:generate` | 0 | Clean tree before and after; `git diff --exit-code` returned 0 |
+| `bun run compose:check` | 0 | 17 checks passed |
+| `bun run test:plugin` | 0 | 23 passed, 9.14 s |
+| `docker compose --progress plain -f deploy/docker-compose.yml build melete` | 0 | Final cached rebuild, 1.528 s |
+| `docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180` | 0 | All four services healthy, 8.283 s |
+| `MELETE_CONFORMANCE_COMPOSE=1 bun test conformance/scenarios/06-no-route-out.test.ts` | 0 | 10 passed, 60 assertions, 60.82 s |
+| `MELETE_CONFORMANCE_COMPOSE=1 bun run conformance` | 0 | 44 passed, 1 explicit skip, 274 assertions, 172.68 s |
+| `bun test --max-concurrency=2` | 0 | 949 passed, 25 explicit skips, 3,997 assertions, 137.85 s |
+
+The final Melete image is
+`sha256:7a5cab21c25e9657b5618db51328d10f589d53cdb9dce99df84ef6907a21a195`.
+The pinned runtime/plugin image is unchanged. Final scenario 6 again observed
+ECONNREFUSED for setup, login and health from both cells. Conformance enabled
+all eight scenarios; its only skip is the real-provider comparison without
+credentials. Scenario 7's stack restart took 17,896 ms and preserved the
+retraction across two attempts.
+
+The 25 skips in the ordinary repository run are the explicitly gated deployment
+cases and hooks; the separate opted-in Compose run supplies that evidence.
+The HIGH, MEDIUM and LOW (a)–(d) review findings are addressed. Windows execution,
+real-provider behavior, and the previously documented historical attempt-row
+limitation remain outside these successful checks. No resource pruning was used.

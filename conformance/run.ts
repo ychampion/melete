@@ -24,7 +24,11 @@ for (const scenario of SCENARIOS) {
   out();
 }
 
-out(`${SCENARIOS.length} scenarios, ${assertions} assertions.`);
+const deferred = composeEnabled ? 0 : SCENARIOS.filter((scenario) => scenario.id >= 6).length;
+const enabled = SCENARIOS.length - deferred;
+out(
+  `${SCENARIOS.length} scenarios declared, ${enabled} enabled, ${deferred} deferred; ${assertions} declared checks.`,
+);
 out();
 out('Scenarios 1–5 use isolated databases, scripted runtimes and the test destination.');
 out('With MELETE_CONFORMANCE_COMPOSE=1, they use the Compose Postgres host,');
@@ -42,4 +46,11 @@ const run = Bun.spawn([process.execPath, 'test', '--max-concurrency=1', 'conform
   stderr: 'inherit',
   env: { ...process.env, ...(composeEnabled ? { DATABASE_URL: await databaseUrl() } : {}) },
 });
-process.exit(await run.exited);
+const code = await run.exited;
+out();
+out(
+  `Conformance exit ${code}: ${enabled} scenarios enabled, ${deferred} deployment scenarios deferred.`,
+);
+if (deferred > 0)
+  out('Enable scenarios 6–8 with MELETE_CONFORMANCE_COMPOSE=1 on a disposable stack.');
+process.exit(code);
