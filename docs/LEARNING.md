@@ -69,7 +69,7 @@ The lifecycle is `candidate → evaluated → enabled_canary → active → supe
 1. To reject an unevaluated or evaluated candidate, call `POST /procedures/{id}/reject` with `space_id` and `reason`.
 2. After both evaluation phases pass, call `POST /procedures/{id}/canary` with `space_id`. Delivery is limited to the origin space.
 3. After a canary job completes without an intervention, call `POST /procedures/{id}/activate` with `space_id`. Activation stays in that space and supersedes older compatible procedures for the same scope.
-4. To stop future delivery, call `POST /procedures/{id}/rollback` once with `space_id` and `reason`. It records `reverted`; repeating rollback is idempotent. A running attempt already holding the general skill is not interrupted by rollback, but subsequent attempt claims cannot receive it.
+4. To stop future delivery, call `POST /procedures/{id}/rollback` once with `space_id` and `reason`. It records `reverted`; repeating rollback is idempotent. Rollback does not restore the predecessor that activation marked `superseded`; that predecessor remains disabled. Returning to earlier behavior requires a new candidate to pass evaluation and canary. A running attempt already holding the general skill is not interrupted by rollback, but subsequent attempt claims cannot receive it.
 
 Nothing in a procedure grants permissions, changes operation identity, unlocks credentials, or changes which sources a job may access. Facts and access rules continue through memory and the broker.
 
