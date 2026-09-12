@@ -117,6 +117,11 @@ bun test --max-concurrency=1 --timeout=30000
 The append-only [REPORT.md](../REPORT.md) records the current strict result,
 focused checks and the final single full-suite run. The earlier 376-test budget
 stop and dictionary-result failure are historical, before integration `55b6a50`.
+The current single locked full suite stopped at 180 seconds after 990 passing
+tests, one context-test timeout and 26 skips. All five context tests pass after
+replacing the database async rejection matchers, but the full suite was not
+repeated and remains incomplete. The focused integration/runtime set has 77
+passes and one platform skip; the plugin suite has 61 passes.
 Skipping opt-in real-runtime checks during ordinary tests is not end-to-end proof.
 Tests use disposable PostgreSQL 17 and pg-boss when `DATABASE_URL` is
 unset. A skipped database test is not a pass. Docker isolation remains unverified

@@ -17,6 +17,7 @@ import { startQueue } from '../jobs/queue.ts';
 import { databaseSpaces } from '../knowledge/spaces.ts';
 import { startDeploymentMemory } from '../memory/bootstrap.ts';
 import { listClaims } from '../memory/claims.ts';
+import { MemoryError } from '../memory/db.ts';
 import { ingest } from '../memory/evidence.ts';
 import { forgetMemory } from '../memory/forget.ts';
 import { runExtractionWork } from '../memory/service.ts';
@@ -26,6 +27,19 @@ import { withDeploymentContext } from './context.ts';
 const parent = await testDatabase();
 afterAll(async () => parent?.close());
 const withDb = parent ? describe : describe.skip;
+
+async function expectMemoryRefusal(operation: Promise<unknown>, code: string) {
+  // Await the database operation before matching its error: Bun's async
+  // rejection matcher can stall database callbacks on this Windows runner.
+  let refusal: unknown;
+  try {
+    await operation;
+  } catch (error) {
+    refusal = error;
+  }
+  expect(refusal).toBeInstanceOf(MemoryError);
+  expect((refusal as MemoryError).code).toBe(code);
+}
 
 async function fixture() {
   const handle = await testDatabase();
@@ -210,7 +224,7 @@ withDb('deployment attempt context', () => {
       const notices = await f.sql`select payload from event where type = 'notice' order by seq`;
       expect(notices.map((row) => row.payload.record_ids)).toEqual([[record.id], []]);
       expect(await f.sql`select seq from event where type = 'turn_started'`).toHaveLength(2);
-      await expect(f.memory.scopeForJob(newId('job'))).rejects.toThrow('scope_denied');
+      await expectMemoryRefusal(f.memory.scopeForJob(newId('job')), 'scope_denied');
     } finally {
       await f.close();
     }
@@ -272,7 +286,8 @@ withDb('deployment attempt context', () => {
         },
         f.options,
       );
-      await expect(adapter.start(bundle, f.sink, new AbortController().signal)).rejects.toThrow(
+      await expectMemoryRefusal(
+        adapter.start(bundle, f.sink, new AbortController().signal),
         'context_invalidated',
       );
     } finally {
@@ -293,7 +308,8 @@ withDb('deployment attempt context', () => {
       expect(f.snapshots[0]?.length).toBeLessThan(10);
       const stale = await f.makeAttempt('bounded');
       stale.attempt.epoch += 1;
-      await expect(f.adapter.start(stale, f.sink, new AbortController().signal)).rejects.toThrow(
+      await expectMemoryRefusal(
+        f.adapter.start(stale, f.sink, new AbortController().signal),
         'stale_attempt',
       );
       expect(
