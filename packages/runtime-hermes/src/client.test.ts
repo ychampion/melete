@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { type AttemptBundle, CONTEXT_LIMITS, EMPTY_SINCE_LAST } from '@melete/contracts';
+import { estimateTokens } from '@melete/skills';
 import {
   HERMES_APPROVAL_ANSWERS,
   HERMES_ROUTES,
@@ -10,6 +11,12 @@ import {
   parseSse,
 } from './client.ts';
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './index.ts';
+import {
+  instructionTokens,
+  measureRenderedInput,
+  renderInput,
+  renderInstructions,
+} from './instructions.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
 const bundle: AttemptBundle = {
@@ -117,6 +124,66 @@ describe('request building', () => {
 });
 
 describe('context assembly', () => {
+  test('the scaffolding tripwire measures instructions, rendered input and tools', () => {
+    const representative = structuredClone(bundle);
+    representative.job.constraints = { deadline: 'Friday', tone: 'plain' };
+    representative.transcript = [
+      { role: 'user', content: 'Prior conversation. '.repeat(2000), at: '2026-09-11T00:00:00Z' },
+    ];
+    const knowledge = representative.knowledge[0];
+    if (!knowledge) throw new Error('Missing representative knowledge');
+    knowledge.excerpt = 'Knowledge body. '.repeat(2000);
+    representative.skills = ['draft', 'verify', 'follow-up'].map((name) => ({
+      name,
+      body: 'Read the record and check the receipt before making a claim. '.repeat(10),
+    }));
+    representative.tools = [
+      {
+        name: 'email.send',
+        description: 'Send an email after approval.',
+        effect_class: 'write_external',
+        connection_id: null,
+        input_schema: { type: 'object', properties: { body: { type: 'string' } } },
+      },
+    ];
+    representative.inputs.since_last = {
+      previous_attempt_id: `att_${SUFFIX}`,
+      evidence_handles: ['claim_1@1'],
+      actions: [{ action_id: `act_${SUFFIX}`, status: 'completed', receipt_id: 'receipt_1' }],
+      pending_questions: [{ id: 'q1', prompt: 'Which deadline?' }],
+      pending_approvals: [],
+    };
+    representative.inputs.repair_briefs = [
+      {
+        id: 'repair_1',
+        job_id: bundle.attempt.job_id,
+        key: null,
+        changed_handle: 'claim_1@1',
+        replacement_handle: 'claim_1@2',
+        old_value: 'Tuesday',
+        new_value: 'Friday',
+        affected: [
+          { kind: 'plan_step', output_id: 'renewal', output_version: '1', location: 'deadline' },
+        ],
+        created_at: '2026-09-11T00:00:00Z',
+      },
+    ];
+    const rendered = [
+      renderInstructions(representative),
+      renderInput(representative),
+      JSON.stringify(representative.tools),
+    ].join('\n\n');
+    expect(instructionTokens(representative)).toBe(estimateTokens(rendered));
+    const bodies =
+      JSON.stringify(representative.transcript).length +
+      representative.knowledge.reduce((sum, entry) => sum + entry.excerpt.length, 0);
+    expect(Math.ceil((rendered.length - bodies) / 4)).toBeLessThan(4000);
+    expect(measureRenderedInput(representative).scaffolding).toBe(
+      Math.ceil((rendered.length - bodies) / 4),
+    );
+    representative.job.constraints = { bloated: 'x'.repeat(16000) };
+    expect(measureRenderedInput(representative).scaffolding).toBeGreaterThan(4000);
+  });
   test('the identity is short enough to be a prefix, not a personality', () => {
     // A rough four-characters-per-token estimate; the contract caps it at 250.
     expect(Math.ceil(IDENTITY.length / 4)).toBeLessThan(CONTEXT_LIMITS.identity_tokens);

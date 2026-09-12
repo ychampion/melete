@@ -3,7 +3,11 @@
  * is validated once at start-up, so a missing master key is a clear message on
  * boot rather than a decryption failure three hours into a job.
  */
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+
+const root = fileURLToPath(new URL('../../../', import.meta.url));
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -21,8 +25,26 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().min(1).optional(),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
-  /** Docker supervises isolated attempts; stub is an explicit local test choice. */
-  MELETE_RUNTIME_ADAPTER: z.enum(['stub', 'external', 'docker']).default('external'),
+  /**
+   * `hermes` starts one pinned engine per attempt through the selected supervisor;
+   * `docker` is the deploy lane's supervised container path; `external` expects an
+   * injected RuntimeAdapter; `stub` is an explicit scripted development choice.
+   */
+  MELETE_RUNTIME_ADAPTER: z.enum(['hermes', 'stub', 'external', 'docker']).default('hermes'),
+  MELETE_RUNTIME_SUPERVISOR: z.enum(['process', 'docker']).default('process'),
+  MELETE_HERMES_ROOT: z.string().default(join(root, '.hermes-src')),
+  MELETE_HERMES_PYTHON: z
+    .string()
+    .default(
+      join(
+        root,
+        '.hermes-venv',
+        process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python',
+      ),
+    ),
+  MELETE_RUNTIME_PACKAGE: z.string().default(join(root, 'packages/runtime-hermes')),
+  MELETE_RUNTIME_NETWORK: z.string().default('melete_internal'),
+  MELETE_RUNTIME_WORK_VOLUME: z.string().default('melete_work'),
 
   /** Where space git repositories and workspace files live. */
   MELETE_SPACES_DIR: z.string().default('/data/spaces'),
@@ -31,6 +53,7 @@ export const envSchema = z.object({
 
   /** The address the runtime container reaches the broker on, internal network only. */
   MELETE_BROKER_BIND: z.string().default('127.0.0.1:3112'),
+  MELETE_BROKER_URL: z.string().url().default('http://127.0.0.1:3112'),
   MELETE_APPROVAL_KEY: z.string().min(32).optional(),
   MELETE_WORK_DIR: z.string().default('/work'),
   MELETE_CONNECTIONS_FILE: z.string().optional(),

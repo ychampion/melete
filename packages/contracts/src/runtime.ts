@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
+import { sinceLastBrief } from './delta.ts';
 import { attemptUsage, waitSpec } from './entities.ts';
 import { executionMode } from './execution.ts';
 import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
@@ -209,6 +210,7 @@ export const attemptBundle = z.object({
   }),
   /** What changed since the last attempt: the reason this wake exists. */
   inputs: z.object({
+    since_last: sinceLastBrief.optional(),
     new_user_messages: z.array(canonicalMessage),
     approval_results: z.array(
       z.object({
@@ -240,6 +242,7 @@ export const attemptBundle = z.object({
   }),
   budget: z.object({
     max_turns: z.number().int().positive(),
+    max_input_tokens: z.number().int().nonnegative().optional(),
     max_output_tokens: z.number().int().positive(),
     max_wall_ms: z.number().int().positive(),
     max_actions: z.number().int().nonnegative(),

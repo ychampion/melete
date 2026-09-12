@@ -9,6 +9,7 @@ import {
   type StyleViolation,
   styleViolations as styleViolationsSchema,
 } from '@melete/contracts';
+import { buildBundle } from '../jobs/bundle.ts';
 import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
 import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
@@ -45,6 +46,7 @@ export async function recordAttemptContext(
     const [prior] = await tx`select id from memory_contexts where attempt_id = ${attemptId}`;
     if (prior) throw new MemoryError('context_already_recorded');
     const context: ContextRecord = {
+      style_violations: [],
       id: newId('ctx'),
       space_id: scope.spaceId,
       job_id: jobId,
@@ -64,7 +66,6 @@ export async function recordAttemptContext(
         sources: item.sources,
       })),
       unattributed: [],
-      style_violations: [],
       disputed_keys: result.disputed_keys,
       recipe: result.recipe,
       token_budget: result.token_budget,
@@ -72,10 +73,10 @@ export async function recordAttemptContext(
       invalidated_at: null,
       created_at: new Date().toISOString(),
     };
-    await tx`insert into memory_contexts (id, space_id, job_id, attempt_id, job_revision, policy_generation, data_revision, access_generation, audience, purpose, items, recipe, token_budget, recall_status, disputed_keys)
+    await tx`insert into memory_contexts (id, space_id, job_id, attempt_id, job_revision, policy_generation, data_revision, access_generation, audience, purpose, items, recipe, token_budget, recall_status, disputed_keys, style_violations)
       values (${context.id}, ${scope.spaceId}, ${jobId}, ${attemptId}, ${context.job_revision}, ${context.policy_generation}, ${context.data_revision}, ${context.access_generation},
       ${JSON.stringify(context.audience)}::text::jsonb, ${context.purpose}, ${JSON.stringify(context.items)}::text::jsonb, ${context.recipe}, ${JSON.stringify(context.token_budget)}::text::jsonb, ${context.recall_status},
-      ${JSON.stringify(context.disputed_keys)}::text::jsonb)`;
+      ${JSON.stringify(context.disputed_keys)}::text::jsonb, '[]'::jsonb)`;
     await tx`update attempt set context_snapshot_ref = ${context.id} where id = ${attemptId}`;
     await tx`insert into memory_derivations (space_id, input_kind, input_id, input_version, output_kind, output_id, output_version)
       values (${scope.spaceId}, 'job', ${jobId}, ${String(audience.jobRevision)}, 'context', ${context.id}, '1') on conflict do nothing`;
@@ -130,6 +131,7 @@ export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, a
       if (head?.head_revision !== item.revision) throw new MemoryError('context_invalidated');
     }
     const context = contextRecord.parse({
+      style_violations: row.style_violations,
       id: row.id,
       space_id: row.space_id,
       job_id: row.job_id,
@@ -145,7 +147,6 @@ export async function assertContextCurrent(sql: MemorySql, scope: MemoryScope, a
       token_budget: row.token_budget,
       recall_status: row.recall_status,
       unattributed: row.unattributed,
-      style_violations: row.style_violations ?? [],
       disputed_keys: row.disputed_keys,
       invalidated_at: null,
       created_at: iso(row.created_at),
@@ -187,20 +188,45 @@ export function withMemoryRuntime(
   runtime: RuntimeAdapter,
   sql: MemorySql,
   scopeForJob: (jobId: string) => Promise<MemoryScope>,
-  options: RecallOptions = {},
+  options: RecallOptions & {
+    catalog?: (bundle: AttemptBundle) => Promise<AttemptBundle['tools']>;
+  } = {},
 ): RuntimeAdapter {
   return {
     capabilities: () => runtime.capabilities(),
     async start(bundle, sink, signal) {
       const scope = await scopeForJob(bundle.attempt.job_id);
-      const prepared = await assembleAttemptKnowledge(
-        sql,
-        scope,
-        bundle.attempt.id,
-        bundle.attempt.job_id,
-        bundle.job.objective,
-        options,
-      );
+      let assembled: AttemptBundle | undefined;
+      const prepare = async () => {
+        if (!options.catalog)
+          return assembleAttemptKnowledge(
+            sql,
+            scope,
+            bundle.attempt.id,
+            bundle.attempt.job_id,
+            bundle.job.objective,
+            options,
+          );
+        for (let retry = 0; retry < 3; retry++) {
+          const built = await buildBundle(bundle, { sql, scope, catalog: options.catalog });
+          try {
+            const context = await recordAttemptContext(
+              sql,
+              scope,
+              bundle.attempt.id,
+              bundle.attempt.job_id,
+              built.recall,
+            );
+            assembled = built.bundle;
+            return { knowledge: built.bundle.knowledge, context, recall: built.recall };
+          } catch (error) {
+            if (!(error instanceof MemoryError) || error.code !== 'stale_context' || retry === 2)
+              throw error;
+          }
+        }
+        throw new MemoryError('stale_context');
+      };
+      const prepared = await prepare();
       const [job] =
         await sql`select constraints, revision from job where id = ${bundle.attempt.job_id} and space_id = ${scope.spaceId}`;
       if (
@@ -212,12 +238,14 @@ export function withMemoryRuntime(
       // E1. What a correction broke since the last attempt, named precisely: the
       // handle that moved, the value before and after, and the outputs that cited
       // it. This is the reason the next attempt does not start from zero.
-      const briefs = await pendingRepairBriefs(sql, scope, bundle.attempt.job_id);
+      const briefs =
+        assembled?.inputs.repair_briefs ??
+        (await pendingRepairBriefs(sql, scope, bundle.attempt.job_id));
       // Accepted action constraints come directly from job state, outside optional memory trimming.
       const next: AttemptBundle = {
-        ...bundle,
+        ...(assembled ?? bundle),
         job: { ...bundle.job, constraints: job.constraints },
-        inputs: { ...bundle.inputs, repair_briefs: briefs },
+        inputs: { ...(assembled ?? bundle).inputs, repair_briefs: briefs },
         // The delta brief carries the same briefs as the inputs. The delta is
         // what an attempt reads to say what it did last time, and a correction
         // is the most important thing that can have happened since.

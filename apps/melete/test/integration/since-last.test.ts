@@ -18,7 +18,7 @@ import {
 } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { newId } from '../../src/ids.ts';
-import { buildBundle } from '../../src/jobs/bundle.ts';
+import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -118,7 +118,7 @@ withDb('the delta brief', () => {
 
     const row = await fixture().jobs.get(jobId);
     const bundle = await serviceTransaction(handle.db, (tx) =>
-      buildBundle(tx, row, identity(newId('att')), model, 0),
+      buildAttemptSkeleton(tx, row, identity(newId('att')), model, 0),
     );
 
     expect(bundle.since_last.attempt_id).toBe(firstAttempt);
@@ -147,7 +147,7 @@ withDb('the delta brief', () => {
 
     const row = await fixture().jobs.get(jobId);
     const bundle = await serviceTransaction(handle.db, (tx) =>
-      buildBundle(tx, row, identity(newId('att')), model, 0),
+      buildAttemptSkeleton(tx, row, identity(newId('att')), model, 0),
     );
     const handles = bundle.since_last.evidence.map((entry) => entry.handle);
     expect(handles).toContain(`artifact:${artifactId}`);
@@ -189,7 +189,7 @@ withDb('the delta brief', () => {
 
     const row = await fixture().jobs.get(jobId);
     const bundle = await serviceTransaction(handle.db, (tx) =>
-      buildBundle(tx, row, identity(newId('att')), model, 0),
+      buildAttemptSkeleton(tx, row, identity(newId('att')), model, 0),
     );
     expect(bundle.since_last.pending_questions.map((entry) => entry.id)).toContain(questionId);
     expect(bundle.since_last.pending_approvals.map((entry) => entry.approval_id)).toContain(
@@ -208,7 +208,7 @@ withDb('the delta brief', () => {
       objective: 'Nothing has happened yet.',
     });
     const bundle = await serviceTransaction(handle.db, (tx) =>
-      buildBundle(tx, fresh, identity(newId('att')), model, 0),
+      buildAttemptSkeleton(tx, fresh, identity(newId('att')), model, 0),
     );
     expect(bundle.since_last.attempt_id).toBeNull();
     expect(bundle.since_last.actions).toEqual([]);

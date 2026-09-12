@@ -7,6 +7,7 @@ import {
   type ContextAwareRuntimeAdapter,
   type ContextInvalidated,
   dedupKey,
+  inputTokenAllowance,
   isOutcomeEnvelope,
   isTerminal,
   type JobState,
@@ -35,7 +36,7 @@ import { captureAttemptVersions, captureCompletedEpisode } from '../learning/epi
 import { spaceAuthority } from '../principals/authority.ts';
 import { browserEventForPersistence, isBrowserTool } from '../workers/browser/privacy.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
-import { buildBundle, completionFacts } from './bundle.ts';
+import { buildAttemptSkeleton, completionFacts } from './bundle.ts';
 import { CAPABILITY_TTL_SECONDS, signCapability } from './capability.ts';
 import { FairScheduler } from './fair-scheduler.ts';
 import { requireCurrentAttempt } from './fence.ts';
@@ -58,6 +59,7 @@ export type RunnerOptions = {
   provider?: string;
   model?: string;
   scopes?: string[];
+  scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   heartbeatMs?: number;
   leaseMs?: number;
   artifactRoots?: ArtifactRoots;
@@ -131,6 +133,11 @@ export class AttemptRunner {
       }
       if (row.state !== 'queued') return null;
       const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
+      const model = {
+        provider: this.options.provider ?? 'stub',
+        model: this.options.model ?? 'script',
+        fallback: null,
+      };
       const budget = jobBudget.parse(row.budget);
       const [previous] = await tx
         .select()
@@ -153,21 +160,17 @@ export class AttemptRunner {
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
-        scopes: this.options.scopes ?? [],
+        scopes: this.options.scopes ?? (await this.options.scopesForJob?.(tx, row)) ?? [],
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
+          max_input_tokens: inputTokenAllowance(model.model, budget),
           max_usd_est: budget.max_usd_est,
         },
         exp: Math.floor(Date.now() / 1000) + CAPABILITY_TTL_SECONDS,
       };
-      const model = {
-        provider: this.options.provider ?? 'stub',
-        model: this.options.model ?? 'script',
-        fallback: null,
-      };
       const generations = await readGenerations(tx, row.spaceId);
-      const bundle = await buildBundle(
+      const bundle = await buildAttemptSkeleton(
         tx,
         row,
         {

@@ -34,6 +34,7 @@
         "playwright": "1.63.0",
         "postgres": "3.4.9",
         "ulid": "3.0.2",
+        "yaml": "2.8.1",
         "zod": "4.6.2",
       },
       "devDependencies": {

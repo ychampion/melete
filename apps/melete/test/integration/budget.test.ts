@@ -91,7 +91,7 @@ databaseTest(
           requestId: `parallel-${n}`,
           provider: 'fake',
           model: 'scripted',
-          estimatedTokens: 500,
+          estimatedTokens: 14000,
           maxOutputTokens: 100,
         }),
       ),
@@ -103,7 +103,7 @@ databaseTest(
       await fixture.sql`select kind, reserved, settled from budget_ledger where job_id = ${s.claims.job_id} order by kind`;
     expect(before.map((row) => [row.kind, row.reserved, row.settled])).toEqual([
       ['calls', 1, null],
-      ['tokens', 500, null],
+      ['tokens', 100, null],
     ]);
     await budget.settle(accepted.value, receipt);
     await budget.settle(accepted.value, receipt);
@@ -116,7 +116,7 @@ databaseTest(
     expect(attempt?.outcome_detail.gateway_usage_uncertain).toBe(false);
     const [ledger] =
       await fixture.sql`select settled from budget_ledger where id = ${accepted.value.id}`;
-    expect(ledger?.settled).toBe(20);
+    expect(ledger?.settled).toBe(8);
   },
 );
 

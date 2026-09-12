@@ -100,13 +100,15 @@ withDb('deployment memory startup', () => {
       expect((await f.app.request('/memory/claims', { headers: owner.headers })).status).toBe(200);
       expect((await f.app.request('/memory/claims')).status).toBe(401);
       const inventedId = newId('sp');
+      // A space the principal cannot use is forbidden, whether or not it exists:
+      // memberships decide, and the answer does not say which of the two it was.
       expect(
         (
           await f.app.request('/memory/claims', {
             headers: { ...owner.headers, 'x-melete-space': inventedId },
           })
         ).status,
-      ).toBe(401);
+      ).toBe(403);
       expect(
         await f.sql`select space_id from memory_spaces where space_id = ${inventedId}`,
       ).toHaveLength(0);

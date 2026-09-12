@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { schema } from './db/schema.ts';
 import { loadEnv, readEnv } from './env.ts';
-import { createApp, VERSION } from './index.ts';
+import { bootstrap, createApp, VERSION } from './index.ts';
 
 const testApp = (database: 'ok' | 'unreachable' | 'not_configured' = 'not_configured') =>
   createApp({
@@ -11,6 +11,29 @@ const testApp = (database: 'ok' | 'unreachable' | 'not_configured' = 'not_config
   });
 
 describe('health', () => {
+  test('reports the supervisor and warns only for unsandboxed Hermes', async () => {
+    for (const mode of ['process', 'docker'] as const) {
+      const warnings: string[] = [];
+      const stderr = spyOn(process.stderr, 'write').mockImplementation((message) => {
+        warnings.push(String(message));
+        return true;
+      });
+      const service = await bootstrap({
+        env: loadEnv({ MELETE_RUNTIME_SUPERVISOR: mode }),
+        workers: false,
+      });
+      try {
+        expect(await (await service.app.request('/health')).json()).toMatchObject({
+          runtime_adapter: 'hermes',
+          runtime_supervisor: mode,
+        });
+        expect(warnings.join('').includes('not sandboxed')).toBe(mode === 'process');
+      } finally {
+        await service.close();
+        stderr.mockRestore();
+      }
+    }
+  });
   test('reports ok with no database configured', async () => {
     const res = await testApp().request('/health');
     expect(res.status).toBe(200);
@@ -52,6 +75,13 @@ describe('environment', () => {
 
   test('a nonsense port is refused', () => {
     expect(readEnv({ PORT: 'eight' }).ok).toBe(false);
+  });
+  test('unknown runtime adapters and supervisors fail fast with the field named', () => {
+    for (const field of ['MELETE_RUNTIME_ADAPTER', 'MELETE_RUNTIME_SUPERVISOR']) {
+      const result = readEnv({ [field]: 'unknown' });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.issues.join()).toContain(field);
+    }
   });
 });
 

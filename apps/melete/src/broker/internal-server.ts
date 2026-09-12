@@ -28,6 +28,8 @@ export function createInternalServer(options: {
   catalog?: BrokerOptions['catalog'];
   composeExecutor?: BrokerOptions['composeExecutor'];
   gatewayFetch?: GatewayOptions['fetch'];
+  /** The service runner finalizes its attempt before the job changes state. */
+  deferApprovalWaitToRunner?: boolean;
   /** A scripted stand-in for the model, for the local end-to-end runs. */
   fake?: GatewayOptions['fake'];
   /** Advisory model review of a written artifact. Unset means none is run. */
@@ -54,6 +56,7 @@ export function createInternalServer(options: {
     },
     catalog: options.catalog,
     composeExecutor: options.composeExecutor,
+    deferApprovalWaitToRunner: options.deferApprovalWaitToRunner,
   });
   const app = createBrokerApp({
     broker,

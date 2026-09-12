@@ -1099,6 +1099,8 @@ export interface paths {
                         "application/json": {
                             /** @enum {string} */
                             database: "ok" | "unreachable" | "not_configured";
+                            runtime_adapter?: string;
+                            runtime_supervisor?: ("process" | "docker") | null;
                             /** @enum {string} */
                             status: "ok" | "degraded";
                             time: components["schemas"]["__schema66"];
@@ -4733,6 +4735,7 @@ export interface components {
         __schema12: {
             max_actions?: number;
             max_attempts?: number;
+            max_input_tokens?: number;
             max_output_tokens?: number;
             max_turns?: number;
             max_usd_est?: number;
@@ -5059,6 +5062,7 @@ export interface components {
         __schema92: {
             max_actions: number;
             max_attempts: number;
+            max_input_tokens?: number;
             max_output_tokens: number;
             max_turns: number;
             max_usd_est: number;

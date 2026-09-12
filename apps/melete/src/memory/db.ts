@@ -47,8 +47,11 @@ export const generation = (row: Record<string, unknown>): SpaceGeneration =>
 
 export async function lockSpace(tx: MemoryTx, scope: MemoryScope, write = true) {
   if (scope.principalId) {
+    // A space created before principals existed carries no owner principal;
+    // the installation owner holds it, as spaceAuthority and ownedSpace decide.
     const [parent] =
-      await tx`select kind, owner_principal_id from space where id = ${scope.spaceId} for share`;
+      await tx`select kind, coalesce(owner_principal_id, (select id from owner limit 1)) as owner_principal_id
+      from space where id = ${scope.spaceId} for share`;
     const [membership] =
       await tx`select role, generation from space_membership where space_id = ${scope.spaceId} and principal_id = ${scope.principalId} and revoked_at is null for share`;
     const access = parent ? { ...parent, ...membership } : undefined;

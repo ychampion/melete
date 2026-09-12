@@ -31,6 +31,8 @@ export const healthResponse = z.object({
   version: z.string(),
   /** Present once the service has a database; absent in the skeleton. */
   database: z.enum(['ok', 'unreachable', 'not_configured']),
+  runtime_adapter: z.string().optional(),
+  runtime_supervisor: z.enum(['process', 'docker']).nullable().optional(),
   time: timestamp,
 });
 export type HealthResponse = z.infer<typeof healthResponse>;

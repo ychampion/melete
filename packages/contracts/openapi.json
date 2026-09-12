@@ -3682,6 +3682,23 @@
                         "not_configured"
                       ]
                     },
+                    "runtime_adapter": {
+                      "type": "string"
+                    },
+                    "runtime_supervisor": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "process",
+                            "docker"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "time": {
                       "$ref": "#/components/schemas/__schema66"
                     }
@@ -6576,6 +6593,11 @@
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
           },
+          "max_input_tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
           "max_output_tokens": {
             "type": "integer",
             "exclusiveMinimum": 0,
@@ -8469,6 +8491,11 @@
           "max_turns": {
             "type": "integer",
             "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "max_input_tokens": {
+            "type": "integer",
+            "minimum": 0,
             "maximum": 9007199254740991
           },
           "max_output_tokens": {

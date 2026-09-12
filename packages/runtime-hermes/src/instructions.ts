@@ -4,8 +4,11 @@
  * Hermes appends the run's `instructions` into the context tier of its own
  * system prompt rather than replacing it (`agent/system_prompt.py:638`), so
  * everything here is additive: the engine's preamble is underneath, and this is
- * the part Melete owns. Measured at the pinned tag, the engine contributes about
- * 2,700 tokens and this contributes the rest, inside the 4,000 budget.
+ * the part Melete owns. The engine contributes its own preamble in addition to
+ * the bounded skills and recalled knowledge supplied by the service. The
+ * representative Melete scaffolding must remain below 4,000 estimated tokens;
+ * its tripwire includes both rendered halves and tool definitions, excluding
+ * only transcript content and knowledge excerpt bodies.
  *
  * Order matters for prompt caching. The identity never changes, the skills
  * change rarely, the knowledge changes per attempt, and the volatile inputs go
@@ -42,7 +45,7 @@ export function renderInstructions(bundle: AttemptBundle): string {
       `# What Melete already knows\n\nEach line is a record, not a belief. Cite the path when you use one.\n\n${bundle.knowledge
         .map(
           (entry) =>
-            `- ${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
+            `- ${entry.handle ? `[${entry.handle}] ` : ''}${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
         )
         .join('\n')}`,
     );
@@ -72,6 +75,15 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle): string =>
 /** The volatile half: the job, and what changed since the last attempt. */
 export function renderInput(bundle: AttemptBundle): string {
   const lines = [`# ${bundle.job.title}`, '', bundle.job.objective];
+  lines.push('', '## Accepted constraints', '', JSON.stringify(bundle.job.constraints));
+  // Disposable engines have no session history. The service's bounded ledger
+  // is the source of prior messages and completed tool-call identities.
+  if (bundle.transcript.length)
+    lines.push('', '## Prior conversation and tool results', '', JSON.stringify(bundle.transcript));
+  if (bundle.inputs.since_last)
+    lines.push('', '## Since last attempt', '', JSON.stringify(bundle.inputs.since_last));
+  for (const brief of bundle.inputs.repair_briefs)
+    lines.push('', '## Repair required', '', JSON.stringify(brief));
 
   if (bundle.job.progress_summary) {
     lines.push('', '## Where this got to', '', bundle.job.progress_summary);
@@ -110,11 +122,26 @@ export function renderInput(bundle: AttemptBundle): string {
 }
 
 /**
- * What the instructions cost, so the service can see the number rather than
- * trust it. The engine's own preamble is not included and is not ours to trim.
+ * Measure the whole Melete render. This is a chars/4 size tripwire, not gateway
+ * admission accounting. Hermes contributes an additional engine-owned preamble.
  */
+export function measureRenderedInput(bundle: AttemptBundle) {
+  const rendered = [
+    renderInstructions(bundle),
+    renderInput(bundle),
+    JSON.stringify(bundle.tools),
+  ].join('\n\n');
+  const transcriptChars = bundle.transcript.length ? JSON.stringify(bundle.transcript).length : 0;
+  const knowledgeChars = bundle.knowledge.reduce((sum, entry) => sum + entry.excerpt.length, 0);
+  return {
+    total: estimateTokens(rendered),
+    // Keep headings, provenance, constraints, changes and repair briefs charged.
+    scaffolding: Math.ceil((rendered.length - transcriptChars - knowledgeChars) / 4),
+  };
+}
+
 export const instructionTokens = (bundle: AttemptBundle): number =>
-  estimateTokens(renderInstructions(bundle));
+  measureRenderedInput(bundle).total;
 
 /** The identity's share of that, checked against the contract on every build. */
 export const IDENTITY_TOKENS: number = estimateTokens(IDENTITY);

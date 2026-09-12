@@ -14,6 +14,10 @@ const failures = (file: ComposeFile) =>
     .map((r) => r.name);
 
 describe('the shipped compose file', () => {
+  test('requires an explicit Docker socket group without a root default', () => {
+    const service = compose.services?.melete;
+    expect(service?.group_add?.some((entry) => /^\$\{DOCKER_GID:\?/.test(entry))).toBe(true);
+  });
   test('passes every boundary check', () => {
     expect(failures(compose)).toEqual([]);
   });
@@ -24,6 +28,12 @@ describe('the shipped compose file', () => {
 });
 
 describe('the check catches the mistakes that would matter', () => {
+  test('selecting the stub for ordinary deployments', () => {
+    const broken = structuredClone(compose);
+    if (broken.services?.melete?.environment)
+      broken.services.melete.environment.MELETE_RUNTIME_ADAPTER = 'stub';
+    expect(failures(broken)).toContain('the default service supervises attempts itself');
+  });
   test('giving the runtime an edge network', () => {
     const broken: ComposeFile = structuredClone(compose);
     const runtime = broken.services?.runtime;

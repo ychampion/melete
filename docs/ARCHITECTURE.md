@@ -48,13 +48,20 @@ with dependencies it also mounts jobs, replies, operations, policy, questions,
 attention, triggers, approvals and events. The executable entry point starts
 the effect boundary when a database handle exists.
 
-With Postgres, `bootstrap` migrates and starts pg-boss but requires a supplied
-`RuntimeAdapter` or explicit `MELETE_RUNTIME_ADAPTER=stub`, plus a capability
-key. It does not construct the Hermes adapter from the runtime URL. Default
-Compose startup as a complete assistant is **not claimed**.
+With Postgres, `bootstrap` migrates, starts pg-boss and, with the default
+`MELETE_RUNTIME_ADAPTER=hermes`, starts memory behind the restriction-journal
+restore gate, the effect boundary and a supervisor that launches one pinned
+Hermes engine per attempt (`MELETE_RUNTIME_SUPERVISOR=process` for local
+development with the current user's OS access, `docker` for a container per
+attempt). The deploy lane's `MELETE_RUNTIME_ADAPTER=docker` is the Compose
+path verified on a Linux host; `stub` is an explicit scripted choice and
+`external` expects an injected `RuntimeAdapter`. The scripted HTTP proof
+`wired-assistant.test.ts` creates a job, corrects a claim and checks the
+requests delivered through a real local Hermes to a scripted provider.
 
-Memory routes require `createApp({ memory: ... })`; the default bootstrap does
-not supply this dependency or start the memory worker. The effect boundary does
+Memory routes and the memory worker start with the `hermes` and `docker`
+adapters; an injected runtime still receives them only when the caller supplies
+the `memory` dependency. The effect boundary does
 install `createMemoryTrustResolver`, so the broker-memory origin seam is no
 longer a missing stub (`an address read off a page is refused as
 untrusted_recipient_origin` in `broker-seam-tests.ts`).
@@ -106,8 +113,13 @@ The contract has context-budget constants, including 15 tools, but
 15-tool cap is **not claimed**. Transcript bounds are implemented as 100 messages
 and 32,000 serialized characters in `jobs/bundle.ts`, tested by `bounds escaped
 serialized content and marks abbreviation without mutating history`.
-The memory adapter separately bounds recall; end-to-end model token accounting
-for every prompt component is **not claimed**.
+The memory adapter separately bounds recall. `budget.max_output_tokens` remains
+the cumulative output ceiling (8,000 by default); the optional
+`max_input_tokens` bounds each request's context and defaults to the pinned
+model's context window minus the output ceiling. An oversized assembled prompt is
+refused with `input_context_exceeded` before the engine launches, and the
+gateway checks the final request again before provider admission. Provider-side
+token accounting for every prompt component is **not claimed**.
 
 ## 6. Broker and gateway
 

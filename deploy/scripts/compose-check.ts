@@ -19,6 +19,7 @@ export type ComposeService = {
   networks?: string[] | Record<string, { aliases?: string[]; gw_priority?: number } | null>;
   environment?: Record<string, string | number | boolean>;
   user?: string;
+  group_add?: string[];
   read_only?: boolean;
   cap_drop?: string[];
   security_opt?: string[];
@@ -36,6 +37,7 @@ export type ComposeService = {
   )[];
   ports?: string[];
   profiles?: string[];
+  image?: string;
   network_mode?: string;
   privileged?: boolean;
   pid?: string;
@@ -77,6 +79,26 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   }
 
   const networks = networkNames(runtime);
+  // The wiring lane's checks, kept where the deploy lane's verified topology
+  // allows: the service must own the Docker socket group explicitly and must
+  // supervise attempts itself (the deploy lane's docker adapter, or the wiring
+  // lane's hermes adapter with its docker supervisor). Its checks for a
+  // development-profile runtime, a credential-free warm cell and a build-only
+  // runtime-image service describe a topology this stack does not use: the
+  // warm probe cell carries a deliberately authority-less capability.
+  const service = compose.services?.melete;
+  say(
+    'the Docker socket group is explicitly required',
+    (service?.group_add ?? []).some((entry) => /^\$\{DOCKER_GID:\?/.test(entry)) === true,
+    'DOCKER_GID must be explicitly set to the host socket group; no root-group default',
+  );
+  say(
+    'the default service supervises attempts itself',
+    service?.environment?.MELETE_RUNTIME_ADAPTER === 'docker' ||
+      (service?.environment?.MELETE_RUNTIME_ADAPTER === 'hermes' &&
+        service.environment.MELETE_RUNTIME_SUPERVISOR === 'docker'),
+    'melete must select the docker adapter, or the hermes adapter with the docker supervisor',
+  );
   say(
     'the runtime is on the internal network only',
     networks.length === 1 && networks[0] === 'internal',

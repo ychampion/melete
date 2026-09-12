@@ -191,6 +191,20 @@ def test_registered_handler_keeps_runtime_context_out_of_admission_and_returns_j
     assert proposal["body"]["payload"] == {"query": "invoice"}
 
 
+def test_registered_handler_preserves_broker_result_in_hermes_text_contract(client, broker):
+    broker.propose_response = {
+        "action_id": ACTION, "status": "needs_approval", "requires_approval": True,
+        "approval_id": APPROVAL, "payload_hash": HASH,
+    }
+    ctx = RecordingContext()
+    register(ctx, client)
+    result = ctx.tools[0]["handler"]({"to": ["a@example.com"], "subject": "hi", "body": "hello"})
+    assert isinstance(result, str)
+    assert json.loads(result)["status"] == "needs_approval"
+    assert json.loads(result)["instruction"] == END_TURN_INSTRUCTION
+    assert broker.requests[-1]["body"]["kind"] == "email.send"
+
+
 def test_a_tool_with_no_schema_still_gets_a_valid_parameters_object():
     assert tool_schema({"name": "x"})["parameters"] == {"type": "object", "properties": {}}
 

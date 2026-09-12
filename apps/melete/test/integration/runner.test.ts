@@ -1,4 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type AttemptBundle,
   type AttemptOutcome,
@@ -711,6 +714,10 @@ withDb('attempt runner against Postgres and pg-boss', () => {
 
   test('bootstrap starts migrated durable dependencies and the configured stub worker', async () => {
     const { handle, jobs } = fixture();
+    const memoryRoot = await mkdtemp(join(tmpdir(), 'melete-w15-bootstrap-'));
+    const bootstrapOwner = newId('own');
+    await handle.sql`insert into owner (id, email) values (${bootstrapOwner}, 'bootstrap@example.test') on conflict do nothing`;
+    await handle.sql`insert into principal (id, email) values (${bootstrapOwner}, 'bootstrap@example.test') on conflict do nothing`;
     const service = await bootstrap({
       env: loadEnv({
         NODE_ENV: 'test',
@@ -718,12 +725,13 @@ withDb('attempt runner against Postgres and pg-boss', () => {
         MELETE_RUNTIME_ADAPTER: 'stub',
         MELETE_CAPABILITY_KEY: key,
         PORT: '3100',
+        MELETE_SPACES_DIR: memoryRoot,
       }),
     });
     try {
       const health = await service.app.request('/health');
       expect(health.status).toBe(200);
-      expect(await health.json()).toMatchObject({ database: 'ok' });
+      expect(await health.json()).toMatchObject({ database: 'ok', runtime_adapter: 'stub' });
       expect((await service.app.request('/jobs')).status).toBe(401);
       expect((await service.app.request('/events')).status).toBe(401);
       expect((await service.app.request(`/jobs/${newId('job')}/events`)).status).toBe(401);
@@ -735,6 +743,9 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       expect(await handle.db.select().from(attempt).where(eq(attempt.jobId, row.id))).toHaveLength(
         1,
       );
+      const [context] =
+        await handle.sql`select style_violations from memory_contexts where job_id = ${row.id}`;
+      expect(context?.style_violations).toEqual([]);
     } finally {
       await service.close();
     }

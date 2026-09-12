@@ -164,8 +164,8 @@ export class HermesClient {
    *
    * `Idempotency-Key` is the attempt id, so a resent POST resolves to the run
    * that already exists rather than starting a second one. The session key is
-   * the job id: consecutive attempts on one job continue the same Hermes
-   * session, which is what lets an approved action resume where it parked.
+   * the job id. Disposable engines get a fresh session store, so the service's
+   * transcript and approval inputs carry continuity across attempts.
    *
    * Nothing here configures the engine. Toolsets, memory, context files and the
    * provider all come from the image's `config.yaml`, because the `/v1/runs`

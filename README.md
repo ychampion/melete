@@ -188,6 +188,39 @@ database-creation permission. An unavailable embedded binary produces a skip,
 which is not a pass. Tests use fake providers. Initial dependency/binary downloads
 can require network access.
 
+## Local development with the pinned engine
+
+Install the pinned engine and select the process supervisor; the service then
+starts memory, the broker and one Hermes engine per attempt on this machine:
+
+```bash
+git clone --depth 1 --branch v2026.9.7 https://github.com/NousResearch/hermes-agent.git .hermes-src
+uv venv .hermes-venv --python 3.12
+# Windows: replace .hermes-venv/bin/python with .hermes-venv/Scripts/python.exe.
+uv pip install --python .hermes-venv/bin/python -e ./.hermes-src aiohttp==3.14.3
+export MELETE_RUNTIME_ADAPTER=hermes MELETE_RUNTIME_SUPERVISOR=process
+export MELETE_SPACES_DIR="$PWD/spaces" MELETE_WORK_DIR="$PWD/work"
+export MELETE_BROKER_BIND=127.0.0.1:3172 MELETE_BROKER_URL=http://127.0.0.1:3172 PORT=3170
+# Configure DATABASE_URL, MELETE_CAPABILITY_KEY, MELETE_APPROVAL_KEY and a provider key.
+bun run apps/melete/src/index.ts
+```
+
+The process supervisor is a development launcher with the current user's OS
+access; container isolation is the Docker path above. The scripted HTTP proof
+uses no provider key:
+
+```bash
+bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1
+```
+
+`budget.max_output_tokens` remains the cumulative output ceiling (8,000 by
+default). The optional `max_input_tokens` bounds each request's context
+separately; when omitted it uses the pinned model context window minus the
+output ceiling (120,000 for the 128,000-token fallback). The service refuses an
+oversized assembled prompt with `input_context_exceeded` before launching
+Hermes; the gateway checks the final request again before provider admission.
+
+
 ```bash
 bun install --frozen-lockfile
 bun run typecheck

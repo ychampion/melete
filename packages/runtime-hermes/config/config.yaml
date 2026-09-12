@@ -46,6 +46,9 @@ skills:
 # or title-generation requests may spend a job's model budget in the background.
 curator:
   enabled: false
+# Melete owns job titles and learning. These side calls do not carry the main
+# provider's per-attempt header, so they must not enter an auxiliary fallback
+# chain (hermes_cli/config_defaults.py:711,742 at the pinned release).
 auxiliary:
   title_generation:
     enabled: false

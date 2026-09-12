@@ -29,7 +29,7 @@ import { EventStream } from '../../src/events/stream.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { AttentionService } from '../../src/jobs/attention.ts';
-import { buildBundle } from '../../src/jobs/bundle.ts';
+import { buildAttemptSkeleton as buildBundle } from '../../src/jobs/bundle.ts';
 import {
   requireConnectionGeneration,
   withCapability,

@@ -8,9 +8,12 @@ edits become protected revisions` in
 [`markdown-tests.ts`](../apps/melete/test/integration/markdown-tests.ts).
 
 The service entry point is more than health: it wires authenticated jobs,
-approvals, events and other service modules. Memory is an optional injected
-router/worker and is not enabled by default in `bootstrap`; automatic memory
-startup is **not claimed**. The broker origin resolver is wired in
+approvals, events and other service modules. With the `hermes` adapter,
+`bootstrap` starts the memory core and worker behind the restriction-journal
+restore gate, mounts the authenticated memory routes, and wraps each attempt's
+runtime with context recording and invalidation; the `docker` adapter starts
+the deployment memory the same way. An injected runtime receives memory only
+when the caller supplies it. The broker origin resolver is wired in
 `broker/start.ts` and tested by `an address read off a page is refused as
 untrusted_recipient_origin`. These statements describe code baseline
 `9484023cabd32b786cb4d336dec818f441cd0cc1`.

@@ -203,6 +203,28 @@ prepare `.hermes-venv` using note 0009 and install the pin's `aiohttp==3.14.3`.
 That check currently reaches the real hooks but fails its final broker-action
 assertion (recorded in the lane's pull request, #13). It is not a passing end-to-end capability proof.
 
+## Per-attempt launch
+
+The service supervisor supplies these values per attempt; they are not static
+Compose settings. In process mode, `process_launcher.py` wraps the aiohttp
+listener startup to report the OS-selected port after binding, so the supervisor
+never releases a candidate port before the child starts (tested with two
+simultaneously live ephemeral listeners).
+
+| | |
+|---|---|
+| `MELETE_ATTEMPT_TOKEN` | the capability, written into the provider's `extra_headers` at boot because the model gateway meters per attempt |
+| `MELETE_JOB_ID` | scopes the proposal reference, so an approved action resumes rather than duplicating |
+| `MELETE_ATTEMPT_ID` | correlation |
+| `MELETE_MODEL_KEY` | the surrogate, which must match `melete-surrogate-<label>`; a label, not the capability |
+| `MELETE_MODEL_PROVIDER`, `MELETE_MODEL_NAME`, `MELETE_MODEL_API_MODE` | the job's selected provider, model and transport, applied to the gateway-only provider configuration |
+| `MELETE_BROKER_URL` | the internal service listener |
+
+`API_SERVER_KEY` is also required, and its absence is silent: without a usable
+key the `api_server` platform is never enabled. `HERMES_HOME` is a per-attempt
+writable mount: the API server's run-idempotency reservations are a SQLite file
+under it, and the adapter refuses an engine whose reservations are not durable.
+
 ## Verify the adapter
 
 From the repository root:

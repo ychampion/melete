@@ -1,4 +1,4 @@
-import type { CapabilityClaims } from '@melete/contracts';
+import { type CapabilityClaims, inputTokenAllowance } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import {
   type GatewayBudget,
@@ -52,6 +52,10 @@ export class PostgresGatewayBudget implements GatewayBudget {
           revision: claims.revision,
           maxRequests: job.budget.max_turns,
           maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
+          maxInputTokens: Math.min(
+            inputTokenAllowance(attempt.model, job.budget),
+            inputTokenAllowance(attempt.model, claims.budget),
+          ),
           allowedModels,
         };
       });
@@ -102,9 +106,15 @@ export class PostgresGatewayBudget implements GatewayBudget {
             throw new GatewayError(403, 'model_denied');
           }
         }
+        const inputTokens = request.estimatedTokens - request.maxOutputTokens;
+        const inputLimit = Math.min(
+          inputTokenAllowance(request.model, job.budget),
+          inputTokenAllowance(request.model, claims.budget),
+        );
+        if (inputTokens > inputLimit) throw new GatewayError(413, 'input_context_exceeded');
         const reservations = await reserveLocked(tx, job, claims, null, [
           { kind: 'calls', amount: 1 },
-          { kind: 'tokens', amount: request.estimatedTokens },
+          { kind: 'tokens', amount: request.maxOutputTokens },
         ]);
         const token = reservations.find((row) => row.kind === 'tokens');
         const calls = reservations.find((row) => row.kind === 'calls');
@@ -122,6 +132,8 @@ export class PostgresGatewayBudget implements GatewayBudget {
             provider: request.provider,
             model_requested: request.model,
             estimated_tokens: request.estimatedTokens,
+            estimated_input_tokens: inputTokens,
+            max_input_tokens: inputLimit,
             max_output_tokens: request.maxOutputTokens,
             fallback,
           },
@@ -170,7 +182,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
       if (!Number.isFinite(result.latencyMs) || result.latencyMs < 0)
         throw new GatewayError(502, 'invalid_latency');
       if (usage)
-        await tx`update budget_ledger set settled = ${usage.totalTokens} where id = ${reservation.id}`;
+        await tx`update budget_ledger set settled = ${usage.outputTokens} where id = ${reservation.id}`;
       await tx`update budget_ledger set settled = reserved where id = ${request.payload.calls_ledger_id}`;
       const previous = attempt.usage ?? {};
       const accumulated = {

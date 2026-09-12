@@ -4,6 +4,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { SecureContextOptions, TLSSocket } from 'node:tls';
+import { inputTokenAllowance } from '@melete/contracts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { object, SecretRedactor, UsageCollector } from './metering.ts';
 import { checkConnectTarget, PROVIDER_HOSTS, providersFromEnv, resolveRoute } from './providers.ts';
@@ -201,8 +202,14 @@ export function createModelGateway(options: GatewayOptions): Server {
       // Remote media and built-in tools cannot be metered by this text-only gateway.
       const encoded = JSON.stringify(body);
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
-      const estimatedTokens = Buffer.byteLength(encoded, 'utf8') + requested + 256;
-      if (estimatedTokens > principal.maxTokens) throw new GatewayError(429, 'token_cap_exceeded');
+      const inputTokens = Buffer.byteLength(encoded, 'utf8') + 256;
+      if (
+        inputTokens >
+        (principal.maxInputTokens ??
+          inputTokenAllowance(model, { max_output_tokens: principal.maxTokens }))
+      )
+        throw new GatewayError(413, 'input_context_exceeded');
+      const estimatedTokens = inputTokens + requested;
       if (!provider.fake && !provider.apiKey)
         throw new GatewayError(503, 'provider_key_unavailable');
       reservation = await options.budget.reserve({

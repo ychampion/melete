@@ -10,6 +10,7 @@ networks:
   # A warm capability/probe cell. Actual attempts get separate networks with
   # these same settings and only the trusted Melete service as a peer.
   internal:
+    name: melete_internal
     driver: bridge
     internal: true
     driver_opts:
@@ -57,6 +58,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      runtime-image:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       PORT: 8787

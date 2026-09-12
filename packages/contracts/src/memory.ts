@@ -356,6 +356,14 @@ export const recallResult = z.strictObject({
 });
 export type RecallResult = z.infer<typeof recallResult>;
 export const contextRecord = z.strictObject({
+  /** Diagnostics recorded by the service, including an empty array when none were observed. */
+  /**
+   * What the deterministic reply-style check saw in this attempt's own outgoing
+   * text. Recorded, never enforced: a violation is a measurement of drift, and
+   * blocking an answer because it opened with the wrong word would be a worse
+   * failure than the word.
+   */
+  style_violations: styleViolations,
   id: prefixedId('ctx'),
   space_id: prefixedId('sp'),
   job_id: prefixedId('job'),
@@ -382,13 +390,6 @@ export const contextRecord = z.strictObject({
    * precise rule did not apply to them.
    */
   unattributed: z.array(boundedIdentity).default([]),
-  /**
-   * What the deterministic reply-style check saw in this attempt's own outgoing
-   * text. Recorded, never enforced: a violation is a measurement of drift, and
-   * blocking an answer because it opened with the wrong word would be a worse
-   * failure than the word.
-   */
-  style_violations: styleViolations,
   disputed_keys: z.array(memoryKey).default([]),
   recipe: boundedIdentity,
   token_budget: recallResult.shape.token_budget,

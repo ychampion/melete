@@ -38,6 +38,9 @@ config["provider"] = "melete-gateway"
 config["model"] = model
 provider["default_model"] = model
 provider["base_url"] = os.environ["MELETE_BROKER_URL"].rstrip("/") + "/providers/" + name + "/v1"
+api_mode = os.environ.get("MELETE_MODEL_API_MODE")
+if api_mode:
+    provider["api_mode"] = api_mode
 # The capability is a per-attempt secret and is never written into the image.
 provider.setdefault("extra_headers", {})["x-melete-capability"] = os.environ["MELETE_ATTEMPT_TOKEN"]
 with open(sys.argv[1], "w", encoding="utf-8") as out:

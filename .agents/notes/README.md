@@ -51,4 +51,5 @@ Two rules:
 | [0019](0019-learning-loop.md) | Corrections become episodes and audited procedure candidates | accepted |
 | [0020](0020-deployment-evidence.md) | Deployment claims require a running Linux stack | accepted |
 | [0021](0021-hermes-capability-audit.md) | What the pinned engine is proven to do, and what awaits proof | accepted |
+| [0022](0022-wired-assistant.md) | The ordinary HTTP job runs one pinned engine per attempt | accepted |
 | [0024](0024-browser-worker.md) | A browser worker outside the cell, with recipes and takeover | accepted |

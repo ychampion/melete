@@ -10,7 +10,7 @@ import {
 } from '../connectors/configured.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
-import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
+import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
@@ -32,6 +32,7 @@ export async function startEffectBoundary(
     composeExecutor?: ComposeExecutor;
     browserSessions?: BrowserSessionService;
     connections?: ConfiguredConnection[];
+    fakeProvider?: GatewayOptions['fake'];
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -94,9 +95,11 @@ export async function startEffectBoundary(
       connectors: registry,
       capabilityKey: env.MELETE_CAPABILITY_KEY,
       approvalKey: env.MELETE_APPROVAL_KEY,
+      deferApprovalWaitToRunner: true,
       boss: queue.boss,
       providers,
       defaultProvider: env.MELETE_DEFAULT_PROVIDER,
+      fake: env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
       connectTls: (host) => certificates.get(host),
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),

@@ -17,7 +17,7 @@ import { loadEnv } from '../../src/env.ts';
 import { EventStream } from '../../src/events/stream.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
-import { buildBundle } from '../../src/jobs/bundle.ts';
+import { buildAttemptSkeleton } from '../../src/jobs/bundle.ts';
 import { requireCurrentAttempt } from '../../src/jobs/fence.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -502,7 +502,7 @@ withDb('principal and shared-space authority', () => {
       (
         await refusal(
           jobs.transaction((tx) =>
-            buildBundle(
+            buildAttemptSkeleton(
               tx,
               active,
               { id: newId('att'), epoch: 2, revision: 0, token: 'refused' },
