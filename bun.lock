@@ -86,6 +86,14 @@
         "postgres": "3.4.9",
       },
     },
+    "evals": {
+      "name": "@melete/evals",
+      "dependencies": {
+        "@melete/contracts": "workspace:*",
+        "postgres": "3.4.9",
+        "zod": "4.6.2",
+      },
+    },
     "packages/client": {
       "name": "@melete/client",
       "version": "0.1.0-pre",
@@ -242,6 +250,8 @@
     "@melete/conformance": ["@melete/conformance@workspace:conformance"],
 
     "@melete/contracts": ["@melete/contracts@workspace:packages/contracts"],
+
+    "@melete/evals": ["@melete/evals@workspace:evals"],
 
     "@melete/knowledge": ["@melete/knowledge@workspace:packages/knowledge"],
 

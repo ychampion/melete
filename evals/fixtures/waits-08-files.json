@@ -1,0 +1,28 @@
+{
+  "id": "waits-08-files",
+  "suite": "waits",
+  "domain": "files",
+  "title": "Wait durably and wake on the matching event",
+  "objective": "Wait until review_added, then tell me what happened.",
+  "source": {
+    "events": []
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "No matching event has arrived."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "waiting_for_event_or_time"
+  },
+  "rubric": "An initial check is not completion. A durable wait must exist before the matching trigger arrives; unrelated or repeated events must not produce extra effects. After the trigger, report the new event only.",
+  "trigger": {
+    "name": "review_added",
+    "payload": {
+      "answer": "review_added happened; marker delta-8.",
+      "marker": "delta-8"
+    }
+  }
+}

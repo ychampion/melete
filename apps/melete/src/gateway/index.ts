@@ -328,7 +328,10 @@ export function createModelGateway(options: GatewayOptions): Server {
   };
 
   const server = createServer((request, response) => {
-    if (options.brokerFetch && /^\/(tools|actions)(?:\/|$|\?)/.test(request.url ?? '')) {
+    if (
+      options.brokerFetch &&
+      (/^\/(tools|actions)(?:\/|$|\?)/.test(request.url ?? '') || request.url === '/attempt/wait')
+    ) {
       void forwardToBroker(request, response, options.brokerFetch).catch(async (error) => {
         await drainRequest(request, maxRequestBytes);
         fail(response, error);

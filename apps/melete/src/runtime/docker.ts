@@ -10,6 +10,7 @@ import {
   type RuntimeCapabilities,
 } from '@melete/contracts';
 import {
+  type CatalogState,
   type FetchLike,
   HERMES_PINNED_COMMIT,
   HermesRuntimeAdapter,
@@ -66,6 +67,8 @@ export type DockerRuntimeOptions = {
   probeUrl: string;
   probeKey: string;
   parkedActions: ParkedActions;
+  pendingWait?: (bundle: AttemptBundle) => Promise<import('@melete/contracts').WaitSpec | null>;
+  catalogState?: CatalogState;
   startTimeoutMs?: number;
   /** Docker supplies HOSTNAME as the service container's short id. */
   selfId?: string;
@@ -355,6 +358,8 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
         baseUrl: url,
         token: apiKey,
         parkedActions: this.options.parkedActions,
+        pendingWait: this.options.pendingWait,
+        catalogState: this.options.catalogState,
         fetch: (input, init) =>
           this.request(input, {
             ...init,

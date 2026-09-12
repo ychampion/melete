@@ -47,7 +47,8 @@ UNCERTAIN_INSTRUCTION = (
 
 def needs_approval(response: Dict[str, Any]) -> bool:
     """True when the broker parked the action instead of dispatching it."""
-    return response.get("status") == NEEDS_APPROVAL or bool(response.get("requires_approval"))
+    status = response.get("status")
+    return status == NEEDS_APPROVAL or (status in (None, "proposed") and bool(response.get("requires_approval")))
 
 
 def from_response(response: Dict[str, Any], receipt: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

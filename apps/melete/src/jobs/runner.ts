@@ -283,7 +283,7 @@ export class AttemptRunner {
   async heartbeat(claims: CapabilityClaims): Promise<boolean> {
     return this.jobs.transaction(async (tx) => {
       try {
-        await requireCurrentAttempt(tx, claims);
+        await requireCurrentAttempt(tx, claims, { settling: true });
       } catch (error) {
         if (error instanceof ServiceError) return false;
         throw error;
@@ -316,7 +316,7 @@ export class AttemptRunner {
       if (duplicate) return;
       let current = true;
       try {
-        await requireCurrentAttempt(tx, claims);
+        await requireCurrentAttempt(tx, claims, { settling: true });
       } catch (error) {
         if (!(error instanceof ServiceError)) throw error;
         current = false;
@@ -436,7 +436,7 @@ export class AttemptRunner {
       ? responsibilityAttemptOutcome.parse(input)
       : { outcome: attemptOutcome.parse(input), questions: [] as QuestionSpec[] };
     return this.jobs.transaction(async (tx) => {
-      const active = await requireCurrentAttempt(tx, claims);
+      const active = await requireCurrentAttempt(tx, claims, { settling: true });
       return this.finish(tx, active.job, claims.attempt_id, envelope.outcome, envelope.questions);
     });
   }
@@ -448,6 +448,7 @@ export class AttemptRunner {
     original: AttemptOutcome,
     carried: readonly QuestionSpec[] = [],
   ): Promise<JobRow> {
+    const brokerParked = ['waiting_for_approval', 'needs_reconciliation'].includes(row.state);
     const [counts] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(attempt)
@@ -589,12 +590,15 @@ export class AttemptRunner {
     const resolution = await resolveQuestions(tx, row, {
       attemptId,
       carried,
-      askable: wait.kind === 'user_input' && !chatComplete,
+      askable: !brokerParked && wait.kind === 'user_input' && !chatComplete,
       fallback: wait.kind === 'user_input' && !chatComplete ? wait.question : undefined,
     });
     if (resolution.asked && wait.kind === 'user_input')
       wait = { kind: 'user_input', question: resolution.asked.text };
-    let updated = await this.jobs.move(tx, row, input, { attemptId, wait, payload: { outcome } });
+    // The broker owns the parked state; drain only this attempt's output and lease.
+    let updated = brokerParked
+      ? row
+      : await this.jobs.move(tx, row, input, { attemptId, wait, payload: { outcome } });
     await tx
       .update(attempt)
       .set({
@@ -751,7 +755,12 @@ export class AttemptRunner {
       const [execution] = await tx.select().from(attempt).where(eq(attempt.id, attemptId));
       if (!execution || execution.endedAt) return false;
       const row = await this.jobs.lock(tx, execution.jobId);
-      if (!row || row.leaseEpoch !== execution.epoch || row.state !== 'running') return false;
+      if (
+        !row ||
+        row.leaseEpoch !== execution.epoch ||
+        !['running', 'waiting_for_approval', 'needs_reconciliation'].includes(row.state)
+      )
+        return false;
       return this.lose(tx, row, attemptId, reason);
     });
   }
@@ -791,19 +800,20 @@ export class AttemptRunner {
       payload: { kind: 'lost', reason },
       dedupKey: `${attemptId}:ended`,
     });
-    await this.jobs.move(
-      tx,
-      row,
-      {
-        kind: 'attempt_failed',
-        retryable: true,
-        attempts_remaining: Math.max(
-          0,
-          jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
-        ),
-      },
-      { attemptId, reason: 'recovery' },
-    );
+    if (row.state === 'running')
+      await this.jobs.move(
+        tx,
+        row,
+        {
+          kind: 'attempt_failed',
+          retryable: true,
+          attempts_remaining: Math.max(
+            0,
+            jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
+          ),
+        },
+        { attemptId, reason: 'recovery' },
+      );
     return true;
   }
 
@@ -847,7 +857,8 @@ export class AttemptRunner {
             });
             return false;
           }
-          if (row.state !== 'running') return false;
+          if (!['running', 'waiting_for_approval', 'needs_reconciliation'].includes(row.state))
+            return false;
           const [committed] = await tx
             .select()
             .from(event)

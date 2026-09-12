@@ -130,6 +130,9 @@ class BrokerClient:
     def call_native(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Native catalog tools still execute on the service side of the gate."""
         return self._call("POST", "/tools/call", {"name": name, "arguments": arguments})
+    def wait(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Request a typed lifecycle wait; authority remains on the broker."""
+        return self._call("POST", "/attempt/wait", payload)
 
     def action(self, action_id: str) -> Dict[str, Any]:
         """Read one action back, for the receipt a dispatch left on it."""

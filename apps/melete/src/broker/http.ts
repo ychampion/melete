@@ -23,6 +23,7 @@ export interface BrokerOperations {
   discovery?: ToolCatalog;
   compose?: Pick<ComposeService, 'run'>;
   authorize(claims: CapabilityClaims): Promise<void>;
+  requestWait?(claims: CapabilityClaims, input: unknown): Promise<unknown>;
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
@@ -77,6 +78,7 @@ export function createBrokerApp(options: {
       (c.req.method === 'GET' && (path === '/tools' || /^\/actions\/[^/]+$/.test(path))) ||
       (c.req.method === 'POST' &&
         (path === '/actions' ||
+          (path === '/attempt/wait' && !!options.broker.requestWait) ||
           path === '/reactions' ||
           path === '/say' ||
           ['/tools/search', '/tools/load', '/tools/call'].includes(path) ||
@@ -100,6 +102,10 @@ export function createBrokerApp(options: {
       c.set('claims', claims);
     }
     await next();
+  });
+  app.post('/attempt/wait', async (c) => {
+    if (!options.broker.requestWait) return c.json({ error: { code: 'not_found' } }, 404);
+    return c.json(await options.broker.requestWait(c.get('claims'), await c.req.json()));
   });
   app.get('/tools', async (c) => {
     const tools = await options.broker.catalog(c.get('claims'));

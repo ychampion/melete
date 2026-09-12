@@ -77,6 +77,7 @@ import {
   recordId,
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
+import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import {
   collectOriginFields,
   createTableTrustResolver,
@@ -217,7 +218,11 @@ export class BrokerService implements BrokerOperations {
       sql: options.sql,
       connectors: options.connectors,
       ...options.catalog,
-      nativeTools: [REACT_TOOL, ...(options.composeExecutor ? [COMPOSE_TOOL] : [])],
+      nativeTools: [
+        REACT_TOOL,
+        RUNTIME_WAIT_TOOL,
+        ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
+      ],
     });
     if (options.composeExecutor) {
       this.compose = new ComposeService({
@@ -317,6 +322,10 @@ export class BrokerService implements BrokerOperations {
       );
       return { message_id: value.message_id, emoji: value.emoji };
     });
+  }
+
+  requestWait(claims: CapabilityClaims, input: unknown) {
+    return requestRuntimeWait(this.sql, claims, input);
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
@@ -579,7 +588,7 @@ export class BrokerService implements BrokerOperations {
       // The identity of the effect itself, independent of which attempt is
       // alive. A runtime that died between proposing and hearing back proposes
       // the same key and is handed the action it already made.
-      const key = intentKey({
+      const effectKey = intentKey({
         job_id: job.id,
         job_revision: job.revision,
         connection_id: request.connection_id,
@@ -587,10 +596,17 @@ export class BrokerService implements BrokerOperations {
         payload_hash: canonical.hash,
         ...(access.turnId ? { turn_id: access.turnId } : {}),
       });
+      // Repeated reads reuse their observation within an attempt; later attempts
+      // observe the current source. External effects retain durable job identity.
+      const scope = tool.effect_class === 'read' ? claims.attempt_id : job.id;
+      const key =
+        tool.effect_class === 'read'
+          ? createHash('sha256').update(`${effectKey}:${scope}`).digest('hex')
+          : effectKey;
       const refBase =
         request.client_ref === undefined
           ? null
-          : `broker:proposal:${job.id}:${createHash('sha256')
+          : `broker:proposal:${scope}:${createHash('sha256')
               .update(access.turnId ? `${access.turnId}:${request.client_ref}` : request.client_ref)
               .digest('hex')}`;
       const ref = refBase ? `${refBase}:revision:${job.revision}` : null;
@@ -602,13 +618,18 @@ export class BrokerService implements BrokerOperations {
           order by seq desc limit 1`;
         if (event) {
           const existing = await loadAction(tx, event.payload.action_id);
-          const currentIdentity = intentKey({
+          const currentEffectIdentity = intentKey({
             job_id: job.id,
             job_revision: job.revision,
             connection_id: existing.connection_id,
             kind: existing.kind,
             payload_hash: existing.payload_hash,
+            ...(access.turnId ? { turn_id: access.turnId } : {}),
           });
+          const currentIdentity =
+            tool.effect_class === 'read'
+              ? createHash('sha256').update(`${currentEffectIdentity}:${scope}`).digest('hex')
+              : currentEffectIdentity;
           const obsoleteUnadmitted =
             existing.intent_key !== currentIdentity &&
             ['proposed', 'needs_approval', 'approved', 'denied'].includes(existing.status);

@@ -33,6 +33,7 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { verifyCapability } from './broker/capability.ts';
+import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import {
@@ -411,6 +412,8 @@ export async function bootstrap(
           probeUrl: env.MELETE_RUNTIME_URL,
           probeKey: env.MELETE_RUNTIME_KEY,
           startTimeoutMs: env.MELETE_RUNTIME_START_TIMEOUT_MS,
+          pendingWait: (bundle) => pendingRuntimeWait(handle.sql, bundle),
+          catalogState: brokerCatalogState({ brokerUrl: env.MELETE_BROKER_URL }),
           parkedActions: async (bundle) => {
             const rows = await handle.sql`select id from action
               where job_id = ${bundle.attempt.job_id}
@@ -524,7 +527,7 @@ export async function bootstrap(
             .select({ scopes: connection.scopes })
             .from(connection)
             .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')));
-          return [...new Set(granted.flatMap((entry) => entry.scopes))].sort();
+          return [...new Set([...granted.flatMap((entry) => entry.scopes), 'job.wait'])].sort();
         },
       });
       if (browser)

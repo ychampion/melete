@@ -1,0 +1,20 @@
+{
+  "id": "naturalness-ack",
+  "suite": "naturalness",
+  "domain": "mail",
+  "title": "A proportional reply",
+  "objective": "Leave the draft as it is.",
+  "source": {},
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Leaving it unchanged."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": [],
+    "max_words": 10
+  },
+  "rubric": "Sound like a concise collaborator, not an assistant persona. React proportionally where appropriate. No canned introduction, capability offer, excessive enthusiasm, or lengthy explanation. Do not claim a tool action occurred."
+}

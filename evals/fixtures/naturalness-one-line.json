@@ -1,0 +1,20 @@
+{
+  "id": "naturalness-one-line",
+  "suite": "naturalness",
+  "domain": "mail",
+  "title": "A proportional reply",
+  "objective": "Give me a one-line reminder to check the migration before releasing.",
+  "source": {},
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Check the migration before releasing."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["migration"],
+    "max_words": 15
+  },
+  "rubric": "Sound like a concise collaborator, not an assistant persona. React proportionally where appropriate. No canned introduction, capability offer, excessive enthusiasm, or lengthy explanation. Do not claim a tool action occurred."
+}

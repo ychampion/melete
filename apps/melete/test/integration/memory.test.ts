@@ -303,13 +303,18 @@ withDb('memory evidence ledger', () => {
     const batch = await claimWork(db.sql, scope);
     if (!batch) throw new Error('missing work');
     const commit = await commitExtraction(db.sql, scope, batch, {
-      proposals: [tripProposal(batch)],
+      proposals: [
+        { ...tripProposal(batch), domain_key: 'pref.trip.month', key: 'pref.trip.month' },
+      ],
     });
     const id = commit.claim_ids[0];
     if (!id) throw new Error('missing claim');
     const initial = await recall(db.sql, scope, { query: 'trip' });
     expect(initial.status).toBe('degraded');
     expect(initial.items[0]?.content).toBe('July');
+    expect(
+      (await recall(db.sql, scope, { query: 'pref.trip.month' })).items.map((item) => item.content),
+    ).toEqual(['July']);
     await buildViews(db.sql, scope);
     expect((await recall(db.sql, scope, { query: 'trip' })).status).toBe('complete');
     await correctClaim(db.sql, scope, {
@@ -324,7 +329,13 @@ withDb('memory evidence ledger', () => {
     expect(current.status).toBe('degraded');
     expect(current.items.map((item) => item.content)).toEqual(['August']);
     expect(current.coverage.supplemented).toBe(1);
+    expect(
+      (await recall(db.sql, scope, { query: 'pref.trip.month' })).items.map((item) => item.content),
+    ).toEqual(['August']);
     await buildViews(db.sql, scope);
+    expect(
+      (await recall(db.sql, scope, { query: 'pref.trip.month' })).items.map((item) => item.content),
+    ).toEqual(['August']);
     const historical = await recall(db.sql, scope, {
       query: 'trip',
       mode: 'historical',

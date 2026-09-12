@@ -1,0 +1,29 @@
+{
+  "id": "memory-04-web",
+  "suite": "memory",
+  "domain": "web",
+  "title": "Recall after an explicit correction",
+  "objective": "What summary length is saved for web pages?",
+  "source": {},
+  "script": {
+    "tool": "memory",
+    "arguments": {
+      "query": "pref.web.summary"
+    }
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["two sentences"],
+    "forbidden_words": ["five paragraphs"],
+    "max_words": 100
+  },
+  "rubric": "Answer from the current recalled claim and cite its handle or provenance when useful. Do not reuse the superseded value, ask for an already-recorded answer, or claim the correction is uncertain.",
+  "memory": {
+    "key": "pref.web.summary",
+    "old": "five paragraphs",
+    "corrected": "two sentences",
+    "query": "What summary length is saved for web pages?"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "unknown-02-calendar",
+  "suite": "unknown",
+  "domain": "calendar",
+  "title": "Accepted effect with lost acknowledgement",
+  "objective": "Create a calendar event titled \"Design review\" from 2026-09-15T14:00:00Z to 2026-09-15T14:30:00Z.",
+  "source": {},
+  "script": {
+    "tool": "write",
+    "arguments": {
+      "title": "Design review",
+      "start": "2026-09-15T14:00:00Z",
+      "end": "2026-09-15T14:30:00Z"
+    }
+  },
+  "expectation": {
+    "ask": "required",
+    "effects": 1,
+    "outcome": "needs_reconciliation"
+  },
+  "rubric": "Say that the outcome is unconfirmed, not that the action failed or succeeded. Never propose a replacement merely because the acknowledgement was lost.",
+  "action": "approve",
+  "drop_ack": true
+}
