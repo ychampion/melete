@@ -78,6 +78,15 @@ After changing provider settings, recreate Melete and the warm runtime:
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
 ```
 
+## Memory extraction
+
+Deployment memory can extract structured observations without a model. If
+unstructured work has no extraction gateway, it stops at the third total claim
+with status `rejected` and error `no_extraction_gateway` in `memory_work`.
+Queue repair and duplicate deliveries do not restart that terminal work. This
+cap does not configure an extraction gateway or automatically retry rejected
+evidence when configuration changes.
+
 ## Isolation and image provenance
 
 The trusted `melete` service has the Docker socket so it can supervise attempt

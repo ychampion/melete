@@ -340,3 +340,15 @@ The threat model again states that runtime compromise exposes a locally stored
 OAuth token while a gateway-held API key remains outside the cell, and recommends
 API keys through the gateway. The existing scope sentence remains: runtime OAuth
 was not configured or tested. Documentation check: `git diff --check`, exit 0.
+
+### LOW (a): extraction without a configured gateway
+
+Unstructured work with no gateway becomes terminal `rejected` with
+`no_extraction_gateway` at its third durable claim. Queue repair and duplicate
+deliveries cannot revive it; the source cursor and extraction outbox settle.
+Structured observations still complete without model calls. The cap does not
+configure a gateway or automatically requeue rejected evidence.
+
+`bun test apps/melete/src/memory/bootstrap.test.ts`: exit 0, 5 passed,
+36 assertions, 7.00 s. The new test is
+`unstructured extraction without a gateway stops at its durable attempt cap`.

@@ -27,6 +27,7 @@ export type MemoryServiceOptions = {
   markdown?: MarkdownViews;
   onError?: (code: string) => void;
 };
+export const NO_GATEWAY_ATTEMPT_LIMIT = 3;
 /** Derive a worker's scope from durable state, never from the queue message's claimed space. */
 export async function workerScope(sql: MemorySql, workId: string): Promise<MemoryScope | null> {
   const [row] =
@@ -59,10 +60,16 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
       await commitExtraction(options.sql, scope, batch, { proposals: tier0 });
       return;
     }
-    // Nothing deterministic to do and no model configured: the work stays
-    // pending rather than being spent, so a later gateway still sees it.
+    // The durable fence counts claims, including recovery after a crashed worker.
+    // Missing configuration gets bounded retries rather than an endless queue cycle.
     if (!options.gateway) {
-      await retryWork(options.sql, scope, batch, 'no_extraction_gateway');
+      if (batch.work.fence >= NO_GATEWAY_ATTEMPT_LIMIT) {
+        await options.sql.begin(async (tx) => {
+          await lockSpace(tx, scope);
+          await checkLease(tx, scope, batch);
+          await finishWork(tx, batch, 'rejected', 'no_extraction_gateway');
+        });
+      } else await retryWork(options.sql, scope, batch, 'no_extraction_gateway');
       return;
     }
     const proposals = await proposeExtraction(options.sql, scope, batch, options.gateway);
@@ -108,8 +115,8 @@ export async function runDerivedWork(options: MemoryServiceOptions) {
 export async function startMemoryService(options: MemoryServiceOptions) {
   await restoreMemory(options.sql, options.journal);
   await options.boss.createQueue(MEMORY_EXTRACT_QUEUE);
-  // Structured observations use Tier 0 without a model. Other evidence stays
-  // pending in runExtractionWork until an extraction gateway is configured.
+  // Structured observations use Tier 0 without a model. Other evidence has a
+  // durable attempt cap when no extraction gateway is configured.
   await options.boss.work<{ work_id: string }>(
     MEMORY_EXTRACT_QUEUE,
     { localConcurrency: 2, batchSize: 1 },

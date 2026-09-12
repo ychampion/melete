@@ -13,7 +13,7 @@ import { listClaims } from './claims.ts';
 import { ingest } from './evidence.ts';
 import { forgetMemory } from './forget.ts';
 import { recall } from './recall.ts';
-import { runExtractionWork } from './service.ts';
+import { NO_GATEWAY_ATTEMPT_LIMIT, runExtractionWork } from './service.ts';
 import { buildViews } from './views.ts';
 import { repairQueue } from './work.ts';
 
@@ -228,4 +228,51 @@ withDb('deployment memory startup', () => {
       await f.close();
     }
   }, 15000);
+
+  test('unstructured extraction without a gateway stops at its durable attempt cap', async () => {
+    const f = await fixture();
+    try {
+      const owner = await f.setup();
+      const accepted = await ingest(f.sql, owner.scope, {
+        stream: 'no-gateway',
+        source_identity: 'message-1',
+        source_version: '1',
+        source_type: 'message',
+        event_at: '2026-09-12T00:00:00Z',
+        text: 'Please remember that I prefer the window seat.',
+      });
+      const [work] = await f.sql`select id from memory_work
+        where source_id = ${accepted.source.source_id}`;
+      if (!work) throw new Error('The extraction fixture did not create work');
+      const options = { sql: f.sql, boss: f.boss, journal: f.memory.routes.journal };
+      for (let attempt = 1; attempt <= NO_GATEWAY_ATTEMPT_LIMIT; attempt++) {
+        await runExtractionWork(options, work.id);
+        const [state] =
+          await f.sql`select status, fence, error_code from memory_work where id = ${work.id}`;
+        expect(state).toEqual({
+          status: attempt === NO_GATEWAY_ATTEMPT_LIMIT ? 'rejected' : 'pending',
+          fence: attempt,
+          error_code: 'no_extraction_gateway',
+        });
+      }
+      expect(await repairQueue(f.sql, f.boss)).toBe(0);
+      await runExtractionWork(options, work.id); // A duplicate delivery cannot revive it.
+      const [terminal] =
+        await f.sql`select status, fence, calls, lease_until from memory_work where id = ${work.id}`;
+      expect(terminal).toEqual({
+        status: 'rejected',
+        fence: NO_GATEWAY_ATTEMPT_LIMIT,
+        calls: 0,
+        lease_until: null,
+      });
+      const [outbox] =
+        await f.sql`select completed_at from memory_outbox where kind = 'extract' and target_id = ${work.id}`;
+      expect(outbox?.completed_at).not.toBeNull();
+      const [stream] =
+        await f.sql`select consumed_sequence from memory_streams where space_id = ${owner.spaceId} and stream = 'no-gateway'`;
+      expect(stream?.consumed_sequence).toBe(1);
+    } finally {
+      await f.close();
+    }
+  });
 });
