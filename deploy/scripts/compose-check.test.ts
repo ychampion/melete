@@ -142,6 +142,28 @@ describe('the check catches the mistakes that would matter', () => {
     expect(failures(running)).toContain('the supervisor image is built without a running engine');
   });
 
+  test.each([
+    { environment: { MELETE_MASTER_KEY: 'dummy-master-key' } },
+    { environment: { OPENAI_API_KEY: 'dummy-provider-key' } },
+    { environment: { MELETE_ATTEMPT_TOKEN: 'dummy-attempt-token' } },
+    { environment: { MELETE_MASTER_KEY: null } },
+    { environment: ['MELETE_MASTER_KEY=dummy-master-key'] },
+    { environment: ['MELETE_MASTER_KEY'] },
+    { env_file: './build.env' },
+    { env_file: ['./build.env'] },
+    { env_file: [{ path: './build.env', required: false }] },
+    { secrets: ['master-key'] },
+    { secrets: [{ source: 'master-key', target: 'credentials' }] },
+    { volumes: ['./master-key:/run/secrets/master-key:ro'] },
+    { volumes: [{ type: 'bind', source: './build.env', target: '/credentials', read_only: true }] },
+  ])('giving the build-only service credentials through %j', (credentials) => {
+    const broken = structuredClone(compose);
+    const image = broken.services?.['runtime-image'];
+    if (!image) throw new Error('Expected build-only service');
+    Object.assign(image, credentials);
+    expect(failures(broken)).toContain('the build-only service carries no credentials');
+  });
+
   test('handing the warm cell a service secret or a substituted attempt credential', () => {
     const withSecret = structuredClone(compose);
     if (withSecret.services?.runtime?.environment)

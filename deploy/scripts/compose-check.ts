@@ -18,6 +18,8 @@ export type ComposeFile = {
 export type ComposeService = {
   networks?: string[] | Record<string, { aliases?: string[]; gw_priority?: number } | null>;
   environment?: Record<string, string | number | boolean>;
+  env_file?: string | (string | { path: string; required?: boolean })[];
+  secrets?: (string | { source: string; target?: string })[];
   user?: string;
   group_add?: string[];
   read_only?: boolean;
@@ -244,6 +246,17 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
       image.image === compose.services?.melete?.environment?.MELETE_RUNTIME_IMAGE &&
       entrypoint[0] === '/bin/true',
     'runtime-image must build the selected image with entrypoint /bin/true and no network',
+  );
+  // /bin/true needs no runtime inputs. Reject all supplied inputs so a new key
+  // name or an opaque file/mount cannot bypass a credential-name denylist.
+  say(
+    'the build-only service carries no credentials',
+    image !== undefined &&
+      Object.keys(image.environment ?? {}).length === 0 &&
+      image.env_file === undefined &&
+      (image.secrets ?? []).length === 0 &&
+      (image.volumes ?? []).length === 0,
+    'runtime-image must not receive environment entries, env_file, secrets, or volume mounts',
   );
 
   // The warm cell is a probe: it may carry placeholders, never a minted
