@@ -2,10 +2,11 @@
  * `bun run conformance` lists the eight scenarios and what each one will
  * assert, then runs the suite.
  *
- * Scenarios 1 through 5 execute against disposable Postgres with scripted
- * runtimes and the test destination; 6, 7 and 8 stay visibly marked as todo.
+ * Scenarios 1 through 5 use disposable databases and scripted runtimes;
+ * scenarios 6 through 8 exercise the deployed services with explicit opt-in.
  */
 import { fileURLToPath } from 'node:url';
+import { composeEnabled, databaseUrl, waitForStack } from './helpers/compose.ts';
 import { SCENARIOS } from './scenarios.ts';
 
 const out = (line = '') => process.stdout.write(`${line}\n`);
@@ -23,18 +24,33 @@ for (const scenario of SCENARIOS) {
   out();
 }
 
-out(`${SCENARIOS.length} scenarios, ${assertions} assertions.`);
+const deferred = composeEnabled ? 0 : SCENARIOS.filter((scenario) => scenario.id >= 6).length;
+const enabled = SCENARIOS.length - deferred;
+out(
+  `${SCENARIOS.length} scenarios declared, ${enabled} enabled, ${deferred} deferred; ${assertions} declared checks.`,
+);
 out();
-out('Scenarios 1, 2, 3, 4 and 5 execute against isolated Postgres, scripted runtimes');
-out('and the test destination. Scenarios 6, 7 and 8 still contain explicit todos.');
+out('Scenarios 1–5 use isolated databases, scripted runtimes and the test destination.');
+out('With MELETE_CONFORMANCE_COMPOSE=1, they use the Compose Postgres host,');
+out('and scenarios 6–8 use the deployed web, API, broker and Hermes cells.');
+out('The optional second-provider comparison is skipped without configured credentials.');
 out(
   'Without DATABASE_URL, tests start embedded Postgres 17; unavailable binaries produce explicit skips.',
 );
 out();
-const run = Bun.spawn([process.execPath, 'test', '--max-concurrency=2', 'conformance/scenarios'], {
+if (composeEnabled) await waitForStack();
+const run = Bun.spawn([process.execPath, 'test', '--max-concurrency=1', 'conformance/scenarios'], {
   cwd: fileURLToPath(new URL('..', import.meta.url)),
   stdin: 'inherit',
   stdout: 'inherit',
   stderr: 'inherit',
+  env: { ...process.env, ...(composeEnabled ? { DATABASE_URL: await databaseUrl() } : {}) },
 });
-process.exit(await run.exited);
+const code = await run.exited;
+out();
+out(
+  `Conformance exit ${code}: ${enabled} scenarios enabled, ${deferred} deployment scenarios deferred.`,
+);
+if (deferred > 0)
+  out('Enable scenarios 6–8 with MELETE_CONFORMANCE_COMPOSE=1 on a disposable stack.');
+process.exit(code);

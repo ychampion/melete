@@ -106,8 +106,12 @@ def build_handler(
         # arguments in one positional dict (`tools/registry.py:822`), not as
         # keyword arguments. A `**kwargs`-only signature raises TypeError before
         # the broker is ever called, and the model is told the tool is broken.
-        arguments: Dict[str, Any] = dict(args or {})
-        arguments.update(extra)
+        # model_tools.py:758-767 puts task_id, session_id and user_task in
+        # kwargs as execution context. Only the positional dict is model
+        # input, including when empty; context must not change the proposed
+        # payload, approval hash, or stable proposal reference. Keyword-only
+        # calls remain a convenience for direct callers outside the engine.
+        arguments: Dict[str, Any] = dict(args if args is not None else extra)
         if name == "react" and connection_id is None:
             # Reactions belong to the attempt's job, not an external connection.
             # The broker checks that ownership before persisting the glyph.

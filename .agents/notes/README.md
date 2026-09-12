@@ -48,3 +48,4 @@ Two rules:
 | [0014](0014-memory-conformance-runner.md) | Memory quality is a suite with a counterfactual arm | accepted |
 | [0015](0015-typed-repair.md) | Failures are classified and repaired, not retried | accepted |
 | [0017](0017-agentic-and-natural.md) | Reply style, reactions, delta briefs, watch predicates, capabilities | accepted |
+| [0020](0020-deployment-evidence.md) | Deployment claims require a running Linux stack | accepted |

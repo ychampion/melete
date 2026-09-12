@@ -212,3 +212,194 @@ describe('the server over a socket', () => {
     }
   });
 });
+
+describe('same-origin API proxy', () => {
+  let api: ReturnType<typeof Bun.serve>;
+  let web: ReturnType<typeof createStaticServer>;
+  let external: ReturnType<typeof Bun.serve>;
+  let apiRequests = 0;
+  let externalRequests = 0;
+  const webOrigin = () => `http://127.0.0.1:${web.port}`;
+  const apiOrigin = () => `http://127.0.0.1:${api.port}`;
+
+  beforeAll(() => {
+    external = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch() {
+        externalRequests++;
+        return new Response('external peer');
+      },
+    });
+    api = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(request) {
+        apiRequests++;
+        const url = new URL(request.url);
+        if (url.pathname === '/redirect') {
+          return Response.redirect(`http://127.0.0.1:${external.port}/secret`, 302);
+        }
+        if (url.pathname === '/events') {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('data: {"seq":1}\n\n'));
+                // Deliberately left open: a buffered proxy would never return this event.
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream' } },
+          );
+        }
+        return Response.json(
+          {
+            method: request.method,
+            path: url.pathname,
+            query: url.search,
+            origin: request.headers.get('origin'),
+            cookie: request.headers.get('cookie'),
+            forwarded: request.headers.get('forwarded'),
+            forwardedHost: request.headers.get('x-forwarded-host'),
+            body: await request.text(),
+          },
+          {
+            status: 201,
+            headers: [
+              [
+                'set-cookie',
+                'melete_session=session-value; Path=/; HttpOnly; Secure; SameSite=Lax',
+              ],
+              ['set-cookie', 'other=value; Path=/; HttpOnly'],
+              ['cache-control', 'no-store'],
+            ],
+          },
+        );
+      },
+    });
+    web = createStaticServer({
+      root: join(base, 'dist'),
+      port: 0,
+      hostname: '127.0.0.1',
+      apiOrigin: apiOrigin(),
+    });
+  });
+
+  afterAll(() => {
+    web.stop(true);
+    api.stop(true);
+    external.stop(true);
+  });
+
+  test('forwards authenticated writes with the internal origin and intact cookies', async () => {
+    const response = await fetch(`${webOrigin()}/api/setup?trace=1`, {
+      method: 'POST',
+      headers: {
+        origin: webOrigin(),
+        cookie: 'melete_session=incoming-session',
+        'content-type': 'application/json',
+        forwarded: 'host=untrusted.example;proto=https',
+        'x-forwarded-host': 'untrusted.example',
+      },
+      body: '{"email":"owner@example.test"}',
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      method: 'POST',
+      path: '/setup',
+      query: '?trace=1',
+      origin: apiOrigin(),
+      cookie: 'melete_session=incoming-session',
+      forwarded: null,
+      forwardedHost: null,
+      body: '{"email":"owner@example.test"}',
+    });
+    expect(response.headers.getSetCookie()).toEqual([
+      'melete_session=session-value; Path=/; HttpOnly; Secure; SameSite=Lax',
+      'other=value; Path=/; HttpOnly',
+    ]);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  test('rejects foreign, opaque, and cross-site browser requests before contacting the API', async () => {
+    const count = apiRequests;
+    const rejectedHeaders: Record<string, string>[] = [
+      { origin: 'https://untrusted.example' },
+      { origin: 'null' },
+      { origin: webOrigin(), 'sec-fetch-site': 'cross-site' },
+      { origin: 'https://untrusted.example', 'x-forwarded-host': 'untrusted.example' },
+    ];
+    for (const headers of rejectedHeaders) {
+      const response = await fetch(`${webOrigin()}/api/setup`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      });
+      expect(response.status).toBe(403);
+    }
+    expect(apiRequests).toBe(count);
+  });
+
+  test('supports clients that omit Origin', async () => {
+    const response = await fetch(`${webOrigin()}/api/me`);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ path: '/me' });
+  });
+
+  test('request paths and query parameters cannot choose another upstream', async () => {
+    for (const path of [
+      `/api//127.0.0.1:${external.port}/secret`,
+      `/api/http://127.0.0.1:${external.port}/secret`,
+      `/api/health?url=http://127.0.0.1:${external.port}/secret`,
+    ]) {
+      const response = await fetch(`${webOrigin()}${path}`);
+      expect(response.status).toBe(201);
+    }
+    expect(externalRequests).toBe(0);
+  });
+
+  test('never follows an upstream redirect with a session cookie', async () => {
+    const response = await fetch(`${webOrigin()}/api/redirect`, {
+      redirect: 'manual',
+      headers: { cookie: 'melete_session=private' },
+    });
+    expect(response.status).toBe(302);
+    expect(externalRequests).toBe(0);
+  });
+
+  test('streams the first SSE event before the upstream closes', async () => {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 2000);
+    try {
+      const response = await fetch(`${webOrigin()}/api/events`, { signal: abort.signal });
+      expect(response.headers.get('content-type')).toBe('text/event-stream');
+      const reader = response.body?.getReader();
+      expect(reader).toBeDefined();
+      const first = await reader?.read();
+      expect(new TextDecoder().decode(first?.value)).toBe('data: {"seq":1}\n\n');
+      await reader?.cancel();
+    } finally {
+      clearTimeout(timer);
+      abort.abort();
+    }
+  });
+
+  test('uses an explicitly configured TLS origin without trusting forwarded headers', async () => {
+    const tlsWeb = createStaticServer({
+      root: join(base, 'dist'),
+      port: 0,
+      hostname: '127.0.0.1',
+      apiOrigin: apiOrigin(),
+      publicOrigin: 'https://melete.example.test',
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${tlsWeb.port}/api/setup`, {
+        method: 'POST',
+        headers: { origin: 'https://melete.example.test' },
+      });
+      expect(response.status).toBe(201);
+      expect(await response.json()).toMatchObject({ origin: apiOrigin() });
+    } finally {
+      tlsWeb.stop(true);
+    }
+  });
+});

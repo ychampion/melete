@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import type { KnowledgeFrontmatter } from '@melete/contracts';
+import { type KnowledgeFrontmatter, prefixedId } from '@melete/contracts';
 import { type ParsedRecord, parseRecord } from './frontmatter.ts';
 import { type IndexedRecord, SpaceIndex } from './fts.ts';
 import { type SpacePaths, spacePaths } from './layout.ts';
@@ -141,6 +141,7 @@ export function openIndex(paths: SpacePaths): { index: SpaceIndex; rebuilt: bool
  * the same thing in a path, in frontmatter, and in a lint message.
  */
 export const SPACE_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+const catalogSpaceId = prefixedId('sp');
 
 /**
  * Create the directories a new space needs. This is the filesystem half only;
@@ -153,9 +154,9 @@ export const SPACE_NAME = /^[a-z0-9][a-z0-9._-]*$/;
  * entirely.
  */
 export function ensureSpaceDirs(spacesRoot: string, space: string): SpacePaths {
-  if (!SPACE_NAME.test(space)) {
+  if (!SPACE_NAME.test(space) && !catalogSpaceId.safeParse(space).success) {
     throw new Error(
-      `"${space}" is not a usable space name: lowercase letters, digits, dot, dash and underscore, starting with a letter or digit`,
+      `"${space}" is not a usable space name: use a catalog space ID or lowercase letters, digits, dot, dash and underscore, starting with a letter or digit`,
     );
   }
   const paths = spacePaths(spacesRoot, space);

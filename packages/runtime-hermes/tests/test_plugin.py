@@ -379,6 +379,40 @@ def test_the_handler_takes_the_arguments_as_one_positional_dict(client, broker):
     assert broker.requests[0]["body"]["payload"] == {"query": "positional"}
 
 
+def test_engine_execution_context_is_not_part_of_the_proposed_payload(client, broker):
+    # Pinned Hermes model_tools.py:758-767 passes model args separately from
+    # task/session ids and user_task. These kwargs are execution context, not
+    # fields of the tool's input schema or the content an owner approves.
+    handler = build_handler(client, CATALOG[1])
+    handler(
+        {"query": "positional", "session_id": "explicit-tool-argument"},
+        task_id="engine-job",
+        session_id="engine-session",
+        user_task=None,
+    )
+    assert broker.requests[0]["body"]["payload"] == {
+        "query": "positional",
+        "session_id": "explicit-tool-argument",
+    }
+
+
+def test_an_empty_argument_dict_does_not_forward_engine_context(client, broker):
+    build_handler(client, CATALOG[1])(
+        {}, task_id="engine-job", session_id="engine-session", user_task=None
+    )
+    assert broker.requests[0]["body"]["payload"] == {}
+
+
+def test_execution_context_cannot_change_a_proposal_reference(client, broker, monkeypatch):
+    monkeypatch.setenv("MELETE_JOB_ID", "same-durable-job")
+    handler = build_handler(client, CATALOG[1])
+    handler({"query": "same"}, task_id="first", session_id="first", user_task=None)
+    handler({"query": "same"}, task_id="second", session_id="second", user_task="different")
+    proposals = [r["body"] for r in broker.requests if r["path"] == "/actions"]
+    assert proposals[0]["payload"] == proposals[1]["payload"] == {"query": "same"}
+    assert proposals[0]["client_ref"] == proposals[1]["client_ref"]
+
+
 def test_the_handler_still_accepts_keyword_arguments(client, broker):
     build_handler(client, CATALOG[1])(query="keyword")
     assert broker.requests[0]["body"]["payload"] == {"query": "keyword"}

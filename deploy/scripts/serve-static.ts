@@ -1,13 +1,12 @@
 /**
- * Serves the reference client's built bundle.
+ * Serves the reference client's built bundle and its same-origin API proxy.
  *
  * A file server instead of a dependency, because a self-hosted client that has
  * to reach a package registry before it can start is not self-hosted. Unknown
  * paths fall back to index.html: the client routes on the hash, but a deep link
  * that arrives as a path should still load the app rather than 404.
  *
- * The only interesting thing a static file server does is decide which bytes a
- * request is allowed to read, so that decision is one pure function with its own
+ * The static file boundary is one pure function with its own
  * tests. It works on filesystem paths throughout and never builds a `file:` URL
  * from a request, because a URL resolved against a base will happily leave the
  * base: `file:///etc/passwd` is not a path under `dist`, it is a different
@@ -21,7 +20,97 @@ export type StaticServerOptions = {
   root: string;
   port?: number;
   hostname?: string;
+  /** Trusted startup configuration, never derived from a request. */
+  apiOrigin?: string;
+  /** External HTTPS origin when TLS terminates before this server. */
+  publicOrigin?: string;
 };
+
+const API_ORIGIN = 'http://melete:8787';
+
+function parseOrigin(value: string): string {
+  const url = new URL(value);
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('The web server requires an HTTP(S) origin without a path or credentials.');
+  }
+  return url.origin;
+}
+
+/** Connection metadata belongs to one connection, not the next peer. */
+function endToEndHeaders(input: Headers): Headers {
+  const headers = new Headers(input);
+  const connectionHeaders = (headers.get('connection') ?? '').split(',');
+  for (const name of [
+    ...connectionHeaders,
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+  ]) {
+    if (name.trim()) headers.delete(name.trim());
+  }
+  return headers;
+}
+
+async function proxyApi(request: Request, url: URL, apiOrigin: string, publicOrigin?: string) {
+  const origin = request.headers.get('origin');
+  if (
+    request.headers.get('sec-fetch-site') === 'cross-site' ||
+    (origin !== null && origin !== (publicOrigin ?? url.origin))
+  ) {
+    return Response.json(
+      { error: { code: 'origin_rejected', message: 'Use the same origin.' } },
+      { status: 403, headers: { 'cache-control': 'no-store' } },
+    );
+  }
+
+  // Set only the path and query. Resolving a caller path against the origin
+  // would let a leading // choose another host and expose the session cookie.
+  const target = new URL(apiOrigin);
+  target.pathname = url.pathname.slice('/api'.length) || '/';
+  target.search = url.search;
+  const headers = endToEndHeaders(request.headers);
+  for (const name of [...headers.keys()]) {
+    if (name === 'host' || name === 'forwarded' || name.startsWith('x-forwarded-')) {
+      headers.delete(name);
+    }
+  }
+  // The browser origin has been checked here. The API checks the internal
+  // origin on the new connection and retains its own direct-request defense.
+  if (origin !== null) headers.set('origin', apiOrigin);
+
+  try {
+    const response = await fetch(target, {
+      method: request.method,
+      headers,
+      body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+      signal: request.signal,
+      redirect: 'manual',
+      decompress: false,
+    });
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: endToEndHeaders(response.headers),
+    });
+  } catch {
+    return Response.json(
+      { error: { code: 'api_unavailable', message: 'The API is unavailable.' } },
+      { status: 502, headers: { 'cache-control': 'no-store' } },
+    );
+  }
+}
 
 /**
  * Turn a request path into an absolute path inside `root`, or null if it does
@@ -70,6 +159,8 @@ const isFile = async (path: string): Promise<boolean> => {
 export function createStaticServer(options: StaticServerOptions) {
   const root = resolve(options.root);
   const indexPath = resolve(root, 'index.html');
+  const apiOrigin = parseOrigin(options.apiOrigin ?? API_ORIGIN);
+  const publicOrigin = options.publicOrigin ? parseOrigin(options.publicOrigin) : undefined;
 
   const index = () =>
     new Response(Bun.file(indexPath), {
@@ -80,7 +171,14 @@ export function createStaticServer(options: StaticServerOptions) {
     port: options.port ?? Number(process.env.PORT ?? 3000),
     ...(options.hostname ? { hostname: options.hostname } : {}),
     idleTimeout: 60,
-    async fetch(request) {
+    async fetch(request, server) {
+      const url = new URL(request.url);
+      if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+        // A job event stream can be quiet for longer than the static timeout.
+        server.timeout(request, 0);
+        return proxyApi(request, url, apiOrigin, publicOrigin);
+      }
+
       // A built bundle is read only, so reading it is the whole vocabulary.
       // Anything else is 405 rather than 404: the path may well exist, the verb
       // is what does not, and answering a POST with the index would report a 200
@@ -92,7 +190,7 @@ export function createStaticServer(options: StaticServerOptions) {
         });
       }
 
-      const { pathname } = new URL(request.url);
+      const { pathname } = url;
       const target = resolveInside(root, pathname);
 
       // Malformed, or pointing outside the bundle. Not a deep link.
@@ -109,6 +207,9 @@ export function createStaticServer(options: StaticServerOptions) {
 }
 
 if (import.meta.main) {
-  const server = createStaticServer({ root: resolve(process.cwd(), 'dist') });
+  const server = createStaticServer({
+    root: resolve(process.cwd(), 'dist'),
+    publicOrigin: process.env.MELETE_WEB_ORIGIN || undefined,
+  });
   process.stdout.write(`melete web client listening on :${server.port}\n`);
 }

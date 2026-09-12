@@ -15,6 +15,7 @@
   "dependencies": {
     "@melete/contracts": "workspace:*",
     "@melete/knowledge": "workspace:*",
+    "@melete/runtime-hermes": "workspace:*",
     "@melete/skills": "workspace:*",
     "ajv": "8.20.0",
     "chrono-node": "2.10.1",

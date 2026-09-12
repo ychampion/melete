@@ -162,10 +162,15 @@ export async function assembleAttemptKnowledge(
   options: RecallOptions = {},
 ) {
   for (let retry = 0; retry < 3; retry++) {
-    const result = await recall(sql, scope, recallRequest.parse({ job_id: jobId, query }), {
-      ...options,
-      includeProfile: true,
-    });
+    const result = await recall(
+      sql,
+      scope,
+      recallRequest.parse({ job_id: jobId, query: query.slice(0, 2000) }),
+      {
+        ...options,
+        includeProfile: true,
+      },
+    );
     try {
       const context = await recordAttemptContext(sql, scope, attemptId, jobId, result);
       return { knowledge: result.items.map(asKnowledge), context, recall: result };

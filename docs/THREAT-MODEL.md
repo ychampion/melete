@@ -22,8 +22,9 @@ meet, because it needs no access to your machine at all.
 What contains it:
 
 - **The runtime has nowhere to send anything.** Its container sits on a network
-  declared `internal: true`, so there is no default route in the kernel. A model
-  persuaded to exfiltrate cannot open a socket to do it.
+  declared `internal: true` with isolated bridge gateway mode. There is no
+  default route or host bridge address. Direct sockets to the tested external
+  destinations fail; the trusted broker and model gateway remain reachable.
 - **Every effect is a proposal, not an action.** Injected text can make the model
   propose sending your inbox to an attacker. The broker canonicalises that
   proposal, classifies it as an external write, and requires an approval bound to
@@ -120,10 +121,9 @@ What contains it:
 - **What actually served the request is recorded.** The gateway reads the model
   from the response body, not the request, so a provider silently substituting a
   cheaper model shows up in the attempt row.
-- **You can change providers.** Melete is model-agnostic on purpose. The
-  recommended default is DeepSeek V4.1 Flash on Fireworks, and any
-  OpenAI-compatible endpoint works, including a model running on your own machine,
-  which removes this attacker entirely.
+- **You can select a configured provider.** The gateway owns the provider/model
+  selection and credentials. The Linux deployment proof used the scripted
+  provider; its optional real-provider comparison was skipped without credentials.
 
 What is not contained:
 
@@ -132,11 +132,12 @@ What is not contained:
 - **A provider can steer the work subtly.** Slightly wrong summaries, a nudged
   recommendation, a plausible but wrong fact. Approval catches sends, not
   judgment.
-- **OAuth tokens for subscription providers live in the runtime's own auth
-  store** in v0.1, unlike API keys, which are held by the gateway and injected. A
-  compromise of the runtime container therefore exposes an OAuth token but not an
-  API key. This is a real asymmetry and it is why API keys are the recommended
-  path.
+- **The credential proof covers the gateway path.** Separately configuring
+  provider OAuth in Hermes would place those credentials in the runtime's auth
+  store and fall outside this verified boundary. The tested images and volumes
+  contain no such OAuth configuration. A runtime compromise exposes an OAuth
+  token stored there; it does not expose a provider API key kept in Melete's
+  gateway. API keys through the gateway are therefore the recommended path.
 
 Practical advice: for anything genuinely sensitive, run a local model through the
 OpenAI-compatible endpoint.
@@ -155,19 +156,27 @@ What contains it:
 - **No route out.** The container is on the internal network only. There is no
   path to the internet, to the host, or to any sibling service on the edge
   network. The conformance suite checks the internet, the Postgres port, the host
-  metadata address, and a sibling path from inside the container.
-- **No credentials to steal.** The runtime holds no database connection string, no
+  metadata address, a proven live host listener, and a sibling job path from
+  inside both the warm probe cell and an actual claimed attempt.
+- **No standing provider or database credentials.** The runtime holds no database connection string, no
   provider API keys, and no connection secrets. Provider keys are injected by the
   gateway on the way out; connection secrets never leave the service process.
 - **No standing authority.** The capability token is scoped to one job, one
   attempt, one epoch, one revision, with a budget and an expiry. When the epoch
   moves, the token is dead. It cannot create a job, widen a scope, or approve
   anything.
+- **The owner control plane is outside the runtime listener.** The API binds
+  only to its edge-network address. A second transport check rejects sources
+  outside that interface's subnet before routing, including `/setup`, `/login`
+  and `/health`, with a fixed 403 that contains no account state. It uses the
+  socket peer, never a caller's forwarding header. Login also has a per-source,
+  per-process burst of five attempts and exponential backoff capped at 60 seconds.
 - **Effects still need approval.** A fully compromised runtime can propose. It
   cannot admit.
 - **A small surface.** Non-root, read-only root filesystem, all capabilities
-  dropped, `no-new-privileges`, process and memory limits, and `/work` as the only
-  mount.
+  dropped, `no-new-privileges`, process and memory limits. Writable storage is
+  limited to the current job's `/work`, its attempt's named `/var/lib/hermes`
+  volume, and a size-limited `/tmp` tmpfs. The Docker socket is absent.
 
 ### The runtime runs code on purpose
 
@@ -210,7 +219,9 @@ What is not contained:
   boundary in this document is gone. A Firecracker microVM is the target and
   gVisor is the documented intermediate step; neither is in v0.1.
 - **`/work` is a real volume.** Whatever is in the workspace is readable and
-  writable, including anything a previous job put there.
+  writable, including output from an earlier attempt of the same job. Docker's
+  volume subpath mount hides other jobs' directories; this is an OS mount boundary,
+  independent of the execution tool's path checks.
 - **The broker is reachable, by design.** A compromised runtime can propose
   endlessly, consume budget, and fill the ledger with noise. That is a denial of
   service against your own assistant.
@@ -218,6 +229,42 @@ What is not contained:
   admission path is a bug in a process that does hold the credentials. Splitting
   them into separate processes with separate database roles is planned, not
   shipped.
+- **The supervisor is trusted with host authority.** Only Melete receives the
+  Docker socket so it can create and retire attempt containers. A compromise of
+  that service crosses the trusted host boundary; cell isolation does not contain it.
+
+## Linux deployment verification
+
+On 2026-09-11, scenario 6 ran Python standard-library probes from a real claimed
+Hermes container and the warm probe container under Docker Engine 29.1.3. The
+claimed cell mounted only `work/<job>` and its private runtime home. These checks
+establish the tested Linux configuration, not macOS, Windows, rootless Docker,
+or protection from kernel exploits.
+
+| Boundary | Observed evidence | What would falsify it |
+| --- | --- | --- |
+| External network | No default route; public IP, metadata IP and a live host listener were unreachable | A successful TCP connection to any blocked target |
+| Sibling services | Postgres failed by DNS and actual container IP; web DNS was unreachable | A reachable database or web listener from the cell |
+| Workspace | A sibling canary existed in the full volume; three read paths returned ENOENT while the job workspace was writable | Reading that canary through any cell path |
+| Sole peer | Network inspection showed only Melete and the cell; broker/model routes answered | Another attached peer or an unmediated external route |
+| Runtime authority | A valid cell capability read the catalog (200) but could not approve (401); altered owner approval hashes were refused (409) | A cell capability spending an approval or changing its payload |
+| Owner control plane | Scenario 6 probes setup, login and health on port 8787 from both cells; the API binds only to edge and its transport guard denies other source subnets | Either cell receiving account state or any response other than connection refusal or the fixed 403 |
+| Process hardening | UID 10001, read-only root, zero effective capabilities, no-new-privileges, no Docker socket | Any failed assertion in the live hardening probe |
+
+The restore proof replaced only the stack's Postgres volume while retaining a
+newer independent restriction journal. Before normal startup, verification
+rejected the stale snapshot. Startup replayed the restriction before opening
+memory and job workers; afterward the forgotten fact was absent, an unrelated
+fact remained available, and the restored waiting job completed with one receipt.
+Serving the forgotten fact or duplicating the destination effect would falsify
+those restore claims. Commands and measured results are in [REPORT.md](../REPORT.md).
+
+The 2026-09-12 review added the missing peer-port checks:
+`the warm cell cannot reach owner setup, login or health` and
+`a claimed attempt cannot reach the owner control plane and retains its job boundary`.
+The earlier peer-set test alone did not establish this control-plane boundary.
+An integration test verifies the transport rejection before and after owner
+creation; another verifies per-source login backoff and forged-header rejection.
 
 ---
 
@@ -274,5 +321,6 @@ fallback is not an OS or memory boundary.
   compute. If you do not control the host, you do not control the data.
 - **The master key is the whole of encryption at rest.** Lose it and every
   credential must be re-entered. Leak it and the encryption bought you nothing.
-- **v0.1 has never been installed anywhere but a development machine.** Do not
-  connect it to an account you cannot afford to have misused.
+- **Verification has a defined scope.** The Linux deployment and restoration
+  checks use a scripted model and test destination. They do not establish live
+  provider behavior or the safety of an arbitrary external account.

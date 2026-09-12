@@ -30,6 +30,14 @@ import os, sys, yaml
 
 config = yaml.safe_load(open("/opt/melete-runtime/config.yaml", encoding="utf-8"))
 provider = config.setdefault("providers", {}).setdefault("melete-gateway", {})
+name = os.environ.get("MELETE_MODEL_PROVIDER", "fireworks")
+model = os.environ.get("MELETE_MODEL_NAME", "deepseek-v4p1-flash")
+if not name or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in name):
+    raise SystemExit("Invalid model provider name")
+config["provider"] = "melete-gateway"
+config["model"] = model
+provider["default_model"] = model
+provider["base_url"] = os.environ["MELETE_BROKER_URL"].rstrip("/") + "/providers/" + name + "/v1"
 # The capability is a per-attempt secret and is never written into the image.
 provider.setdefault("extra_headers", {})["x-melete-capability"] = os.environ["MELETE_ATTEMPT_TOKEN"]
 with open(sys.argv[1], "w", encoding="utf-8") as out:

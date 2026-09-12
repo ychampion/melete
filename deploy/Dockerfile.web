@@ -1,21 +1,12 @@
 # The reference web client.
 #
-# `apps/web` is a small client for the API, not the product interface: the owner
-# builds that separately. It stays behind the compose `web` profile so
-# `docker compose up` is still just the service, and `docker compose --profile
-# web up` adds a browsable client on top of it.
-#
-# The API address is baked in at build time, because Vite inlines
-# `import.meta.env` into the bundle. Pass it as a build argument:
-#
-#   docker compose --profile web build --build-arg VITE_MELETE_API=https://melete.example
-#
-# Changing it later means rebuilding the image. A static bundle has nothing left
-# to read an environment variable from.
+# /api is served by the web server's fixed proxy to http://melete:8787. Browser
+# requests and session cookies therefore stay on the web client's origin.
+# Vite inlines the API address at build time; changing it requires a rebuild.
 
-FROM oven/bun:1.3.13-slim AS build
+FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16462e5b57ed3fff0f1 AS build
 
-ARG VITE_MELETE_API=http://localhost:8787
+ARG VITE_MELETE_API=/api
 ENV VITE_MELETE_API=${VITE_MELETE_API}
 
 WORKDIR /app
@@ -23,12 +14,18 @@ COPY package.json bun.lock ./
 COPY apps/web/package.json apps/web/
 COPY packages/client/package.json packages/client/
 COPY packages/contracts/package.json packages/contracts/
+COPY packages/knowledge/package.json packages/knowledge/
+COPY packages/runtime-hermes/package.json packages/runtime-hermes/
+COPY packages/skills/package.json packages/skills/
+COPY apps/melete/package.json apps/melete/
+COPY apps/mock-api/package.json apps/mock-api/
+COPY conformance/package.json conformance/
 RUN bun install --frozen-lockfile
 
 COPY . .
 RUN bun run --cwd apps/web build
 
-FROM oven/bun:1.3.13-slim
+FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16462e5b57ed3fff0f1
 
 WORKDIR /app
 COPY --from=build /app/apps/web/dist ./dist

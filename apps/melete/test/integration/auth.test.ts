@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { spaceListResponse } from '@melete/contracts';
+import { apiFetch, apiNetwork } from '../../src/api/listener.ts';
+import { LoginThrottle } from '../../src/api/login-throttle.ts';
 import { session } from '../../src/db/auth-schema.ts';
 import { pingDatabase } from '../../src/db/client.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -197,5 +199,64 @@ describeWithDb('single-owner authentication against Postgres', () => {
     const setup = await api.request('/setup', credentials());
     expect(setup.status).toBe(201);
     expect(setup.headers.get('set-cookie')).toContain('Secure');
+  });
+
+  test('runtime peers cannot claim the owner or read account state before or after setup', async () => {
+    const api = app();
+    const boundary = apiFetch(api, apiNetwork('172.20.0.3', '255.255.0.0'));
+    const probe = async () => {
+      for (const path of ['/setup', '/login', '/health']) {
+        const response = await boundary(
+          new Request(`http://melete:8787${path}`, path === '/health' ? {} : credentials()),
+          { requestIP: () => ({ address: '172.21.0.2' }) },
+        );
+        expect(response.status).toBe(403);
+        expect(await response.json()).toEqual({
+          error: { code: 'control_plane_forbidden', message: 'Forbidden.' },
+        });
+      }
+    };
+    await probe();
+    const [before] = await database().sql`select count(*)::int as count from "owner"`;
+    expect(before?.count).toBe(0);
+    expect((await api.request('/setup', credentials())).status).toBe(201);
+    await probe();
+    const [after] = await database().sql`select count(*)::int as count from "owner"`;
+    expect(after?.count).toBe(1);
+  });
+
+  test('login throttles the socket source before password checks and ignores forged source headers', async () => {
+    let now = 0;
+    const api = createApp({
+      env: loadEnv({ NODE_ENV: 'test' }),
+      db: database().db,
+      checkDatabase: async () => 'ok',
+      loginThrottle: new LoginThrottle(() => now),
+    });
+    expect((await api.request('/setup', credentials())).status).toBe(201);
+    const login = (source: string, correct = false) =>
+      api.request(
+        '/login',
+        {
+          ...credentials({ email, password: correct ? password : 'wrong-password' }),
+          headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': String(Math.random()) },
+        },
+        { remoteAddress: source },
+      );
+    const burst = await Promise.all(Array.from({ length: 5 }, () => login('172.20.0.2')));
+    expect(burst.map((response) => response.status)).toEqual([401, 401, 401, 401, 401]);
+    const denied = await login('172.20.0.2', true);
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get('retry-after')).toBe('1');
+    expect(denied.headers.get('set-cookie')).toBeNull();
+    expect((await login('172.20.0.4', true)).status).toBe(200);
+    now = 1000;
+    expect((await login('172.20.0.2')).status).toBe(401);
+    const backedOff = await login('172.20.0.2');
+    expect(backedOff.status).toBe(429);
+    expect(backedOff.headers.get('retry-after')).toBe('2');
+    now = 3000;
+    expect((await login('172.20.0.2', true)).status).toBe(200);
+    expect((await login('172.20.0.2', true)).status).toBe(200);
   });
 });
