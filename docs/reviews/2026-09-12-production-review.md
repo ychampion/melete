@@ -149,9 +149,10 @@ acceptance tests, live-provider comparisons, or a production load benchmark.
   rewritten; the durable recovery mechanism still handles them.
 - Commit ordering requires participating writers to run the updated code.
   A mixed deployment with an old broker can still bypass the guard.
-- The broker now participates in the service's existing serialization boundary.
-  This deliberately favors correctness over transaction parallelism. Connector
-  I/O remains outside it, but throughput under production load was not measured.
+- Every broker job lock acquires the same global advisory lock. This serializes
+  read-only broker operations and per-request gateway budget accounting against
+  all service transactions. Connector I/O remains outside the lock; throughput
+  under production load is unmeasured.
 - `lockJob` must receive the transaction client from `sql.begin`. Taking it on a
   pool/autocommit client would release the guard before the later write. The
   narrowed type makes that misuse visible during integration.
