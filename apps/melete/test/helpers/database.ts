@@ -72,7 +72,7 @@ async function prepareTemplate(url: string) {
   }
 }
 
-async function unusedPort(): Promise<number> {
+export async function unusedPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

@@ -6,7 +6,7 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { PgBoss } from 'pg-boss';
 import postgres from 'postgres';
 import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/db.ts';
-import { sharedTestServerUrl } from '../helpers/database.ts';
+import { sharedTestServerUrl, unusedPort } from '../helpers/database.ts';
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
 /** One disposable database per integration file; never migrate the caller's existing database. */
@@ -14,7 +14,6 @@ export async function createTestDatabase(
   databaseUrl = process.env.DATABASE_URL,
   options: { port?: number } = {},
 ) {
-  const port = options.port ?? 3122;
   let embedded: { stop(): Promise<void> } | undefined;
   let directory: string | undefined;
   const sharedUrl = databaseUrl ? undefined : await sharedTestServerUrl();
@@ -22,6 +21,8 @@ export async function createTestDatabase(
   let baseUrl = databaseUrl ?? sharedUrl;
   if (!baseUrl) {
     try {
+      // Allocate a TCP port through bind(0) before starting Postgres.
+      const port = options.port === 0 ? await unusedPort() : (options.port ?? 3122);
       const { default: EmbeddedPostgres } = await import('embedded-postgres');
       directory = await mkdtemp(join(tmpdir(), 'melete-w7-pg-'));
       const instance = new EmbeddedPostgres({

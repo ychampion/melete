@@ -268,7 +268,7 @@ export class ProcedureEvaluator {
         candidateCorrections: 0,
         scopeViolations: violations,
       });
-      const harness = await openHarness({ databasePort: 3152, providerPort: 3150 });
+      const harness = await openHarness({ databasePort: 0, providerPort: 0 });
       if (!harness) throw new Error('memory_conformance_unavailable');
       let memoryTokens = 0;
       let memoryCalls = 0;
