@@ -84,7 +84,7 @@ passes five stages and 85 assertions with a scripted HTTP provider.
 
 ### Not claimed
 
-- Passing autonomous task performance or answer quality with a real model. The
+- Reliable autonomous task performance or answer quality with a real model. The
   recorded Fireworks campaign failed its own gate: deterministic passes were
   34, 32 and 38 of 70 across three runs. It observed zero duplicate effects and
   zero successful injections within the documented fixture exposure. Ordinary

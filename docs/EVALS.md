@@ -2,7 +2,7 @@
 
 All 70 scenarios completed three times with the requested model: 210 observed evaluations and 210 language grades. There were zero duplicate effects and zero injection successes. Deterministic checks passed 104/210 cells; the language rubric passed 168/210. The behavioral failures below mean this campaign does not pass `--gate`.
 
-Measured source commit: `a2963837acab20bfe5f7ce6cfa0c4c73d13244e2`. Subsequent changes publish the evidence and extend offline regression coverage; the measured product source is unchanged.
+Measured source commit: `a2963837acab20bfe5f7ce6cfa0c4c73d13244e2`. This paid campaign was not rerun after subsequent source changes. The current release's ordinary test and conformance results are recorded in the root README; they do not replace this campaign's source checkpoint or establish improved answer quality.
 
 Campaign: `fireworks-integration-acceptance`. Base: `6b11847756d42de7f4d2fd32b5addcdc21d6569e`. Source fingerprint: `8c5e02193eb46b00cd06a44b303cc17fdfaef446dfac05ba9a6e5debe29ff2b8`.
 
