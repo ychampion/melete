@@ -1,11 +1,20 @@
 import { createHash } from 'node:crypto';
-import { memoryItem, memoryItemCreate, memoryItemEdit, unavailable } from '@melete/contracts';
+import {
+  memoryItem,
+  memoryItemCreate,
+  memoryItemEdit,
+  memoryKeyValue,
+  unavailable,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { correctClaim, getHead, listClaims, publishRevision } from '../memory/claims.ts';
-import { lockSpace, type MemoryScope } from '../memory/db.ts';
+import { resolveContradictions } from '../memory/contradictions.ts';
+import { enqueue, lockSpace, type MemoryScope } from '../memory/db.ts';
 import { persistEvidence } from '../memory/evidence.ts';
 import { forgetMemory } from '../memory/forget.ts';
+import { invalidateDependencies, notifyInvalidated } from '../memory/invalidate.ts';
+import { writeRepairBriefs } from '../memory/outputs.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { explainHandles, memoryKeyLabel } from './evidence.ts';
 import { plainText } from './projectors.ts';
@@ -69,23 +78,34 @@ export class ExperienceMemory {
     const scope = await this.scope(spaceId, ownerId);
     if (!scope) return unavailable('Your saved details are not connected yet.');
     const input = memoryItemCreate.parse(raw);
+    if (memoryKeyValue(input.key) !== 'text')
+      throw new ServiceError(
+        'extractor_owned_key',
+        'This key is maintained from source evidence. Correct its saved item instead.',
+        409,
+      );
     const statement = input.statement ?? input.value;
     const at = new Date().toISOString();
     const identity = createHash('sha256')
-      .update(`${input.key}:${statement}:${input.value}`)
+      .update(JSON.stringify([input.key, statement, input.value]))
       .digest('hex');
     const claimId = await this.sql.begin(async (tx) => {
       await lockSpace(tx, scope);
       const [current] = await tx`select c.id from memory_claims c
         join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
         where c.space_id = ${scope.spaceId} and c.key = ${input.key} and c.audience = ${scope.audience}
-        and not c.hidden and r.status in ('active', 'disputed') limit 1`;
+        and not c.hidden limit 1`;
       const head = current ? await getHead(tx, scope, String(current.id)) : null;
       // The same statement again is the same item, not a second revision.
       const [said] = await tx`select count(*)::int as n from memory_sources
         where space_id = ${scope.spaceId} and publisher = ${scope.publisher}
         and stream = 'onboarding' and source_identity = ${identity}`;
-      if (Number(said?.n ?? 0) > 0 && head && head.current.content === input.value) return head.id;
+      if (
+        Number(said?.n ?? 0) > 0 &&
+        head?.current.status === 'active' &&
+        head.current.content === input.value
+      )
+        return head.id;
       const evidence = await persistEvidence(tx, scope, {
         stream: 'onboarding',
         source_identity: identity,
@@ -121,8 +141,24 @@ export class ExperienceMemory {
       await tx`update memory_work set status = 'done' where source_id = ${evidence.source.source_id}`;
       await tx`update memory_streams set consumed_sequence = committed_sequence
         where space_id = ${scope.spaceId} and publisher = ${scope.publisher} and stream = 'onboarding'`;
+      // Replacing an answer must retire delivered context just as a correction
+      // does, including repair briefs for results that used its previous value.
+      if (head) {
+        await writeRepairBriefs(tx, scope, {
+          claimId: head.id,
+          key: head.key,
+          oldRevision: head.head_revision,
+          newRevision: revision.revision,
+          oldValue: head.current.content ?? '',
+          newValue: input.value,
+        });
+        await resolveContradictions(tx, scope, input.key);
+        await invalidateDependencies(tx, scope, [head.id], revision.data_revision);
+        await enqueue(tx, scope.spaceId, 'invalidate', `${head.id}:${revision.revision}`);
+      }
       return revision.claim_id;
     });
+    await notifyInvalidated(this.sql, scope.spaceId);
     const listed = await this.list(spaceId, ownerId);
     const item = 'items' in listed ? listed.items.find((entry) => entry.id === claimId) : undefined;
     if (!item) throw experienceMissing();

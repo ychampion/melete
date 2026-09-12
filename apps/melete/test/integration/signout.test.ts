@@ -32,6 +32,16 @@ withDb('sign-out', () => {
     if (!cookie) throw new Error('Setup omitted the session');
     expect((await app.request('/me', { headers: { cookie } })).status).toBe(200);
 
+    const login = await app.request('/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'leaving@example.test', password: 'fixture-password' }),
+    });
+    expect(login.status).toBe(200);
+    const otherCookie = login.headers.get('set-cookie')?.split(';')[0];
+    if (!otherCookie) throw new Error('Login omitted the second session');
+    expect(otherCookie).not.toBe(cookie);
+
     const signedOut = await app.request('/signout', { method: 'POST', headers: { cookie } });
     expect(signedOut.status).toBe(200);
     expect(await signedOut.json()).toEqual({ status: 'ok' });
@@ -40,7 +50,7 @@ withDb('sign-out', () => {
     expect(cleared).toMatch(/Max-Age=0|Expires=/);
 
     const sessions = await handle.sql`select count(*)::int as n from session`;
-    expect(sessions[0]?.n).toBe(0);
+    expect(sessions[0]?.n).toBe(1);
     expect((await app.request('/me', { headers: { cookie } })).status).toBe(401);
     expect((await app.request('/profile', { headers: { cookie } })).status).toBe(401);
     // Signing out again with the dead cookie is refused the same way.
@@ -49,5 +59,11 @@ withDb('sign-out', () => {
     );
     // Without any session the route is not public either.
     expect((await app.request('/signout', { method: 'POST' })).status).toBe(401);
+    expect((await app.request('/me', { headers: { cookie: otherCookie } })).status).toBe(200);
+    expect((await app.request('/profile', { headers: { cookie: otherCookie } })).status).toBe(200);
+    expect(
+      (await app.request('/signout', { method: 'POST', headers: { cookie: otherCookie } })).status,
+    ).toBe(200);
+    expect((await handle.sql`select count(*)::int as n from session`)[0]?.n).toBe(0);
   });
 });

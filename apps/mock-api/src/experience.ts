@@ -89,6 +89,7 @@ class MockExperienceError extends Error {
   constructor(
     readonly status: 400 | 401 | 404 | 409,
     message: string,
+    readonly code = 'experience_request_refused',
   ) {
     super(message);
   }
@@ -1314,6 +1315,12 @@ export class ExperienceMock {
       case 'POST /memory/items': {
         // One key, one current value: a second answer on a key replaces the first.
         const create = C.memoryItemCreate.parse(input);
+        if (C.memoryKeyValue(create.key) !== 'text')
+          throw new MockExperienceError(
+            409,
+            'This key is maintained from source evidence. Correct its saved item instead.',
+            'extractor_owned_key',
+          );
         const label = this.keyLabel(create.key);
         const existing = [...this.memories.values()].find((entry) => entry.key === label);
         const item = C.memoryItem.parse({
@@ -1555,10 +1562,7 @@ export function mountExperienceMock(
           : c.json(C.experienceResult(operation.response).parse(body));
       } catch (error) {
         if (!(error instanceof MockExperienceError)) throw error;
-        return c.json(
-          { error: { code: 'experience_request_refused', message: error.message } },
-          error.status,
-        );
+        return c.json({ error: { code: error.code, message: error.message } }, error.status);
       }
     });
   }

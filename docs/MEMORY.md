@@ -25,6 +25,28 @@ sequence. Claims have stable IDs and numbered revisions, support references,
 validity times and provenance. A correction requires the expected revision and
 an idempotency key. Current recall and historical recall are distinct.
 
+The web app's final setup step saves four owner-stated answers through
+`POST /memory/items` with `{ key, value, statement? }`. The session supplies
+the owner and space. `persistEvidence` records the statement on the `onboarding`
+stream in the same evidence journal used by corrections; `publishRevision`
+creates a protected claim with owner origin trust. No extraction is needed for
+these statements. `GET /memory/items` lists their source as `onboarding`.
+
+Stating the same key again supersedes its previous revision and leaves one
+active head. The replacement uses the correction path's invalidation and
+repair journal for outputs that used the old value. Preference answers enter
+the memory profile after its queued rebuild and are then included in attempt
+bundles. Keys maintained by deterministic event and contact extractors receive
+`409 extractor_owned_key`; the existing correction route remains available.
+The [onboarding integration tests](../apps/melete/test/integration/onboarding-memory.test.ts)
+cover four answers, replacement, provenance, session scope, refusal, repair,
+and an attempt bundle carrying an answer.
+
+Settings also offers `POST /signout`. It revokes only the session behind the
+cookie and clears that cookie; saved memory remains, and another live session
+can still read it. The [sign-out test](../apps/melete/test/integration/signout.test.ts)
+checks the old cookie is refused while the other session continues to work.
+
 | Behavior | Named test in the integration suite |
 | --- | --- |
 | Durable ingest and replay identity | `persist before acknowledgment, dedup, immutable versions, separate streams` |
@@ -88,11 +110,13 @@ scope, foreign claim IDs, and reader writes`.
 | `POST /knowledge/proposals/{id}/apply` | Revalidate and apply a proposal |
 | `DELETE /knowledge/proposals/{id}` | Discard a proposal |
 
-The route implementation is `memory/routes.ts`. The Markdown round-trip and
+The core route implementation is `memory/routes.ts`; the interface's saved
+details are served by `experience/memory.ts` and `experience/routes.ts`.
+The Markdown round-trip and
 `review mediation stages diffs and revalidates apply against authoritative
-evidence` tests supply authentication, actual IDs and revisions. A fresh default
-service does not expose this workflow automatically; that integration is
-**not claimed**. Run the fixture command below for a reproducible example.
+evidence` tests supply authentication, actual IDs and revisions. Runtime
+startup provides authenticated memory scope as described above. Run the
+fixture command below for a reproducible example.
 
 ## Dependencies, contradictions and origin
 
@@ -144,8 +168,8 @@ after rolling both database and journal back together are **not claimed**.
 An embedding application must provision authenticated memory scope, initialize
 a new journal only for new storage, and call `startMemoryService` before
 serving memory traffic. It must inject `createMemoryRouter` and the
-`withMemoryRuntime` wrapper where required. The default bootstrap does not do
-this. Evidence for the components: `startup gates serving, pg-boss derives scope
+`withMemoryRuntime` wrapper where required. The normal runtime bootstrap wires
+these components. Evidence: `startup gates serving, pg-boss derives scope
 from work, and background indexing catches up`; `runtime adapter discards
 delivered context and rejects events after an owner correction`.
 
@@ -168,5 +192,5 @@ The integration fixture uses disposable Postgres and scripted HTTP extraction.
 The standalone runner uses ten scenarios across seven executed families and a
 withheld-memory arm; procedure transfer is **written, not run**. See the
 [memory conformance README](../conformance/memory/README.md) for exact scope,
-and the documentation lane's pull request (#17) for command outcomes. Neither establishes model
+and pull request #17 for command outcomes. Neither establishes model
 reasoning quality, statistical superiority or production scale.

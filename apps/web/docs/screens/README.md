@@ -1,6 +1,6 @@
 # Screens
 
-Written by `bun run --cwd apps/web screens` against the mock serving the experience contract. Every surface is checked at 1440, 1024 and 390 px in light and dark for horizontal overflow and console errors; the committed images are 1440 light, 390 light and 1440 dark.
+Written by `bun run --cwd apps/web screens` against the mock serving the experience contract. Every surface is checked at 1440, 1024 and 390 px in light and dark for horizontal overflow and unexpected console errors; the committed images are 1440 light, 390 light and 1440 dark. Revoked profile requests are asserted to return 401 during sign-out and are counted separately in the console output. Pass `--signout-only` to recheck those cases without repeating the complete walk.
 
 - `design-sheet` — The living component sheet at #/design: every primitive in every state.
 - `sign-in` — Sign-in: the magic link; OAuth buttons only when the service says they work, and the honest reason when it does not.
@@ -25,12 +25,15 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 - `onboarding-tour` — Setup step 2: the tour, only the stages this instance can do.
 - `onboarding-connect` — Setup step 3: what Melete may look at.
 - `onboarding-agent` — Setup step 4: meet your first agent.
+- `onboarding-know-you` — Setup step 5: four answers saved as memory items, with their values returned by the service.
+- `onboarding-first-message` — The completed setup opens a conversation whose first message and welcome refer to a saved answer.
 - `phone-drawer` — The phone layout with the sidebar drawer open.
 - `phone-day` — The phone layout with the day panel sheet open.
+- `settings-signout` — Sign-in after pressing Sign out in Settings; reloading with the revoked session still shows sign-in.
 
 ## Last run
 
-| surface | viewport | overflow | console errors |
+| surface | viewport | overflow | unexpected console errors |
 |---|---|---|---|
 | design-sheet | 1440-light | no | 0 |
 | design-sheet | 1440-dark | no | 0 |
@@ -154,7 +157,21 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 | onboarding-agent | 1024-dark | no | 0 |
 | onboarding-agent | 390-light | no | 0 |
 | onboarding-agent | 390-dark | no | 0 |
+| onboarding-know-you | 1440-light | no | 0 |
+| onboarding-know-you | 1440-dark | no | 0 |
+| onboarding-know-you | 1024-light | no | 0 |
+| onboarding-know-you | 1024-dark | no | 0 |
+| onboarding-know-you | 390-light | no | 0 |
+| onboarding-know-you | 390-dark | no | 0 |
+| onboarding-first-message | 1440-light | no | 0 |
+| onboarding-first-message | 1440-dark | no | 0 |
+| onboarding-first-message | 1024-light | no | 0 |
+| onboarding-first-message | 1024-dark | no | 0 |
+| onboarding-first-message | 390-light | no | 0 |
+| onboarding-first-message | 390-dark | no | 0 |
 | phone-drawer | 390-light | no | 0 |
 | phone-drawer | 390-dark | no | 0 |
 | phone-day | 390-light | no | 0 |
 | phone-day | 390-dark | no | 0 |
+| settings-signout | 1440-light | no | 0 |
+| settings-signout | 1440-dark | no | 0 |

@@ -23,6 +23,7 @@ import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
+import { recordOutput } from '../../src/memory/outputs.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
@@ -171,6 +172,27 @@ withDb('setup answers as saved details', () => {
     const revisions =
       await sql`select count(*)::int as n from memory_revisions where claim_id = ${moved.id}`;
     expect(revisions[0]?.n).toBe(2);
+    const heads =
+      await sql`select r.status from memory_claims c join memory_revisions r on r.claim_id = c.id
+      where c.space_id = ${spaceId} and c.key = 'pref.home.city' and not c.hidden order by r.revision`;
+    expect(heads.map((row) => row.status)).toEqual(['superseded', 'active']);
+    const evidence = await sql`select s.*, b.content from memory_sources s
+      join memory_source_content b on b.source_id = s.id where s.space_id = ${spaceId} order by s.stream_sequence`;
+    expect(evidence).toHaveLength(5);
+    expect(
+      evidence.every(
+        (row) =>
+          row.owner_id === ownerId &&
+          row.publisher === 'experience' &&
+          row.stream === 'onboarding' &&
+          row.author === 'owner' &&
+          row.origin_trust === 'owner',
+      ),
+    ).toBe(true);
+    expect(evidence.map((row) => row.content)).toEqual([
+      ...answers.map((answer) => answer.statement),
+      'Where are you based? Lisbon.',
+    ]);
   });
 
   test('the first message after setup carries the answer it is about', async () => {
@@ -225,5 +247,104 @@ withDb('setup answers as saved details', () => {
       summary: 'The plan is set up.',
       evidence: [],
     });
+
+    // The same output ledger and repair journal used by corrections must see
+    // a replacement posted through the creation route too.
+    const sql = required(handle).sql;
+    const [focus] = await sql`select id, head_revision from memory_claims
+      where space_id = ${spaceId} and key = 'pref.focus.this-month' and not hidden`;
+    await recordOutput(sql, scope, {
+      job_id: chat.id,
+      attempt_id: null,
+      kind: 'plan_step',
+      output_id: 'first-plan',
+      output_version: '1',
+      location: 'Weekly focus',
+      uses: [`${focus?.id}@${focus?.head_revision}`],
+    });
+    expect(
+      (
+        await request('/memory/items', 'POST', {
+          key: 'pref.focus.this-month',
+          value: 'Family logistics',
+        })
+      ).status,
+    ).toBe(200);
+    const [output] = await sql`select stale from memory_outputs where job_id = ${chat.id}`;
+    expect(output?.stale).toBe(true);
+    const [repair] =
+      await sql`select old_value, new_value from memory_repair_briefs where job_id = ${chat.id}`;
+    expect(repair?.old_value).toBe('A launch at work');
+    expect(repair?.new_value).toBe('Family logistics');
+  });
+
+  test('extractor-owned keys and client identity are refused without writing evidence', async () => {
+    const sql = required(handle).sql;
+    const before = await sql`select count(*)::int as n from memory_sources`;
+    for (const key of [
+      'event.launch.date',
+      'event.launch.location',
+      'contact.alex.email',
+      'contact.alex.phone',
+    ]) {
+      const refused = await request('/memory/items', 'POST', { key, value: 'A stated value' });
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: { code: 'extractor_owned_key' } });
+    }
+    for (const field of [
+      'space_id',
+      'owner_id',
+      'publisher',
+      'audience',
+      'source',
+      'origin_trust',
+    ]) {
+      const refused = await request('/memory/items', 'POST', { ...answers[0], [field]: 'spoofed' });
+      expect(refused.status).toBe(400);
+    }
+    const anonymous = await required(app).request('/memory/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(answers[0]),
+    });
+    expect(anonymous.status).toBe(401);
+    expect((await sql`select count(*)::int as n from memory_sources`)[0]?.n).toBe(before[0]?.n);
+  });
+
+  test('the authenticated session selects the space and its answers stay private', async () => {
+    const db = required(handle);
+    const otherSpace = newId('sp');
+    const otherToken = randomBytes(32).toString('base64url');
+    await db.db
+      .insert(space)
+      .values({ id: otherSpace, name: 'Other personal space', gitPath: `/spaces/${otherSpace}` });
+    await provisionMemorySpace(db.sql, ownerId, otherSpace);
+    await db.sql`update memory_spaces set restore_ready = true where space_id = ${otherSpace}`;
+    await db.db.insert(session).values({
+      tokenHash: createHash('sha256').update(otherToken).digest('hex'),
+      ownerId,
+      spaceId: otherSpace,
+      expiresAt: new Date(Date.now() + 600000),
+    });
+    const headers = { Cookie: `melete_session=${otherToken}`, 'Content-Type': 'application/json' };
+    const before = await required(app).request('/memory/items', { headers });
+    expect(memoryItemList.parse(await before.json()).items).toHaveLength(0);
+    const saved = await required(app).request('/memory/items', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ key: 'pref.home.city', value: 'Tokyo' }),
+    });
+    expect(saved.status).toBe(200);
+    const item = memoryItemResponse.parse(await saved.json()).item;
+    expect(item.value).toBe('Tokyo');
+    const firstSpace = memoryItemList.parse(await (await request('/memory/items')).json());
+    expect(firstSpace.items).toHaveLength(4);
+    expect(firstSpace.items.some((entry) => entry.id === item.id || entry.value === 'Tokyo')).toBe(
+      false,
+    );
+    const otherList = memoryItemList.parse(
+      await (await required(app).request('/memory/items', { headers })).json(),
+    );
+    expect(otherList.items).toEqual([item]);
   });
 });

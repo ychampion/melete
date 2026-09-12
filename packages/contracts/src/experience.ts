@@ -271,6 +271,8 @@ export const memoryItemEdit = z.strictObject({ value: z.string().min(1).max(1600
  * owner-trusted claim on a registered key; stating the same key again replaces
  * the value, so one key has one current answer. `statement` is the sentence
  * that was said, kept as the claim's evidence; it defaults to the value.
+ * Event and contact keys belong to deterministic extractors and receive a
+ * 409 `extractor_owned_key` error; their existing items can be corrected.
  */
 export const memoryItemCreate = z.strictObject({
   key: memoryKey,
