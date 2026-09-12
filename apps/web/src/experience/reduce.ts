@@ -5,6 +5,7 @@
  * kept on the transcript: text that streamed while the connection was down
  * is gone, and the interface says so rather than stitching halves.
  */
+import type { MeleteEvent } from '@melete/client';
 import type { StreamGap } from './adapter.ts';
 import type {
   ComposerState,
@@ -13,6 +14,7 @@ import type {
   Permission,
   PermissionOption,
   Question,
+  Reaction,
   Receipt,
   ResultCard,
   TrailStep,
@@ -47,6 +49,16 @@ export type TranscriptTurn = {
   /** True while text_delta items are arriving for this turn. */
   streaming: boolean;
   delivery: Turn['delivery'];
+  /** The first identified, nonempty text event in the answer, never a card or status. */
+  messageSeq: number | null;
+};
+
+export type ReactionMessage = {
+  conversationId: string;
+  turnId: string | null;
+  author: 'person' | 'assistant';
+  text: string;
+  createdAt: string;
 };
 
 export type Transcript = {
@@ -57,6 +69,8 @@ export type Transcript = {
   status: TurnStatus;
   /** Drafts this conversation holds, keyed by id, refreshed after a send. */
   drafts: Record<string, Draft>;
+  /** Message identities retained from the two event streams, keyed by their actual seq. */
+  messages: Record<string, ReactionMessage>;
 };
 
 export const emptyTranscript = (): Transcript => ({
@@ -66,6 +80,7 @@ export const emptyTranscript = (): Transcript => ({
   composer: 'send',
   status: 'idle',
   drafts: {},
+  messages: {},
 });
 
 const fromTurn = (turn: Turn): TranscriptTurn => ({
@@ -77,6 +92,7 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   blocks: [],
   streaming: false,
   delivery: turn.delivery,
+  messageSeq: null,
 });
 
 export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnStatus): Transcript {
@@ -121,7 +137,19 @@ const hasBlock = (transcript: Transcript, id: string): boolean =>
 export function applyEvent(transcript: Transcript, event: ExperienceEvent): Transcript {
   const lastSeq = Math.max(transcript.lastSeq, event.seq);
   const item = event.item;
-  const base = { ...transcript, lastSeq };
+  let base = { ...transcript, lastSeq };
+  if (item.type === 'text_delta' && item.text.trim() && event.turn_id !== null) {
+    base = rememberMessage(base, event.seq, {
+      conversationId: event.conversation_id,
+      turnId: event.turn_id,
+      author: 'assistant',
+      text: item.text,
+      createdAt: event.created_at,
+    });
+    base = patchTurn(base, event.turn_id, (turn) =>
+      turn.messageSeq === null ? { ...turn, messageSeq: event.seq } : turn,
+    );
+  }
   if (
     (item.type === 'card' && hasBlock(base, item.card.id)) ||
     (item.type === 'receipt' && hasBlock(base, item.receipt.id)) ||
@@ -251,12 +279,18 @@ export function acceptLocalTurn(
   transcript: Transcript,
   localId: string,
   turnId: string,
+  receivedAt: string,
 ): Transcript {
   return {
     ...transcript,
     turns: transcript.turns.map((t) =>
       t.id === localId
-        ? { ...t, id: turnId, delivery: null, turn: { ...t.turn, id: turnId, delivery: null } }
+        ? {
+            ...t,
+            id: turnId,
+            delivery: null,
+            turn: { ...t.turn, id: turnId, delivery: null, created_at: receivedAt },
+          }
         : t,
     ),
   };
@@ -326,4 +360,83 @@ export function openQuestion(transcript: Transcript): Question | null {
     if (block?.type === 'question' && !block.answered) return block.question;
   }
   return null;
+}
+
+function rememberMessage(
+  transcript: Transcript,
+  seq: number,
+  message: ReactionMessage,
+): Transcript {
+  if (!Number.isSafeInteger(seq) || seq < 1) return transcript;
+  return { ...transcript, messages: { ...transcript.messages, [seq]: message } };
+}
+
+/** Keep only message identity from the job stream; internal events never become visible text. */
+export function applyMessageEvent(transcript: Transcript, event: MeleteEvent): Transcript {
+  if (!event.job_id) return transcript;
+  const payload = event.payload;
+  if (
+    (payload.kind === 'user_message' || payload.from === 'owner') &&
+    typeof payload.text === 'string' &&
+    payload.text.trim()
+  ) {
+    return rememberMessage(transcript, event.seq, {
+      conversationId: event.job_id,
+      turnId: typeof payload.turn_id === 'string' ? payload.turn_id : null,
+      author: 'person',
+      text: payload.text,
+      createdAt: event.created_at,
+    });
+  }
+  const item = payload.item;
+  if (
+    payload.kind === 'experience' &&
+    typeof payload.turn_id === 'string' &&
+    item &&
+    typeof item === 'object' &&
+    !Array.isArray(item) &&
+    item.type === 'text_delta' &&
+    typeof item.text === 'string' &&
+    item.text.trim()
+  ) {
+    const message: ReactionMessage = {
+      conversationId: event.job_id,
+      turnId: payload.turn_id,
+      author: 'assistant',
+      text: item.text,
+      createdAt: event.created_at,
+    };
+    const next = rememberMessage(transcript, event.seq, message);
+    // A projection has its own seq; an existing reaction may name the source text instead.
+    return typeof payload.source_seq === 'number'
+      ? rememberMessage(next, payload.source_seq, message)
+      : next;
+  }
+  return transcript;
+}
+
+/** Only a completed answer with an identified text event can receive a reaction. */
+export function reactionMessageSeq(turn: TranscriptTurn): number | null {
+  return ['done', 'stopped', 'failed'].includes(turn.status) && answerOf(turn).trim()
+    ? turn.messageSeq
+    : null;
+}
+
+/** Resolve the actual target record. Event ordering and matching prose alone are not identity. */
+export function turnIndexForReaction(transcript: Transcript, reaction: Reaction): number {
+  const message = transcript.messages[reaction.message_id];
+  if (!message || message.conversationId !== reaction.job_id || message.author === reaction.by)
+    return -1;
+  const matches = transcript.turns.flatMap((turn, index) => {
+    if (turn.turn.conversation_id !== message.conversationId) return [];
+    if (message.turnId !== null) return turn.id === message.turnId ? [index] : [];
+    // The service writes the accepted turn and user_message in one transaction;
+    // both carry that transaction's timestamp. Repeated or incomplete matches stay hidden.
+    return message.author === 'person' &&
+      turn.turn.text === message.text &&
+      turn.turn.created_at === message.createdAt
+      ? [index]
+      : [];
+  });
+  return matches.length === 1 ? (matches[0] ?? -1) : -1;
 }

@@ -26,13 +26,16 @@ import {
   markPermission,
   markQuestion,
   openQuestion,
+  reactionMessageSeq,
   setDrafts,
   type TranscriptTurn,
+  turnIndexForReaction,
 } from '../experience/reduce.ts';
 import type {
   ActionResolution,
   LedgerAction,
   PermissionOption,
+  Reaction,
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
@@ -156,6 +159,8 @@ function TurnView({
   onOwn,
   unknown,
   onResolve,
+  reactions = [],
+  onReact,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -169,6 +174,10 @@ function TurnView({
   /** Effects from the broker's ledger that never confirmed; drawn on the newest turn only. */
   unknown?: LedgerAction[];
   onResolve?: (actionId: string, resolution: ActionResolution) => void;
+  /** Glyphs on this turn, both bubbles. */
+  reactions?: Reaction[];
+  /** Absent when the agent's bubble cannot be reacted to. */
+  onReact?: (emoji: string) => void;
 }) {
   const { agents } = useApp();
   const { transcript } = useTranscript();
@@ -243,7 +252,7 @@ function TurnView({
   const hasBlocks = rendered.length > 0 || unconfirmed.length > 0;
   return (
     <>
-      <UserBubble turn={turn} />
+      <UserBubble turn={turn} reactions={reactions.filter((r) => r.by === 'assistant')} />
       <div className="turn">
         <div className="turn-text">
           <TurnAvatar agent={agent} status={turn.status} />
@@ -269,10 +278,12 @@ function TurnView({
             {showText ? <Trail turn={turn} now={now} /> : null}
             {rendered}
             {unconfirmed}
-            {finished ? (
+            {finished && text.trim() ? (
               <ActionBar
                 turn={turn}
                 touch={touch}
+                reactions={reactions.filter((r) => r.by === 'person')}
+                onReact={onReact}
                 onCopy={() => {
                   void navigator.clipboard?.writeText(text);
                   toast({ kind: 'ok', title: 'Copied' });
@@ -306,6 +317,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [agentId, setAgentId] = useState<string | null>(null);
   const [stuck, setStuck] = useState(true);
   const [unknown, setUnknown] = useState<LedgerAction[]>([]);
+  const [reactions, setReactions] = useState<Reaction[]>([]);
+  /** Turns whose bubble the service refused a reaction on; the control goes away. */
+  const [unreactable, setUnreactable] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
 
@@ -321,6 +335,18 @@ export function ChatScreen({ id }: { id: string | null }) {
   // Effects the connector never confirmed rest in the broker's ledger, not in
   // the conversation's events; the ledger is read whenever the turn settles.
   const settled = transcript.status;
+  // Reactions live on the job stream, which this client does not follow, so
+  // they are read when a turn settles and again after the person taps one.
+  useEffect(() => {
+    if (!conversationId || WORKING.includes(settled)) return;
+    let live = true;
+    void adapter.reactions(conversationId).then((result) => {
+      if (live && result.data) setReactions(result.data.reactions);
+    });
+    return () => {
+      live = false;
+    };
+  }, [conversationId, settled]);
   useEffect(() => {
     if (!conversationId || WORKING.includes(settled)) return;
     let live = true;
@@ -345,6 +371,22 @@ export function ChatScreen({ id }: { id: string | null }) {
   useEffect(() => {
     setUnknown([]);
   }, [conversationId]);
+
+  const react = (turn: TranscriptTurn, emoji: string) => {
+    const messageSeq = reactionMessageSeq(turn);
+    if (messageSeq === null || !conversationId) return;
+    void adapter.react(messageSeq, emoji).then((result) => {
+      if (result.data === null) {
+        // Not a message the service lets anyone react to: the control goes away.
+        setUnreactable((previous) => new Set(previous).add(turn.id));
+        return;
+      }
+      const reaction = result.data.reaction;
+      setReactions((previous) =>
+        previous.some((r) => r.seq === reaction.seq) ? previous : [...previous, reaction],
+      );
+    });
+  };
 
   const resolve = (actionId: string, resolution: ActionResolution) =>
     void adapter.resolveAction(actionId, resolution).then((result) => {
@@ -428,7 +470,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           });
           return;
         }
-        state.accepted(localId, accepted.data.turn_id);
+        state.accepted(localId, accepted.data.turn_id, accepted.data.receipt.received_at);
         refreshConversations();
       };
       if (!navigator.onLine) {
@@ -591,7 +633,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   </span>
                 </div>
               ) : null}
-              {transcript.turns.map((turn) => (
+              {transcript.turns.map((turn, index) => (
                 <TurnView
                   key={turn.id}
                   turn={turn}
@@ -605,6 +647,12 @@ export function ChatScreen({ id }: { id: string | null }) {
                   onOwn={(own) => void send(own)}
                   unknown={turn.id === lastId ? unknown : undefined}
                   onResolve={resolve}
+                  reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
+                  onReact={
+                    reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
+                      ? (emoji) => react(turn, emoji)
+                      : undefined
+                  }
                 />
               ))}
               {transcript.gaps.map((gap) => (

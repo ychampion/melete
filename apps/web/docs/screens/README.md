@@ -11,6 +11,7 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 - `chat-sent` — After the person pressed send on the draft: the sent receipt, nothing recalled.
 - `chat-unknown` — An effect the connector never confirmed: the unknown-outcome card from the broker’s ledger, nothing repeated, the person decides.
 - `chat-resolved` — After the person said it arrived: the card settled, the note in the transcript, the turn done.
+- `chat-reactions` — Reactions drawn on the bubbles they belong to: the agent’s glyph on the person’s thanks, the person’s tap on the earlier result.
 - `chat-question` — A question with keyboard answers (1–4) waiting for the person.
 - `chat-plain` — A plain answer with its one source; nothing to decide.
 - `command-palette` — The command palette (⌘K) with typed results across chats, plans, tasks, connections and actions.
@@ -77,6 +78,10 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 | chat-unknown | 390-dark | no | 0 |
 | chat-resolved | 1440-light | no | 0 |
 | chat-resolved | 1440-dark | no | 0 |
+| chat-reactions | 1440-light | no | 0 |
+| chat-reactions | 1440-dark | no | 0 |
+| chat-reactions | 390-light | no | 0 |
+| chat-reactions | 390-dark | no | 0 |
 | chat-question | 1440-light | no | 0 |
 | chat-question | 1440-dark | no | 0 |
 | chat-question | 1024-light | no | 0 |

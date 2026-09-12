@@ -81,6 +81,13 @@ carries them and the first message can be answered with one. Sign-out is
 `POST /signout` from Settings; the app returns to sign-in after the service
 confirms, and a revoked cookie also opens sign-in after a page reload.
 
+Reactions list under `GET /jobs/{id}/reactions`, where the conversation is a
+job and the target is an event seq. The interface posts a tap to an identified
+text event. The job stream supplies each person's message identity, resolved
+by an explicit turn ID or a unique match on conversation, text and transaction
+timestamp. Unknown or ambiguous targets are omitted. Card-only and receipt-only
+turns have no reaction controls; the list is read when a turn settles.
+
 Text deltas are streamed live and never stored, so a reconnect draws a gap
 marker where streamed text may be missing rather than stitching two halves
 together. Durable events replay from the last seq the client drew.

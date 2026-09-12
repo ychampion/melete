@@ -47,6 +47,12 @@ export const scenarioStep = z.discriminatedUnion('step', [
     meta: z.string().default(''),
     sources: z.array(source).default([]),
   }),
+  /** The agent answers with one glyph on the person's message instead of prose. */
+  z.object({
+    step: z.literal('react'),
+    delay_ms: z.number().int().nonnegative().default(300),
+    emoji: z.string().min(1).max(24),
+  }),
   /** One or two plain sentences the agent says to the person about the task. */
   z.object({
     step: z.literal('say'),

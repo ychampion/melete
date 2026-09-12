@@ -8,7 +8,7 @@
  * `unavailable` is the reason a capability is not connected, and a surface
  * that gets one is not drawn.
  */
-import { createMeleteClient, errorMessage, readSse } from '@melete/client';
+import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import type {
   ActionResolution,
   Agent,
@@ -33,6 +33,7 @@ import type {
   PlanCreate,
   Profile,
   Question,
+  Reaction,
   Receipt,
   ResultCard,
   Rule,
@@ -179,6 +180,21 @@ export const adapter = {
       api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
     ),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  /* ---------- reactions: a glyph on a message, either direction ---------- */
+  messageEvents: (conversationId: string, signal: AbortSignal) =>
+    subscribeEvents(client, { jobId: conversationId, signal }),
+  reactions: (conversationId: string) =>
+    guard<{ reactions: Reaction[] }>(() =>
+      api.GET('/jobs/{jobId}/reactions', { params: { path: { jobId: conversationId } } }),
+    ),
+  react: (messageSeq: number, emoji: string) =>
+    guard<{ reaction: Reaction }>(() =>
+      api.POST('/messages/{messageId}/reactions', {
+        params: { path: { messageId: String(messageSeq) } },
+        body: { emoji },
+      }),
+    ),
+
   /* ---------- the broker's ledger: effects the connector never confirmed ---------- */
   unknownActions: (jobId: string) =>
     guard<{ actions: LedgerAction[] }>(() =>
