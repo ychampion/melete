@@ -542,14 +542,17 @@ export function Popover({
   offset?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Callers pass a fresh arrow each render; the listeners must not re-bind for that.
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') close.current();
     };
     const onDown = (event: MouseEvent) => {
       const node = ref.current;
-      if (node && !node.parentElement?.contains(event.target as Node)) onClose();
+      if (node && !node.parentElement?.contains(event.target as Node)) close.current();
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onDown);
@@ -557,7 +560,7 @@ export function Popover({
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('mousedown', onDown);
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div
@@ -608,17 +611,28 @@ export function Dialog({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  /**
+   * The focus effect depends on `open` alone. Every caller passes `onClose` as
+   * a fresh inline arrow, and re-running this effect on a parent render would
+   * hand focus back to the trigger and then to the Close button, so a dialog
+   * would take one keystroke and lose the rest.
+   */
+  const close = useRef(onClose);
+  close.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     const node = ref.current;
-    const first = node?.querySelector<HTMLElement>(FOCUSABLE);
-    (first ?? node)?.focus();
+    // A field with autoFocus already holds focus; otherwise start at the first control.
+    if (!node?.contains(document.activeElement)) {
+      const first = node?.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? node)?.focus();
+    }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        close.current();
         return;
       }
       if (event.key !== 'Tab' || !node) return;
@@ -640,7 +654,7 @@ export function Dialog({
       document.removeEventListener('keydown', onKey);
       previous?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (

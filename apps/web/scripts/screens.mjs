@@ -207,6 +207,26 @@ await surface(
   `/plans/${japan?.id ?? ''}`,
 );
 await surface(
+  'plans-new',
+  'The New plan dialog after typing a full title: focus stays in the field and every keystroke lands.',
+  '/plans',
+  {
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'New plan' }).first().click();
+      const title = page.getByRole('dialog').getByLabel('Title');
+      await title.waitFor();
+      await page.keyboard.type('Learn to sail by spring', { delay: 20 });
+      const value = await title.inputValue();
+      if (value !== 'Learn to sail by spring')
+        throw new Error(`the dialog lost keystrokes: "${value}"`);
+      const focused = await title.evaluate((node) => node === document.activeElement);
+      if (!focused) throw new Error('focus left the title field');
+      await page.waitForTimeout(300);
+    },
+    only: [WIDTHS[0]],
+  },
+);
+await surface(
   'agents',
   'Agents with Nova open in the editor: look, the nine states, the face wall, templates.',
   `/agents/${nova.id}`,
