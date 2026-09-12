@@ -52,6 +52,26 @@ Append-only. Every line names a SHA, a command, a test, or a log excerpt.
 ## Final
 Branch `lane/w16b-web`. `bun run typecheck` clean, `bunx biome check .` clean, `bun run --cwd apps/web build` green, `bun test apps/mock-api` 33/33, the screen walk 128/128 at 1440, 1024 and 390 in light and dark with no horizontal overflow and no console errors. The full repo suite was not run (killed for memory, then forbidden by the orchestrator). The web app runs against this lane's `/surfaces/*` mock routes; the landed experience contract is merged and mapped, not yet wired. PR opened to `integration`.
 
+## Retarget to the experience contract
+
+- cca7bb0 The web app reads `packages/contracts/src/experience.ts` through the generated client and nothing else. `apps/web/src/experience/types.ts` is derived from the OpenAPI `paths`; `adapter.ts` maps each call to data, error, or the contract's `not_available` reason; `reduce.ts` folds the contract's events (`say`, `action`, `note`, `done`, `text_delta`, `card`, `receipt`, `permission`, `question`, `status`) into turns. Every screen, the shell, the palette, sign-in and setup use contract routes: conversations, messages with `Idempotency-Key`, pause/resume/stop, SSE events with `Last-Event-ID`, permissions with `version` and `bounds`, receipts with undo handles, drafts with explicit send, quick answers, agents and templates, memory with `why`, plans and milestones, tasks, home, automations, connections, rules, search, magic-link and profile.
+- cca7bb0 `apps/mock-api/src/surfaces.ts` deleted and unwired; `MOCK_SEED=off` starts the contract mock empty (the tests' default), otherwise it is seeded with the designed data plus one standing rule. The mock's generic opener is skipped when a scenario speaks first.
+- cca7bb0 A permission or question decided elsewhere is closed ("Decided", options disabled) once the turn's `status` leaves `needs_you`; the contract has no decision event, so the option is not guessed. Proposed as additive items in the mapping note.
+- cca7bb0 Hidden, not faked, because the contract has no shape: the browser task card and panel, reactions, chat rename/pin/delete/share, save to plan, attachments and voice, add milestone / complete plan / plan templates, connect/disconnect, automation toggle/retry/edit, agent delete and face import, the "get to know you" setup step, unknown-outcome resolve, the "Example" badge, sign-out. Each is a row in `.agents/notes/proposed/2026-09-12-w16b-experience-shapes.md` with the proposed addition.
+- cca7bb0 `bun run --cwd apps/web typecheck` clean; `bunx biome check apps/web apps/mock-api` "Checked 53 files … No fixes applied"; `bunx tsc -b` clean; `bun run --cwd apps/web build` "✓ built in 352ms", `dist/assets/index-DuhkaHFh.js 409.92 kB │ gzip: 122.60 kB`; `bun test apps/mock-api` 33 pass / 0 fail; `node apps/web/scripts/screens.mjs` against the seeded contract mock on :3210 and vite on :5180: "118 checks, 0 failed" — 23 surfaces × {1440, 1024, 390} × {light, dark} (chat-working, chat-sent and the phone surfaces at fewer widths), no horizontal overflow, no console or page errors. Screenshots refreshed in `apps/web/docs/screens/` (the browser and know-you captures removed, chat-sent added). The full repo suite was not run, per the orchestrator's instruction for this box.
+
+## Verification steps, exactly (on the contract)
+
+1. `MOCK_PORT=3210 bun run dev:mock` (seeded; `MOCK_SEED=off` for an empty instance) and `bun run --cwd apps/web dev` on :5180.
+2. `bun run --cwd apps/web screens` → one `ok`/`FAIL` line per surface × viewport × theme; writes `apps/web/docs/screens/`.
+3. `#/`, type "Find a lovely spot for dinner with Alex and Priya tonight at 7:30." → say and action steps with app-named sources, Stop in the composer; the Luna Trattoria card, the draft to Alex with "Send via Messages", then the permission card with the card as its preview: Allow once / Always allow (asks for the count cap, expiry and re-consent days) / Deny → the receipt "Added to your calendar" with Undo; Undo → "Removed again" receipt, the first marked reversed. Send the draft → the sent receipt.
+4. "Kyoto in October" → a question answered with the 1–4 keys or a typed answer; "Passport renewal" → a plain answer with its source.
+5. Settings › Rules shows the seeded rule with its limit, expiry and re-consent, and Revoke removes it; Memory edits carry the item's version and "why" comes from its own call.
+6. `#/welcome` probes the sign-in routes: the Google and Apple buttons appear only when the mock answers them, the magic link always. `#/setup` walks the four steps and ends by saving the profile, creating the agent and the morning brief.
+
+## Final, after the retarget
+Branch `lane/w16b-web` at cca7bb0. The web app runs unchanged against `apps/mock-api` serving the W16a shapes and will run against the real service on the same routes. What the contract lacks is hidden and listed as proposed additive changes. Checks: typecheck clean, biome clean, build green, `bun test apps/mock-api` 33/33, screen walk 118/118. PR #23 to `integration` carries the change.
+
 ---
 
 # Lane W16a report, merged into this branch
