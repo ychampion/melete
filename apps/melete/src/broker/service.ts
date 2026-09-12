@@ -1187,11 +1187,12 @@ export class BrokerService implements BrokerOperations {
     result: ExecutionSettlement,
   ): Promise<Action> {
     const action = await loadAction(this.sql, id);
-    // Settlement accepts late evidence. Read context without a transaction lock;
-    // recordResult re-locks the job and action before persisting the receipt.
+    // Settlement accepts late evidence. This read supplies identity and context
+    // without a transaction lock; recordResult holds the job and action locks
+    // together inside the transaction that persists the receipt.
     const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
-    if (!job) throw new BrokerFault('stale_epoch', 'Job is not available');
     if (
+      !job ||
       action.job_id !== claims.job_id ||
       job.space_id !== claims.space_id ||
       action.attempt_id !== claims.attempt_id

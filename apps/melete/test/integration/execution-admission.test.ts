@@ -26,14 +26,12 @@ async function setup(max_actions = 20) {
   const root = await mkdtemp(join(tmpdir(), 'melete-admission-'));
   const work = join(root, seed.claims.job_id);
   await Bun.write(join(work, '.keep'), '');
+  const connector = createExecConnector({ workRoot: root });
   const broker = new BrokerService({
     sql: db.sql,
-    connectors: new ConnectorRegistry().register(
-      seed.connectionId,
-      createExecConnector({ workRoot: root }),
-    ),
+    connectors: new ConnectorRegistry().register(seed.connectionId, connector),
   });
-  return { ...seed, work, broker, sql: db.sql };
+  return { ...seed, work, broker, connector, sql: db.sql };
 }
 
 for (const reason of ['stale_epoch', 'budget_exceeded']) {
@@ -82,6 +80,71 @@ for (const reason of ['stale_epoch', 'budget_exceeded']) {
     30_000,
   );
 }
+
+databaseTest(
+  'two concurrent execution settlements produce one durable result',
+  async () => {
+    const ctx = await setup();
+    const proposal = await ctx.broker.propose(ctx.claims, {
+      kind: 'exec.python',
+      connection_id: ctx.connectionId,
+      payload: { intent: { code: "print('settled')" } },
+      client_ref: 'concurrent-settlement',
+    });
+    expect(proposal.status).toBe('admitted');
+    expect((await ctx.broker.startExecution(ctx.claims, proposal.action_id)).execute).toBe(true);
+
+    let checkedCount = 0;
+    let release!: () => void;
+    const bothChecked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const execute = ctx.connector.execute;
+    ctx.connector.execute = async (action, context) => {
+      const checked = await execute(action, context);
+      // Both callers must observe a dispatched action before either can persist
+      // its result, so a sequential retry cannot accidentally satisfy the test.
+      checkedCount += 1;
+      if (checkedCount === 2) release();
+      await bothChecked;
+      return checked;
+    };
+
+    const settlements = await Promise.all(
+      [10, 20].map((duration_ms) =>
+        ctx.broker.settleExecution(ctx.claims, proposal.action_id, {
+          record: {
+            language: 'python',
+            command: "print('settled')",
+            cwd: '.',
+            exit_code: 0,
+            signal: null,
+            timed_out: false,
+            duration_ms,
+            output_digest: 'a'.repeat(64),
+            output_bytes: 8,
+            truncated: false,
+            output_path: null,
+          },
+        }),
+      ),
+    );
+    expect(checkedCount).toBe(2);
+    expect(settlements.map((action) => action.status)).toEqual(['succeeded', 'succeeded']);
+    expect(settlements[0]?.receipt).not.toBeNull();
+    expect(settlements[0]?.receipt).toEqual(settlements[1]?.receipt);
+    const events = await ctx.sql`select payload from event where job_id = ${ctx.claims.job_id}
+      and type = 'notice' and payload->>'phase' = 'receipt'
+      and payload->>'action_id' = ${proposal.action_id}`;
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload.outcome).toBe('succeeded');
+    const [budget] = await ctx.sql`select count(*)::int as count,
+      sum(reserved)::int as reserved, sum(settled)::int as settled
+      from budget_ledger where action_id = ${proposal.action_id}`;
+    expect(budget).toMatchObject({ count: 1, reserved: 1, settled: 1 });
+  },
+  30_000,
+);
 
 databaseTest(
   'admission reserves once, claims once, and accepts only its matching late result',
