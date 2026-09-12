@@ -1,3 +1,4 @@
+import type { ProcedurePromotion } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -82,6 +83,10 @@ export const procedureCandidate = pgTable(
       .references(() => episode.id, { onDelete: 'cascade' }),
     scope: jsonb('scope').$type<ProcedureScope>().notNull(),
     state: text('state').$type<ProcedureState>().notNull().default('candidate'),
+    promotion: jsonb('promotion')
+      .$type<ProcedurePromotion>()
+      .notNull()
+      .default({ scope: 'private', principal_id: null }),
     body: text('body').notNull(),
     bodyHash: text('body_hash').notNull(),
     change: jsonb('change').$type<Record<string, unknown>>().notNull(),
@@ -102,6 +107,7 @@ export const procedureCandidate = pgTable(
       'procedure_state_check',
       sql`${t.state} in ('candidate','evaluated','enabled_canary','active','superseded','reverted')`,
     ),
+    check('procedure_promotion_scope_check', sql`${t.promotion}->>'scope' in ('private', 'space')`),
   ],
 );
 export const procedureTransition = pgTable('procedure_transition', {

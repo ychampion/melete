@@ -14,6 +14,7 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { bootstrap } from '../../src/index.ts';
 import { EVALUATED_SCOPE } from '../../src/learning/evaluator.ts';
+import { selectProcedureSkills } from '../../src/learning/selection.ts';
 import { selectedContext } from '../../src/principals/context.ts';
 import { capabilityProvider } from '../fixtures/capability-provider.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -57,6 +58,22 @@ const later: RecordCase = {
   },
   expectedIds: ['y', 'w', 'z', 'x'],
 };
+const teammateExample: RecordCase = {
+  template: 'w14-teammate-renewals',
+  task: {
+    columns: ['id', 'renewal'],
+    rows: [
+      { id: 'team-a', renewal: '14/09/2032' },
+      { id: 'team-b', renewal: '02/02/2032' },
+      { id: 'team-c', renewal: '21/12/2032' },
+    ],
+    key: 'renewal',
+    type: 'date',
+    dateFormat: 'dmy',
+    direction: 'descending',
+  },
+  expectedIds: ['team-c', 'team-a', 'team-b'],
+};
 
 /** Audit mode verifies available seams; proof mode additionally requires every requested capability. */
 proof(
@@ -75,6 +92,8 @@ proof(
     };
     const gaps = evidence.missing as string[];
     let installationProbe: { status: number; body: string; jobState: string } | undefined;
+    let sharedPromotion: { candidateId: string; memberJob: string } | undefined;
+    let revokedLearningJob = '';
     const stages = evidence.stages as Record<string, unknown>;
     const failures: string[] = [];
     const provider = capabilityProvider();
@@ -447,117 +466,126 @@ proof(
         },
       );
 
-      await stage('correction, evaluation, private reuse and rollback', async () => {
-        const original = await create(
-          sharedId,
-          training.template,
-          taskObjective(training.task),
-          cookie,
-          true,
-        );
-        expect(gradeRecords(training, await run(original))).toBe(false);
-        const corrected = await json<{ episode: { id: string; correctiveJobId: string } }>(
-          await call(`/jobs/${original}/interventions`, {
-            idempotency_key: 'w14-correction',
-            kind: 'correction',
-            signal: 'typed_ordering',
-            text: `${PRIVATE}: compare dates chronologically using the declared date format; preserve columns and rows.`,
-          }),
-          201,
-        );
-        expect(gradeRecords(training, await run(corrected.episode.correctiveJobId))).toBe(true);
-        const proposal = await json<{ candidate: { id: string; body: string } }>(
-          await call(`/episodes/${corrected.episode.id}/propose`, { space_id: sharedId }),
-          201,
-        );
-        expect(proposal.candidate.body).not.toContain(PRIVATE);
-        const proposedBytes = [...provider.requests]
-          .filter(([id]) => id.startsWith('proposal:'))
-          .map(([, body]) => body);
-        expect(proposedBytes.length).toBe(1);
-        expect(JSON.stringify(proposedBytes)).not.toContain(PRIVATE);
-        const candidateId = proposal.candidate.id;
-        const evaluated = await json<{ evaluations: { passed: boolean }[] }>(
-          await call(`/procedures/${candidateId}/evaluate`, { space_id: sharedId }),
-        );
-        evidence.evaluations =
-          await handle.sql`select phase, passed, evidence, budget from procedure_evaluation where candidate_id = ${candidateId}`;
-        evidence.evaluationOutputs =
-          await handle.sql`select a.outcome, a.outcome_detail from attempt a join learning_trial t on t.job_id = a.job_id where t.candidate_id = ${candidateId} order by a.started_at`;
-        expect(evaluated.evaluations).toHaveLength(2);
-        expect(evaluated.evaluations.every((row) => row.passed)).toBe(true);
-        await json(await call(`/procedures/${candidateId}/canary`, { space_id: sharedId }));
-        const next = await create(
-          sharedId,
-          later.template,
-          taskObjective(later.task),
-          cookie,
-          true,
-        );
-        expect(gradeRecords(later, await run(next))).toBe(true);
-        const bundle = bundles.find((value) => value.attempt.job_id === next);
-        expect(bundle?.skills.map((skill) => skill.name)).toContain(`procedure:${candidateId}`);
-        expect(JSON.stringify(provider.requests.get(bundle?.attempt.id ?? ''))).not.toContain(
-          PRIVATE,
-        );
-        await json(await call(`/procedures/${candidateId}/activate`, { space_id: sharedId }));
-        const memberTask = await create(
-          sharedId,
-          'w14-member-dates',
-          taskObjective(later.task),
-          memberCookie,
-          true,
-        );
-        await run(memberTask);
-        expect(
-          bundles
-            .find((value) => value.attempt.job_id === memberTask)
-            ?.skills.map((skill) => skill.name),
-        ).not.toContain(`procedure:${candidateId}`);
-        // A qualified shared procedure is not representable by the current learning contract.
-        expect(
-          procedureScope.safeParse({ ...EVALUATED_SCOPE, audience: `space:${sharedId}` }).success,
-        ).toBe(false);
-        gaps.push(
-          'Evaluated teammate reuse: procedure scope is owner/private; no shared promotion or member delivery contract',
-        );
-        expect(
-          (
-            await call(
-              `/procedures/${candidateId}?space_id=${sharedId}`,
-              undefined,
-              'GET',
-              memberCookie,
-            )
-          ).status,
-        ).toBe(403);
-        await json(
-          await call(`/procedures/${candidateId}/rollback`, {
-            space_id: sharedId,
-            reason: 'End capability proof',
-          }),
-        );
-        const after = await create(
-          sharedId,
-          'w14-after-rollback',
-          taskObjective(later.task),
-          cookie,
-          true,
-        );
-        await run(after);
-        expect(
-          bundles
-            .find((value) => value.attempt.job_id === after)
-            ?.skills.map((skill) => skill.name),
-        ).not.toContain(`procedure:${candidateId}`);
-        return {
-          original,
-          corrective: corrected.episode.correctiveJobId,
-          candidateId,
-          reuse: next,
-          rollback: after,
-        };
-      });
+      await stage(
+        'correction, evaluation, private canary and evaluated teammate reuse',
+        async () => {
+          const original = await create(
+            sharedId,
+            training.template,
+            taskObjective(training.task),
+            cookie,
+            true,
+          );
+          expect(gradeRecords(training, await run(original))).toBe(false);
+          const corrected = await json<{ episode: { id: string; correctiveJobId: string } }>(
+            await call(`/jobs/${original}/interventions`, {
+              idempotency_key: 'w14-correction',
+              kind: 'correction',
+              signal: 'typed_ordering',
+              text: `${PRIVATE}: compare dates chronologically using the declared date format; preserve columns and rows.`,
+            }),
+            201,
+          );
+          expect(gradeRecords(training, await run(corrected.episode.correctiveJobId))).toBe(true);
+          const proposal = await json<{ candidate: { id: string; body: string } }>(
+            await call(`/episodes/${corrected.episode.id}/propose`, { space_id: sharedId }),
+            201,
+          );
+          expect(proposal.candidate.body).not.toContain(PRIVATE);
+          const proposedBytes = [...provider.requests]
+            .filter(([id]) => id.startsWith('proposal:'))
+            .map(([, body]) => body);
+          expect(proposedBytes.length).toBe(1);
+          expect(JSON.stringify(proposedBytes)).not.toContain(PRIVATE);
+          const candidateId = proposal.candidate.id;
+          const evaluated = await json<{ evaluations: { passed: boolean }[] }>(
+            await call(`/procedures/${candidateId}/evaluate`, { space_id: sharedId }),
+          );
+          evidence.evaluations =
+            await handle.sql`select phase, passed, evidence, budget from procedure_evaluation where candidate_id = ${candidateId}`;
+          evidence.evaluationOutputs =
+            await handle.sql`select a.outcome, a.outcome_detail from attempt a join learning_trial t on t.job_id = a.job_id where t.candidate_id = ${candidateId} order by a.started_at`;
+          expect(evaluated.evaluations).toHaveLength(2);
+          expect(evaluated.evaluations.every((row) => row.passed)).toBe(true);
+          await json(await call(`/procedures/${candidateId}/canary`, { space_id: sharedId }));
+          const next = await create(
+            sharedId,
+            later.template,
+            taskObjective(later.task),
+            cookie,
+            true,
+          );
+          expect(gradeRecords(later, await run(next))).toBe(true);
+          const bundle = bundles.find((value) => value.attempt.job_id === next);
+          expect(bundle?.skills.map((skill) => skill.name)).toContain(`procedure:${candidateId}`);
+          expect(JSON.stringify(provider.requests.get(bundle?.attempt.id ?? ''))).not.toContain(
+            PRIVATE,
+          );
+          const memberTask = await create(
+            sharedId,
+            'w14-member-dates',
+            taskObjective(later.task),
+            memberCookie,
+            true,
+          );
+          await run(memberTask);
+          expect(
+            bundles
+              .find((value) => value.attempt.job_id === memberTask)
+              ?.skills.map((skill) => skill.name),
+          ).not.toContain(`procedure:${candidateId}`);
+          // Applicability stays fixed; the explicit promotion grant controls delivery.
+          expect(
+            procedureScope.safeParse({ ...EVALUATED_SCOPE, audience: `space:${sharedId}` }).success,
+          ).toBe(false);
+          expect(
+            (
+              await call(
+                `/procedures/${candidateId}?space_id=${sharedId}`,
+                undefined,
+                'GET',
+                memberCookie,
+              )
+            ).status,
+          ).toBe(403);
+          const promoted = await json<{
+            candidate: { promotion: { scope: string; principal_id: string } };
+          }>(
+            await call(`/procedures/${candidateId}/activate`, {
+              space_id: sharedId,
+              scope: 'space',
+            }),
+          );
+          expect(promoted.candidate.promotion).toEqual({ scope: 'space', principal_id: ownerId });
+          const memberJob = await create(
+            sharedId,
+            teammateExample.template,
+            taskObjective(teammateExample.task),
+            memberCookie,
+            true,
+          );
+          expect(gradeRecords(teammateExample, await run(memberJob))).toBe(true);
+          const sharedBundle = bundles.find((value) => value.attempt.job_id === memberJob);
+          expect(sharedBundle?.principal_id).toBe(member.principal.id);
+          expect(
+            sharedBundle?.skills.find((skill) => skill.name === `procedure:${candidateId}`)
+              ?.space_id,
+          ).toBe(sharedId);
+          expect(JSON.stringify(sharedBundle)).not.toContain(PRIVATE);
+          expect(
+            JSON.stringify(provider.requests.get(sharedBundle?.attempt.id ?? '')),
+          ).not.toContain(PRIVATE);
+          sharedPromotion = { candidateId, memberJob };
+          return {
+            original,
+            corrective: corrected.episode.correctiveJobId,
+            candidateId,
+            reuse: next,
+            memberPrivateTask: memberTask,
+            sharedReuse: memberJob,
+          };
+        },
+      );
 
       await stage('teammate audience isolation and revocation', async () => {
         const skills = join(spaces, sharedId, 'skills');
@@ -597,7 +625,14 @@ proof(
         expect(JSON.stringify(provider.requests.get(bundle?.attempt.id ?? ''))).not.toContain(
           PRIVATE,
         );
-        const queued = await create(sharedId, 'Revoke queued', 'records', memberCookie);
+        const queued = await create(
+          sharedId,
+          'w14-revoke-queued',
+          taskObjective(teammateExample.task),
+          memberCookie,
+          true,
+        );
+        revokedLearningJob = queued;
         await json(
           await call(`/spaces/${sharedId}/memberships/${member.principal.id}`, undefined, 'DELETE'),
         );
@@ -640,6 +675,67 @@ proof(
           queued,
           selected: bundle.skills.map((skill) => skill.name),
           revoked: true,
+        };
+      });
+      await stage('evaluated shared procedure revocation and rollback', async () => {
+        if (!sharedPromotion || !service?.runner)
+          throw new Error('Missing shared promotion evidence');
+        const { candidateId, memberJob } = sharedPromotion;
+        const [active] =
+          await handle.sql`select state, promotion from procedure_candidate where id = ${candidateId}`;
+        expect(active).toMatchObject({ state: 'active', promotion: { scope: 'space' } });
+        const former = await jobs.get(memberJob);
+        let refused: unknown;
+        try {
+          await jobs.transaction((tx) =>
+            selectProcedureSkills(
+              tx,
+              former,
+              { provider: 'fake', model: 'scripted-learning-v1', fallback: null },
+              'hermes@v2026.9.7+melete-observers.2',
+            ),
+          );
+        } catch (error) {
+          refused = error;
+        }
+        expect(refused).toMatchObject({ code: 'scope_denied' });
+        const delivered = bundles.length;
+        const queued = await jobs.get(revokedLearningJob);
+        await service.runner.handleWake({
+          job_id: queued.id,
+          expected_epoch: queued.leaseEpoch,
+          expected_version: queued.stateVersion,
+          reason: 'created',
+        });
+        expect(bundles).toHaveLength(delivered);
+        expect(
+          await handle.sql`select id from action where job_id = ${revokedLearningJob}`,
+        ).toHaveLength(0);
+        await json(
+          await call(`/procedures/${candidateId}/rollback`, {
+            space_id: sharedId,
+            reason: 'End evaluated shared capability proof',
+          }),
+        );
+        const after = await create(
+          sharedId,
+          'w14-after-rollback',
+          taskObjective(later.task),
+          cookie,
+          true,
+        );
+        await run(after);
+        expect(
+          bundles
+            .find((value) => value.attempt.job_id === after)
+            ?.skills.map((skill) => skill.name),
+        ).not.toContain(`procedure:${candidateId}`);
+        return {
+          candidateId,
+          memberJob,
+          revokedLearningJob,
+          noFurtherDelivery: true,
+          rollback: after,
         };
       });
       evidence.failures = failures;

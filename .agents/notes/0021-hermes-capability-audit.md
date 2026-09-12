@@ -280,53 +280,78 @@ The [contract-additions note](proposed/2026-09-12-w14-contract-additions.md)
 records compatibility details. The current three-state matrix is in
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
 
-## Integrated proof - 2026-09-12
+## Integrated release-gate proof - 2026-09-12
 
 The findings above describe the original audit and first delivery. Integration
 `55b6a50` includes W10c, W11, W12, W15 and the W14 migration as `0027`. The
-dependency wait is over. The follow-up uses the retained local engine at the
+release-gate continuation starts at `c83c3e5`. It uses the retained engine at the
 same pin, adapter `hermes@v2026.9.7+melete-observers.2`, through `bootstrap()` and
 real HTTP with a scripted provider. No engine installation was needed.
 
-The single test `real Hermes capability chain: discovery, hooks, learning,
-teammate context and revocation` in `capability-proof.test.ts` is the strict
-proof. Its final run returned exit 1: 37 assertions, 180.60 seconds. The stages
-run independently so an MCP failure does not suppress learning or authority
-evidence. Passing a stage that detects a missing route is evidence of the gap.
+The single strict test is `real Hermes capability chain: discovery, hooks,
+learning, teammate context and revocation` in `capability-proof.test.ts`.
+Each stage records its own evidence; the test fails for any failed stage or
+missing implementation. The final strict run passes all five stages with
+85 assertions in 208.62 seconds, no failures and no missing entries. Evidence is
+`%TEMP%/melete-w14-capability-JAbcAJ/capability-evidence.json`, SHA-256
+`899c68b5b6470201ea378e0c2e70306255c499e160a9a317634dfb1aa3e7fa31`.
 
-| Capability | Status | Current evidence or missing implementation |
+| Capability | Status | Current evidence and limit |
 |---|---|---|
-| Dynamic tool discovery | implemented-but-unverified | Real search/load and catalog continuation occur; `dynamic discovery and broker receipt` fails because the action is `unknown`, its receipt is null, and MCP `tools/call` count is zero. |
-| MCP connect after session start | missing | The running-job `POST /connections` probe returns 404. Configuration is an operator file loaded at startup; the service rejects stdio launch. |
-| MCP disconnect recovery | missing | The health probe changes failing to ok when the fixture returns, but there is no MCP reconnect repair callback or exactly-once recovery proof. |
-| Connection auth refresh and reconnect | missing | The configured MCP connector has no credential-refresh/reconnect callback. Generic repair support does not connect this adapter. |
-| Lifecycle hooks | implemented-but-unverified | `hooks.test.ts` passes persistence, deduplication and replay; `test_hooks.py` passes continuation identity and failure isolation. The real trace has 18 hook events including session start/end and pre/post tool, but compaction remains unverified. |
-| Automatic skill selection | implemented-and-tested | The real `teammate audience isolation and revocation` stage selects alpha/beta/gamma, caps at three and excludes the owner's private canary from both bundle and provider requests. |
-| Correction, candidate, evaluation, promotion, rollback | implemented-and-tested | The real `correction, evaluation, private reuse and rollback` stage passes validation and sealed evaluation, owner canary reuse on a different task, activation and rollback. This is owner/private promotion. |
-| Teammate reuse of an evaluated shared skill | missing | `procedureScope` only accepts owner/private; qualified shared promotion is rejected. The real test and `learning-three-act.test.ts` prove a member requesting owner scope cannot receive the private procedure. |
-| Revocation prevents subsequent use | implemented-and-tested | The real teammate stage proves cancellation, denied reads/admission, an old capability's refusal and fresh personal context without shared skills; `principals.test.ts` additionally proves delivered-context invalidation and regrant fencing. |
+| Dynamic tool discovery | implemented-and-tested | Real search/load, catalog continuation, one MCP call and a durable receipt. Dedicated HTTP connections fix the reproduced Windows Bun pool stall during the runtime stream. |
+| MCP connect after session start | implemented-and-tested | The proof starts without a connection and installs through authenticated `POST /connections` during a running attempt. The same attempt discovers and calls the tool. |
+| MCP disconnect recovery | implemented-and-tested | An expired HTTP session causes typed W12 repair, new initialization, one call and a receipt. HTTP and stdio fixtures prove bounded reconnect; acknowledgement loss remains unknown without replay. |
+| Connection auth refresh and reconnect | implemented-and-tested | Real Hermes observes one sealed credential refresh and a receipt. Revocation stops dispatch and preserves an open question with `waiting_for_input`. Both transport fixtures cover refresh and grant loss during repair. |
+| Lifecycle hooks | implemented-but-unverified | The real discovery stage passes session start/end and pre/post tool capture with 23 events. Recorded-stream and Python checks prove deduplication, replay, failure isolation and continuation identity. Actual compaction remains unverified. |
+| Automatic skill selection | implemented-and-tested | Real member context selects alpha/beta/gamma, caps at three and excludes the private canary from the bundle and provider requests. |
+| Correction, candidate, evaluation, promotion, rollback | implemented-and-tested | Real correction, bounded candidate generation, validation and sealed evaluation, private owner canary, activation and rollback. Both evaluation phases require held-out improvement without regression. |
+| Teammate reuse of an evaluated shared skill | implemented-and-tested | A explicitly activates space delivery; B's different record task receives only the evaluated compiled procedure. Private delivery denies B before sharing. Public and other-space denial are also checked in `shared-procedure.test.ts`. |
+| Revocation prevents subsequent use | implemented-and-tested | Revoking B cancels queued evaluated reuse, refuses selection and old capabilities, and dispatches no action. General shared-context tests additionally cover delivered-context invalidation and regrant fencing. |
 
-The fixes restore the service's catalog-continuation and proposal-provider
-callbacks, retain the actual memory reader, preserve checked skill/procedure
-selection during catalog enrichment, verify private procedure ownership, and
-prepare the hash-checked observer bridge in process mode. Continuations retain
-the attempt identity with separate capture namespaces. The original runtime
-pin is unchanged; the observer adapter version advances because its captured
-evidence behavior changed. The bounded test provider parses only received HTTP
-prompts; it does not read a bundle, expected output or database state.
+### MCP ownership and uncertain outcomes
 
-Both evaluation phases record `held_out_improvement_without_regression`. Each
-phase runs three paired baseline/candidate record tasks through real Hermes,
-plus scope and memory checks. The record-task baseline scores 1/3 and the
-candidate scores 3/3 in each phase; all six evidence rows per phase pass the
-promotion gate. Private correction text is absent from the proposal request,
-candidate and later authorized bundle. These tests prove wiring with a fake
-provider, not learning quality across real models.
+The operator route persists HTTP configuration, setup state and sealed
+credentials, opens a worker and publishes its verified catalog after activation.
+Service-issued principal-bound attempts can opt into signed
+`live_connection_scopes`; explicitly restricted and legacy tokens retain fixed
+scopes. Operator grants remain bounded by the existing principal, membership,
+space, epoch, compartment and agent restrictions. Search and loaded schemas
+cannot authorize a dispatch. Approval, intent keys, trust origin and declared
+effect classes remain broker-owned.
 
-The final evidence is `%TEMP%/melete-w14-capability-1xOgEE/capability-evidence.json`,
-SHA-256 `a6b943ddc80986b94661637e43a89092e28965baa17c51c8baaef63dcc96b40d`.
-The MCP job entered `needs_reconciliation`; no successful effect is claimed.
-The two permitted discovery integration fix cycles are exhausted. Missing
-installation, reconnect and shared evaluated promotion are not replaced with
-fixture behavior. The final command ledger and full-suite result are in
-[REPORT.md](../../REPORT.md).
+Repair classifies only proved pre-dispatch failures, session termination and
+explicit authentication refusal as retryable typed faults. Reconnect checks the
+pinned catalog. W12 bounds attempts; refresh occurs once against the sealed,
+operator-configured token endpoint and publishes a new sealed reference only if
+the original grant remains current. A dropped acknowledgement is never replayed.
+Revocation leaves an open question even if Hermes claims completion. Production
+stdio launch remains disabled pending OS isolation; stdio repair is tested with
+explicit fixtures.
+
+### Evaluated sharing and private context
+
+`POST /procedures/:id/activate` adds `scope: private | space`, default private.
+The additive promotion record captures that choice and the authenticated
+principal. The existing evaluated applicability object does not grant access.
+Canary delivery stays private; space activation requires the origin shared-space
+owner, validation and sealed evidence, and a completed private canary.
+
+Selection checks current membership under the same authority lock used by
+revocation, matching space, task applicability, model, runtime, body hash and
+live evaluation evidence. Members receive only the verified compiled procedure
+body. Episodes, corrections, evaluation records and job timelines remain private
+to their principal. Revocation cancels queued reuse and fences previously
+issued capabilities; rollback removes subsequent selection.
+
+Both evaluation phases use three paired record tasks through real Hermes plus
+scope and memory checks. The record baseline scores 1/3 and the candidate 3/3;
+all evidence rows pass the promotion gate. The bounded provider derives output
+from actual HTTP prompts and sees neither expected answers nor database state.
+Private correction text is absent from the proposal, later member bundle and
+provider requests. This establishes integration behavior with a fake provider,
+not learning quality across real models.
+
+The final evidence path, checksum, focused checks and single locked full-suite
+result are in [REPORT.md](../../REPORT.md). Earlier red evidence in that
+append-only report describes superseded runs. The current capability matrix is
+[docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).

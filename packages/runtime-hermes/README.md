@@ -205,10 +205,10 @@ proof is `MELETE_CAPABILITY_PROOF=1 bun test apps/melete/test/integration/capabi
 It uses the service's process supervisor, which prepares the same hash-checked
 observer bridge as the image before starting its first engine. Continuation
 captures retain the original attempt identity and use separate capture IDs.
-The proof records real lifecycle hooks and passes private learning, selected
-teammate context and revocation stages. Its MCP receipt stage remains red;
-mid-session installation, MCP reconnect and evaluated shared promotion remain
-missing. Real compaction is unverified. See the current
+The proof records real lifecycle hooks and exercises runtime MCP installation,
+search/load, receipts, bounded reconnect, sealed credential refresh, private
+learning, evaluated teammate reuse and revocation. A lost acknowledgement stays
+unknown without replay. Real compaction is unverified. See the current
 [capability matrix](../../docs/CAPABILITIES.md) and [report](../../REPORT.md).
 
 ## Per-attempt launch

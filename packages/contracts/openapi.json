@@ -527,7 +527,7 @@
         "tags": [
           "learning"
         ],
-        "summary": "Activate after a completed canary job",
+        "summary": "Activate after a private canary with explicit private or shared-space delivery",
         "parameters": [
           {
             "in": "path",
@@ -544,7 +544,24 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/__schema5"
+                "type": "object",
+                "properties": {
+                  "space_id": {
+                    "$ref": "#/components/schemas/__schema6"
+                  },
+                  "scope": {
+                    "default": "private",
+                    "type": "string",
+                    "enum": [
+                      "private",
+                      "space"
+                    ]
+                  }
+                },
+                "required": [
+                  "space_id"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -11400,6 +11417,40 @@
           "scope": {
             "$ref": "#/components/schemas/__schema73"
           },
+          "promotion": {
+            "default": {
+              "scope": "private",
+              "principal_id": null
+            },
+            "type": "object",
+            "properties": {
+              "scope": {
+                "default": "private",
+                "type": "string",
+                "enum": [
+                  "private",
+                  "space"
+                ]
+              },
+              "principal_id": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^own_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "scope",
+              "principal_id"
+            ],
+            "additionalProperties": false
+          },
           "state": {
             "$ref": "#/components/schemas/__schema80"
           },
@@ -11462,6 +11513,7 @@
           "spaceId",
           "episodeId",
           "scope",
+          "promotion",
           "state",
           "body",
           "bodyHash",

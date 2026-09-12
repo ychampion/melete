@@ -53,6 +53,7 @@ import {
   learningScopeResponse,
   learningSpaceQuery,
   learningSpaceRequest,
+  procedureActivationRequest,
   procedureInspection,
   procedureListResponse,
   procedureReasonRequest,
@@ -258,9 +259,10 @@ export function buildOpenApiDocument() {
         '/procedures/{id}/activate': {
           post: {
             tags: ['learning'],
-            summary: 'Activate after a completed canary job',
+            summary:
+              'Activate after a private canary with explicit private or shared-space delivery',
             requestParams: idParam('id', 'Procedure id'),
-            requestBody: json(learningSpaceRequest),
+            requestBody: json(procedureActivationRequest),
             responses: { '200': jsonResponse('Active procedure', procedureResponse) },
           },
         },

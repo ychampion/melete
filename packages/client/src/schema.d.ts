@@ -5637,7 +5637,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Activate after a completed canary job */
+        /** Activate after a private canary with explicit private or shared-space delivery */
         post: {
             parameters: {
                 query?: never;
@@ -5650,7 +5650,14 @@ export interface paths {
             };
             requestBody?: {
                 content: {
-                    "application/json": components["schemas"]["__schema5"];
+                    "application/json": {
+                        /**
+                         * @default private
+                         * @enum {string}
+                         */
+                        scope?: "private" | "space";
+                        space_id: components["schemas"]["__schema6"];
+                    };
                 };
             };
             responses: {
@@ -7423,6 +7430,21 @@ export interface components {
             id: components["schemas"]["__schema79"];
             knownRisk: string;
             predictedBenefit: string;
+            /**
+             * @default {
+             *       "scope": "private",
+             *       "principal_id": null
+             *     }
+             */
+            promotion: {
+                /** @default null */
+                principal_id: string | null;
+                /**
+                 * @default private
+                 * @enum {string}
+                 */
+                scope: "private" | "space";
+            };
             rejectionReason: string | null;
             scope: components["schemas"]["__schema73"];
             selectedEvaluationId: string | null;

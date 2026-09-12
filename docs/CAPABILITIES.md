@@ -20,22 +20,22 @@ connected to Melete's authority and tested.
 | Connection auth refresh and reconnect | implemented-and-tested | The real Hermes proof refreshes an expired credential once through the sealed store and receives one action receipt. Revocation makes no call, leaves an open question and commits waiting for input. HTTP and stdio fixtures also cover revocation during refresh, token rotation and bounded repeated expiry. |
 | Lifecycle hooks persisted with dedup and replay | implemented-but-unverified | `adapter capture persists in order, deduplicates delivery and replays from the stored cursor` passes in `hooks.test.ts`; Python tests prove observer failure isolation and continuation identity. The real proof records session start/end and pre/post tool events, including distinct continuation capture IDs. Real compaction remains unverified. |
 | Automatic skill selection in a job | implemented-and-tested | The real capability test's `teammate audience isolation and revocation` stage selects exactly `alpha`, `beta`, `gamma` despite a matching private skill. Actual provider requests exclude the private canary. `principals.test.ts` also tests membership and audience filtering. |
-| Correction → candidate → evaluation → promotion → rollback | implemented-and-tested | The real capability test's `correction, evaluation, private reuse and rollback` stage passes: correction, bounded proposal, validation and sealed evaluation, owner canary reuse on a different task, activation and rollback. Promotion is owner/private only; the fake provider reasons from the actual HTTP prompt. |
-| Teammate reuse of an evaluated shared skill | missing | `procedureScope` accepts only `role: owner`, `audience: private`; qualified shared promotion is rejected. Tests prove a member cannot obtain that private procedure by requesting an owner scope. Published shared Markdown skills are a separate tested path. |
+| Correction → candidate → evaluation → promotion → rollback | implemented-and-tested | The real capability test performs correction, bounded proposal, validation and sealed evaluation, private owner canary reuse, explicit activation and rollback. Both evaluation phases require held-out improvement without regression; the fake provider reasons from the actual HTTP prompt. |
+| Teammate reuse of an evaluated shared skill | implemented-and-tested | `correction, evaluation, private canary and evaluated teammate reuse` proves A's evaluated procedure reaches B's materially different task only after explicit space promotion. `shared-procedure.test.ts` proves private defaults, principal-bound source access, compiled-body-only delivery, other-space/public refusal, and no delivery or dispatch after revoking B. |
 | Revocation prevents subsequent shared-space use | implemented-and-tested | The real capability test proves queued work cancellation, refused reads and admission, an old capability's refusal, and personal context without shared skills. `principals.test.ts` additionally covers delivered-context invalidation, gateway fencing and stale capabilities after regrant. |
 
 ## Components with narrower evidence
 
 | Component | Status | Exact evidence and limit |
 |---|---|---|
-| Broker plugin registration and forwarding | implemented-and-tested | `test_registers_one_tool_per_catalog_entry`, `test_a_dispatched_call_returns_the_receipt`, `test_a_broker_refusal_keeps_the_brokers_own_code` in `packages/runtime-hermes/tests/test_plugin.py`, using a test broker. The integrated plugin fixes the earlier dictionary-result incompatibility; the current MCP receipt failure is recorded separately. |
+| Broker plugin registration and forwarding | implemented-and-tested | `test_registers_one_tool_per_catalog_entry`, `test_a_dispatched_call_returns_the_receipt`, `test_a_broker_refusal_keeps_the_brokers_own_code` in `packages/runtime-hermes/tests/test_plugin.py`, using a test broker. The real capability proof also confirms the MCP receipt in the ledger and subsequent provider request. |
 | Approval results tell the runtime to park | implemented-and-tested | `test_a_parked_action_tells_the_model_to_stop` and `test_an_unknown_dispatch_is_never_presented_as_either_outcome` in the Python plugin suite. |
 | Deterministic bounded skill selection | implemented-and-tested | `at most three load, however many match`, `the same inputs always give the same bundle`, and `load alongside the built-ins` in `packages/skills/src/skills.test.ts`, plus the actual job-bundle integration test above. |
 | Audience-qualified skills | implemented-and-tested | `preserves a qualified audience and refuses a different container` in `packages/contracts/src/principals.test.ts`; the integration test excludes private and incorrectly qualified files. |
 | Existing account upgrade | implemented-and-tested | `additive migration preserves the setup guard, login and an issued personal-space capability` applies the old migrations, seeds real account/session/work rows, upgrades, and verifies login and both attempt fences. |
 | Adapter sequencing and prompt assembly | implemented-and-tested | `every event carries the one dedup key format` and `the instructions are identity, then skills, then knowledge` in the runtime adapter/client suites. Uses recorded HTTP responses. |
-| Real local Hermes hook run | implemented-but-unverified | The current real capability test records 18 hook events across the initial run and continuation. Its broker receipt assertion fails before its hook assertions; this is observed evidence, not a green combined test. Compaction and a complete successful MCP lifecycle remain unverified. |
-| Whole end-to-end capability proof | implemented-but-unverified | `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` exists as one opt-in integration test. The final strict run fails with 37 assertions in 180.60 seconds; independent learning and revocation stages pass, while MCP receipt proof fails and the missing capabilities above remain explicit. |
+| Real local Hermes hook run | implemented-and-tested | The real capability test passes its session start/end and pre/post tool assertions and records 23 lifecycle events across discovery and continuation with a successful MCP receipt. Actual compaction remains outside this executed scenario. |
+| Whole end-to-end capability proof | implemented-and-tested | `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` passes through the real pinned HTTP engine: 85 assertions, 208.62 seconds, all five stages passed, no missing entries. Evidence `melete-w14-capability-JAbcAJ` includes the actual provider requests. |
 
 ## Authority and observer behavior
 
@@ -104,14 +104,25 @@ container and audience. Derived memory Markdown is excluded: its authoritative
 recall path supplies the current claim revision. The service preserves the
 actual reader principal and membership generation in memory scopes. Catalog
 enrichment preserves the already authorized selection and evaluated procedures;
-it can remove skills whose tools are unavailable. Evaluated procedures currently
-remain private to the space owner. An invitation UI is outside v0.1.
+it can remove skills whose tools are unavailable. An invitation UI is outside v0.1.
+
+Evaluated procedure activation accepts `scope: private | space`, defaulting to
+`private`. Its promotion record also stores the authenticated principal; callers
+cannot nominate another principal. Canary delivery stays private. Explicit
+space activation requires the source space's owner, a shared space, the sealed
+evaluation gate and a completed private canary. Task applicability remains a
+separate evaluated object and grants no access by itself. A current member can
+receive only the verified compiled procedure body for a matching task, model and
+runtime in that space. Episodes, corrections, evaluations and job timelines stay
+private. Selection rechecks membership under the existing revocation lock;
+revocation cancels queued reuse and fences already delivered context. Rollback
+removes subsequent procedure delivery.
 
 ## Verification
 
 ```sh
-bun test apps/melete/test/integration/principals.test.ts packages/contracts/src/principals.test.ts --max-concurrency=2
-bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=2
+bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/shared-procedure.test.ts packages/contracts/src/principals.test.ts --max-concurrency=1
+bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=1
 bun run test:plugin
 bun run lint
 bun run typecheck
@@ -144,14 +155,10 @@ trap 'rm C:/Users/gamin/.melete-test.lock/w14-owner; rmdir C:/Users/gamin/.melet
 bun test --max-concurrency=1 --timeout=30000
 ```
 
-The append-only [REPORT.md](../REPORT.md) records the current strict result,
-focused checks and the final single full-suite run. The earlier 376-test budget
-stop and dictionary-result failure are historical, before integration `55b6a50`.
-The current single locked full suite stopped at 180 seconds after 990 passing
-tests, one context-test timeout and 26 skips. All five context tests pass after
-replacing the database async rejection matchers, but the full suite was not
-repeated and remains incomplete. The focused integration/runtime set has 77
-passes and one platform skip; the plugin suite has 61 passes.
+The append-only [REPORT.md](../REPORT.md) records the passing strict proof,
+focused checks and final single full-suite run. The earlier dictionary-result,
+MCP receipt and context-matcher failures are historical. The final release-gate
+full-suite result is recorded after the single locked invocation completes.
 Skipping opt-in real-runtime checks during ordinary tests is not end-to-end proof.
 Tests use disposable PostgreSQL 17 and pg-boss when `DATABASE_URL` is
 unset. A skipped database test is not a pass. Docker isolation remains unverified
