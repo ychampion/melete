@@ -18,6 +18,7 @@ import {
 import { eq } from 'drizzle-orm';
 import { BudgetService } from '../../src/broker/budget.ts';
 import { session } from '../../src/db/auth-schema.ts';
+import { openDatabase } from '../../src/db/client.ts';
 import {
   action,
   agent,
@@ -620,6 +621,46 @@ withDb('experience rows and authenticated scope', () => {
     expect(view.conversation.status).toBe('needs_you');
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
     expect(page.events.some((event) => event.item.type === 'done')).toBe(false);
+  });
+  test('space event sync skips locked idle conversations and explicit sync retains history', async () => {
+    const idle = await createConversation();
+    const recent = await createConversation();
+    const fixture = required(handle);
+    await fixture.sql`update job set updated_at = now() - interval '2 days' where id = ${idle.id}`;
+    for (const chat of [idle, recent])
+      await fixture.db.insert(event).values({
+        jobId: chat.id,
+        type: 'notice',
+        payload: {
+          kind: 'experience_say',
+          text: chat.id === idle.id ? 'Saved history.' : 'Working now.',
+        },
+        dedupKey: `${chat.id}:fixture-say`,
+        createdAt: new Date(Date.now() - (chat.id === idle.id ? 2 * 86400000 : 0)),
+      });
+    const reader = openDatabase(fixture.url, 1);
+    try {
+      await reader.sql`set lock_timeout = '250ms'`;
+      const projection = new ExperienceEvents(reader.db);
+      await fixture.sql.begin(async (tx) => {
+        await tx`select id from job where id = ${idle.id} for update`;
+        const page = await projection.page(spaceId, 0);
+        expect(
+          page.events.some(
+            (item) => item.conversation_id === recent.id && item.item.type === 'say',
+          ),
+        ).toBe(true);
+        expect(page.events.some((item) => item.conversation_id === idle.id)).toBe(false);
+      });
+      const history = await projection.page(spaceId, 0, idle.id);
+      expect(
+        history.events.some(
+          (item) => item.item.type === 'say' && item.item.text === 'Saved history.',
+        ),
+      ).toBe(true);
+    } finally {
+      await reader.close();
+    }
   });
   test('real ledger rows yield one grouped trail action and stable resumable safe events', async () => {
     const chat = await createConversation();

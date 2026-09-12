@@ -32,11 +32,17 @@ export class ExperienceEvents {
   ) {}
 
   async sync(spaceId: string, jobId?: string): Promise<void> {
+    // Space-wide polling only revisits recent conversations; explicit requests can replay old history.
+    const recentSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const ids = await this.db
       .select({ id: job.id })
       .from(job)
       .where(
-        and(eq(job.spaceId, spaceId), eq(job.kind, 'chat'), jobId ? eq(job.id, jobId) : undefined),
+        and(
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'chat'),
+          jobId ? eq(job.id, jobId) : gt(job.updatedAt, recentSince),
+        ),
       );
     for (const { id } of ids)
       await this.db.transaction(async (tx) => {
