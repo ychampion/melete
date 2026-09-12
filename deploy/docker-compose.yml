@@ -111,14 +111,24 @@ services:
       retries: 30
     stop_grace_period: 40s
 
-  runtime:
+  # Builds the runtime image before the service can launch an attempt from it.
+  # Nothing runs here: no engine, no credential, no network.
+  runtime-image:
     image: melete-runtime:local
     build:
       context: ../packages/runtime-hermes
       dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    network_mode: none
+    restart: "no"
+
+  runtime:
+    image: melete-runtime:local
     restart: unless-stopped
     networks: [internal]
     depends_on:
+      runtime-image:
+        condition: service_completed_successfully
       melete:
         condition: service_healthy
     environment:
