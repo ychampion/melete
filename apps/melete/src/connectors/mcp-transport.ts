@@ -3,6 +3,7 @@ import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { type JsonObject, jsonObject } from '@melete/contracts';
+import { ConnectorFaultError } from './faults.ts';
 
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
@@ -17,6 +18,19 @@ export interface McpTransport {
   notify(method: string): Promise<void>;
   close(): Promise<void>;
 }
+
+export type McpTransportOptions = {
+  timeoutMs?: number;
+  maxMessageBytes?: number;
+  /** Only the trusted credential store supplies this value. */
+  accessToken?: () => Promise<string | undefined>;
+};
+
+const disconnected = () =>
+  new ConnectorFaultError({
+    kind: 'transient_before_dispatch',
+    detail: 'MCP transport is unavailable before dispatch',
+  });
 
 type RpcMessage = JsonObject & { jsonrpc: '2.0' };
 
@@ -85,17 +99,21 @@ async function removeWorkerDirectory(directory: string): Promise<void> {
 /** Local subprocess seam; production must additionally supply OS-level worker isolation. */
 export async function openStdioMcpTransport(
   endpoint: Extract<McpEndpoint, { transport: 'stdio' }>,
-  options: { timeoutMs?: number; maxMessageBytes?: number } = {},
+  options: McpTransportOptions = {},
 ): Promise<McpTransport> {
   if (process.env.NODE_ENV !== 'test') {
     throw new Error('MCP stdio requires an isolated OS launcher; only test fixtures may spawn');
   }
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
+  const token = await options.accessToken?.();
   const directory = await mkdtemp(join(await realpath(tmpdir()), TEMP_PREFIX));
   const child = spawn(endpoint.command, endpoint.args, {
     cwd: directory,
-    env: filteredMcpEnvironment(process.env, directory),
+    env: {
+      ...filteredMcpEnvironment(process.env, directory),
+      ...(token ? { MELETE_MCP_ACCESS_TOKEN: token } : {}),
+    },
     shell: false,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'ignore'],
@@ -160,7 +178,7 @@ export async function openStdioMcpTransport(
   });
   return {
     request(method, params, signal) {
-      if (closed || failure) return Promise.reject(failure ?? new Error('MCP transport closed'));
+      if (closed || failure) return Promise.reject(disconnected());
       if (signal?.aborted) return Promise.reject(new Error('MCP request cancelled'));
       if (pending.size >= 16) return Promise.reject(new Error('MCP request concurrency exceeded'));
       const id = ++counter;
@@ -211,7 +229,7 @@ export async function openStdioMcpTransport(
 /** HTTP transport uses only the configured endpoint; redirects and client capabilities are refused. */
 export function openHttpMcpTransport(
   endpoint: Extract<McpEndpoint, { transport: 'http' }>,
-  options: { timeoutMs?: number; maxMessageBytes?: number } = {},
+  options: McpTransportOptions = {},
 ): McpTransport {
   const maxBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
   let session: string | undefined;
@@ -220,7 +238,7 @@ export function openHttpMcpTransport(
   const controllers = new Set<AbortController>();
 
   async function post(message: JsonObject, signal?: AbortSignal): Promise<unknown> {
-    if (closed) throw new Error('MCP transport closed');
+    if (closed) throw disconnected();
     const controller = new AbortController();
     controllers.add(controller);
     const abort = () => controller.abort();
@@ -231,6 +249,7 @@ export function openHttpMcpTransport(
     try {
       const body = JSON.stringify(message);
       if (Buffer.byteLength(body) > maxBytes) throw new Error('MCP request limit exceeded');
+      const token = await options.accessToken?.();
       const response = await fetch(endpoint.url, {
         method: 'POST',
         redirect: 'error',
@@ -244,10 +263,22 @@ export function openHttpMcpTransport(
           Accept: 'application/json, text/event-stream',
           'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
           ...(session ? { 'MCP-Session-Id': session } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body,
       });
-      if (!response.ok) throw new Error(`MCP HTTP status ${response.status}`);
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        // MCP session termination and HTTP authentication reject before tool execution.
+        if (response.status === 404 && session) throw disconnected();
+        if (response.status === 401 || response.status === 403)
+          throw new ConnectorFaultError({
+            kind: response.status === 401 ? 'expired_credential' : 'revoked_credential',
+            detail:
+              response.status === 401 ? 'MCP credential expired' : 'MCP credential was revoked',
+          });
+        throw new Error(`MCP HTTP status ${response.status}`);
+      }
       if (!('id' in message) || !('method' in message)) {
         if (response.status !== 202) throw new Error('MCP notification was not acknowledged');
         return undefined;
@@ -301,6 +332,17 @@ export function openHttpMcpTransport(
         }
         if (chunk.done) throw new Error('MCP stream ended without an acknowledgement');
       }
+    } catch (error) {
+      // These network codes prove no destination connection existed. Resets and
+      // timeouts do not prove that, so they retain the unknown outcome.
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(String(error.code))
+      )
+        throw disconnected();
+      throw error;
     } finally {
       await reader?.cancel().catch(() => {});
       clearTimeout(timer);
@@ -321,6 +363,7 @@ export function openHttpMcpTransport(
       for (const controller of controllers) controller.abort();
       if (session) {
         // Session disposal has no tool effect and is never used to replay a call.
+        const token = await options.accessToken?.().catch(() => undefined);
         const response = await fetch(endpoint.url, {
           method: 'DELETE',
           redirect: 'error',
@@ -328,6 +371,7 @@ export function openHttpMcpTransport(
           headers: {
             'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
             'MCP-Session-Id': session,
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
         }).catch(() => undefined);
         await response?.body?.cancel().catch(() => {});

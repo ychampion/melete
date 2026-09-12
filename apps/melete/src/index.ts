@@ -165,7 +165,12 @@ export function createApp(deps: AppDeps) {
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   if (deps.db && deps.sql && deps.registry)
-    mountConnections(app, { db: deps.db, sql: deps.sql, registry: deps.registry });
+    mountConnections(app, {
+      db: deps.db,
+      sql: deps.sql,
+      registry: deps.registry,
+      masterKey: deps.env.MELETE_MASTER_KEY,
+    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =

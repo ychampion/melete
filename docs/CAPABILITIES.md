@@ -16,8 +16,8 @@ connected to Melete's authority and tested.
 |---|---|---|
 | Dynamic tool discovery through `search_tools` / `load_tool` | implemented-and-tested | The real capability test's `dynamic discovery and broker receipt` stage passes search, load, continuation, one MCP call and a durable receipt. MCP HTTP exchanges use dedicated connections to avoid the pinned Windows Bun pool stalling a request while Hermes streams. |
 | MCP connect after session start | implemented-and-tested | The real proof starts without an MCP connection, installs one through authenticated `POST /connections` during the first provider request, then searches, loads and calls it in the same attempt. `runtime-mcp.test.ts` covers setup states, persisted restart configuration and authority boundaries. Service-side stdio launch remains disabled. |
-| MCP disconnect recovery | missing | The MCP adapter has no repair callback that reconnects the session and resolves an uncertain action. The capability test observes health failing and recovering, which does not prove job recovery or exactly one effect. |
-| Connection auth refresh and reconnect | missing | Generic connection repair exists, but the configured MCP adapter has no credential-refresh or reconnect callback. |
+| MCP disconnect recovery | implemented-and-tested | The real Hermes proof terminates an HTTP session, then observes W12 reconnect, a fresh initialization, one call and a durable receipt. HTTP and stdio integration fixtures exercise the callback; repeated termination stops after three attempts. A lost acknowledgement stays unknown without replay. |
+| Connection auth refresh and reconnect | implemented-and-tested | The real Hermes proof refreshes an expired credential once through the sealed store and receives one action receipt. Revocation makes no call, leaves an open question and commits waiting for input. HTTP and stdio fixtures also cover revocation during refresh, token rotation and bounded repeated expiry. |
 | Lifecycle hooks persisted with dedup and replay | implemented-but-unverified | `adapter capture persists in order, deduplicates delivery and replays from the stored cursor` passes in `hooks.test.ts`; Python tests prove observer failure isolation and continuation identity. The real proof records session start/end and pre/post tool events, including distinct continuation capture IDs. Real compaction remains unverified. |
 | Automatic skill selection in a job | implemented-and-tested | The real capability test's `teammate audience isolation and revocation` stage selects exactly `alpha`, `beta`, `gamma` despite a matching private skill. Actual provider requests exclude the private canary. `principals.test.ts` also tests membership and audience filtering. |
 | Correction → candidate → evaluation → promotion → rollback | implemented-and-tested | The real capability test's `correction, evaluation, private reuse and rollback` stage passes: correction, bounded proposal, validation and sealed evaluation, owner canary reuse on a different task, activation and rollback. Promotion is owner/private only; the fake provider reasons from the actual HTTP prompt. |
@@ -46,6 +46,22 @@ names its raw server name, alias, required scopes and effect class. Installation
 persists its configuration and exposes `connecting`, `connected`, or `error`;
 the live registry publishes tools only after the connection becomes active.
 The existing owner audience boundary still applies.
+
+An MCP installation may supply `credentials` with `access_token`, optional
+`expires_at`, and a paired `refresh_token` / `token_url`; optional client
+credentials remain in the same sealed record. Credential endpoints require
+TLS, with loopback allowed for local fixtures. Refresh follows only the
+operator-configured token endpoint, refuses redirects, rotates the sealed
+reference only while the same grant is current, and never changes scopes.
+Credentials are absent from connection responses, runtime bundles and hooks.
+
+MCP repair distinguishes proved pre-dispatch failure from uncertain execution.
+A terminated session or refused connection can reconnect under W12's bounded
+retry policy; an acknowledgement lost after dispatch cannot. Reconnection
+checks the catalog against its pinned schemas and operator policy. Expiry can
+refresh once; revocation leaves the operator's question open even if the
+runtime claims completion. Stdio exercises these callbacks only in fixtures;
+the production launcher still requires OS isolation.
 
 Service-issued principal-bound attempts opt into signed `live_connection_scopes`
 so a running session can follow current operator grants. Explicitly restricted

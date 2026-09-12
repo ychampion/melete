@@ -227,6 +227,7 @@ export async function configuredConnectors(options: {
             setting.server,
             { connectionId: row.id, spaceId: row.space_id },
             options.sql,
+            secrets,
           ),
         );
       } else if (row.provider === 'caldav' && setting?.kind === 'ics') {

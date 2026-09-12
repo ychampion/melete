@@ -9,7 +9,9 @@ import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { mcpServerConfig } from '../connectors/mcp.ts';
 import { openConfiguredMcpConnector } from '../connectors/mcp-connector.ts';
+import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
+import { PostgresSecretRepository, SealedSecretStore } from '../connectors/secrets.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
@@ -36,8 +38,12 @@ function view(row: typeof connection.$inferSelect) {
 /** Installation is an owner API action; a model cannot select endpoints or declare tool authority. */
 export function mountConnections(
   app: Hono,
-  deps: { db: Database; sql: Sql; registry: ConnectorRegistry },
+  deps: { db: Database; sql: Sql; registry: ConnectorRegistry; masterKey?: string },
 ) {
+  const secrets = new SealedSecretStore(
+    new PostgresSecretRepository(deps.sql),
+    () => deps.masterKey,
+  );
   app.get('/connections', async (c) => {
     const rows = await deps.db
       .select()
@@ -69,7 +75,7 @@ export function mountConnections(
         'This installation route currently accepts MCP connections.',
         400,
       );
-    if (!request.mcp || request.credentials || request.scopes.length)
+    if (!request.mcp || request.scopes.length)
       throw new ServiceError(
         'invalid_request',
         'Supply MCP endpoint and operator policy in mcp.',
@@ -77,6 +83,8 @@ export function mountConnections(
       );
     const { url, ...policy } = request.mcp;
     const config = mcpServerConfig.parse({ ...policy, endpoint: { transport: 'http', url } });
+    const credential = request.credentials ? mcpCredentials.parse(request.credentials) : undefined;
+    if (credential) mcpCredentialUrl.parse(url);
     // Named verbs must also be explicitly granted; tool discovery cannot add them for the operator.
     if (
       !config.tools.every((tool) =>
@@ -116,6 +124,9 @@ export function mountConnections(
         provider: 'mcp',
         label: request.label,
         scopes: config.allowed_scopes,
+        secretRef: credential
+          ? await secrets.put(request.space_id, JSON.stringify(credential))
+          : null,
         configuration: { server: config },
         status: 'disabled',
         setupState: 'connecting',
@@ -127,6 +138,7 @@ export function mountConnections(
         config,
         { connectionId: id, spaceId: request.space_id },
         deps.sql,
+        secrets,
       );
       deps.registry.register(id, worker);
       await serviceTransaction(deps.db, async (tx) => {

@@ -66,7 +66,7 @@ afterAll(async () => {
         boss: queue.boss,
       });
       const app = createApp({
-        env: loadEnv({ NODE_ENV: 'test' }),
+        env: loadEnv({ NODE_ENV: 'test', MELETE_MASTER_KEY: '95'.repeat(32) }),
         db: fixture.db,
         sql: fixture.sql,
         registry,
@@ -109,6 +109,7 @@ afterAll(async () => {
         provider: 'mcp',
         space_id: space.id,
         label: 'Live fixture',
+        credentials: { access_token: 'live-private-access-token' },
         mcp: {
           id: 'live',
           url: `${server.url}mcp`,
@@ -148,6 +149,11 @@ afterAll(async () => {
       expect(response.status).toBe(201);
       const body = (await response.json()) as { connection: { id: string; setup_state: string } };
       expect(body.connection.setup_state).toBe('connected');
+      expect(JSON.stringify(body)).not.toContain('live-private-access-token');
+      const [sealed] =
+        await fixture.sql`select s.ciphertext from connection c join secret s on s.id = c.secret_ref where c.id = ${body.connection.id}`;
+      expect(sealed?.ciphertext).toStartWith('sealed-box-v1:');
+      expect(sealed?.ciphertext).not.toContain('live-private-access-token');
       expect(registry.get(body.connection.id)?.manifest.tools[0]?.name).toBe('mcp_live.read');
       expect(await broker.discovery.search(claimed.claims, 'live')).toMatchObject([
         { name: 'mcp_live.read', source: 'mcp' },
@@ -210,6 +216,7 @@ afterAll(async () => {
         sql: fixture.sql,
         workRoot: 'unused',
         spacesRoot: 'unused',
+        masterKey: '95'.repeat(32),
       });
       expect(reopened.get(body.connection.id)?.manifest.tools[0]?.name).toBe('mcp_live.read');
       await reopened.close();

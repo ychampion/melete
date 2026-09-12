@@ -1140,6 +1140,14 @@ export class BrokerService implements BrokerOperations {
           await connector.execute(wire(payload), ctx({ attempt, route, mapping })),
         ),
       verify: async () => verifyResult.parse(await connector.verify(action, ctx())),
+      ...(connector.reconnect
+        ? {
+            reconnect: async () => {
+              if (await this.authorityLost(action)) return;
+              await (connector.reconnect as NonNullable<Connector['reconnect']>)(action, ctx());
+            },
+          }
+        : {}),
       ...(connector.describe
         ? {
             describe: () =>
@@ -1149,6 +1157,7 @@ export class BrokerService implements BrokerOperations {
       ...(connector.refreshCredential
         ? {
             refreshCredential: async () => {
+              if (await this.authorityLost(action)) return false;
               const refreshed = await (
                 connector.refreshCredential as NonNullable<Connector['refreshCredential']>
               )(action, ctx());

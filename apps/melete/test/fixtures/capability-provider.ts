@@ -55,6 +55,10 @@ export function capabilityProvider() {
       const names = ((body.tools ?? []) as { function?: { name?: string } }[]).map(
         (tool) => tool.function?.name,
       );
+      const blocked = messages.some(
+        (message) =>
+          message.role === 'tool' && /"status"\s*:\s*"failed"/.test(String(message.content)),
+      );
       if (index === 0)
         turn = {
           tool: {
@@ -67,9 +71,18 @@ export function capabilityProvider() {
         turn = {
           tool: { name: 'load_tool', arguments: { name: 'mcp_fixture.read' }, id: 'load_fixture' },
         };
-      else if (names.includes('mcp_fixture.read') && !text.includes('fixture-value-verified'))
+      else if (
+        names.includes('mcp_fixture.read') &&
+        !text.includes('fixture-value-verified') &&
+        !blocked
+      )
         turn = { tool: { name: 'mcp_fixture.read', arguments: {}, id: 'read_fixture' } };
-      else turn = { text: 'MCP discovery finished.' };
+      else
+        turn = {
+          text: blocked
+            ? 'The MCP action was blocked and needs operator attention.'
+            : 'MCP discovery finished.',
+        };
     } else turn = { text: 'The authorized shared task is complete.' };
     return createScriptedProvider([turn])(body, id, protocol);
   };

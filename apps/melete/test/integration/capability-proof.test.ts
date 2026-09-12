@@ -81,6 +81,11 @@ proof(
     const bundles: AttemptBundle[] = [];
     let calls = 0;
     let connected = true;
+    let sessions = 0;
+    let rejectSession = false;
+    let expiredCredential = false;
+    let revokedCredential = false;
+    let refreshes = 0;
     let service: Awaited<ReturnType<typeof bootstrap>> | undefined;
     let api: ReturnType<typeof Bun.serve> | undefined;
     // A real HTTP transport is installed through the owner API during the first running attempt.
@@ -88,13 +93,26 @@ proof(
       hostname: '127.0.0.1',
       port: 0,
       async fetch(request) {
+        if (new URL(request.url).pathname === '/token') {
+          refreshes++;
+          const form = new URLSearchParams(await request.text());
+          if (form.get('refresh_token') !== 'proof-refresh-token')
+            return new Response(null, { status: 400 });
+          return Response.json({
+            access_token: 'proof-fresh-token',
+            token_type: 'Bearer',
+            expires_in: 3600,
+          });
+        }
         if (!connected) return new Response('fixture disconnected', { status: 503 });
         if (request.method === 'DELETE') return new Response(null, { status: 204 });
         const message = (await request.json()) as { id?: number; method: string };
         if (message.id === undefined) return new Response(null, { status: 202 });
         let result: unknown = {};
-        if (message.method === 'initialize')
+        if (message.method === 'initialize') {
+          sessions++;
           result = { protocolVersion: '2025-11-25', capabilities: { tools: {} } };
+        }
         if (message.method === 'tools/list')
           result = {
             tools: [
@@ -106,10 +124,26 @@ proof(
             ],
           };
         if (message.method === 'tools/call') {
+          if (rejectSession) {
+            rejectSession = false;
+            return new Response(null, { status: 404 });
+          }
+          if (revokedCredential) return new Response(null, { status: 403 });
+          if (
+            expiredCredential &&
+            request.headers.get('authorization') !== 'Bearer proof-fresh-token'
+          )
+            return new Response(null, { status: 401 });
           calls++;
           result = { content: [{ type: 'text', text: 'fixture-value-verified' }] };
         }
-        return Response.json({ jsonrpc: '2.0', id: message.id, result });
+        return Response.json(
+          { jsonrpc: '2.0', id: message.id, result },
+          {
+            headers:
+              message.method === 'initialize' ? { 'MCP-Session-Id': `proof-${sessions}` } : {},
+          },
+        );
       },
     });
     let connectionId = '';
@@ -236,6 +270,7 @@ proof(
           MELETE_RUNTIME_SUPERVISOR: 'process',
           MELETE_CAPABILITY_KEY: KEY,
           MELETE_APPROVAL_KEY: 'w14-proof-approval-key-at-least-32',
+          MELETE_MASTER_KEY: '94'.repeat(32),
           MELETE_SPACES_DIR: spaces,
           MELETE_WORK_DIR: join(root, 'work'),
           MELETE_BROKER_BIND: '127.0.0.1:3162',
@@ -252,6 +287,11 @@ proof(
               provider: 'mcp',
               space_id: personalId,
               label: 'Capability fixture',
+              credentials: {
+                access_token: 'proof-stale-token',
+                refresh_token: 'proof-refresh-token',
+                token_url: `${mcp.url}token`,
+              },
               mcp: { ...serverConfig, endpoint: undefined, url: serverConfig.endpoint.url },
             });
             installationProbe = {
@@ -346,24 +386,66 @@ proof(
         expect(names).toContain('on_session_end');
         return { jobId: id, calls, hooks: names };
       });
-      await stage('mid-session installation and disconnect boundary', async () => {
-        expect(installationProbe?.jobState).toBe('running');
-        expect(installationProbe?.status).toBe(201);
-        const installed = await json<{ connection: { setup_state: string } }>(
-          await call(`/connections/${connectionId}`),
-        );
-        expect(installed.connection.setup_state).toBe('connected');
-        const connector = registry.get(connectionId);
-        if (!connector) throw new Error('Missing live MCP connector');
-        connected = false;
-        expect((await connector.health()).status).toBe('failing');
-        connected = true;
-        expect((await connector.health()).status).toBe('ok');
-        gaps.push(
-          'MCP disconnect repair: transport loss becomes unknown; no MCP reconnect or credential-refresh callback',
-        );
-        return installationProbe;
-      });
+      await stage(
+        'mid-session installation, disconnect recovery, refresh and revocation',
+        async () => {
+          expect(installationProbe?.jobState).toBe('running');
+          expect(installationProbe?.status).toBe(201);
+          const installed = await json<{ connection: { setup_state: string } }>(
+            await call(`/connections/${connectionId}`),
+          );
+          expect(installed.connection.setup_state).toBe('connected');
+          const connector = registry.get(connectionId);
+          if (!connector) throw new Error('Missing live MCP connector');
+          connected = false;
+          expect((await connector.health()).status).toBe('failing');
+          connected = true;
+          expect((await connector.health()).status).toBe('ok');
+          expect(typeof connector.reconnect).toBe('function');
+          expect(typeof connector.refreshCredential).toBe('function');
+          const repairs: unknown[] = [];
+          evidence.mcpRepairs = repairs;
+          for (const scenario of ['disconnect', 'expired', 'revoked'] as const) {
+            rejectSession = scenario === 'disconnect';
+            expiredCredential = scenario === 'expired';
+            revokedCredential = scenario === 'revoked';
+            const before = calls;
+            const id = await create(personalId, `MCP ${scenario}`, `W14 MCP discovery ${scenario}`);
+            const output = await run(id).catch((error: Error) => error.message);
+            const actions =
+              await handle.sql`select status, receipt, repair_trace, repair_disposition from action where job_id = ${id}`;
+            const questions = await handle.sql`select id, state from question where job_id = ${id}`;
+            repairs.push({ scenario, jobId: id, output, actions, questions });
+            expect(actions).toHaveLength(1);
+            if (scenario === 'revoked') {
+              expect(actions[0]?.status).toBe('failed');
+              expect(actions[0]?.repair_disposition).toBe('needs_reconnect');
+              expect(calls).toBe(before);
+              expect(questions.filter((question) => question.state === 'open')).toHaveLength(1);
+            } else {
+              expect(actions[0]?.status).toBe('succeeded');
+              expect(calls).toBe(before + 1);
+              expect(actions[0]?.receipt?.detail?.result?.content?.[0]?.text).toBe(
+                'fixture-value-verified',
+              );
+              expect(JSON.stringify(actions[0]?.repair_trace)).toContain(
+                scenario === 'disconnect' ? 'retry_with_backoff' : 'refresh_credential',
+              );
+            }
+            const bytes = JSON.stringify(
+              bundles
+                .filter((bundle) => bundle.attempt.job_id === id)
+                .flatMap((bundle) => provider.requests.get(bundle.attempt.id) ?? []),
+            );
+            expect(bytes).not.toContain('proof-stale-token');
+            expect(bytes).not.toContain('proof-fresh-token');
+            expect(bytes).not.toContain('proof-refresh-token');
+          }
+          revokedCredential = false;
+          expect(refreshes).toBe(1);
+          return { installationProbe, sessions, calls, refreshes, repairs };
+        },
+      );
 
       await stage('correction, evaluation, private reuse and rollback', async () => {
         const original = await create(
