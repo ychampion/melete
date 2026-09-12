@@ -111,3 +111,9 @@
 
 - `bun test apps/melete/src/runtime/supervisor.test.ts --max-concurrency=1`: exit 0, 7 pass, 1 Windows skip, 0 fail, 32 assertions (2.62s).
 - The real `dockerRunArguments` test requires non-root `10001:10001`, read-only, `cap-drop ALL`, `no-new-privileges:true`, PID limit 256 and memory 2g. Removing any flag or changing its required value fails this test.
+
+### 3. Make Docker socket authority explicit
+
+- Reproduction `bun test deploy/scripts/compose-check.test.ts --test-name-pattern 'explicit Docker socket group' --max-concurrency=1`: exit 1, 0 pass, 1 fail, 13 filtered, exposing `${DOCKER_GID:-0}`.
+- `bun test deploy/scripts/compose-check.test.ts --max-concurrency=1`: exit 0, 14 pass, 0 fail, 14 assertions (0.874s).
+- Compose now requires a nonempty `DOCKER_GID`; `.env.example` leaves it blank. The deploy README and threat model describe socket access as host-root equivalent and place the service's trusted supervisor inside the host trust boundary.

@@ -14,6 +14,12 @@ const failures = (file: ComposeFile) =>
     .map((r) => r.name);
 
 describe('the shipped compose file', () => {
+  test('requires an explicit Docker socket group without a root default', () => {
+    const service = compose.services?.melete;
+    expect(service?.group_add).toEqual([
+      `\${DOCKER_GID:?Set DOCKER_GID to the Docker socket group}`,
+    ]);
+  });
   test('passes every boundary check', () => {
     expect(failures(compose)).toEqual([]);
   });

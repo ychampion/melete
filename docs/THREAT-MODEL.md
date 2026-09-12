@@ -9,6 +9,16 @@ The general shape: **the model is never the boundary.** Every rule below holds
 whether the model cooperated or not, because it is enforced by something the
 model cannot reach.
 
+The service container mounts the host Docker socket to supervise attempt
+containers. Socket access is **host-root equivalent**: the service can ask the
+Docker daemon to launch privileged containers and mount host filesystems. Its
+non-root UID and selected socket group do not reduce that authority. The trusted
+supervisor and service therefore sit **inside the host trust boundary**. A
+compromised service can compromise the host; the attempt sandbox does not contain
+that compromise. Runtime attempts never receive the socket. Compose requires an
+explicit `DOCKER_GID` matching its host ownership, and the supervisor's launch
+argument tests check the restrictions applied to each runtime.
+
 ---
 
 ## Attacker 1: hostile content in email or on a web page

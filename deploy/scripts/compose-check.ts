@@ -18,6 +18,7 @@ export type ComposeFile = {
 export type ComposeService = {
   networks?: string[];
   user?: string;
+  group_add?: string[];
   read_only?: boolean;
   cap_drop?: string[];
   security_opt?: string[];
@@ -64,6 +65,12 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     'runtime.profiles must include runtime-dev; ordinary jobs use the supervisor',
   );
   const melete = compose.services?.melete;
+  say(
+    'the Docker socket group is explicitly required',
+    melete?.group_add?.includes(`\${DOCKER_GID:?Set DOCKER_GID to the Docker socket group}`) ===
+      true,
+    'DOCKER_GID must be explicitly set to the host socket group; no root-group default',
+  );
   say(
     'the default service supervises Hermes attempts',
     melete?.environment?.MELETE_RUNTIME_ADAPTER === 'hermes' &&

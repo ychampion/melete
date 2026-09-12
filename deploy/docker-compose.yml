@@ -64,7 +64,7 @@ services:
         condition: service_healthy
       runtime-image:
         condition: service_completed_successfully
-    group_add: ["${DOCKER_GID:-0}"]
+    group_add: ["${DOCKER_GID:?Set DOCKER_GID to the Docker socket group}"]
     environment:
       NODE_ENV: production
       PORT: 8787
