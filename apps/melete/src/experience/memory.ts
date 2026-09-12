@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { memoryItem, memoryItemEdit, unavailable } from '@melete/contracts';
+import { memoryItem, memoryItemCreate, memoryItemEdit, unavailable } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
-import { correctClaim, getHead, listClaims } from '../memory/claims.ts';
+import { correctClaim, getHead, listClaims, publishRevision } from '../memory/claims.ts';
 import { lockSpace, type MemoryScope } from '../memory/db.ts';
+import { persistEvidence } from '../memory/evidence.ts';
 import { forgetMemory } from '../memory/forget.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { explainHandles, memoryKeyLabel } from './evidence.ts';
@@ -55,6 +56,77 @@ export class ExperienceMemory {
       );
     }
     return { items };
+  }
+  /**
+   * A detail the person states outright, during setup or later. It takes the
+   * same path an owner correction takes: the statement is persisted as owner
+   * evidence on the `onboarding` stream, and a protected, attributed revision
+   * cites it, so the claim carries owner trust and no extractor has to agree.
+   * A key already answered gets a new revision rather than a second claim, so
+   * one key keeps one current value; the same statement said twice is one item.
+   */
+  async create(spaceId: string, ownerId: string, raw: unknown) {
+    const scope = await this.scope(spaceId, ownerId);
+    if (!scope) return unavailable('Your saved details are not connected yet.');
+    const input = memoryItemCreate.parse(raw);
+    const statement = input.statement ?? input.value;
+    const at = new Date().toISOString();
+    const identity = createHash('sha256')
+      .update(`${input.key}:${statement}:${input.value}`)
+      .digest('hex');
+    const claimId = await this.sql.begin(async (tx) => {
+      await lockSpace(tx, scope);
+      const [current] = await tx`select c.id from memory_claims c
+        join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
+        where c.space_id = ${scope.spaceId} and c.key = ${input.key} and c.audience = ${scope.audience}
+        and not c.hidden and r.status in ('active', 'disputed') limit 1`;
+      const head = current ? await getHead(tx, scope, String(current.id)) : null;
+      // The same statement again is the same item, not a second revision.
+      const [said] = await tx`select count(*)::int as n from memory_sources
+        where space_id = ${scope.spaceId} and publisher = ${scope.publisher}
+        and stream = 'onboarding' and source_identity = ${identity}`;
+      if (Number(said?.n ?? 0) > 0 && head && head.current.content === input.value) return head.id;
+      const evidence = await persistEvidence(tx, scope, {
+        stream: 'onboarding',
+        source_identity: identity,
+        // Each time the sentence is said anew it is a new version of the same evidence.
+        source_version: String(Number(said?.n ?? 0) + 1),
+        source_type: 'message',
+        author: 'owner',
+        event_at: at,
+        text: statement,
+      });
+      if (evidence.source.state !== 'active')
+        throw new ServiceError('detail_refused', 'This detail cannot be saved here.', 409);
+      const revision = await publishRevision(tx, scope, input.key, head, {
+        key: input.key,
+        content: input.value,
+        // A stated preference joins the profile every attempt carries; any other
+        // key is a statement recalled when a request touches it.
+        kind: input.key.startsWith('pref.') ? 'preference' : 'user_statement',
+        factual_status: 'attributed',
+        valid_from: at,
+        valid_until: null,
+        protected: true,
+        sources: [
+          {
+            source_id: evidence.source.source_id,
+            source_version: evidence.source.source_version,
+            start: 0,
+            end: statement.length,
+          },
+        ],
+      });
+      // The statement is the claim's evidence already; nothing is left to extract.
+      await tx`update memory_work set status = 'done' where source_id = ${evidence.source.source_id}`;
+      await tx`update memory_streams set consumed_sequence = committed_sequence
+        where space_id = ${scope.spaceId} and publisher = ${scope.publisher} and stream = 'onboarding'`;
+      return revision.claim_id;
+    });
+    const listed = await this.list(spaceId, ownerId);
+    const item = 'items' in listed ? listed.items.find((entry) => entry.id === claimId) : undefined;
+    if (!item) throw experienceMissing();
+    return { item };
   }
   async edit(spaceId: string, ownerId: string, id: string, raw: unknown) {
     const scope = await this.scope(spaceId, ownerId);
