@@ -40,6 +40,7 @@ import type {
   RuleBounds,
   SearchResult,
   SendOutcome,
+  StreamGap,
   Task,
   TaskInput,
   Turn,
@@ -271,11 +272,6 @@ export const adapter = {
 
 export type Adapter = typeof adapter;
 
-export type StreamGap = {
-  after: number;
-  next: number | null;
-  reason: 'reconnect' | 'sequence_skip';
-};
 export type StreamItem =
   | { type: 'open' }
   | { type: 'event'; event: ExperienceEvent }

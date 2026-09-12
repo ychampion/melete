@@ -6,7 +6,6 @@
  * is gone, and the interface says so rather than stitching halves.
  */
 import type { MeleteEvent } from '@melete/client';
-import type { StreamGap } from './adapter.ts';
 import type {
   ComposerState,
   Draft,
@@ -17,6 +16,7 @@ import type {
   Reaction,
   Receipt,
   ResultCard,
+  StreamGap,
   TrailStep,
   Turn,
   TurnStatus,

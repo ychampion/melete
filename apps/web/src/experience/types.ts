@@ -43,6 +43,12 @@ export type ExperienceEvent = Success<
   Ok<paths['/conversations/{id}/events'], 'get'>
 >['events'][number];
 export type EventItem = ExperienceEvent['item'];
+/** Local stream state shared by the adapter and the environment-independent reducer. */
+export type StreamGap = {
+  after: number;
+  next: number | null;
+  reason: 'reconnect' | 'sequence_skip';
+};
 export type TrailStep = Extract<EventItem, { type: 'say' | 'action' | 'note' | 'done' }>;
 export type Source = Extract<EventItem, { type: 'action' }>['sources'][number];
 export type ResultCard = Success<Ok<paths['/conversations/{id}/cards'], 'get'>>['cards'][number];
