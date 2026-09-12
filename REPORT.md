@@ -333,3 +333,10 @@ All six owner-route probes returned ECONNREFUSED (111). Broker and gateway
 routes remained reachable and returned 401 without capabilities. `/proc/net/tcp`
 showed `172.20.0.2:8787` for the API and `0.0.0.0:8788` for the broker;
 the host's `http://127.0.0.1:3100/health` returned 200 with database `ok`.
+
+### MEDIUM: OAuth credential consequence
+
+The threat model again states that runtime compromise exposes a locally stored
+OAuth token while a gateway-held API key remains outside the cell, and recommends
+API keys through the gateway. The existing scope sentence remains: runtime OAuth
+was not configured or tested. Documentation check: `git diff --check`, exit 0.

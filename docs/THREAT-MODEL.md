@@ -133,7 +133,9 @@ What is not contained:
 - **The credential proof covers the gateway path.** Separately configuring
   provider OAuth in Hermes would place those credentials in the runtime's auth
   store and fall outside this verified boundary. The tested images and volumes
-  contain no such OAuth configuration.
+  contain no such OAuth configuration. A runtime compromise exposes an OAuth
+  token stored there; it does not expose a provider API key kept in Melete's
+  gateway. API keys through the gateway are therefore the recommended path.
 
 Practical advice: for anything genuinely sensitive, run a local model through the
 OpenAI-compatible endpoint.
