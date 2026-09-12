@@ -403,8 +403,10 @@ export class BrokerService implements BrokerOperations {
           : `broker:proposal:${job.id}:${createHash('sha256').update(request.client_ref).digest('hex')}`;
       const ref = refBase ? `${refBase}:revision:${job.revision}` : null;
       if (refBase) {
+        // LIKE treats '_' in every job id as a wildcard unless escaped.
+        const refPattern = `${refBase.replace(/[\\%_]/g, '\\$&')}:revision:%`;
         const [event] = await tx`select payload from event where job_id = ${job.id}
-          and (dedup_key = ${refBase} or dedup_key like ${`${refBase}:revision:%`})
+          and (dedup_key = ${refBase} or dedup_key like ${refPattern})
           order by seq desc limit 1`;
         if (event) {
           const existing = await loadAction(tx, event.payload.action_id);

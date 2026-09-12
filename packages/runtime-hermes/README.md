@@ -10,8 +10,12 @@ running container can say exactly what it is.
 
 ## What "thin" means here
 
-Melete does not fork Hermes. Everything below is configuration, which is what
-makes upgrading the pin a one-line change instead of a rebase.
+Melete keeps the Hermes source checkout unchanged. The thin settings below
+configure its behavior. In process mode, `process_launcher.py` wraps aiohttp
+listener startup to report the OS-selected port after binding. The listener
+stays open throughout the handoff; the supervisor never releases a candidate
+port before the child starts. This wrapper depends on pinned aiohttp 3.14.3
+and is tested with two simultaneously live ephemeral listeners.
 
 | Switch | Where | Why |
 |---|---|---|

@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { appendEvent } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { configuredConnectors } from '../../src/connectors/configured.ts';
 import { newId } from '../../src/ids.ts';
@@ -128,5 +130,24 @@ afterAll(async () => {
     const [count] =
       await handle.sql`select count(*)::int as total from action where job_id = ${job.id}`;
     expect(count?.total).toBe(2);
+    // '_' in a job id must match itself, never a lookalike event prefix.
+    const literalRef = 'literal_ref';
+    const lookalike = `broker:proposal:${job.id.replace('_', 'X')}:${createHash('sha256').update(literalRef).digest('hex')}:revision:2`;
+    await appendEvent(
+      handle.sql,
+      job.id,
+      retry.claims.attempt_id,
+      'notice',
+      { action_id: fresh.action_id },
+      lookalike,
+    );
+    const independent = await broker.propose(retry.claims, {
+      kind: 'test.send',
+      connection_id: connectionId,
+      payload: { message: 'An independent proposal' },
+      client_ref: literalRef,
+    });
+    expect(independent.action_id).not.toBe(fresh.action_id);
+    expect(independent.status).toBe('needs_approval');
   }, 20_000);
 });

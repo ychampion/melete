@@ -114,12 +114,27 @@ export async function jobWorkspace(root: string, jobId: string): Promise<string>
   return path;
 }
 
-async function freePort(): Promise<number> {
-  const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('') });
-  const port = server.port;
-  await server.stop(true);
-  if (!port) throw new Error('No runtime port was allocated');
-  return port;
+export async function waitRuntimeAddress(
+  path: string,
+  signal: AbortSignal,
+  timeout: number,
+  exited: () => boolean,
+): Promise<string> {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    signal.throwIfAborted();
+    if (exited()) throw new Error('Hermes exited before reporting its listener');
+    try {
+      const { port } = JSON.parse(await readFile(path, 'utf8')) as { port: number };
+      if (!Number.isInteger(port) || port < 1 || port > 65535)
+        throw new Error('Invalid runtime listener report');
+      return `http://127.0.0.1:${port}`;
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    }
+    await Bun.sleep(25);
+  }
+  throw new Error(`Hermes did not report its listener within ${timeout}ms`);
 }
 async function waitReady(
   baseUrl: string,
@@ -211,8 +226,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
     const workspace = await jobWorkspace(this.options.workRoot, bundle.attempt.job_id);
     const home = await mkdtemp(join(await realpath(tmpdir()), 'melete-runtime-'));
     const token = randomBytes(32).toString('base64url');
-    const port = await freePort();
-    const baseUrl = `http://127.0.0.1:${port}`;
+    const addressFile = join(home, 'runtime-address.json');
     let child: ChildProcess | undefined;
     let stopPromise: Promise<void> | undefined;
     const stop = () =>
@@ -269,22 +283,27 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       };
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
       signal.throwIfAborted();
-      child = spawn(this.options.python, ['-m', 'hermes_cli.main', 'gateway', 'run'], {
-        cwd: workspace,
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-        env: {
-          ...platformEnvironment(),
-          ...environment,
-          HERMES_HOME: home,
-          HOME: home,
-          USERPROFILE: home,
-          API_SERVER_HOST: '127.0.0.1',
-          API_SERVER_PORT: String(port),
-          TERMINAL_CWD: workspace,
+      child = spawn(
+        this.options.python,
+        [join(this.options.runtimePackage, 'process_launcher.py')],
+        {
+          cwd: workspace,
+          detached: process.platform !== 'win32',
+          windowsHide: true,
+          env: {
+            ...platformEnvironment(),
+            ...environment,
+            HERMES_HOME: home,
+            HOME: home,
+            USERPROFILE: home,
+            API_SERVER_HOST: '127.0.0.1',
+            API_SERVER_PORT: '0',
+            MELETE_RUNTIME_ADDRESS_FILE: addressFile,
+            TERMINAL_CWD: workspace,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
         },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      );
       let startupError: Error | undefined;
       child.once('error', (error) => {
         startupError = error;
@@ -300,12 +319,16 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       };
       signal.addEventListener('abort', abort, { once: true });
       try {
+        const timeout = this.options.startupTimeoutMs ?? 60_000;
+        const launchStarted = Date.now();
+        const exited = () => Boolean(startupError) || child?.exitCode !== null;
+        const baseUrl = await waitRuntimeAddress(addressFile, signal, timeout, exited);
         await waitReady(
           baseUrl,
           token,
           signal,
-          this.options.startupTimeoutMs ?? 60_000,
-          () => Boolean(startupError) || child?.exitCode !== null,
+          Math.max(1, timeout - (Date.now() - launchStarted)),
+          exited,
         );
         return {
           baseUrl,

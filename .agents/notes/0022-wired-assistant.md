@@ -15,7 +15,7 @@ merging. The gateway and broker use only service-owned credentials. Each engine
 gets its bounded attempt capability and an independent API key; neither the
 database URL nor provider, approval or master keys enter its environment.
 
-The process supervisor runs `python -m hermes_cli.main gateway run` from the
+The process supervisor runs `process_launcher.py`, which calls the pinned Hermes CLI, from the
 job's workspace, with a fresh temporary home and the unmodified pinned checkout
 at `2237be355906fbe6065ce1815711eee52b2d646e` (v2026.9.7). The HTTP dependency is
 `aiohttp==3.14.3`. It kills the complete owned process tree and removes the home
