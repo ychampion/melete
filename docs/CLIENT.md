@@ -428,3 +428,92 @@ an unconfirmed send for the person and does not send it again. Saved details are
 projected from the mock's active seeded records. Profile, agents, tasks, plans,
 rules, and routines can be exercised without connecting an external service.
 Browser tasks and sign-in delivery remain honestly unavailable in the mock.
+
+The web app in `apps/web` also uses the mock: run it on `3210` (`MOCK_PORT=3210 bun run dev:mock`) and `bun run dev:web` on `5180`. Its scenarios are chosen by what the message says:
+
+- **approved-send** and **unknown-outcome**, as above.
+- **dinner-with-friends** — checks the calendar, searches the web and Maps,
+  drafts a note, and asks before adding the event; the result card's button is
+  the decision. Ask for "dinner".
+- **book-a-table** — the follow-up: opens the sandboxed browser, picks the
+  slot, and asks before reserving. Say "book it".
+- **kyoto-in-october**, **passport-renewal**, **welcome** — a question with
+  numbered answers, a plain answer with its source, and the first message
+  after setup.
+
+The web app reads only the experience contract
+(`packages/contracts/src/experience.ts`, through the generated client in
+`packages/client`): conversations, turns, events, cards, receipts, drafts,
+permissions, questions, agents, memory, plans, tasks, home, automations,
+connections, rules and search. The mock serves those routes from
+`apps/mock-api/src/experience.ts`, seeded with a person, three agents, calendar
+events, plans, tasks and routines so every surface has something to show;
+`MOCK_SEED=off` starts it empty, which is how the tests run it. There is no
+second set of routes for the interface: what the web app can do against the
+mock, it can do against the service.
+
+Adding a case is a JSON file, not a branch. The mock parses every request with
+the contract's schemas on the way in and every response on the way out, so a
+body it invented that the document does not describe fails there rather than in
+your client.
+
+## Rules the web app adds
+
+These are what `apps/web` does on top of the API. A second interface should
+do the same, so a person who moves between them is never told two stories.
+
+**The trail has four kinds of step and no more.** `say` is one or two plain
+sentences from the agent to the person. `action` is a past-tense human label
+("Read your calendar, checked Alex and Priya's availability"), a short meta
+("free after 7:00 PM"), and the sources it read, each drawn with its app's
+logo. `note` is a quiet aside. `done` is the resting line: how long, which
+apps, how many sources. There is no `thought` step: the trail never shows
+model reasoning, a tool name, or "Thought for N seconds".
+
+**One decision, three outcomes.** A permission card offers allow once, always,
+and deny. "Always" creates a rule the person can see and revoke under
+Settings › Rules, and a later request the rule covers is allowed with the rule
+named on its card. When a result card's own button is the decision ("Add to
+calendar"), the separate permission card is not drawn; the card's More menu
+carries the other two outcomes. A hash mismatch is shown as "This changed while
+you were reading it" on the card, and the person decides again.
+
+**Every write leaves a receipt.** What, where, when, with an undo valid for a
+stated window, drawn under the card that caused it. An undone receipt says so
+in place; nothing disappears.
+
+**An unconfirmed effect is a question, not a retry.** When a connector never
+answers, the action rests in the broker's ledger at `unknown`
+(`GET /actions?job_id=`), the transcript says so in a note, and the card asks
+the person what happened: it arrived, it did not, or they cannot tell yet.
+Their answer goes to `POST /actions/{id}/resolve` and the ledger records who
+decided. Nothing is sent again in the meantime, and a draft that never
+confirmed stays theirs to send.
+
+**Drafts are sent by the person.** A draft names its recipient and channel
+("Send via Messages"), can be edited in place, and nothing leaves until that
+button is pressed.
+
+**The composer has one state button.** Send when it is the person's turn,
+Pause while an agent works, Resume after a pause, Stop while an answer streams.
+Stop keeps the partial text. Enter sends; Shift+Enter is a new line. An
+attachment queues as a tile with a progress bar and a cancel that works
+mid-upload.
+
+**A gap is drawn, not hidden.** On reconnect the durable events replay and a
+marker says text that streamed while the connection was down may be missing.
+
+**One question at a time, numbers answer it.** A question with up to four
+options listens to the keys 1–4 (and the next number focuses "type your own")
+only while it is the newest open question in the newest turn.
+
+**Delivery is honest.** A message shows sending, then its time; offline it says
+it will send when you are back; a failure offers retry and keeps the text.
+
+**Unavailable means absent.** A surface whose capability the adapter reports as
+unavailable (the browser card and panel, an OAuth button, voice, attachments, a
+tour stage) is not drawn and not offered. Nothing says "coming soon".
+
+**The technology stays in Settings.** Memory items, connections and rules are
+the only places a person sees what Melete remembers, may reach, or may do
+without asking. Errors say what happened and what already happened about it.

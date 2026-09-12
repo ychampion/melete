@@ -1,0 +1,46 @@
+{
+  "id": "welcome",
+  "title": "The first message after setup",
+  "summary": "The agent says hello and references one thing the person said during setup.",
+  "match": ["__welcome__"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "text",
+      "delay_ms": 900,
+      "text": "Hi {{melete_calls_you}}. You said “{{this_month}}” is what eats your week right now. Want me to set it up as a plan, or clear this afternoon’s follow-ups first?"
+    },
+    {
+      "step": "ask",
+      "delay_ms": 400,
+      "question": "Where should I start?",
+      "options": [
+        {
+          "label": "Set up the plan",
+          "description": "Milestones with the legwork split between agents"
+        },
+        {
+          "label": "Clear my follow-ups",
+          "description": "Drafts for each one, you send"
+        },
+        {
+          "label": "What’s on today?",
+          "description": "Your day in three lines"
+        }
+      ]
+    },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "On it."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "On it."
+    }
+  ]
+}

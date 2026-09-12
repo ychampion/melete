@@ -1,0 +1,85 @@
+{
+  "id": "kyoto-in-october",
+  "title": "Sketch two slow weeks in Japan",
+  "summary": "Nova reads the plan and the notes, checks travel times, and answers with a shape for the trip.",
+  "match": ["kyoto", "japan", "trip", "about this plan", "about the plan"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "say",
+      "delay_ms": 700,
+      "text": "Reading your notes first so the shape of the trip matches what you already decided."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "files.read",
+      "title": "Read kyoto-notes.md, pulled the dates and the budget",
+      "active_title": "Reading your notes",
+      "meta": "1 file",
+      "sources": [
+        {
+          "app": "gdrive",
+          "label": "kyoto-notes.md"
+        }
+      ],
+      "result": {}
+    },
+    {
+      "step": "tool",
+      "delay_ms": 1000,
+      "name": "maps.compare",
+      "title": "Checked train times between Kyoto, Tokyo and the coast",
+      "active_title": "Checking train times",
+      "meta": "3 routes",
+      "sources": [
+        {
+          "app": "gmaps",
+          "label": "Kyoto → Kanazawa · 2 h 15"
+        },
+        {
+          "app": "gmaps",
+          "label": "Kanazawa → Tokyo · 2 h 30"
+        }
+      ],
+      "result": {}
+    },
+    {
+      "step": "text",
+      "delay_ms": 600,
+      "text": "Five nights in Kyoto, three somewhere quiet on the coast, then six in Tokyo. The ryokan is the one thing to book now; everything else can wait a month."
+    },
+    {
+      "step": "ask",
+      "delay_ms": 500,
+      "question": "Want me to hold the ryokan?",
+      "options": [
+        {
+          "label": "Hold it",
+          "description": "Ask before paying the deposit"
+        },
+        {
+          "label": "Show me two others",
+          "description": "Similar price, closer to the station"
+        },
+        {
+          "label": "Not yet",
+          "description": "Come back to it next week"
+        }
+      ]
+    },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "Noted. I’ll pick it up from there."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Noted."
+    }
+  ]
+}

@@ -81,6 +81,8 @@ export type AppDeps = {
   scenarios: Scenario[];
   spaceId: string;
   experienceSpeed?: number;
+  /** Seed conversations, plans, tasks and routines for the web app. Tests leave this off. */
+  seedExperience?: boolean;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -108,7 +110,8 @@ export function createMockApp(deps: AppDeps) {
     }),
   );
 
-  mountExperienceMock(app, deps);
+  const experience = mountExperienceMock(app, deps);
+  if (deps.seedExperience) experience.seed();
 
   /**
    * Parse an outgoing body with the contract before it leaves. A failure here is
@@ -575,6 +578,7 @@ export function createMockApp(deps: AppDeps) {
       store.move(job.id, { kind: 'reconciled' }, { wait: { kind: 'none' } });
       runner.signal(job.id, { kind: 'reconciled' });
     }
+    experience.actionResolved(settled);
     return send(actionResponse, { action: settled });
   });
 

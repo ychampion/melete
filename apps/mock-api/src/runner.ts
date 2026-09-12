@@ -40,6 +40,9 @@ const defaultSleep = (ms: number): Promise<void> =>
 export class Runner {
   private readonly runs = new Map<string, RunState>();
   private readonly gates = new Map<string, (signal: GateSignal) => void>();
+  /** Jobs a person paused. The drive loop holds before its next step. */
+  private readonly paused = new Set<string>();
+  private readonly resumers = new Map<string, () => void>();
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly speed: number;
   private readonly onError: (jobId: string, error: unknown) => void;
@@ -69,6 +72,30 @@ export class Runner {
       refs: new Map(),
     });
     this.spawn(jobId);
+  }
+
+  /** Hold the job before its next step. State is kept; nothing is re-run. */
+  pauseJob(jobId: string): void {
+    this.paused.add(jobId);
+  }
+
+  resumeJob(jobId: string): void {
+    this.paused.delete(jobId);
+    const wake = this.resumers.get(jobId);
+    this.resumers.delete(jobId);
+    wake?.();
+  }
+
+  isPaused(jobId: string): boolean {
+    return this.paused.has(jobId);
+  }
+
+  private async holdWhilePaused(jobId: string): Promise<void> {
+    while (this.paused.has(jobId)) {
+      await new Promise<void>((resolve) => {
+        this.resumers.set(jobId, resolve);
+      });
+    }
   }
 
   scriptFor(jobId: string): Scenario | null {
@@ -232,6 +259,7 @@ export class Runner {
       run.position += 1;
 
       await this.pause(step.delay_ms);
+      await this.holdWhilePaused(jobId);
       if (this.cancelled(jobId)) return;
 
       const parked = await this.perform(jobId, run, step);
@@ -269,19 +297,99 @@ export class Runner {
       }
 
       case 'tool': {
+        const ui = {
+          ...(step.title ? { label: step.title } : {}),
+          ...(step.active_title ? { active_label: step.active_title } : {}),
+          meta: step.meta,
+          sources: step.sources,
+        };
         this.store.append({
           type: 'tool_call_proposed',
           job_id: jobId,
           attempt_id: attemptId,
-          payload: { name: step.name, arguments: step.arguments },
+          payload: { name: step.name, arguments: step.arguments, ...ui },
         });
         await this.pause(120);
         this.store.append({
           type: 'tool_result',
           job_id: jobId,
           attempt_id: attemptId,
-          payload: { name: step.name, result: step.result },
+          payload: { name: step.name, result: step.result, ...ui },
         });
+        return 'continue';
+      }
+
+      case 'say': {
+        this.store.append({
+          type: 'notice',
+          job_id: jobId,
+          attempt_id: attemptId,
+          payload: { level: 'info', kind: 'say', title: step.text, body: '' },
+        });
+        return 'continue';
+      }
+
+      case 'card': {
+        const { step: _kind, delay_ms: _delay, primary, ...card } = step;
+        const approves = primary.approves ? (run.refs.get(primary.approves) ?? null) : null;
+        this.store.append({
+          type: 'notice',
+          job_id: jobId,
+          attempt_id: attemptId,
+          payload: {
+            level: 'info',
+            kind: 'card',
+            title: card.title,
+            body: '',
+            card: { ...card, primary: { ...primary, action_id: approves } },
+          },
+        });
+        return 'continue';
+      }
+
+      case 'draft': {
+        const { step: _kind, delay_ms: _delay, ...draft } = step;
+        this.store.append({
+          type: 'notice',
+          job_id: jobId,
+          attempt_id: attemptId,
+          payload: { level: 'info', kind: 'draft', title: draft.body, body: '', draft },
+        });
+        return 'continue';
+      }
+
+      case 'browser': {
+        const { step: _kind, delay_ms: _delay, ...browser } = step;
+        this.store.append({
+          type: 'notice',
+          job_id: jobId,
+          attempt_id: attemptId,
+          payload: { level: 'info', kind: 'browser', title: browser.task, body: '', browser },
+        });
+        return 'continue';
+      }
+
+      case 'ask': {
+        this.store.append({
+          type: 'notice',
+          job_id: jobId,
+          attempt_id: attemptId,
+          payload: {
+            level: 'info',
+            kind: 'question',
+            title: step.question,
+            body: '',
+            options: step.options,
+          },
+        });
+        this.endAttempt(run, 'waiting_for_input', { question: step.question });
+        this.store.move(
+          jobId,
+          { kind: 'attempt_waiting_for_input' },
+          { wait: { kind: 'user_input', question: step.question } },
+        );
+        const signal = await this.park(jobId);
+        if (signal.kind === 'cancelled') return 'stop';
         return 'continue';
       }
 

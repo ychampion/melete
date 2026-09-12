@@ -1,0 +1,154 @@
+{
+  "id": "book-a-table",
+  "title": "Book the table in the sandboxed browser",
+  "summary": "Nova opens Resy in the sandboxed browser, picks the slot, and asks before anything is reserved.",
+  "match": ["book it", "book the table", "book a table", "reserve", "reservation"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "tool",
+      "delay_ms": 800,
+      "name": "calendar.read",
+      "title": "Checked your calendar",
+      "active_title": "Checking your calendar",
+      "meta": "free after 7:00 PM",
+      "sources": [
+        {
+          "app": "gcal",
+          "label": "No conflicts tonight"
+        }
+      ],
+      "result": {}
+    },
+    {
+      "step": "say",
+      "delay_ms": 600,
+      "text": "Opening Resy in the sandboxed browser. I’ll stop before anything is paid or reserved."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 900,
+      "name": "browser.open",
+      "title": "Opened Resy, found Luna Trattoria",
+      "active_title": "Opening Resy",
+      "meta": "sandboxed browser",
+      "sources": [
+        {
+          "app": "globe",
+          "label": "resy.com/venues/luna-trattoria"
+        }
+      ],
+      "result": {}
+    },
+    {
+      "step": "browser",
+      "delay_ms": 300,
+      "id": "resy",
+      "status": "working",
+      "url": "resy.com/venues/luna-trattoria",
+      "task": "Book a table at Luna Trattoria for 3 at 7:30 PM",
+      "attention": null,
+      "preview": {
+        "title": "Luna Trattoria",
+        "sub": "Italian · $$ · Greenwich Village · 4.7 (2,341)",
+        "chips": ["Tonight", "3 guests", "Dinner"],
+        "slots": ["6:45 PM", "7:00 PM", "7:30 PM", "8:00 PM", "8:30 PM"],
+        "chosen": "7:30 PM"
+      }
+    },
+    {
+      "step": "tool",
+      "delay_ms": 2600,
+      "name": "browser.click",
+      "title": "Chose the 7:30 PM slot for 3 guests",
+      "active_title": "Choosing the 7:30 PM slot for 3 guests",
+      "meta": "",
+      "sources": [],
+      "result": {}
+    },
+    {
+      "step": "propose",
+      "delay_ms": 600,
+      "ref": "table",
+      "kind": "browser.reserve",
+      "connection": "test-destination",
+      "effect_class": "write_external",
+      "payload": {
+        "title": "Table for 3 at Luna Trattoria",
+        "when": "Tonight 7:30 PM",
+        "place": "Luna Trattoria",
+        "cost": "No charge to hold"
+      }
+    },
+    {
+      "step": "await_approval",
+      "delay_ms": 200,
+      "ref": "table",
+      "on_denied": "no-table"
+    },
+    {
+      "step": "dispatch",
+      "delay_ms": 900,
+      "ref": "table",
+      "outcome": "succeeded",
+      "external_ref": "resy:res_88213",
+      "detail": {}
+    },
+    {
+      "step": "browser",
+      "delay_ms": 200,
+      "id": "resy",
+      "status": "done",
+      "url": "resy.com/venues/luna-trattoria",
+      "task": "Book a table at Luna Trattoria for 3 at 7:30 PM",
+      "attention": null,
+      "preview": {
+        "title": "Luna Trattoria",
+        "sub": "Reserved · tonight 7:30 PM · 3 guests",
+        "chips": ["Confirmed"],
+        "slots": [],
+        "chosen": ""
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 500,
+      "text": "Booked. Luna Trattoria is holding a table for three at 7:30, and I’ll nudge you at 6:00."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Booked."
+    },
+    {
+      "label": "no-table",
+      "step": "browser",
+      "delay_ms": 200,
+      "id": "resy",
+      "status": "stopped",
+      "url": "resy.com/venues/luna-trattoria",
+      "task": "Book a table at Luna Trattoria for 3 at 7:30 PM",
+      "attention": null,
+      "preview": {
+        "title": "Luna Trattoria",
+        "sub": "Nothing was reserved",
+        "chips": [],
+        "slots": [],
+        "chosen": ""
+      }
+    },
+    {
+      "step": "text",
+      "delay_ms": 400,
+      "text": "Nothing was reserved. Say the word if you want a different time."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Nothing was reserved."
+    }
+  ]
+}
