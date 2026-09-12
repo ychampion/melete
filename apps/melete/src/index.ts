@@ -19,6 +19,7 @@ import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
+import { mountConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
@@ -163,6 +164,8 @@ export function createApp(deps: AppDeps) {
     });
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
+  if (deps.db && deps.sql && deps.registry)
+    mountConnections(app, { db: deps.db, sql: deps.sql, registry: deps.registry });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -509,6 +512,7 @@ export async function bootstrap(
         // The test connector's fixed scopes when it is enabled; otherwise the
         // scopes the space's active connections actually grant.
         scopes: env.MELETE_ENABLE_TEST_CONNECTOR ? ['test.send', 'test.read'] : undefined,
+        liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
         scopesForJob: async (tx, row) => {
           const granted = await tx
             .select({ scopes: connection.scopes })

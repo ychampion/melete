@@ -996,11 +996,13 @@ export function buildOpenApiDocument() {
           },
           post: {
             tags: ['connections'],
-            summary: 'Add a connection',
+            summary: 'Install an operator-declared HTTP MCP connection without restarting',
             requestBody: json(createConnectionRequest),
             responses: {
               '201': jsonResponse('Created', connectionResponse),
               '400': problem('Invalid request'),
+              '403': problem('Space owner and matching audience required'),
+              '409': problem('MCP installation name already exists'),
             },
           },
         },

@@ -144,7 +144,12 @@ export class ExperienceHome {
           id: row.id,
           app: appName(row),
           label: plainText(row.label, appName(row)),
-          status: row.status !== 'active' || row.health === 'failing' ? 'error' : 'connected',
+          status:
+            row.setupState === 'connecting' || row.setupState === 'available'
+              ? row.setupState
+              : row.status !== 'active' || row.health === 'failing'
+                ? 'error'
+                : 'connected',
           access: row.scopes.some((scope) =>
             /(?:send|create|update|delete|write|move)$/.test(scope),
           )

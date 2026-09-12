@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
+import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 
@@ -249,8 +250,7 @@ export class ToolCatalog {
       for (const declared of connector.manifest.tools) {
         if (access.chat && directSend(declared.name)) continue;
         const scopes = [declared.name, ...declared.required_scopes];
-        if (!scopes.every((scope) => claims.scopes.includes(scope) && row.scopes.includes(scope)))
-          continue;
+        if (!grantsConnectionScopes(claims, row.scopes, scopes)) continue;
         if (
           !(await accept(declared.name, row.id, () => {
             if (reserved.has(declared.name))

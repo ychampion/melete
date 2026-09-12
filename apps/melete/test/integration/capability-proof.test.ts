@@ -83,7 +83,7 @@ proof(
     let connected = true;
     let service: Awaited<ReturnType<typeof bootstrap>> | undefined;
     let api: ReturnType<typeof Bun.serve> | undefined;
-    // This is the implemented operator-file HTTP transport, not a substitute for the missing stdio route.
+    // A real HTTP transport is installed through the owner API during the first running attempt.
     const mcp = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
@@ -112,7 +112,7 @@ proof(
         return Response.json({ jsonrpc: '2.0', id: message.id, result });
       },
     });
-    const connectionId = newId('conn');
+    let connectionId = '';
     const serverConfig = {
       id: 'fixture',
       endpoint: { transport: 'http', url: `${mcp.url}mcp` },
@@ -127,11 +127,6 @@ proof(
         },
       ],
     };
-    const configPath = join(root, 'connections.json');
-    await writeFile(
-      configPath,
-      JSON.stringify([{ kind: 'mcp', id: connectionId, server: serverConfig }]),
-    );
     let cookie = '';
     const call = (
       path: string,
@@ -224,14 +219,13 @@ proof(
       throw new Error(`Job ${id} did not finish`);
     }
     try {
-      // Seed just the durable account/connection, then boot exactly the W15 product path.
+      // Seed only the durable account, then boot exactly the W15 product path.
       const ownerId = newId('own');
       const personalId = newId('sp');
       const hash = await Bun.password.hash('capability-proof-password', { algorithm: 'argon2id' });
       await handle.sql`insert into owner (id, email, password_hash) values (${ownerId}, 'capability@example.test', ${hash})`;
       await handle.sql`insert into principal (id, email, password_hash) values (${ownerId}, 'capability@example.test', ${hash})`;
       await handle.sql`insert into space (id, name, git_path, owner_principal_id) values (${personalId}, 'Personal', ${join(spaces, personalId)}, ${ownerId})`;
-      await handle.sql`insert into connection (id, space_id, provider, label, scopes, status) values (${connectionId}, ${personalId}, 'mcp', 'Capability fixture', '["mcp_fixture.read"]'::jsonb, 'active')`;
       service = await bootstrap({
         workers: false,
         env: loadEnv({
@@ -246,7 +240,6 @@ proof(
           MELETE_WORK_DIR: join(root, 'work'),
           MELETE_BROKER_BIND: '127.0.0.1:3162',
           MELETE_BROKER_URL: 'http://127.0.0.1:3162',
-          MELETE_CONNECTIONS_FILE: configPath,
           MELETE_ENABLE_FAKE_PROVIDER: 'true',
           MELETE_DEFAULT_PROVIDER: 'fake',
           MELETE_DEFAULT_MODEL: 'scripted-learning-v1',
@@ -258,13 +251,16 @@ proof(
             const response = await call('/connections', {
               provider: 'mcp',
               space_id: personalId,
-              server: serverConfig,
+              label: 'Capability fixture',
+              mcp: { ...serverConfig, endpoint: undefined, url: serverConfig.endpoint.url },
             });
             installationProbe = {
               status: response.status,
               body: await response.text(),
               jobState: String(active?.state),
             };
+            if (response.status === 201)
+              connectionId = JSON.parse(installationProbe.body).connection.id;
           }
           return provider.fake(body, id, protocol);
         },
@@ -275,8 +271,6 @@ proof(
       const { jobs, queue, memory, broker, registry } = service;
       if (!jobs || !queue || !memory || !broker || !registry)
         throw new Error('Missing service dependency');
-      const connector = registry.get(connectionId);
-      if (!connector) throw new Error('Missing MCP connector');
       api = Bun.serve({
         hostname: '127.0.0.1',
         port: 3160,
@@ -337,6 +331,10 @@ proof(
         expect(calls).toBe(1);
         const bundle = bundles.find((value) => value.attempt.job_id === id);
         expect(bundle?.tools.map((tool) => tool.name)).not.toContain('mcp_fixture.read');
+        if (!bundle) throw new Error('Missing initial bundle');
+        const claims = verifyCapability(bundle.attempt.token, KEY);
+        expect(claims.scopes).not.toContain('mcp_fixture.read');
+        expect(claims.live_connection_scopes).toBe(true);
         const delivered = JSON.stringify(provider.requests.get(bundle?.attempt.id ?? ''));
         expect(delivered).toContain('fixture-value-verified');
         const hooks =
@@ -350,10 +348,13 @@ proof(
       });
       await stage('mid-session installation and disconnect boundary', async () => {
         expect(installationProbe?.jobState).toBe('running');
-        expect(installationProbe?.status).toBe(404);
-        gaps.push(
-          'MCP installation after session start: no operator installation route; stdio service launcher is disabled',
+        expect(installationProbe?.status).toBe(201);
+        const installed = await json<{ connection: { setup_state: string } }>(
+          await call(`/connections/${connectionId}`),
         );
+        expect(installed.connection.setup_state).toBe('connected');
+        const connector = registry.get(connectionId);
+        if (!connector) throw new Error('Missing live MCP connector');
         connected = false;
         expect((await connector.health()).status).toBe('failing');
         connected = true;

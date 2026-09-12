@@ -60,6 +60,7 @@ export type RunnerOptions = {
   provider?: string;
   model?: string;
   scopes?: string[];
+  liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   heartbeatMs?: number;
   leaseMs?: number;
@@ -170,6 +171,11 @@ export class AttemptRunner {
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
+        ...(this.options.liveConnectionScopes &&
+        this.options.scopes === undefined &&
+        access.principalId
+          ? { live_connection_scopes: true }
+          : {}),
         scopes: this.options.scopes ??
           (await this.options.scopesForJob?.(tx, row)) ?? [
             ...new Set(available.flatMap((item) => item.scopes)),

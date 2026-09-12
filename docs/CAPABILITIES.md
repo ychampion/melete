@@ -15,7 +15,7 @@ connected to Melete's authority and tested.
 | Capability | Status | Test or reason |
 |---|---|---|
 | Dynamic tool discovery through `search_tools` / `load_tool` | implemented-and-tested | The real capability test's `dynamic discovery and broker receipt` stage passes search, load, continuation, one MCP call and a durable receipt. MCP HTTP exchanges use dedicated connections to avoid the pinned Windows Bun pool stalling a request while Hermes streams. |
-| MCP connect after session start | missing | During a running real-Hermes job, `POST /connections` returns 404. MCP configuration is read from an operator file at startup; service-side stdio launch is disabled. |
+| MCP connect after session start | implemented-and-tested | The real proof starts without an MCP connection, installs one through authenticated `POST /connections` during the first provider request, then searches, loads and calls it in the same attempt. `runtime-mcp.test.ts` covers setup states, persisted restart configuration and authority boundaries. Service-side stdio launch remains disabled. |
 | MCP disconnect recovery | missing | The MCP adapter has no repair callback that reconnects the session and resolves an uncertain action. The capability test observes health failing and recovering, which does not prove job recovery or exactly one effect. |
 | Connection auth refresh and reconnect | missing | Generic connection repair exists, but the configured MCP adapter has no credential-refresh or reconnect callback. |
 | Lifecycle hooks persisted with dedup and replay | implemented-but-unverified | `adapter capture persists in order, deduplicates delivery and replays from the stored cursor` passes in `hooks.test.ts`; Python tests prove observer failure isolation and continuation identity. The real proof records session start/end and pre/post tool events, including distinct continuation capture IDs. Real compaction remains unverified. |
@@ -38,6 +38,20 @@ connected to Melete's authority and tested.
 | Whole end-to-end capability proof | implemented-but-unverified | `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` exists as one opt-in integration test. The final strict run fails with 37 assertions in 180.60 seconds; independent learning and revocation stages pass, while MCP receipt proof fails and the missing capabilities above remain explicit. |
 
 ## Authority and observer behavior
+
+An owner can install an HTTP MCP server through `POST /connections` with
+`provider: mcp`, `space_id`, `label`, and `mcp` containing `id`, `url`,
+`allowed_scopes`, `audience: owner`, and operator-declared `tools`. Each tool
+names its raw server name, alias, required scopes and effect class. Installation
+persists its configuration and exposes `connecting`, `connected`, or `error`;
+the live registry publishes tools only after the connection becomes active.
+The existing owner audience boundary still applies.
+
+Service-issued principal-bound attempts opt into signed `live_connection_scopes`
+so a running session can follow current operator grants. Explicitly restricted
+and legacy capabilities retain their fixed scope lists. Discovery and admission
+still check the current connection, principal, membership, epoch, space,
+compartment and agent restrictions. A loaded schema grants no authority.
 
 Hooks observe; the broker enforces tools, approvals, budgets and generations.
 The plugin registers lifecycle observers and the adapter stores their events in
