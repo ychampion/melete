@@ -23,6 +23,10 @@ test('a pending action still requires approval when no matching approval row exi
     receipt: null,
     resolved_at: null,
     reconciliation: null,
+    repair_trace: [],
+    repair_counters: {},
+    repair_disposition: null,
+    retry_after_at: null,
     created_at: '2026-09-12T00:00:00.000Z',
   };
   const query = mock(async () => []);
