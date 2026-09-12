@@ -14,6 +14,7 @@ export type Metadata = {
   source_hash: string;
   identity_hash: string;
   base_commit: string;
+  runtime_image?: string;
   runs: number;
   seed: number;
   command: string;
@@ -130,7 +131,7 @@ export async function writeReport(meta: Metadata, results: CellResult[], scenari
   const text =
     `# Evaluation evidence\n\n` +
     `Campaign: \`${meta.campaign}\`. Base: \`${meta.base_commit}\`. Source fingerprint: \`${meta.source_hash}\`.\n\n` +
-    `Requested provider/model: \`${meta.provider_requested}\` / \`${meta.model_requested}\`. Observed provider/model: \`${meta.provider_actual}\` / \`${meta.model_actual}\`. Pinned Hermes commit: \`${HERMES_PINNED_COMMIT}\`.\n\n` +
+    `Requested provider/model: \`${meta.provider_requested}\` / \`${meta.model_requested}\`. Observed provider/model: \`${meta.provider_actual}\` / \`${meta.model_actual}\`. Pinned Hermes commit: \`${HERMES_PINNED_COMMIT}\`. Runtime image: \`${meta.runtime_image ?? 'not started'}\`.\n\n` +
     (meta.limitation ? `**Not run:** ${meta.limitation}\n\n` : '') +
     `Observed deterministic passes: ${summary.passed}/${summary.observed}; cells not run: ${summary.not_run}; rubric cells not run: ${summary.rubric_not_run}. These counts do not substitute for the independent language rubric. Recorded total task spend, including unresolved reservations and graders: $${meta.total_cost_usd.toFixed(6)}.\n\n` +
     `## Exact command\n\n\`\`\`sh\n${meta.command}\n\`\`\`\n\n` +

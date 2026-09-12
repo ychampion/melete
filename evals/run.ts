@@ -213,6 +213,7 @@ try {
   if (meta.limitation) console.log(meta.limitation);
   const stack = await openStack();
   state.pin(`${prefix}runtime-image`, stack.imageId);
+  meta.runtime_image = stack.imageId;
   const assignments = Array.from({ length: runs }, (_, i) => i + 1).flatMap((run) =>
     shuffle(scenarios, seed + run).map((scenario) => ({ run, scenario })),
   );

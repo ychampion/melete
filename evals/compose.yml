@@ -10,7 +10,7 @@ services:
     volumes: ["${EVALS_DATA_DIR:?required}/pgdata:/var/lib/postgresql/data"]
     networks: [database]
     logging: {driver: json-file, options: {max-size: 2m, max-file: "2"}}
-    mem_limit: 384m
+    mem_limit: 2g
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U evals -d $$POSTGRES_DB"]
       interval: 2s
