@@ -5,7 +5,7 @@ import {
   jsonObject,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import {
   gradeRecords,
   type RecordCase,
@@ -75,6 +75,26 @@ export class ProcedureEvaluator {
     if (this.busy)
       throw new ServiceError('evaluation_busy', 'Another bounded evaluation is running.');
     this.busy = true;
+    try {
+      // Hold a separate transaction for the whole evaluation, across replicas and both phases.
+      // Do not use JobService.transaction here: its event-order lock must stay short-lived.
+      return await this.jobs.db.transaction(async (lock) => {
+        const [row] = await lock.execute(
+          sql`select pg_try_advisory_xact_lock(781103, hashtext(${spaceId})) as acquired`,
+        );
+        if (!row?.acquired)
+          throw new ServiceError(
+            'evaluation_busy',
+            'An evaluation is already running in this space.',
+          );
+        return this.evaluateLocked(ownerId, spaceId, id);
+      });
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private async evaluateLocked(ownerId: string, spaceId: string, id: string) {
     let promoter: Awaited<ReturnType<typeof openPromoterProcess>> | undefined;
     let runner: AttemptRunner | undefined;
     try {
@@ -145,11 +165,7 @@ export class ProcedureEvaluator {
       try {
         await runner?.stop();
       } finally {
-        try {
-          await promoter?.close();
-        } finally {
-          this.busy = false;
-        }
+        await promoter?.close();
       }
     }
   }

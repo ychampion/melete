@@ -2,7 +2,9 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
 import { taskObjective } from '../../../../conformance/learning/records.ts';
 import { ScriptedRecordRuntime } from '../../../../conformance/learning/scripted-runtime.ts';
+import { openDatabase } from '../../src/db/client.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
+import { JobService } from '../../src/jobs/service.ts';
 import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { ProcedureService } from '../../src/learning/procedures.ts';
 import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
@@ -57,6 +59,74 @@ async function candidate(template: string, selected: string[]) {
 }
 
 (fixture ? describe : describe.skip)('real jobs and unchanged memory conformance promotion', () => {
+  test('independent evaluators exclude the same space and release its lock after failure', async () => {
+    if (!fixture) return;
+    const proposed = await candidate('replica-exclusion', [
+      'sort-typed-values',
+      'keep-header-and-rows',
+    ]);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    class HeldRuntime extends ScriptedRecordRuntime {
+      override async capabilities(): Promise<never> {
+        entered();
+        await held;
+        throw new Error('Intentional evaluation failure');
+      }
+    }
+    class FailingRuntime extends ScriptedRecordRuntime {
+      override async capabilities(): Promise<never> {
+        throw new Error('Replica reached evaluation');
+      }
+    }
+    const first = new ProcedureEvaluator(fixture.jobs, new HeldRuntime(), fixture.runner.options);
+    const replicaDb = openDatabase(fixture.handle.url, 3);
+    const replica = new ProcedureEvaluator(
+      new JobService(replicaDb.db, fixture.queue.boss),
+      new FailingRuntime(),
+      fixture.runner.options,
+    );
+    const pending = first.evaluate(fixture.ownerId, fixture.spaceId, proposed.id).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    try {
+      await Promise.race([
+        started,
+        pending.then(() => {
+          throw new Error('First evaluator did not reach the barrier');
+        }),
+      ]);
+      await rejectsWith(
+        () => replica.evaluate(fixture.ownerId, fixture.spaceId, proposed.id),
+        'evaluation_busy',
+      );
+      expect(
+        await fixture.handle.db
+          .select()
+          .from(procedureEvaluation)
+          .where(eq(procedureEvaluation.candidateId, proposed.id)),
+      ).toEqual([]);
+      release();
+      expect(await pending).toMatchObject({ message: 'Intentional evaluation failure' });
+      const retry = await replica.evaluate(fixture.ownerId, fixture.spaceId, proposed.id).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(retry).toMatchObject({ message: 'Replica reached evaluation' });
+    } finally {
+      release();
+      await pending;
+      await replicaDb.close();
+    }
+  }, 90000);
+
   test('selected validation cannot enable canary without passing final evidence bound to and after selection', async () => {
     if (!fixture || !evaluator || !procedures) return;
     const proposed = await candidate('sealed-final-falsifier', [
