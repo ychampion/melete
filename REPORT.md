@@ -58,3 +58,10 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
 - Commit `Let the scrub check skip its own source and describe its patterns in the report` (`42b1fce`): `bun run lint` then reports `scrub:check passed (795 tracked files)`.
 - Demo: mock on port 3211 (`MOCK_PORT=3211 bun run --cwd apps/mock-api start`) and the web app on 5181 with `VITE_MELETE_API=http://localhost:3211`; a Playwright script drove the dinner conversation (message typed in the composer, `Allow once`, `Send via Messages`) and the ledger conversation (`Review and send`, `Allow once`, `It arrived`); `errors []` from the page. `ffprobe`: 39.96 s. `docs/media/approval-walk.gif` 3,784,551 bytes (760 px wide, 6 fps, 96 colours); `docs/media/approval-walk.mp4` 770,222 bytes (1280 px, H.264).
 - Commit `Add the recorded approval walk through the web app against the mock`.
+
+## Changelog, tag, push and housekeeping
+
+- Commit `Add the changelog with the v0.1.0 entry`: `CHANGELOG.md`.
+- Command `git tag -a v0.1.0 55b6a5071527adbc8332e5eb837aa7ea8b3a5a1b -m ...`: local annotated tag; `git rev-parse v0.1.0^{}` = `55b6a5071527adbc8332e5eb837aa7ea8b3a5a1b`. Not pushed. To push after the owner's decision: `git push origin v0.1.0`. If the release should carry this branch's docs, move it first: `git tag -f -a v0.1.0 <integration merge commit of this PR> -m "Melete v0.1.0"` then `git push origin v0.1.0`.
+- Command `git push -u origin lane/w13-release`: `[new branch] lane/w13-release -> lane/w13-release`.
+- Commands `gh pr close <n> --comment ...` for 1 (merge commits `3a0ea5b`, `91b2189`), 2 (`69eb8a9`), 3 (`6be51a3`), 4 (`9268dcb`), 5 (`d822707`): each answered `Closed pull request`. Every other lane PR (6 to 23) was already merged, including 13; nothing else is open.
