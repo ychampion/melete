@@ -10,6 +10,8 @@ import type { Database } from '../db/client.ts';
 import { owner, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
+import type { RequestSource } from './listener.ts';
+import { LoginThrottle } from './login-throttle.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -73,8 +75,12 @@ async function readCredentials(c: Context) {
   return parsed.success ? parsed.data : null;
 }
 
-export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): void {
+export function mountAuth(
+  app: Hono,
+  deps: { db: Database | null; env: Env; loginThrottle?: LoginThrottle },
+): void {
   const { db, env } = deps;
+  const loginThrottle = deps.loginThrottle ?? new LoginThrottle();
 
   app.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
@@ -156,6 +162,20 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
   });
 
   app.post('/login', async (c) => {
+    const source = (c.env as RequestSource | undefined)?.remoteAddress ?? 'unknown';
+    const retryAfter = loginThrottle.admit(source);
+    if (retryAfter > 0) {
+      c.header('Retry-After', String(retryAfter));
+      return c.json(
+        {
+          error: {
+            code: 'login_rate_limited',
+            message: 'Too many login attempts. Try again later.',
+          },
+        },
+        429,
+      );
+    }
     if (!db) {
       return c.json(
         { error: { code: 'database_unavailable', message: 'Configure Postgres.' } },
@@ -178,6 +198,7 @@ export function mountAuth(app: Hono, deps: { db: Database | null; env: Env }): v
     }
     const authenticated = newSession(found.id);
     await db.insert(session).values(authenticated.row);
+    loginThrottle.succeeded(source);
     sessionCookie(c, authenticated.token, env);
     return c.json({ owner: publicOwner(found) });
   });

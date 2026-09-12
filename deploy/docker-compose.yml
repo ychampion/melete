@@ -48,13 +48,19 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.melete
     restart: unless-stopped
-    networks: [edge, database, internal]
+    networks:
+      edge:
+        aliases: [melete-api]
+        gw_priority: 1
+      database: {}
+      internal: {}
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 8787
+      MELETE_API_BIND: melete-api
       DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
       MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?run bun run deploy/scripts/configure.ts}
@@ -95,7 +101,7 @@ services:
     ports:
       - "127.0.0.1:${MELETE_PORT:-3100}:8787"
     healthcheck:
-      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8787/health');const b=await r.json();process.exit(r.ok&&b.database==='ok'?0:1)"]
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://melete-api:8787/health');const b=await r.json();process.exit(r.ok&&b.database==='ok'?0:1)"]
       interval: 2s
       timeout: 5s
       start_period: 30s

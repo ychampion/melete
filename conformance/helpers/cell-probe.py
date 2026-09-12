@@ -12,6 +12,23 @@ probe = json.loads(sys.argv[1])
 started = time.monotonic()
 mode = probe['mode']
 result = {}
+
+
+def http_check(url, post=False):
+    request = urllib.request.Request(url, data=b'{}' if post else None,
+                                     headers={'content-type': 'application/json'})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=3) as response:
+            return {'status': response.status, 'body': response.read(512).decode()}
+    except urllib.error.HTTPError as error:
+        return {'status': error.code, 'body': error.read(512).decode()}
+    except urllib.error.URLError as error:
+        return {'reachable': False, 'errno': getattr(error.reason, 'errno', None)}
+    except OSError as error:
+        return {'reachable': False, 'errno': error.errno}
+
+
 if mode == 'connect':
     try:
         with socket.create_connection((probe['host'], probe['port']), timeout=2):
@@ -19,14 +36,12 @@ if mode == 'connect':
     except OSError as error:
         result = {'reachable': False, 'errno': error.errno, 'error': type(error).__name__}
 elif mode == 'http':
-    request = urllib.request.Request(probe['url'], data=b'{}' if probe.get('post') else None,
-                                     headers={'content-type': 'application/json'})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(request, timeout=3) as response:
-            result = {'status': response.status}
-    except urllib.error.HTTPError as error:
-        result = {'status': error.code}
+    result = http_check(probe['url'], probe.get('post', False))
+elif mode == 'control-plane':
+    result = {'checks': [
+        {'path': path, **http_check('http://melete:8787' + path, path != '/health')}
+        for path in ['/setup', '/login', '/health']
+    ]}
 elif mode == 'route':
     routes = Path('/proc/net/route').read_text().splitlines()[1:]
     result = {'default_routes': [line for line in routes if line.split()[1] == '00000000']}

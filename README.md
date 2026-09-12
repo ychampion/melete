@@ -57,8 +57,8 @@ per space, which you can read, edit, and diff with the tools you already have.
 
 ## Install on a Linux Docker host
 
-Use Docker Engine **28 or newer**, a current Docker Compose plugin supporting
-`volume.subpath`, and the local rootful Docker socket at `/var/run/docker.sock`.
+Use Docker Engine **28 or newer**, Docker Compose **2.33.1 or newer** supporting
+`volume.subpath` and `gw_priority`, and the local rootful Docker socket at `/var/run/docker.sock`.
 Engine 28 introduced the [isolated bridge gateway mode](https://docs.docker.com/engine/release-notes/28/)
 used to remove host-network reachability. If Docker is not installed, follow
 the [Docker Engine installation instructions](https://docs.docker.com/engine/install/)

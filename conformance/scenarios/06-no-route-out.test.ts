@@ -28,6 +28,7 @@ type Probe = {
   reachable?: boolean;
   errno?: number;
   status?: number;
+  checks?: { path: string; reachable?: boolean; errno?: number; status?: number; body?: string }[];
   duration_ms: number;
   default_routes?: string[];
   reads?: { readable: boolean }[];
@@ -55,6 +56,20 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
       `cell probe ${input.mode}:${input.host ?? input.url ?? ''} ${JSON.stringify(result)}\n`,
     );
     return result;
+  };
+
+  const expectControlPlaneDenied = (result: Probe) => {
+    expect(result.checks?.map((check) => check.path)).toEqual(['/setup', '/login', '/health']);
+    for (const check of result.checks ?? []) {
+      if (check.reachable === false) {
+        expect(check.errno).toBe(111); // ECONNREFUSED, not a timeout or a DNS failure.
+      } else {
+        expect(check.status).toBe(403);
+        expect(JSON.parse(check.body ?? '')).toEqual({
+          error: { code: 'control_plane_forbidden', message: 'Forbidden.' },
+        });
+      }
+    }
   };
 
   beforeAll(async () => {
@@ -183,7 +198,11 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
     expect(result.docker_socket_present).toBe(false);
   });
 
-  test('a claimed attempt has the same boundaries and mounts only its own job', async () => {
+  test('the warm cell cannot reach owner setup, login or health', async () => {
+    expectControlPlaneDenied(await probe({ mode: 'control-plane' }));
+  });
+
+  test('a claimed attempt cannot reach the owner control plane and retains its job boundary', async () => {
     const { jobId } = await createStackJob({ title: 'Probe an actual isolated attempt' });
     const childId = await waitFor(
       async () => {
@@ -206,7 +225,9 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
     // Stop only the engine process. Docker exec remains available for the probes;
     // the service continues renewing the claimed attempt's lease.
     await docker('kill', '--signal', 'STOP', childId);
+    let controlPlane: Probe | undefined;
     try {
+      controlPlane = await probe({ mode: 'control-plane' }, childId);
       const child = JSON.parse(await docker('inspect', childId))[0] as Inspection;
       expect(
         child.HostConfig.Mounts.find((mount) => mount.Target === '/work')?.VolumeOptions?.Subpath,
@@ -256,5 +277,7 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
     }
     await waitForJob(jobId, 'waiting_for_approval');
     await approveJob(jobId);
+    if (!controlPlane) throw new Error('The claimed-cell control-plane probe did not run');
+    expectControlPlaneDenied(controlPlane);
   }, 240_000);
 });

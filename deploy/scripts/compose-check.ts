@@ -16,7 +16,8 @@ export type ComposeFile = {
 };
 
 export type ComposeService = {
-  networks?: string[];
+  networks?: string[] | Record<string, { aliases?: string[]; gw_priority?: number } | null>;
+  environment?: Record<string, string | number | boolean>;
   user?: string;
   read_only?: boolean;
   cap_drop?: string[];
@@ -48,6 +49,8 @@ export type CheckResult = {
 };
 
 const RUNTIME = 'runtime';
+const networkNames = (service: ComposeService | undefined): string[] =>
+  Array.isArray(service?.networks) ? service.networks : Object.keys(service?.networks ?? {});
 
 /** Every property the architecture promises about the runtime container. */
 export function checkCompose(compose: ComposeFile): CheckResult[] {
@@ -73,7 +76,7 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     return results;
   }
 
-  const networks = runtime.networks ?? [];
+  const networks = networkNames(runtime);
   say(
     'the runtime is on the internal network only',
     networks.length === 1 && networks[0] === 'internal',
@@ -171,22 +174,41 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   // Postgres must never be reachable from outside the machine, and the runtime
   // must not be able to reach it at all.
   const postgres = compose.services?.postgres;
+  const postgresNetworks = networkNames(postgres);
   say(
     'postgres is internal and unpublished',
     Boolean(postgres) &&
-      postgres?.networks?.length === 1 &&
-      postgres.networks[0] === 'database' &&
+      postgresNetworks.length === 1 &&
+      postgresNetworks[0] === 'database' &&
       compose.networks?.database?.internal === true &&
       (postgres?.ports ?? []).length === 0,
     'postgres must sit on the separate internal database network and publish no port',
   );
   const peers = Object.entries(compose.services ?? {})
-    .filter(([name, service]) => name !== RUNTIME && service.networks?.includes('internal'))
+    .filter(([name, service]) => name !== RUNTIME && networkNames(service).includes('internal'))
     .map(([name]) => name);
   say(
     "the broker is the runtime network's only peer",
     peers.length === 1 && peers[0] === 'melete',
     `unexpected runtime peers: ${peers.join(', ')}`,
+  );
+
+  const melete = compose.services?.melete;
+  const ownerNetworks = Array.isArray(melete?.networks) ? {} : (melete?.networks ?? {});
+  const aliasOffEdge = Object.values(compose.services ?? {}).some(
+    (service) =>
+      !Array.isArray(service.networks) &&
+      Object.entries(service.networks ?? {}).some(
+        ([name, config]) => name !== 'edge' && config?.aliases?.includes('melete-api'),
+      ),
+  );
+  say(
+    'the owner API binds only to its edge network address',
+    melete?.environment?.MELETE_API_BIND === 'melete-api' &&
+      ownerNetworks.edge?.aliases?.includes('melete-api') === true &&
+      ownerNetworks.edge?.gw_priority === 1 &&
+      !aliasOffEdge,
+    'MELETE_API_BIND must use the edge-only melete-api alias with edge gateway priority',
   );
 
   return results;

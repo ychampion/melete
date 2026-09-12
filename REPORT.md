@@ -303,3 +303,33 @@ The measurement campaign finished at 22:03 UTC, about 73 minutes after starting
 and within its five-hour cap. The two owned auxiliary fixture containers were
 removed after evidence capture. The primary four-service stack remains available;
 no pre-existing image, container or volume was pruned.
+
+## 2026-09-12 PR review results
+
+Database-dependent checks use disposable databases on the existing Compose
+Postgres server, with `DATABASE_URL` passed privately. Deployment checks use the
+scripted provider and test destination. No resources were pruned.
+
+### HIGH: runtime access to the owner control plane
+
+The owner API binds only to the edge interface resolved by the edge-only
+`melete-api` alias. A separate socket-source guard rejects other subnets before
+any account lookup, with the same 403 before and after owner creation. Login
+reserves five attempts per socket source before asynchronous work, then applies
+1/2/4/.../60-second backoff and `Retry-After`. Forwarded headers cannot change
+the source, and the source map is bounded.
+
+| Command / check | Exit | Result |
+| --- | ---: | --- |
+| `MELETE_CONFORMANCE_COMPOSE=1 bun test conformance/scenarios/06-no-route-out.test.ts` against the reviewed image | 1 | Expected reproduction: 8 passed, 2 failed, 57 assertions; both cells reached setup/login validation (400) and health (200) |
+| `bun test apps/melete/src/api/listener.test.ts apps/melete/src/api/login-throttle.test.ts apps/melete/test/integration/auth.test.ts deploy/scripts/compose-check.test.ts` | 0 | 35 passed, 143 assertions, 6.11 s |
+| `bun run typecheck` | 0 | TypeScript checks passed |
+| `docker compose --progress plain -f deploy/docker-compose.yml build melete` | 0 | 26.736 s |
+| `docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180` | 0 | All four services healthy, 7.935 s |
+| `MELETE_CONFORMANCE_COMPOSE=1 bun test conformance/scenarios/06-no-route-out.test.ts` against the rebuilt image | 0 | 10 passed, 60 assertions, 47.70 s |
+| Live `/login` burst with six different forged forwarding headers | 0 | Five 401 responses, then 429 with `Retry-After: 1`; no session cookies |
+
+All six owner-route probes returned ECONNREFUSED (111). Broker and gateway
+routes remained reachable and returned 401 without capabilities. `/proc/net/tcp`
+showed `172.20.0.2:8787` for the API and `0.0.0.0:8788` for the broker;
+the host's `http://127.0.0.1:3100/health` returned 200 with database `ok`.

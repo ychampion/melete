@@ -8,6 +8,8 @@ import { z } from 'zod';
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8787),
+  /** Compose resolves an alias assigned only to edge; local development uses loopback. */
+  MELETE_API_BIND: z.string().min(1).default('127.0.0.1'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
   /**

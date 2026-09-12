@@ -117,4 +117,18 @@ describe('the check catches the mistakes that would matter', () => {
     if (broken.services) delete broken.services.runtime;
     expect(failures(broken)).toContain('the runtime service exists');
   });
+
+  test('binding the owner API to every interface is rejected', () => {
+    const broken = structuredClone(compose);
+    if (broken.services?.melete?.environment)
+      broken.services.melete.environment.MELETE_API_BIND = '0.0.0.0';
+    expect(failures(broken)).toContain('the owner API binds only to its edge network address');
+  });
+
+  test('assigning the owner API alias to the runtime network is rejected', () => {
+    const broken = structuredClone(compose);
+    const networks = broken.services?.melete?.networks;
+    if (networks && !Array.isArray(networks)) networks.internal = { aliases: ['melete-api'] };
+    expect(failures(broken)).toContain('the owner API binds only to its edge network address');
+  });
 });

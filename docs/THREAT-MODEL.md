@@ -161,6 +161,12 @@ What contains it:
   attempt, one epoch, one revision, with a budget and an expiry. When the epoch
   moves, the token is dead. It cannot create a job, widen a scope, or approve
   anything.
+- **The owner control plane is outside the runtime listener.** The API binds
+  only to its edge-network address. A second transport check rejects sources
+  outside that interface's subnet before routing, including `/setup`, `/login`
+  and `/health`, with a fixed 403 that contains no account state. It uses the
+  socket peer, never a caller's forwarding header. Login also has a per-source,
+  per-process burst of five attempts and exponential backoff capped at 60 seconds.
 - **Effects still need approval.** A fully compromised runtime can propose. It
   cannot admit.
 - **A small surface.** Non-root, read-only root filesystem, all capabilities
@@ -204,6 +210,7 @@ or protection from kernel exploits.
 | Workspace | A sibling canary existed in the full volume; three read paths returned ENOENT while the job workspace was writable | Reading that canary through any cell path |
 | Sole peer | Network inspection showed only Melete and the cell; broker/model routes answered | Another attached peer or an unmediated external route |
 | Runtime authority | A valid cell capability read the catalog (200) but could not approve (401); altered owner approval hashes were refused (409) | A cell capability spending an approval or changing its payload |
+| Owner control plane | Scenario 6 probes setup, login and health on port 8787 from both cells; the API binds only to edge and its transport guard denies other source subnets | Either cell receiving account state or any response other than connection refusal or the fixed 403 |
 | Process hardening | UID 10001, read-only root, zero effective capabilities, no-new-privileges, no Docker socket | Any failed assertion in the live hardening probe |
 
 The restore proof replaced only the stack's Postgres volume while retaining a
@@ -213,6 +220,13 @@ memory and job workers; afterward the forgotten fact was absent, an unrelated
 fact remained available, and the restored waiting job completed with one receipt.
 Serving the forgotten fact or duplicating the destination effect would falsify
 those restore claims. Commands and measured results are in [REPORT.md](../REPORT.md).
+
+The 2026-09-12 review added the missing peer-port checks:
+`the warm cell cannot reach owner setup, login or health` and
+`a claimed attempt cannot reach the owner control plane and retains its job boundary`.
+The earlier peer-set test alone did not establish this control-plane boundary.
+An integration test verifies the transport rejection before and after owner
+creation; another verifies per-source login backoff and forged-header rejection.
 
 ---
 

@@ -104,6 +104,7 @@ export const SCENARIOS: readonly Scenario[] = [
       'a sibling job canary is absent while the current workspace is writable',
       'a positively verified host listener is unreachable',
       'the broker and model gateway answer and are the only attached peer',
+      'owner setup, login and health refuse connections from both runtime cells without account state',
       'the container runs as a non-root user with a read-only root filesystem',
     ],
   },

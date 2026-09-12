@@ -222,3 +222,37 @@ such historical rows existed after the combined checks; their epochs were
 fenced and no supervised cells remained. This is a recorded status limitation.
 Detailed procedures and measured results are in [REPORT.md](../../REPORT.md)
 and [deployment operations](../../docs/DEPLOYMENT.md).
+
+## 2026-09-12 control-plane boundary correction
+
+The original scenario 6 proved the attached peer set but did not prove that
+only its broker port was reachable. The review's missing-port reproduction
+failed as expected: 8 tests passed and 2 failed, with both the warm cell and a
+claimed attempt receiving setup/login validation (400) and health state (200)
+from `melete:8787`.
+
+The API now binds only to the edge-network address resolved by the edge-only
+`melete-api` alias. Its transport guard separately rejects source addresses
+outside that interface's subnet, before any routing or account lookup. The
+fixed 403 has no account state. The guard and login throttle use the real socket
+source rather than forwarded headers. Login allows five attempts per source,
+then exponential backoff from one to sixty seconds; the source map is bounded.
+
+The new scenario 6 names are:
+
+- `the warm cell cannot reach owner setup, login or health`
+- `a claimed attempt cannot reach the owner control plane and retains its job boundary`
+
+Against the rebuilt stack, scenario 6 passed 10 tests and 60 assertions in
+47.70 seconds. All three owner routes returned ECONNREFUSED (111) from each
+cell. Broker and gateway probes remained reachable with 401 without authority.
+The API socket was bound to `172.20.0.2:8787`; only the broker used
+`0.0.0.0:8788`. The host API health check returned 200.
+
+The listener/authentication/Compose tests passed 35 tests and 143 assertions.
+They verify the account-state denial before and after owner creation, socket
+source handling, bounded throttle storage, and backoff. A live six-request
+login burst with forged forwarding headers returned five 401 responses and
+then 429 with `Retry-After: 1`, without issuing any session cookie. A cell
+receiving owner account state, a wildcard owner API socket, or forwarding
+headers bypassing this throttle would falsify the corrected claim.

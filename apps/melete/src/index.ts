@@ -18,6 +18,8 @@ import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
+import { apiFetch, resolveApiNetwork } from './api/listener.ts';
+import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
@@ -54,6 +56,7 @@ export const VERSION = '0.1.0-pre';
 export type AppDeps = {
   env: Env;
   db: Database | null;
+  loginThrottle?: LoginThrottle;
   jobs?: JobService;
   triggers?: TriggerService;
   approvals?: ApprovalService;
@@ -321,10 +324,16 @@ export async function bootstrap(
 }
 
 if (import.meta.main) {
+  const apiNetwork = await resolveApiNetwork(loadEnv());
   const service = await bootstrap({ effects: true });
   const { app, env, effectBoundary } = service;
-  process.stdout.write(`melete ${VERSION} listening on :${env.PORT}\n`);
-  const server = Bun.serve({ port: env.PORT, fetch: app.fetch, idleTimeout: 0 });
+  const server = Bun.serve({
+    hostname: apiNetwork.hostname,
+    port: env.PORT,
+    fetch: apiFetch(app, apiNetwork),
+    idleTimeout: 0,
+  });
+  process.stdout.write(`melete ${VERSION} listening on ${apiNetwork.hostname}:${env.PORT}\n`);
   if (effectBoundary)
     process.stdout.write(`effect boundary listening on ${env.MELETE_BROKER_BIND}\n`);
   let stopping = false;

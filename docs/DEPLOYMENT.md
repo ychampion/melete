@@ -21,6 +21,21 @@ The default listeners bind to host loopback:
 | `http://localhost:3100` | Direct API |
 | No host port | Postgres, broker, and runtime API |
 
+Inside Melete, the owner API binds only to the IPv4 address resolved by
+`MELETE_API_BIND=melete-api`. Compose assigns that alias only on the edge network;
+the API does not listen on runtime or database interfaces. Its transport guard
+also rejects requests outside the edge interface's subnet before reaching
+`/setup`, `/login`, `/health`, or any other API route. The rejection is a fixed
+403 without account state, based on the socket source rather than forwarded
+headers. The runtime network can reach the broker/model listener on port 8788.
+
+Login accepts a burst of five attempts per socket source and process, then
+requires 1, 2, 4, up to 60 seconds between attempts. A rejection returns 429 and
+`Retry-After`; success or 15 idle minutes resets the source's burst. The source
+map is bounded. Browsers behind the web proxy share that proxy's bucket;
+untrusted forwarding headers cannot create fresh buckets. Restarting Melete
+resets these in-memory limits.
+
 Use the SSH tunnel in the README for a remote host. For a public hostname,
 terminate TLS in your reverse proxy and forward the whole site to
 `http://127.0.0.1:3101`, preserving the request Host and Origin headers. Preserve
