@@ -243,9 +243,16 @@ export function createBrowserConnector(options: {
         };
       } catch (error) {
         if (error instanceof BrowserFault) {
-          if (activeSessionId && browserInputReasons.has(error.reason))
-            await options.sessions.park(ctx, activeSessionId, error.reason, action.attempt_id);
-          return { outcome: 'failed', reason: error.reason, retryable: false };
+          let reason = error.reason;
+          if (activeSessionId && browserInputReasons.has(error.reason)) {
+            try {
+              await options.sessions.park(ctx, activeSessionId, error.reason, action.attempt_id);
+            } catch {
+              // The durable failure records both outcomes without exposing a database error's contents.
+              reason += '; browser_park_failed';
+            }
+          }
+          return { outcome: 'failed', reason, retryable: false };
         }
         // A transport loss after an approved commit has an unknown effect and must never be retried.
         if (kind === 'submit')

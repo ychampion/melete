@@ -59,7 +59,7 @@ function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClien
       };
     },
   });
-  return { connector, commands, parks, captures };
+  return { connector, commands, parks, captures, sessions };
 }
 
 test('browser catalog exposes consequential commits as approved external writes', () => {
@@ -167,6 +167,29 @@ test('planned epoch is never refreshed at dispatch and controller refusal parks 
   expect(result).toEqual({ outcome: 'failed', reason: 'stale_control_epoch', retryable: false });
   expect(s.parks).toEqual(['stale_control_epoch']);
 });
+
+test.each(['fill', 'submit'])(
+  'a park failure preserves the named %s refusal and records failed parking',
+  async (kind) => {
+    const s = fixture(() => Response.json({ error: 'stale_control_epoch' }, { status: 409 }));
+    s.sessions.park = async (_ctx, _id, reason) => {
+      s.parks.push(reason);
+      throw new Error('database connection secret must not enter the result');
+    };
+    const action = connectorAction(`browser.${kind}`, {
+      session_id: 'brws_fixture',
+      control_epoch: 3,
+      after_observation: 'obs_prior',
+      ...(kind === 'fill' ? { label: 'Name', value: 'Alice' } : { intent: {} }),
+    });
+    expect(await s.connector.execute(action, connectorContext(action))).toEqual({
+      outcome: 'failed',
+      reason: 'stale_control_epoch; browser_park_failed',
+      retryable: false,
+    });
+    expect(s.parks).toEqual(['stale_control_epoch']);
+  },
+);
 
 test('read refresh keys stay inside the broker and observe failures park the leased session', async () => {
   const s = fixture(() => Response.json({ error: 'human_control' }, { status: 409 }));
