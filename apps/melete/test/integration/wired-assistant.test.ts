@@ -66,6 +66,8 @@ afterAll(async () => {
     const password = 'w15-local-proof-password';
     const passwordHash = await Bun.password.hash(password, { algorithm: 'argon2id' });
     await handle.sql`update owner set email = 'wired@example.test', password_hash = ${passwordHash}`;
+    // Login reads the principal created by the fixture, not the singleton setup record.
+    await handle.sql`update principal set email = 'wired@example.test', password_hash = ${passwordHash} where id = ${scope.ownerId}`;
     await handle.sql`insert into connection (id, space_id, provider, label, scopes, status)
       values (${newId('conn')}, ${scope.spaceId}, 'test', 'Scripted send', '["test.send"]'::jsonb, 'active')`;
     await new FileRestrictionJournal(join(spaces, '.memory', 'restrictions.jsonl')).initializeNew();
@@ -172,7 +174,12 @@ afterAll(async () => {
       expect(first.skills.map((skill) => skill.name)).toEqual(['alpha', 'beta', 'gamma']);
       expect(first.knowledge).toHaveLength(2);
       expect(first.knowledge.map((item) => item.handle)).toContain(`${seat.id}@1`);
-      expect(first.tools.map((tool) => tool.name)).toEqual(['test.send']);
+      expect(first.tools.map((tool) => tool.name)).toEqual([
+        'search_tools',
+        'load_tool',
+        'react',
+        'test.send',
+      ]);
       expect(first.inputs.since_last?.previous_attempt_id).toBeNull();
       expect(first.inputs.since_last?.evidence_handles).toEqual([`${seeded.sourceId}@1`]);
       expect(
