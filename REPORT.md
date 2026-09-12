@@ -49,3 +49,12 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
 - Command `bun run typecheck`: exit 0.
 - Commit `Scrub local paths and working-session phrases from the record and check for them in lint`: `.agents/notes/{0018,0021}`, four lane reports, `LANDING-REPORT.md`, `docs/CAPABILITIES.md`, `scripts/scrub-check.ts`, `package.json` (`lint` now runs `scrub:check`).
 - Commit `Rewrite the README around the promise, the six gates and the install path`: `README.md`, `REPORT.md`.
+
+## Docs pass and demo (commits below)
+
+- Commit `Refresh the public documentation against the landed tree` (`6cafa10`): `docs/ARCHITECTURE.md` rewritten; targeted edits in `docs/{MEMORY,ENGINEERING,THREAT-MODEL,CONNECTORS,CLIENT,mail-calendar,browser-worker}.md`, `SECURITY.md`, `CONTRIBUTING.md`, `conformance/README.md`, `conformance/memory/README.md`, `apps/melete/src/{api,gateway,knowledge}/README.md`, `packages/runtime-hermes/README.md`, `.agents/notes/README.md` (0016, 0018, 0025 indexed).
+- Command `git grep -n -i -E "written, not run|9484023|\blane\b|pull request \(#|\bW[0-9]{1,2}[a-c]?\b" -- '*.md'` over the public pages (excluding `.agents`, `LANDING-REPORT.md`, `REPORT.md`, `docs/reviews`, `apps/web/docs`): one hit, the file name of the contract-additions note linked from `docs/CAPABILITIES.md`.
+- Command (link check over every tracked Markdown file): 86 files; the only unresolved links are quoted before/after sentences inside `LANDING-REPORT.md` and the README's demo image, which the demo commit adds.
+- Commit `Let the scrub check skip its own source and describe its patterns in the report` (`42b1fce`): `bun run lint` then reports `scrub:check passed (795 tracked files)`.
+- Demo: mock on port 3211 (`MOCK_PORT=3211 bun run --cwd apps/mock-api start`) and the web app on 5181 with `VITE_MELETE_API=http://localhost:3211`; a Playwright script drove the dinner conversation (message typed in the composer, `Allow once`, `Send via Messages`) and the ledger conversation (`Review and send`, `Allow once`, `It arrived`); `errors []` from the page. `ffprobe`: 39.96 s. `docs/media/approval-walk.gif` 3,784,551 bytes (760 px wide, 6 fps, 96 colours); `docs/media/approval-walk.mp4` 770,222 bytes (1280 px, H.264).
+- Commit `Add the recorded approval walk through the web app against the mock`.
