@@ -87,8 +87,9 @@ const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: 
 
 class MockExperienceError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 401 | 404 | 409,
     message: string,
+    readonly code = 'experience_request_refused',
   ) {
     super(message);
   }
@@ -116,6 +117,12 @@ export class ExperienceMock {
   readonly tasks = new Map<string, ReturnType<typeof C.experienceTask.parse>>();
   readonly automations = new Map<string, ReturnType<typeof C.experienceAutomation.parse>>();
   readonly memories = new Map<string, ReturnType<typeof C.memoryItem.parse>>();
+  /** Answers given during setup, by key, so the first message can refer to one. */
+  readonly answers = new Map<string, string>();
+  /** Set once the welcome scenario has played; every later message picks by text. */
+  welcomed = false;
+  /** After POST /signout every route but sign-in answers 401 until a link is consumed. */
+  signedOut = false;
   readonly submissions = new Map<
     string,
     { text: string; result: ReturnType<typeof C.messageAcceptance.parse> }
@@ -558,7 +565,10 @@ export class ExperienceMock {
     }
     if (step.step === 'say') {
       this.flush(chat);
-      this.event(chat, { type: 'say', text: plainText(step.text, 'Working on it.', 600) });
+      this.event(chat, {
+        type: 'say',
+        text: plainText(this.fill(step.text), 'Working on it.', 600),
+      });
     } else if (step.step === 'tool' && step.sources.length) {
       // Scripted evidence with human labels: one action, its sources with their apps.
       this.flush(chat);
@@ -726,7 +736,7 @@ export class ExperienceMock {
       }
     } else if (step.step === 'text') {
       this.flush(chat);
-      const text = answerText(step.text);
+      const text = answerText(this.fill(step.text));
       if (text) {
         const turn = chat.turns.at(-1);
         if (turn) turn.answer += text;
@@ -859,6 +869,12 @@ export class ExperienceMock {
     });
     chat.turns.push(turn);
     chat.script = chooseScenario(this.deps.scenarios, `${chat.view.title} ${input.text}`);
+    // The first message after setup gets the welcome, which names one setup answer.
+    const welcome = this.deps.scenarios.find((entry) => entry.id === 'welcome');
+    if (welcome && this.answers.size > 0 && !this.welcomed) {
+      chat.script = welcome;
+      this.welcomed = true;
+    }
     chat.position = 0;
     chat.paused = false;
     chat.stopped = false;
@@ -1171,7 +1187,24 @@ export class ExperienceMock {
     this.automations.set(value.id, value);
     return { automation: value };
   }
+  /** The label a key shows under, matching the service's own wording. */
+  keyLabel(key: string) {
+    const [kind, subject, field] = key.split('.');
+    const name = (subject ?? '').replaceAll('-', ' ');
+    const leaf = (field ?? '').replaceAll('-', ' ');
+    if (kind === 'contact') return `${name}'s ${leaf}`;
+    if (kind === 'event') return `${name} ${leaf}`;
+    return `${name}: ${leaf}`;
+  }
+  /** Placeholders the welcome scenario fills from setup. */
+  fill(text: string) {
+    return text
+      .replaceAll('{{melete_calls_you}}', this.profile.name.split(' ')[0] ?? this.profile.name)
+      .replaceAll('{{this_month}}', this.answers.get('pref.focus.this-month') ?? 'this month');
+  }
   handle(key: string, c: Context, input: Record<string, unknown>): unknown {
+    if (this.signedOut && !key.startsWith('POST /signin'))
+      throw new MockExperienceError(401, 'A session is required.');
     const id = c.req.param('id') ?? '';
     switch (key) {
       case 'GET /agents/templates':
@@ -1279,6 +1312,40 @@ export class ExperienceMock {
       }
       case 'GET /memory/items':
         return { items: [...this.memories.values()] };
+      case 'POST /memory/items': {
+        // One key, one current value: a second answer on a key replaces the first.
+        const create = C.memoryItemCreate.parse(input);
+        if (C.memoryKeyValue(create.key) !== 'text')
+          throw new MockExperienceError(
+            409,
+            'This key is maintained from source evidence. Correct its saved item instead.',
+            'extractor_owned_key',
+          );
+        const label = this.keyLabel(create.key);
+        const existing = [...this.memories.values()].find((entry) => entry.key === label);
+        const item = C.memoryItem.parse({
+          id: existing?.id ?? newId('mem'),
+          key: label,
+          value: create.value,
+          source: 'onboarding',
+          created: existing?.created ?? this.now(),
+          last_used: existing?.last_used ?? null,
+          editable: true,
+          version: newId('v'),
+        });
+        this.memories.set(item.id, item);
+        this.answers.set(create.key, create.value);
+        return { item };
+      }
+      case 'POST /signout':
+        this.signedOut = true;
+        return { status: 'ok' };
+      case 'POST /signin/magic-link':
+        // The mock sends no mail; the link is any token consumed below.
+        return { status: 'ok' };
+      case 'POST /signin/magic-link/consume':
+        this.signedOut = false;
+        return { status: 'ok' };
       case 'PATCH /memory/items/{id}': {
         const item = required(this.memories, id);
         if (input.version !== item.version)
@@ -1495,10 +1562,7 @@ export function mountExperienceMock(
           : c.json(C.experienceResult(operation.response).parse(body));
       } catch (error) {
         if (!(error instanceof MockExperienceError)) throw error;
-        return c.json(
-          { error: { code: 'experience_request_refused', message: error.message } },
-          error.status,
-        );
+        return c.json({ error: { code: error.code, message: error.message } }, error.status);
       }
     });
   }

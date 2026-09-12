@@ -8,11 +8,12 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
-import { action, artifact, attempt, job, owner, space } from '../db/schema.ts';
+import { action, artifact, attempt, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import { requireJobAccess, spaceAuthority, visibleJob } from '../principals/authority.ts';
 import {
   type Intervention,
   interventionRequest,
@@ -205,9 +206,8 @@ export async function captureCompletedEpisode(
 
 /** Owner authentication is supplied by the API. A requested space is checked, never trusted. */
 export async function requireLearningSpace(tx: Transaction, ownerId: string, spaceId: string) {
-  const [person] = await tx.select({ id: owner.id }).from(owner).where(eq(owner.id, ownerId));
-  const [parent] = await tx.select().from(space).where(eq(space.id, spaceId));
-  if (!person || !parent) throw new ServiceError('scope_denied', 'Space is unavailable.', 403);
+  const access = await spaceAuthority(tx, spaceId, ownerId, true);
+  if (access.role !== 'owner') throw new ServiceError('scope_denied', 'Space is unavailable.', 403);
   const state = await tx.execute(
     sql`select owner_id, revoked, restore_ready from memory_spaces where space_id = ${spaceId}`,
   );
@@ -228,6 +228,7 @@ export class EpisodeService {
       const row = await this.jobs.lock(tx, jobId);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
       await requireLearningSpace(tx, ownerId, row.spaceId);
+      await requireJobAccess(tx, row.id, ownerId);
       const [old] = await tx.select().from(learningJob).where(eq(learningJob.jobId, jobId));
       if (old) {
         if (
@@ -261,6 +262,7 @@ export class EpisodeService {
       let row = await this.jobs.lock(tx, jobId);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
       await requireLearningSpace(tx, ownerId, row.spaceId);
+      await requireJobAccess(tx, row.id, ownerId);
       const [old] = await tx
         .select()
         .from(episode)
@@ -366,6 +368,7 @@ export class EpisodeService {
         .where(
           and(
             eq(episode.spaceId, spaceId),
+            visibleJob(episode.jobId, ownerId),
             eq(episode.restricted, false),
             gt(episode.expiresAt, new Date()),
           ),
@@ -389,7 +392,9 @@ export class EpisodeService {
           inputRefs: [],
           generationState: 'restricted',
         })
-        .where(and(eq(episode.id, id), eq(episode.spaceId, spaceId)))
+        .where(
+          and(eq(episode.id, id), eq(episode.spaceId, spaceId), visibleJob(episode.jobId, ownerId)),
+        )
         .returning();
       if (!saved) throw new ServiceError('not_found', 'Episode not found.', 404);
       await tx.execute(sql`delete from procedure_candidate where episode_id = ${id}`);

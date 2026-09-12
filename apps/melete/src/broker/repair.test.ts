@@ -46,6 +46,38 @@ const ACTION_ID = 'act_01J0000000000000000000000A';
 const CONNECTION_ID = 'conn_01J0000000000000000000000B';
 const FALLBACK_ROUTE = 'send/authorized-fallback';
 
+test('revocation during reconnect prevents the next execution', async () => {
+  let lost = false;
+  let calls = 0;
+  let reconnects = 0;
+  const run = await runRepair(
+    {},
+    {
+      authorityLost: async () => (lost ? 'grant revoked during reconnect' : null),
+      execute: async () => {
+        calls++;
+        throw new ConnectorFaultError({
+          kind: 'transient_before_dispatch',
+          detail: 'Transport closed before dispatch',
+        });
+      },
+      verify: async () => ({ decision: 'unsupported', reason: 'No effect verification' }),
+      reconnect: async () => {
+        reconnects++;
+        lost = true;
+      },
+    },
+    { operation: 'test.send', classify, sleep: async () => {} },
+  );
+  expect(run.disposition).toBe('needs_reconnect');
+  expect(calls).toBe(1);
+  expect(reconnects).toBe(1);
+  expect(run.trace.map((entry) => entry.decision)).toEqual([
+    'retry_with_backoff',
+    'stop_connection_revoked',
+  ]);
+});
+
 /** The eleven reference cases, plus the two the lane brief adds. */
 const CASES = {
   healthy: 'completed',

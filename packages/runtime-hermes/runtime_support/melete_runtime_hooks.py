@@ -32,7 +32,7 @@ _TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 
 class Capture:
     def __init__(self, attempt_id: str, sink: Callable[[dict], None]):
-        self.attempt_id, self.prefix = capture_identity(attempt_id)
+        self.attempt_id, self.capture_prefix = capture_identity(attempt_id)
         self.sink = sink
         self.seq = 0
         self.lock = threading.Lock()
@@ -40,17 +40,16 @@ class Capture:
         self.closed = False
 
 
+_current: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("melete_hook_capture", default=None)
+
+
 def capture_identity(run_key: str) -> tuple[str, str]:
-    # Tool discovery starts another run in the same attempt. Its idempotency
-    # suffix distinguishes captures without changing the service-owned attempt.
-    match = re.fullmatch(r"(att_[A-Za-z0-9]+):tools:([1-9][0-9]*)", run_key)
-    if match:
-        attempt, index = match.groups()
+    """Discovery continuations retain their attempt but have distinct capture IDs."""
+    continuation = re.fullmatch(r"(.+):tools:([1-9][0-9]{0,8})", run_key)
+    if continuation:
+        attempt, index = continuation.groups()
         return attempt, f"{attempt}:hook:tools:{index}:"
     return run_key, f"{run_key}:hook:"
-
-
-_current: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("melete_hook_capture", default=None)
 
 
 def bind_capture(attempt_id: str, sink: Callable[[dict], None]):
@@ -111,7 +110,7 @@ def observe(name: str, payload: dict | None = None, *, build: Callable = observa
     with capture.lock:
         if capture.closed:
             return
-        record.update(attempt_id=capture.attempt_id, capture_id=f"{capture.prefix}{capture.seq}")
+        record.update(attempt_id=capture.attempt_id, capture_id=f"{capture.capture_prefix}{capture.seq}")
         capture.seq += 1
         if capture.delivery_failed:
             record.update(event="hook.error", outcome="failed", error_code="capture_gap")

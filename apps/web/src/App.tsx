@@ -13,6 +13,7 @@ import { HomeScreen } from './screens/Home.tsx';
 import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
 import { SettingsScreen } from './screens/Settings.tsx';
+import { toast } from './shell/Shell.tsx';
 import { useTheme } from './theme.ts';
 
 const ONBOARDED_KEY = 'melete.onboarded';
@@ -56,8 +57,14 @@ export function App() {
   const route = useRoute();
   useTheme();
 
-  // The profile is the session: a signed-in person has one, a stranger does not.
-  const profile = useLoad(() => adapter.profile(), []);
+  const [signedOut, setSignedOut] = useState(false);
+  // An expired or revoked cookie needs sign-in, including after a page reload.
+  const profile = useLoad(async () => {
+    const result = await adapter.profile();
+    if (result.error !== null && result.unauthorized) setSignedOut(true);
+    else if (result.data) setSignedOut(false);
+    return result;
+  }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -82,7 +89,10 @@ export function App() {
     });
   }, []);
 
-  const signedIn = profile.data !== null;
+  const signedIn = profile.data !== null && !signedOut;
+  const refreshProfile = useCallback(() => {
+    profile.reload();
+  }, [profile.reload]);
   useEffect(() => {
     if (!signedIn) return;
     refreshAgents();
@@ -118,6 +128,19 @@ export function App() {
     }
   }, []);
 
+  const signOut = useCallback(async () => {
+    const result = await adapter.signOut();
+    if (result.data === null) {
+      toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t sign out' });
+      return;
+    }
+    setAgents([]);
+    setConversations([]);
+    setAgentsLoaded(false);
+    setSignedOut(true);
+    navigate('/welcome');
+  }, []);
+
   // Nothing in the contract records setup. A stored flag wins; otherwise an
   // instance with agents already made has been set up.
   const onboarded = onboardedStored ?? (agentsLoaded ? agents.length > 0 : true);
@@ -125,19 +148,22 @@ export function App() {
   const value = useMemo<AppContextValue>(
     () => ({
       capabilities,
-      profile: profile.data?.profile ?? null,
+      profile: signedIn ? (profile.data?.profile ?? null) : null,
       onboarded,
       setOnboarded,
       agents,
       conversations,
-      refreshProfile: profile.reload,
+      refreshProfile,
       refreshConversations,
       refreshAgents,
+      signOut,
     }),
     [
+      signOut,
+      signedIn,
+      refreshProfile,
       capabilities,
       profile.data,
-      profile.reload,
       onboarded,
       setOnboarded,
       agents,
@@ -157,9 +183,9 @@ export function App() {
     );
   }
 
-  if (profile.error && !profile.data)
+  if (!signedOut && profile.error && !profile.data)
     return <Unreachable error={profile.error} onRetry={profile.reload} />;
-  if (profile.loading && !profile.data) return null;
+  if (!signedOut && profile.loading && !profile.data) return null;
 
   const [head, second] = route.parts;
 

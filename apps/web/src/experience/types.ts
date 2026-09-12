@@ -65,6 +65,7 @@ export type AgentInput = Body<paths['/agents'], 'post'>;
 export type AgentTemplate = Success<Ok<paths['/agents/templates'], 'get'>>['templates'][number];
 export type MemoryItem = Success<Ok<paths['/memory/items'], 'get'>>['items'][number];
 export type MemoryExplanation = Success<Ok<paths['/memory/items/{id}/why'], 'get'>>;
+export type MemoryItemCreate = Body<paths['/memory/items'], 'post'>;
 
 /* ---------- plans, tasks, home, routines ---------- */
 

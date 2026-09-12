@@ -7,12 +7,13 @@
  *   MOCK_PORT=3210 bun run dev:mock   (in one shell)
  *   bun run dev:web                   (in another)
  *   bun run --cwd apps/web screens
+ * Pass --signout-only to recheck just sign-out against an existing screen report.
  *
  * The chat states are real: the script starts the dinner conversation through
  * the experience contract, waits for the agent to reach each state, decides
  * the permission, and sends the draft.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -64,7 +65,12 @@ const browser = await chromium.launch();
  * Render one surface at every width and theme. `prepare` runs once per
  * viewport after navigation and can click through the interface.
  */
-async function surface(name, caption, route, { prepare, settle = 1200, only } = {}) {
+async function surface(
+  name,
+  caption,
+  route,
+  { prepare, verify, expectedProfile401 = false, settle = 1200, only } = {},
+) {
   captions.push(`- \`${name}\` — ${caption}`);
   for (const size of only ?? WIDTHS) {
     for (const theme of THEMES) {
@@ -75,8 +81,18 @@ async function surface(name, caption, route, { prepare, settle = 1200, only } = 
       });
       const page = await context.newPage();
       const errors = [];
+      const expectedErrors = [];
       page.on('console', (message) => {
-        if (message.type() === 'error') errors.push(message.text());
+        if (message.type() !== 'error') return;
+        // Strict Mode can request the profile twice after reload. Both 401s
+        // are expected only in the check that deliberately revoked the session.
+        if (
+          expectedProfile401 &&
+          message.location().url === `${API}/profile` &&
+          message.text().includes('401 (Unauthorized)')
+        )
+          expectedErrors.push(message.text());
+        else errors.push(message.text());
       });
       page.on('pageerror', (error) => errors.push(String(error)));
       await page.goto(`${WEB}/#${route}`, { waitUntil: 'load' });
@@ -88,15 +104,32 @@ async function surface(name, caption, route, { prepare, settle = 1200, only } = 
       const key = `${size.name}-${theme}`;
       const file = `${name}-${key}.png`;
       if (COMMIT.has(key)) await page.screenshot({ path: join(OUT, file) });
+      if (verify) await verify(page, errors);
       const ok = !overflow && errors.length === 0;
       if (!ok) failures += 1;
       results.push({ name, key, overflow, errors, file: COMMIT.has(key) ? file : null });
       process.stdout.write(
-        `${ok ? 'ok  ' : 'FAIL'} ${name} ${key}${overflow ? ' overflow' : ''}${errors.length ? ` ${errors[0]}` : ''}\n`,
+        `${ok ? 'ok  ' : 'FAIL'} ${name} ${key}${overflow ? ' overflow' : ''}${errors.length ? ` ${errors[0]}` : ''}${expectedErrors.length ? ` (${expectedErrors.length} expected profile 401s)` : ''}\n`,
       );
       await context.close();
     }
   }
+}
+
+// Recheck an affected sign-out case without replaying the whole screen walk.
+if (process.argv.includes('--signout-only')) {
+  await signOutSurface();
+  await browser.close();
+  const report = readFileSync(join(OUT, 'README.md'), 'utf8').split('\n');
+  for (const result of results) {
+    const index = report.findIndex((line) => line.startsWith(`| ${result.name} | ${result.key} |`));
+    if (index < 0) throw new Error('Run the complete screen walk before a targeted recheck.');
+    report[index] =
+      `| ${result.name} | ${result.key} | ${result.overflow ? 'yes' : 'no'} | ${result.errors.length} |`;
+  }
+  writeFileSync(join(OUT, 'README.md'), report.join('\n'));
+  process.stdout.write(`${results.length} sign-out checks, ${failures} failed.\n`);
+  process.exit(failures ? 1 : 0);
 }
 
 // ---- state the mock holds ----
@@ -330,18 +363,80 @@ await surface('onboarding-connect', 'Setup step 3: what Melete may look at.', '/
     await page.waitForTimeout(500);
   },
 });
+let firstChatId;
 await surface('onboarding-agent', 'Setup step 4: meet your first agent.', '/setup', {
   prepare: async (page) => {
     await page.getByRole('button', { name: 'Show me' }).click();
     for (let i = 0; i < 8; i += 1) {
-      const next = page.getByRole('button', { name: /^(Next|Continue)$/ });
-      if ((await next.count()) === 0) break;
-      await next.first().click();
+      if (await page.getByText('Meet your first agent', { exact: true }).count()) break;
+      await page
+        .getByRole('button', { name: /^(Next|Continue)$/ })
+        .first()
+        .click();
       await page.waitForTimeout(200);
     }
-    await page.waitForTimeout(500);
+    await page.getByText('Meet your first agent', { exact: true }).waitFor();
   },
 });
+await surface(
+  'onboarding-know-you',
+  'Setup step 5: four answers saved as memory items, with their values returned by the service.',
+  '/setup',
+  {
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Show me' }).click();
+      for (let i = 0; i < 8; i += 1) {
+        const next = page.getByRole('button', { name: /^(Next|Continue)$/ });
+        if ((await next.count()) === 0) break;
+        await next.first().click();
+        await page.waitForTimeout(200);
+        if ((await page.getByText('Let Nova get to know you').count()) > 0) break;
+      }
+      await page.getByRole('button', { name: 'New York' }).click();
+      await page.getByText('home: city').waitFor({ timeout: 10_000 });
+      await page.getByRole('button', { name: 'Alex and Priya' }).click();
+      await page.getByText('people: names').waitFor({ timeout: 10_000 });
+      await page.getByRole('button', { name: 'A launch at work' }).click();
+      await page.getByText('focus: this month').waitFor({ timeout: 10_000 });
+      await page.getByRole('button', { name: 'Morning brief at 8:30' }).click();
+      await page.getByText('checkins: style').waitFor({ timeout: 10_000 });
+      const { items } = await api('GET', '/memory/items');
+      for (const value of [
+        'New York',
+        'Alex and Priya',
+        'A launch at work',
+        'Morning brief at 8:30',
+      ]) {
+        if (
+          items.filter((item) => item.source === 'onboarding' && item.value === value).length !== 1
+        )
+          throw new Error(`Expected one saved setup answer: ${value}`);
+      }
+      await page.waitForTimeout(500);
+    },
+    verify: async (page) => {
+      if (firstChatId) return;
+      await page.getByRole('button', { name: 'Open Melete' }).click();
+      await page.waitForURL(/#\/chat\//);
+      firstChatId = page.url().split('#/chat/')[1];
+      await waitFor(async () => {
+        const { turns } = await api('GET', `/conversations/${firstChatId}/messages`);
+        if (!turns[0]?.text.includes('A launch at work'))
+          throw new Error('The first message omitted the setup answer');
+        return turns[0]?.answer.includes('You said “A launch at work”');
+      });
+      await page
+        .getByText(/Hi .*You said “A launch at work”/)
+        .first()
+        .waitFor();
+    },
+  },
+);
+await surface(
+  'onboarding-first-message',
+  'The completed setup opens a conversation whose first message and welcome refer to a saved answer.',
+  `/chat/${firstChatId}`,
+);
 
 await surface('phone-drawer', 'The phone layout with the sidebar drawer open.', '/', {
   only: [WIDTHS[2]],
@@ -358,18 +453,50 @@ await surface('phone-day', 'The phone layout with the day panel sheet open.', '/
   },
 });
 
+// Signing out ends the session: the next request is refused and the app shows
+// sign-in. The walk then consumes a link so the mock's session is back.
+async function signOutSurface() {
+  await surface(
+    'settings-signout',
+    'Sign-in after pressing Sign out in Settings; reloading with the revoked session still shows sign-in.',
+    '/settings/memory',
+    {
+      only: [WIDTHS[0]],
+      expectedProfile401: true,
+      prepare: async (page) => {
+        await page.getByRole('button', { name: 'Sign out' }).click();
+        await page.getByText('Welcome to Melete').waitFor({ timeout: 10_000 });
+        const refused = await fetch(`${API}/profile`);
+        if (refused.status !== 401) throw new Error(`profile still answers ${refused.status}`);
+        await page.waitForTimeout(300);
+      },
+      verify: async (page) => {
+        await page.reload();
+        await page.getByText('Welcome to Melete').waitFor({ timeout: 10_000 });
+        await api('POST', '/signin/magic-link/consume', {
+          token: 'walk-restore-token-0123456789abcdef0123456789abcdef',
+        });
+        await page.goto(`${WEB}/#/settings/memory`);
+        await page.reload();
+        await page.getByRole('button', { name: 'Sign out' }).waitFor({ timeout: 10_000 });
+      },
+    },
+  );
+}
+await signOutSurface();
+
 await browser.close();
 
 const lines = [
   '# Screens',
   '',
-  'Written by `bun run --cwd apps/web screens` against the mock serving the experience contract. Every surface is checked at 1440, 1024 and 390 px in light and dark for horizontal overflow and console errors; the committed images are 1440 light, 390 light and 1440 dark.',
+  'Written by `bun run --cwd apps/web screens` against the mock serving the experience contract. Every surface is checked at 1440, 1024 and 390 px in light and dark for horizontal overflow and unexpected console errors; the committed images are 1440 light, 390 light and 1440 dark. Revoked profile requests are asserted to return 401 during sign-out and are counted separately in the console output. Pass `--signout-only` to recheck those cases without repeating the complete walk.',
   '',
   ...captions,
   '',
   '## Last run',
   '',
-  '| surface | viewport | overflow | console errors |',
+  '| surface | viewport | overflow | unexpected console errors |',
   '|---|---|---|---|',
   ...results.map(
     (r) => `| ${r.name} | ${r.key} | ${r.overflow ? 'yes' : 'no'} | ${r.errors.length} |`,

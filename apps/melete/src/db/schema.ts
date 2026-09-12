@@ -102,6 +102,8 @@ export const connection = pgTable(
     label: text('label').notNull(),
     secretRef: text('secret_ref').references(() => secret.id, { onDelete: 'set null' }),
     scopes: jsonb('scopes').$type<string[]>().notNull().default([]),
+    configuration: jsonb('configuration').$type<Record<string, unknown>>().notNull().default({}),
+    setupState: text('setup_state').notNull().default('connected'),
     status: text('status').notNull().default('active'),
     generation: integer('generation').notNull().default(0),
     health: text('health').notNull().default('unknown'),

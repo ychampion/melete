@@ -54,6 +54,8 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
         baseUrl: instance.baseUrl,
         token: instance.token,
         pendingWait: (current) => pendingRuntimeWait(this.sql, current),
+        // Loading a tool updates broker state; the next Hermes run must hydrate
+        // that state before the newly disclosed schema can reach the provider.
         catalogState: this.catalogState,
         parkedActions: async (current) => {
           const rows = await this

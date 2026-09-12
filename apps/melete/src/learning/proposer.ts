@@ -2,6 +2,7 @@ import { and, eq, gt, isNotNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import { visibleJob } from '../principals/authority.ts';
 import { requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
 import type { ProposalGateway } from './proposal-gateway.ts';
@@ -24,6 +25,7 @@ export class ProcedureProposer {
         .where(
           and(
             eq(episode.id, episodeId),
+            visibleJob(episode.jobId, ownerId),
             eq(episode.spaceId, spaceId),
             eq(episode.restricted, false),
             gt(episode.expiresAt, new Date()),
@@ -80,6 +82,7 @@ export class ProcedureProposer {
           .where(
             and(
               eq(episode.id, episodeId),
+              visibleJob(episode.jobId, ownerId),
               eq(episode.restricted, false),
               gt(episode.expiresAt, new Date()),
             ),

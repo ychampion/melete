@@ -63,6 +63,7 @@ import {
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import { type CatalogOptions, resolveToolAlias, ToolCatalog } from './catalog.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
+import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import {
@@ -290,11 +291,7 @@ export class BrokerService implements BrokerOperations {
     const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
     const required = new Set([...tool.required_scopes, tool.name]);
-    if (
-      ![...required].every(
-        (scope) => claims.scopes.includes(scope) && connection.scopes.includes(scope),
-      )
-    ) {
+    if (!grantsConnectionScopes(claims, connection.scopes, [...required])) {
       throw new BrokerFault('scope_denied');
     }
     return { tool, connector };
@@ -1164,6 +1161,14 @@ export class BrokerService implements BrokerOperations {
           await connector.execute(wire(payload), ctx({ attempt, route, mapping })),
         ),
       verify: async () => verifyResult.parse(await connector.verify(action, ctx())),
+      ...(connector.reconnect
+        ? {
+            reconnect: async () => {
+              if (await this.authorityLost(action)) return;
+              await (connector.reconnect as NonNullable<Connector['reconnect']>)(action, ctx());
+            },
+          }
+        : {}),
       ...(connector.describe
         ? {
             describe: () =>
@@ -1173,6 +1178,7 @@ export class BrokerService implements BrokerOperations {
       ...(connector.refreshCredential
         ? {
             refreshCredential: async () => {
+              if (await this.authorityLost(action)) return false;
               const refreshed = await (
                 connector.refreshCredential as NonNullable<Connector['refreshCredential']>
               )(action, ctx());

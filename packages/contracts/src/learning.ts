@@ -12,6 +12,14 @@ export const procedureScope = z.strictObject({
   audience: z.literal('private'),
 });
 export type ProcedureScope = z.infer<typeof procedureScope>;
+/** Delivery authority is separate from the evaluated task applicability above. */
+export const procedurePromotionScope = z.enum(['private', 'space']);
+export type ProcedurePromotionScope = z.infer<typeof procedurePromotionScope>;
+export const procedurePromotion = z.object({
+  scope: procedurePromotionScope.default('private'),
+  principal_id: prefixedId('own').nullable().default(null),
+});
+export type ProcedurePromotion = z.infer<typeof procedurePromotion>;
 export const jobLearningScope = z.strictObject({
   scope: procedureScope,
   template_id: label,
@@ -79,6 +87,7 @@ export const procedureRecord = z.object({
   spaceId: prefixedId('sp'),
   episodeId,
   scope: procedureScope,
+  promotion: procedurePromotion.default({ scope: 'private', principal_id: null }),
   state: procedureState,
   body: z.string(),
   bodyHash: z.string(),
@@ -95,6 +104,9 @@ export const procedureRecord = z.object({
 });
 export const learningSpaceQuery = z.object({ space_id: prefixedId('sp') });
 export const learningSpaceRequest = z.strictObject({ space_id: prefixedId('sp') });
+export const procedureActivationRequest = learningSpaceRequest.extend({
+  scope: procedurePromotionScope.default('private'),
+});
 export const procedureReasonRequest = learningSpaceRequest.extend({
   reason: z.string().min(1).max(500),
 });

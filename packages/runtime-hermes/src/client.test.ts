@@ -146,12 +146,29 @@ describe('context assembly', () => {
         input_schema: { type: 'object', properties: { body: { type: 'string' } } },
       },
     ];
-    representative.inputs.since_last = {
-      previous_attempt_id: `att_${SUFFIX}`,
-      evidence_handles: ['claim_1@1'],
-      actions: [{ action_id: `act_${SUFFIX}`, status: 'completed', receipt_id: 'receipt_1' }],
-      pending_questions: [{ id: 'q1', prompt: 'Which deadline?' }],
+    representative.since_last = {
+      attempt_id: `att_${SUFFIX}`,
+      ended_at: '2026-09-11T00:00:00Z',
+      evidence: [
+        {
+          kind: 'source',
+          handle: 'source:claim_1@1',
+          label: 'contacts observation',
+          at: '2026-09-11T00:00:00Z',
+        },
+      ],
+      actions: [
+        {
+          action_id: `act_${SUFFIX}`,
+          kind: 'email.send',
+          status: 'succeeded',
+          receipt_ref: 'receipt_1',
+          at: '2026-09-11T00:00:00Z',
+        },
+      ],
+      pending_questions: [{ id: 'q1', text: 'Which deadline?', state: 'asked' }],
       pending_approvals: [],
+      repair_briefs: [],
     };
     representative.inputs.repair_briefs = [
       {
@@ -281,6 +298,6 @@ describe('SSE parsing', () => {
 describe('the pin', () => {
   test('names the exact release the image is built from', () => {
     expect(HERMES_PINNED_TAG).toBe('v2026.9.7');
-    expect(RUNTIME_VERSION).toBe('hermes@v2026.9.7+melete-observers.1');
+    expect(RUNTIME_VERSION).toBe('hermes@v2026.9.7+melete-observers.2');
   });
 });

@@ -1,6 +1,7 @@
 import { type CapabilityClaims, type Receipt, receipt as receiptContract } from '@melete/contracts';
 import { and, eq, isNull } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { databaseNow } from '../db/clock.ts';
 import { action, attempt, connection, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -38,7 +39,7 @@ export async function requireCurrentAttempt(
     );
   if (
     !active?.leaseExpiresAt ||
-    active.leaseExpiresAt.getTime() <= Date.now() ||
+    active.leaseExpiresAt.getTime() <= (await databaseNow(tx)).getTime() ||
     active.leaseStatus !== 'active'
   ) {
     throw new ServiceError('stale_epoch', 'This attempt lease has expired.');
@@ -138,7 +139,7 @@ export async function recordReceipt(
       row.state !== 'running' ||
       execution.endedAt !== null ||
       !execution.leaseExpiresAt ||
-      execution.leaseExpiresAt.getTime() <= Date.now();
+      execution.leaseExpiresAt.getTime() <= (await databaseNow(tx)).getTime();
     const receipt = { ...value, late };
     const existing = receiptContract.safeParse(effect.receipt);
     if (existing.success) return existing.data;

@@ -9,7 +9,7 @@ import {
 } from '@melete/contracts';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
@@ -178,6 +178,17 @@ export function mountAuth(
     app.post(`/signin/${provider}`, (c) =>
       c.json(unavailable('Use your password or an email sign-in link.')),
     );
+  /**
+   * Ends the session the cookie names. The row is removed rather than flagged,
+   * so a later request with the same cookie is unauthorized, and the cookie
+   * itself is cleared. Reaching here already required a live session.
+   */
+  app.post('/signout', async (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    if (db && token) await db.delete(session).where(eq(session.tokenHash, tokenHash(token)));
+    deleteCookie(c, SESSION_COOKIE, { path: '/' });
+    return c.json({ status: 'ok' });
+  });
 
   app.post('/setup', async (c) => {
     if (!db) {

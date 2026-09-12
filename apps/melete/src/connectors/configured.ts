@@ -147,11 +147,19 @@ export async function configuredConnectors(options: {
   if (config.size !== (options.connections ?? []).length)
     throw new Error('Duplicate configured connection id');
   const connections =
-    await options.sql`select id, space_id, provider, secret_ref from connection where status = 'active' order by id`;
+    await options.sql`select * from connection where status = 'active' order by id`;
   if (options.enableTestConnector) await initializeTestLedger(options.sql);
   try {
     for (const row of connections) {
-      const setting = config.get(row.id);
+      const setting =
+        config.get(row.id) ??
+        (row.provider === 'mcp' && row.configuration?.server
+          ? {
+              kind: 'mcp' as const,
+              id: row.id,
+              server: mcpServerConfig.parse(row.configuration.server),
+            }
+          : undefined);
       if (row.provider === 'generation') {
         // A capability is registered like any other connector, so a generation
         // call takes the path approval, fencing, budget and idempotency already
@@ -219,6 +227,7 @@ export async function configuredConnectors(options: {
             setting.server,
             { connectionId: row.id, spaceId: row.space_id },
             options.sql,
+            secrets,
           ),
         );
       } else if (row.provider === 'caldav' && setting?.kind === 'ics') {

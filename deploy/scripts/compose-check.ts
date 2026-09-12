@@ -18,6 +18,8 @@ export type ComposeFile = {
 export type ComposeService = {
   networks?: string[] | Record<string, { aliases?: string[]; gw_priority?: number } | null>;
   environment?: Record<string, string | number | boolean>;
+  env_file?: string | (string | { path: string; required?: boolean })[];
+  secrets?: (string | { source: string; target?: string })[];
   user?: string;
   group_add?: string[];
   read_only?: boolean;
@@ -42,6 +44,8 @@ export type ComposeService = {
   privileged?: boolean;
   pid?: string;
   ipc?: string;
+  entrypoint?: string | string[];
+  depends_on?: string[] | Record<string, unknown>;
 };
 
 export type CheckResult = {
@@ -82,10 +86,10 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   // The wiring lane's checks, kept where the deploy lane's verified topology
   // allows: the service must own the Docker socket group explicitly and must
   // supervise attempts itself (the deploy lane's docker adapter, or the wiring
-  // lane's hermes adapter with its docker supervisor). Its checks for a
-  // development-profile runtime, a credential-free warm cell and a build-only
-  // runtime-image service describe a topology this stack does not use: the
-  // warm probe cell carries a deliberately authority-less capability.
+  // lane's hermes adapter with its docker supervisor). Its development-profile
+  // check is not needed here: the static cell is a warm probe that the adapter
+  // check keeps from ever running a job, and the authority check below keeps
+  // credential-free. Its build-only image check is restored further down.
   const service = compose.services?.melete;
   say(
     'the Docker socket group is explicitly required',
@@ -213,6 +217,66 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     "the broker is the runtime network's only peer",
     peers.length === 1 && peers[0] === 'melete',
     `unexpected runtime peers: ${peers.join(', ')}`,
+  );
+
+  // A dependency on a service that is not in the file is refused by Compose
+  // before anything starts; a check that reads the YAML has to refuse it too.
+  const dangling = Object.entries(compose.services ?? {}).flatMap(([name, entry]) => {
+    const dependencies = Array.isArray(entry.depends_on)
+      ? entry.depends_on
+      : Object.keys(entry.depends_on ?? {});
+    return dependencies
+      .filter((dependency) => !(dependency in (compose.services ?? {})))
+      .map((dependency) => `${name} -> ${dependency}`);
+  });
+  say(
+    'every dependency names a service in the file',
+    dangling.length === 0,
+    `depends_on names services that do not exist: ${dangling.join(', ')}`,
+  );
+
+  // The attempt image is built by a service that runs nothing: no engine, no
+  // credential and no network, so a build cannot become a warm cell by accident.
+  const image = compose.services?.['runtime-image'];
+  const entrypoint = Array.isArray(image?.entrypoint) ? image.entrypoint : [image?.entrypoint];
+  say(
+    'the supervisor image is built without a running engine',
+    image !== undefined &&
+      image.network_mode === 'none' &&
+      image.image === compose.services?.melete?.environment?.MELETE_RUNTIME_IMAGE &&
+      entrypoint[0] === '/bin/true',
+    'runtime-image must build the selected image with entrypoint /bin/true and no network',
+  );
+  // /bin/true needs no runtime inputs. Reject all supplied inputs so a new key
+  // name or an opaque file/mount cannot bypass a credential-name denylist.
+  say(
+    'the build-only service carries no credentials',
+    image !== undefined &&
+      Object.keys(image.environment ?? {}).length === 0 &&
+      image.env_file === undefined &&
+      (image.secrets ?? []).length === 0 &&
+      (image.volumes ?? []).length === 0,
+    'runtime-image must not receive environment entries, env_file, secrets, or volume mounts',
+  );
+
+  // The warm cell is a probe: it may carry placeholders, never a minted
+  // capability, a substituted secret, or one of the service's own keys.
+  const staticEnvironment = runtime.environment ?? {};
+  const serviceSecrets = [
+    'MELETE_CAPABILITY_KEY',
+    'MELETE_APPROVAL_KEY',
+    'MELETE_MASTER_KEY',
+    'DATABASE_URL',
+    'MELETE_DOCKER_SOCKET',
+  ].filter((key) => key in staticEnvironment);
+  const substituted = ['MELETE_ATTEMPT_TOKEN', 'MELETE_MODEL_KEY'].filter((key) => {
+    const value = String(staticEnvironment[key] ?? '');
+    return value.includes('${') || /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
+  });
+  say(
+    'the warm cell carries no attempt authority',
+    serviceSecrets.length === 0 && substituted.length === 0,
+    `attempt credentials are minted per container; the static cell must not carry ${[...serviceSecrets, ...substituted].join(', ')}`,
   );
 
   const melete = compose.services?.melete;

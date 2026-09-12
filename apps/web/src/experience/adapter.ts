@@ -25,6 +25,7 @@ import type {
   LedgerAction,
   MemoryExplanation,
   MemoryItem,
+  MemoryItemCreate,
   MessageAcceptance,
   Permission,
   PermissionOutcome,
@@ -46,7 +47,7 @@ import { isNotAvailable } from './types.ts';
 
 export type Result<T> =
   | { data: T; error: null; unavailable: null }
-  | { data: null; error: string; unavailable: null }
+  | { data: null; error: string; unavailable: null; unauthorized?: boolean }
   | { data: null; error: null; unavailable: string };
 
 const MOCK_API_BASE = 'http://localhost:3210';
@@ -71,7 +72,12 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
       return { data: null, error: null, unavailable: outcome.data.reason };
     return { data: outcome.data as T, error: null, unavailable: null };
   }
-  return { data: null, error: errorMessage(outcome.error, OFFLINE), unavailable: null };
+  return {
+    data: null,
+    error: errorMessage(outcome.error, OFFLINE),
+    unavailable: null,
+    unauthorized: outcome.response?.status === 401,
+  };
 }
 
 async function guard<T>(
@@ -98,6 +104,8 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
   signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
+  /** Ends the session; the next request needs a new sign-in. */
+  signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),
@@ -192,6 +200,9 @@ export const adapter = {
   updateAgent: (id: string, body: AgentInput) =>
     guard<{ agent: Agent }>(() => api.PATCH('/agents/{id}', { ...path(id), body })),
   memory: () => guard<{ items: MemoryItem[] }>(() => api.GET('/memory/items')),
+  /** A detail the person states outright; the same key again replaces the value. */
+  createMemoryItem: (body: MemoryItemCreate) =>
+    guard<{ item: MemoryItem }>(() => api.POST('/memory/items', { body })),
   editMemory: (id: string, value: string, version: string) =>
     guard<{ status: 'ok' }>(() =>
       api.PATCH('/memory/items/{id}', { ...path(id), body: { value, version } }),

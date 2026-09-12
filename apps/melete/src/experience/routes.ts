@@ -119,6 +119,9 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'GET /quick-answers': (spaceId) => questions.list(spaceId),
     'POST /quick-answers/{id}': (spaceId, c, input) =>
       questions.answer(spaceId, c.req.param('id') ?? '', String(input.option_id)),
+    'POST /memory/items': (spaceId, c, input) =>
+      memory?.create(spaceId, c.get('owner').id, input) ??
+      unavailable('Your saved details are not connected yet.'),
     'GET /memory/items': (spaceId, c) =>
       memory?.list(spaceId, c.get('owner').id) ??
       unavailable('Your saved details are not connected yet.'),
