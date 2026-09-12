@@ -13,6 +13,7 @@ import type {
   Permission,
   PermissionOption,
   Question,
+  Reaction,
   Receipt,
   ResultCard,
   TrailStep,
@@ -47,6 +48,12 @@ export type TranscriptTurn = {
   /** True while text_delta items are arriving for this turn. */
   streaming: boolean;
   delivery: Turn['delivery'];
+  /**
+   * The seq of the first event the agent produced for this turn: the message
+   * id a reaction on the agent's bubble is posted to. Null until an event
+   * arrives, so a local or still-queued turn cannot be reacted to.
+   */
+  firstSeq: number | null;
 };
 
 export type Transcript = {
@@ -77,6 +84,7 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   blocks: [],
   streaming: false,
   delivery: turn.delivery,
+  firstSeq: null,
 });
 
 export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnStatus): Transcript {
@@ -121,7 +129,9 @@ const hasBlock = (transcript: Transcript, id: string): boolean =>
 export function applyEvent(transcript: Transcript, event: ExperienceEvent): Transcript {
   const lastSeq = Math.max(transcript.lastSeq, event.seq);
   const item = event.item;
-  const base = { ...transcript, lastSeq };
+  const base = patchTurn({ ...transcript, lastSeq }, event.turn_id, (turn) =>
+    turn.firstSeq === null ? { ...turn, firstSeq: event.seq } : turn,
+  );
   if (
     (item.type === 'card' && hasBlock(base, item.card.id)) ||
     (item.type === 'receipt' && hasBlock(base, item.receipt.id)) ||
@@ -326,4 +336,27 @@ export function openQuestion(transcript: Transcript): Question | null {
     if (block?.type === 'question' && !block.answered) return block.question;
   }
   return null;
+}
+
+/**
+ * Which turn a reaction belongs to. The person reacts to the agent's bubble,
+ * addressed by the turn's first event; the agent reacts to the person's
+ * message, whose event precedes the turn's own events. Both start from the
+ * last turn whose first seq is at or before the message; the agent's case
+ * then steps forward one turn, because the person's message sits between the
+ * previous turn's events and this turn's.
+ */
+export function turnIndexForReaction(transcript: Transcript, reaction: Reaction): number {
+  const seq = Number(reaction.message_id);
+  const turns = transcript.turns;
+  let index = -1;
+  for (let i = 0; i < turns.length; i += 1) {
+    const first = turns[i]?.firstSeq;
+    if (first !== null && first !== undefined && first <= seq) index = i;
+  }
+  if (reaction.by === 'assistant') {
+    const next = index + 1;
+    return next < turns.length ? next : index;
+  }
+  return index;
 }

@@ -20,6 +20,7 @@ import type {
   Permission,
   PermissionOption,
   Question,
+  Reaction,
   Receipt,
   ResultCard as ResultCardData,
   RuleBounds,
@@ -70,13 +71,23 @@ const KIND_ICON: Record<Source['kind'], IconName> = {
 
 /* ---------- user bubble ---------- */
 
-export function UserBubble({ turn, onRetry }: { turn: TranscriptTurn; onRetry?: () => void }) {
+export function UserBubble({
+  turn,
+  reactions = [],
+  onRetry,
+}: {
+  turn: TranscriptTurn;
+  /** The agent's glyphs on this message, drawn under the bubble. */
+  reactions?: Reaction[];
+  onRetry?: () => void;
+}) {
   const delivery = turn.delivery;
   return (
     <div className="bubble-wrap">
       <div className="bubble" data-pending={delivery ? 'true' : undefined}>
         {turn.turn.text}
       </div>
+      {reactions.length ? <ReactionRow reactions={reactions} /> : null}
       <div className="bubble-meta">
         {delivery === 'sending' ? (
           <span className="row" style={{ gap: 6 }}>
@@ -913,22 +924,82 @@ export function UnknownCard({
   );
 }
 
+/* ---------- reactions ---------- */
+
+/** The glyphs a person can answer with in one tap. Anything else is a message. */
+export const REACTION_SET = ['\u{1F44D}', '\u{1F44E}', '\u2764\uFE0F', '\u{1F64F}'] as const;
+
+/**
+ * Reactions drawn on the message they belong to, never as a row of their own.
+ * The same glyph from both sides shows once, with a count.
+ */
+export function ReactionRow({ reactions }: { reactions: Reaction[] }) {
+  const grouped = new Map<string, Reaction[]>();
+  for (const reaction of reactions)
+    grouped.set(reaction.emoji, [...(grouped.get(reaction.emoji) ?? []), reaction]);
+  if (grouped.size === 0) return null;
+  return (
+    <div className="reactions">
+      {[...grouped.entries()].map(([emoji, list]) => {
+        const who = list.map((r) => (r.by === 'person' ? 'you' : 'the agent')).join(' and ');
+        return (
+          <span
+            key={emoji}
+            className="reaction"
+            data-mine={list.some((r) => r.by === 'person') ? 'true' : undefined}
+            title={`${emoji} from ${who}`}
+          >
+            <span aria-hidden="true">{emoji}</span>
+            {list.length > 1 ? <span className="reaction-count">{list.length}</span> : null}
+            <span className="sr-only">{`${emoji} from ${who}`}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ActionBar({
   turn,
   onCopy,
   touch,
+  reactions = [],
+  onReact,
 }: {
   turn: TranscriptTurn;
   onCopy: () => void;
   touch: boolean;
+  reactions?: Reaction[];
+  /** Absent when this message cannot be reacted to; then no control is drawn. */
+  onReact?: (emoji: string) => void;
 }) {
   const s = touch ? 40 : 28;
   const i = touch ? 18 : 15;
+  const mine = new Set(reactions.filter((r) => r.by === 'person').map((r) => r.emoji));
   return (
-    <div className="action-bar">
-      <IconButton name="copy" label="Copy" size={s} iconSize={i} onClick={onCopy} />
-      <div className="grow" />
-      <span style={{ fontSize: 12, color: 'var(--muted)' }}>{timeOf(turn.turn.created_at)}</span>
+    <div className="col" style={{ gap: 4 }}>
+      {reactions.length ? <ReactionRow reactions={reactions} /> : null}
+      <div className="action-bar">
+        <IconButton name="copy" label="Copy" size={s} iconSize={i} onClick={onCopy} />
+        {onReact
+          ? REACTION_SET.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                className="react-btn"
+                style={{ width: s, height: s }}
+                aria-label={`React with ${emoji}`}
+                aria-pressed={mine.has(emoji)}
+                data-on={mine.has(emoji) ? 'true' : undefined}
+                onClick={() => onReact(emoji)}
+              >
+                <span aria-hidden="true">{emoji}</span>
+              </button>
+            ))
+          : null}
+        <div className="grow" />
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{timeOf(turn.turn.created_at)}</span>
+      </div>
     </div>
   );
 }

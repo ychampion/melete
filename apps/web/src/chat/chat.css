@@ -766,3 +766,56 @@
   color: var(--muted);
   text-align: center;
 }
+
+/* reactions: glyphs drawn on the message they belong to */
+.reactions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 0;
+}
+.reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1;
+}
+.reaction[data-mine="true"] {
+  border-color: var(--blue-line);
+  background: var(--blue-soft);
+}
+.reaction-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+.react-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity 0.15s,
+    background 0.15s;
+}
+.react-btn:hover,
+.react-btn:focus-visible {
+  opacity: 1;
+  background: var(--hover);
+}
+.react-btn[data-on="true"] {
+  opacity: 1;
+  background: var(--blue-soft);
+}

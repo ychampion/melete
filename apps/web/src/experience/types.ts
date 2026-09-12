@@ -89,6 +89,12 @@ export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][numbe
  * effects resting at `unknown` or `unresolved`, and never shows its `kind`.
  */
 export type LedgerAction = Ok<paths['/actions'], 'get'>['actions'][number];
+/**
+ * A glyph on a message, from the person or the assistant. A message is
+ * addressed by the seq of the event that carries it; a conversation's
+ * reactions are listed under its job, which is the conversation's id.
+ */
+export type Reaction = Ok<paths['/jobs/{jobId}/reactions'], 'get'>['reactions'][number];
 export type ActionResolution = Body<paths['/actions/{actionId}/resolve'], 'post'>['resolution'];
 
 /* ---------- what the interface decides on its own ---------- */
