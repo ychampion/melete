@@ -2,7 +2,8 @@ import { afterEach, expect, test } from 'bun:test';
 import { connectorManifest, type JsonObject } from '@melete/contracts';
 import { BrowserWorkerClient } from '../workers/browser/client.ts';
 import type { BrowserSessionService } from '../workers/browser/routes.ts';
-import { BrowserFault, type BrowserSession } from '../workers/browser/sessions.ts';
+import { startBrowserServer } from '../workers/browser/server.ts';
+import { BrowserFault, type BrowserSession, BrowserSessions } from '../workers/browser/sessions.ts';
 import { browserManifest, createBrowserConnector } from './browser.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
 
@@ -11,7 +12,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.stop(true);
 });
 
-function fixture(response: (body: JsonObject) => Response) {
+function fixture(response: ((body: JsonObject) => Response) | BrowserWorkerClient) {
   const commands: JsonObject[] = [];
   const parks: string[] = [];
   const captures: unknown[] = [];
@@ -24,16 +25,20 @@ function fixture(response: (body: JsonObject) => Response) {
     control: 'automation',
     warm_until: Date.now() + 300000,
   };
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      const body = (await request.json()) as JsonObject;
-      commands.push(body);
-      return response(body);
-    },
-  });
-  servers.push(server);
-  const worker = new BrowserWorkerClient(server.url.href, 'x'.repeat(32));
+  let worker: BrowserWorkerClient;
+  if (response instanceof BrowserWorkerClient) worker = response;
+  else {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const body = (await request.json()) as JsonObject;
+        commands.push(body);
+        return response(body);
+      },
+    });
+    servers.push(server);
+    worker = new BrowserWorkerClient(server.url.href, 'x'.repeat(32));
+  }
   const sessions: Pick<BrowserSessionService, 'lease' | 'park'> = {
     async lease() {
       return { session, worker };
@@ -69,6 +74,56 @@ test('browser catalog exposes consequential commits as approved external writes'
       effect_class: 'write_reversible',
     });
 });
+
+test('an empty 413 rejects an oversized submit before the controller and is not unknown', async () => {
+  const sessions = new BrowserSessions({ spaceId: 'sp_01', spaceRoot: 'unused-without-a-lease' });
+  let commands = 0;
+  const token = 'x'.repeat(32);
+  const server = await startBrowserServer({
+    sessions,
+    token,
+    command: async () => {
+      commands++;
+      return {};
+    },
+  });
+  try {
+    const s = fixture(new BrowserWorkerClient(server.url.href, token));
+    const submit = connectorAction('browser.submit', {
+      session_id: 'brws_fixture',
+      control_epoch: 4,
+      intent: { fields: { oversized: 'x'.repeat(300 * 1024) } },
+    });
+    expect(await s.connector.execute(submit, connectorContext(submit))).toEqual({
+      outcome: 'failed',
+      reason: 'worker_http_413',
+      retryable: false,
+    });
+    expect(commands).toBe(0);
+    expect(sessions.page).toBeUndefined();
+  } finally {
+    await server.stop(true);
+    await sessions.close();
+  }
+});
+
+test.each([400, 413, 500, 200])(
+  'malformed worker response %i preserves commit certainty',
+  async (status) => {
+    const s = fixture(() => new Response('not JSON', { status }));
+    const submit = connectorAction('browser.submit', {
+      session_id: 'brws_fixture',
+      control_epoch: 4,
+      intent: {},
+    });
+    const result = await s.connector.execute(submit, connectorContext(submit));
+    expect(result.outcome).toBe(status >= 400 && status < 500 ? 'failed' : 'unknown');
+    if (result.outcome === 'failed') {
+      expect(result.reason).toBe(`worker_http_${status}`);
+      expect(result.retryable).toBe(false);
+    }
+  },
+);
 
 test('observation persists captures and returns handles without screenshot or tree bytes', async () => {
   const s = fixture(() =>

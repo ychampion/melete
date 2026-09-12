@@ -16,11 +16,25 @@ export class BrowserWorkerClient {
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });
-    const value = (await response.json()) as T & { error?: string };
+    const text = await response.text();
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      // Empty or non-JSON refusals (including the body's 413 gate) never reached a commit.
+      if (response.status >= 400 && response.status < 500)
+        throw new BrowserFault(`worker_http_${response.status}`);
+      throw new Error('Browser worker returned an invalid response');
+    }
     if (response.status >= 500)
       throw new Error('Browser worker operation failed without a confirmed result');
-    if (!response.ok) throw new BrowserFault(value.error ?? 'worker_unavailable');
-    return value;
+    if (!response.ok)
+      throw new BrowserFault(
+        value && typeof value === 'object' && 'error' in value && typeof value.error === 'string'
+          ? value.error
+          : `worker_http_${response.status}`,
+      );
+    return value as T;
   }
   lease(jobId: string, policy: BrowserPolicy): Promise<BrowserSession> {
     return this.request('/lease', { job_id: jobId, policy });
