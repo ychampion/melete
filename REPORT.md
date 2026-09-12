@@ -72,7 +72,7 @@
 ## Locked full-suite result
 
 - Command `bun test --max-concurrency=2` under the shared lock: **915 pass, 1 skip, 14 todo, 0 fail**, 3,871 assertions across 77 files, reported duration **257.20 seconds**. The EXIT trap released W15's lock after completion. The skip is the POSIX permission assertion on Windows; the 14 conformance todos already existed at SHA `9484023`.
-- Test `skills, handled recall, delta and correction repair reach the model from bootstrap`: **passed** in 37.032 seconds using the real pinned Hermes server and only a scripted model provider. HTTP authentication, job creation, three selected skills, two handled claims, durable delta, correction repair, new attempt tokens and context `style_violations` were verified.
+- Test `skills, handled recall, delta and correction repair reach the model from bootstrap`: **passed** in 37.032 seconds using the real pinned Hermes server and only a scripted model provider. HTTP authentication, job creation, three selected skills, two handled claims, durable delta, correction repair, new attempt tokens were verified. Context `style_violations` was checked only as an empty array round-trip; no prose style checker ran.
 - Log `wired Hermes att_01M29BZ9JV3H75BVZ7JD0074ES: cold=10067ms wall=19980ms`; log `wired Hermes att_01M29BZXN21CCWWPQVEE466XBX: cold=8426ms wall=14951ms`.
 - Command `bun test --max-concurrency=2`: the requested 180-second duration target remains **unmet** on this host. Time outside the 37.032-second HTTP proof was approximately 220.17 seconds. This is a timing limitation; the locked run had no failed tests.
 - Command `bun run typecheck`: passed after the workspace permission fix; the supervisor's focused checks passed with the explicit Windows skip described above. Docker build, socket access, volume-subpath behavior and actual network isolation remain **unverified** because Docker is unavailable here.
@@ -88,9 +88,9 @@
 ## Final state
 
 - Command `gh pr create --repo ychampion/melete --base integration --head lane/w15-wire`: opened [PR 21](https://github.com/ychampion/melete/pull/21). Command `gh pr view 21` verified `OPEN`, base `integration`, head `lane/w15-wire`, and no reported automated status checks.
-- SHA `46175f2`: all five requested slices are published in order. The functional HTTP-to-Hermes path is verified by the locked suite: 915 passing tests, 0 failures, one explicit Windows skip and 14 existing todos.
+- SHA `46175f2`: all five requested slices are published in order. The functional HTTP-to-Hermes path passed in this locked run, where the pinned local engine and Python environment were installed: 915 passing tests, 0 failures, one explicit Windows skip and 14 existing todos. The proof self-skips in a clean checkout without the local engine; the full suite alone does not establish that this path ran.
 - Command `bun test --max-concurrency=2`: the suite's 257.20-second duration exceeds the 180-second target. That timing requirement remains unmet; Docker execution remains unverified on this Windows host as expected by the brief.
-- Test `skills, handled recall, delta and correction repair reach the model from bootstrap`: uses the scripted provider and an explicit 200,000-token reservation. The gateway's current 8,000 default can reject the Hermes prompt. Context `style_violations` is recorded as an empty array; no prose style checker is configured.
+- At pre-review SHA `0372d19`, test `skills, handled recall, delta and correction repair reach the model from bootstrap` used the scripted provider and an explicit 200,000-token reservation. The gateway's current 8,000 default can reject the Hermes prompt. Context `style_violations` is recorded as an empty array; no prose style checker is configured.
 - Commands `bun run typecheck`, `bun run lint`, `bun run openapi`, `bun run client:generate`, `bun run compose:check`, `bun run test:plugin` and the locked full test command passed their functional checks. The later changes are documentation and this report only; no additional full-suite run was required.
 - Log `2026-09-11 23:21:04 UTC`: final publication verification occurred within the five-hour campaign cap. No other worktree, shared lock owner or unrelated process was modified; no force push or merge was performed.
 
@@ -136,3 +136,54 @@
 - `bun test apps/melete/test/integration/runtime-handoff.test.ts apps/melete/src/runtime/supervisor.test.ts --max-concurrency=1`: exit 0, 8 pass, 1 Windows skip, 0 fail, 47 assertions (20.22s). The literal prefix is escaped before adding the revision wildcard.
 - The new port-handshake test initially failed collection because no launcher/reporting module existed (exit 2, 1 error); it did not reproduce a live collision. `uv run --no-project --python 3.12 --with pytest==9.1.1 --with aiohttp==3.14.3 python -m pytest packages/runtime-hermes/tests/test_process_launcher.py -q`: exit 0, 1 pass (1.32s).
 - Process mode now binds port zero inside the child and atomically reports the actual listener from its private temporary home. The pinned aiohttp startup wrapper leaves that socket open. The test verifies two distinct simultaneously live ports, successful connections, and failed competing binds. The pinned Hermes checkout is unchanged; Docker attempts still use their isolated container port.
+
+
+### 7. Correct the scope of the proof
+
+The historical results above now distinguish an empty `style_violations` array
+round-trip from a configured prose style checker. They also identify the local
+engine prerequisite for the real HTTP proof; its test self-skips when the Python
+environment is absent (and database fixtures can skip if unavailable).
+
+To run the real proof from a clean checkout, install workspace dependencies and
+the pinned engine, then run the named test. It uses a scripted provider and no
+provider key:
+
+```bash
+bun install
+git clone --depth 1 --branch v2026.9.7 https://github.com/NousResearch/hermes-agent.git .hermes-src
+uv venv .hermes-venv --python 3.12
+uv pip install --python .hermes-venv/bin/python -e ./.hermes-src aiohttp==3.14.3
+# Windows: use .hermes-venv/Scripts/python.exe in the preceding command.
+bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1
+```
+
+Check that the output contains **1 pass**, **0 fail**, and both `wired Hermes`
+attempt timings; a skip is not proof. The fixture uses disposable Postgres from
+the installed test dependencies. The test now creates its job with no budget.
+
+## Final review verification — 2026-09-12
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `bun run typecheck` | 0 | Service, packages and web types pass. |
+| `bun run lint` | 0 | 318 files checked, no fixes needed. |
+| `bun run openapi && bun run client:generate` | 0 | Tree clean before and after; generated artifacts unchanged. |
+| `bun run compose:check` | 0 | 17 checks pass. |
+| `bun run test:plugin` | 0 | 22 tests pass (10.97s). |
+| `bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1` | 0 | 1 pass, 0 fail, 52 assertions; 73.48s total, 57.047s test. Real pinned Hermes, default budget, child-reported ports. |
+| `bun test --max-concurrency=1` under the shared directory lock | 0 | **921 pass, 1 skip, 14 existing todos, 0 fail; 3,901 assertions across 79 files; 339.36s.** Exactly one full run. |
+| `git diff 0372d19..HEAD --check` | 0 | No whitespace errors. |
+
+The full run used the shared `C:/Users/gamin/.melete-test.lock` directory with
+atomic directory acquisition and a marker inside; the marker and directory were
+removed after completion. The real Hermes proof also ran and passed inside that
+full suite. No full suite was rerun.
+
+All seven review requests are addressed. Live Docker image, mount and network
+verification remains open on a Docker host; static checks do not establish it.
+The POSIX umask check is skipped on Windows and the 14 pre-existing conformance
+todos remain. Style diagnostics still only round-trip an empty array; no prose
+style checker is configured. The real-engine test requires the local setup above
+and self-skips without it. The full-suite duration still exceeds the original
+180-second target.

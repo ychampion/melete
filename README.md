@@ -152,7 +152,7 @@ access. Container isolation requires the Docker supervisor. The scripted HTTP
 proof uses no provider key:
 
 ```bash
-bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=2
+bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1
 ```
 
 `budget.max_output_tokens` remains the cumulative output ceiling (8,000 by
