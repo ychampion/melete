@@ -65,3 +65,20 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
 - Command `git tag -a v0.1.0 55b6a5071527adbc8332e5eb837aa7ea8b3a5a1b -m ...`: local annotated tag; `git rev-parse v0.1.0^{}` = `55b6a5071527adbc8332e5eb837aa7ea8b3a5a1b`. Not pushed. To push after the owner's decision: `git push origin v0.1.0`. If the release should carry this branch's docs, move it first: `git tag -f -a v0.1.0 <integration merge commit of this PR> -m "Melete v0.1.0"` then `git push origin v0.1.0`.
 - Command `git push -u origin lane/w13-release`: `[new branch] lane/w13-release -> lane/w13-release`.
 - Commands `gh pr close <n> --comment ...` for 1 (merge commits `3a0ea5b`, `91b2189`), 2 (`69eb8a9`), 3 (`6be51a3`), 4 (`9268dcb`), 5 (`d822707`): each answered `Closed pull request`. Every other lane PR (6 to 23) was already merged, including 13; nothing else is open.
+
+## Final check run (one serialized pass, at 4348e85 plus this section)
+
+- Command `bun run openapi` and `bun run client:generate`: both wrote their files; `git status --short` empty afterwards.
+- Command (all tracked `*.test.ts` except `apps/melete/src/runtime/context.test.ts`, `bun test --max-concurrency=1 --timeout=30000`, serialized with the other test processes on this machine): `1535 pass, 29 skip, 2 fail`, `Ran 1566 tests across 146 files. [332.41s]`.
+  - `(fail) learning episode capture > a cleared job cannot recreate evidence on a later completion or correction`: `error: No resumed attempt` at `learning-episodes.test.ts:316`.
+  - `(fail) broker and attempt-runner handoff > a parked tool leaves the lease live until the runner records its outcome`: `error: No replacement attempt` at `runtime-handoff.test.ts:87`.
+  - Command `bun test --max-concurrency=1 --timeout=30000 apps/melete/test/integration/learning-episodes.test.ts apps/melete/test/integration/runtime-handoff.test.ts` (focused rerun): `13 pass, 0 fail`, `Ran 13 tests across 2 files. [16.77s]`. Both failures are attempt-claim timing in the long serialized run and did not reproduce; no code was changed on this branch, so they are reported, not fixed.
+- Command `timeout 180 bun test ... apps/melete/src/runtime/context.test.ts`: `(fail) deployment attempt context > first-job provisioning reads actual Markdown then excludes retraction on the next attempt [30031.00ms]`, wall clock exit 124: the same fourth case that timed out on this host at the landing checkpoints, unchanged.
+- Command `bun run conformance`: `26 pass, 25 skip, 0 fail`, `Ran 51 tests across 8 files. [19.59s]`, `Conformance exit 0: 5 scenarios enabled, 3 deployment scenarios deferred.`
+- Command `bun run conformance:memory`: `All 10 active memory scenarios passed; 1 deferred. 10 counterfactual checks exercised memory.` exit 0.
+- Command `bun run test:plugin`: `60 passed in 26.34s`.
+- Command `bun run lint`: Biome clean (one pre-existing warning) and `scrub:check passed`; `bun run typecheck`: exit 0; `bun run compose:check`: 19 checks.
+
+## Final
+
+Branch `lane/w13-release` on `55b6a50`: README, docs refresh, demo, changelog, scrub check, local `v0.1.0` tag, PRs 1 to 5 closed. Not claimed and unchanged: the four Linux portability failures and the Windows `context.test.ts` timeout belong to the code fix pass; the real-Hermes capability proof is pending; the two timing failures above did not reproduce focused.
