@@ -849,8 +849,11 @@ export class BrokerService implements BrokerOperations {
     result: ExecutionSettlement,
   ): Promise<Action> {
     const action = await loadAction(this.sql, id);
-    const job = await lockJob(this.sql, action.job_id);
+    // This read supplies identity and context; recordResult holds the job and
+    // action locks together inside the transaction that persists settlement.
+    const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
     if (
+      !job ||
       action.job_id !== claims.job_id ||
       job.space_id !== claims.space_id ||
       action.attempt_id !== claims.attempt_id
