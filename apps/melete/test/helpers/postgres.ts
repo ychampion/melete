@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import postgres from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
+import { migrateDatabase } from '../../src/db/migrate.ts';
 
 export type PostgresFixture = DatabaseHandle & {
   url: string;
@@ -12,21 +13,10 @@ export type PostgresFixture = DatabaseHandle & {
 };
 
 export type PostgresFixtureOptions = {
-  /** The initial frozen schema always runs before these additional migrations. */
+  /** The committed migration journal runs before these additional migrations. */
   migrations?: Array<string | URL>;
 };
 
-const initialMigration = new URL('../../drizzle/0000_initial_schema.sql', import.meta.url);
-/**
- * Broker fixtures also need the production event epoch, wake scheduling class,
- * and effect-identity index. Testing only the initial schema hides integration
- * failures at those boundaries.
- */
-const brokerMigrations = [
-  new URL('../../drizzle/0006_event_protocol.sql', import.meta.url),
-  new URL('../../drizzle/0008_scheduling_attention.sql', import.meta.url),
-  new URL('../../drizzle/0012_effect_identity.sql', import.meta.url),
-];
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
@@ -140,11 +130,8 @@ export async function createPostgresFixture(
     const url = new URL(adminUrl);
     url.pathname = `/${databaseName}`;
     handle = openDatabase(url.toString(), 2);
-    for (const migration of [
-      initialMigration,
-      ...brokerMigrations,
-      ...(options.migrations ?? []),
-    ]) {
+    await migrateDatabase(handle);
+    for (const migration of options.migrations ?? []) {
       await handle.sql.unsafe(await readFile(migration, 'utf8'));
     }
     return {

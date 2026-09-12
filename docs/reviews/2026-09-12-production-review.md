@@ -109,8 +109,8 @@ again. Denied actions stay denied; uncertain sends are not re-executed.
 
 The new broker/service contract regression suite uses the full
 service migrations rather than the broker-only frozen schema. The existing
-broker fixture now also applies the already-shipped event-protocol and
-scheduling migrations, so its event and wake tests exercise production columns.
+broker fixture also applies the committed migration journal, so its event and
+wake tests exercise production columns without maintaining a filename list.
 No production migration was introduced or edited.
 
 The initial database fixture could not start. Those startup errors were not
