@@ -227,7 +227,13 @@ afterAll(async () => {
           expect(knowledge.handle).toBeDefined();
           expect(delivered).toContain(knowledge.handle ?? 'missing handle');
         }
-        expect(delivered).toContain('Since last attempt');
+        expect(delivered).toContain('Since the last attempt');
+        for (const evidence of bundle.since_last.evidence)
+          expect(delivered).toContain(evidence.handle);
+        for (const approval of bundle.since_last.pending_approvals)
+          expect(delivered).toContain(
+            `approval ${approval.approval_id} is waiting on action ${approval.action_id}`,
+          );
         const [context] =
           await handle.sql`select style_violations, items from memory_contexts where attempt_id = ${bundle.attempt.id}`;
         expect(context?.style_violations).toEqual([]);
