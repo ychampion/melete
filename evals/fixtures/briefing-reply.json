@@ -1,0 +1,33 @@
+{
+  "id": "briefing-reply",
+  "suite": "briefing",
+  "domain": "mail",
+  "title": "Brief only what changed after a gap",
+  "objective": "I last checked two days ago. Read the change records and tell me what changed since then. Skip unchanged details.",
+  "source": {
+    "changes": [
+      {
+        "from": "alex@example.test",
+        "subject": "Friday review",
+        "body": "Friday works for me. Confirmed."
+      }
+    ],
+    "last_seen_at": "2026-09-10T09:00:00Z",
+    "current_at": "2026-09-12T09:00:00Z",
+    "unchanged": "The newsletter is unchanged."
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "Alex replied and confirmed Friday."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["confirmed"],
+    "forbidden_words": ["newsletter"],
+    "max_words": 75
+  },
+  "rubric": "Lead with the delta. Include the new state and consequential next step only when supported. Do not repeat unchanged context, introduce yourself, or turn a small update into a report."
+}

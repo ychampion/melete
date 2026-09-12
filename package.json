@@ -32,12 +32,14 @@
     "db:generate": "bun run --cwd apps/melete db:generate",
     "client:generate": "bun run packages/client/scripts/generate.ts",
     "dev:mock": "bun run --cwd apps/mock-api dev",
-    "dev:web": "bun run --cwd apps/web dev"
+    "dev:web": "bun run --cwd apps/web dev",
+    "evals": "bun run evals/run.ts"
   },
   "type": "module",
   "workspaces": [
     "apps/*",
     "packages/*",
-    "conformance"
+    "conformance",
+    "evals"
   ]
 }

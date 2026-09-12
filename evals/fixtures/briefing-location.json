@@ -1,0 +1,33 @@
+{
+  "id": "briefing-location",
+  "suite": "briefing",
+  "domain": "calendar",
+  "title": "Brief only what changed after a gap",
+  "objective": "I last checked two days ago. Read the change records and tell me what changed since then. Skip unchanged details.",
+  "source": {
+    "changes": [
+      {
+        "field": "review.location",
+        "before": "North room",
+        "after": "South room"
+      }
+    ],
+    "last_seen_at": "2026-09-10T09:00:00Z",
+    "current_at": "2026-09-12T09:00:00Z",
+    "unchanged": "The parking is unchanged."
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "The review moved from North room to South room."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["South room"],
+    "forbidden_words": ["parking"],
+    "max_words": 75
+  },
+  "rubric": "Lead with the delta. Include the new state and consequential next step only when supported. Do not repeat unchanged context, introduce yourself, or turn a small update into a report."
+}

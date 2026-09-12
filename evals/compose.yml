@@ -1,0 +1,55 @@
+name: melete-evals
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: evals
+      POSTGRES_PASSWORD: ${EVALS_DB_PASSWORD:?required}
+      POSTGRES_DB: ${EVALS_DATABASE_NAME:?required}
+    command: [postgres, -c, max_wal_size=128MB, -c, shared_buffers=64MB, -c, max_connections=60]
+    volumes: ["${EVALS_DATA_DIR:?required}/pgdata:/var/lib/postgresql/data"]
+    networks: [database]
+    logging: {driver: json-file, options: {max-size: 2m, max-file: "2"}}
+    mem_limit: 2g
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U evals -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  runtime:
+    profiles: [attempt]
+    image: ${EVALS_RUNTIME_IMAGE:-melete-runtime:local}
+    entrypoint: [/bin/sh, /usr/local/bin/melete-runtime-entrypoint]
+    command: [hermes, gateway, run]
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 2g
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    networks: [cell]
+    environment:
+      HERMES_HOME: /var/lib/hermes
+      API_SERVER_KEY: ${EVALS_RUNTIME_KEY:-not-used-until-an-attempt-is-created}
+      MELETE_BROKER_URL: ${EVALS_BROKER_URL:-http://invalid:19188}
+      MELETE_ATTEMPT_TOKEN: ${EVALS_ATTEMPT_TOKEN:-not-used}
+      MELETE_ATTEMPT_ID: ${EVALS_ATTEMPT_ID:-not-used}
+      MELETE_JOB_ID: ${EVALS_JOB_ID:-not-used}
+      MELETE_MODEL_KEY: melete-surrogate-evals
+      MELETE_MODEL_PROVIDER: ${EVALS_MODEL_PROVIDER:-scripted}
+      MELETE_MODEL_NAME: ${EVALS_MODEL_NAME:-scripted}
+      MELETE_MODEL_API_MODE: chat_completions
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: "*"
+    volumes:
+      - ${EVALS_HOME:-../.eval-state/runtime-home}:/var/lib/hermes
+      - ${EVALS_CONFIG:-../.eval-state/runtime-config.yaml}:/opt/melete-runtime/config.yaml:ro
+      - ../.eval-state/runtime-assets/melete_plugin:/opt/melete-runtime/melete_plugin:ro
+      - ../.eval-state/runtime-assets/entrypoint.sh:/usr/local/bin/melete-runtime-entrypoint:ro
+    logging: {driver: json-file, options: {max-size: 2m, max-file: "2"}}
+networks:
+  database: {internal: true}
+  cell: {internal: true}

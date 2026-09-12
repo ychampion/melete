@@ -4,6 +4,9 @@ import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
+import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
+import { parse } from 'yaml';
+import { resolvePython } from './python.ts';
 import {
   attemptEnvironment,
   DockerRuntimeSupervisor,
@@ -53,6 +56,67 @@ const options: SupervisorOptions = {
 };
 
 describe('runtime launch boundaries', () => {
+  test('process startup preserves model settings and selects the scoped gateway', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'melete-process-config-'));
+    const runtimePackage = join(root, 'runtime');
+    const supervisor = new ProcessRuntimeSupervisor({
+      ...options,
+      engineRoot: join(root, 'engine'),
+      runtimePackage,
+      workRoot: join(root, 'work'),
+      python: resolvePython(),
+      startupTimeoutMs: 5000,
+    });
+    try {
+      await mkdir(join(root, 'engine', '.git'), { recursive: true });
+      await writeFile(join(root, 'engine', '.git', 'HEAD'), HERMES_PINNED_COMMIT);
+      await mkdir(join(runtimePackage, 'patches'), { recursive: true });
+      await mkdir(join(runtimePackage, 'config'));
+      await mkdir(join(runtimePackage, 'melete_plugin'));
+      await writeFile(join(runtimePackage, 'patches', 'observer_bridge.py'), '# Fixture only.\n');
+      await writeFile(
+        join(runtimePackage, 'config', 'config.yaml'),
+        'provider: obsolete\nmodel:\n  max_tokens: 1234\n  temperature: 0.2\n',
+      );
+      // A loopback-only stand-in returns the exact configuration the child received.
+      await writeFile(
+        join(runtimePackage, 'process_launcher.py'),
+        `import http.server, json, os, pathlib
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        data = (pathlib.Path(os.environ['HERMES_HOME']) / 'config.yaml').read_bytes()
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'port': server.server_port}))
+server.serve_forever()
+`,
+      );
+      const instance = await supervisor.launch(bundle, new AbortController().signal);
+      const response = await fetch(`${instance.baseUrl}/config`);
+      const config = parse(await response.text());
+      expect(config.provider).toBeUndefined();
+      expect(config.model).toEqual({
+        max_tokens: 1234,
+        temperature: 0.2,
+        provider: 'melete-gateway',
+        default: 'scripted',
+      });
+      expect(Object.keys(config.providers)).toEqual(['melete-gateway']);
+      expect(config.providers['melete-gateway']).toMatchObject({
+        base_url: 'http://melete:8788/providers/fake/v1',
+        key_env: 'MELETE_MODEL_KEY',
+        extra_headers: { 'x-melete-capability': bundle.attempt.token },
+      });
+    } finally {
+      await supervisor.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
   test('service credentials and inherited home never enter the child environment', () => {
     expect(
       platformEnvironment({

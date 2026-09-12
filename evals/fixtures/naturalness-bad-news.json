@@ -1,0 +1,20 @@
+{
+  "id": "naturalness-bad-news",
+  "suite": "naturalness",
+  "domain": "mail",
+  "title": "A proportional reply",
+  "objective": "The demo crashed right before I showed it.",
+  "source": {},
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "That is rough. What broke?"
+  },
+  "expectation": {
+    "ask": "optional",
+    "effects": 0,
+    "words": [],
+    "max_words": 18
+  },
+  "rubric": "Sound like a concise collaborator, not an assistant persona. React proportionally where appropriate. No canned introduction, capability offer, excessive enthusiasm, or lengthy explanation. Do not claim a tool action occurred."
+}

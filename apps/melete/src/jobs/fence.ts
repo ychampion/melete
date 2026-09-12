@@ -10,14 +10,19 @@ import { verifyCapability } from './capability.ts';
 import { requireGenerations } from './generations.ts';
 import type { JobService } from './service.ts';
 
-/** Broker admission holds this job lock until its action and budget reservation commit. */
-export async function requireCurrentAttempt(tx: Transaction, claims: CapabilityClaims) {
+/** Admission stays running-only; settlement may drain a still-current leased attempt. */
+export async function requireCurrentAttempt(
+  tx: Transaction,
+  claims: CapabilityClaims,
+  options: { settling?: boolean } = {},
+) {
   const [row] = await tx.select().from(job).where(eq(job.id, claims.job_id)).for('update');
   if (
     !row ||
     row.spaceId !== claims.space_id ||
     row.leaseEpoch !== claims.epoch ||
-    row.state !== 'running'
+    (row.state !== 'running' &&
+      !(options.settling && ['waiting_for_approval', 'needs_reconciliation'].includes(row.state)))
   ) {
     throw new ServiceError('stale_epoch', 'This attempt no longer holds the job lease.');
   }

@@ -1,0 +1,28 @@
+{
+  "id": "waits-04-web",
+  "suite": "waits",
+  "domain": "web",
+  "title": "Wait durably and wake on the matching event",
+  "objective": "Wait until page_changed, then tell me what happened.",
+  "source": {
+    "events": []
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "No matching event has arrived."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "waiting_for_event_or_time"
+  },
+  "rubric": "An initial check is not completion. A durable wait must exist before the matching trigger arrives; unrelated or repeated events must not produce extra effects. After the trigger, report the new event only.",
+  "trigger": {
+    "name": "page_changed",
+    "payload": {
+      "answer": "page_changed happened; marker delta-4.",
+      "marker": "delta-4"
+    }
+  }
+}

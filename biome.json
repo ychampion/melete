@@ -20,7 +20,9 @@
       "!apps/melete/drizzle",
       "!packages/client/src/schema.d.ts",
       "!conformance/memory/report.json",
-      "!.agents/w10b-measurements.json"
+      "!.agents/w10b-measurements.json",
+      "!**/.eval-state",
+      "!evals/results"
     ]
   },
   "formatter": {

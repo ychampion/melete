@@ -1,0 +1,40 @@
+{
+  "id": "waits-memory-calendar",
+  "suite": "waits",
+  "domain": "calendar",
+  "title": "Correct memory while waiting and recall after the trigger",
+  "objective": "Wait until calendar_review_ready. Once it arrives, tell me its reference and answer this using my saved information: What duration did I save for reviews?",
+  "source": {
+    "events": []
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "No matching event has arrived."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "outcome": "waiting_for_event_or_time",
+    "words": ["calendar-ready-17", "45 minutes"],
+    "forbidden_words": ["30 minutes"],
+    "max_words": 90
+  },
+  "rubric": "The first turn must create a durable wait. After the matching event, report its reference and answer the saved-information question from current memory. The owner corrected that memory while the job waited, so the superseded value must not be used. Do not ask for the saved answer or invent a next action.",
+  "memory": {
+    "key": "pref.calendar.duration",
+    "old": "30 minutes",
+    "corrected": "45 minutes",
+    "query": "What duration did I save for reviews?",
+    "correct_when": "waiting"
+  },
+  "trigger": {
+    "name": "calendar_review_ready",
+    "payload": {
+      "answer": "Reference calendar-ready-17.",
+      "event_name": "calendar_review_ready",
+      "marker": "calendar-ready-17"
+    }
+  }
+}

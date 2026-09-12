@@ -1,0 +1,10 @@
+{
+  "name": "@melete/evals",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@melete/contracts": "workspace:*",
+    "postgres": "3.4.9",
+    "zod": "4.6.2"
+  }
+}

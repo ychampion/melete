@@ -15,6 +15,7 @@ import { type AgentAccess, agentAccess, directSend } from '../experience/access.
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
+import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
 
@@ -326,12 +327,18 @@ export class ToolCatalog {
       });
     }
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
+      if (tool.name === RUNTIME_WAIT_TOOL.name && !claims.scopes.includes(tool.name)) continue;
       if (
         !(await accept(tool.name, tool.connection_id, () => {
-          if (tool.connection_id !== null || tool.effect_class !== 'read')
+          const lifecycleWait =
+            tool.name === RUNTIME_WAIT_TOOL.name &&
+            schemaFingerprint(tool.input_schema) ===
+              schemaFingerprint(RUNTIME_WAIT_TOOL.input_schema) &&
+            tool.effect_class === RUNTIME_WAIT_TOOL.effect_class;
+          if (tool.connection_id !== null || (tool.effect_class !== 'read' && !lifecycleWait))
             throw new BrokerFault(
               'unknown_tool',
-              'Native catalog tools must be broker-owned reads',
+              'Native catalog tools must be broker-owned reads or the typed lifecycle wait',
             );
           if (
             META_TOOLS.some((meta) => meta.name === tool.name) ||

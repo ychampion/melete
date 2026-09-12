@@ -2,6 +2,7 @@ import {
   claimHandleOf,
   type JobConstraints,
   type KnowledgeExcerpt,
+  memoryKey,
   type RecallItem,
   type RecallRequest,
   type RecallResult,
@@ -138,6 +139,12 @@ export function itemTokens(item: RecallItem) {
   );
 }
 
+/** Use the same word boundaries as the key-bearing lexical index. */
+export function lexicalQuery(query: string): string {
+  const candidate = query.trim();
+  return memoryKey.safeParse(candidate).success ? candidate.replace(/[.:]/g, ' ') : query;
+}
+
 export async function lexicalCandidates(
   tx: MemoryTx,
   scope: MemoryScope,
@@ -147,10 +154,10 @@ export async function lexicalCandidates(
 ): Promise<Candidate[]> {
   const at = request.at ?? new Date().toISOString();
   const rows =
-    await tx`select i.claim_id, i.revision, ts_rank_cd(i.tokens, plainto_tsquery('simple', ${request.query})) as score
+    await tx`select i.claim_id, i.revision, ts_rank_cd(i.tokens, plainto_tsquery('simple', ${lexicalQuery(request.query)})) as score
     from memory_index_entries i join memory_claims c on c.id = i.claim_id join memory_revisions r on r.claim_id = i.claim_id and r.revision = i.revision
     where i.space_id = ${scope.spaceId} and i.generation = ${manifestGeneration} and not c.hidden and c.audience = any(${audience.audiences})
-      and r.status <> 'retracted' and i.tokens @@ plainto_tsquery('simple', ${request.query})
+      and r.status <> 'retracted' and i.tokens @@ plainto_tsquery('simple', ${lexicalQuery(request.query)})
       and (${request.mode === 'historical'} or (c.head_revision = r.revision and r.status in ('active','disputed') and r.kind <> 'historical' and r.valid_from <= ${at} and (r.valid_until is null or r.valid_until > ${at})))
       and (${request.mode !== 'historical' || !request.at} or (r.valid_from <= ${at} and (r.valid_until is null or r.valid_until > ${at})))
     order by score desc, i.claim_id, i.revision desc limit ${request.path === 'investigative' ? 200 : 100}`;
@@ -185,7 +192,7 @@ async function supplementalCandidates(
   }
   const matches =
     await tx`select claim_id, revision, 0.5 as score from jsonb_to_recordset(${JSON.stringify(fresh)}::text::jsonb) as fresh(claim_id text, revision integer, text text)
-    where to_tsvector('simple', text) @@ plainto_tsquery('simple', ${request.query})`;
+    where to_tsvector('simple', text) @@ plainto_tsquery('simple', ${lexicalQuery(request.query)})`;
   return matches.map((row) => ({
     claim_id: row.claim_id,
     revision: row.revision,

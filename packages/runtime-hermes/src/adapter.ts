@@ -21,6 +21,8 @@ import {
   type RuntimeEvent,
   type ToolSpec,
   toolSpec,
+  type WaitSpec,
+  waitSpec,
 } from '@melete/contracts';
 import {
   HermesClient,
@@ -65,6 +67,8 @@ export type HermesAdapterOptions = {
   token?: string;
   parkedActions: ParkedActions;
   catalogState?: CatalogState;
+  /** A typed, service-owned wait record, never inferred from reply text. */
+  pendingWait?: (bundle: AttemptBundle) => Promise<WaitSpec | null>;
   fetch?: FetchLike;
   /** How long to wait for a frame before calling the stream dead. */
   streamIdleMs?: number;
@@ -457,6 +461,14 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           await emitter.emit({ type: 'action_requested', action_id: actionId, kind: 'approval' });
         }
         settled = { kind: 'waiting_for_approval', action_ids: parked as [string, ...string[]] };
+      } else if (settled.kind === 'completed' && this.options.pendingWait) {
+        const pending = await beforeDeadline(this.options.pendingWait(bundle), deadline);
+        if (pending) {
+          const wait = waitSpec.parse(pending);
+          if (wait.kind !== 'timer' && wait.kind !== 'event')
+            throw new Error('Invalid lifecycle wait');
+          settled = { kind: 'waiting_for_event_or_time', wait };
+        }
       }
     } catch (error) {
       const timedOut =

@@ -1,0 +1,20 @@
+{
+  "id": "naturalness-correction",
+  "suite": "naturalness",
+  "domain": "mail",
+  "title": "A proportional reply",
+  "objective": "I meant Thursday, not Tuesday. Just acknowledge the correction.",
+  "source": {},
+  "script": {
+    "tool": "none",
+    "arguments": {},
+    "reply": "Thursday, not Tuesday."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "words": ["Thursday"],
+    "max_words": 12
+  },
+  "rubric": "Sound like a concise collaborator, not an assistant persona. React proportionally where appropriate. No canned introduction, capability offer, excessive enthusiasm, or lengthy explanation. Do not claim a tool action occurred."
+}

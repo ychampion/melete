@@ -1,0 +1,33 @@
+{
+  "id": "briefing-time",
+  "suite": "briefing",
+  "domain": "calendar",
+  "title": "Brief only what changed after a gap",
+  "objective": "I last checked two days ago. Read the change records and tell me what changed since then. Skip unchanged details.",
+  "source": {
+    "changes": [
+      {
+        "field": "review.start",
+        "before": "2026-09-15T14:00:00Z",
+        "after": "2026-09-15T15:00:00Z"
+      }
+    ],
+    "last_seen_at": "2026-09-10T09:00:00Z",
+    "current_at": "2026-09-12T09:00:00Z",
+    "unchanged": "The catering is unchanged."
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "The review moved from 14:00 to 15:00."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["15:00"],
+    "forbidden_words": ["catering"],
+    "max_words": 75
+  },
+  "rubric": "Lead with the delta. Include the new state and consequential next step only when supported. Do not repeat unchanged context, introduce yourself, or turn a small update into a report."
+}

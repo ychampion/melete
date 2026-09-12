@@ -1,0 +1,40 @@
+{
+  "id": "waits-memory-files",
+  "suite": "waits",
+  "domain": "files",
+  "title": "Correct memory while waiting and recall after the trigger",
+  "objective": "Wait until files_review_ready. Once it arrives, tell me its reference and answer this using my saved information: What format did I save for notes?",
+  "source": {
+    "events": []
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "No matching event has arrived."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "outcome": "waiting_for_event_or_time",
+    "words": ["files-ready-17", "Markdown"],
+    "forbidden_words": ["PDF"],
+    "max_words": 90
+  },
+  "rubric": "The first turn must create a durable wait. After the matching event, report its reference and answer the saved-information question from current memory. The owner corrected that memory while the job waited, so the superseded value must not be used. Do not ask for the saved answer or invent a next action.",
+  "memory": {
+    "key": "pref.files.format",
+    "old": "PDF",
+    "corrected": "Markdown",
+    "query": "What format did I save for notes?",
+    "correct_when": "waiting"
+  },
+  "trigger": {
+    "name": "files_review_ready",
+    "payload": {
+      "answer": "Reference files-ready-17.",
+      "event_name": "files_review_ready",
+      "marker": "files-ready-17"
+    }
+  }
+}
