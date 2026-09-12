@@ -994,3 +994,15 @@ img {
     animation: none;
   }
 }
+
+/* A grouped field: the fieldset carries no chrome, the legend sits like a label. */
+.field-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.field-group > legend {
+  padding: 0;
+  margin-bottom: 6px;
+}

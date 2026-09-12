@@ -7,7 +7,9 @@
 import {
   type ButtonHTMLAttributes,
   type CSSProperties,
+  cloneElement,
   type InputHTMLAttributes,
+  isValidElement,
   type ReactNode,
   useEffect,
   useId,
@@ -273,6 +275,7 @@ export function Select({
   height = 36,
   width,
   label,
+  id,
 }: {
   icon?: IconName;
   value: string;
@@ -281,6 +284,7 @@ export function Select({
   height?: number;
   width?: number | string;
   label: string;
+  id?: string;
 }) {
   return (
     <label className="input" style={{ height, width }} data-icon={icon ? 'true' : undefined}>
@@ -289,7 +293,12 @@ export function Select({
           <Icon name={icon} size={16} />
         </span>
       ) : null}
-      <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+      <select
+        id={id}
+        aria-label={id ? undefined : label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
@@ -444,6 +453,12 @@ export function Hairline() {
   return <div className="hairline" />;
 }
 
+/**
+ * A labelled control. When the child is a single input, select or textarea the
+ * label is a real `<label for>` and the control gets the id, so the name reaches
+ * assistive technology and clicking the label focuses the field. A group of
+ * chips or a segmented control is named through `aria-labelledby` instead.
+ */
 export function Field({
   label,
   hint,
@@ -453,12 +468,34 @@ export function Field({
   hint?: ReactNode;
   children: ReactNode;
 }) {
+  const id = useId();
+  const labelStyle = { fontSize: 13, fontWeight: 500, color: 'var(--heading)' } as const;
+  const single = isValidElement<{ id?: string }>(children) ? children : null;
+  const labelable =
+    single !== null &&
+    (single.type === Input ||
+      single.type === Select ||
+      single.type === 'input' ||
+      single.type === 'select' ||
+      single.type === 'textarea');
+  if (labelable && single) {
+    const controlId = single.props.id ?? id;
+    return (
+      <div className="col" style={{ gap: 6 }}>
+        <label htmlFor={controlId} style={labelStyle}>
+          {label}
+        </label>
+        {cloneElement(single, { id: controlId })}
+        {hint ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>{hint}</span> : null}
+      </div>
+    );
+  }
   return (
-    <div className="col" style={{ gap: 6 }}>
-      <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>{label}</span>
+    <fieldset className="col field-group" style={{ gap: 6 }}>
+      <legend style={labelStyle}>{label}</legend>
       {children}
       {hint ? <span style={{ fontSize: 12, color: 'var(--muted)' }}>{hint}</span> : null}
-    </div>
+    </fieldset>
   );
 }
 
