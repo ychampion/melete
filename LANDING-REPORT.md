@@ -22,7 +22,7 @@ Trial integration on `landing` only. Source baseline: `9484023cabd32b786cb4d336d
 | 4b | integration | `origin/integration` moved to `062d7f7` (four commits) | `d1d2d1a` | None | Typecheck, lint, clean regeneration; plugin 45; Compose 12; focused 254 pass / 0 fail |
 | 5 | #15 | `lane/w10c-discovery`, head `17d65c8` | `5a89677` | `0018_tool_catalog` to 0020 | Typecheck, lint, clean regeneration; plugin 50; Compose 12; focused 356 pass / 0 fail after two test fixes |
 | 6 | #18 | `lane/w6-deploy`, head `007aee9` | `0f000c6` | None | Typecheck, lint, clean regeneration; plugin 53; Compose 17; focused: 9 of 10 lane files pass (77 tests), `runtime/context.test.ts` last case hangs on this Windows box at the lane's own head too (see section) |
-| 7 | #17 | `lane/w13a-docs` | Not attempted | None | Not run |
+| 7 | #17 | `lane/w13a-docs`, head `7cfd41e` | `c6bbac8` | None | Typecheck, lint, clean regeneration; plugin 53; Compose 17; docs only, 40 sentences corrected (listed below) |
 | 8 | #20 | `lane/w10b-browser` | Not attempted | Pending | Not run |
 | 9 | #19 | `lane/w11-learning` | Not attempted | Pending | Not run |
 | 10 | #13 | `lane/w14-capabilities` | Not attempted | Pending | Not run; real Hermes effect proof pending in draft |
@@ -150,4 +150,135 @@ Other fixes the merge needed: the lane's `runtime/context.test.ts` and `runtime/
 Checks: typecheck; lint 395 files; OpenAPI and client regenerated and stable; plugin 53 passed; Compose 17 checks; public-copy scan empty. Focused run, one file at a time with a 180 s wall clock each: `api/listener` 4, `api/login-throttle` 3, `knowledge/spaces` 5, `memory/bootstrap` 5, `runtime/docker` 10, `integration/auth` 12, `deploy/scripts/compose-check` 16, `deploy/scripts/serve-static` 23, all passing; plus the earlier regressions (`knowledge/routes`, `capability-catalog`, `since-last`, `reactions`, `gateway`, `broker`, `catalog`, `execution-admission`, `broker-service-contract`, `generated-artifacts`) which passed in the first combined run before it was stopped.
 
 **Open item, not a merge defect:** `apps/melete/src/runtime/context.test.ts`, case "context is byte-bounded and stale caller epochs cannot launch or create a selection audit", never completes on this box. Its first three cases pass. Traced with temporary logging: the first attempt completes in about 130 ms with a complete recall; the immediately following stale attempt enters `assembleAttemptKnowledge` and its `recall` transaction stops after `BEGIN` (Postgres shows the session idle in transaction with no further statement; no locks waited on, no other active sessions), so the returned promise never settles and the leaked pg-boss connection keeps the process alive after the per-test timeout. It is timing dependent: the same sequence passes when any query runs between the two starts. Bypassing the product lane's style check, and swapping in the lane's own `memory/` and `runtime/context.ts` sources, made no difference. The same file was then run at the lane's own head `007aee9` in a throwaway worktree on this box: the same case timed out the same way. The lane recorded that Windows execution was not performed. Left for the lane owner; nothing in this merge was changed for it. Checkpoints 2 and 3 run this file separately under a wall clock so the rest of the suite still reports.
+
+## PR 17: docs lane
+
+Source head: `7cfd41e01c0c1d93a2e9ab759899e0a175890c80`, confirmed with GitHub. Merge commit `c6bbac8`. Removed incoming `REPORT.md`. Documentation only. Nine files conflicted (twelve hunks): `README.md`, `apps/melete/src/{broker,connectors,knowledge}/README.md`, `docs/{ARCHITECTURE,CLIENT,CONNECTORS,THREAT-MODEL}.md`, `packages/runtime-hermes/README.md`; eleven more lane files merged automatically.
+
+Method, as the brief prescribes: the lane's version of every sentence and its structure were taken, and only sentences whose stated fact a code lane above changed were corrected in place. The lane wrote against baseline `9484023`, so its "written, not run" and "not claimed" statements about deployment (PR 18 ran the Linux stack, scenarios 6 to 8, the restore proof and the control-plane guard), automatic runtime supervision (PR 18), the plugin test suite (run here, 53 passing), the tool catalog (PR 15's token-budgeted core and discovery), the runtime's `work/<job>` subpath mount (PR 18) and provider OAuth exposure (PR 18) were corrected. Sections that document features the lane's baseline did not have were appended under the lane's structure rather than dropped: typed faults and the repair policy and the execution routes (`broker/README.md`), typed faults (`connectors/README.md`), the typed-repair paragraph (`ARCHITECTURE.md`, kept beside the lane's renamed heading), the reaction rule and the safe-stop rule (`CLIENT.md`), watch predicates, discovery, operator-installed MCP servers and composition (`CONNECTORS.md`), the runtime-runs-code section, the Linux deployment verification table and the MCP attacker (`THREAT-MODEL.md`), and the scaffolding measurement, in-cell execution and discovery continuations (`runtime-hermes/README.md`). The Linux install procedure from the deploy lane was reinstated in `README.md` because the lane's "installation not claimed" no longer holds. The lane's links to the unshipped lane `REPORT.md` (thirteen, across the lane's and the deploy lane's docs) were repointed: deployment evidence to note 0020, documentation-verification results to the lane's pull request.
+
+Corrected sentences (before and after, whitespace collapsed):
+
+- `README.md`
+  - was: bun test --max-concurrency=2 --timeout=15000 bun run openapi bun run client:generate bun run compose:check bun test --max-concurrency=2 --timeout=15000 conformance/scenarios bun run conformance:memory ```
+  - now: bun run test bun run openapi bun run client:generate bun run compose:check bun run conformance bun run conformance:memory bun run test:plugin ```
+- `README.md`
+  - was: The generators update the OpenAPI document and client declarations; generated differences must be inspected. The Compose command checks YAML, not live networking. The service-scenario command runs scenarios 1–5 and reports 6–8 as todo. The full suite took 454.72 seconds, about seven and a half minutes, on the measured host with the documented `--timeout=15000` override. `bunfig.toml` sets concurrency to two; the command gives each test/fixture hook fifteen seconds, not the whole suite. Several minutes of test output can therefore be normal progress. The shorter default produced fixture-hook timeouts in a run that took 628.07 seconds; see the recorded results when assessing a nonzero exit. The memory runner executes ten scenarios across seven families plus ten withheld-memory runs; procedure transfer is **written, not run**. Results and command failures are recorded in [REPORT.md](REPORT.md).
+  - now: The generators update the OpenAPI document and client declarations; generated differences must be inspected. The Compose command checks YAML, not live networking. `bun run conformance` runs scenarios 1–5 and reports 6–8 as todo unless the Compose opt-in above is set, in which case all eight run against the stack. `bun run test:plugin` runs the Python plugin suite. The full suite took 454.72 seconds, about seven and a half minutes, on the measured host; the `test` script passes `--max-concurrency=2 --timeout=30000`, which gives each test and fixture hook thirty seconds, not the whole suite. Several minutes of test output can therefore be normal progress. The shorter default produced fixture-hook timeouts in a run that took 628.07 seconds. The memory runner executes ten scenarios across seven families plus ten withheld-memory runs; procedure transfer is **written, not run**.
+- `README.md`
+  - was: | `packages/runtime-hermes` | Pinned engine configuration and HTTP adapter |
+  - now: | `packages/runtime-hermes` | Pinned engine configuration, the Melete plugin and HTTP adapter, and the runtime image |
+- `README.md`
+  - was: | `deploy` | Deployment configuration; live deployment is **not claimed** |
+  - now: | `deploy` | `docker-compose.yml`, `.env.example`, the configuration generator, and the check that the sandbox is really a sandbox; verified on a Linux Docker host |
+- `README.md`
+  - was: | `conformance` | Executable scenarios and explicit todos |
+  - now: | `conformance` | Eight scenarios (6–8 need the Compose opt-in) and [eight memory scenario families](conformance/memory/README.md) |
+- `README.md`
+  - was: **Status: pre-release. Durable service components work in scripted tests; a complete installed assistant is not claimed.** Evidence below applies to code baseline `9484023cabd32b786cb4d336dec818f441cd0cc1`.
+  - now: **Status: pre-release. Durable service components work in scripted tests, and the Linux Compose stack builds from source and runs the scripted provider; a complete assistant with a real model is not claimed.** The test-mapped evidence below was recorded at code baseline `9484023cabd32b786cb4d336dec818f441cd0cc1`; the deployment evidence was recorded on a Linux Docker host on 2026-09-11 and 2026-09-12 (see [the threat model](docs/THREAT-MODEL.md)).
+- `README.md`
+  - was: waits, approvals and action receipts. The five executable [conformance scenarios](conformance/README.md) test recovery, fencing, unknown outcomes, approval binding and runtime death with isolated Postgres and scripted runtimes. They do not run a Compose deployment or a real model.
+  - now: waits, approvals and action receipts. The first five [conformance scenarios](conformance/README.md) test recovery, fencing, unknown outcomes, approval binding and runtime death with isolated Postgres and scripted runtimes. Scenarios 6 to 8 run against the Compose stack when the opt-in below is set. None of them runs a real model.
+- `README.md`
+  - was: Container egress probes are **written, not run**; installation, upgrades and whole-system backup/restore are **not claimed**. |
+  - now: Container egress probes ran from a claimed cell and the warm cell on a Linux Docker host (scenario 6, 2026-09-12); a clean-host install was measured at 64.93 seconds; the Postgres restore proof passed with one destination effect. Upgrades are **not claimed**. |
+- `README.md`
+  - was: - The service has authenticated job, approval, scheduling, attention and event APIs. Startup requires a supplied runtime or the explicit scripted stub when Postgres is configured; automatic Hermes startup is **not claimed**. See [architecture](docs/ARCHITECTURE.md) for the wiring and named tests.
+  - now: - The service has authenticated job, approval, scheduling, attention, event and reaction APIs. With `MELETE_RUNTIME_ADAPTER=docker` the service supervises one Hermes container per attempt itself; otherwise startup requires a supplied runtime or the explicit scripted stub when Postgres is configured. See [architecture](docs/ARCHITECTURE.md) for the wiring and named tests.
+- `README.md`
+  - was: edits, and owner edits become protected revisions`). Memory startup/router integration is optional and is not wired by default; see [memory](docs/MEMORY.md).
+  - now: edits, and owner edits become protected revisions`). Memory startup and its routes are wired when the Docker runtime is selected and stay optional otherwise; see [memory](docs/MEMORY.md).
+- `README.md`
+  - was: - The broker catalog is filtered by scopes; a universal 15-tool limit is **not claimed**. The contract constant is not an enforced catalog cap.
+  - now: - The broker catalog is filtered by scopes and served as a token-budgeted core (750 estimated tokens) plus `search_tools` and `load_tool`; a universal 15-tool limit is **not claimed**. The contract constant is not an enforced catalog cap.
+- `README.md`
+  - was: - Compose hardening is declared and statically checked. Runtime egress probes are **written, not run**. Postgres shares the runtime's internal network, so exclusive broker reachability is **not claimed**. See the [threat model](docs/THREAT-MODEL.md).
+  - now: - Compose hardening is declared, statically checked, and was probed live on a Linux Docker host: from inside a claimed cell and the warm cell, the internet, the host metadata address, Postgres, the web service and the owner control plane were unreachable, and the broker with its model gateway was the only peer. See the [threat model](docs/THREAT-MODEL.md).
+- `apps/melete/src/broker/README.md`
+  - was: The internal listener combines broker routes, a service-authenticated action read adapter and the model gateway. Live exclusive-broker reachability is **not claimed**: the container probes are **written, not run**, and Postgres shares the declared runtime network.
+  - now: The internal listener combines broker routes, a service-authenticated action read adapter and the model gateway. Scenario 6 on the Linux Compose stack (2026-09-12) showed this listener as the cell's only reachable peer: Postgres, the web service and the owner control plane were unreachable from a claimed attempt and from the warm cell.
+- `apps/melete/src/connectors/README.md`
+  - was: File checks use portable filesystem APIs and do not establish a kernel boundary against another process racing directory replacement. Live container enforcement is **written, not run**. Mail and calendar use local protocol fixtures; general live-account compatibility is **not claimed**.
+  - now: File checks use portable filesystem APIs and do not establish a kernel boundary against another process racing directory replacement; the container mount boundary (a per-attempt `work/<job>` subpath) was probed live on Linux in scenario 6. Mail and calendar use local protocol fixtures; general live-account compatibility is **not claimed**.
+- `apps/melete/src/knowledge/README.md`
+  - was: See [MEMORY](../../../../docs/MEMORY.md) for authoritative retrieval and startup requirements. Whole-stack retraction/restart conformance is **written, not run** in scenario 7.
+  - now: See [MEMORY](../../../../docs/MEMORY.md) for authoritative retrieval and startup requirements. Scenario 7 runs whole-stack retraction and restart against the Linux Compose stack when the Compose opt-in is set (2026-09-12: the restart took 17.9 seconds).
+- `docs/CONNECTORS.md`
+  - was: | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
+  - now: | Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` | | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` | | Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` | | Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` | | MCP | Operator-configured HTTP servers behind the broker with operator-chosen effect classes, scopes and audience | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
+- `docs/CONNECTORS.md`
+  - was: symlinks without touching outside content`. These are connector checks, not proof of container filesystem isolation. The container probes are **written, not run**.
+  - now: symlinks without touching outside content`. These are connector checks, not proof of container filesystem isolation; that boundary was probed live in scenario 6 on a Linux Docker host, where a sibling job's canary was unreadable from the cell while its own workspace was writable.
+- `docs/CONNECTORS.md`
+  - was: The broker's database scenarios also run under the full test command in [README](../README.md). [REPORT.md](../REPORT.md) records verification results.
+  - now: The broker's database scenarios also run under the full test command in [README](../README.md).
+- `docs/THREAT-MODEL.md`
+  - was: comparison is **written, not run**. API-key forwarding is implemented; subscription OAuth credential storage and its isolation are **not claimed**.
+  - now: comparison is **written, not run**. API-key forwarding through the gateway is the verified path. Configuring provider OAuth inside Hermes would place those credentials in the runtime's auth store, outside this boundary: a runtime compromise exposes an OAuth token stored there, and it does not expose a provider API key kept in Melete's gateway. The tested images and volumes contain no such OAuth configuration.
+- `docs/THREAT-MODEL.md`
+  - was: Live container containment is **not claimed**. The scenario 6 container probes are **written, not run**: internet, Postgres, metadata, sibling service, broker reachability and filesystem/UID checks all remain `test.todo`. The Compose file declares an internal-only runtime network, non-root UID, read-only root, dropped capabilities, no-new-privileges and process/memory limits. The static test `passes every boundary check` reads that configuration; it does not establish runtime network behavior. In particular, Postgres shares the runtime's internal network. The assertion that Postgres cannot be reached, and the assertion that the broker is the only reachable peer, are **not claimed**. Writable paths include `/work`, `/var/lib/hermes` and a `/tmp` tmpfs. The declared Hermes home is checked by `taking away the runtime writable Hermes home`; container enforcement is **written, not run**. A shared kernel, runtime volume contents and reachable broker remain attack surfaces. Virtual-machine isolation and host-compromise containment are **not claimed**.
+  - now: Live container containment was probed on a Linux Docker host (Engine 29.1.3, 2026-09-11 and 2026-09-12) from a real claimed Hermes container and the warm probe container: the internet, the host metadata address, a live host listener, Postgres (by DNS and by container IP), the web service and the owner control plane (`/setup`, `/login`, `/health` on port 8787) were unreachable; the broker and model gateway on port 8788 were the only reachable peers; the cell ran as UID 10001 with a read-only root, zero effective capabilities, no-new-privileges and no Docker socket. The table below records that evidence and what would falsify it. These checks establish the tested Linux configuration, not macOS, Windows, rootless Docker, or protection from kernel exploits. The Compose file declares an internal-only runtime network with isolated bridge gateway mode, non-root UID, read-only root, dropped capabilities, no-new-privileges and process/memory limits. The static test `passes every boundary check` reads that configuration; the live probes above are what establish runtime behavior. Writable paths are the current job's `/work` subpath (`work/<job>`, mounted with a volume subpath so sibling jobs' directories are hidden by the OS mount), the attempt's named `/var/lib/hermes` volume, and a size-limited `/tmp` tmpfs. The declared Hermes home is checked by `taking away the runtime writable Hermes home`. A shared kernel, the runtime volume's own contents and the reachable broker remain attack surfaces. Virtual-machine isolation and host-compromise containment are **not claimed**.
+- `docs/THREAT-MODEL.md`
+  - was: The first command checks YAML only; the second uses temporary files, fake transports and local protocol fixtures. Full-suite results and the unrun container probes are recorded in [REPORT.md](../REPORT.md).
+  - now: The first command checks YAML only; the second uses temporary files, fake transports and local protocol fixtures. The container probes run as scenario 6 when `MELETE_CONFORMANCE_COMPOSE=1` is set against a running Linux stack (see the README). The Linux deployment and restoration checks use a scripted model and a test destination; they do not establish live provider behavior or the safety of an arbitrary external account.
+- `docs/THREAT-MODEL.md`
+  - was: gate (conformance 4). Skill selection is deterministic (`matches a trigger in the objective`, `loads at most three skills, however many match`); schema length limits are tested by `refuses a skill that is longer than the contract allows`.
+  - now: gate (conformance 4). Initial skill selection is deterministic (`matches a trigger in the objective`, `loads at most three skills, however many match`); on-demand discovery can load a skill the model requests, but the broker filters it by the current job's scopes and withholds space skills in the public compartment, so a requested skill never supplies its own authority. Schema length limits are tested by `refuses a skill that is longer than the contract allows`.
+- `packages/runtime-hermes/README.md`
+  - was: Automatic construction of this adapter by the default service bootstrap is **not claimed**; callers must inject a runtime or use the explicit local stub.
+  - now: The service constructs and supervises this adapter itself when `MELETE_RUNTIME_ADAPTER=docker` is set (one container per attempt, retired when the attempt ends); otherwise callers inject a runtime or use the explicit local stub.
+- `packages/runtime-hermes/README.md`
+  - was: The container build and its live configuration behavior are **written, not run** for this documentation verification. Historical measurements remain in [the engineering record](../../.agents/notes/0009-hermes-surface.md); they are not a current deployment benchmark.
+  - now: The image was built from the pinned tag and run on a Linux Docker host on 2026-09-12; its labels record the Hermes commit and the plugin content hash, and `build-metadata.py` refuses a build whose plugin bytes do not match the pin. Historical measurements remain in [the engineering record](../../.agents/notes/0009-hermes-surface.md); the current scaffolding measurement is below.
+- `packages/runtime-hermes/README.md`
+  - was: The broker filters tools by scopes, but a universal 15-tool cap is **not claimed**: the current broker catalog does not truncate to the contract constant.
+  - now: The broker filters tools by scopes and serves a token-budgeted core (750 estimated tokens, discovery tools included) plus `search_tools` and `load_tool`; a universal 15-tool cap is **not claimed**, and the contract constant is not an enforced catalog cap.
+- `packages/runtime-hermes/README.md`
+  - was: The plugin forwards broker proposals and returns their dispositions. Its Python test suite is **written, not run** for this documentation verification; see `tests/`. A local TypeScript adapter pass does not imply Python plugin or container execution passed.
+  - now: The plugin forwards broker proposals and returns their dispositions, carries out `in_cell` execution tools itself, and registers a schema the broker loads on demand. Its Python test suite (`tests/`) runs with `bun run test:plugin`; a local TypeScript adapter pass does not imply container execution passed.
+- `packages/runtime-hermes/README.md`
+  - was: Compose declares an internal-only runtime, read-only root, non-root UID and dropped capabilities. It provides writable `/work`, `/var/lib/hermes` and temporary storage. The home volume supports durable engine run-idempotency; the static check `taking away the runtime writable Hermes home` covers the declaration. Inside-container egress/filesystem probes are **written, not run** in [conformance 6](../../conformance/scenarios/06-no-route-out.test.ts). Postgres shares the internal network, so exclusive broker reachability is **not claimed**. The per-attempt environment and writable home configuration do not by themselves implement the service's missing runtime lifecycle wiring.
+  - now: Compose declares an internal-only runtime, read-only root, non-root UID and dropped capabilities. Each attempt's container mounts only its job's `work/<job>` subpath, a named `/var/lib/hermes` volume and temporary storage. The home volume supports durable engine run-idempotency; the static check `taking away the runtime writable Hermes home` covers the declaration. Inside-container egress and filesystem probes are [conformance 6](../../conformance/scenarios/06-no-route-out.test.ts); they ran on a Linux Docker host on 2026-09-12 from a claimed attempt and the warm cell, and found the broker and model gateway to be the only reachable peers, with Postgres, the web service and the owner control plane unreachable. The service starts and retires these containers itself when the Docker runtime is selected.
+- `SECURITY.md`
+  - was: pre-release. [REPORT.md](REPORT.md) records the verification performed for the documentation revision.
+  - now: pre-release. The documentation lane's pull request (#17) records the verification performed for the documentation revision.
+- `conformance/README.md`
+  - was: See [REPORT.md](../REPORT.md) for observed failures and retry results.
+  - now: See the documentation lane's pull request (#17) for observed failures and retry results.
+- `conformance/README.md`
+  - was: arm. [REPORT.md](../REPORT.md) records command results and limitations.
+  - now: arm. The documentation lane's pull request (#17) records command results and limitations.
+- `conformance/memory/README.md`
+  - was: Results for this documentation revision are in [REPORT.md](../../REPORT.md).
+  - now: Results for this documentation revision are in the documentation lane's pull request (#17).
+- `docs/ARCHITECTURE.md`
+  - was: scenarios and prints the todos. See [REPORT.md](../REPORT.md) for run outcomes.
+  - now: scenarios and prints the todos. See the documentation lane's pull request (#17) for run outcomes.
+- `docs/CLIENT.md`
+  - was: command in [README](../README.md). [REPORT.md](../REPORT.md) records outcomes.
+  - now: command in [README](../README.md). The documentation lane's pull request (#17) records outcomes.
+- `docs/DEPLOYMENT.md`
+  - was: The [deployment report](../REPORT.md) records the tested revision, image sizes,
+  - now: The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records the tested revision, image sizes,
+- `docs/DEPLOYMENT.md`
+  - was: to choose another parent directory. The [deployment report](../REPORT.md) records
+  - now: to choose another parent directory. The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records
+- `docs/ENGINEERING.md`
+  - was: Run outcomes are in [REPORT.md](../REPORT.md).
+  - now: Run outcomes are in the documentation lane's pull request (#17).
+- `docs/MEMORY.md`
+  - was: and [REPORT.md](../REPORT.md) for command outcomes. Neither establishes model
+  - now: and the documentation lane's pull request (#17) for command outcomes. Neither establishes model
+- `docs/THREAT-MODEL.md`
+  - was: those restore claims. Commands and measured results are in [REPORT.md](../REPORT.md).
+  - now: those restore claims. Commands and measured results are in [deployment note 0020](../.agents/notes/0020-deployment-evidence.md).
+- `docs/mail-calendar.md`
+  - was: or remote calendar is used. See [REPORT.md](../REPORT.md) for results.
+  - now: or remote calendar is used. See the documentation lane's pull request (#17) for results.
+- `packages/runtime-hermes/README.md`
+  - was: provider. [REPORT.md](../../REPORT.md) records the result.
+  - now: provider. The documentation lane's pull request (#17) records the result.
+
+Checks: typecheck; lint 395 files; OpenAPI and client regeneration unchanged; plugin 53 passed; Compose 17 checks; public-copy scan empty; no `REPORT.md` link remains outside `.agents/notes` and this report.
 
