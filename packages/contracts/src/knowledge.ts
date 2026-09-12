@@ -56,32 +56,34 @@ export type KnowledgeSource = z.infer<typeof knowledgeSource>;
 
 export const knowledgeId = prefixedId(ID_PREFIXES.knowledge);
 
-export const knowledgeFrontmatter = z.object({
-  /** Stable across retitling, so a supersedes chain never breaks. */
-  id: knowledgeId,
-  title: z.string().min(1).max(200),
-  /** MUST equal the directory this file lives in. The linter enforces it. */
-  space: z.string().min(1),
-  audience: knowledgeAudience,
-  type: knowledgeType,
-  status: knowledgeRecordStatus,
-  confidence,
-  asserted_by: assertedBy,
-  source: knowledgeSource,
-  /** When Melete learned it. */
-  observed_at: dateOnly,
-  /** When it became true in the world. Not the same thing. */
-  valid_from: dateOnly,
-  /** Null means still true. */
-  valid_until: dateOnly.nullable().default(null),
-  supersedes: z.array(knowledgeId).default([]),
-  superseded_by: knowledgeId.nullable().default(null),
-  created: dateOnly,
-  updated: dateOnly,
-  tags: z.array(z.string()).default([]),
-  links: z.array(knowledgeId).default([]),
-  schema_version: z.literal(SCHEMA_VERSION),
-});
+export const knowledgeFrontmatter = z
+  .object({
+    /** Stable across retitling, so a supersedes chain never breaks. */
+    id: knowledgeId,
+    title: z.string().min(1).max(200),
+    /** MUST equal the directory this file lives in. The linter enforces it. */
+    space: z.string().min(1),
+    audience: knowledgeAudience,
+    type: knowledgeType,
+    status: knowledgeRecordStatus,
+    confidence,
+    asserted_by: assertedBy,
+    source: knowledgeSource,
+    /** When Melete learned it. */
+    observed_at: dateOnly,
+    /** When it became true in the world. Not the same thing. */
+    valid_from: dateOnly,
+    /** Null means still true. */
+    valid_until: dateOnly.nullable().default(null),
+    supersedes: z.array(knowledgeId).default([]),
+    superseded_by: knowledgeId.nullable().default(null),
+    created: dateOnly,
+    updated: dateOnly,
+    tags: z.array(z.string()).default([]),
+    links: z.array(knowledgeId).default([]),
+    schema_version: z.literal(SCHEMA_VERSION),
+  })
+  .meta({ id: 'KnowledgeFrontmatter' });
 export type KnowledgeFrontmatter = z.infer<typeof knowledgeFrontmatter>;
 
 export const knowledgeRecord = z.object({

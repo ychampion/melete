@@ -1,6 +1,10 @@
 # Proposed - Contract additions for attention as a contract
 
-Status: proposed
+Status: **accepted 2026-09-12**, as landed with the lane. One thing changed
+afterwards: `ownerQuestion` now also carries `source`, `space_id` and `key`,
+and its `job_id`, `job_title` and `attempt_id` are nullable, because the one
+queue holds disputed memory keys beside the jobs' questions. The migration
+became `0011_attention_contract`.
 Date: 2026-09-11
 Raised by: the attention lane, implementing E7
 

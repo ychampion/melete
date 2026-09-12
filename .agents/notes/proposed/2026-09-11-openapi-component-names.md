@@ -1,6 +1,12 @@
 # Proposed - Name the shared OpenAPI components
 
-Status: proposed
+Status: **accepted 2026-09-12**. The eleven hoisted shapes carry
+`.meta({ id })`, so the document names `Job`, `Space`, `Attempt`, `Action`,
+`Event`, `Connection`, `JobState`, `ActionStatus`, `EffectClass` and
+`KnowledgeFrontmatter` instead of numbering them. Done before v0.1.0, which
+is what this note argued for: the one-time churn costs nothing now and would
+have broken every generated client later. Other shared shapes are still
+anonymous, so the client keeps deriving its aliases from paths.
 Date: 2026-09-11
 Raised by: the client lane, while generating types from openapi.json
 

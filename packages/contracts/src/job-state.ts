@@ -18,7 +18,7 @@ export const JOB_STATES = [
   'cancelled',
 ] as const;
 
-export const jobState = z.enum(JOB_STATES);
+export const jobState = z.enum(JOB_STATES).meta({ id: 'JobState' });
 export type JobState = z.infer<typeof jobState>;
 
 export const TERMINAL_STATES = [

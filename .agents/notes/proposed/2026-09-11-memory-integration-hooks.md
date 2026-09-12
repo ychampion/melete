@@ -1,6 +1,11 @@
 # Memory integration hooks
 
-Status: proposed
+Status: **resolved 2026-09-12**. The hooks this note said were missing are
+wired: the memory router is mounted, context invalidation is durable, the
+broker asks memory where a payload value came from, and the knowledge
+proposal operations are served and described. Scope still comes from
+server-side authentication and never from a caller-supplied header, which is
+the part of this note that was a requirement rather than a gap.
 Date: 2026-09-11
 
 ## Problem

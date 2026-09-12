@@ -38,15 +38,17 @@ export const SPACE_AUDIENCES = ['owner'] as const;
 export const spaceAudience = z.enum(SPACE_AUDIENCES);
 export type SpaceAudience = z.infer<typeof spaceAudience>;
 
-export const space = z.object({
-  id: prefixedId(ID_PREFIXES.space),
-  name: z.string().min(1).max(120),
-  kind: spaceKind,
-  audience: spaceAudience,
-  /** Path of this space's git repository on the `spaces` volume. */
-  git_path: z.string().min(1),
-  created_at: timestamp,
-});
+export const space = z
+  .object({
+    id: prefixedId(ID_PREFIXES.space),
+    name: z.string().min(1).max(120),
+    kind: spaceKind,
+    audience: spaceAudience,
+    /** Path of this space's git repository on the `spaces` volume. */
+    git_path: z.string().min(1),
+    created_at: timestamp,
+  })
+  .meta({ id: 'Space' });
 export type Space = z.infer<typeof space>;
 
 // --------------------------------------------------------------------------
@@ -97,7 +99,7 @@ export const connection = z.object({
 export type Connection = z.infer<typeof connection>;
 
 /** What the API is allowed to return: the same row minus the secret pointer. */
-export const connectionView = connection.omit({ secret_ref: true });
+export const connectionView = connection.omit({ secret_ref: true }).meta({ id: 'Connection' });
 export type ConnectionView = z.infer<typeof connectionView>;
 
 // --------------------------------------------------------------------------
@@ -146,26 +148,28 @@ export const waitSpec = z.discriminatedUnion('kind', [
 ]);
 export type WaitSpec = z.infer<typeof waitSpec>;
 
-export const job = z.object({
-  id: prefixedId(ID_PREFIXES.job),
-  space_id: prefixedId(ID_PREFIXES.space),
-  title: z.string().min(1).max(200),
-  objective: z.string().min(1),
-  constraints: jobConstraints,
-  state: jobState,
-  /** Bumped whenever the objective or constraints change; approvals bind to it. */
-  revision: z.number().int().nonnegative(),
-  /** Bumped when an attempt starts. The broker fences on this. */
-  lease_epoch: z.number().int().nonnegative(),
-  next_wake_at: timestamp.nullable(),
-  wait: waitSpec,
-  budget: jobBudget,
-  created_by: z.enum(['owner', 'trigger', 'system']),
-  created_at: timestamp,
-  updated_at: timestamp,
-  /** Optimistic-concurrency counter for the single transaction that commits a move. */
-  state_version: z.number().int().nonnegative(),
-});
+export const job = z
+  .object({
+    id: prefixedId(ID_PREFIXES.job),
+    space_id: prefixedId(ID_PREFIXES.space),
+    title: z.string().min(1).max(200),
+    objective: z.string().min(1),
+    constraints: jobConstraints,
+    state: jobState,
+    /** Bumped whenever the objective or constraints change; approvals bind to it. */
+    revision: z.number().int().nonnegative(),
+    /** Bumped when an attempt starts. The broker fences on this. */
+    lease_epoch: z.number().int().nonnegative(),
+    next_wake_at: timestamp.nullable(),
+    wait: waitSpec,
+    budget: jobBudget,
+    created_by: z.enum(['owner', 'trigger', 'system']),
+    created_at: timestamp,
+    updated_at: timestamp,
+    /** Optimistic-concurrency counter for the single transaction that commits a move. */
+    state_version: z.number().int().nonnegative(),
+  })
+  .meta({ id: 'Job' });
 export type Job = z.infer<typeof job>;
 
 // --------------------------------------------------------------------------
@@ -193,72 +197,76 @@ export const attemptUsage = z.object({
 });
 export type AttemptUsage = z.infer<typeof attemptUsage>;
 
-export const attempt = z.object({
-  id: prefixedId(ID_PREFIXES.attempt),
-  job_id: prefixedId(ID_PREFIXES.job),
-  epoch: z.number().int().nonnegative(),
-  runtime_version: z.string(),
-  provider: z.string(),
-  model: z.string(),
-  /** What the provider actually served, read from the response, not the request. */
-  model_actual: z.string().nullable(),
-  usage: attemptUsage,
-  started_at: timestamp,
-  ended_at: timestamp.nullable(),
-  outcome: attemptOutcomeKind.nullable(),
-  outcome_detail: jsonObject.nullable(),
-  context_snapshot_ref: z.string().nullable(),
-});
+export const attempt = z
+  .object({
+    id: prefixedId(ID_PREFIXES.attempt),
+    job_id: prefixedId(ID_PREFIXES.job),
+    epoch: z.number().int().nonnegative(),
+    runtime_version: z.string(),
+    provider: z.string(),
+    model: z.string(),
+    /** What the provider actually served, read from the response, not the request. */
+    model_actual: z.string().nullable(),
+    usage: attemptUsage,
+    started_at: timestamp,
+    ended_at: timestamp.nullable(),
+    outcome: attemptOutcomeKind.nullable(),
+    outcome_detail: jsonObject.nullable(),
+    context_snapshot_ref: z.string().nullable(),
+  })
+  .meta({ id: 'Attempt' });
 export type Attempt = z.infer<typeof attempt>;
 
 // --------------------------------------------------------------------------
 // action, approval
 // --------------------------------------------------------------------------
 
-export const action = z.object({
-  id: prefixedId(ID_PREFIXES.action),
-  job_id: prefixedId(ID_PREFIXES.job),
-  attempt_id: prefixedId(ID_PREFIXES.attempt),
-  connection_id: prefixedId(ID_PREFIXES.connection),
-  kind: z.string().min(1),
-  effect_class: effectClass,
-  canonical_payload: jsonObject,
-  payload_hash: payloadHash,
-  /**
-   * The identity of the effect across attempts: one action per job, revision,
-   * connection, tool and payload hash. Null only on rows written before the
-   * column existed; every action created since carries one. A record that omits
-   * it reads as null rather than failing, so an older producer still parses.
-   */
-  intent_key: sha256Hex.nullable().default(null),
-  status: actionStatus,
-  /** The approval this admission relied on, if any. */
-  authorization_ref: prefixedId(ID_PREFIXES.approval).nullable(),
-  budget_reservation: prefixedId(ID_PREFIXES.ledger).nullable(),
-  /** Always the action id, so a retry is the same request to the connector. */
-  idempotency_key: z.string().min(1),
-  dispatched_at: timestamp.nullable(),
-  receipt: jsonObject.nullable(),
-  resolved_at: timestamp.nullable(),
-  reconciliation: jsonObject.nullable(),
-  /**
-   * What the repair policy did about this action's faults, in order. Rows
-   * written before the column existed read as an empty trace rather than
-   * failing, so an older producer still parses.
-   */
-  repair_trace: repairTrace.default([]),
-  /** One counter per fault class met. Absent keys are zero. */
-  repair_counters: repairCounters.default({}),
-  /**
-   * Where the last dispatch came to rest. `completed` is the only value that
-   * means the effect happened; every other one is a safe stop and a client
-   * shows it as its own state rather than as a failure.
-   */
-  repair_disposition: repairDisposition.nullable().default(null),
-  /** When a rate-limited destination may be approached again. */
-  retry_after_at: timestamp.nullable().default(null),
-  created_at: timestamp,
-});
+export const action = z
+  .object({
+    id: prefixedId(ID_PREFIXES.action),
+    job_id: prefixedId(ID_PREFIXES.job),
+    attempt_id: prefixedId(ID_PREFIXES.attempt),
+    connection_id: prefixedId(ID_PREFIXES.connection),
+    kind: z.string().min(1),
+    effect_class: effectClass,
+    canonical_payload: jsonObject,
+    payload_hash: payloadHash,
+    /**
+     * The identity of the effect across attempts: one action per job, revision,
+     * connection, tool and payload hash. Null only on rows written before the
+     * column existed; every action created since carries one. A record that omits
+     * it reads as null rather than failing, so an older producer still parses.
+     */
+    intent_key: sha256Hex.nullable().default(null),
+    status: actionStatus,
+    /** The approval this admission relied on, if any. */
+    authorization_ref: prefixedId(ID_PREFIXES.approval).nullable(),
+    budget_reservation: prefixedId(ID_PREFIXES.ledger).nullable(),
+    /** Always the action id, so a retry is the same request to the connector. */
+    idempotency_key: z.string().min(1),
+    dispatched_at: timestamp.nullable(),
+    receipt: jsonObject.nullable(),
+    resolved_at: timestamp.nullable(),
+    reconciliation: jsonObject.nullable(),
+    /**
+     * What the repair policy did about this action's faults, in order. Rows
+     * written before the column existed read as an empty trace rather than
+     * failing, so an older producer still parses.
+     */
+    repair_trace: repairTrace.default([]),
+    /** One counter per fault class met. Absent keys are zero. */
+    repair_counters: repairCounters.default({}),
+    /**
+     * Where the last dispatch came to rest. `completed` is the only value that
+     * means the effect happened; every other one is a safe stop and a client
+     * shows it as its own state rather than as a failure.
+     */
+    repair_disposition: repairDisposition.nullable().default(null),
+    /** When a rate-limited destination may be approached again. */
+    retry_after_at: timestamp.nullable().default(null),
+    created_at: timestamp,
+  })
+  .meta({ id: 'Action' });
 export type Action = z.infer<typeof action>;
 
 export const approval = z.object({
@@ -302,20 +310,28 @@ export const EVENT_TYPES = [
   'notice',
   /** A glyph on a message, from either side. Persisted and streamed like the rest. */
   'reaction',
+  /**
+   * Part of an attempt's history was never received. It is recorded where the
+   * hole is rather than at the end, so a reader can see which stretch is
+   * unknown instead of inferring it from a failure message.
+   */
+  'gap',
 ] as const;
 export const eventType = z.enum(EVENT_TYPES);
 export type EventType = z.infer<typeof eventType>;
 
-export const event = z.object({
-  seq: z.number().int().positive(),
-  job_id: prefixedId(ID_PREFIXES.job).nullable(),
-  attempt_id: prefixedId(ID_PREFIXES.attempt).nullable(),
-  type: eventType,
-  payload: jsonObject,
-  /** Unique. Duplicate delivery of the same runtime event writes one row. */
-  dedup_key: z.string().min(1),
-  created_at: timestamp,
-});
+export const event = z
+  .object({
+    seq: z.number().int().positive(),
+    job_id: prefixedId(ID_PREFIXES.job).nullable(),
+    attempt_id: prefixedId(ID_PREFIXES.attempt).nullable(),
+    type: eventType,
+    payload: jsonObject,
+    /** Unique. Duplicate delivery of the same runtime event writes one row. */
+    dedup_key: z.string().min(1),
+    created_at: timestamp,
+  })
+  .meta({ id: 'Event' });
 export type Event = z.infer<typeof event>;
 
 // --------------------------------------------------------------------------

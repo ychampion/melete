@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { drizzle } from 'drizzle-orm/postgres-js';
+import { recordId } from '../../src/broker/records.ts';
 import { QuestionService } from '../../src/jobs/questions.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { correctClaim } from '../../src/memory/claims.ts';
@@ -295,6 +296,63 @@ export function registerKeyTests(db: TestDatabase | null) {
         await db.sql`select 1 from memory_contradictions where space_id = ${scope.spaceId} and state = 'open'`,
       ).toHaveLength(0);
       expect(await questions.list()).toHaveLength(0);
+    });
+
+    test('a disputed key full of SQL punctuation matches itself and nothing else', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      // Keys come from extraction proposals, so a key is data. This one carries
+      // a quote, a statement separator and a comment marker: if any of it ever
+      // reached the parser the lookup would break or over-match.
+      const hostile = "contact.o'brien; drop table question--x";
+      const innocent = 'contact.other.email';
+      const jobId = recordId('job');
+      const attemptId = recordId('att');
+      const connectionId = recordId('conn');
+      await db.sql`insert into connection (id, space_id, provider, label, scopes)
+        values (${connectionId}, ${scope.spaceId}, 'test', 'Injection', '[]'::jsonb)`;
+      await db.sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget, constraints)
+        values (${jobId}, ${scope.spaceId}, 'Injection', 'Prove the lookup binds', 'running', 1,
+          '{"max_actions":1,"max_output_tokens":10,"max_usd_est":1,"max_wall_ms":1000,"max_turns":1}'::jsonb,
+          '{"public_compartment":false,"allowed_domains":[]}'::jsonb)`;
+      await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+        values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
+      // An action already admitted, resting on a claim whose key is hostile.
+      await db.sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, status, idempotency_key)
+        values (${recordId('act')}, ${jobId}, ${attemptId}, ${connectionId}, 'test.send',
+          'write_external', '{}'::jsonb, 'hash', 'admitted', ${recordId('idem')})`;
+      const claimId = 'k_01J8ZP3QWABCDEFGHJKMNPQRS1';
+      await db.sql`insert into memory_claims (id, space_id, domain_key, audience, key, head_revision)
+        values (${claimId}, ${scope.spaceId}, ${hostile}, 'private', ${hostile}, 1)`;
+      const outputRow = 'mo_injection_fixture';
+      await db.sql`insert into memory_outputs (id, space_id, job_id, kind, output_id, output_version)
+        values (${outputRow}, ${scope.spaceId}, ${jobId}, 'action', 'send-1', '1')`;
+      await db.sql`insert into memory_output_uses (output_row_id, handle, handle_kind, claim_id, revision)
+        values (${outputRow}, ${`${claimId}@1`}, 'claim', ${claimId}, 1)`;
+
+      // Two entries in the queue: the hostile key, and one nothing acted on.
+      const blocked = recordId('qst');
+      const quiet = recordId('qst');
+      await db.sql`insert into question (id, source, space_id, key, text, because, if_ignored)
+        values (${blocked}, 'memory', ${scope.spaceId}, ${hostile}, 'Which is right?',
+          '["claim:k_01J8ZP3QWABCDEFGHJKMNPQRS1@1"]'::jsonb, 'Nothing will be sent.')`;
+      await db.sql`insert into question (id, source, space_id, key, text, because, if_ignored)
+        values (${quiet}, 'memory', ${scope.spaceId}, ${innocent}, 'And this one?',
+          '["claim:k_01J8ZP3QWABCDEFGHJKMNPQRS2@1"]'::jsonb, 'Nothing will be sent.')`;
+
+      const questions = new QuestionService(new JobService(drizzle(db.sql), db.boss));
+      const listed = await questions.list();
+      const hostileEntry = listed.find((q) => q.id === blocked);
+      const quietEntry = listed.find((q) => q.id === quiet);
+      expect(hostileEntry?.key).toBe(hostile);
+      // Exactly that row: the one an admitted action rests on, and only it.
+      expect(hostileEntry?.blocks_external_effect).toBe(true);
+      expect(quietEntry?.blocks_external_effect).toBe(false);
+      // And the table the key pretended to drop is still there, with both rows.
+      expect(
+        await db.sql`select 1 from question where space_id = ${scope.spaceId} and source = 'memory'`,
+      ).toHaveLength(2);
     });
 
     test('the database refuses a second claim on one key', async () => {

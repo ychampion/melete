@@ -1,6 +1,10 @@
 # What a review of the knowledge write path found
 
-Status: proposed
+Status: **resolved 2026-09-12**. This is a record of a review, and every fix
+it describes landed with the knowledge lane. It is kept because the reasoning
+is the useful part: the staging directory is untrusted input, and a green
+suite says the code does what the tests say rather than that the tests say
+the right things.
 Date: 2026-09-11
 
 ## Problem
