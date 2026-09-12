@@ -1,163 +1,130 @@
-# 0016 - Code execution in the cell, and artifacts that have to hold up
+# 0016 - Code execution in the cell and artifact validation
 
 Status: accepted
-Date: 2026-09-12
 
-Two decisions, one consequence each.
+Melete exposes `exec.run` and `exec.python` through the broker catalog. The
+plugin runs admitted commands in the cell; the broker owns admission, budget
+reservation, action state and receipts. Artifact validation ties declared
+checks to file content, and publication binds approval to a recorded version.
 
-**Running code inside the cell is safe to enable, so it is enabled.** The cell
-has no route out and every external effect is brokered, so a command's effects
-are confined to `/work/<job>` and are reversible by the ordinary means: read it,
-diff it, delete it. Disabling a capable built-in and offering nothing in its
-place is how an assistant becomes unable to do arithmetic on a spreadsheet, and
-the reason to disable it was never the code, it was the effects.
+## Execution admission and settlement
 
-**A file is not a deliverable until something has checked it.** A write may
-declare what it is meant to be; Melete runs every check it can run without
-asking anyone, records the results next to the content hash they were computed
-over, and refuses to let the job say it is finished while one of its own checks
-is failing. The model is not asked whether the file is good.
+The plugin registers the broker's scoped catalog in the `melete` toolset.
+Hermes's built-in terminal is not part of that toolset. `HERMES_EXEC_ASK`
+controls the built-in shell and does not govern these broker tools. Both
+execution tools declare `write_reversible`, `execution: 'in_cell'` and
+`requires_approval: false`; the registry rejects an in-cell tool that also
+requires approval.
 
-## Execution: the shape, and why it is not the built-in terminal
+The plugin follows this sequence:
 
-The brief said to turn on the pinned engine's terminal toolset. That is not what
-this lane shipped, and the reason is the ledger.
+1. Post `{ intent: arguments }` to `POST /actions` with a stable job-scoped
+   proposal reference. The broker validates the input, checks the attempt and
+   budget, reserves the action, and returns the admitted canonical intent.
+2. Call `POST /actions/{actionId}/execution/start`. The broker rechecks dispatch
+   admission and grants a one-use claim. Only an `execute: true` response permits
+   the plugin to spawn the command; refusal or an already-claimed action does
+   not run it again.
+3. Run the admitted canonical arguments in the cell with the workspace guard,
+   child environment and execution limits.
+4. Call `POST /actions/{actionId}/execution/settle` with the execution record,
+   or an error if execution could not proceed. Settlement checks the original
+   job, space and attempt identity, the record schema, and the admitted command,
+   language and working directory. The exec connector checks the recorded
+   paths and any stored output before producing a receipt.
+5. Persist the result through `recordResult`'s transaction. It locks the job and
+   action, settles the reservation and records the receipt event and any
+   declared artifacts. A repeated terminal result returns the existing action.
+   A matching result from an older attempt epoch can be recorded as late.
 
-A built-in toolset runs the command inside Hermes and returns the output to the
-model. Nothing about that reaches the broker, so there is no action row, no
-receipt, no effect class, and nothing in the event stream: the one kind of work
-that writes files would be the one kind of work with no record. The whole
-argument in ARCHITECTURE.md §6 is that an effect is a record before it is a
-request. Intercepting the built-in would mean `allow_tool_override`, a
-same-named registration, and a reimplementation of the execution anyway, with
-the engine's schema and the engine's approval semantics in the way.
+The action's canonical payload retains the immutable intent; the execution
+record belongs to settlement and the receipt. `input_schema` describes model
+arguments and `record_schema` describes the result. The broker also accepts the
+legacy completed-record proposal shape for compatibility; the plugin uses the
+intent/start/settle workflow. Registered handlers keep Hermes task and session
+metadata outside the model arguments and serialize results as JSON text.
 
-So execution is a Melete tool served by the broker like every other tool, and
-carried out in the cell:
+`admission_before_execution` in
+`packages/runtime-hermes/tests/test_plugin.py` proves that stale-epoch and
+budget refusals leave no command marker. The same two cases run through the
+real broker in `apps/melete/test/integration/execution-admission.test.ts`.
+`test_admission_reserves_stable_intent_then_settles` proves the plugin's proposal,
+claim and settlement order and prevents a retry from executing twice.
+`admission reserves once, claims once, and accepts only its matching late result`
+proves the broker's reservation, claim and result-identity checks.
 
-```
-model -> exec.python(code)          the catalog entry, scoped like any tool
-      -> the plugin runs it         subprocess, cwd inside /work/<job>, caps applied
-      -> POST /actions              the RECORD: command, cwd, exit code,
-                                    duration, output digest, truncation
-      -> broker admits it           write_reversible, no approval
-      -> exec connector checks it   paths confined, stored output re-hashed
-      -> receipt                    on the ledger, in the event stream
-```
+## Execution limits and output evidence
 
-Two shapes, not one. The tool's `input_schema` is what the model fills in; the
-action's payload is what already happened. `connectorTool.record_schema` is how
-a connector declares the second, and `connectorTool.execution: 'in_cell'` is how
-the broker tells the cell which tools work this way. Both are additive and
-default to the old behaviour, so every existing connector is untouched.
+The default timeout is 30,000 ms and the maximum is 120,000 ms. Timeout and
+cooperative cancellation terminate the process tree using Windows `taskkill /T /F`
+or a POSIX process group, then reap the parent. `timeout_descendant` and
+`cancellation_descendant` in
+`packages/runtime-hermes/tests/test_execution_boundaries.py` require the parent
+to confirm that it spawned a child and then prove the child leaves no marker.
 
-The order is forced. The broker cannot run the command: the broker process holds
-the database credentials and the provider keys, which is exactly what the cell
-must never reach. The cell can run it and cannot reach anything. So the cell
-runs and the broker records.
+Standard error is merged into standard output. The plugin drains the pipe
+incrementally, keeps a preview of at most 16,384 bytes, and stores output beyond
+that preview in a spill file. `MAX_CAPTURE_BYTES` caps retained output at
+4,194,304 bytes. Further bytes are drained and counted but discarded.
 
-The registry refuses a connector that declares both `in_cell` and an approval,
-because approval is a gate in front of an effect and there is no gate in front
-of something that is over. That is not a hypothetical: it is the one mistake the
-two-shapes design invites, and it would park an action for a decision that
-cannot change anything while the person is asked to approve a command that has
-already run.
+| Record field | Meaning |
+|---|---|
+| `output_bytes`, `captured_bytes` | Number of retained bytes |
+| `total_bytes` | Number of bytes read from the combined output pipe |
+| `truncated` | The emitted output exceeded the display preview limit |
+| `capture_limited` | Some emitted bytes were discarded at the capture limit |
+| `output_digest` | SHA-256 of the retained bytes |
+| `output_path` | Stored retained output, or null when it fits in the preview |
 
-`HERMES_EXEC_ASK` stays set and stays irrelevant. It guards the engine's own
-shell tool, which is still not in the toolset. Melete's execution needs no
-approval because there is nothing external to approve: no recipient, no
-destination, no money, no message. `write_reversible` auto-admits within budget,
-which is the same rule that lets `files.write` proceed.
+The display adds a truncation marker. When capture is limited, it labels the
+file as a captured prefix and reports the emitted byte count. A spill file
+contains full output only when capture was not limited. The optional capture
+counters preserve compatibility with older records; missing counters do not
+establish that capture was complete.
 
-## What is enforced, and by what
+`capture_above_limit` emits 4,195,328 bytes and proves that 4,194,304 are retained
+with explicit capture loss. `capture_memory_is_bounded_while_draining_both_streams`
+emits 16 MiB and checks bounded plugin memory. Both are in
+`packages/runtime-hermes/tests/test_execution_boundaries.py`.
 
-| Property | Enforced by | Tested where |
-|---|---|---|
-| The command runs in this job's workspace | the plugin's path guard | `tests/test_execution.py` |
-| A record naming another job's directory is refused | the exec connector, at the ledger | `src/connectors/exec.test.ts`, `test/integration/artifacts.test.ts` |
-| A stored output is the output that was recorded | the exec connector re-hashes it | `src/connectors/exec.test.ts` |
-| A command past the time cap is killed and the kill recorded | the plugin | `tests/test_execution.py` |
-| Output above the cap is truncated with a marker, full output stored | the plugin | `tests/test_execution.py` |
-| The stored output is an artifact of the job, not a loose file | the exec connector, from the bytes on disk | `src/connectors/exec.test.ts`, `test/integration/artifacts.test.ts` |
-| The child never sees the attempt capability or the model key | the plugin's allow-list environment | `tests/test_execution.py` |
-| An in-cell tool cannot also require approval | the connector registry | `src/connectors/exec.test.ts` |
-| A declaration the service cannot read writes no file | the files connector, before opening it | `src/connectors/files-expect.test.ts` |
-| A snippet cannot write outside `/work` | **the container**, not the plugin | not tested here |
+The exec connector checks capture-counter consistency and, when output is
+stored, verifies its size and digest. `digest_verified: true` means the stored
+bytes match the record; it does not establish that discarded bytes were saved.
+Without stored output, `digest_verified` is false and the digest is the cell's
+claim. Stored output is declared as a text artifact with no requested semantic
+checks or renderer. Its current content still participates in the artifact
+digest gate. A successful execution action records a valid result; command
+failure or timeout remains visible in the receipt's exit and timeout fields.
 
-The last row is the honest one. On this laptop the tests run as an ordinary
-process with the developer's own permissions, and a test asserts that a snippet
-writing outside the workspace *succeeds* there, so nobody mistakes the local
-suite for a sandbox. In the container the same snippet fails because the root
-filesystem is read-only and `/work` is the only writable mount. That is the
-isolation the egress probe owns, and this lane built no Docker image and ran no
-container.
+## Workspace and container boundaries
 
-**A gap this lane did not close.** `deploy/docker-compose.yml` mounts the whole
-`work` volume at `/work` in the runtime container, so a snippet can read another
-job's directory even though the tool refuses to. The per-attempt container the
-service will start has to mount `work/<job>` at `/work` instead. Until it does,
-the separation between two jobs' workspaces is a tool-level refusal and not a
-filesystem boundary, and this note says so rather than the compose file implying
-otherwise.
+The plugin resolves its working directory and every plugin-owned scratch,
+output and cleanup path against the workspace root. `realpath` resolution
+rejects symlinks or junctions that escape that root. `plugin_output_path_escape`
+tests redirects present before execution and created by the command. The exec
+connector independently rejects recorded paths outside the job workspace and
+re-hashes stored output; these checks are covered in
+`apps/melete/src/connectors/exec.test.ts`.
 
-## Measured again: what the toolset costs
+The child receives an allow-listed environment without `MELETE_ATTEMPT_TOKEN`,
+`MELETE_MODEL_KEY` or `API_SERVER_KEY`. This removes those inherited environment
+values; it is not a filesystem sandbox. Arbitrary code can open paths outside
+its working directory wherever operating-system permissions allow it.
+`packages/runtime-hermes/tests/test_execution.py` explicitly demonstrates that
+limit when execution runs outside a container.
 
-Same method as note 0009, same six stub tools, same machine, same tag. The
-execution and publish schemas come out of the real connector manifests
-(`.agents/probe/execution_tools.ts` writes them; `.agents/probe/measure_exec.py`
-reads them) so the number cannot drift from what the broker serves.
+Compose configures a non-root runtime with a read-only root filesystem,
+dropped capabilities, resource limits and an internal network. Writable
+locations include the work volume, Hermes home and temporary storage. The
+whole work volume is mounted into the runtime, so the plugin's job path guard
+does not prevent arbitrary code from reading or writing sibling job
+workspaces. Per-job filesystem isolation requires a narrower mount or another
+enforced boundary. Configuration checks and ordinary-process tests do not
+prove container confinement or network isolation.
 
-```
-bun run .agents/probe/execution_tools.ts > .agents/probe/execution_tools.json
-.hermes-venv/Scripts/python.exe .agents/probe/measure_exec.py \
-    <abs>/.hermes-src <abs>/packages/skills/builtin/identity.md
-MELETE_PROBE_EXTRA_TOOLS=<abs>/.agents/probe/execution_tools.json \
-  .hermes-venv/Scripts/python.exe .agents/probe/measure_exec.py <same two args>
-```
+## Artifact declarations and validation
 
-| | tools | tool schemas | system prompt | total |
-|---|---|---|---|---|
-| note 0009's thin + identity | 6 | 377 tok | 2,927 tok | **3,304 tok** |
-| the same, execution on | 9 | 854 tok | 2,927 tok | **3,781 tok** |
-
-The delta is **+477 tokens**, all of it tool schema: the system prompt is
-byte-identical, because the toolset is a catalog entry and not a prose block.
-Still inside the 4,000 budget, with 219 tokens of headroom. The baseline run
-reproduces 3,304 exactly, which is what makes the delta a measurement rather
-than two numbers from two machines.
-
-The three tools are `exec.run`, `exec.python` and `artifact.publish`. A job that
-holds none of those scopes sees none of them and pays none of it: the broker
-filters the catalog before the cell ever sees it.
-
-## The local end-to-end
-
-`packages/runtime-hermes/scripts/e2e-exec.ts` runs a real Hermes API server from
-the pinned tag against the real broker, the real gateway, and the real adapter,
-with a scripted model that asks for one Python snippet. Observed:
-
-```
-cold start: 7146 ms
-outcome: {"kind":"completed","summary":"The snippet ran and out.csv is in the workspace."}
-events: turn_started, tool_call_proposed, tool_result, text_delta, attempt_outcome
-actions: [{"kind":"exec.python","status":"succeeded","effect_class":"write_reversible"}]
-approvals asked for the execution: 0
-out.csv: item,amount / desk,60.0 / chair,40.0 / Total,100.0
-```
-
-The receipt carries the command, the cwd, exit code 0, 108 ms, the output digest
-and `digest_verified: false`, which says plainly that the output was small
-enough that nothing was stored and the digest is therefore the cell's word. When
-output is truncated the file is stored, the connector re-hashes it, and the same
-field says `true`. That file is also declared as a text artifact of the job, so a
-long command's output has a handle a later attempt can cite and a person can
-publish, rather than a path in a hidden directory. Nothing is promised about the
-contents of an arbitrary command's output, so recording it can never be what
-stops a job from finishing.
-
-## Artifacts: declare, check, then finish
-
-`files.write` takes an optional `expect`:
+`files.write` accepts an optional `expect` declaration, for example:
 
 ```json
 {"kind": "csv",
@@ -166,83 +133,90 @@ stops a job from finishing.
  "render": true, "human": false, "critique": null}
 ```
 
-Four classes of validator, in descending order of how much they prove.
+Malformed declarations are refused before writing. Checks that would share a
+persisted name are rejected with a typed declaration error, and the recorder
+also rejects duplicate validation names. `row_count min10 followed by min1
+silently removes failure` and `duplicate persisted validation names cannot
+overwrite a failure` in `apps/melete/test/integration/artifacts.test.ts` prove
+that a later passing check cannot erase the first failure.
 
-**`deterministic`** is a function of the bytes: parses, totals, required columns
-and sections, row counts, JSON Schema, image dimensions from the file's own
-header. Passing means the property holds. A check that cannot be computed fails
-with the reason; "could not tell" is never reported as a pass.
+Validators operate on the written bytes and produce these result classes:
 
-**`render`** opens the file the way a reader would. Markdown to HTML and CSV to a
-table are implemented, small and on purpose: the job is not typesetting, it is
-catching the "report" that is one unterminated code fence. DOCX, XLSX and PDF
-need a maintained reader, Bun ships none, this release adds no dependency for
-one, and the recorded result is the word `unavailable`.
+| Class | Behavior |
+|---|---|
+| `deterministic` | Parsing and declared checks such as totals, columns, sections, row counts, JSON Schema and image dimensions; errors are recorded as failures. |
+| `render` | Markdown and CSV produce HTML; text-like kinds check decodability and images check recognized headers. DOCX, XLSX, PDF and binary rendering are unavailable. A requested render is non-advisory. |
+| `critique` | An optional `ArtifactCritic` hook supplies advisory results. Without a critic, the requested critique is recorded as unavailable. |
+| `human` | Requested acceptance starts pending and blocks until the owner accepts that artifact version. |
 
-**`critique`** is a model reading it. Advisory by construction: recorded, shown,
-never a gate. No critic is wired in v0.1, so a declared critique is recorded as
-`unavailable` with that reason, and the injection point (`ArtifactCritic`) is
-there for when one is.
+Artifact rows and their validations are persisted with the successful receipt
+in the broker transaction. Each validation carries the content digest it
+checked. Publication receipts also persist the artifact ID, destination,
+external reference and content hash; `source_job_id` retains the producing job.
 
-**`human`** is a person accepting it. A declared acceptance starts `pending`, and
-`pending` blocks.
+## Completion uses current bytes
 
-The validators run in the files connector, which is trusted Melete code, over
-the bytes that were actually written, before the runtime hears that the write
-succeeded. The broker persists the artifact row and its results in the same
-transaction that persists the receipt, so an artifact never exists without the
-receipt that produced it.
+`completionFacts` includes `artifact_validations_passed`. The gate selects the
+newest declared artifact per `(area, path)`, hashes the current file, and rejects
+missing, unreadable or changed content. Every non-advisory validation must
+match the artifact digest and have status `passed`. Failed, pending and
+unavailable required checks block completion. Advisory results do not block.
+The job transition guard routes blocked completion to `waiting_for_input` and
+the runner includes the artifact failures in its question. Files without an
+artifact declaration are outside this gate.
 
-### The gate, and why re-writing a file clears it
+Successful file-write, file-move and execution receipts trigger inspection of
+existing declared artifacts. Changed bytes are revalidated using the inherited
+expectation and recorded as a new version; previous rows remain intact. A
+rewrite without `expect` therefore does not erase a previous totals check.
+Changes made outside those receipt paths are caught by the live digest check
+at completion. Fixing the file allows completion only when current content and
+its required validations pass; rewriting alone is not sufficient.
 
-`completionFacts` now also answers `artifact_validations_passed`. The state
-machine turns a completion with a failing check into `waiting_for_input`, and
-the runner names the failure in the question: "the amount column adds up to 91.5
-but the total says 100", not "something went wrong with the artifact".
+`incorrect CSV overwrite retains passing totals validation`, the execution and
+raw mutation tests, and `validation digest must match the current artifact
+digest` in `apps/melete/test/integration/artifacts.test.ts` prove these gates.
+`non-advisory unavailable renderer permits completion` proves that an
+unavailable required PDF renderer blocks completion while an explicitly
+advisory result does not.
 
-Only the newest artifact row per `(area, path)` is asked. An earlier version
-that failed is history, not an open failure. That is what makes the falsifier
-work:
+## Publication binds approval to identity
 
-> A CSV artifact declared with a totals check whose totals do not add up cannot
-> complete the job; fixing the file completes it.
+`artifact.publish` is `write_external` and requires approval bound to the
+canonical payload hash. It publishes to the space artifacts directory or
+sends an email attachment. Before approval, trusted preparation selects the
+latest declared artifact for the job, space, area and path, and adds its exact
+`artifact_id` and `content_hash` to the canonical payload. Undeclared files and
+explicitly requested versions that are no longer current are refused.
 
-`test/integration/artifacts.test.ts` runs exactly that against a real database:
-the first write succeeds as a write and fails as a deliverable, the gate names
-`totals:amount` and the number 91.5, the second write of the same path produces
-a second artifact row, and the gate passes. Two rows, both kept.
+Admission and dispatch load that exact ID and hash in the same job and space;
+dispatch does not select a newer version by path. The service reads the file
+itself and verifies its bytes against the approved digest before copying or
+sending them. Replacement declarations cannot silently substitute a different
+artifact under an existing approval. A proposal for a replacement version has
+a different canonical payload and requires its own approval. Publication
+requires a declared artifact with matching bytes; it does not independently
+require every validation to pass, which is the completion gate's responsibility.
 
-## Publishing
+`an approval for version A publishes recorded version B` in
+`apps/melete/test/integration/artifacts.test.ts` proves that dispatch refuses
+replaced bytes under A's approval and that publishing B requires a new approval.
+The same file checks direct file drift and undeclared-file refusal.
 
-`artifact.publish(path, destination)` is `write_external`, needs an approval
-bound to the payload hash, and leaves a receipt. Two destinations: the space's
-artifacts directory, and an email with the file attached.
+Email preparation also binds an active mailbox connection with `email.send`
+scope from the artifact's space, including its connection ID and generation.
+Admission and dispatch recheck that binding, and the mailer refuses a mismatched
+space or connection before opening the transport. `cross_space_mailbox` and
+the mailbox-generation tests in `apps/melete/test/integration/artifacts.test.ts`,
+plus the mailer refusal in `apps/melete/src/connectors/email.test.ts`, cover
+these checks. Email verification cannot confirm an unacknowledged send from
+the artifact store alone and returns an undecided result.
 
-Two rules make the approval mean something.
+## End-to-end coverage
 
-The bytes are never in the payload. The payload names a path; the service looks
-up the artifact it recorded for that path and reads the file itself. A file that
-changed since it was recorded fails the publish rather than being sent, because
-the content hash the owner approved is the one on the record. There is a test
-for that, and it is the reason attachments were added to the mail transport as
-`Buffer`s from a recorded artifact rather than as bytes from a payload.
-
-Only a recorded artifact can be published. A write that declared nothing has no
-record, no validations and nothing to point at, and this release will not send
-it anywhere.
-
-The publication row links the artifact to the action, the destination, the
-external reference and the content hash. Together with `artifact.source_job_id`,
-that is what makes "update this with the latest data" the same job waking again
-rather than a new job that happens to write a similarly named file.
-
-## What is not established
-
-- No container was built and no container was run. Every filesystem claim about
-  the cell is the image's, not this lane's.
-- The compose runtime still mounts the whole work volume. See the gap above.
-- The critique validator has no critic behind it in v0.1.
-- `artifact.publish` by email was exercised against a fake transport that
-  records what it was handed, not against a real SMTP server.
-- The scaffolding figures are of assembly, measured with the release's own
-  functions and a chars-over-four estimator, not of bytes on a provider's wire.
+`packages/runtime-hermes/scripts/e2e-exec.ts` connects a real Hermes API server
+to the broker, gateway and adapter with a scripted provider. It reports the
+attempt outcome and checks that a Python snippet produces the expected CSV
+and leaves a successful `write_reversible` execution action without an approval.
+It also reads and reports the execution receipt.
+It exercises execution and ledger integration, not container confinement.
