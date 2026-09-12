@@ -629,6 +629,7 @@ export interface paths {
                             /** @enum {string} */
                             database: "ok" | "unreachable" | "not_configured";
                             runtime_adapter?: string;
+                            runtime_supervisor?: ("process" | "docker") | null;
                             /** @enum {string} */
                             status: "ok" | "degraded";
                             time: components["schemas"]["__schema41"];

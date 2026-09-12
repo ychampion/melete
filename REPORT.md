@@ -117,3 +117,9 @@
 - Reproduction `bun test deploy/scripts/compose-check.test.ts --test-name-pattern 'explicit Docker socket group' --max-concurrency=1`: exit 1, 0 pass, 1 fail, 13 filtered, exposing `${DOCKER_GID:-0}`.
 - `bun test deploy/scripts/compose-check.test.ts --max-concurrency=1`: exit 0, 14 pass, 0 fail, 14 assertions (0.874s).
 - Compose now requires a nonempty `DOCKER_GID`; `.env.example` leaves it blank. The deploy README and threat model describe socket access as host-root equivalent and place the service's trusted supervisor inside the host trust boundary.
+
+### 4. Report and warn about process mode
+
+- Reproduction `bun test apps/melete/src/index.test.ts --test-name-pattern 'reports the supervisor' --max-concurrency=1`: exit 1, 0 pass, 1 fail, 8 filtered; supervisor information was absent.
+- `bun test apps/melete/src/index.test.ts --max-concurrency=1`: exit 0, 9 pass, 0 fail, 22 assertions (1.99s).
+- Health now reports `runtime_supervisor` beside the adapter. Bootstrap emits a warning that process attempts are not sandboxed and inherit the service user's OS access; Docker mode emits no such warning. The test checks both modes. The additive health field is included in regenerated OpenAPI and client types.

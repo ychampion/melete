@@ -2814,6 +2814,20 @@
                     "runtime_adapter": {
                       "type": "string"
                     },
+                    "runtime_supervisor": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "process",
+                            "docker"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "time": {
                       "$ref": "#/components/schemas/__schema41"
                     }

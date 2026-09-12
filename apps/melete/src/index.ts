@@ -120,6 +120,8 @@ export function createApp(deps: AppDeps) {
       version: VERSION,
       database,
       runtime_adapter: deps.runtimeAdapter,
+      runtime_supervisor:
+        deps.runtimeAdapter === 'hermes' ? deps.env.MELETE_RUNTIME_SUPERVISOR : null,
       time: new Date().toISOString(),
     });
   });
@@ -162,6 +164,14 @@ export async function bootstrap(
   }
   if (!['process', 'docker'].includes(env.MELETE_RUNTIME_SUPERVISOR))
     throw new Error('MELETE_RUNTIME_SUPERVISOR must be process or docker.');
+  if (
+    !options.runtime &&
+    env.MELETE_RUNTIME_ADAPTER === 'hermes' &&
+    env.MELETE_RUNTIME_SUPERVISOR === 'process'
+  )
+    process.stderr.write(
+      "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
+    );
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
