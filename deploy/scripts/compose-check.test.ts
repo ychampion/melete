@@ -145,15 +145,22 @@ describe('the check catches the mistakes that would matter', () => {
   test('handing the warm cell a service secret or a substituted attempt credential', () => {
     const withSecret = structuredClone(compose);
     if (withSecret.services?.runtime?.environment)
-      withSecret.services.runtime.environment.MELETE_CAPABILITY_KEY = '${MELETE_CAPABILITY_KEY}';
+      withSecret.services.runtime.environment.MELETE_CAPABILITY_KEY = [
+        '$',
+        '{MELETE_CAPABILITY_KEY}',
+      ].join('');
     expect(failures(withSecret)).toContain('the warm cell carries no attempt authority');
     const withToken = structuredClone(compose);
     if (withToken.services?.runtime?.environment)
-      withToken.services.runtime.environment.MELETE_ATTEMPT_TOKEN = '${MELETE_ATTEMPT_TOKEN:?set}';
+      withToken.services.runtime.environment.MELETE_ATTEMPT_TOKEN = [
+        '$',
+        '{MELETE_ATTEMPT_TOKEN:?set}',
+      ].join('');
     expect(failures(withToken)).toContain('the warm cell carries no attempt authority');
     const withSigned = structuredClone(compose);
     if (withSigned.services?.runtime?.environment)
-      withSigned.services.runtime.environment.MELETE_ATTEMPT_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJqb2IiOiJqb2JfMSJ9.c2lnbmF0dXJl';
+      withSigned.services.runtime.environment.MELETE_ATTEMPT_TOKEN =
+        'eyJhbGciOiJIUzI1NiJ9.eyJqb2IiOiJqb2JfMSJ9.c2lnbmF0dXJl';
     expect(failures(withSigned)).toContain('the warm cell carries no attempt authority');
   });
 

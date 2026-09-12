@@ -57,7 +57,9 @@ export function missingPrerequisites(facts: PreflightFacts): string[] {
       'DATABASE_URL is unset on Linux; the embedded Postgres build needs libpq5 and an ICU 60 runtime that current Debian and Ubuntu do not ship. Set DATABASE_URL to a Postgres 17 (the helpers create disposable databases on it).',
     );
   if (embedded && facts.platform === 'linux' && !facts.libpq)
-    missing.push('libpq5 is not installed (initdb fails with libpq.so.5 missing): apt install libpq5.');
+    missing.push(
+      'libpq5 is not installed (initdb fails with libpq.so.5 missing): apt install libpq5.',
+    );
   if (!facts.uv)
     missing.push('uv is not on PATH; `bun run test:plugin` needs it (https://docs.astral.sh/uv/).');
   return missing;

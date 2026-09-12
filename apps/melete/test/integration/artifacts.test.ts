@@ -30,8 +30,8 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from '../../src/connectors/secrets.ts';
 import { artifact as artifactTable, job as jobTable } from '../../src/db/schema.ts';
 import { completionFacts } from '../../src/jobs/bundle.ts';
-import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { resolvePython } from '../../src/runtime/python.ts';
+import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 // The shared server, not a second embedded cluster: every integration suite

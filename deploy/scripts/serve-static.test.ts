@@ -190,8 +190,13 @@ describe('the server over a socket', () => {
     const CRLF = '\r\n';
     const request = (path: string, close = false) =>
       socket.write(
-        [`GET ${path} HTTP/1.1`, 'Host: 127.0.0.1', ...(close ? ['Connection: close'] : []), '', '']
-          .join(CRLF),
+        [
+          `GET ${path} HTTP/1.1`,
+          'Host: 127.0.0.1',
+          ...(close ? ['Connection: close'] : []),
+          '',
+          '',
+        ].join(CRLF),
       );
     const responses = () => text.split('HTTP/1.1 ').length - 1;
     const until = async (count: number) => {
