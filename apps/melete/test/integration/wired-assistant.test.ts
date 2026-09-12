@@ -173,8 +173,11 @@ afterAll(async () => {
       expect(first.knowledge).toHaveLength(2);
       expect(first.knowledge.map((item) => item.handle)).toContain(`${seat.id}@1`);
       expect(first.tools.map((tool) => tool.name)).toEqual(['test.send']);
-      expect(first.inputs.since_last?.previous_attempt_id).toBeNull();
-      expect(first.inputs.since_last?.evidence_handles).toEqual([`${seeded.sourceId}@1`]);
+      expect(first.inputs.since_last).toBeUndefined();
+      expect(first.since_last.attempt_id).toBeNull();
+      expect(first.since_last.evidence.map((item) => item.handle)).toEqual([
+        `source:${seeded.sourceId}@1`,
+      ]);
       expect(
         (
           await call('/memory/outputs', {
@@ -202,8 +205,8 @@ afterAll(async () => {
       const second = bundles[1];
       if (!second) throw new Error('No replacement bundle');
       expect(second.attempt.token).not.toBe(first.attempt.token);
-      expect(second.inputs.since_last?.previous_attempt_id).toBe(first.attempt.id);
-      expect(second.inputs.since_last?.actions.length).toBeGreaterThan(0);
+      expect(second.since_last.attempt_id).toBe(first.attempt.id);
+      expect(second.since_last.pending_approvals.length).toBeGreaterThan(0);
       expect(second.inputs.repair_briefs).toHaveLength(1);
       expect(second.inputs.repair_briefs[0]).toMatchObject({
         changed_handle: `${seat.id}@1`,
