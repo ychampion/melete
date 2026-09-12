@@ -351,7 +351,12 @@ Private correction text is absent from the proposal, later member bundle and
 provider requests. This establishes integration behavior with a fake provider,
 not learning quality across real models.
 
-The final evidence path, checksum, focused checks and single locked full-suite
-result are in [REPORT.md](../../REPORT.md). Earlier red evidence in that
+The single locked full suite reached the 180-second budget with 1,312 passing
+test lines, zero failing lines and 29 skips (exit 124, 180.75 seconds). It was
+not rerun and is incomplete. Typecheck, lint, clean schema/OpenAPI/client
+regeneration, 61 plugin tests and 19 Compose declaration checks pass.
+
+The final evidence path, checksum, focused checks and full-suite command ledger
+are in [REPORT.md](../../REPORT.md). Earlier red evidence in that
 append-only report describes superseded runs. The current capability matrix is
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).

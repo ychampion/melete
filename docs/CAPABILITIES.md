@@ -158,7 +158,11 @@ bun test --max-concurrency=1 --timeout=30000
 The append-only [REPORT.md](../REPORT.md) records the passing strict proof,
 focused checks and final single full-suite run. The earlier dictionary-result,
 MCP receipt and context-matcher failures are historical. The final release-gate
-full-suite result is recorded after the single locked invocation completes.
+full suite ran once under the shared lock and reached its 180-second budget:
+1,312 passing test lines, no failing lines and 29 skips before termination
+(exit 124, 180.75 seconds). It remains incomplete and was not rerun. Typecheck,
+lint, clean database/OpenAPI/client regeneration, 61 plugin tests and 19 Compose
+declaration checks pass. Actual compaction and Docker isolation remain unverified.
 Skipping opt-in real-runtime checks during ordinary tests is not end-to-end proof.
 Tests use disposable PostgreSQL 17 and pg-boss when `DATABASE_URL` is
 unset. A skipped database test is not a pass. Docker isolation remains unverified
