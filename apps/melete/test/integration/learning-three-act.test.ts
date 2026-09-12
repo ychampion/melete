@@ -7,18 +7,30 @@ import {
   taskObjective,
 } from '../../../../conformance/learning/records.ts';
 import { ScriptedRecordRuntime } from '../../../../conformance/learning/scripted-runtime.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { attempt } from '../../src/db/schema.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
+import { newId } from '../../src/ids.ts';
 import type { JobRow } from '../../src/jobs/service.ts';
+import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { ProcedureService } from '../../src/learning/procedures.ts';
 import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
 import { ProcedureProposer } from '../../src/learning/proposer.ts';
 import { procedureCandidate } from '../../src/learning/schema.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import { learningFixture, learningScope, wake } from './learning-fixtures.ts';
 
 const runtime = new ScriptedRecordRuntime();
 const fixture = await learningFixture(runtime);
+// Exercise product catalog enrichment as well as the learning selector: the
+// evaluated body must survive the same final enrichment used by bootstrap().
+if (fixture)
+  fixture.runner.options.loadCatalog = new RuntimeCatalog(
+    fixture.handle.db,
+    new ConnectorRegistry(),
+    'unused-learning-skill-root',
+  ).forAttempt;
 const requests: unknown[] = [];
 const gateway = fixture
   ? await openProposalGateway({
@@ -70,6 +82,13 @@ async function run(row: JobRow) {
 (fixture ? describe : describe.skip)('the three-act procedure learning scenario', () => {
   test('completed job, owner correction, then a different job succeeds with fewer interventions and no private details', async () => {
     if (!fixture || !proposer) return;
+    const memberId = newId('own');
+    await fixture.handle
+      .sql`insert into principal (id, email) values (${memberId}, ${`${memberId}@example.test`})`;
+    await fixture.handle
+      .sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${fixture.ownerId} where id = ${fixture.spaceId}`;
+    await fixture.handle.sql`insert into space_membership (space_id, principal_id, role) values
+      (${fixture.spaceId}, ${fixture.ownerId}, 'owner'), (${fixture.spaceId}, ${memberId}, 'member')`;
     const training: RecordCase = {
       template: 'owner-dmy-training',
       task: {
@@ -158,6 +177,18 @@ async function run(row: JobRow) {
     expect(delivered?.skills.map((skill) => skill.name)).toEqual([`procedure:${candidate.id}`]);
     expect(delivered?.inputs.new_user_messages).toEqual([]);
     expect(JSON.stringify(delivered)).not.toContain('PLANTED-PRIVATE-THREE-ACT-482');
+    const memberJob = await principalContext.run(memberId, () =>
+      fixture.jobs.create({
+        space_id: fixture.spaceId,
+        title: 'Member records',
+        objective: taskObjective(later.task),
+        learning: { scope: learningScope, template_id: 'member-records', input_refs: [] },
+      }),
+    );
+    await run(memberJob);
+    const memberBundle = runtime.observed.find((bundle) => bundle.attempt.job_id === memberJob.id);
+    expect(memberBundle?.skills).toEqual([]);
+    expect(JSON.stringify(memberBundle)).not.toContain('PLANTED-PRIVATE-THREE-ACT-482');
     const episodes = await fixture.episodes.list(fixture.ownerId, fixture.spaceId);
     const firstCorrections = episodes.filter(
       (row) => row.jobId === original.id && row.intervention,

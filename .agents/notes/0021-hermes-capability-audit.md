@@ -279,3 +279,54 @@ This does not supply W11's evaluated promotion or the gated MCP chain.
 The [contract-additions note](proposed/2026-09-12-w14-contract-additions.md)
 records compatibility details. The current three-state matrix is in
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
+
+## Integrated proof - 2026-09-12
+
+The findings above describe the original audit and first delivery. Integration
+`55b6a50` includes W10c, W11, W12, W15 and the W14 migration as `0027`. The
+dependency wait is over. The follow-up uses the retained local engine at the
+same pin, adapter `hermes@v2026.9.7+melete-observers.2`, through `bootstrap()` and
+real HTTP with a scripted provider. No engine installation was needed.
+
+The single test `real Hermes capability chain: discovery, hooks, learning,
+teammate context and revocation` in `capability-proof.test.ts` is the strict
+proof. Its final run returned exit 1: 37 assertions, 180.60 seconds. The stages
+run independently so an MCP failure does not suppress learning or authority
+evidence. Passing a stage that detects a missing route is evidence of the gap.
+
+| Capability | Status | Current evidence or missing implementation |
+|---|---|---|
+| Dynamic tool discovery | implemented-but-unverified | Real search/load and catalog continuation occur; `dynamic discovery and broker receipt` fails because the action is `unknown`, its receipt is null, and MCP `tools/call` count is zero. |
+| MCP connect after session start | missing | The running-job `POST /connections` probe returns 404. Configuration is an operator file loaded at startup; the service rejects stdio launch. |
+| MCP disconnect recovery | missing | The health probe changes failing to ok when the fixture returns, but there is no MCP reconnect repair callback or exactly-once recovery proof. |
+| Connection auth refresh and reconnect | missing | The configured MCP connector has no credential-refresh/reconnect callback. Generic repair support does not connect this adapter. |
+| Lifecycle hooks | implemented-but-unverified | `hooks.test.ts` passes persistence, deduplication and replay; `test_hooks.py` passes continuation identity and failure isolation. The real trace has 18 hook events including session start/end and pre/post tool, but compaction remains unverified. |
+| Automatic skill selection | implemented-and-tested | The real `teammate audience isolation and revocation` stage selects alpha/beta/gamma, caps at three and excludes the owner's private canary from both bundle and provider requests. |
+| Correction, candidate, evaluation, promotion, rollback | implemented-and-tested | The real `correction, evaluation, private reuse and rollback` stage passes validation and sealed evaluation, owner canary reuse on a different task, activation and rollback. This is owner/private promotion. |
+| Teammate reuse of an evaluated shared skill | missing | `procedureScope` only accepts owner/private; qualified shared promotion is rejected. The real test and `learning-three-act.test.ts` prove a member requesting owner scope cannot receive the private procedure. |
+| Revocation prevents subsequent use | implemented-and-tested | The real teammate stage proves cancellation, denied reads/admission, an old capability's refusal and fresh personal context without shared skills; `principals.test.ts` additionally proves delivered-context invalidation and regrant fencing. |
+
+The fixes restore the service's catalog-continuation and proposal-provider
+callbacks, retain the actual memory reader, preserve checked skill/procedure
+selection during catalog enrichment, verify private procedure ownership, and
+prepare the hash-checked observer bridge in process mode. Continuations retain
+the attempt identity with separate capture namespaces. The original runtime
+pin is unchanged; the observer adapter version advances because its captured
+evidence behavior changed. The bounded test provider parses only received HTTP
+prompts; it does not read a bundle, expected output or database state.
+
+Both evaluation phases record `held_out_improvement_without_regression`. Each
+phase runs three paired baseline/candidate record tasks through real Hermes,
+plus scope and memory checks. The record-task baseline scores 1/3 and the
+candidate scores 3/3 in each phase; all six evidence rows per phase pass the
+promotion gate. Private correction text is absent from the proposal request,
+candidate and later authorized bundle. These tests prove wiring with a fake
+provider, not learning quality across real models.
+
+The final evidence is `%TEMP%/melete-w14-capability-1xOgEE/capability-evidence.json`,
+SHA-256 `a6b943ddc80986b94661637e43a89092e28965baa17c51c8baaef63dcc96b40d`.
+The MCP job entered `needs_reconciliation`; no successful effect is claimed.
+The two permitted discovery integration fix cycles are exhausted. Missing
+installation, reconnect and shared evaluated promotion are not replaced with
+fixture behavior. The final command ledger and full-suite result are in
+[REPORT.md](../../REPORT.md).

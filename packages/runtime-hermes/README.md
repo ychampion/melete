@@ -200,8 +200,16 @@ Run `bun run test:plugin` and
 for the observer and persistence checks. The optional real-server check is
 `MELETE_HERMES_E2E=1 bun test apps/melete/test/integration/hooks-real.test.ts --max-concurrency=2`;
 prepare `.hermes-venv` using note 0009 and install the pin's `aiohttp==3.14.3`.
-That check currently reaches the real hooks but fails its final broker-action
-assertion (recorded in the lane's pull request, #13). It is not a passing end-to-end capability proof.
+That check's earlier broker-action failure is historical. The current combined
+proof is `MELETE_CAPABILITY_PROOF=1 bun test apps/melete/test/integration/capability-proof.test.ts --max-concurrency=1`.
+It uses the service's process supervisor, which prepares the same hash-checked
+observer bridge as the image before starting its first engine. Continuation
+captures retain the original attempt identity and use separate capture IDs.
+The proof records real lifecycle hooks and passes private learning, selected
+teammate context and revocation stages. Its MCP receipt stage remains red;
+mid-session installation, MCP reconnect and evaluated shared promotion remain
+missing. Real compaction is unverified. See the current
+[capability matrix](../../docs/CAPABILITIES.md) and [report](../../REPORT.md).
 
 ## Per-attempt launch
 

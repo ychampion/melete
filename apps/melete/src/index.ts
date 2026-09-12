@@ -10,6 +10,7 @@
  */
 
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
+import { brokerCatalogState } from '@melete/runtime-hermes';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -457,7 +458,12 @@ export async function bootstrap(
           dockerNetwork: env.MELETE_RUNTIME_NETWORK,
           dockerWorkVolume: env.MELETE_RUNTIME_WORK_VOLUME,
         });
-        hermesRuntime = new SupervisedHermesRuntime(supervisor, handle.sql, options.onTiming);
+        hermesRuntime = new SupervisedHermesRuntime(
+          supervisor,
+          handle.sql,
+          options.onTiming,
+          brokerCatalogState({ brokerUrl: env.MELETE_BROKER_URL }),
+        );
       }
       const runtime =
         options.runtime ??
@@ -515,7 +521,7 @@ export async function bootstrap(
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
-      learning = await startLearning(jobs, env, options.workers !== false);
+      learning = await startLearning(jobs, env, options.workers !== false, options.fakeProvider);
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);

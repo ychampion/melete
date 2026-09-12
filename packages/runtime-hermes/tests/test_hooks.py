@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime_support"))
 
 from melete_runtime_hooks import HOOK_NAMES, bind_capture, observation, register_observers, reset_capture
+from melete_runtime_hooks import failure_frame
 
 
 class Context:
@@ -104,3 +105,22 @@ def test_observer_delivery_failure_cannot_veto_and_later_capture_reports_gap():
     assert records[0]["event"] == "hook.error"
     assert records[0]["error_code"] == "capture_gap"
     assert records[0]["capture_id"] == "att_delivery:hook:1"
+
+
+def test_discovery_continuations_keep_attempt_identity_without_capture_collisions():
+    ctx = Context()
+    register_observers(ctx)
+    records = []
+    for key in ("att_discovery", "att_discovery:tools:1", "att_discovery:tools:2"):
+        token = bind_capture(key, records.append)
+        try:
+            ctx.hooks["on_session_start"]()
+        finally:
+            reset_capture(token)
+    assert {record["attempt_id"] for record in records} == {"att_discovery"}
+    assert [record["capture_id"] for record in records] == [
+        "att_discovery:hook:0", "att_discovery:hook:tools:1:0", "att_discovery:hook:tools:2:0",
+    ]
+    failure = failure_frame("att_discovery:tools:2")
+    assert failure["attempt_id"] == "att_discovery"
+    assert failure["capture_id"] == "att_discovery:hook:tools:2:runtime-error"

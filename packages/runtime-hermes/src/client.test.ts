@@ -281,6 +281,6 @@ describe('SSE parsing', () => {
 describe('the pin', () => {
   test('names the exact release the image is built from', () => {
     expect(HERMES_PINNED_TAG).toBe('v2026.9.7');
-    expect(RUNTIME_VERSION).toBe('hermes@v2026.9.7+melete-observers.1');
+    expect(RUNTIME_VERSION).toBe('hermes@v2026.9.7+melete-observers.2');
   });
 });

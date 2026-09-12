@@ -1,15 +1,23 @@
 import type { Env } from '../env.ts';
-import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
+import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import type { JobService } from '../jobs/service.ts';
 import { openProposalGateway } from './proposal-gateway.ts';
 import { ProcedureProposer } from './proposer.ts';
 
 /** One durable drain; a second timer tick cannot overlap a bounded model call. */
-export async function startLearning(jobs: JobService, env: Env, workers: boolean) {
+export async function startLearning(
+  jobs: JobService,
+  env: Env,
+  workers: boolean,
+  fake?: GatewayOptions['fake'],
+) {
   const gateway = await openProposalGateway({
     db: jobs.db,
     provider: env.MELETE_DEFAULT_PROVIDER,
     model: env.MELETE_DEFAULT_MODEL,
+    // The same explicitly configured fake provider covers the proposal call.
+    // Real provider credentials still stay inside the existing model gateway.
+    fake,
     providers: [
       ...providersFromEnv({
         FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,

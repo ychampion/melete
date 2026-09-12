@@ -2,6 +2,7 @@ import { type AttemptBundle, jsonObject } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
+import { spaceAuthority } from '../principals/authority.ts';
 import type { ProcedureScope } from './contracts.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import { verifyDefinition } from './procedures.ts';
@@ -24,6 +25,9 @@ export async function selectProcedureSkills(
   if (jsonObject.parse(row.constraints).public_compartment || !runtimeVersion) return [];
   const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
   if (registration?.scope.role !== 'owner' || registration.scope.audience !== 'private') return [];
+  // A requested learning scope cannot turn a member into the owner of private evidence.
+  const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
+  if (access.role !== 'owner') return [];
   const state = await tx.execute(
     sql`select revoked, restore_ready from memory_spaces where space_id = ${row.spaceId}`,
   );
