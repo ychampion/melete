@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +17,7 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { bootstrap } from '../../src/index.ts';
 import { verifyCapability } from '../../src/jobs/capability.ts';
-import { requireCurrentAttempt, withCapability } from '../../src/jobs/fence.ts';
+import { recordReceipt, requireCurrentAttempt, withCapability } from '../../src/jobs/fence.ts';
 import { type AttemptWake, QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, type ClaimedAttempt, type RunnerOptions } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
@@ -271,6 +271,204 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       locked.release();
     }
     expect((await claim(runner(), row)).claims.epoch).toBe(1);
+  });
+
+  test('a wake is judged by the database clock, not by a process clock up to 50 ms off', async () => {
+    const { handle, jobs } = fixture();
+    const realNow = Date.now;
+    const shift = (ms: number) => {
+      Date.now = () => realNow() + ms;
+    };
+    try {
+      // Due by the database clock. A process clock 50 ms behind Postgres would
+      // have called this wake early and dropped it until the recovery scan.
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      shift(-50);
+      expect((await claim(runner(), await jobs.get(row.id))).claims.epoch).toBe(1);
+      // Not yet due by the database clock. A process clock 50 ms ahead would
+      // have claimed it before its time.
+      const next = await create();
+      await handle.sql`update job set next_wake_at = now() + interval '30 milliseconds' where id = ${next.id}`;
+      shift(50);
+      expect(await runner().claim(wake(await jobs.get(next.id)))).toBeNull();
+      await Bun.sleep(60);
+      expect((await claim(runner(), await jobs.get(next.id))).claims.epoch).toBe(1);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test.each([-120_000, 120_000])(
+    'claim leases use database time with process skew %i',
+    async (skew) => {
+      const { handle } = fixture();
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + skew;
+        const admitted = await claim(runner(), row);
+        const [lease] =
+          await handle.sql`select extract(epoch from (lease_expires_at - now()))::float as remaining
+        from attempt where id = ${admitted.claims.attempt_id}`;
+        expect(lease?.remaining).toBeWithin(40, 46);
+      } finally {
+        Date.now = realNow;
+      }
+    },
+  );
+
+  test.each([-120_000, 120_000])(
+    'heartbeat then recovery preserves live work with process skew %i',
+    async (skew) => {
+      const { handle, jobs } = fixture();
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      const worker = runner();
+      const admitted = await claim(worker, row);
+      const id = admitted.claims.attempt_id;
+      // Isolate renewal from creation: the starting lease is healthy by Postgres time.
+      await handle.sql`update attempt set lease_expires_at = now() + interval '10 seconds' where id = ${id}`;
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + skew;
+        expect(await worker.heartbeat(admitted.claims)).toBe(true);
+        await worker.recover();
+        expect((await jobs.get(row.id)).state).toBe('running');
+        expect((await jobs.get(row.id)).leaseEpoch).toBe(1);
+        expect(await execution(id)).toMatchObject({
+          endedAt: null,
+          outcome: null,
+          leaseStatus: 'active',
+        });
+        await jobs.transaction((tx) => requireCurrentAttempt(tx, admitted.claims));
+        const [lease] =
+          await handle.sql`select extract(epoch from (lease_expires_at - now()))::float as remaining
+        from attempt where id = ${id}`;
+        expect(lease?.remaining).toBeWithin(40, 46);
+        expect(
+          await handle.sql`select seq from event where attempt_id = ${id} and type = 'attempt_ended'`,
+        ).toHaveLength(0);
+
+        // A slow process clock must not admit or revive work that Postgres has expired.
+        await handle.sql`update attempt set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        await rejects(
+          () => jobs.transaction((tx) => requireCurrentAttempt(tx, admitted.claims)),
+          'stale_epoch',
+        );
+        expect(await worker.heartbeat(admitted.claims)).toBe(false);
+        await worker.recover();
+        expect(await execution(id)).toMatchObject({
+          leaseStatus: 'lost',
+          outcomeDetail: { reason: 'lease_expired' },
+        });
+      } finally {
+        Date.now = realNow;
+      }
+    },
+  );
+
+  test.each([-120_000, 120_000])(
+    'receipt lateness uses database time with process skew %i',
+    async (skew) => {
+      const { handle, jobs } = fixture();
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      const admitted = await claim(runner(), row);
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + skew;
+        for (const late of [false, true]) {
+          const id = await effect(admitted, 'dispatched');
+          const [dispatched] = await handle.db
+            .update(action)
+            .set({ dispatchedAt: new Date() })
+            .where(eq(action.id, id))
+            .returning();
+          if (!dispatched) throw new Error('Expected dispatched action');
+          await handle.sql`update attempt set lease_expires_at = now() + ${late ? -1 : 45} * interval '1 second'
+          where id = ${admitted.claims.attempt_id}`;
+          const receipt = await recordReceipt(jobs, admitted.claims.attempt_id, {
+            action_id: id,
+            connection_id: dispatched.connectionId,
+            external_ref: id,
+            detail: {},
+            received_at: new Date().toISOString(),
+            late: false,
+          });
+          expect(receipt.late).toBe(late);
+        }
+      } finally {
+        Date.now = realNow;
+      }
+    },
+  );
+
+  test.each(['create', 'resume'] as const)(
+    'an immediate %s wake stays due with a process clock ahead of Postgres',
+    async (operation) => {
+      const { handle, jobs } = fixture();
+      const worker = runner();
+      let row: JobRow | undefined;
+      if (operation === 'resume') {
+        row = await create();
+        await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+        const admitted = await claim(worker, row);
+        await worker.commitOutcome(admitted.claims, {
+          kind: 'waiting_for_input',
+          question: 'Continue?',
+        });
+      }
+      // Unlike replacing Date.now alone, this also skews the Date constructor used by wakes.
+      setSystemTime(new Date(Date.now() + 120_000));
+      try {
+        const due = row ? await jobs.input(row.id, 'Continue.') : await create();
+        const [saved] =
+          await handle.sql`select next_wake_at <= now() as due from job where id = ${due.id}`;
+        expect(saved?.due).toBe(true);
+        expect((await claim(worker, due)).claims.epoch).toBe(operation === 'resume' ? 2 : 1);
+      } finally {
+        setSystemTime();
+      }
+    },
+  );
+
+  test('an attempt still open when a later epoch claims the job ends as superseded', async () => {
+    const { handle, jobs } = fixture();
+    const row = await create();
+    const first = await claim(runner(), row);
+    // The job is queued again past the open attempt without ending it, as a
+    // crashed service or an out-of-band state repair can leave it.
+    await handle.sql`update job set state = 'queued', lease_epoch = lease_epoch + 1,
+      state_version = state_version + 1, next_wake_at = now() where id = ${row.id}`;
+    const second = await claim(runner(), await jobs.get(row.id));
+    expect(second.claims.attempt_id).not.toBe(first.claims.attempt_id);
+    const stale = await execution(first.claims.attempt_id);
+    expect(stale.endedAt).not.toBeNull();
+    expect(stale.outcome).toBe('fenced');
+    expect(stale.outcomeDetail).toEqual({ kind: 'superseded', by: second.claims.attempt_id });
+    const [ended] = await handle.sql`select count(*)::int as n from event
+      where attempt_id = ${first.claims.attempt_id} and type = 'attempt_ended'`;
+    expect(ended?.n).toBe(1);
+    expect(
+      await handle.sql`select id from attempt where job_id = ${row.id} and ended_at is null`,
+    ).toHaveLength(1);
+  });
+
+  test('the recovery scan closes an expired attempt a later epoch already fenced', async () => {
+    const { handle, jobs } = fixture();
+    const row = await create();
+    const first = await claim(runner(), row);
+    await handle.sql`update job set lease_epoch = lease_epoch + 1, state = 'waiting_for_input',
+      next_wake_at = null where id = ${row.id}`;
+    await handle.sql`update attempt set lease_expires_at = now() - interval '1 second'
+      where id = ${first.claims.attempt_id}`;
+    await runner().recover();
+    const stale = await execution(first.claims.attempt_id);
+    expect(stale.endedAt).not.toBeNull();
+    expect(stale.outcomeDetail).toEqual({ kind: 'superseded' });
+    expect((await jobs.get(row.id)).state).toBe('waiting_for_input');
   });
 
   test('durable input cursors deliver new messages once while retaining completed tools in the transcript', async () => {

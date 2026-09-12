@@ -7,6 +7,7 @@ import type { Sql } from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { migrateDatabase } from '../../src/db/migrate.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
+import { gatherFacts, missingPrerequisites } from './preflight.ts';
 
 export type TestDatabase = DatabaseHandle & { url: string; mode: 'embedded' | 'external' };
 type TestServer = { url: string; mode: TestDatabase['mode']; stop: () => Promise<void> };
@@ -155,6 +156,9 @@ async function startTestServer(): Promise<TestServer | null> {
   if (process.env.DATABASE_URL) {
     return { url: process.env.DATABASE_URL, mode: 'external', stop: async () => {} };
   }
+  // Name the missing prerequisite once here, not fifty times as opaque failures.
+  const missing = missingPrerequisites(gatherFacts()).filter((line) => !line.startsWith('uv '));
+  if (missing.length) throw new Error(`embedded Postgres cannot start: ${missing.join(' ')}`);
   let EmbeddedPostgres: typeof import('embedded-postgres').default;
   try {
     EmbeddedPostgres = (await import('embedded-postgres')).default;
@@ -185,6 +189,12 @@ async function startTestServer(): Promise<TestServer | null> {
   } catch (error) {
     await embedded.stop();
     await removeOwnedTempRoot(tempRoot);
+    // A binary linked against a library this host does not have is a host
+    // problem with a one-line answer, not a skip.
+    if (/libpq\.so|libicu/i.test(String(error)))
+      throw new Error(
+        `embedded Postgres cannot start on this host (${String(error).split(/\r?\n/)[0]}); set DATABASE_URL to a Postgres 17 on Linux.`,
+      );
     // Only absent binary downloads can skip tests; startup and migration errors fail.
     if (!binaryUnavailable(error)) throw error;
     return reportUnavailable(error);

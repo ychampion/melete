@@ -85,8 +85,8 @@ export type KnowledgeExcerpt = z.infer<typeof knowledgeExcerpt>;
  * handle is what the attempt cites; the label is what it can say out loud.
  */
 export const evidenceHandleRef = z.object({
-  kind: z.enum(['artifact', 'knowledge', 'action']),
-  /** `artifact:art_...`, `knowledge:k_...`, `action:act_...`. */
+  kind: z.enum(['artifact', 'knowledge', 'action', 'source']),
+  /** `artifact:art_...`, `knowledge:k_...`, `action:act_...`, `source:src_...@version`. */
   handle: z.string().min(1).max(240),
   label: z.string().max(240),
   at: timestamp,
@@ -212,6 +212,11 @@ export const attemptBundle = z.object({
   }),
   /** What changed since the last attempt: the reason this wake exists. */
   inputs: z.object({
+    /**
+     * Deprecated. The delta is the top-level `since_last`, built once from
+     * durable rows; no producer fills this field. It stays optional so a bundle
+     * written before the two shapes were unified still parses.
+     */
     since_last: sinceLastBrief.optional(),
     new_user_messages: z.array(canonicalMessage),
     approval_results: z.array(

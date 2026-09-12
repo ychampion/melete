@@ -21,6 +21,7 @@ import {
   type TrustResolution,
   type TrustResolver,
 } from '@melete/contracts';
+import { describeDay as describeUtcDay } from '../dates.ts';
 import { lockSpace, type MemoryScope, type MemorySql, type MemoryTx } from './db.ts';
 
 export type SourceOrigin = {
@@ -55,12 +56,7 @@ export function revisionTrust(
   return kind === 'inferred' ? 'inferred' : fromSources;
 }
 
-const DAY = new Intl.DateTimeFormat('en-GB', {
-  day: 'numeric',
-  month: 'long',
-  timeZone: 'UTC',
-});
-export const describeDay = (instant: string): string => DAY.format(new Date(instant));
+export const describeDay = (instant: string): string => describeUtcDay(new Date(instant));
 
 /** Written for a person reading an approval card, not for a log. */
 export function describeOrigin(source: SourceOrigin & { event_at: string }): string {

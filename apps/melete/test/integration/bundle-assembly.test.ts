@@ -104,11 +104,13 @@ afterAll(async () => {
       'react',
       'test.send',
     ]);
-    expect(first.inputs.since_last?.evidence_handles).toHaveLength(1);
+    // One delta, completed with the memory sources the lease could not see.
+    expect(first.inputs.since_last).toBeUndefined();
+    expect(first.since_last.evidence.map((item) => item.kind)).toEqual(['source']);
     expect(other.skills).toEqual([]);
     expect(other.knowledge).toEqual([]);
     expect(other.tools).toEqual([...META_TOOLS, REACT_TOOL]);
-    expect(other.inputs.since_last?.evidence_handles).toEqual([]);
+    expect(other.since_last.evidence).toEqual([]);
     const seat = await head(db, a, 'pref.travel.seat');
     if (!seat) throw new Error('missing seat');
     await recordOutput(handle.sql, a, {

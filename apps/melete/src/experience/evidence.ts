@@ -1,5 +1,6 @@
 import { parseMemoryHandle } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
+import { numericDate } from '../dates.ts';
 import { memoryScopeForSpace } from '../memory/broker-trust.ts';
 import { eligibleRevision } from '../memory/claims.ts';
 import type { MemoryTx } from '../memory/db.ts';
@@ -53,7 +54,7 @@ export async function explainHandles(
         and s.state = 'active' and m.restore_ready and not m.revoked`;
       if (row)
         reasons.push(
-          `${row.author === 'owner' ? 'You shared this' : 'This came from a connected source'} on ${new Date(String(row.event_at)).toLocaleDateString('en-GB', { timeZone: 'UTC' })}.`,
+          `${row.author === 'owner' ? 'You shared this' : 'This came from a connected source'} on ${numericDate(new Date(String(row.event_at)))}.`,
         );
     } else if (raw.startsWith('attempt:') || raw.startsWith('job:')) {
       const [row] = raw.startsWith('attempt:')

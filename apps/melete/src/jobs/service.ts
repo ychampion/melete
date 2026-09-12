@@ -17,6 +17,7 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
+import { databaseNow } from '../db/clock.ts';
 import { attempt, job, space } from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -160,7 +161,7 @@ export class JobService {
         nextWakeAt:
           experience && (experience.dormant || ['chat', 'plan'].includes(experience.kind))
             ? null
-            : (experience?.scheduledAt ?? new Date()),
+            : (experience?.scheduledAt ?? (await databaseNow(tx))),
         ...(experience
           ? {
               kind: experience.kind,
@@ -241,7 +242,7 @@ export class JobService {
     let wait = options.wait ?? { kind: 'none' };
     const baseWakeAt =
       result.value === 'queued'
-        ? new Date()
+        ? await databaseNow(tx)
         : result.value === 'waiting_for_event_or_time' && wait.kind === 'timer'
           ? new Date(wait.wake_at)
           : result.value === 'waiting_for_event_or_time' &&

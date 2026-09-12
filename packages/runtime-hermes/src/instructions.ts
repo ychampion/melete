@@ -83,8 +83,6 @@ export function renderInput(bundle: AttemptBundle): string {
   // is the source of prior messages and completed tool-call identities.
   if (bundle.transcript.length)
     lines.push('', '## Prior conversation and tool results', '', JSON.stringify(bundle.transcript));
-  if (bundle.inputs.since_last)
-    lines.push('', '## Since last attempt', '', JSON.stringify(bundle.inputs.since_last));
   for (const brief of bundle.inputs.repair_briefs)
     lines.push('', '## Repair required', '', JSON.stringify(brief));
 

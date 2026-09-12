@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import { type AttemptBundle, prefixedId } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { parse, stringify } from 'yaml';
+import { resolvePython } from './python.ts';
 
 const exec = promisify(execFile);
 export type RuntimeInstance = {
@@ -284,7 +285,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
       signal.throwIfAborted();
       child = spawn(
-        this.options.python,
+        resolvePython(this.options.python),
         [join(this.options.runtimePackage, 'process_launcher.py')],
         {
           cwd: workspace,
