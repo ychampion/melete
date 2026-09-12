@@ -38,7 +38,7 @@ Typecheck passed. Lint passed across 308 files. OpenAPI and client regeneration 
 
 ## Full-suite checkpoints
 
-After steps 4, 7, and 12: not reached.
+Checkpoint 1 (after step 4, head `e956aa0`): full Bun suite under the shared lock, `bun test --max-concurrency=1 --timeout=20000`: 1154 passed, 1 skipped (key-gated), 14 existing todos, 0 failures across 97 files in 264.36 s. Checkpoints 2 (after step 7) and 3 (after step 12): not reached yet.
 
 ## PR 12: typed repair
 
