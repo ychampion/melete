@@ -7,6 +7,7 @@ import { createBrokerApp } from '../../src/broker/http.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createExecConnector } from '../../src/connectors/exec.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { resolvePython } from '../../src/runtime/python.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -54,7 +55,7 @@ for (const reason of ['stale_epoch', 'budget_exceeded']) {
       try {
         const process = Bun.spawn(
           [
-            'python',
+            resolvePython(),
             '-c',
             "import json,os,sys; sys.path.insert(0,os.environ['PLUGIN_ROOT']); from melete_plugin import build_handler; from melete_plugin.broker import BrokerClient; print(json.dumps(build_handler(BrokerClient(),json.loads(os.environ['TOOL']))(code=\"open('marker','w').write('ran')\")))",
           ],

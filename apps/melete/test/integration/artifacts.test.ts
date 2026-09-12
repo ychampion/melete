@@ -31,6 +31,7 @@ import { PostgresSecretRepository, SealedSecretStore } from '../../src/connector
 import { artifact as artifactTable, job as jobTable } from '../../src/db/schema.ts';
 import { completionFacts } from '../../src/jobs/bundle.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
+import { resolvePython } from '../../src/runtime/python.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 // The shared server, not a second embedded cluster: every integration suite
@@ -304,7 +305,7 @@ for (const mode of ['write', 'execution', 'raw']) {
         expect((await ctx.broker.startExecution(ctx.claims, proposal.action_id)).execute).toBe(
           true,
         );
-        const child = Bun.spawn(['python', '-c', code], {
+        const child = Bun.spawn([resolvePython(), '-c', code], {
           cwd: path.join(ctx.workRoot, ctx.claims.job_id),
           stdout: 'pipe',
           stderr: 'pipe',
