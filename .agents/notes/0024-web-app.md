@@ -63,6 +63,15 @@ its preview, `dispatch` becomes a receipt with an undo handle. Every body it
 emits is validated against the contract's schemas, and its text is checked
 against the backend vocabulary list, so a tool name cannot reach the interface.
 
+An effect the connector never confirms is not a note alone. The mock records
+it in the store's action ledger at `unknown` (the same ledger the broker
+routes serve), the interface reads `GET /actions?job_id=` when a turn settles
+and draws the unknown-outcome card, and the person's answer goes to
+`POST /actions/{id}/resolve`, after which the chat continues. A permission or
+question decided from somewhere else closes on the first event that follows
+its `needs_you` status, without claiming which way it went; the contract has
+no decision event, and the note lists one.
+
 Text deltas are streamed live and never stored, so a reconnect draws a gap
 marker where streamed text may be missing rather than stitching two halves
 together. Durable events replay from the last seq the client drew.

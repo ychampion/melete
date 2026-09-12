@@ -45,6 +45,8 @@ type Proposal = {
   decision: 'allow_once' | 'always' | 'deny' | null;
   onDenied: string | null;
   permissionId: string | null;
+  /** The connection the effect goes through; the ledger action names it. */
+  connectionId: string;
 };
 
 /** Human words for the apps a scenario's evidence names. Never a tool name. */
@@ -159,6 +161,15 @@ export class ExperienceMock {
   readonly permissionProposals = new Map<string, { chatId: string; ref: string }>();
   /** Receipts whose change can still be reversed, by receipt id. */
   readonly undoable = new Map<string, { chatId: string; what: string }>();
+  /**
+   * Effects the connector never confirmed. They rest in the store's ledger at
+   * `unknown` and are settled through the broker's resolve route; the chat
+   * they belong to waits until then.
+   */
+  readonly unknownActions = new Map<
+    string,
+    { chatId: string; draftId: string | null; resume: boolean }
+  >();
   /** Calendar events the seed placed, for the home panel. */
   readonly calendarEvents: ReturnType<typeof C.experienceCalendarEvent.parse>[] = [];
   now() {
@@ -637,6 +648,13 @@ export class ExperienceMock {
         reversible: false,
       };
       const title = plainText(step.payload.title, '');
+      const rows = [...this.deps.store.connections.values()].filter(
+        (row) => row.space_id === this.deps.spaceId,
+      );
+      const source =
+        rows.find((row) => row.label === step.connection || row.scopes.includes(step.kind)) ??
+        this.evidenceConnection() ??
+        rows[0];
       chat.proposals.set(step.ref, {
         ref: step.ref,
         kind: step.kind,
@@ -646,6 +664,7 @@ export class ExperienceMock {
         decision: null,
         onDenied: null,
         permissionId: null,
+        connectionId: source?.id ?? '',
       });
     } else if (step.step === 'await_approval') {
       const proposal = chat.proposals.get(step.ref);
@@ -695,10 +714,15 @@ export class ExperienceMock {
         this.undoable.set(receipt.id, { chatId: chat.view.id, what: proposal.what });
         this.event(chat, { type: 'receipt', receipt });
       } else if (proposal && step.outcome !== 'succeeded') {
-        this.event(chat, {
-          type: 'note',
-          text: 'The change could not be confirmed. It has not been repeated.',
+        this.restUnknown(chat, {
+          kind: proposal.kind,
+          connectionId: proposal.connectionId,
+          payload: proposal.payload,
+          draftId: null,
+          what: 'The change',
+          resume: true,
         });
+        return;
       }
     } else if (step.step === 'text') {
       this.flush(chat);
@@ -863,11 +887,20 @@ export class ExperienceMock {
   deliver(chat: Chat, draft: C.ExperienceDraft) {
     const outcome = chat.script?.steps.find((step) => step.step === 'dispatch');
     if (outcome?.step === 'dispatch' && outcome.outcome !== 'succeeded') {
-      this.event(chat, {
-        type: 'note',
-        text: 'The send could not be confirmed. It has not been repeated.',
+      const proposed = chat.script?.steps.find(
+        (step) => step.step === 'propose' && step.ref === outcome.ref,
+      );
+      this.restUnknown(chat, {
+        kind: proposed?.step === 'propose' ? proposed.kind : 'message.send',
+        connectionId: draft.connection_id,
+        payload:
+          proposed?.step === 'propose'
+            ? proposed.payload
+            : { to: draft.recipient, subject: draft.subject ?? '', body: draft.body },
+        draftId: draft.id,
+        what: 'The send',
+        resume: false,
       });
-      this.state(chat, 'needs_you');
       return null;
     }
     draft.status = 'sent';
@@ -882,6 +915,84 @@ export class ExperienceMock {
     this.event(chat, { type: 'receipt', receipt });
     this.finish(chat, 'Your message was sent.');
     return receipt;
+  }
+  /**
+   * Record an effect whose outcome never came back. It rests in the ledger at
+   * `unknown` (GET /actions?job_id=) until a person settles it through
+   * POST /actions/{id}/resolve; nothing is repeated meanwhile.
+   */
+  restUnknown(
+    chat: Chat,
+    input: {
+      kind: string;
+      connectionId: string;
+      payload: Record<string, unknown>;
+      draftId: string | null;
+      what: string;
+      resume: boolean;
+    },
+  ) {
+    const { canonical, hash } = C.canonicalizePayload(input.payload);
+    const now = this.now();
+    const id = newId('act');
+    const action: C.Action = {
+      id,
+      job_id: chat.view.id,
+      attempt_id: newId('att'),
+      connection_id: input.connectionId,
+      kind: input.kind,
+      effect_class: 'write_external',
+      canonical_payload: canonical,
+      payload_hash: hash,
+      intent_key: null,
+      status: 'unknown',
+      authorization_ref: null,
+      budget_reservation: null,
+      idempotency_key: id,
+      dispatched_at: now,
+      receipt: null,
+      resolved_at: null,
+      reconciliation: null,
+      created_at: now,
+    };
+    this.deps.store.actions.set(id, action);
+    this.unknownActions.set(id, {
+      chatId: chat.view.id,
+      draftId: input.draftId,
+      resume: input.resume,
+    });
+    this.event(chat, {
+      type: 'note',
+      text: `${input.what} could not be confirmed. It has not been repeated.`,
+    });
+    this.state(chat, 'needs_you');
+  }
+  /** The person settled an unknown action through the broker; the chat says so and moves on. */
+  actionResolved(action: C.Action) {
+    const rest = this.unknownActions.get(action.id);
+    const chat = rest ? this.chats.get(rest.chatId) : undefined;
+    if (!rest || !chat) return;
+    const draft = rest.draftId ? chat.drafts.find((entry) => entry.id === rest.draftId) : null;
+    if (action.status === 'unresolved') {
+      this.event(chat, {
+        type: 'note',
+        text: 'Still unconfirmed. Nothing will be repeated until you say what happened.',
+      });
+      return;
+    }
+    this.unknownActions.delete(action.id);
+    if (draft) draft.status = action.status === 'succeeded' ? 'sent' : 'draft';
+    this.event(chat, {
+      type: 'note',
+      text:
+        action.status === 'succeeded'
+          ? 'You said it arrived. Nothing was sent again.'
+          : 'You said it did not arrive. Nothing was sent again; the draft is still yours.',
+    });
+    if (rest.resume && chat.script && chat.position < chat.script.steps.length) {
+      this.state(chat, 'working');
+      this.schedule(chat);
+    } else this.state(chat, 'done');
   }
   send(id: string) {
     const { chat, draft } = this.findDraft(id);

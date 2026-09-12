@@ -13,8 +13,10 @@ import { Avatar, Badge, Button, Dialog, Field, IconButton, Select } from '../des
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, type TranscriptTurn } from '../experience/reduce.ts';
 import type {
+  ActionResolution,
   Agent,
   Draft,
+  LedgerAction,
   Permission,
   PermissionOption,
   Question,
@@ -598,7 +600,9 @@ export function PermissionCard({
           })}
         </div>
       ) : null}
-      {permission.preview ? <ResultCard card={permission.preview} readOnly touch={touch} /> : null}
+      {permission.preview && !permission.draft ? (
+        <ResultCard card={permission.preview} readOnly touch={touch} />
+      ) : null}
       {permission.draft ? (
         <div className="col" style={{ gap: 6 }}>
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
@@ -831,6 +835,83 @@ export function Questionnaire({
 }
 
 /* ---------- action bar ---------- */
+
+/**
+ * An effect the connector never confirmed, read from the broker's ledger.
+ * Nothing is repeated; the person says what happened and the ledger records
+ * that decision. The action's kind is a tool name and is never shown.
+ */
+export function describeAction(action: LedgerAction): string {
+  const payload = action.canonical_payload as Record<string, unknown>;
+  const to = payload.to;
+  if (Array.isArray(to) && to.length) return `a message to ${to.map(String).join(', ')}`;
+  if (typeof to === 'string' && to) return `a message to ${to}`;
+  if (typeof payload.title === 'string' && payload.title) return `“${payload.title}”`;
+  return 'the change';
+}
+
+export function UnknownCard({
+  action,
+  onResolve,
+}: {
+  action: LedgerAction;
+  onResolve: (resolution: ActionResolution) => void;
+}) {
+  const settled =
+    action.status === 'succeeded' || action.status === 'failed' ? action.status : null;
+  const unsure = action.status === 'unresolved';
+  return (
+    <div className="card-pad">
+      <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+        <span
+          className="row"
+          style={{
+            justifyContent: 'center',
+            width: 40,
+            height: 40,
+            borderRadius: 10,
+            background: 'var(--sand)',
+            color: 'var(--sand-ink)',
+            flexShrink: 0,
+          }}
+        >
+          <Icon name="alert" size={20} />
+        </span>
+        <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+            I sent this once and never heard back.
+          </span>
+          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
+            It may or may not have arrived. I have not sent it again. What I tried:{' '}
+            {describeAction(action)}.
+          </span>
+        </div>
+        {settled ? (
+          <Badge tone={settled === 'succeeded' ? 'success' : 'neutral'}>
+            {settled === 'succeeded' ? 'It arrived' : 'It did not'}
+          </Badge>
+        ) : unsure ? (
+          <Badge tone="neutral">Still unsure</Badge>
+        ) : null}
+      </div>
+      {!settled ? (
+        <div className="card-actions">
+          <Button size="sm" onClick={() => onResolve('succeeded')}>
+            It arrived
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => onResolve('failed')}>
+            It did not
+          </Button>
+          {unsure ? null : (
+            <Button size="sm" variant="ghost" onClick={() => onResolve('unresolved')}>
+              I can’t tell yet
+            </Button>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function ActionBar({
   turn,

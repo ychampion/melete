@@ -9,10 +9,13 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 - `chat-decide` — The permission card with its result-card preview, the draft with explicit send, the trail collapsed.
 - `chat-done` — The finished turn: the receipt with undo, the draft still unsent, the collapsed trail.
 - `chat-sent` — After the person pressed send on the draft: the sent receipt, nothing recalled.
+- `chat-unknown` — An effect the connector never confirmed: the unknown-outcome card from the broker’s ledger, nothing repeated, the person decides.
+- `chat-resolved` — After the person said it arrived: the card settled, the note in the transcript, the turn done.
 - `chat-question` — A question with keyboard answers (1–4) waiting for the person.
 - `chat-plain` — A plain answer with its one source; nothing to decide.
 - `command-palette` — The command palette (⌘K) with typed results across chats, plans, tasks, connections and actions.
 - `plans` — Plans with the sheet open on Japan: milestones with assignees, the linked chat, Ask Melete about this plan.
+- `plans-new` — The New plan dialog after typing a full title: focus stays in the field and every keystroke lands.
 - `agents` — Agents with Nova open in the editor: look, the nine states, the face wall, templates.
 - `automations` — Automations: schedule sentences, run history, test run, and a new routine.
 - `settings-memory` — Settings › Memory in plain language with edit, forget and why.
@@ -65,6 +68,12 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 | chat-done | 390-dark | no | 0 |
 | chat-sent | 1440-light | no | 0 |
 | chat-sent | 1440-dark | no | 0 |
+| chat-unknown | 1440-light | no | 0 |
+| chat-unknown | 1440-dark | no | 0 |
+| chat-unknown | 390-light | no | 0 |
+| chat-unknown | 390-dark | no | 0 |
+| chat-resolved | 1440-light | no | 0 |
+| chat-resolved | 1440-dark | no | 0 |
 | chat-question | 1440-light | no | 0 |
 | chat-question | 1440-dark | no | 0 |
 | chat-question | 1024-light | no | 0 |
@@ -89,6 +98,8 @@ Written by `bun run --cwd apps/web screens` against the mock serving the experie
 | plans | 1024-dark | no | 0 |
 | plans | 390-light | no | 0 |
 | plans | 390-dark | no | 0 |
+| plans-new | 1440-light | no | 0 |
+| plans-new | 1440-dark | no | 0 |
 | agents | 1440-light | no | 0 |
 | agents | 1440-dark | no | 0 |
 | agents | 1024-light | no | 0 |

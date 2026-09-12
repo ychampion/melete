@@ -27,7 +27,11 @@ export type TurnBlock =
    * `decided` is the option this client chose; `closed` means the turn moved on
    * after a decision made elsewhere (the contract carries no decision event).
    */
-  | { type: 'permission'; permission: Permission; decided: PermissionOption | 'closed' | null }
+  | {
+      type: 'permission';
+      permission: Permission;
+      decided: PermissionOption | 'closed' | null;
+    }
   /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
   | { type: 'question'; question: Question; answered: string | null };
 
@@ -125,6 +129,29 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
     (item.type === 'question' && hasBlock(base, item.question.id))
   )
     return base;
+  // While a permission or question waits, the service emits nothing for that
+  // turn except the status that says so (or a pause). Any other event means the
+  // person decided somewhere else; the contract has no decision event, so the
+  // block closes without claiming which way it went.
+  const stillWaiting =
+    item.type === 'status' && ['needs_you', 'paused', 'queued', 'idle'].includes(item.status);
+  const waited = stillWaiting
+    ? base
+    : patchTurn(base, event.turn_id, (turn) => ({
+        ...turn,
+        blocks: turn.blocks.map((block) =>
+          block.type === 'permission' && block.decided === null
+            ? { ...block, decided: 'closed' }
+            : block.type === 'question' && block.answered === null
+              ? { ...block, answered: 'closed' }
+              : block,
+        ),
+      }));
+  return applyItem(waited, event);
+}
+
+function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
+  const item = event.item;
   switch (item.type) {
     case 'say':
     case 'action':
@@ -176,21 +203,11 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
       }));
     case 'status': {
       const next = { ...base, composer: item.composer, status: item.status };
-      const movedOn = !['needs_you', 'paused', 'queued', 'idle'].includes(item.status);
       return patchTurn(next, event.turn_id, (turn) => ({
         ...turn,
         status: item.status,
         streaming: item.status === 'streaming' ? turn.streaming : false,
         turn: { ...turn.turn, status: item.status },
-        blocks: movedOn
-          ? turn.blocks.map((block) =>
-              block.type === 'permission' && block.decided === null
-                ? { ...block, decided: 'closed' }
-                : block.type === 'question' && block.answered === null
-                  ? { ...block, answered: 'closed' }
-                  : block,
-            )
-          : turn.blocks,
       }));
     }
     default:

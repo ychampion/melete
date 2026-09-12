@@ -10,6 +10,7 @@
  */
 import { createMeleteClient, errorMessage, readSse } from '@melete/client';
 import type {
+  ActionResolution,
   Agent,
   AgentInput,
   AgentTemplate,
@@ -21,6 +22,7 @@ import type {
   Draft,
   ExperienceEvent,
   Home,
+  LedgerAction,
   MemoryExplanation,
   MemoryItem,
   MessageAcceptance,
@@ -161,6 +163,18 @@ export const adapter = {
       api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
     ),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  /* ---------- the broker's ledger: effects the connector never confirmed ---------- */
+  unknownActions: (jobId: string) =>
+    guard<{ actions: LedgerAction[] }>(() =>
+      api.GET('/actions', { params: { query: { job_id: jobId } } }),
+    ),
+  resolveAction: (id: string, resolution: ActionResolution, note?: string) =>
+    guard<{ action: LedgerAction }>(() =>
+      api.POST('/actions/{actionId}/resolve', {
+        params: { path: { actionId: id } },
+        body: note ? { resolution, note } : { resolution },
+      }),
+    ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
 
   /* ---------- agents, memory ---------- */

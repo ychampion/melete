@@ -84,6 +84,12 @@ export type Connection = Success<
 >['connections'][number];
 export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
+/**
+ * An entry in the broker's action ledger. The interface reads it only for
+ * effects resting at `unknown` or `unresolved`, and never shows its `kind`.
+ */
+export type LedgerAction = Ok<paths['/actions'], 'get'>['actions'][number];
+export type ActionResolution = Body<paths['/actions/{actionId}/resolve'], 'post'>['resolution'];
 
 /* ---------- what the interface decides on its own ---------- */
 

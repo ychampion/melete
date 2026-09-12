@@ -174,6 +174,55 @@ await surface(
   { settle: 1500, only: [WIDTHS[0]] },
 );
 
+// An effect the connector never confirms rests in the broker's ledger; the
+// person settles it from the card.
+const ledger = (await api('POST', '/conversations', { title: 'Ledger entry', agent_id: nova.id }))
+  .conversation;
+await api(
+  'POST',
+  `/conversations/${ledger.id}/messages`,
+  { text: 'Write one line to the flaky test destination.' },
+  { 'Idempotency-Key': `walk-ledger-${Date.now()}` },
+);
+const ledgerDraft = await waitFor(
+  async () => (await api('GET', `/conversations/${ledger.id}/drafts`)).drafts?.[0],
+);
+const sendOutcome = await api('POST', `/drafts/${ledgerDraft.id}/send`);
+if (sendOutcome.permission)
+  await api('POST', `/permissions/${sendOutcome.permission.id}`, {
+    option: 'allow_once',
+    version: sendOutcome.permission.version,
+  });
+await waitFor(async () =>
+  (await api('GET', `/actions?job_id=${ledger.id}`)).actions?.find((a) => a.status === 'unknown'),
+);
+await surface(
+  'chat-unknown',
+  'An effect the connector never confirmed: the unknown-outcome card from the broker’s ledger, nothing repeated, the person decides.',
+  `/chat/${ledger.id}`,
+  { settle: 1500, only: [WIDTHS[0], WIDTHS[2]] },
+);
+await surface(
+  'chat-resolved',
+  'After the person said it arrived: the card settled, the note in the transcript, the turn done.',
+  `/chat/${ledger.id}`,
+  {
+    settle: 1500,
+    only: [WIDTHS[0]],
+    prepare: async (page) => {
+      // The first theme settles the action; the second finds it already settled.
+      const arrived = page.getByRole('button', { name: 'It arrived' });
+      if ((await arrived.count()) > 0) {
+        await arrived.click();
+        // The buttons give way to the badge once the ledger has the decision.
+        await arrived.waitFor({ state: 'detached', timeout: 10_000 });
+      }
+      await page.getByText('It arrived', { exact: true }).waitFor({ timeout: 10_000 });
+      await page.waitForTimeout(800);
+    },
+  },
+);
+
 if (kyoto)
   await surface(
     'chat-question',

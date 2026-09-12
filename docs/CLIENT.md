@@ -260,6 +260,14 @@ you were reading it" on the card, and the person decides again.
 stated window, drawn under the card that caused it. An undone receipt says so
 in place; nothing disappears.
 
+**An unconfirmed effect is a question, not a retry.** When a connector never
+answers, the action rests in the broker's ledger at `unknown`
+(`GET /actions?job_id=`), the transcript says so in a note, and the card asks
+the person what happened: it arrived, it did not, or they cannot tell yet.
+Their answer goes to `POST /actions/{id}/resolve` and the ledger records who
+decided. Nothing is sent again in the meantime, and a draft that never
+confirmed stays theirs to send.
+
 **Drafts are sent by the person.** A draft names its recipient and channel
 ("Send via Messages"), can be edited in place, and nothing leaves until that
 button is pressed.

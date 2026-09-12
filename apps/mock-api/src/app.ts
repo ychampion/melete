@@ -471,6 +471,7 @@ export function createMockApp(deps: AppDeps) {
       store.move(job.id, { kind: 'reconciled' }, { wait: { kind: 'none' } });
       runner.signal(job.id, { kind: 'reconciled' });
     }
+    experience.actionResolved(settled);
     return send(actionResponse, { action: settled });
   });
 

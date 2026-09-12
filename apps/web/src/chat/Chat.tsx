@@ -29,7 +29,13 @@ import {
   setDrafts,
   type TranscriptTurn,
 } from '../experience/reduce.ts';
-import type { PermissionOption, RuleBounds, TurnStatus } from '../experience/types.ts';
+import type {
+  ActionResolution,
+  LedgerAction,
+  PermissionOption,
+  RuleBounds,
+  TurnStatus,
+} from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import { Composer } from './Composer.tsx';
@@ -41,6 +47,7 @@ import {
   ResultCard,
   Trail,
   TurnAvatar,
+  UnknownCard,
   UserBubble,
 } from './parts.tsx';
 import './chat.css';
@@ -147,6 +154,8 @@ function TurnView({
   onUndo,
   onAnswer,
   onOwn,
+  unknown,
+  onResolve,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -157,6 +166,9 @@ function TurnView({
   onUndo: (id: string) => void;
   onAnswer: (questionId: string, optionId: string) => void;
   onOwn: (text: string) => void;
+  /** Effects from the broker's ledger that never confirmed; drawn on the newest turn only. */
+  unknown?: LedgerAction[];
+  onResolve?: (actionId: string, resolution: ActionResolution) => void;
 }) {
   const { agents } = useApp();
   const { transcript } = useTranscript();
@@ -221,7 +233,14 @@ function TurnView({
         return null;
     }
   });
-  void rendered.length;
+  const unconfirmed = (unknown ?? []).map((action) => (
+    <UnknownCard
+      key={action.id}
+      action={action}
+      onResolve={(resolution) => onResolve?.(action.id, resolution)}
+    />
+  ));
+  const hasBlocks = rendered.length > 0 || unconfirmed.length > 0;
   return (
     <>
       <UserBubble turn={turn} />
@@ -245,10 +264,11 @@ function TurnView({
             </div>
           )}
         </div>
-        {(showText && turn.trail.length > 0) || rendered.length > 0 || finished ? (
+        {(showText && turn.trail.length > 0) || hasBlocks || finished ? (
           <div className="turn-body">
             {showText ? <Trail turn={turn} now={now} /> : null}
             {rendered}
+            {unconfirmed}
             {finished ? (
               <ActionBar
                 turn={turn}
@@ -285,6 +305,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [text, setText] = useState('');
   const [agentId, setAgentId] = useState<string | null>(null);
   const [stuck, setStuck] = useState(true);
+  const [unknown, setUnknown] = useState<LedgerAction[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
 
@@ -296,6 +317,49 @@ export function ChatScreen({ id }: { id: string | null }) {
   useEffect(() => {
     setAgentId(conversation?.agent_id ?? agents[0]?.id ?? null);
   }, [conversation?.agent_id, agents]);
+
+  // Effects the connector never confirmed rest in the broker's ledger, not in
+  // the conversation's events; the ledger is read whenever the turn settles.
+  const settled = transcript.status;
+  useEffect(() => {
+    if (!conversationId || WORKING.includes(settled)) return;
+    let live = true;
+    void adapter.unknownActions(conversationId).then((result) => {
+      if (!live || result.data === null) return;
+      // Resting at unknown, or settled by a person: the ledger keeps that decision.
+      const shown = result.data.actions
+        .filter(
+          (action) =>
+            action.status === 'unknown' ||
+            action.status === 'unresolved' ||
+            action.reconciliation?.decided_by === 'owner',
+        )
+        .sort((a, b) => a.created_at.localeCompare(b.created_at));
+      setUnknown(shown);
+    });
+    return () => {
+      live = false;
+    };
+  }, [conversationId, settled]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the list belongs to one conversation and empties when the route changes
+  useEffect(() => {
+    setUnknown([]);
+  }, [conversationId]);
+
+  const resolve = (actionId: string, resolution: ActionResolution) =>
+    void adapter.resolveAction(actionId, resolution).then((result) => {
+      if (result.data === null) {
+        toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t record that' });
+        return;
+      }
+      const action = result.data.action;
+      setUnknown((previous) => previous.map((entry) => (entry.id === action.id ? action : entry)));
+      // A draft that never confirmed is sent or returned to the person now.
+      if (conversationId)
+        void adapter.drafts(conversationId).then((drafts) => {
+          if (drafts.data) setTranscript((previous) => setDrafts(previous, drafts.data.drafts));
+        });
+    });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: every transcript change scrolls when the person is at the bottom
   useEffect(() => {
@@ -539,6 +603,8 @@ export function ChatScreen({ id }: { id: string | null }) {
                   onUndo={undo}
                   onAnswer={answer}
                   onOwn={(own) => void send(own)}
+                  unknown={turn.id === lastId ? unknown : undefined}
+                  onResolve={resolve}
                 />
               ))}
               {transcript.gaps.map((gap) => (
