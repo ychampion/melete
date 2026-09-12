@@ -302,7 +302,7 @@ export class BrokerService implements BrokerOperations {
       effect_class: action.effect_class,
       payload_hash: action.payload_hash,
       canonical_payload: action.canonical_payload,
-      requires_approval: action.status === 'needs_approval' && approval?.decision === null,
+      requires_approval: action.status === 'needs_approval' && !approval?.decision,
       approval_id: approval?.id ?? null,
       intent_key: action.intent_key ?? key,
       repeated,
