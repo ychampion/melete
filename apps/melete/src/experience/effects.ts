@@ -9,7 +9,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
-import { loadAction, recordId } from '../broker/records.ts';
+import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
@@ -64,27 +64,65 @@ export class ExperienceEffects {
     if (tool?.effect_class !== 'read' || !(await this.supports(spaceId, connectionId, kind)))
       return unavailable('This connection cannot provide that information.');
     const key = `home:${spaceId}:${connectionId}:${kind}:${Math.floor(Date.now() / 60000)}`;
+    // Owner reads must expire without becoming a queued runtime task after recovery.
+    const budget = { ...DEFAULT_BUDGET, max_attempts: 1 };
     const jobId = await this.sql.begin(async (tx) => {
       await tx`select id from space where id = ${spaceId} for update`;
       const [existing] = await tx`select id from job where experience_command_key = ${key}`;
       if (existing) return String(existing.id);
       const id = recordId('job');
       await tx`insert into job (id, space_id, title, objective, kind, state, lease_epoch, experience_command_key, constraints, budget)
-        values (${id}, ${spaceId}, 'Read upcoming events', 'Read upcoming events', 'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
-      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
-        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command')`;
+        values (${id}, ${spaceId}, 'Read upcoming events', 'Read upcoming events', 'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(budget)}::jsonb)`;
+      await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at)
+        values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command', now() + interval '5 minutes')`;
       return id;
     });
-    const [existing] = await this
-      .sql`select id from action where job_id = ${jobId} order by created_at limit 1`;
-    if (existing) return loadAction(this.sql, String(existing.id));
-    const proposed = await this.broker.propose(await this.claims(jobId, connectionId), {
-      connection_id: connectionId,
-      kind,
-      payload,
-      client_ref: 'home',
+    try {
+      const [existing] = await this
+        .sql`select id from action where job_id = ${jobId} order by created_at limit 1`;
+      const id = existing
+        ? String(existing.id)
+        : (
+            await this.broker.propose(await this.claims(jobId, connectionId), {
+              connection_id: connectionId,
+              kind,
+              payload,
+              client_ref: 'home',
+            })
+          ).action_id;
+      const effect = await loadAction(this.sql, id);
+      if (['succeeded', 'failed', 'denied'].includes(effect.status))
+        await this.finishRead(jobId, effect.status === 'succeeded');
+      return effect;
+    } catch (error) {
+      await this.finishRead(jobId, false);
+      throw error;
+    }
+  }
+
+  private async finishRead(jobId: string, succeeded: boolean) {
+    await this.sql.begin(async (tx) => {
+      const [row] = await tx`select * from job where id = ${jobId} for update`;
+      if (row?.state !== 'running') return;
+      const outcome = succeeded
+        ? { kind: 'completed', summary: 'Read upcoming events.' }
+        : { kind: 'failed', reason: 'Could not read upcoming events.', retryable: false };
+      const [execution] = await tx`update attempt set outcome = ${outcome.kind},
+        outcome_detail = ${JSON.stringify(outcome)}::jsonb, ended_at = now(),
+        lease_status = 'ended', lease_expires_at = null
+        where job_id = ${jobId} and epoch = ${row.lease_epoch} and ended_at is null returning id`;
+      if (!execution) return;
+      await tx`update job set state = ${outcome.kind}, state_version = state_version + 1,
+        next_wake_at = null, updated_at = now() where id = ${jobId}`;
+      await appendEvent(
+        tx,
+        jobId,
+        String(execution.id),
+        'attempt_ended',
+        { outcome },
+        `${execution.id}:ended`,
+      );
     });
-    return loadAction(this.sql, proposed.action_id);
   }
 
   private async command(spaceId: string, source: Action, verb: string) {

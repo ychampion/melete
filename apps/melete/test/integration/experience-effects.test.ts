@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test';
+import { afterAll, expect, spyOn, test } from 'bun:test';
 import { type Action, type DispatchResult, permissionOutcome } from '@melete/contracts';
 import { loadAction, recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
@@ -11,6 +11,10 @@ import { ExperienceEffects } from '../../src/experience/effects.ts';
 import { ExperiencePermissions } from '../../src/experience/permissions.ts';
 import { BACKEND_VOCABULARY } from '../../src/experience/projectors.ts';
 import { resolveExperienceGrant } from '../../src/experience/rules.ts';
+import { startQueue } from '../../src/jobs/queue.ts';
+import { AttemptRunner } from '../../src/jobs/runner.ts';
+import { JobService } from '../../src/jobs/service.ts';
+import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
 
@@ -129,6 +133,76 @@ databaseTest('home calendar reads use a scoped private command and reject writes
     status: 'not_available',
   });
 });
+
+databaseTest('home refreshes across minutes leave no running read attempts', async () => {
+  const s = await setup('calendar');
+  const now = Date.now();
+  const clock = spyOn(Date, 'now');
+  try {
+    for (let minute = -2; minute <= 0; minute++) {
+      clock.mockReturnValue(now + minute * 60000);
+      expect(
+        await s.effects.read(s.claims.space_id, s.connectionId, 'calendar.list', {}),
+      ).toMatchObject({ status: 'succeeded' });
+    }
+  } finally {
+    clock.mockRestore();
+  }
+  const rows = await s.sql`select j.state, a.ended_at, a.outcome, a.lease_status,
+    a.lease_expires_at from job j join attempt a on a.job_id = j.id
+    where j.space_id = ${s.claims.space_id} and j.kind = 'command'`;
+  expect(rows).toHaveLength(3);
+  for (const row of rows) {
+    expect(row).toMatchObject({
+      state: 'completed',
+      outcome: 'completed',
+      lease_status: 'ended',
+      lease_expires_at: null,
+    });
+    expect(row.ended_at).not.toBeNull();
+  }
+});
+
+databaseTest(
+  'abandoned home reads expire and recovery does not queue a runtime retry',
+  async () => {
+    if (!fixture) throw new Error('Postgres unavailable');
+    const s = await setup('calendar');
+    // Leave the durable proposal pending, as if its caller disappeared before dispatch.
+    const dispatch = spyOn(s.broker, 'dispatch').mockImplementation((id) => loadAction(s.sql, id));
+    let read: Awaited<ReturnType<ExperienceEffects['read']>>;
+    try {
+      read = await s.effects.read(s.claims.space_id, s.connectionId, 'calendar.list', {});
+    } finally {
+      dispatch.mockRestore();
+    }
+    if ('reason' in read) throw new Error(read.reason);
+    const [execution] = await s.sql`select * from attempt where id = ${read.attempt_id}`;
+    expect(execution?.lease_expires_at).not.toBeNull();
+    expect(new Date(execution?.lease_expires_at).getTime() - Date.now()).toBeLessThanOrEqual(
+      300000,
+    );
+    await s.sql`update attempt set lease_expires_at = now() - interval '1 second' where id = ${read.attempt_id}`;
+    const queue = await startQueue(fixture.url);
+    const runner = new AttemptRunner(
+      new JobService(fixture.db, queue.boss),
+      new StubRuntimeAdapter(),
+      {
+        key: 'experience-fixture-signing-key-32-bytes',
+      },
+    );
+    try {
+      await runner.recover();
+      const [row] = await s.sql`select j.state, j.next_wake_at, a.ended_at, a.lease_status
+      from job j join attempt a on a.job_id = j.id where a.id = ${read.attempt_id}`;
+      expect(row).toMatchObject({ state: 'failed', next_wake_at: null, lease_status: 'lost' });
+      expect(row?.ended_at).not.toBeNull();
+    } finally {
+      await runner.stop();
+      await queue.stop();
+    }
+  },
+);
 
 databaseTest(
   'chat catalog and proposal both reject direct sends; owner draft send is durable and reviewed',
