@@ -563,7 +563,7 @@ export interface paths {
                         };
                         label: string;
                         /** @enum {string} */
-                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation";
+                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp";
                         /** @default [] */
                         scopes?: string[];
                         space_id: string;
@@ -4272,7 +4272,7 @@ export interface components {
             usd_est: number;
         };
         __schema124: components["schemas"]["__schema53"] | null;
-        __schema125: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced") | null;
+        __schema125: ("completed" | "waiting_for_input" | "waiting_for_approval" | "waiting_for_event_or_time" | "failed" | "budget_exhausted" | "fenced" | "unknown_check") | null;
         __schema126: components["schemas"]["__schema73"] | null;
         __schema127: string | null;
         __schema128: {
@@ -4341,7 +4341,7 @@ export interface components {
         __schema158: string;
         __schema159: string;
         /** @enum {string} */
-        __schema160: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation";
+        __schema160: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp";
         __schema161: string;
         __schema162: string[];
         /** @enum {string} */

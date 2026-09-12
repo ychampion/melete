@@ -92,6 +92,13 @@ def from_error(code: str, message: str) -> Dict[str, Any]:
     `unreachable` is deliberately given the uncertain instruction rather than
     the failure one: a request that got no answer may still have been received.
     """
+    if code == "schema_invalid":
+        return {
+            "status": FAILED,
+            "error": {"code": code, "message": message},
+            "retryable": False,
+            "instruction": "The tool schema needs operator repair. Stop now. Do not retry this tool.",
+        }
     uncertain = code == "unreachable"
     return {
         "status": UNKNOWN if uncertain else FAILED,

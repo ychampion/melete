@@ -351,8 +351,11 @@ describe('durable action lifecycle', () => {
         payload: {},
       });
       await s.sql`update connection set scopes = '["test.read"]'::jsonb where id = ${s.connectionId}`;
-      // `react` is always there: it belongs to no connection and needs no scope.
+      // `react` is always there: it belongs to no connection and needs no scope;
+      // the discovery tools lead the core the catalog serves.
       expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toEqual([
+        'search_tools',
+        'load_tool',
         'react',
         'test.read',
       ]);

@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProposedWrite } from '@melete/contracts';
 import type { Check } from './findings.ts';
-import { aRecord, fixedClock, IDS } from './fixtures.ts';
+import { aRecord, fixedClock, IDS, seededSpace } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
 import { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
@@ -25,7 +25,7 @@ import {
   type SpacePolicy,
   validateProposal,
 } from './mediation.ts';
-import { commitRecord, initSpace } from './space.ts';
+import { commitRecord } from './space.ts';
 import { knownIds, loadSpace } from './store.ts';
 
 let root: string;
@@ -76,9 +76,14 @@ const stageByHand = (proposal: Partial<Proposal> & { content: string }): Proposa
   return staged;
 };
 
-beforeEach(async () => {
+let seed: Awaited<ReturnType<typeof seededSpace>>;
+beforeAll(async () => {
+  seed = await seededSpace();
+}, 30_000);
+afterAll(() => seed?.close());
+beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'melete-mediation-'));
-  paths = await initSpace(root, 'personal');
+  paths = seed.copy(root);
 });
 
 afterEach(() => {

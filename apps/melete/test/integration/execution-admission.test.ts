@@ -39,7 +39,9 @@ for (const reason of ['stale_epoch', 'budget_exceeded']) {
     `admission_before_execution: real broker ${reason}`,
     async () => {
       const ctx = await setup(reason === 'budget_exceeded' ? 0 : 20);
-      const catalog = await ctx.broker.catalog(ctx.claims);
+      // The catalog leads with discovery tools; the plugin is handed the in-cell one.
+      const tool = (await ctx.broker.catalog(ctx.claims)).find((t) => t.name === 'exec.python');
+      if (!tool) throw new Error('exec.python absent from the catalog');
       if (reason === 'stale_epoch')
         await ctx.sql`update job set lease_epoch = lease_epoch + 1 where id = ${ctx.claims.job_id}`;
       const key = 'test-execution-capability-key-000000';
@@ -60,7 +62,7 @@ for (const reason of ['stale_epoch', 'budget_exceeded']) {
             env: {
               ...Bun.env,
               PLUGIN_ROOT: resolve('packages/runtime-hermes'),
-              TOOL: JSON.stringify(catalog[0]),
+              TOOL: JSON.stringify(tool),
               MELETE_WORK_DIR: ctx.work,
               MELETE_BROKER_URL: `http://127.0.0.1:${server.port}`,
               MELETE_ATTEMPT_TOKEN: signCapability(ctx.claims, key),

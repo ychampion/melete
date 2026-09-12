@@ -8,6 +8,7 @@ import type {
   JsonObject,
   VerifyResult,
 } from '@melete/contracts';
+import type { CatalogMetadata } from '../broker/catalog.ts';
 import type { Query } from '../broker/records.ts';
 import type { ConnectorDescription, RepairAttemptContext } from './faults.ts';
 
@@ -37,6 +38,8 @@ export interface Connector {
    * the call produces, both from trusted configuration.
    */
   capability?: CapabilityManifest;
+  /** Trusted discovery metadata: source, examples and core priorities. Never from a tool result. */
+  catalog?: CatalogMetadata;
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   health(): Promise<ConnectorHealth>;
@@ -57,4 +60,17 @@ export interface Connector {
    * only after a route said definitively that it did not execute.
    */
   routes?(action: Action, ctx: ConnectorContext): Promise<string[]>;
+  close?(): Promise<void>;
+}
+
+/** An operator's owner-only installation is unavailable to public compartments. */
+export function connectorAllowsAudience(
+  connector: Connector,
+  constraints: JobConstraints,
+  audience: string,
+): boolean {
+  return (
+    !connector.catalog?.audience ||
+    (connector.catalog.audience === audience && !constraints.public_compartment)
+  );
 }

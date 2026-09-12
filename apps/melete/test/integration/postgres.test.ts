@@ -2,6 +2,8 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { PgBoss } from 'pg-boss';
 import { type AttemptWake, QUEUES } from '../../src/jobs/queue.ts';
 import { createPostgresFixture } from '../helpers/postgres.ts';
@@ -132,4 +134,17 @@ describe('isolated Postgres and durable queue', () => {
       await boss.stop({ graceful: true, timeout: 5_000 });
     }
   });
+});
+
+databaseTest('fixture applies every journal migration in journal order', async () => {
+  if (!fixture) throw new Error('Postgres fixture unavailable');
+  const expected = readMigrationFiles({
+    migrationsFolder: fileURLToPath(new URL('../../drizzle', import.meta.url)),
+  });
+  const applied =
+    await fixture.sql`select hash from drizzle.__drizzle_migrations order by created_at`;
+  expect(applied.map((row) => row.hash)).toEqual(expected.map((migration) => migration.hash));
+  expect((await fixture.sql`select to_regclass('attempt_tool_context') as name`)[0]?.name).toBe(
+    'attempt_tool_context',
+  );
 });

@@ -27,9 +27,8 @@ tools:
   tool_search:
     # Plugin tools are "deferrable" and are collapsed behind a
     # tool_search/tool_describe/tool_call bridge by default
-    # (hermes_cli/config_defaults.py:1792). Melete's catalog is already filtered
-    # by the job's scopes and capped at fifteen tools, so the bridge buys
-    # nothing and costs a round trip before the model can call anything.
+    # (hermes_cli/config_defaults.py:1792). Discovery is supplied by Melete's
+    # own scoped search_tools/load_tool pair, under the same broker authority.
     enabled: "off"
 
 memory:
@@ -37,6 +36,10 @@ memory:
   # a retracted record has to disappear from retrieval at once, which an
   # engine-side store would quietly undo. The `memory` toolset is absent from
   # platform_toolsets above, which is the other half of this.
+  enabled: false
+
+skills:
+  # Operator-installed skills are discovered through the broker catalog.
   enabled: false
 
 approvals:

@@ -1,6 +1,16 @@
 import { REACT_TOOL_NAME, reactToolSchema, type ToolSpec } from '@melete/contracts';
 import type { Connector } from './types.ts';
 
+/** The broker-owned reaction tool: no connection, no scope, always in the catalog. */
+export const REACT_TOOL: ToolSpec = {
+  name: REACT_TOOL_NAME,
+  description:
+    'React to a message with one emoji instead of replying, when the message needs only acknowledgement.',
+  input_schema: reactToolSchema as unknown as ToolSpec['input_schema'],
+  effect_class: 'read',
+  connection_id: null,
+};
+
 export type ConnectionGrant = { id: string; provider: string; scopes: readonly string[] };
 export type ConnectorLookup = { get(id: string): Connector | undefined };
 
@@ -10,16 +20,7 @@ export function grantedToolCatalog(
   registry: ConnectorLookup,
   scopes?: readonly string[],
 ): ToolSpec[] {
-  const tools: ToolSpec[] = [
-    {
-      name: REACT_TOOL_NAME,
-      description:
-        'React to a message with one emoji instead of replying, when the message needs only acknowledgement.',
-      input_schema: reactToolSchema as unknown as ToolSpec['input_schema'],
-      effect_class: 'read',
-      connection_id: null,
-    },
-  ];
+  const tools: ToolSpec[] = [structuredClone(REACT_TOOL)];
   for (const connection of connections) {
     const connector = registry.get(connection.id);
     if (

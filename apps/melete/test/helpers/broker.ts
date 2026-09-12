@@ -28,9 +28,10 @@ export async function seedJob(
     budget?: Partial<JobBudget>;
     constraints?: Partial<JobConstraints>;
     provider?: string;
+    spaceId?: string;
   } = {},
 ): Promise<{ claims: CapabilityClaims; connectionId: string }> {
-  const spaceId = recordId('sp');
+  const spaceId = options.spaceId ?? recordId('sp');
   const jobId = recordId('job');
   const attemptId = recordId('att');
   const connectionId = recordId('conn');

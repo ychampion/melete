@@ -70,7 +70,11 @@ IN_CELL = "in_cell"
 IN_CELL_LANGUAGES = {"exec.run": "shell", "exec.python": "python"}
 
 
-def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., Dict[str, Any]]:
+def build_handler(
+    client: BrokerClient,
+    tool: Dict[str, Any],
+    register_loaded: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Callable[..., Dict[str, Any]]:
     """Build the forwarder for one catalog entry.
 
     The arguments the model produced are the proposed payload, unexamined. The
@@ -85,8 +89,19 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
     language = IN_CELL_LANGUAGES.get(name) if tool.get("execution") == IN_CELL else None
+    terminal_error: Optional[Dict[str, Any]] = None
+
+    def refuse(error: BrokerError) -> Dict[str, Any]:
+        nonlocal terminal_error
+        result = from_error(error.code, error.message)
+        if error.code == "schema_invalid":
+            # Arguments cannot fix the operator's schema; prevent another request.
+            terminal_error = result
+        return result
 
     def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
+        if terminal_error is not None:
+            return terminal_error
         # Hermes dispatches as `handler(args, **kwargs)` with the model's
         # arguments in one positional dict (`tools/registry.py:822`), not as
         # keyword arguments. A `**kwargs`-only signature raises TypeError before
@@ -99,7 +114,31 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
             try:
                 return {"status": SUCCEEDED, "reaction": client.react(arguments)}
             except BrokerError as error:
-                return from_error(error.code, error.message)
+                return refuse(error)
+        try:
+            if name == "search_tools":
+                return client.search_tools(arguments)
+            if name == "load_tool":
+                loaded = client.load_tool(arguments)
+                schema = loaded.get("tool")
+                if not isinstance(schema, dict) or not isinstance(schema.get("name"), str):
+                    return from_error("invalid_catalog", "The broker returned no tool schema.")
+                if register_loaded is None:
+                    return from_error("registration_unavailable", "The runtime cannot register tools.")
+                register_loaded(schema)
+                # AIAgent snapshots its tools at creation. The adapter observes
+                # the broker's new catalog, stops this run, and starts a fresh
+                # run in the same attempt. Model text never controls that gate.
+                return {
+                    "status": "tools_loaded",
+                    "name": schema["name"],
+                    "schema_fingerprint": loaded.get("schema_fingerprint"),
+                    "instruction": "The tool is loaded. This run will continue with its schema.",
+                }
+            if connection_id is None and (name.startswith("skills.") or name == "compose"):
+                return client.call_native(name, arguments)
+        except BrokerError as error:
+            return refuse(error)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
@@ -121,7 +160,7 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
                 client_ref=_client_ref(name, payload),
             )
         except BrokerError as error:
-            return from_error(error.code, error.message)
+            return refuse(error)
 
         if language is not None and response.get("status") == "admitted":
             action_id = str(response["action_id"])
@@ -213,18 +252,6 @@ def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
     return f"{scope}:{name}:{digest}"
 
 
-def _runtime_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., str]:
-    forward = build_handler(client, tool)
-
-    def handler(args: Optional[Dict[str, Any]] = None, **context: Any) -> str:
-        # Hermes supplies task/session metadata separately from model arguments.
-        # Only the latter belong in the admitted intent; its registry consumes
-        # JSON text so the broker result survives logging and persistence.
-        return json.dumps(forward(args), ensure_ascii=False)
-
-    return handler
-
-
 def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
     """Register the broker's tools. Called once by the plugin loader.
 
@@ -248,19 +275,31 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
         return []
 
     registered: List[str] = []
-    for tool in catalog:
+
+    def register_one(tool: Dict[str, Any]) -> None:
         name = tool.get("name")
-        if not isinstance(name, str) or not name:
-            continue
+        if not isinstance(name, str) or not name or name in registered:
+            return
+        forward = build_handler(client, tool, register_one)
+
+        def wire_handler(args: Optional[Dict[str, Any]] = None, **_metadata: Any) -> str:
+            # model_tools supplies task/session/user_task as keyword metadata;
+            # none belongs in the proposed payload. Registry results must be
+            # JSON strings (tools/registry.py:792), not ordinary Python dicts.
+            return json.dumps(forward(args), ensure_ascii=False)
+
         ctx.register_tool(
             name=name,
             toolset=TOOLSET,
             schema=tool_schema(tool),
-            handler=_runtime_handler(client, tool),
+            handler=wire_handler,
             description=str(tool.get("description", "")),
             emoji="",
         )
         registered.append(name)
+
+    for tool in catalog:
+        register_one(tool)
 
     if not registered:
         logger.warning("melete: the broker served no tools; this attempt has no way to act")

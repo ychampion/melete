@@ -24,6 +24,8 @@ export function createInternalServer(options: {
   resolveAuthority?: BrokerOptions['resolveAuthority'];
   resolveTrust?: BrokerOptions['resolveTrust'];
   approvalTtlMs?: number;
+  catalog?: BrokerOptions['catalog'];
+  composeExecutor?: BrokerOptions['composeExecutor'];
   gatewayFetch?: GatewayOptions['fetch'];
   /** A scripted stand-in for the model, for the local end-to-end runs. */
   fake?: GatewayOptions['fake'];
@@ -49,6 +51,8 @@ export function createInternalServer(options: {
         ? capability.unit_cost_usd
         : Number.NaN;
     },
+    catalog: options.catalog,
+    composeExecutor: options.composeExecutor,
   });
   const app = createBrokerApp({
     broker,

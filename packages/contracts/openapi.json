@@ -4485,7 +4485,8 @@
                       "test",
                       "exec",
                       "artifacts",
-                      "generation"
+                      "generation",
+                      "mcp"
                     ]
                   },
                   "label": {
@@ -8095,7 +8096,8 @@
               "waiting_for_event_or_time",
               "failed",
               "budget_exhausted",
-              "fenced"
+              "fenced",
+              "unknown_check"
             ]
           },
           {
@@ -8500,7 +8502,8 @@
           "test",
           "exec",
           "artifacts",
-          "generation"
+          "generation",
+          "mcp"
         ]
       },
       "__schema161": {

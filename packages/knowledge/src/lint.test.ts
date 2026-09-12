@@ -1,15 +1,15 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { KnowledgeFrontmatter } from '@melete/contracts';
 import { runLint } from './cli/lint.ts';
 import type { Check } from './findings.ts';
-import { aRecord, fixedClock, IDS } from './fixtures.ts';
+import { aRecord, fixedClock, IDS, seededSpace } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
 import type { SpacePaths } from './layout.ts';
 import { lintSpace } from './lint.ts';
-import { commitRecord, initSpace, refreshCatalog } from './space.ts';
+import { commitRecord, refreshCatalog } from './space.ts';
 
 let root: string;
 let paths: SpacePaths;
@@ -22,15 +22,21 @@ const put = (name: string, frontmatter: KnowledgeFrontmatter, body: string): voi
 const checksOf = (findings: readonly { check: Check }[]): Check[] =>
   [...new Set(findings.map((f) => f.check))].sort();
 
-beforeEach(async () => {
+let seed: Awaited<ReturnType<typeof seededSpace>>;
+beforeAll(async () => {
+  seed = await seededSpace(async (paths) => {
+    await commitRecord(
+      paths,
+      'knowledge/prefers-bun.md',
+      serializeRecord(aRecord({}), 'Zara uses bun for every package operation.'),
+      { proposedBy: 'user', now },
+    );
+  });
+}, 30_000);
+afterAll(() => seed?.close());
+beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'melete-lint-'));
-  paths = await initSpace(root, 'personal');
-  await commitRecord(
-    paths,
-    'knowledge/prefers-bun.md',
-    serializeRecord(aRecord({}), 'Zara uses bun for every package operation.'),
-    { proposedBy: 'user', now },
-  );
+  paths = seed.copy(root);
 });
 
 afterEach(() => {

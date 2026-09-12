@@ -165,6 +165,15 @@ withDb('attempt runner against Postgres and pg-boss', () => {
   const outcomes: Array<{ outcome: AttemptOutcome; state: string }> = [
     { outcome: completion(), state: 'completed' },
     {
+      outcome: {
+        kind: 'unknown_check',
+        check: 'parked_actions',
+        reason: 'timed_out',
+        message: 'The parked-action check timed out.',
+      },
+      state: 'waiting_for_input',
+    },
+    {
       outcome: { kind: 'waiting_for_input', question: 'Which date?', draft: 'Draft answer' },
       state: 'waiting_for_input',
     },
@@ -199,7 +208,13 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       expect(saved?.leaseStatus).toBe('ended');
       expect(saved?.endedAt).toBeInstanceOf(Date);
       expect(saved?.leaseExpiresAt).toBeNull();
-      if (outcome.kind === 'waiting_for_input') {
+      if (outcome.kind === 'unknown_check') {
+        expect(updated.wait).toEqual({ kind: 'user_input', question: outcome.message });
+        expect(updated.nextWakeAt).toBeNull();
+        const wakes =
+          await handle.sql`select id from pgboss.job where data->>'job_id' = ${row.id} and (data->>'expected_version')::int = 2`;
+        expect(wakes).toHaveLength(0);
+      } else if (outcome.kind === 'waiting_for_input') {
         expect(updated.wait).toEqual({ kind: 'user_input', question: outcome.question });
       } else if (outcome.kind === 'waiting_for_approval') {
         expect(updated.wait).toEqual({ kind: 'approval', action_ids: outcome.action_ids });

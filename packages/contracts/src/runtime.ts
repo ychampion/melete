@@ -274,6 +274,12 @@ export const attemptOutcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('waiting_for_event_or_time'), wait: waitSpec }),
   z.object({ kind: z.literal('failed'), reason: z.string(), retryable: z.boolean() }),
   z.object({ kind: z.literal('budget_exhausted'), summary: z.string() }),
+  z.object({
+    kind: z.literal('unknown_check'),
+    check: z.literal('parked_actions'),
+    reason: z.enum(['timed_out', 'unavailable']),
+    message: z.string(),
+  }),
 ]);
 export type AttemptOutcome = z.infer<typeof attemptOutcome>;
 

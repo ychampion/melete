@@ -68,6 +68,8 @@ export const CONNECTION_PROVIDERS = [
   'artifacts',
   /** Generative capabilities: they make a file rather than reaching one. */
   'generation',
+  /** Operator-installed MCP servers, exposed through the broker like any other connector. */
+  'mcp',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
@@ -184,6 +186,7 @@ export const ATTEMPT_OUTCOMES = [
   'failed',
   'budget_exhausted',
   'fenced',
+  'unknown_check',
 ] as const;
 export const attemptOutcomeKind = z.enum(ATTEMPT_OUTCOMES);
 export type AttemptOutcomeKind = z.infer<typeof attemptOutcomeKind>;

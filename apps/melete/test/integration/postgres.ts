@@ -1,53 +1,21 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { PgBoss } from 'pg-boss';
 import postgres from 'postgres';
 import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/db.ts';
+import { acquireTestServer } from '../helpers/database.ts';
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
 /** One disposable database per integration file; never migrate the caller's existing database. */
 export async function createTestDatabase(
   databaseUrl = process.env.DATABASE_URL,
-  options: { port?: number } = {},
+  _options: { port?: number } = {},
 ) {
-  const port = options.port ?? 3122;
-  let embedded: { stop(): Promise<void> } | undefined;
-  let directory: string | undefined;
-  let baseUrl = databaseUrl;
-  if (!baseUrl) {
-    try {
-      const { default: EmbeddedPostgres } = await import('embedded-postgres');
-      directory = await mkdtemp(join(tmpdir(), 'melete-w7-pg-'));
-      const instance = new EmbeddedPostgres({
-        databaseDir: join(directory, 'data'),
-        user: 'postgres',
-        password: 'test-local-only',
-        port,
-        persistent: true,
-        postgresFlags: ['-h', '127.0.0.1', '-c', 'max_connections=30'],
-        onLog: () => {},
-        onError: () => {},
-      });
-      embedded = instance;
-      await instance.initialise();
-      await instance.start();
-      baseUrl = `postgres://postgres:test-local-only@127.0.0.1:${port}/postgres`;
-    } catch (error) {
-      await embedded?.stop().catch(() => {});
-      if (
-        !(error instanceof Error) ||
-        !/module|binary|download|ENOENT|Cannot find/i.test(error.message)
-      )
-        throw error;
-      process.stdout.write(
-        'db tests skipped: set DATABASE_URL to run them against a real Postgres\n',
-      );
-      return null;
-    }
-  }
+  // The shared throwaway server allocates a loopback port, avoiding other lanes' fixtures.
+  const shared = databaseUrl ? null : await acquireTestServer();
+  const baseUrl = databaseUrl ?? shared?.url;
+  if (!baseUrl) return null;
   const admin = postgres(baseUrl, { max: 1, onnotice: () => {} });
   const name = `w7_${newId('test').toLowerCase()}`;
   // Windows initdb can inherit WIN1252. Exact source spans require a Unicode database.
@@ -71,21 +39,7 @@ export async function createTestDatabase(
       await sql.end({ timeout: 2 });
       await admin.unsafe(`drop database "${name}" with (force)`);
       await admin.end();
-      await embedded?.stop();
-      // The path is created above, outside user repositories. Preserve it if shutdown is incomplete.
-      if (
-        directory &&
-        resolve(directory).startsWith(
-          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-w7-pg-`,
-        )
-      ) {
-        await rm(directory, {
-          recursive: true,
-          force: true,
-          maxRetries: 10,
-          retryDelay: 100,
-        }).catch(() => {});
-      }
+      await shared?.release();
     },
   };
 }

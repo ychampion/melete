@@ -3,6 +3,7 @@ import {
   type Action,
   type ActionStatus,
   type ApprovalDecisionRequest,
+  BROKER_TIMEOUT_MS,
   type CapabilityClaims,
   type ConnectorFault,
   type ConnectorTool,
@@ -30,10 +31,11 @@ import {
   type VerifyResult,
   verifyResult,
 } from '@melete/contracts';
-import { Ajv } from 'ajv';
+import { Ajv, type ValidateFunction } from 'ajv';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
-import { type ConnectionGrant, grantedToolCatalog } from '../connectors/catalog.ts';
+import { REACT_TOOL } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
   type ConnectorDescription,
@@ -41,7 +43,11 @@ import {
   unclassifiedFault,
 } from '../connectors/faults.ts';
 import { checkConnectionGeneration } from '../connectors/generation.ts';
-import type { Connector, ConnectorContext } from '../connectors/types.ts';
+import {
+  type Connector,
+  type ConnectorContext,
+  connectorAllowsAudience,
+} from '../connectors/types.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import {
@@ -53,6 +59,8 @@ import {
   saveBinding,
 } from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
+import { type CatalogOptions, resolveToolAlias, ToolCatalog } from './catalog.ts';
+import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { BrokerFault } from './errors.ts';
 import type { BrokerOperations } from './http.ts';
 import {
@@ -118,6 +126,9 @@ export type BrokerOptions = {
     tx: Query,
     input: { job_id: string; attempt_id: string; wake_at: string; reason: string },
   ) => Promise<void>;
+  catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
+  /** W10a supplies the cell executor; omission keeps composition unavailable. */
+  composeExecutor?: ComposeExecutor;
 };
 
 export type StandingGrantInput = { job: LockedJob; action: Action; tool: ConnectorTool };
@@ -175,12 +186,32 @@ function dispositionMessage(action: Action, repeated: boolean): string {
 
 export class BrokerService implements BrokerOperations {
   readonly sql: Sql;
-  private readonly validator = new Ajv({ strict: false, allErrors: false });
+  readonly discovery: ToolCatalog;
+  readonly compose?: ComposeService;
+  private readonly validator = new Ajv({ strict: false, allErrors: false, addUsedSchema: false });
+  private readonly validator2020 = new Ajv2020({
+    strict: false,
+    allErrors: false,
+    addUsedSchema: false,
+  });
   private readonly dispatchTimeoutMs: number;
 
   constructor(private readonly options: BrokerOptions) {
     this.sql = options.sql;
-    this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
+    this.discovery = new ToolCatalog({
+      sql: options.sql,
+      connectors: options.connectors,
+      ...options.catalog,
+      nativeTools: [REACT_TOOL, ...(options.composeExecutor ? [COMPOSE_TOOL] : [])],
+    });
+    if (options.composeExecutor) {
+      this.compose = new ComposeService({
+        broker: this,
+        catalog: (claims) => this.discovery.available(claims),
+        executor: options.composeExecutor,
+      });
+    }
+    this.dispatchTimeoutMs = options.dispatchTimeoutMs ?? BROKER_TIMEOUT_MS;
     if (
       options.approvalTtlMs !== undefined &&
       (!Number.isSafeInteger(options.approvalTtlMs) || options.approvalTtlMs <= 0)
@@ -202,8 +233,10 @@ export class BrokerService implements BrokerOperations {
     connectionId: string,
     kind: string,
   ) {
-    const [connection] = await tx`select provider, scopes, status from connection
-      where id = ${connectionId} and space_id = ${job.space_id} for share`;
+    const [connection] =
+      await tx`select c.provider, c.scopes, c.status, s.audience from connection c
+      join space s on s.id = c.space_id
+      where c.id = ${connectionId} and c.space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
     const connector = this.options.connectors.get(connectionId);
     if (
@@ -212,7 +245,9 @@ export class BrokerService implements BrokerOperations {
       connector.capability?.available === false
     )
       throw new BrokerFault('connector_unavailable');
-    const tool = findTool(connector.manifest, kind);
+    if (!connectorAllowsAudience(connector, job.constraints, connection.audience))
+      throw new BrokerFault('scope_denied');
+    const tool = resolveToolAlias(connector, connectionId, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
     const required = new Set([...tool.required_scopes, tool.name]);
     if (
@@ -253,13 +288,7 @@ export class BrokerService implements BrokerOperations {
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
-    return this.sql.begin(async (tx) => {
-      const job = await lockJob(tx, claims.job_id);
-      await checkAttempt(tx, job, claims);
-      const connections = await tx<ConnectionGrant[]>`select id, provider, scopes from connection
-        where space_id = ${job.space_id} and status = 'active' order by id`;
-      return grantedToolCatalog(connections, this.options.connectors, claims.scopes);
-    });
+    return this.discovery.catalog(claims);
   }
 
   async get(claims: CapabilityClaims, id: string): Promise<Action> {
@@ -284,13 +313,37 @@ export class BrokerService implements BrokerOperations {
       throw new BrokerFault('payload_invalid', 'An in-cell tool must declare a record schema');
     const intent = tool.execution === 'in_cell' ? executionIntent.safeParse(payload) : null;
     if (intent?.success) {
-      if (!this.validator.validate(tool.input_schema, intent.data.intent))
-        throw new BrokerFault('payload_invalid');
+      this.compiled(tool.input_schema)(intent.data.intent);
       return;
     }
     const schema = tool.execution === 'in_cell' ? tool.record_schema : tool.input_schema;
-    if (!schema || !this.validator.validate(schema, payload))
-      throw new BrokerFault('payload_invalid');
+    if (!schema) throw new BrokerFault('payload_invalid');
+    this.compiled(schema)(payload);
+  }
+
+  /**
+   * A tool schema the broker cannot compile is an operator fault, not a model
+   * one: changing the arguments cannot repair it, so it is refused as such.
+   */
+  private compiled(schema: ConnectorTool['input_schema']) {
+    let validate: ValidateFunction;
+    try {
+      const validator =
+        schema.$schema === 'https://json-schema.org/draft/2020-12/schema'
+          ? this.validator2020
+          : this.validator;
+      validate = validator.compile(schema);
+    } catch {
+      throw new BrokerFault(
+        'schema_invalid',
+        'Tool schema cannot compile; operator repair is required',
+      );
+    }
+    if ('$async' in validate && validate.$async)
+      throw new BrokerFault('schema_invalid', 'Asynchronous tool schemas are unsupported');
+    return (payload: unknown) => {
+      if (validate(payload) !== true) throw new BrokerFault('payload_invalid');
+    };
   }
 
   private async proposalView(
@@ -438,6 +491,7 @@ export class BrokerService implements BrokerOperations {
   async propose(
     claims: CapabilityClaims,
     request: ProposeActionRequest,
+    readOnly = false,
   ): Promise<EffectProposalResponse> {
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
@@ -449,6 +503,14 @@ export class BrokerService implements BrokerOperations {
         request.connection_id,
         request.kind,
       );
+      if (readOnly && (tool.effect_class !== 'read' || tool.requires_approval))
+        throw new BrokerFault(
+          'scope_denied',
+          'Composition may invoke only auto-admitted read tools',
+        );
+      // A presentation alias binds one granted account; the durable intent and
+      // connector dispatch keep the original verb, including after a restart.
+      request = { ...request, kind: tool.name };
       let canonical = canonicalizePayload(request.payload);
       this.validatePayload(tool, canonical.canonical);
       if (connector.prepare) {
@@ -547,6 +609,10 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  proposeRead(claims: CapabilityClaims, request: ProposeActionRequest) {
+    return this.propose(claims, request, true);
   }
 
   async decide(id: string, request: ApprovalDecisionRequest) {
@@ -735,8 +801,10 @@ export class BrokerService implements BrokerOperations {
    * backoff is exactly the case a retry must not out-run.
    */
   private async checkAuthority(tx: Query, job: LockedJob, action: Action): Promise<string | null> {
-    const [connection] = await tx`select status, provider, scopes from connection
-      where id = ${action.connection_id} and space_id = ${job.space_id} for share`;
+    const [connection] =
+      await tx`select c.status, c.provider, c.scopes, s.audience from connection c
+      join space s on s.id = c.space_id
+      where c.id = ${action.connection_id} and c.space_id = ${job.space_id} for share`;
     const stored = await loadBinding(tx, action);
     const authority = await resolveEffectAuthority(
       tx,
@@ -754,7 +822,9 @@ export class BrokerService implements BrokerOperations {
     if (
       !connector ||
       connector.manifest.provider !== connection?.provider ||
+      !connectorAllowsAudience(connector, job.constraints, connection.audience) ||
       !tool ||
+      tool.effect_class !== action.effect_class ||
       ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))
     )
       throw new BrokerFault('scope_denied');
@@ -768,6 +838,8 @@ export class BrokerService implements BrokerOperations {
     // Admission authorized these origins. If the world has since learned that
     // one of them came from somewhere else, nothing leaves.
     const classified = await this.classify(tx, job, action, tool);
+    if (classified.requires_approval && !action.authorization_ref)
+      throw new BrokerFault('approval_required', 'Tool now requires approval');
     const [authorizing] = action.authorization_ref
       ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
       : [];

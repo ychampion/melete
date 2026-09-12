@@ -27,6 +27,24 @@ export async function sharedTestServerUrl(): Promise<string | null | undefined> 
   return (await server)?.url ?? null;
 }
 
+/** Reuse the server, never a fixture's database, across the broker and memory suites. */
+export async function acquireTestServer() {
+  server ??= startTestServer();
+  const shared = await server;
+  if (!shared) return null;
+  fixtures++;
+  let released = false;
+  return {
+    url: shared.url,
+    async release() {
+      if (released) return;
+      released = true;
+      fixtures--;
+      if (!globalCleanup && fixtures === 0) await stopTestServer();
+    },
+  };
+}
+
 async function stopTestServer() {
   const active = await server;
   server = undefined;
@@ -69,7 +87,7 @@ async function prepareTemplate(url: string) {
   }
 }
 
-async function unusedPort(): Promise<number> {
+export async function unusedTestPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -94,7 +112,7 @@ async function startTestServer(): Promise<TestServer | null> {
     return null;
   }
   const databaseDir = await mkdtemp(join(tmpdir(), 'melete-w1-pg-'));
-  const port = await unusedPort();
+  const port = await unusedTestPort();
   const password = randomBytes(24).toString('hex');
   const embedded = new EmbeddedPostgres({
     databaseDir,
@@ -128,10 +146,8 @@ async function startTestServer(): Promise<TestServer | null> {
 
 /** Each fixture owns a disposable database; an operator's existing tables are never reused. */
 export async function testDatabase(): Promise<TestDatabase | null> {
-  server ??= startTestServer();
-  const shared = await server;
+  const shared = await acquireTestServer();
   if (!shared) return null;
-  fixtures++;
   const { url } = shared;
   template ??= prepareTemplate(url);
   const templateName = await template;
@@ -148,8 +164,7 @@ export async function testDatabase(): Promise<TestDatabase | null> {
     await handle.close();
     await admin.sql`drop database ${admin.sql(name)} with (force)`;
     await admin.close();
-    fixtures--;
-    if (!globalCleanup && fixtures === 0) await stopTestServer();
+    await shared.release();
   };
   try {
     await migrateDatabase(handle);
