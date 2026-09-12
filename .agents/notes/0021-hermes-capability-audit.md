@@ -297,6 +297,22 @@ including setup/login preservation, legacy capability fences, the three new
 columns, and an idempotent second startup. The upgrade evidence row is restored
 only with this production-path proof.
 
+The second review reproduction pauses an actual HTTP MCP initialization and
+revokes through `POST /connections/:id/lifecycle`. Both cases fail before the
+route fix: successful initialization revives the row at generation 1, while
+failed initialization overwrites its revoked status with error (`2` failures,
+`12` assertions, `12.16s`). Completion now compares the original generation and
+disabled/connecting state atomically in both update paths. A stale opened worker
+is removed and closed; a changed generation returns a conflict without changing
+the connection response contract.
+
+`runtime-mcp-revocation.test.ts` preserves every revoked state field across both
+handshake outcomes, verifies session disposal and registry removal, and refuses
+discovery, loading and dispatch from a fresh attempt. It and `runtime-mcp.test.ts`
+pass together: 3 tests, 60 assertions, 29.99 seconds. No jobs or broker source was
+changed, and the 85-assertion real-engine proof file remains byte-for-byte
+unchanged at SHA-256 `50f3ae8adf5b7b5c26dea07dc335a09128853f5481af6f7026bf39eb96b7ba99`.
+
 ## Integrated release-gate proof - 2026-09-12
 
 The findings above describe the original audit and first delivery. Integration

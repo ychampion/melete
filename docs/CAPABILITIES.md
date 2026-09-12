@@ -15,7 +15,7 @@ connected to Melete's authority and tested.
 | Capability | Status | Test or reason |
 |---|---|---|
 | Dynamic tool discovery through `search_tools` / `load_tool` | implemented-and-tested | The real capability test's `dynamic discovery and broker receipt` stage passes search, load, continuation, one MCP call and a durable receipt. MCP HTTP exchanges use dedicated connections to avoid the pinned Windows Bun pool stalling a request while Hermes streams. |
-| MCP connect after session start | implemented-and-tested | The real proof starts without an MCP connection, installs one through authenticated `POST /connections` during the first provider request, then searches, loads and calls it in the same attempt. `runtime-mcp.test.ts` covers setup states, persisted restart configuration and authority boundaries. Service-side stdio launch remains disabled. |
+| MCP connect after session start | implemented-and-tested | The real proof installs through authenticated `POST /connections` during a running attempt, then searches, loads and calls in that attempt. `runtime-mcp.test.ts` covers setup and restart; `runtime-mcp-revocation.test.ts` pauses initialization, revokes through the lifecycle route, and proves both successful and failed handshakes preserve revocation, dispose any opened worker and deny fresh-attempt calls. Service-side stdio launch remains disabled. |
 | MCP disconnect recovery | implemented-and-tested | The real Hermes proof terminates an HTTP session, then observes W12 reconnect, a fresh initialization, one call and a durable receipt. HTTP and stdio integration fixtures exercise the callback; repeated termination stops after three attempts. A lost acknowledgement stays unknown without replay. |
 | Connection auth refresh and reconnect | implemented-and-tested | The real Hermes proof refreshes an expired credential once through the sealed store and receives one action receipt. Revocation makes no call, leaves an open question and commits waiting for input. HTTP and stdio fixtures also cover revocation during refresh, token rotation and bounded repeated expiry. |
 | Lifecycle hooks persisted with dedup and replay | implemented-but-unverified | `adapter capture persists in order, deduplicates delivery and replays from the stored cursor` passes in `hooks.test.ts`; Python tests prove observer failure isolation and continuation identity. The real proof records session start/end and pre/post tool events, including distinct continuation capture IDs. Real compaction remains unverified. |
@@ -45,7 +45,10 @@ An owner can install an HTTP MCP server through `POST /connections` with
 names its raw server name, alias, required scopes and effect class. Installation
 persists its configuration and exposes `connecting`, `connected`, or `error`;
 the live registry publishes tools only after the connection becomes active.
-The existing owner audience boundary still applies.
+Publication and failure updates require the original generation and the original
+disabled/connecting state. A lifecycle change during initialization wins;
+the opened worker is removed and closed, and a changed generation returns a
+conflict. The existing owner audience boundary still applies.
 
 An MCP installation may supply `credentials` with `access_token`, optional
 `expires_at`, and a paired `refresh_token` / `token_url`; optional client

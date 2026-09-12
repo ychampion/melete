@@ -98,7 +98,7 @@ export function mountConnections(
       );
     const actor = c.get('owner').id;
     const id = newId('conn');
-    await serviceTransaction(deps.db, async (tx) => {
+    const generation = await serviceTransaction(deps.db, async (tx) => {
       const access = await spaceAuthority(tx, request.space_id, actor, true);
       if (access.role !== 'owner' || access.space.audience !== config.audience)
         throw new ServiceError(
@@ -118,20 +118,32 @@ export function mountConnections(
           'An MCP installation with this name already exists.',
           409,
         );
-      await tx.insert(connection).values({
-        id,
-        spaceId: request.space_id,
-        provider: 'mcp',
-        label: request.label,
-        scopes: config.allowed_scopes,
-        secretRef: credential
-          ? await secrets.put(request.space_id, JSON.stringify(credential))
-          : null,
-        configuration: { server: config },
-        status: 'disabled',
-        setupState: 'connecting',
-      });
+      const [created] = await tx
+        .insert(connection)
+        .values({
+          id,
+          spaceId: request.space_id,
+          provider: 'mcp',
+          label: request.label,
+          scopes: config.allowed_scopes,
+          secretRef: credential
+            ? await secrets.put(request.space_id, JSON.stringify(credential))
+            : null,
+          configuration: { server: config },
+          status: 'disabled',
+          setupState: 'connecting',
+        })
+        .returning({ generation: connection.generation });
+      if (!created) throw new Error('Connection installation was not created');
+      return created.generation;
     });
+    // A lifecycle change during the handshake owns the newer state, on both success and failure.
+    const stillInstalling = and(
+      eq(connection.id, id),
+      eq(connection.generation, generation),
+      eq(connection.status, 'disabled'),
+      eq(connection.setupState, 'connecting'),
+    );
     let worker: Connector | undefined;
     try {
       worker = await openConfiguredMcpConnector(
@@ -146,7 +158,7 @@ export function mountConnections(
         if (access.role !== 'owner' || access.space.audience !== config.audience)
           throw new ServiceError('scope_denied', 'Installation authority changed.', 403);
         // Registry publication precedes activation so discovery cannot observe an active row without a worker.
-        await tx
+        const [published] = await tx
           .update(connection)
           .set({
             status: 'active',
@@ -154,7 +166,10 @@ export function mountConnections(
             health: 'ok',
             lastCheckedAt: new Date(),
           })
-          .where(eq(connection.id, id));
+          .where(stillInstalling)
+          .returning({ id: connection.id });
+        if (!published)
+          throw new ServiceError('generation_conflict', 'Installation authority changed.');
       });
     } catch {
       if (worker) {
@@ -165,11 +180,13 @@ export function mountConnections(
       await deps.db
         .update(connection)
         .set({ status: 'error', setupState: 'error', health: 'failing', lastCheckedAt: new Date() })
-        .where(eq(connection.id, id));
+        .where(stillInstalling);
     }
     const [row] = await deps.db.select().from(connection).where(eq(connection.id, id));
     if (!row)
       throw new ServiceError('not_found', 'Connection was removed during installation.', 404);
+    if (row.generation !== generation)
+      throw new ServiceError('generation_conflict', 'Connection changed during installation.');
     return c.json(connectionResponse.parse({ connection: view(row) }), 201);
   });
 }
