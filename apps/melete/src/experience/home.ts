@@ -8,6 +8,7 @@ import {
   unavailable,
 } from '@melete/contracts';
 import { and, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
+import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
 import { action, connection, experienceProfile, job, task } from '../db/schema.ts';
 import { newId } from '../ids.ts';
@@ -44,12 +45,7 @@ export function dayGreeting(profile: ReturnType<typeof profileInput.parse>, now 
   return {
     greeting:
       profile.name === 'there' ? salutation : `${salutation}, ${plainText(profile.name, 'there')}`,
-    date: new Intl.DateTimeFormat('en-GB', {
-      timeZone: profile.time_zone,
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-    }).format(now),
+    date: describeDate(now, profile.time_zone),
     time_zone: profile.time_zone,
     within_day_hours:
       start === end ||

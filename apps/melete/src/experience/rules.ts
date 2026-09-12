@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { type Action, type StandingRule, standingRule } from '@melete/contracts';
 import type { StandingGrantResolver } from '../broker/service.ts';
 import { collectOriginFields } from '../broker/trust.ts';
+import { numericDate } from '../dates.ts';
 import { plainText } from './projectors.ts';
 
 export const ruleKinds: Record<string, StandingRule['kind']> = {
@@ -37,7 +38,7 @@ export function ruleView(row: Record<string, unknown>): StandingRule {
     kind,
     connection_id: row.connection_id,
     recipient_class: recipient,
-    text: `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${new Date(String(row.expires_at)).toLocaleDateString('en-GB', { timeZone: 'UTC' })}. Ask again after ${row.reconsent_after_days} days.`,
+    text: `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`,
     bounds: {
       count_cap: row.count_cap,
       expires_at: new Date(String(row.expires_at)).toISOString(),
