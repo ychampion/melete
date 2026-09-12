@@ -40,3 +40,11 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
 - Command `bun run compose:check`: `compose:check passed (19 checks)`.
 - Command `git grep -i -E "managed hosting|enterprise|compan(y|ies)|business plan" -- . ':!node_modules' ':!bun.lock'`: no output at the landed head.
 - Command `git grep -n -E "C:/Users|/root/|melete-oss-|fix cycle|shared lock|codex|astra|opus|fable|claude" -- . ':!node_modules' ':!bun.lock' | grep -v gpt-6-astra`: 44 lines across 13 files at the landed head; docs and notes hits are handled in the scrub slice, code hits are listed under Assumptions.
+
+## Scrub and README (commits below)
+
+- Command `git grep -n -E "C:/Users|/root/|melete-oss-|fix cycle|shared lock|codex|astra|opus|fable|claude" -- . ':!node_modules' ':!bun.lock' | grep -v gpt-6-astra` after the rewrite: 11 lines, all code (`experience/projectors.ts:33` redaction pattern, `gateway/index.test.ts:420,424` fake model id, `runtime/supervisor.test.ts:69,74` and `runtime/supervisor.ts:86` for the `gpt-6-astra` provider's `codex_responses` API mode, `packages/runtime-hermes/Dockerfile:38,53` pinned `astral-sh/uv` image and its `/root/.cache`). No documentation or note line remains.
+- Command `bun run lint`: `Checked 531 files`, one pre-existing Biome warning, then `scrub:check passed (794 tracked files)`, exit 0.
+- Command `bun run typecheck`: exit 0.
+- Commit `Scrub local paths and working-session phrases from the record and check for them in lint`: `.agents/notes/{0018,0021}`, four lane reports, `LANDING-REPORT.md`, `docs/CAPABILITIES.md`, `scripts/scrub-check.ts`, `package.json` (`lint` now runs `scrub:check`).
+- Commit `Rewrite the README around the promise, the six gates and the install path`: `README.md`, `REPORT.md`.
