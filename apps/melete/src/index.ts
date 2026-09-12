@@ -56,6 +56,15 @@ import { TriggerService } from './jobs/triggers.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
+import { EpisodeService } from './learning/episodes.ts';
+import { ProcedureEvaluator } from './learning/evaluator.ts';
+import { mountProcedures } from './learning/procedure-routes.ts';
+import { ProcedureService } from './learning/procedures.ts';
+import { mountProposals } from './learning/proposal-routes.ts';
+import type { ProcedureProposer } from './learning/proposer.ts';
+import { expireEpisodes } from './learning/retention.ts';
+import { mountLearning } from './learning/routes.ts';
+import { startLearning } from './learning/start.ts';
 import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
@@ -89,6 +98,9 @@ export type AppDeps = {
    * trusted session resolver says; request headers never supply this authority.
    */
   resolveSpace?: SpaceResolver;
+  episodes?: EpisodeService;
+  proposer?: ProcedureProposer;
+  evaluator?: ProcedureEvaluator;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the authenticated owner's database catalog resolves volume spaces. */
   knowledge?: KnowledgeDeps;
@@ -133,6 +145,9 @@ export function createApp(deps: AppDeps) {
     deps.replies ??
     (deps.jobs && submissions ? new ReplyService(deps.jobs, submissions) : undefined);
   if (deps.jobs) mountJobs(app, deps.jobs, submissions);
+  if (deps.jobs) mountLearning(app, deps.episodes ?? new EpisodeService(deps.jobs));
+  if (deps.proposer) mountProposals(app, deps.proposer);
+  if (deps.jobs) mountProcedures(app, new ProcedureService(deps.jobs), deps.evaluator);
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
@@ -209,13 +224,24 @@ export async function bootstrap(
   let effectBoundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
   let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
   let connections: ConfiguredConnection[] = [];
+  let episodeRetention: ReturnType<typeof setInterval> | undefined;
+  let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
+  let evaluator: ProcedureEvaluator | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
+    clearInterval(episodeRetention);
     let failure: unknown;
     for (const stop of [
-      () => Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]),
+      () =>
+        Promise.all([
+          learning?.close(),
+          events?.close(),
+          triggers?.stop(),
+          runner?.stop(),
+          operations?.stop(),
+        ]),
       () => supervisedRuntime?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
@@ -232,7 +258,16 @@ export async function bootstrap(
     if (failure) throw failure;
   };
   try {
-    if (handle) await migrateDatabase(handle);
+    if (handle) {
+      await migrateDatabase(handle);
+      await expireEpisodes(handle.sql);
+      episodeRetention = setInterval(() => {
+        void expireEpisodes(handle.sql).catch(() =>
+          process.stderr.write('episode retention failed\n'),
+        );
+      }, 60_000);
+      episodeRetention.unref();
+    }
     if (handle)
       catalog = new RuntimeCatalog(
         handle.db,
@@ -309,6 +344,8 @@ export async function bootstrap(
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
+      learning = await startLearning(jobs, env, options.workers !== false);
+      evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -370,6 +407,9 @@ export async function bootstrap(
         : undefined,
     memory: deploymentMemory?.routes,
     browserSessions: browser?.sessions,
+    episodes: jobs ? new EpisodeService(jobs, (id) => runner?.interrupt(id)) : undefined,
+    proposer: learning?.proposer,
+    evaluator,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -395,6 +435,7 @@ export async function bootstrap(
     effectBoundary,
     browserSessions: browser?.sessions,
     connections,
+    learning,
     close,
   };
 }

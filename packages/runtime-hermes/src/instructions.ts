@@ -65,6 +65,8 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle): string =>
     'Every tool call is proposed to the broker, which records it and may need the',
     "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",
     'say what you are waiting on, and end your turn.',
+    'Reusable owner corrections go through learning.propose when it is in the catalog.',
+    'It refers the recorded intervention for evaluation; it never installs a live skill.',
   ].join('\n');
 
 /** The volatile half: the job, and what changed since the last attempt. */

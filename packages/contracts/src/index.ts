@@ -19,6 +19,7 @@ export * from './execution.ts';
 export * from './execution-admission.ts';
 export * from './job-state.ts';
 export * from './knowledge.ts';
+export * from './learning.ts';
 export * from './memory.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
 export * from './provenance.ts';

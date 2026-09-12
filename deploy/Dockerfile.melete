@@ -4,7 +4,11 @@
 # on `edge` for the API, `database` for Postgres, and isolated runtime networks
 # as the cells' only broker/gateway peer.
 
+FROM node:24.14.0-bookworm-slim AS promoter-node
 FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16462e5b57ed3fff0f1
+
+# The trusted promoter uses Node's process permission boundary without file write grants.
+COPY --from=promoter-node /usr/local/bin/node /usr/local/bin/node
 
 ENV NODE_ENV=production
 
@@ -32,6 +36,7 @@ COPY tsconfig.base.json tsconfig.json ./
 COPY packages/ packages/
 COPY apps/ apps/
 COPY deploy/scripts/memory-restore-proof.ts deploy/scripts/memory-restore-proof.ts
+COPY conformance/ conformance/
 
 # Non-root. The service writes only to the mounted volumes.
 RUN groupadd --gid 10001 runtime-work \

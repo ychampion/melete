@@ -34,6 +34,7 @@ import {
   question,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { selectProcedureSkills } from '../learning/selection.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -303,6 +304,7 @@ export async function buildBundle(
   model: AttemptBundle['model'],
   afterSeq: number,
   expected?: ContextGenerations,
+  runtimeVersion?: string,
 ): Promise<ResponsibilityAttemptBundle> {
   const generations = expected
     ? await requireGenerations(tx, row.spaceId, expected)
@@ -410,7 +412,7 @@ export async function buildBundle(
     since_last: delta,
     transcript: history.transcript,
     tools: [],
-    skills: [],
+    skills: await selectProcedureSkills(tx, row, model, runtimeVersion),
     knowledge: [],
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.

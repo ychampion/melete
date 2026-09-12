@@ -143,6 +143,13 @@ def build_handler(
                 return client.call_native(name, arguments)
         except BrokerError as error:
             return refuse(error)
+        if name == "learning.propose" and connection_id is None:
+            # This catalog entry refers recorded evidence. It cannot publish a
+            # skill or act on a connection; the service owns generation and evaluation.
+            try:
+                return client.propose_procedure(arguments)
+            except BrokerError as error:
+                return refuse(error)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.

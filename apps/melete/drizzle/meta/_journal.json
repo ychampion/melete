@@ -162,6 +162,34 @@
       "when": 1789232400002,
       "tag": "0022_browser_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789232400003,
+      "tag": "0023_simple_reavers",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789232400004,
+      "tag": "0024_outgoing_redwing",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789232400005,
+      "tag": "0025_free_puma",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789232400006,
+      "tag": "0026_calm_forgotten_one",
+      "breakpoints": true
     }
   ]
 }

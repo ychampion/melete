@@ -171,7 +171,7 @@ export async function startScriptedProvider(port = 3124) {
       });
     },
   });
-  const endpoint = `http://127.0.0.1:${port}/v1/chat/completions`;
+  const endpoint = `http://127.0.0.1:${server.port}/v1/chat/completions`;
   return {
     calls,
     /** Register what the extractor will propose for one source, before it runs. */

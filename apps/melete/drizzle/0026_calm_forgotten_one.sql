@@ -1,0 +1,2 @@
+ALTER TABLE "episode" ADD COLUMN "corrective_job_id" text;--> statement-breakpoint
+ALTER TABLE "episode" ADD CONSTRAINT "episode_corrective_job_id_job_id_fk" FOREIGN KEY ("corrective_job_id") REFERENCES "public"."job"("id") ON DELETE set null ON UPDATE no action;

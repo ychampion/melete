@@ -92,6 +92,8 @@ class FakeBroker:
             return 200, {"tool": CATALOG[1], "schema_fingerprint": HASH}
         if method == "POST" and path == "/tools/call":
             return 200, {"body": "Use the broker for every action."}
+        if method == "POST" and path == "/tools/learning/propose":
+            return 200, {"status": "candidate_pending", "episode_id": "ep_recorded"}
         if method == "GET" and path.startswith("/actions/"):
             return 200, {"action": self.action_record}
         return 404, {"error": {"code": "not_found", "message": "no such route"}}
@@ -254,6 +256,14 @@ def test_compose_is_forwarded_to_the_broker_native_gate(client, broker):
 
 
 # -- calling ------------------------------------------------------------------
+
+
+def test_learning_handler_forwards_to_the_proposal_endpoint_and_returns_its_reply(client, broker):
+    result = build_handler(client, {"name": "learning.propose", "connection_id": None})({})
+    assert result == {"status": "candidate_pending", "episode_id": "ep_recorded"}
+    assert broker.requests == [{
+        "method": "POST", "path": "/tools/learning/propose", "body": {}, "auth": "Bearer cap-token"
+    }]
 
 
 def test_a_dispatched_call_returns_the_receipt(client, broker):

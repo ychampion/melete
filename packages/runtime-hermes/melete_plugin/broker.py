@@ -149,6 +149,10 @@ class BrokerClient:
         """Forward a reaction under the same attempt token as every other tool."""
         return self._call("POST", "/reactions", payload)
 
+    def propose_procedure(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Refer an existing owner intervention; the service owns generation and evaluation."""
+        return self._call("POST", "/tools/learning/propose", payload)
+
 
 def _error_from_body(error: "urllib.error.HTTPError") -> tuple:
     """Pull the broker's own error code out of a non-2xx body.
