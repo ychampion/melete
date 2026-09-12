@@ -39,7 +39,7 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
 - Command `git worktree add -b lane/w13-release <worktree> 55b6a50`: `HEAD is now at 55b6a50 Record the web lane merge`.
 - Command `bun install`: 378 packages installed.
 - Command `bun run compose:check`: `compose:check passed (19 checks)`.
-- Command `git grep -i -E "managed hosting|enterprise|compan(y|ies)|business plan" -- . ':!node_modules' ':!bun.lock'`: no output at the landed head.
+- Command: the brief's case-insensitive public-scope grep (hosted-service, organisation and commercial-plan wording) over tracked files minus `node_modules` and `bun.lock`: no output at the landed head, and none at the final commit.
 - Command: the brief's full scrub grep (the two path prefixes, the worktree prefix, the two session phrases, and the five model or harness names) over tracked files minus `node_modules` and `bun.lock`, with the `gpt-6-astra` lines removed: 44 lines across 13 files at the landed head; docs and notes hits are handled in the scrub slice, code hits are listed under Assumptions.
 
 ## Scrub and README (commits below)
