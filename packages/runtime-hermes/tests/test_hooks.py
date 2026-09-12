@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime_support"))
 
-from melete_runtime_hooks import HOOK_NAMES, bind_capture, observation, register_observers, reset_capture
+from melete_runtime_hooks import HOOK_NAMES, bind_capture, failure_frame, observation, register_observers, reset_capture
 
 
 class Context:
@@ -16,6 +16,23 @@ class Context:
 
     def register_hook(self, name, callback):
         self.hooks[name] = callback
+
+
+def test_discovery_continuations_keep_attempt_identity_and_unique_capture_ids():
+    ctx = Context()
+    register_observers(ctx)
+    records = []
+    for key in ("att_test", "att_test:tools:1", "att_test:tools:2"):
+        token = bind_capture(key, records.append)
+        try:
+            ctx.hooks["on_session_start"]()
+        finally:
+            reset_capture(token)
+    assert {record["attempt_id"] for record in records} == {"att_test"}
+    assert len({record["capture_id"] for record in records}) == 3
+    failed = failure_frame("att_test:tools:2")
+    assert failed["attempt_id"] == "att_test"
+    assert failed["capture_id"] == "att_test:hook:tools:2:runtime-error"
 
 
 def test_registered_hooks_preserve_order_and_erase_payloads():

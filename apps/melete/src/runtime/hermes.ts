@@ -6,11 +6,13 @@ import {
   type RuntimeAdapter,
 } from '@melete/contracts';
 import {
+  type CatalogState,
   HermesRuntimeAdapter,
   RUNTIME_VERSION,
   renderInput,
   renderInstructions,
 } from '@melete/runtime-hermes';
+import { pendingRuntimeWait } from '../broker/runtime-wait.ts';
 import type { MemorySql } from '../memory/db.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
@@ -22,6 +24,7 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
     readonly supervisor: RuntimeSupervisor,
     readonly sql: MemorySql,
     readonly onTiming: (timing: AttemptTiming) => void = () => {},
+    readonly catalogState?: CatalogState,
   ) {}
   async capabilities() {
     // No attempt identity exists at lease reservation time. Validate the live
@@ -50,6 +53,8 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
       const adapter = new HermesRuntimeAdapter({
         baseUrl: instance.baseUrl,
         token: instance.token,
+        pendingWait: (current) => pendingRuntimeWait(this.sql, current),
+        catalogState: this.catalogState,
         parkedActions: async (current) => {
           const rows = await this
             .sql`select a.id from action a join approval p on p.action_id = a.id

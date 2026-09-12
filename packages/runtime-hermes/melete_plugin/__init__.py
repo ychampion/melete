@@ -156,6 +156,11 @@ def build_handler(
                 return client.say(str(arguments.get("text", "")), _client_ref(name, arguments))
             except BrokerError as error:
                 return refuse(error)
+        if name == "job.wait" and connection_id is None:
+            try:
+                return client.wait(arguments)
+            except BrokerError as error:
+                return refuse(error)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
@@ -174,7 +179,7 @@ def build_handler(
                 kind=name,
                 connection_id=str(connection_id),
                 payload=payload,
-                client_ref=_client_ref(name, payload),
+                client_ref=_client_ref(name, payload, read=tool.get("effect_class") == "read"),
             )
         except BrokerError as error:
             return refuse(error)
@@ -244,7 +249,7 @@ def _execution_view(outcome: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
+def _client_ref(name: str, arguments: Dict[str, Any], *, read: bool = False) -> str:
     """A stable name for this proposal within this job.
 
     The broker keys a proposal on this and refuses a second one under the same
@@ -262,11 +267,19 @@ def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
     payload hash, so a second identical send is indistinguishable from a retry,
     and sending twice is the failure that cannot be taken back.
     """
-    scope = os.environ.get(JOB_ID_ENV) or os.environ.get(ATTEMPT_ID_ENV, "job")
+    scope = (os.environ.get(ATTEMPT_ID_ENV) if read else os.environ.get(JOB_ID_ENV)) or os.environ.get(ATTEMPT_ID_ENV, "job")
     digest = hashlib.sha256(
         json.dumps(arguments, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:32]
     return f"{scope}:{name}:{digest}"
+
+
+def engine_handler(handler: Callable[..., Dict[str, Any]]) -> Callable[..., str]:
+    """Serialize results; engine keyword metadata is not a connector payload."""
+    def forward(args: Optional[Dict[str, Any]] = None, **_runtime_context: Any) -> str:
+        return json.dumps(handler(dict(args or {})), ensure_ascii=False)
+
+    return forward
 
 
 def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:

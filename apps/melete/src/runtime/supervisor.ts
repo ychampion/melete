@@ -270,8 +270,12 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
         await readFile(join(this.options.runtimePackage, 'config', 'config.yaml'), 'utf8'),
       ) as Record<string, unknown>;
       const environment = attemptEnvironment(bundle, this.options.brokerUrl, token);
-      config.provider = 'melete-gateway';
-      config.model = bundle.model.model;
+      delete config.provider;
+      config.model = {
+        ...(typeof config.model === 'object' ? config.model : {}),
+        provider: 'melete-gateway',
+        default: bundle.model.model,
+      };
       config.providers = {
         'melete-gateway': {
           base_url: `${this.options.brokerUrl}/providers/${encodeURIComponent(bundle.model.provider)}/v1`,

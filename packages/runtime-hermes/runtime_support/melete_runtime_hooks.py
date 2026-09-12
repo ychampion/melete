@@ -32,12 +32,22 @@ _TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 
 class Capture:
     def __init__(self, attempt_id: str, sink: Callable[[dict], None]):
-        self.attempt_id = attempt_id
+        self.attempt_id, self.prefix = capture_identity(attempt_id)
         self.sink = sink
         self.seq = 0
         self.lock = threading.Lock()
         self.delivery_failed = False
         self.closed = False
+
+
+def capture_identity(run_key: str) -> tuple[str, str]:
+    # Tool discovery starts another run in the same attempt. Its idempotency
+    # suffix distinguishes captures without changing the service-owned attempt.
+    match = re.fullmatch(r"(att_[A-Za-z0-9]+):tools:([1-9][0-9]*)", run_key)
+    if match:
+        attempt, index = match.groups()
+        return attempt, f"{attempt}:hook:tools:{index}:"
+    return run_key, f"{run_key}:hook:"
 
 
 _current: contextvars.ContextVar[Capture | None] = contextvars.ContextVar("melete_hook_capture", default=None)
@@ -101,7 +111,7 @@ def observe(name: str, payload: dict | None = None, *, build: Callable = observa
     with capture.lock:
         if capture.closed:
             return
-        record.update(attempt_id=capture.attempt_id, capture_id=f"{capture.attempt_id}:hook:{capture.seq}")
+        record.update(attempt_id=capture.attempt_id, capture_id=f"{capture.prefix}{capture.seq}")
         capture.seq += 1
         if capture.delivery_failed:
             record.update(event="hook.error", outcome="failed", error_code="capture_gap")
@@ -125,9 +135,10 @@ def register_observers(ctx, *, build: Callable = observation) -> None:
 
 def failure_frame(attempt_id: str) -> dict:
     """The outer HTTP failure has no plugin payload and never copies its error text."""
+    attempt_id, prefix = capture_identity(attempt_id)
     return {
         **observation("runtime_error", {}),
         "event": "hook.event",
         "attempt_id": attempt_id,
-        "capture_id": f"{attempt_id}:hook:runtime-error",
+        "capture_id": f"{prefix}runtime-error",
     }

@@ -1,0 +1,29 @@
+{
+  "id": "memory-08-mail",
+  "suite": "memory",
+  "domain": "mail",
+  "title": "Recall after an explicit correction",
+  "objective": "Which email address is now recorded for Alex?",
+  "source": {},
+  "script": {
+    "tool": "memory",
+    "arguments": {
+      "query": "contact.alex.email"
+    }
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "words": ["new-alex@example.test"],
+    "forbidden_words": ["old-alex@example.test"],
+    "max_words": 100
+  },
+  "rubric": "Answer from the current recalled claim and cite its handle or provenance when useful. Do not reuse the superseded value, ask for an already-recorded answer, or claim the correction is uncertain.",
+  "memory": {
+    "key": "contact.alex.email",
+    "old": "old-alex@example.test",
+    "corrected": "new-alex@example.test",
+    "query": "Which email address is now recorded for Alex?"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "waits-03-files",
+  "suite": "waits",
+  "domain": "files",
+  "title": "Wait durably and wake on the matching event",
+  "objective": "Wait until file_changed, then tell me what happened.",
+  "source": {
+    "events": []
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "No matching event has arrived."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "outcome": "waiting_for_event_or_time"
+  },
+  "rubric": "An initial check is not completion. A durable wait must exist before the matching trigger arrives; unrelated or repeated events must not produce extra effects. After the trigger, report the new event only.",
+  "trigger": {
+    "name": "file_changed",
+    "payload": {
+      "answer": "file_changed happened; marker delta-3.",
+      "marker": "delta-3"
+    }
+  }
+}

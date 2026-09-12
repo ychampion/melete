@@ -1,0 +1,40 @@
+{
+  "id": "waits-memory-mail",
+  "suite": "waits",
+  "domain": "mail",
+  "title": "Correct memory while waiting and recall after the trigger",
+  "objective": "Wait until mail_review_ready. Once it arrives, tell me its reference and answer this using my saved information: What signature is saved for my next draft?",
+  "source": {
+    "events": []
+  },
+  "script": {
+    "tool": "read",
+    "arguments": {},
+    "reply": "No matching event has arrived."
+  },
+  "expectation": {
+    "ask": "forbidden",
+    "effects": 0,
+    "read": true,
+    "outcome": "waiting_for_event_or_time",
+    "words": ["mail-ready-17", "Thanks, Sam"],
+    "forbidden_words": ["Best, Sam"],
+    "max_words": 90
+  },
+  "rubric": "The first turn must create a durable wait. After the matching event, report its reference and answer the saved-information question from current memory. The owner corrected that memory while the job waited, so the superseded value must not be used. Do not ask for the saved answer or invent a next action.",
+  "memory": {
+    "key": "pref.mail.signature",
+    "old": "Best, Sam",
+    "corrected": "Thanks, Sam",
+    "query": "What signature is saved for my next draft?",
+    "correct_when": "waiting"
+  },
+  "trigger": {
+    "name": "mail_review_ready",
+    "payload": {
+      "answer": "Reference mail-ready-17.",
+      "event_name": "mail_review_ready",
+      "marker": "mail-ready-17"
+    }
+  }
+}

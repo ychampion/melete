@@ -19,7 +19,8 @@
     "apps/*/test/**/*.ts",
     "apps/*/*.ts",
     "deploy/scripts/**/*.ts",
-    "conformance/**/*.ts"
+    "conformance/**/*.ts",
+    "evals/**/*.ts"
   ],
   "exclude": ["node_modules", "**/node_modules", "**/dist", "apps/web"]
 }

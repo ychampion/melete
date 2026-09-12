@@ -34,8 +34,10 @@ name = os.environ.get("MELETE_MODEL_PROVIDER", "fireworks")
 model = os.environ.get("MELETE_MODEL_NAME", "deepseek-v4p1-flash")
 if not name or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in name):
     raise SystemExit("Invalid model provider name")
-config["provider"] = "melete-gateway"
-config["model"] = model
+# The pinned resolver reads model.provider, not a top-level provider field.
+config.pop("provider", None)
+model_config = config.get("model")
+config["model"] = {**(model_config if isinstance(model_config, dict) else {}), "provider": "melete-gateway", "default": model}
 provider["default_model"] = model
 provider["base_url"] = os.environ["MELETE_BROKER_URL"].rstrip("/") + "/providers/" + name + "/v1"
 api_mode = os.environ.get("MELETE_MODEL_API_MODE")
