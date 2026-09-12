@@ -123,3 +123,9 @@
 - Reproduction `bun test apps/melete/src/index.test.ts --test-name-pattern 'reports the supervisor' --max-concurrency=1`: exit 1, 0 pass, 1 fail, 8 filtered; supervisor information was absent.
 - `bun test apps/melete/src/index.test.ts --max-concurrency=1`: exit 0, 9 pass, 0 fail, 22 assertions (1.99s).
 - Health now reports `runtime_supervisor` beside the adapter. Bootstrap emits a warning that process attempts are not sandboxed and inherit the service user's OS access; Docker mode emits no such warning. The test checks both modes. The additive health field is included in regenerated OpenAPI and client types.
+
+### 5. Restore the rendered scaffolding tripwire
+
+- Reproduction `bun test packages/runtime-hermes/src/client.test.ts --test-name-pattern 'scaffolding tripwire' --max-concurrency=1`: exit 1, 0 pass, 1 fail, 24 filtered; the old helper counted 8,351 estimated tokens while the whole render contained 18,526.
+- `bun test packages/runtime-hermes/src/client.test.ts --max-concurrency=1`: exit 0, 25 pass, 0 fail, 49 assertions (0.683s).
+- The existing context assembly suite now measures instructions, input and tool definitions for a representative bundle with three skills, constraints, changes and a repair brief. It keeps headings and provenance charged, excludes only transcript content and knowledge excerpt bodies, asserts scaffolding below 4,000 estimated tokens, and proves oversized constraints cross the tripwire. This measures Melete's rendered contribution; Hermes's own preamble remains additional. The earlier repository contained a thin-engine measurement probe, not an automated 4,000-token scaffolding assertion.

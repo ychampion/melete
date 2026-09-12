@@ -5,7 +5,10 @@
  * system prompt rather than replacing it (`agent/system_prompt.py:638`), so
  * everything here is additive: the engine's preamble is underneath, and this is
  * the part Melete owns. The engine contributes its own preamble in addition to
- * the bounded skills and recalled knowledge supplied by the service.
+ * the bounded skills and recalled knowledge supplied by the service. The
+ * representative Melete scaffolding must remain below 4,000 estimated tokens;
+ * its tripwire includes both rendered halves and tool definitions, excluding
+ * only transcript content and knowledge excerpt bodies.
  *
  * Order matters for prompt caching. The identity never changes, the skills
  * change rarely, the knowledge changes per attempt, and the volatile inputs go
@@ -114,11 +117,26 @@ export function renderInput(bundle: AttemptBundle): string {
 }
 
 /**
- * What the instructions cost, so the service can see the number rather than
- * trust it. The engine's own preamble is not included and is not ours to trim.
+ * Measure the whole Melete render. This is a chars/4 size tripwire, not gateway
+ * admission accounting. Hermes contributes an additional engine-owned preamble.
  */
+export function measureRenderedInput(bundle: AttemptBundle) {
+  const rendered = [
+    renderInstructions(bundle),
+    renderInput(bundle),
+    JSON.stringify(bundle.tools),
+  ].join('\n\n');
+  const transcriptChars = bundle.transcript.length ? JSON.stringify(bundle.transcript).length : 0;
+  const knowledgeChars = bundle.knowledge.reduce((sum, entry) => sum + entry.excerpt.length, 0);
+  return {
+    total: estimateTokens(rendered),
+    // Keep headings, provenance, constraints, changes and repair briefs charged.
+    scaffolding: Math.ceil((rendered.length - transcriptChars - knowledgeChars) / 4),
+  };
+}
+
 export const instructionTokens = (bundle: AttemptBundle): number =>
-  estimateTokens(renderInstructions(bundle));
+  measureRenderedInput(bundle).total;
 
 /** The identity's share of that, checked against the contract on every build. */
 export const IDENTITY_TOKENS: number = estimateTokens(IDENTITY);
