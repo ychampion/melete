@@ -90,7 +90,9 @@ withDb('deployment memory startup', () => {
     const f = await fixture();
     try {
       expect(await readFile(f.journalPath, 'utf8')).toBe('melete-memory-restrictions-v1\n');
-      expect((await stat(f.journalPath)).mode & 0o777).toBe(0o600);
+      // Windows permissions are ACLs; stat's emulated POSIX bits report 0666.
+      if (process.platform !== 'win32')
+        expect((await stat(f.journalPath)).mode & 0o777).toBe(0o600);
       const owner = await f.setup();
       const [provisioned] = await f.sql`select owner_id, restore_ready from memory_spaces
         where space_id = ${owner.spaceId}`;

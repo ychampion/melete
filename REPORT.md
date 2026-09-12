@@ -352,3 +352,9 @@ configure a gateway or automatically requeue rejected evidence.
 `bun test apps/melete/src/memory/bootstrap.test.ts`: exit 0, 5 passed,
 36 assertions, 7.00 s. The new test is
 `unstructured extraction without a gateway stops at its durable attempt cap`.
+
+### LOW (b): Windows permission-bit assertion
+
+Only the POSIX mode-bit assertion is skipped on `win32`; the rest of the startup
+test still runs there, and Linux still requires mode 0600. This campaign runs
+on Linux and does not claim Windows execution. `git diff --check`: exit 0.
