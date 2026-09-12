@@ -29,6 +29,11 @@ None of them runs a real model.
 
 ## What the code does
 
+- Additional accounts, shared spaces and membership revocation exist as API
+  primitives (`/principals`, `/spaces/shared`, `/spaces/{id}/memberships`);
+  revocation invalidates delivered context and fences running work. There is no
+  invitation UI. The [capability matrix](docs/CAPABILITIES.md) lists their
+  tests and what remains unproven.
 - The broker records canonical effects and checks authority before dispatch.
   Unknown sends remain visible and are not blindly repeated (conformance 3,
   `the action is never dispatched a second time, including after broker restart`).

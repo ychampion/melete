@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import type { RuntimeAdapter } from '@melete/contracts';
-import { owner, space } from '../../src/db/schema.ts';
+import { owner, principal, space } from '../../src/db/schema.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
@@ -47,6 +47,8 @@ export async function learningFixture(runtime: RuntimeAdapter = new StubRuntimeA
   const episodes = new EpisodeService(jobs, (id) => runner.interrupt(id));
   const ownerId = newId('own');
   await handle.db.insert(owner).values({ id: ownerId, email: `${ownerId}@example.test` });
+  // Sessions and jobs now resolve identities through the principal table.
+  await handle.db.insert(principal).values({ id: ownerId, email: `${ownerId}@example.test` });
   async function createSpace() {
     const spaceId = newId('sp');
     await handle?.db

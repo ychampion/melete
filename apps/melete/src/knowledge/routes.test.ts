@@ -471,7 +471,7 @@ describe('the knowledge module inside the service', () => {
    * in first rather than assert the gate, which auth.test.ts already covers.
    */
   async function signIn(api: ReturnType<typeof createApp>): Promise<string> {
-    await database().sql`truncate "owner", "space" cascade`;
+    await database().sql`truncate "principal", "owner", "space" cascade`;
     const response = await api.request('/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -479,6 +479,8 @@ describe('the knowledge module inside the service', () => {
     });
     const value = response.headers.get('set-cookie')?.split(';')[0];
     if (!value) throw new Error(`setup issued no session cookie (${response.status})`);
+    await database()
+      .sql`insert into space (id, name, git_path, owner_principal_id) values (${spaceId}, 'personal', ${paths.root}, (select id from owner limit 1))`;
     return value;
   }
 

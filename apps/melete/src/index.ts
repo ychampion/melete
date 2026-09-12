@@ -69,6 +69,8 @@ import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
+import { requestPrincipal, spaceAuthority } from './principals/authority.ts';
+import { mountPrincipals } from './principals/routes.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter } from './runtime/docker.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
@@ -109,6 +111,7 @@ export type AppDeps = {
 };
 
 export function createApp(deps: AppDeps) {
+  const db = deps.db;
   const app = new Hono();
   app.onError((error, c) => {
     if (error instanceof ServiceError)
@@ -139,6 +142,7 @@ export function createApp(deps: AppDeps) {
       return row ? { spaceId: row.id } : null;
     });
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
+  mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -161,7 +165,26 @@ export function createApp(deps: AppDeps) {
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
-  if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
+  if (deps.memory)
+    app.route(
+      '/',
+      createMemoryRouter({
+        ...deps.memory,
+        resolveScope: async (request) => {
+          const scope = await deps.memory?.resolveScope?.(request);
+          const actor = requestPrincipal();
+          if (!scope || !actor || !deps.db) return null;
+          const access = await spaceAuthority(deps.db, scope.spaceId, actor);
+          return {
+            ...scope,
+            principalId: actor,
+            membershipGeneration: access.generation,
+            role: access.role === 'owner' ? 'owner' : 'reader',
+            audience: access.role === 'owner' ? scope.audience : 'space',
+          };
+        },
+      }),
+    );
   if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
 
   app.get('/health', async (c) => {
@@ -176,13 +199,20 @@ export function createApp(deps: AppDeps) {
 
   app.route(
     '/',
-    knowledgeRoutes(
-      deps.knowledge ?? {
+    knowledgeRoutes({
+      ...(deps.knowledge ?? {
         spaces: deps.db
           ? databaseSpaces(deps.db, deps.env.MELETE_SPACES_DIR)
           : filesystemSpaces(deps.env.MELETE_SPACES_DIR),
-      },
-    ),
+      }),
+      ...(db
+        ? {
+            authorizeSpace: async (id: string) => ({
+              owner: (await spaceAuthority(db, id, requestPrincipal())).role === 'owner',
+            }),
+          }
+        : {}),
+    }),
   );
 
   app.notFound((c) =>

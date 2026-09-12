@@ -5,8 +5,10 @@
  * depend on model judgment.
  */
 import { z } from 'zod';
+import { qualifiedAudience } from './principals.ts';
 
 export const skillFrontmatter = z.object({
+  audience: qualifiedAudience.optional(),
   name: z.string().regex(/^[a-z][a-z0-9-]*$/, 'lowercase kebab-case'),
   description: z.string().min(1).max(300),
   /** Phrases matched against the objective and the latest user message. */

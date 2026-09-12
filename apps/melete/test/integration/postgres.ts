@@ -51,6 +51,7 @@ export async function createScope(db: TestDatabase): Promise<MemoryScope> {
   await db.sql`insert into owner (id, email) values (${candidate}, ${`${candidate}@example.test`}) on conflict do nothing`;
   const [existing] = await db.sql`select id from owner limit 1`;
   const ownerId = (existing?.id ?? candidate) as string;
+  await db.sql`insert into principal (id, email) select id, email from owner where id = ${ownerId} on conflict do nothing`;
   await db.sql`insert into space (id, name, git_path) values (${spaceId}, 'Test space', ${`test/${spaceId}`})`;
   await provisionMemorySpace(db.sql, ownerId, spaceId);
   await db.sql`update memory_spaces set restore_ready = true where space_id = ${spaceId}`;

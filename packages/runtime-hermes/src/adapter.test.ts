@@ -129,6 +129,96 @@ describe('capabilities', () => {
   });
 });
 
+describe('lifecycle hook bridge', () => {
+  const hook = (name: string, capture = 0, event = 'hook.event') => ({
+    event,
+    attempt_id: ATTEMPT,
+    capture_id: `${ATTEMPT}:hook:${capture}`,
+    name,
+    tool_name: 'test.read',
+    timing: { captured_at: '2026-09-12T00:00:00.000Z', duration_ms: 12 },
+    outcome: event === 'hook.error' ? 'failed' : 'observed',
+    redacted_args_digest: 'a'.repeat(64),
+    ...(event === 'hook.error' ? { error_code: 'observer_failed' } : {}),
+  });
+  const frames = (...events: object[]) =>
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+
+  test('ordered observations share the event sequencer and replayed captures consume no new id', async () => {
+    const first = hook('on_session_start');
+    const { fetch } = harness({
+      sse: frames(
+        first,
+        first,
+        hook('pre_tool_call', 1),
+        hook('post_tool_call', 2),
+        hook('on_compaction', 3),
+        hook('on_session_end', 4),
+        { event: 'run.completed', output: 'Done' },
+      ),
+    });
+    const sink = new Collector();
+    const outcome = await adapterWith(fetch).start(bundle, sink, new AbortController().signal);
+    expect(outcome.kind).toBe('completed');
+    expect(
+      sink.events.filter((event) => event.type === 'hook_event').map((event) => event.name),
+    ).toEqual([
+      'on_session_start',
+      'pre_tool_call',
+      'post_tool_call',
+      'on_compaction',
+      'on_session_end',
+    ]);
+    expect(sink.events.map((event) => event.dedup_key)).toEqual(
+      sink.events.map((_, seq) => `${ATTEMPT}:${seq}`),
+    );
+  });
+
+  test('a throwing observer is a durable hook_error and the run still completes', async () => {
+    const { fetch } = harness({
+      sse: frames(hook('pre_tool_call', 0, 'hook.error'), {
+        event: 'run.completed',
+        output: 'Done',
+      }),
+    });
+    const sink = new Collector();
+    expect((await adapterWith(fetch).start(bundle, sink, new AbortController().signal)).kind).toBe(
+      'completed',
+    );
+    expect(sink.events[1]?.type).toBe('hook_error');
+    expect(sink.events[1]).toHaveProperty('error_code', 'observer_failed');
+  });
+
+  test('mismatched identity and changed replay bytes are gaps, never accepted observations', async () => {
+    for (const sse of [
+      frames({ ...hook('pre_tool_call'), attempt_id: 'att_someone_else' }),
+      frames(hook('pre_tool_call'), { ...hook('pre_tool_call'), outcome: 'failed' }),
+    ]) {
+      const { fetch } = harness({ sse });
+      const outcome = await adapterWith(fetch).start(
+        bundle,
+        new Collector(),
+        new AbortController().signal,
+      );
+      expect(outcome.kind).toBe('failed');
+      if (outcome.kind === 'failed') expect(outcome.reason).toContain('transcript is incomplete');
+    }
+  });
+
+  test('unrecognized fields never leave the adapter in a hook record', async () => {
+    const { fetch } = harness({
+      sse: frames(
+        { ...hook('pre_tool_call'), args: { token: 'secret' }, error_message: 'private' },
+        { event: 'run.completed', output: 'Done' },
+      ),
+    });
+    const sink = new Collector();
+    await adapterWith(fetch).start(bundle, sink, new AbortController().signal);
+    expect(JSON.stringify(sink.events)).not.toContain('secret');
+    expect(JSON.stringify(sink.events)).not.toContain('private');
+  });
+});
+
 describe('a recorded run', () => {
   test('maps the stream to contract events in order', async () => {
     const { fetch } = harness();

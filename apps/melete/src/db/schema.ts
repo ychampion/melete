@@ -15,6 +15,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -34,16 +35,47 @@ export const owner = pgTable(
   () => [uniqueIndex('owner_singleton_idx').on(sql`(true)`)],
 );
 
+/** Login identities are independent of the installation's singleton setup guard. */
+export const principal = pgTable('principal', {
+  id: text('id').primaryKey(),
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash'),
+  passkey: jsonb('passkey'),
+  createdAt: created(),
+});
+
 export const space = pgTable('space', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   policyGeneration: integer('policy_generation').notNull().default(0),
   kind: text('kind').notNull().default('personal'),
-  // Reserved so shared spaces can arrive without a rewrite. Always "owner" in v0.1.
+  ownerPrincipalId: text('owner_principal_id').references(() => principal.id),
   audience: text('audience').notNull().default('owner'),
   gitPath: text('git_path').notNull(),
   createdAt: created(),
 });
+
+/** Revocations retain their row so a regrant never resurrects an old capability. */
+export const spaceMembership = pgTable(
+  'space_membership',
+  {
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(),
+    generation: integer('generation').notNull().default(0),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: created(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.principalId, t.spaceId] }),
+    check('membership_role', sql`${t.role} in ('owner', 'member')`),
+    check('membership_generation', sql`${t.generation} >= 0`),
+  ],
+);
 
 /**
  * Sealed with MELETE_MASTER_KEY. Nothing outside the connectors module reads
@@ -87,6 +119,7 @@ export const job = pgTable(
       .notNull()
       .references(() => space.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
+    principalId: text('principal_id').references(() => principal.id),
     objective: text('objective').notNull(),
     constraints: jsonb('constraints').notNull().default({}),
     state: text('state').notNull().default('queued'),
@@ -133,6 +166,8 @@ export const attempt = pgTable(
       .notNull()
       .references(() => job.id, { onDelete: 'cascade' }),
     epoch: integer('epoch').notNull(),
+    principalId: text('principal_id').references(() => principal.id),
+    membershipGeneration: integer('membership_generation'),
     runtimeVersion: text('runtime_version').notNull(),
     provider: text('provider').notNull(),
     model: text('model').notNull(),
@@ -468,6 +503,7 @@ export const skill = pgTable(
 export const submission = pgTable('submission', {
   submissionId: text('submission_id').primaryKey(),
   inputDigest: text('input_digest').notNull(),
+  principalId: text('principal_id').references(() => principal.id),
   jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
   jobRevision: integer('job_revision'),
   eventCursor: bigint('event_cursor', { mode: 'number' }),
@@ -481,6 +517,7 @@ export const submission = pgTable('submission', {
 /** Independent of the receipt row and retained beyond event-stream pruning. */
 export const acceptanceJournal = pgTable('acceptance_journal', {
   submissionId: text('submission_id').primaryKey(),
+  principalId: text('principal_id').references(() => principal.id),
   jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
   receipt: jsonb('receipt').notNull(),
   receiptHash: text('receipt_hash').notNull(),
@@ -612,6 +649,8 @@ export const eventRetention = pgTable('event_retention', {
 
 export const schema = {
   owner,
+  principal,
+  spaceMembership,
   space,
   secret,
   connection,

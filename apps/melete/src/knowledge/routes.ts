@@ -39,10 +39,12 @@ import {
 import { chooseSkills, loadSkills } from '@melete/skills';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
+import { audienceVisible } from '../principals/context.ts';
 import { stableUlid } from './ids.ts';
 import type { SpaceRef, SpaceResolver } from './spaces.ts';
 
 export type KnowledgeDeps = {
+  authorizeSpace?: (spaceId: string) => Promise<{ owner: boolean }>;
   spaces: SpaceResolver;
   /** What each space lets an agent do without a person. */
   policyFor?: (space: SpaceRef) => SpacePolicy;
@@ -51,7 +53,7 @@ export type KnowledgeDeps = {
   toolsForSpace?: (space: SpaceRef) => Promise<readonly ToolSpec[]>;
 };
 
-type Variables = { space: SpaceRef };
+type Variables = { space: SpaceRef; spaceOwner: boolean };
 
 /** An explicit selection within the authenticated owner's catalog. */
 export const SPACE_HEADER = 'x-melete-space';
@@ -152,6 +154,13 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
     }
     const space = selected ? await deps.spaces.byId(selected) : available[0];
     if (!space) return c.json(fail('no_such_space', 'No accessible space has that id.'), 404);
+    const access = await deps.authorizeSpace?.(space.id);
+    c.set('spaceOwner', access?.owner ?? true);
+    if (access && !access.owner && c.req.method !== 'GET')
+      return c.json(
+        fail('scope_denied', 'Only the space owner may change its published knowledge.'),
+        403,
+      );
     c.set('space', space);
     await next();
     return undefined;
@@ -174,10 +183,21 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
 
     const { q, limit, include_retracted } = parsed.data;
     if (include_retracted) {
-      const records = loadSpace(space.paths).records;
+      const records = loadSpace(space.paths).records.filter((record) =>
+        audienceVisible(record.frontmatter.audience, space.id, c.get('spaceOwner')),
+      );
       return c.json({ hits: scanForRetracted(records, q, limit) });
     }
-    const hits = withIndex(space, (index) => index.query(q, { limit }));
+    const visible = new Set(
+      loadSpace(space.paths)
+        .records.filter((record) =>
+          audienceVisible(record.frontmatter.audience, space.id, c.get('spaceOwner')),
+        )
+        .map((record) => record.frontmatter.id),
+    );
+    const hits = withIndex(space, (index) => index.query(q, { limit })).filter((hit) =>
+      visible.has(hit.id),
+    );
     return c.json({ hits: hits.map(hitView) });
   });
 
@@ -224,22 +244,27 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
       return c.json(fail('wrong_space', 'this session cannot list that space'), 403);
     }
     return c.json({
-      records: loadSpace(space.paths).records.map((record) => ({
-        id: record.frontmatter.id,
-        path: record.path,
-        title: record.frontmatter.title,
-        type: record.frontmatter.type,
-        status: record.frontmatter.status,
-        tags: record.frontmatter.tags,
-        updated: record.frontmatter.updated,
-      })),
+      records: loadSpace(space.paths)
+        .records.filter((record) =>
+          audienceVisible(record.frontmatter.audience, space.id, c.get('spaceOwner')),
+        )
+        .map((record) => ({
+          id: record.frontmatter.id,
+          path: record.path,
+          title: record.frontmatter.title,
+          type: record.frontmatter.type,
+          status: record.frontmatter.status,
+          tags: record.frontmatter.tags,
+          updated: record.frontmatter.updated,
+        })),
     });
   });
 
   app.get('/knowledge/:recordId', (c) => {
     const space = c.get('space');
     const record = findRecord(space, c.req.param('recordId'));
-    if (!record) return c.json(fail('not_found', 'no record with that id in this space'), 404);
+    if (!record || !audienceVisible(record.frontmatter.audience, space.id, c.get('spaceOwner')))
+      return c.json(fail('not_found', 'no record with that id in this space'), 404);
     return c.json(asRecordResponse(record));
   });
 
@@ -290,13 +315,19 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
       (await deps.toolsForSpace?.(space)) ?? [],
     );
     return c.json({
-      skills: offered.map((skill) => ({
-        id: `${ID_PREFIXES.skill}_${stableUlid(`skill:${skill.frontmatter.name}`)}`,
-        space_id: skill.source === 'space' ? space.id : null,
-        path: skill.path,
-        enabled: true,
-        frontmatter: skill.frontmatter,
-      })),
+      skills: offered
+        .filter(
+          (skill) =>
+            skill.source === 'builtin' ||
+            audienceVisible(skill.frontmatter.audience, space.id, c.get('spaceOwner')),
+        )
+        .map((skill) => ({
+          id: `${ID_PREFIXES.skill}_${stableUlid(`skill:${skill.frontmatter.name}`)}`,
+          space_id: skill.source === 'space' ? space.id : null,
+          path: skill.path,
+          enabled: true,
+          frontmatter: skill.frontmatter,
+        })),
     });
   });
 

@@ -22,6 +22,7 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobService } from './service.ts';
 
@@ -32,7 +33,7 @@ export class PolicyService {
     readonly runner?: AttemptRunner,
   ) {}
 
-  private async invalidate(
+  async invalidateInTransaction(
     tx: Transaction,
     spaceId: string,
     generation: number,
@@ -213,6 +214,11 @@ export class PolicyService {
         .where(eq(connection.id, id))
         .for('update');
       if (!source) throw new ServiceError('not_found', 'Connection not found.', 404);
+      if (
+        requestPrincipal() &&
+        (await spaceAuthority(tx, source.spaceId, requestPrincipal(), true)).role !== 'owner'
+      )
+        throw new ServiceError('scope_denied', 'Space owner required.', 403);
       if (source.generation !== request.expected_generation)
         throw new ServiceError('generation_conflict', 'The connection generation changed.');
       if (request.kind === 'switch') {
@@ -250,7 +256,7 @@ export class PolicyService {
           .update(trigger)
           .set({ enabled: false })
           .where(and(eq(trigger.kind, 'event'), sql`${trigger.spec}->>'connection_id' = ${id}`));
-      const controls = await this.invalidate(
+      const controls = await this.invalidateInTransaction(
         tx,
         source.spaceId,
         parent.policyGeneration,
@@ -275,13 +281,24 @@ export class PolicyService {
     const result = await this.jobs.transaction(async (tx) => {
       const [parent] = await tx.select().from(space).where(eq(space.id, spaceId)).for('update');
       if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
+      if (
+        requestPrincipal() &&
+        (await spaceAuthority(tx, spaceId, requestPrincipal(), true)).role !== 'owner'
+      )
+        throw new ServiceError('scope_denied', 'Space owner required.', 403);
       if (parent.policyGeneration !== expectedGeneration)
         throw new ServiceError('generation_conflict', 'The policy generation changed.');
       const generation = parent.policyGeneration + 1;
       await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
       return {
         response: policyGeneration.parse({ space_id: spaceId, policy_generation: generation }),
-        controls: await this.invalidate(tx, spaceId, generation, null, 'policy_changed'),
+        controls: await this.invalidateInTransaction(
+          tx,
+          spaceId,
+          generation,
+          null,
+          'policy_changed',
+        ),
       };
     });
     await this.signal(result.controls);

@@ -7,8 +7,10 @@ import {
 import { and, asc, eq, gt } from 'drizzle-orm';
 import postgres from 'postgres';
 import { ZodError } from 'zod';
+import { ServiceError } from '../api/errors.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import { event } from '../db/schema.ts';
+import { visibleJob } from '../principals/authority.ts';
 import { EventProtocol } from './protocol.ts';
 
 export const EVENT_CHANNEL = 'melete_events';
@@ -18,6 +20,7 @@ export type EventStreamOptions = {
   keepaliveMs?: number;
 };
 export type EventSubscription = {
+  principalId?: string;
   after: number;
   jobId?: string;
   signal?: AbortSignal;
@@ -150,11 +153,21 @@ export class EventStream {
     }
   }
 
-  private async page(after: number, jobId?: string): Promise<ResponsibilityEvent[]> {
+  private async page(
+    after: number,
+    jobId?: string,
+    principalId?: string,
+  ): Promise<ResponsibilityEvent[]> {
     const rows = await this.handle.db
       .select()
       .from(event)
-      .where(and(gt(event.seq, after), jobId === undefined ? undefined : eq(event.jobId, jobId)))
+      .where(
+        and(
+          gt(event.seq, after),
+          jobId === undefined ? undefined : eq(event.jobId, jobId),
+          visibleJob(event.jobId, principalId),
+        ),
+      )
       .orderBy(asc(event.seq))
       .limit(this.pageSize);
     return rows.map((row) =>
@@ -184,6 +197,7 @@ export class EventStream {
         subscription.jobId,
         subscription.epoch,
         subscription.resync,
+        subscription.principalId,
       ),
     );
     if (this.stopped) throw new Error('event stream is closed');
@@ -232,13 +246,46 @@ export class EventStream {
           while (!closed) {
             const control = controls.shift();
             if (control) {
-              value.enqueue(encoder.encode(control));
+              // Refresh snapshots just before delivery; buffered controls cannot preserve revoked bytes.
+              let frame = control;
+              if (subscription.principalId && control.includes('event: reset\n')) {
+                const fresh = await this.query(() =>
+                  this.protocol.handshake(
+                    cursor,
+                    subscription.jobId,
+                    epoch,
+                    true,
+                    subscription.principalId,
+                  ),
+                ).catch(() => null);
+                if (!fresh) {
+                  cleanup(true);
+                  return;
+                }
+                frame = fresh.frames.at(-1) ?? control;
+                cursor = fresh.cursor;
+              }
+              value.enqueue(encoder.encode(frame));
               lastWrite = Date.now();
               return;
             }
             const next = buffered.shift();
             if (next) {
               cursor = next.seq;
+              if (subscription.principalId) {
+                const [allowed] = await this.query(() =>
+                  this.handle.db
+                    .select({ seq: event.seq })
+                    .from(event)
+                    .where(
+                      and(
+                        eq(event.seq, next.seq),
+                        visibleJob(event.jobId, subscription.principalId),
+                      ),
+                    ),
+                );
+                if (!allowed) continue;
+              }
               value.enqueue(encoder.encode(persistedFrame(next)));
               lastWrite = Date.now();
               return;
@@ -246,7 +293,13 @@ export class EventStream {
             const observed = change;
             try {
               const position = await this.query(() =>
-                this.protocol.handshake(cursor, subscription.jobId, epoch),
+                this.protocol.handshake(
+                  cursor,
+                  subscription.jobId,
+                  epoch,
+                  false,
+                  subscription.principalId,
+                ),
               );
               if (closed) return;
               epoch = position.epoch;
@@ -255,9 +308,15 @@ export class EventStream {
                 controls = position.frames;
                 continue;
               }
-              buffered = await this.query(() => this.page(cursor, subscription.jobId));
+              buffered = await this.query(() =>
+                this.page(cursor, subscription.jobId, subscription.principalId),
+              );
             } catch (error) {
               if (closed) return;
+              if (error instanceof ServiceError && error.code === 'scope_denied') {
+                cleanup(true);
+                return;
+              }
               if (error instanceof ZodError) {
                 cleanup(false);
                 value.error(error);

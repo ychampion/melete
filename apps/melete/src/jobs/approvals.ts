@@ -10,6 +10,7 @@ import { ServiceError } from '../api/errors.ts';
 import { action, approval } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { visibleJob } from '../principals/authority.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobRow, JobService } from './service.ts';
 
@@ -132,6 +133,6 @@ export class ApprovalService {
       .select({ action, approval })
       .from(approval)
       .innerJoin(action, eq(approval.actionId, action.id))
-      .where(isNull(approval.decision));
+      .where(and(isNull(approval.decision), visibleJob(action.jobId)));
   }
 }

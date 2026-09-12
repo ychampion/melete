@@ -68,7 +68,7 @@ withDb('durable jobs and contract transitions', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
-    await handle.sql`truncate "owner", "space" cascade`;
+    await handle.sql`truncate "principal", "owner", "space" cascade`;
     spaceId = newId('sp');
     await handle.db
       .insert(space)

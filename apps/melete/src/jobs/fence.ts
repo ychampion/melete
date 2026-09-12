@@ -4,6 +4,7 @@ import { ServiceError } from '../api/errors.ts';
 import { action, attempt, connection, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { requirePrincipalCapability } from '../principals/authority.ts';
 import { verifyCapability } from './capability.ts';
 import { requireGenerations } from './generations.ts';
 import type { JobService } from './service.ts';
@@ -40,6 +41,13 @@ export async function requireCurrentAttempt(tx: Transaction, claims: CapabilityC
   if (row.revision !== claims.revision || active.revision !== claims.revision) {
     throw new ServiceError('revision_mismatch', 'The job changed after this attempt started.');
   }
+  await requirePrincipalCapability(tx, row, claims, active.principalId === null);
+  if (
+    active.principalId !== null &&
+    (active.principalId !== claims.principal_id ||
+      active.membershipGeneration !== claims.membership_generation)
+  )
+    throw new ServiceError('scope_denied', 'The attempt principal binding changed.', 403);
   await requireGenerations(tx, row.spaceId, {
     policy_generation: active.policyGeneration,
     connection_generations: active.connectionGenerations,

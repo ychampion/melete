@@ -136,7 +136,8 @@ async function loadHandles(
     if (!parsed) continue;
     if (parsed.kind === 'source') {
       const [row] = await tx`select source_type, author, event_at, origin_trust from memory_sources
-        where id = ${parsed.source_id} and space_id = ${scope.spaceId} and source_version = ${parsed.source_version} and state = 'active'`;
+        where id = ${parsed.source_id} and space_id = ${scope.spaceId} and source_version = ${parsed.source_version} and state = 'active'
+        and (${scope.role === 'owner'} or audience in ('space', 'public'))`;
       if (!row) continue;
       const [body] =
         await tx`select content from memory_source_content where source_id = ${parsed.source_id}`;

@@ -1,9 +1,9 @@
-# The Melete runtime: a pinned, unmodified Hermes release configured thin.
+# The Melete runtime: pinned Hermes configured thin with an observer-only bridge.
 #
-# Nothing in this image is patched. Everything that makes it thin is
-# configuration, so upgrading the pin is a one-line change here rather than a
-# rebase of a fork. Every key in config/config.yaml was checked against the tag;
-# the citations are in .agents/notes/0009-hermes-surface.md.
+# The three source seams in patches/observer_bridge.py are checked against the
+# audited pin before application. They add compaction observation and bind the
+# plugin's observers to the HTTP run queue. They change no broker decision.
+# Thin configuration keys are cited in .agents/notes/0009-hermes-surface.md.
 #
 # The container has no route to the internet. docker-compose attaches it only to
 # the `internal` network, whose sole reachable peer is the Melete broker.
@@ -19,7 +19,7 @@ ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # produces something else is visible rather than silent: a moved tag is the one
 # way a "pinned, unmodified release" stops being either.
 ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
-ARG MELETE_PLUGIN_SHA=282c8ca215260897aeb07a6170378e8e14325ab90966bba6069d3847493e751f
+ARG MELETE_PLUGIN_SHA=62e3c5f1b668cafe1d02c49ca698772f1103a0c89096dfab000281658e37e48f
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -57,6 +57,9 @@ RUN git clone --depth 1 --branch "${HERMES_TAG}" "${HERMES_REPO}" /opt/hermes \
 # a volume at run time and a volume mount would hide whatever the image put
 # underneath it.
 COPY melete_plugin/ /opt/melete-runtime/melete_plugin/
+COPY runtime_support/ /opt/melete-runtime/runtime_support/
+COPY patches/ /opt/melete-runtime/patches/
+RUN python /opt/melete-runtime/patches/observer_bridge.py /opt/hermes
 COPY config/config.yaml /opt/melete-runtime/config.yaml
 COPY entrypoint.sh /usr/local/bin/melete-runtime-entrypoint
 COPY build-metadata.py /opt/melete-runtime/build-metadata.py

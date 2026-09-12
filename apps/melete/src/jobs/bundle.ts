@@ -4,6 +4,7 @@ import {
   attemptBundle,
   attemptOutcome,
   type CanonicalMessage,
+  CONTEXT_LIMITS,
   type ContextGenerations,
   type Deliverable,
   jobBudget,
@@ -35,6 +36,8 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { selectProcedureSkills } from '../learning/selection.ts';
+import { spaceAuthority } from '../principals/authority.ts';
+import { selectedContext } from '../principals/context.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
 import { questionView, readDeferred } from './questions.ts';
 import type { JobRow } from './service.ts';
@@ -306,6 +309,7 @@ export async function buildBundle(
   expected?: ContextGenerations,
   runtimeVersion?: string,
 ): Promise<ResponsibilityAttemptBundle> {
+  const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
   const generations = expected
     ? await requireGenerations(tx, row.spaceId, expected)
     : await readGenerations(tx, row.spaceId);
@@ -380,6 +384,14 @@ export async function buildBundle(
   });
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
   const constraints = jobConstraints.parse(row.constraints);
+  const context = await selectedContext(
+    tx,
+    row.spaceId,
+    access.principalId,
+    row.objective,
+    history.inputs.new_user_messages.at(-1)?.content ?? '',
+    constraints.public_compartment,
+  );
   const wait = waitSpec.parse(row.wait);
   const [open] = await tx
     .select()
@@ -398,6 +410,9 @@ export async function buildBundle(
     readDeferred(row),
   );
   return responsibilityAttemptBundle.parse({
+    ...(access.principalId
+      ? { principal_id: access.principalId, membership_generation: access.generation }
+      : {}),
     ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
     job: {
@@ -412,8 +427,11 @@ export async function buildBundle(
     since_last: delta,
     transcript: history.transcript,
     tools: [],
-    skills: await selectProcedureSkills(tx, row, model, runtimeVersion),
-    knowledge: [],
+    skills: mergeSkills(
+      await selectProcedureSkills(tx, row, model, runtimeVersion),
+      context.skills,
+    ),
+    knowledge: context.knowledge,
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
     attention: {
@@ -609,4 +627,22 @@ export async function completionFacts(
     artifact_validations_passed: gate.passed,
     artifact_failures: gate.failures,
   };
+}
+
+/**
+ * A learned procedure is scoped to this job by the owner; trigger-selected
+ * skills fill the rest. One entry per name, within the contract's cap.
+ */
+function mergeSkills(
+  procedures: AttemptBundle['skills'],
+  selected: AttemptBundle['skills'],
+): AttemptBundle['skills'] {
+  const seen = new Set<string>();
+  const merged: AttemptBundle['skills'] = [];
+  for (const skill of [...procedures, ...selected]) {
+    if (seen.has(skill.name)) continue;
+    seen.add(skill.name);
+    merged.push(skill);
+  }
+  return merged.slice(0, CONTEXT_LIMITS.max_skills);
 }

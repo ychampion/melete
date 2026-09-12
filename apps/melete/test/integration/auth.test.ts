@@ -46,7 +46,7 @@ describeWithDb('single-owner authentication against Postgres', () => {
     expect(await pingDatabase(database())).toBe(true);
   });
   beforeEach(async () => {
-    await database().sql`truncate "owner", "space" cascade`;
+    await database().sql`truncate "principal", "owner", "space" cascade`;
   }, 15_000);
 
   afterAll(async () => {

@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime_support"))
 
 from melete_plugin import TOOLSET, build_handler, register, tool_schema  # noqa: E402
 from melete_plugin.broker import BrokerClient, BrokerError  # noqa: E402
@@ -148,6 +149,10 @@ class RecordingContext:
 
     def __init__(self) -> None:
         self.tools: List[Dict[str, Any]] = []
+        self.hooks: Dict[str, Any] = {}
+
+    def register_hook(self, name, callback):
+        self.hooks[name] = callback
 
     def register_tool(self, **kwargs: Any) -> None:
         self.tools.append(kwargs)

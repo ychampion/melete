@@ -47,7 +47,7 @@ export async function resolveEffectAuthority(
   const resolved = authority.parse({
     policyGeneration: 0,
     connectionGeneration: 0,
-    actingPrincipal: 'owner',
+    actingPrincipal: input.job.principal_id ?? 'owner',
     resource: {
       kind: action.kind,
       connection_id: action.connection_id,

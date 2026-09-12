@@ -3,11 +3,31 @@
 # is an allow-list of those keys, not a boolean.
 name: melete
 version: 0.1.0
-description: Registers the Melete broker's tools and forwards every call to it.
+description: Forwards broker tools and captures redacted lifecycle observations.
 author: Melete
 license: Apache-2.0
 kind: standalone
 # Declared so `hermes plugins list` says what this is. Melete never overrides a
 # built-in tool: broker tool names are dotted and collide with nothing.
 provides_tools: []
-provides_hooks: []
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - pre_approval_request
+  - post_approval_response
+  - subagent_start
+  - subagent_stop
+  - on_skill_lifecycle
+  - on_stream_start
+  - on_stream_end
+  - pre_verify
+  - on_compaction

@@ -13,7 +13,7 @@
  *
  *   bun run packages/runtime-hermes/scripts/e2e.ts
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +29,7 @@ import { createPostgresFixture } from '../../../apps/melete/test/helpers/postgre
 import { brokerParkedActions, HermesRuntimeAdapter } from '../src/adapter.ts';
 
 export const ROOT = join(import.meta.dir, '..', '..', '..');
+const HERMES_SRC = join(ROOT, '.hermes-src');
 const PYTHON = join(ROOT, '.hermes-venv', 'Scripts', 'python.exe');
 const CAPABILITY_KEY = 'e2e-capability-key-e2e-capability-key';
 const APPROVAL_KEY = 'e2e-approval-key-e2e-approval-key-xx';
@@ -63,11 +64,17 @@ export function hermesHome(brokerPort: number, apiPort: number, token: string): 
       tools: { tool_search: { enabled: 'off' } },
       memory: { enabled: false },
       skills: { enabled: false },
+      curator: { enabled: false },
+      auxiliary: {
+        title_generation: { enabled: false },
+        background_review: { enabled: false },
+        compression: { provider: 'melete-gateway', model: 'scripted', fallback_chain: [] },
+      },
       approvals: { unattended_mode: 'deny', timeout: 300 },
       provider: 'melete-gateway',
       // The gateway's budget adapter allows only the provider/model recorded on
       // the attempt row, so these have to be the seeded pair, not a nice name.
-      model: 'scripted',
+      model: { default: 'scripted', context_length: 256_000 },
       providers: {
         'melete-gateway': {
           base_url: `http://127.0.0.1:${brokerPort}/providers/fake/v1`,
@@ -97,6 +104,13 @@ export function startRuntime(
   attemptId: string,
   jobId: string,
 ): Runtime {
+  const patched = spawnSync(
+    PYTHON,
+    [join(ROOT, 'packages/runtime-hermes/patches/observer_bridge.py'), HERMES_SRC],
+    { encoding: 'utf8', windowsHide: true },
+  );
+  if (patched.status !== 0)
+    throw new Error(`Observer patch refused: ${patched.stderr || patched.error}`);
   const lines: string[] = [];
   // The container inherits none of the operator's provider keys; this process
   // would, and a stray GOOGLE_API_KEY silently wins the provider race.

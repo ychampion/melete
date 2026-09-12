@@ -179,6 +179,8 @@ export const payloadHash = z
  * can never admit new work.
  */
 export const capabilityClaims = z.object({
+  principal_id: prefixedId(ID_PREFIXES.owner).optional(),
+  membership_generation: z.number().int().nonnegative().optional(),
   job_id: prefixedId(ID_PREFIXES.job),
   attempt_id: prefixedId(ID_PREFIXES.attempt),
   space_id: prefixedId(ID_PREFIXES.space),

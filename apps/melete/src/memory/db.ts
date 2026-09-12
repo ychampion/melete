@@ -7,6 +7,8 @@ export type MemorySql = ReturnType<typeof postgres>;
 export type MemoryTx = postgres.TransactionSql;
 /** Constructed by server authentication, never by parsing a model/request body. */
 export type MemoryScope = {
+  principalId?: string;
+  membershipGeneration?: number;
   ownerId: string;
   spaceId: string;
   publisher: string;
@@ -44,6 +46,22 @@ export const generation = (row: Record<string, unknown>): SpaceGeneration =>
   });
 
 export async function lockSpace(tx: MemoryTx, scope: MemoryScope, write = true) {
+  if (scope.principalId) {
+    const [parent] =
+      await tx`select kind, owner_principal_id from space where id = ${scope.spaceId} for share`;
+    const [membership] =
+      await tx`select role, generation from space_membership where space_id = ${scope.spaceId} and principal_id = ${scope.principalId} and revoked_at is null for share`;
+    const access = parent ? { ...parent, ...membership } : undefined;
+    const isOwner = access?.owner_principal_id === scope.principalId;
+    if (
+      !access ||
+      (access.kind === 'personal'
+        ? !isOwner
+        : !access.role || access.generation !== scope.membershipGeneration) ||
+      (scope.role === 'owner' && !isOwner)
+    )
+      throw new MemoryError('scope_denied');
+  }
   const [row] =
     await tx`select * from memory_spaces where space_id = ${scope.spaceId} and owner_id = ${scope.ownerId} for update`;
   if (!row || row.revoked || (write && scope.role !== 'owner'))

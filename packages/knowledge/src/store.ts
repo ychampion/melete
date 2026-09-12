@@ -29,6 +29,7 @@ export type SpaceContents = {
 
 const listMarkdown = (dir: string): string[] => {
   if (!existsSync(dir)) return [];
+  if (lstatSync(dir).isSymbolicLink()) return [];
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);

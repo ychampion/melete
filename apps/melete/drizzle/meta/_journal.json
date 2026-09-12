@@ -190,6 +190,13 @@
       "when": 1789232400006,
       "tag": "0026_calm_forgotten_one",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789232400007,
+      "tag": "0027_petite_demogoblin",
+      "breakpoints": true
     }
   ]
 }

@@ -553,6 +553,7 @@ describe('browser broker authority and durable control', () => {
       const token = randomBytes(32).toString('base64url');
       const ownerId = recordId('own');
       await s.sql`insert into owner (id,email) values (${ownerId}, 'browser-owner@example.test') on conflict do nothing`;
+      await s.sql`insert into principal (id,email) values (${ownerId}, 'browser-owner@example.test') on conflict do nothing`;
       const [owner] = await s.sql`select id from owner limit 1`;
       await s.sql`insert into session (token_hash,owner_id,expires_at) values (${createHash('sha256').update(token).digest('hex')}, ${owner?.id}, now() + interval '1 hour')`;
       const headers = { cookie: `melete_session=${token}` };

@@ -14,6 +14,8 @@ import {
   BROKER_TIMEOUT_MS,
   dedupKey,
   type EventSink,
+  hookCaptureErrorCode,
+  hookObservation,
   type RuntimeAdapter,
   type RuntimeCapabilities,
   type RuntimeEvent,
@@ -350,6 +352,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
   ): Promise<AttemptOutcome | null> {
     const name = String(event.event);
 
+    if (name === 'hook.event' || name === 'hook.error') {
+      await emitter.hook(event, name === 'hook.error');
+      return null;
+    }
+
     if (name === 'message.delta') {
       await emitter.emit({ type: 'text_delta', text: String(event.delta ?? '') });
       return null;
@@ -524,6 +531,7 @@ type RuntimeEventBody<T extends RuntimeEvent = RuntimeEvent> = T extends Runtime
  */
 class SequencedSink {
   private seq = 0;
+  private readonly captures = new Map<string, string>();
 
   constructor(
     private readonly attemptId: string,
@@ -532,6 +540,29 @@ class SequencedSink {
 
   get next(): number {
     return this.seq;
+  }
+
+  async hook(input: Record<string, unknown>, failed: boolean): Promise<void> {
+    if (input.attempt_id !== this.attemptId) throw new Error('hook attempt identity mismatch');
+    const observation = hookObservation.parse(input);
+    if (!observation.capture_id.startsWith(`${this.attemptId}:hook:`))
+      throw new Error('hook capture identity mismatch');
+    const event: RuntimeEventBody = failed
+      ? {
+          ...observation,
+          type: 'hook_error',
+          error_code: hookCaptureErrorCode.parse(input.error_code),
+        }
+      : { ...observation, type: 'hook_event' };
+    const fingerprint = JSON.stringify(event);
+    const previous = this.captures.get(observation.capture_id);
+    if (previous !== undefined) {
+      if (previous !== fingerprint) throw new Error('hook capture replay changed its contents');
+      return;
+    }
+    await this.emit(event);
+    // A retried capture keeps its original event identity; it cannot consume a new sequence.
+    this.captures.set(observation.capture_id, fingerprint);
   }
 
   async emit(event: RuntimeEventBody) {

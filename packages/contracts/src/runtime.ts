@@ -9,6 +9,7 @@ import { effectClass } from './broker.ts';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
 import { attemptUsage, waitSpec } from './entities.ts';
 import { executionMode } from './execution.ts';
+import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
 import { repairBrief } from './provenance.ts';
 
@@ -45,6 +46,7 @@ export const toolSpec = z.object({
 export type ToolSpec = z.infer<typeof toolSpec>;
 
 export const skillPayload = z.object({
+  space_id: prefixedId(ID_PREFIXES.space).optional(),
   name: z.string().min(1),
   body: z.string(),
 });
@@ -187,6 +189,8 @@ export function renderSinceLast(delta: SinceLast): string {
  * prompt caching: stable prefix first, volatile inputs last.
  */
 export const attemptBundle = z.object({
+  principal_id: prefixedId(ID_PREFIXES.owner).optional(),
+  membership_generation: z.number().int().nonnegative().optional(),
   attempt: z.object({
     id: prefixedId(ID_PREFIXES.attempt),
     job_id: prefixedId(ID_PREFIXES.job),
@@ -305,6 +309,8 @@ export const RUNTIME_EVENT_TYPES = [
    * where the hole is, which is a different fact from "the attempt failed".
    */
   'gap',
+  'hook_event',
+  'hook_error',
 ] as const;
 export const runtimeEventType = z.enum(RUNTIME_EVENT_TYPES);
 export type RuntimeEventType = z.infer<typeof runtimeEventType>;
@@ -317,6 +323,17 @@ const runtimeEventBase = {
 };
 
 export const runtimeEvent = z.discriminatedUnion('type', [
+  z.object({
+    ...runtimeEventBase,
+    ...hookObservation.shape,
+    type: z.literal('hook_event'),
+  }),
+  z.object({
+    ...runtimeEventBase,
+    ...hookObservation.shape,
+    type: z.literal('hook_error'),
+    error_code: hookCaptureErrorCode,
+  }),
   z.object({
     ...runtimeEventBase,
     type: z.literal('turn_started'),

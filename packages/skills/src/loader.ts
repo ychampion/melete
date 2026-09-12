@@ -10,7 +10,7 @@
  * not itself depend on model judgment, or injected text gets a say in which
  * instructions arrive with it.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -98,12 +98,15 @@ export function parseSkill(source: string): ParsedSkill {
 
 const readSkillFiles = (directory: string): string[] => {
   if (!existsSync(directory)) return [];
+  if (lstatSync(directory).isSymbolicLink()) return [];
   const files: string[] = [];
   for (const entry of readdirSync(directory).sort()) {
     const full = join(directory, entry);
-    if (statSync(full).isDirectory()) {
+    const stats = lstatSync(full);
+    if (stats.isSymbolicLink()) continue;
+    if (stats.isDirectory()) {
       const nested = join(full, 'SKILL.md');
-      if (existsSync(nested)) files.push(nested);
+      if (existsSync(nested) && !lstatSync(nested).isSymbolicLink()) files.push(nested);
       continue;
     }
     // identity.md is not a skill: it loads on every attempt, not on a trigger.

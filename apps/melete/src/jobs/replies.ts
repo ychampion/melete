@@ -16,6 +16,7 @@ import { attempt, event, notification, replyObligation } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { requestPrincipal, requireJobAccess, visibleJob } from '../principals/authority.ts';
 import { type AttemptResult, attemptResult } from './attention.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobRow, JobService } from './service.ts';
@@ -348,14 +349,16 @@ export class ReplyService {
     return this.jobs.db
       .select()
       .from(replyObligation)
-      .where(ne(replyObligation.state, 'fulfilled'))
+      .where(and(ne(replyObligation.state, 'fulfilled'), visibleJob(replyObligation.jobId)))
       .orderBy(replyObligation.createdAt);
   }
   outbox() {
     return this.jobs.db
       .select()
       .from(notification)
-      .where(inArray(notification.state, ['pending', 'attempted']))
+      .where(
+        and(inArray(notification.state, ['pending', 'attempted']), visibleJob(notification.jobId)),
+      )
       .orderBy(notification.createdAt);
   }
 
@@ -363,6 +366,7 @@ export class ReplyService {
     return this.jobs.transaction(async (tx) => {
       const [row] = await tx.select().from(replyObligation).where(eq(replyObligation.id, id));
       if (!row) throw new ServiceError('not_found', 'Reply obligation not found.', 404);
+      if (requestPrincipal() && row.jobId) await requireJobAccess(tx, row.jobId);
       if (row.acknowledgedAt || row.state === 'fulfilled') return row;
       const [updated] = await tx
         .update(replyObligation)
@@ -381,6 +385,7 @@ export class ReplyService {
     return this.jobs.transaction(async (tx) => {
       const [row] = await tx.select().from(notification).where(eq(notification.id, id));
       if (!row) throw new ServiceError('not_found', 'Notification not found.', 404);
+      if (requestPrincipal() && row.jobId) await requireJobAccess(tx, row.jobId);
       const parsed = replyContent.safeParse(row.content);
       if (!parsed.success || digest(parsed.data) !== row.contentHash)
         throw new ServiceError('notification_content_unavailable', missingContent);
@@ -404,6 +409,7 @@ export class ReplyService {
     return this.jobs.transaction(async (tx) => {
       const [row] = await tx.select().from(notification).where(eq(notification.id, id));
       if (!row) throw new ServiceError('not_found', 'Notification not found.', 404);
+      if (requestPrincipal() && row.jobId) await requireJobAccess(tx, row.jobId);
       const parsed = replyContent.safeParse(row.content);
       if (
         !parsed.success ||

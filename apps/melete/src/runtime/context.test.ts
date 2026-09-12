@@ -42,6 +42,7 @@ async function fixture() {
   const spaceId = newId('sp');
   const spacesRoot = join(root, 'spaces');
   await handle.sql`insert into owner (id, email) values (${ownerId}, 'context@example.test')`;
+  await handle.sql`insert into principal (id, email) values (${ownerId}, 'context@example.test')`;
   await handle.sql`insert into space (id, name, git_path)
     values (${spaceId}, 'Context', ${join(spacesRoot, spaceId)})`;
   const spaces = databaseSpaces(handle.db, spacesRoot);

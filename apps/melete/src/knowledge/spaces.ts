@@ -6,9 +6,9 @@
  */
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import { ID_PREFIXES, prefixedId } from '@melete/contracts';
+import { ID_PREFIXES, prefixedId, spaceAudience } from '@melete/contracts';
 import { initSpace, isGitRepo, type SpacePaths, spacePaths } from '@melete/knowledge';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { space } from '../db/schema.ts';
 import { stableUlid } from './ids.ts';
@@ -84,7 +84,14 @@ export function databaseSpaces(db: Database, spacesRoot: string): SpaceResolver 
   const pending = new Map<string, Promise<SpaceRef | null>>();
   const idSchema = prefixedId(ID_PREFIXES.space);
   const open = async (row: typeof space.$inferSelect): Promise<SpaceRef | null> => {
-    if (!idSchema.safeParse(row.id).success || !isAbsolute(row.gitPath)) return null;
+    // Shared spaces resolve like personal ones; membership decides access per
+    // request. An audience the contract does not know is a corrupt row.
+    if (
+      !idSchema.safeParse(row.id).success ||
+      !spaceAudience.safeParse(row.audience).success ||
+      !isAbsolute(row.gitPath)
+    )
+      return null;
     // Setup records one direct child named by its immutable ID. Display names
     // may change, and a corrupt catalog path must never open another space.
     const expected = join(root, row.id);
@@ -122,11 +129,7 @@ export function databaseSpaces(db: Database, spacesRoot: string): SpaceResolver 
   };
   const byId = async (id: string) => {
     if (!idSchema.safeParse(id).success) return null;
-    const [row] = await db
-      .select()
-      .from(space)
-      .where(and(eq(space.id, id), eq(space.audience, 'owner')))
-      .limit(1);
+    const [row] = await db.select().from(space).where(eq(space.id, id)).limit(1);
     return row ? reference(row) : null;
   };
   return {

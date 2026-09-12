@@ -11,8 +11,14 @@ stub.
 
 ## Configuration and prompt scope
 
-`config/config.yaml` selects the Melete plugin toolset, disables Hermes memory
-and the tool-search bridge, and points model traffic at Melete's gateway.
+`config/config.yaml` selects the Melete plugin toolset, disables Hermes memory,
+the tool-search bridge, the skill curator and the auxiliary title, review and
+compression requests that would spend a job's budget in the background, and
+points model traffic at Melete's gateway. The image also applies
+`patches/observer_bridge.py`: three source hashes must match the audited pin or
+the identical reviewed patch. It adds a real compaction dispatch and binds
+plugin observations to the current HTTP run queue; updating the pin means
+reviewing those seams again.
 The image was built from the pinned tag and run on a Linux Docker host on
 2026-09-12; its labels record the Hermes commit and the plugin content hash, and
 `build-metadata.py` refuses a build whose plugin bytes do not match the pin.
@@ -178,6 +184,24 @@ sequence are shared, and there is exactly one public attempt outcome.
 Continuations keep the native Hermes session history; the real-server test
 checks the previous request remains an exact prefix of the next request's
 history.
+
+## Lifecycle observations
+
+Lifecycle observations become `hook_event` or `hook_error`, use the adapter's
+ordinary event sequence, and are persisted before timeline fan-out and replay.
+Retried captures keep their identity. Only fixed metadata and a digest of
+redacted argument shape survive; values, messages, results and exception text
+are omitted. Hooks return no directive and never enforce authorization.
+`on_session_end` retains Hermes's turn-finalization meaning. The compaction
+patch dispatches only after committed progress.
+
+Run `bun run test:plugin` and
+`bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=2`
+for the observer and persistence checks. The optional real-server check is
+`MELETE_HERMES_E2E=1 bun test apps/melete/test/integration/hooks-real.test.ts --max-concurrency=2`;
+prepare `.hermes-venv` using note 0009 and install the pin's `aiohttp==3.14.3`.
+That check currently reaches the real hooks but fails its final broker-action
+assertion (recorded in the lane's pull request, #13). It is not a passing end-to-end capability proof.
 
 ## Verify the adapter
 

@@ -12,10 +12,11 @@ import {
 import { eq } from 'drizzle-orm';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ServiceError } from '../api/errors.ts';
-import { acceptanceJournal, event, job, submission } from '../db/schema.ts';
+import { acceptanceJournal, event, job, owner, submission } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
+import { requestPrincipal, requireJobAccess, spaceAuthority } from '../principals/authority.ts';
 import type { JobRow, JobService } from './service.ts';
 
 /** Canonical input preserves text bytes; action-specific email normalization does not apply. */
@@ -76,10 +77,31 @@ export class SubmissionService {
       .select()
       .from(acceptanceJournal)
       .where(eq(acceptanceJournal.submissionId, id));
+    const actor = requestPrincipal();
+    if (
+      actor &&
+      ((saved && saved.principalId !== actor) || (history && history.principalId !== actor))
+    )
+      throw new ServiceError('scope_denied', 'Submission is not accessible.', 403);
     const [marker] = await tx
       .select()
       .from(event)
       .where(eq(event.dedupKey, `submission:${id}`));
+    let principalId = saved?.principalId ?? history?.principalId ?? null;
+    if (marker && !saved && !history) {
+      const declared = (marker.payload as { principal_id?: unknown }).principal_id;
+      const sourceJob = marker.jobId ? await requireJobAccess(tx, marker.jobId, actor) : null;
+      const [installation] =
+        sourceJob?.principalId || typeof declared === 'string'
+          ? []
+          : await tx.select({ id: owner.id }).from(owner).limit(1);
+      principalId =
+        typeof declared === 'string'
+          ? declared
+          : (sourceJob?.principalId ?? installation?.id ?? null);
+      if (actor && principalId !== actor)
+        throw new ServiceError('scope_denied', 'Submission history is not accessible.', 403);
+    }
     const parsed = submissionReceipt.safeParse(history?.receipt);
     let current: JobRow | null = null;
     const valid =
@@ -117,6 +139,7 @@ export class SubmissionService {
           if (receipt.job_id !== null) {
             const [row] = await tx.select().from(job).where(eq(job.id, receipt.job_id));
             current = row ?? null;
+            if (current && actor) await spaceAuthority(tx, current.spaceId, actor, true);
           }
           if (
             !current ||
@@ -132,17 +155,25 @@ export class SubmissionService {
       saved,
       history,
       marker,
+      principalId,
       knownDigest,
       receipt,
       job: receipt.state === 'accepted' ? current : null,
     };
   }
 
-  private async storeUncertainty(tx: Transaction, id: string, digest: string) {
+  private async storeUncertainty(
+    tx: Transaction,
+    id: string,
+    digest: string,
+    principalId: string | null,
+  ) {
     await tx
       .insert(submission)
       .values({
         submissionId: id,
+        // Internal recovery has no HTTP identity; retain the durable admission's principal.
+        principalId,
         inputDigest: digest,
         state: 'unknown_durability',
         httpStatus: 503,
@@ -163,7 +194,7 @@ export class SubmissionService {
         previous.knownDigest &&
         (previous.saved || previous.history || previous.marker)
       )
-        await this.storeUncertainty(tx, id, previous.knownDigest);
+        await this.storeUncertainty(tx, id, previous.knownDigest, previous.principalId);
       return previous.receipt;
     });
   }
@@ -216,7 +247,7 @@ export class SubmissionService {
           };
         }
         if (previous.receipt.state === 'unknown_durability') {
-          await this.storeUncertainty(tx, id, digest);
+          await this.storeUncertainty(tx, id, digest, previous.principalId);
           return {
             receipt: { ...previous.receipt, input_digest: digest },
             job: null,
@@ -279,6 +310,7 @@ export class SubmissionService {
         type: 'notice',
         payload: {
           kind: accepted ? 'submission_accepted' : 'submission_rejected',
+          principal_id: requestPrincipal() ?? current?.principalId ?? null,
           submission_id: id,
           input_digest: digest,
           job_revision: current?.revision ?? null,
@@ -299,6 +331,7 @@ export class SubmissionService {
       const status = rejection?.status ?? (kind === 'create' ? 201 : 200);
       await tx.insert(submission).values({
         submissionId: id,
+        principalId: requestPrincipal() ?? current?.principalId,
         inputDigest: digest,
         jobId: receipt.job_id,
         jobRevision: receipt.job_revision,
@@ -308,9 +341,13 @@ export class SubmissionService {
         errorCode: rejection?.code,
         errorMessage: rejection?.message,
       });
-      await tx
-        .insert(acceptanceJournal)
-        .values({ submissionId: id, jobId: receipt.job_id, receipt, receiptHash: hash(receipt) });
+      await tx.insert(acceptanceJournal).values({
+        submissionId: id,
+        principalId: requestPrincipal() ?? current?.principalId,
+        jobId: receipt.job_id,
+        receipt,
+        receiptHash: hash(receipt),
+      });
       if (accepted && current) await this.onAccepted?.(tx, receipt, current, kind);
       return {
         receipt,
