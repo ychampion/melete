@@ -31,6 +31,11 @@ export function learningRuntimeFetch(options: {
     available ??=
       options.sql`select to_regclass('public.episode') is not null and to_regclass('public.learning_attempt') is not null as available`.then(
         (rows) => rows[0]?.available === true,
+        (error) => {
+          // A transient connection failure must not disable the catalog for this process.
+          available = undefined;
+          throw error;
+        },
       );
     return available;
   }
