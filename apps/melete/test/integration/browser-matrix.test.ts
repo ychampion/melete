@@ -28,7 +28,7 @@ const measurements: Measurement[] = [];
   beforeAll(async () => {
     if (!db) throw new Error('Postgres unavailable');
     fixture = startBrowserFixture();
-    driver = await browserBrokerFixture(db);
+    driver = await browserBrokerFixture(db, fixture.url);
   }, 25_000);
   afterAll(async () => {
     await driver?.close();

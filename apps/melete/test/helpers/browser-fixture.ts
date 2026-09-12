@@ -14,7 +14,7 @@ export function startBrowserFixture() {
   const requests: Array<{ path: string; method: string }> = [];
   const server = Bun.serve({
     hostname: '127.0.0.1',
-    port: 3130,
+    port: 0,
     async fetch(request) {
       const url = new URL(request.url);
       requests.push({ path: url.pathname, method: request.method });
@@ -82,7 +82,7 @@ export function startBrowserFixture() {
     server,
     effects,
     requests,
-    url: 'http://127.0.0.1:3130',
+    url: server.url.origin,
     close: () => server.stop(true),
   };
 }

@@ -77,6 +77,8 @@ export class BrowserWorkerPool {
       allowLocalProcess?: boolean;
       /** Tests supply their own entry that injects a fixed local fixture; never owner/model configuration. */
       workerEntry?: URL;
+      /** Arguments for the trusted worker entry, including fixture-only configuration in tests. */
+      workerArguments?: string[];
       headless?: boolean;
     },
   ) {}
@@ -114,6 +116,7 @@ export class BrowserWorkerPool {
         '--experimental-transform-types',
         '--disable-warning=ExperimentalWarning',
         fileURLToPath(this.options.workerEntry ?? new URL('./entry.ts', import.meta.url)),
+        ...(this.options.workerArguments ?? []),
       ],
       {
         cwd: spaceRoot,

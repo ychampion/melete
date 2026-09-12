@@ -23,6 +23,7 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       spacesRoot: await mkdtemp(join(tmpdir(), 'melete-w10b-controller-')),
       allowLocalProcess: true,
       workerEntry: new URL('../helpers/browser-child.ts', import.meta.url),
+      workerArguments: [fixture.url],
     });
     worker = await pool.get('sp_controller');
     session = await worker.lease('job_controller', {

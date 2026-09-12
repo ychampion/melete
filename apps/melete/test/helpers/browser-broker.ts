@@ -35,12 +35,13 @@ export type BrowserDetail = {
 };
 
 /** A scripted caller exercises the real broker; only the fixture's explicit owner approval is automated. */
-export async function browserBrokerFixture(db: TestDatabase) {
+export async function browserBrokerFixture(db: TestDatabase, fixtureOrigin: string) {
   const root = await mkdtemp(join(tmpdir(), 'melete-w10b-matrix-'));
   const pool = new BrowserWorkerPool({
     spacesRoot: root,
     allowLocalProcess: true,
     workerEntry: new URL('./browser-child.ts', import.meta.url),
+    workerArguments: [fixtureOrigin],
   });
   const boss = new PgBoss({ connectionString: db.url, max: 2 });
   boss.on('error', () => {});
