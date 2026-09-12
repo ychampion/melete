@@ -103,3 +103,11 @@
 - The supervised adapter returns `budget_exhausted` with the named `input_context_exceeded` summary before engine launch when the assembled prompt plus conservative engine framing cannot fit. The gateway rechecks the final encoded request before provider admission and returns the same named error (HTTP 413).
 - `bun test apps/melete/src/gateway/index.test.ts apps/melete/test/integration/budget.test.ts apps/melete/src/runtime/hermes.test.ts packages/contracts/src/model-budget.test.ts --max-concurrency=1`: exit 0, 24 pass, 0 fail, 106 assertions (11.95s). The first combined run had one outdated output-accounting expectation (21 pass, 1 fail); it was corrected from total-token to output-token usage.
 - The HTTP proof now posts a job without a budget and asserts output 8,000 and resolved input 120,000.
+- `bun run typecheck`: exit 0 after correcting the new admission test's `EventSink` fixture.
+- `bun run openapi && bun run client:generate`: exit 0; additive input fields generated.
+- `bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1`: exit 0, 1 pass, 0 fail, 52 assertions (184.15s overall; test 143.031s). Both real Hermes attempts reached the expected approval outcome with the default budget.
+
+### 2. Assert the actual container launch boundary
+
+- `bun test apps/melete/src/runtime/supervisor.test.ts --max-concurrency=1`: exit 0, 7 pass, 1 Windows skip, 0 fail, 32 assertions (2.62s).
+- The real `dockerRunArguments` test requires non-root `10001:10001`, read-only, `cap-drop ALL`, `no-new-privileges:true`, PID limit 256 and memory 2g. Removing any flag or changing its required value fails this test.

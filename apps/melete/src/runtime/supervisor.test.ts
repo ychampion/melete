@@ -83,6 +83,17 @@ describe('runtime launch boundaries', () => {
     expect(args).not.toContain('--publish');
     expect(args).not.toContain('--privileged');
     expect(args).toContain('--read-only');
+    for (const [flag, value] of [
+      ['--user', '10001:10001'],
+      ['--cap-drop', 'ALL'],
+      ['--security-opt', 'no-new-privileges:true'],
+      ['--pids-limit', '256'],
+      ['--memory', '2g'],
+    ] as const) {
+      const index = args.indexOf(flag);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(args[index + 1]).toBe(value);
+    }
     expect(args.filter((arg) => arg === '--network')).toHaveLength(1);
     expect(() =>
       dockerRunArguments(
