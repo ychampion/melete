@@ -28,15 +28,18 @@ import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
 import {
   action,
+  agent,
   approval,
   artifact,
   attempt,
   connection,
   event,
+  experienceTurn,
   knowledgeRecord,
   question,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { agentIdentity, agentView } from '../experience/agents.ts';
 import { selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
@@ -415,7 +418,18 @@ export async function buildAttemptSkeleton(
     previous ? { id: previous.id, endedAt: previous.endedAt } : null,
     readDeferred(row),
   );
+  const [activeTurn] = row.currentTurnId
+    ? await tx.select().from(experienceTurn).where(eq(experienceTurn.id, row.currentTurnId))
+    : [];
+  const personaId = activeTurn?.agentId ?? row.agentId;
+  const [persona] = personaId
+    ? await tx
+        .select()
+        .from(agent)
+        .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
+    : [];
   return responsibilityAttemptBundle.parse({
+    ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
       : {}),

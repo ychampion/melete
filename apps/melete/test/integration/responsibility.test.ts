@@ -44,7 +44,7 @@ import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { rejectionOf } from '../helpers/broker.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 import { processFault } from '../helpers/process-fault.ts';
 
 const handle = await testDatabase();
@@ -77,7 +77,7 @@ withDb('responsibility protocol', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     for (const name of Object.values(QUEUES)) await queue.boss.deleteAllJobs(name);
-    await handle.sql`truncate "principal", "owner", "space", event_retention cascade`;
+    await resetTestRows(handle.sql, { retention: true });
     spaceId = newId('sp');
     await handle.db
       .insert(space)

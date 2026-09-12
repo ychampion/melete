@@ -27,7 +27,8 @@ import { resolveTrustIn } from './trust.ts';
 export async function handlesForJob(tx: Query, spaceId: string, jobId: string): Promise<string[]> {
   const rows = await tx`select distinct u.handle
     from memory_outputs o join memory_output_uses u on u.output_row_id = o.id
-    where o.space_id = ${spaceId} and o.job_id = ${jobId}`;
+    where o.space_id = ${spaceId} and (o.job_id = ${jobId} or o.job_id =
+      (select experience_parent_id from job where id = ${jobId} and space_id = ${spaceId}))`;
   return rows.map((row) => row.handle as string);
 }
 

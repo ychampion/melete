@@ -23,6 +23,15 @@ export const envSchema = z.object({
   MELETE_MASTER_KEY: z.string().min(32).optional(),
 
   DATABASE_URL: z.string().min(1).optional(),
+  MELETE_PUBLIC_URL: z
+    .url()
+    .refine((value) => {
+      const address = new URL(value);
+      return (
+        ['http:', 'https:'].includes(address.protocol) && !address.username && !address.password
+      );
+    }, 'Use your public web address.')
+    .optional(),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**

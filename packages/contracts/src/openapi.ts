@@ -42,6 +42,7 @@ import { browserControlResponse } from './browser.ts';
 import { space } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
 import { executionSettlement, executionStartResponse } from './execution-admission.ts';
+import { experiencePaths } from './experience-openapi.ts';
 import { hookObservation } from './hooks.ts';
 import {
   episodeListResponse,
@@ -330,6 +331,7 @@ export function buildOpenApiDocument() {
             },
           },
         },
+        ...experiencePaths(),
         '/responsibilities': {
           post: {
             tags: ['jobs'],

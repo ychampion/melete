@@ -13,7 +13,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { SubmissionService, submissionDigest } from '../../src/jobs/submissions.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 import { processFault } from '../helpers/process-fault.ts';
 
 const handle = await testDatabase();
@@ -61,7 +61,7 @@ withDb('durable submission receipts', () => {
   beforeEach(async () => {
     const { handle, queue } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
-    await handle.sql`truncate "principal", "owner", "space" cascade`;
+    await resetTestRows(handle.sql);
     const ownerId = newId('own');
     spaceId = newId('sp');
     await handle.db

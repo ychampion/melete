@@ -52,4 +52,5 @@ Two rules:
 | [0020](0020-deployment-evidence.md) | Deployment claims require a running Linux stack | accepted |
 | [0021](0021-hermes-capability-audit.md) | What the pinned engine is proven to do, and what awaits proof | accepted |
 | [0022](0022-wired-assistant.md) | The ordinary HTTP job runs one pinned engine per attempt | accepted |
+| [0023](0023-experience-adapter.md) | The experience API is an adapter over saved work, never a second truth | accepted |
 | [0024](0024-browser-worker.md) | A browser worker outside the cell, with recipes and takeover | accepted |

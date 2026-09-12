@@ -2,12 +2,13 @@ import { resolve } from 'node:path';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { PgBoss } from 'pg-boss';
-import postgres from 'postgres';
+import postgres, {} from 'postgres';
 import { type MemoryScope, newId, provisionMemorySpace } from '../../src/memory/db.ts';
 import { acquireTestServer } from '../helpers/database.ts';
 
 export type TestDatabase = NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>;
-/** One disposable database per integration file; never migrate the caller's existing database. */
+
+/** Isolated databases share the preload's server; caller databases are never migrated in place. */
 export async function createTestDatabase(
   databaseUrl = process.env.DATABASE_URL,
   _options: { port?: number } = {},
@@ -18,7 +19,6 @@ export async function createTestDatabase(
   if (!baseUrl) return null;
   const admin = postgres(baseUrl, { max: 1, onnotice: () => {} });
   const name = `w7_${newId('test').toLowerCase()}`;
-  // Windows initdb can inherit WIN1252. Exact source spans require a Unicode database.
   await admin.unsafe(
     `create database "${name}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
   );

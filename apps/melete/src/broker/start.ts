@@ -8,8 +8,10 @@ import {
   connectorsFromEnv,
   readConnectionConfig,
 } from '../connectors/configured.ts';
+import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
+import { resolveExperienceGrant } from '../experience/rules.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
@@ -18,6 +20,7 @@ import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
 import { createInternalServer } from './internal-server.ts';
+import type { BrokerService } from './service.ts';
 import type { TrustResolver } from './trust.ts';
 
 /** Start only the effect listener; the API keeps its own port and authentication surface. */
@@ -33,6 +36,9 @@ export async function startEffectBoundary(
     browserSessions?: BrowserSessionService;
     connections?: ConfiguredConnection[];
     fakeProvider?: GatewayOptions['fake'];
+    /** A broker and registry the service already built, so both listeners share them. */
+    broker?: BrokerService;
+    registry?: ConnectorRegistry;
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -51,10 +57,12 @@ export async function startEffectBoundary(
   const browser = dependencies.browserSessions
     ? undefined
     : await configuredBrowserSessions({ sql: handle.sql, env, connections });
-  const registry = await connectorsFromEnv(handle.sql, env, {
-    connections,
-    browserSessions: dependencies.browserSessions ?? browser?.sessions,
-  });
+  const registry =
+    dependencies.registry ??
+    (await connectorsFromEnv(handle.sql, env, {
+      connections,
+      browserSessions: dependencies.browserSessions ?? browser?.sessions,
+    }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   try {
     const providers = [
@@ -103,6 +111,8 @@ export async function startEffectBoundary(
       connectTls: (host) => certificates.get(host),
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
+      resolveStandingGrant: resolveExperienceGrant,
+      broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,
       catalog: {
         skills: async (spaceId) =>

@@ -1,14 +1,23 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import { ID_PREFIXES, spaceListResponse } from '@melete/contracts';
+import {
+  ID_PREFIXES,
+  magicLinkConsume,
+  magicLinkRequest,
+  spaceListResponse,
+  unavailable,
+} from '@melete/contracts';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
+import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { session } from '../db/auth-schema.ts';
 import type { Database } from '../db/client.ts';
 import { owner, principal, space } from '../db/schema.ts';
 import type { Env } from '../env.ts';
+import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import type { RequestSource } from './listener.ts';
@@ -29,6 +38,7 @@ export type SessionOwner = { id: string; email: string; created_at: string };
 declare module 'hono' {
   interface ContextVariableMap {
     owner: SessionOwner;
+    experienceSpaceId: string;
   }
 }
 
@@ -40,7 +50,7 @@ const publicOwner = (row: typeof owner.$inferSelect): SessionOwner => ({
 
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 
-function newSession(ownerId: string, principalId = ownerId) {
+function newSession(ownerId: string, principalId = ownerId, spaceId?: string) {
   const token = randomBytes(32).toString('base64url');
   return {
     token,
@@ -48,6 +58,7 @@ function newSession(ownerId: string, principalId = ownerId) {
       tokenHash: tokenHash(token),
       ownerId,
       principalId,
+      ...(spaceId ? { spaceId } : {}),
       expiresAt: new Date(Date.now() + SESSION_TTL_SECONDS * 1000),
     },
   };
@@ -79,7 +90,13 @@ async function readCredentials(c: Context) {
 
 export function mountAuth(
   app: Hono,
-  deps: { db: Database | null; env: Env; loginThrottle?: LoginThrottle },
+  deps: {
+    db: Database | null;
+    env: Env;
+    loginThrottle?: LoginThrottle;
+    sql?: Sql;
+    registry?: ConnectorRegistry;
+  },
 ): void {
   const { db, env } = deps;
   const loginThrottle = deps.loginThrottle ?? new LoginThrottle();
@@ -91,7 +108,15 @@ export function mountAuth(
     }
     const publicRoute =
       (c.req.method === 'GET' && c.req.path === '/health') ||
-      (c.req.method === 'POST' && ['/setup', '/login'].includes(c.req.path));
+      (c.req.method === 'POST' &&
+        [
+          '/setup',
+          '/login',
+          '/signin/magic-link',
+          '/signin/magic-link/consume',
+          '/signin/google',
+          '/signin/apple',
+        ].includes(c.req.path));
     if (publicRoute) return next();
 
     const token = getCookie(c, SESSION_COOKIE);
@@ -105,7 +130,7 @@ export function mountAuth(
       );
     }
     const [active] = await db
-      .select({ owner: principal })
+      .select({ owner: principal, spaceId: session.spaceId })
       .from(session)
       .innerJoin(
         principal,
@@ -117,8 +142,42 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
+    const selected =
+      active.spaceId ??
+      (
+        await db
+          .select({ id: space.id })
+          .from(space)
+          .where(eq(space.kind, 'personal'))
+          .orderBy(space.createdAt, space.id)
+          .limit(1)
+      )[0]?.id;
+    if (selected) c.set('experienceSpaceId', selected);
     return principalContext.run(active.owner.id, next);
   });
+
+  const signIn =
+    deps.sql && deps.registry
+      ? new ExperienceSignIn(deps.sql, deps.registry, env.MELETE_PUBLIC_URL)
+      : undefined;
+  app.post('/signin/magic-link', async (c) => {
+    const input = magicLinkRequest.parse(await c.req.json());
+    return c.json(
+      signIn
+        ? await signIn.request(input.email)
+        : unavailable('Email sign-in is not connected yet.'),
+    );
+  });
+  app.post('/signin/magic-link/consume', async (c) => {
+    const input = magicLinkConsume.parse(await c.req.json());
+    if (!signIn) return c.json(unavailable('Email sign-in is not connected yet.'));
+    sessionCookie(c, await signIn.consume(input.token, newSession), env);
+    return c.json({ status: 'ok' });
+  });
+  for (const provider of ['google', 'apple'])
+    app.post(`/signin/${provider}`, (c) =>
+      c.json(unavailable('Use your password or an email sign-in link.')),
+    );
 
   app.post('/setup', async (c) => {
     if (!db) {

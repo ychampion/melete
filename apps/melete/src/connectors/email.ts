@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   Action,
   ConnectorHealth,
@@ -214,6 +215,27 @@ export class EmailConnector implements Connector {
         });
       },
     };
+  }
+
+  canSendSignIn(spaceId: string, email: string): boolean {
+    return (
+      spaceId === this.config.spaceId && this.config.from.toLowerCase() === email.toLowerCase()
+    );
+  }
+
+  /** Authentication mail is fixed-purpose and cannot be called through the action catalog. */
+  async sendSignInLink(spaceId: string, email: string, url: string): Promise<void> {
+    if (!this.canSendSignIn(spaceId, email)) throw new Error('Sign-in mailbox mismatch');
+    await this.use((transport) =>
+      transport.send({
+        to: [email],
+        cc: [],
+        bcc: [],
+        subject: 'Melete sign-in link',
+        body: `Use this link to sign in to Melete. It expires in ten minutes and can be used once.\n\n${url}\n\nIf you did not request this link, ignore this email.`,
+        messageId: `<signin.${randomUUID()}@melete.local>`,
+      }),
+    );
   }
 
   private success(

@@ -14,7 +14,7 @@ import { AttemptRunner, type ClaimedAttempt } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
 const queue = handle ? await startQueue(handle.url) : null;
@@ -124,7 +124,7 @@ withDb('durable waits, triggers and approval inputs', () => {
     const { handle, queue, jobs } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
     await queue.boss.deleteAllJobs(QUEUES.triggerSchedule);
-    await handle.sql`truncate "principal", "owner", "space" cascade`;
+    await resetTestRows(handle.sql);
     spaceId = newId('sp');
     ownerId = newId('own');
     connectionId = newId('conn');

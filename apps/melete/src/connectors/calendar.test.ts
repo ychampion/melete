@@ -58,6 +58,13 @@ function caldavDouble() {
         authorization: request.headers.get('authorization'),
       });
       const path = new URL(request.url).pathname;
+      if (request.method === 'DELETE') {
+        const existing = records.get(path);
+        if (!existing || existing.etag !== request.headers.get('if-match'))
+          return new Response(null, { status: 412 });
+        records.delete(path);
+        return new Response(null, { status: 204 });
+      }
       if (request.method === 'PUT') {
         puts++;
         const existing = records.get(path);
@@ -138,6 +145,19 @@ describe('calendar faults are typed, so the broker can repair the cause', () => 
 });
 
 describe('calendar connector', () => {
+  test('delete respects the observed version and keeps a changed event', async () => {
+    const double = caldavDouble();
+    const connector = new CalendarConnector(double.config, secret);
+    const create = mailAction('calendar.create', payload);
+    const created = await connector.execute(create, mailContext());
+    if (created.outcome !== 'succeeded') throw new Error('Create failed');
+    const removal = mailAction('calendar.delete', { uid: create.id, etag: '"stale"' });
+    expect((await connector.execute(removal, mailContext())).outcome).toBe('failed');
+    expect(double.records.size).toBe(1);
+    removal.canonical_payload.etag = created.receipt.detail.etag ?? null;
+    expect((await connector.execute(removal, mailContext())).outcome).toBe('succeeded');
+    expect(double.records.size).toBe(0);
+  });
   test('manifests conform and imported ICS exposes only the read tool', () => {
     expect(connectorManifest.safeParse(calendarManifest).success).toBe(true);
     const connector = new CalendarConnector(

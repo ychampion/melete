@@ -19,7 +19,7 @@ ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # produces something else is visible rather than silent: a moved tag is the one
 # way a "pinned, unmodified release" stops being either.
 ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
-ARG MELETE_PLUGIN_SHA=62e3c5f1b668cafe1d02c49ca698772f1103a0c89096dfab000281658e37e48f
+ARG MELETE_PLUGIN_SHA=03d1325b951f4d5e465d22e22558466874894e83d46f5fd11d7e1ff89bdaff31
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -150,6 +150,12 @@ def build_handler(
                 return client.propose_procedure(arguments)
             except BrokerError as error:
                 return refuse(error)
+        if name == "say" and connection_id is None:
+            # Narration for the person: no effect, no approval, recorded by the broker.
+            try:
+                return client.say(str(arguments.get("text", "")), _client_ref(name, arguments))
+            except BrokerError as error:
+                return refuse(error)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.

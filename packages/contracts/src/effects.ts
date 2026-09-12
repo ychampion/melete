@@ -39,6 +39,7 @@ export const intentKeyInput = z.object({
   connection_id: z.string().min(1),
   kind: z.string().min(1),
   payload_hash: sha256Hex,
+  turn_id: z.string().min(1).optional(),
 });
 export type IntentKeyInput = z.infer<typeof intentKeyInput>;
 
@@ -55,6 +56,8 @@ export function intentKey(input: IntentKeyInput): string {
     parsed.kind,
     parsed.payload_hash,
   ];
+  // Preserve existing identities; each new chat turn or routine occurrence gets its own scope.
+  if (parsed.turn_id) parts.push(parsed.turn_id);
   const encoded = parts.map((part) => `${Buffer.byteLength(part, 'utf8')}:${part}`).join('|');
   return createHash('sha256').update(encoded, 'utf8').digest('hex');
 }

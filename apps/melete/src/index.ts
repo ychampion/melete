@@ -12,6 +12,7 @@
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
@@ -30,6 +31,7 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { verifyCapability } from './broker/capability.ts';
+import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import {
   type ConfiguredConnection,
@@ -37,11 +39,13 @@ import {
   connectorsFromEnv,
   readConnectionConfig,
 } from './connectors/configured.ts';
+import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { connection, space } from './db/schema.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
+import { mountExperience } from './experience/routes.ts';
 import type { GatewayOptions } from './gateway/index.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
@@ -119,6 +123,10 @@ export type AppDeps = {
   memory?: MemoryRouteOptions;
   browserSessions?: BrowserSessionService;
   runtimeAdapter?: string;
+  runner?: AttemptRunner;
+  broker?: BrokerService;
+  registry?: ConnectorRegistry;
+  sql?: Sql;
 };
 
 export function createApp(deps: AppDeps) {
@@ -171,10 +179,25 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) {
     mountReactions(app, deps.reactions ?? new ReactionService(deps.jobs, attention), personalSpace);
   }
-  if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
+  const questions =
+    deps.questions ?? (deps.jobs ? new QuestionService(deps.jobs, submissions) : undefined);
+  if (questions) mountQuestions(app, questions);
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
+  if (deps.db)
+    mountExperience(app, {
+      db: deps.db,
+      jobs: deps.jobs,
+      submissions,
+      runner: deps.runner,
+      sql: deps.sql,
+      broker: deps.broker,
+      registry: deps.registry,
+      questions,
+      memoryJournal: deps.memory?.journal,
+      triggers: deps.triggers,
+    });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
     app.route(
@@ -295,6 +318,7 @@ export async function bootstrap(
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
+  let registry: ConnectorRegistry | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -338,15 +362,16 @@ export async function bootstrap(
       }, 60_000);
       episodeRetention.unref();
     }
-    if (handle)
-      catalog = new RuntimeCatalog(
-        handle.db,
-        await connectorsFromEnv(handle.sql, env),
-        env.MELETE_SPACES_DIR,
-      );
     if (handle) {
       connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
       browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
+      // One connector registry serves the API catalog, the effect boundary and
+      // the experience routes; the boundary builds the one configured broker.
+      registry = await connectorsFromEnv(handle.sql, env, {
+        connections,
+        browserSessions: browser?.sessions,
+      });
+      catalog = new RuntimeCatalog(handle.db, registry, env.MELETE_SPACES_DIR);
     }
     if (handle) {
       events = new EventStream(handle);
@@ -416,6 +441,7 @@ export async function bootstrap(
           fakeProvider: options.fakeProvider,
           browserSessions: browser?.sessions,
           connections,
+          registry,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -516,6 +542,7 @@ export async function bootstrap(
         effectBoundary = await startEffectBoundary(handle, env, {
           browserSessions: browser?.sessions,
           connections,
+          registry,
         });
       if (options.workers !== false) {
         await operations.start();
@@ -556,6 +583,10 @@ export async function bootstrap(
     proposer: learning?.proposer,
     evaluator,
     runtimeAdapter: options.runtime ? 'injected' : env.MELETE_RUNTIME_ADAPTER,
+    runner,
+    broker: effectBoundary?.broker,
+    registry,
+    sql: handle?.sql,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -585,6 +616,8 @@ export async function bootstrap(
     memory,
     boundary: effectBoundary,
     supervisor,
+    broker: effectBoundary?.broker,
+    registry,
     close,
   };
 }

@@ -11,6 +11,7 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
+import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 
@@ -98,6 +99,21 @@ export const META_TOOLS: ToolSpec[] = [
   },
 ];
 
+/** A chat's narration tool: what the assistant will do next, in the person's words, at no action cost. */
+export const SAY_TOOL: ToolSpec = {
+  name: 'say',
+  description:
+    'Tell the person in one or two first-person sentences what you will do next. Do not include reasoning, internal names, or technical details. This narration has no action cost and needs no approval.',
+  input_schema: {
+    type: 'object',
+    properties: { text: { type: 'string', minLength: 1, maxLength: 600 } },
+    required: ['text'],
+    additionalProperties: false,
+  },
+  effect_class: 'read',
+  connection_id: null,
+};
+
 export const toolTokens = (tools: readonly ToolSpec[]): number =>
   estimateTokens(
     JSON.stringify(
@@ -178,7 +194,10 @@ export class ToolCatalog {
     tx: Query,
     job: LockedJob,
     claims: CapabilityClaims,
+    access: AgentAccess,
   ): Promise<ScopedCatalogItem[]> {
+    // A job bound to a persona that no longer resolves fails closed: nothing is offered.
+    if (access.missingAgent) return [];
     const connections = await tx`select c.id, c.provider, c.scopes, c.health, s.audience
       from connection c join space s on s.id = c.space_id
       where c.space_id = ${job.space_id} and c.status = 'active' order by c.id`;
@@ -219,12 +238,16 @@ export class ToolCatalog {
       }
     };
     for (const row of connections) {
+      // A conversation's persona bounds which connections and verbs are offered.
+      if ((access.chat && !access.agentId) || (access.allowed && !access.allowed.includes(row.id)))
+        continue;
       const connector = this.options.connectors.get(row.id);
       if (!connector || connector.manifest.provider !== row.provider) continue;
       // A capability whose provider is not configured has nothing to offer yet.
       if (connector.capability?.available === false) continue;
       if (!connectorAllowsAudience(connector, job.constraints, row.audience)) continue;
       for (const declared of connector.manifest.tools) {
+        if (access.chat && directSend(declared.name)) continue;
         const scopes = [declared.name, ...declared.required_scopes];
         if (!scopes.every((scope) => claims.scopes.includes(scope) && row.scopes.includes(scope)))
           continue;
@@ -302,7 +325,7 @@ export class ToolCatalog {
         uses: 0,
       });
     }
-    for (const tool of this.options.nativeTools ?? []) {
+    for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
       if (
         !(await accept(tool.name, tool.connection_id, () => {
           if (tool.connection_id !== null || tool.effect_class !== 'read')
@@ -402,19 +425,28 @@ export class ToolCatalog {
 
   private async within<T>(
     claims: CapabilityClaims,
-    use: (tx: Query, job: LockedJob, items: CatalogItem[], context: CatalogContext) => Promise<T>,
+    use: (
+      tx: Query,
+      job: LockedJob,
+      items: CatalogItem[],
+      context: CatalogContext,
+      access: AgentAccess,
+    ) => Promise<T>,
   ): Promise<T> {
     return this.options.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const items = await this.scoped(tx, job, claims);
+      const access = await agentAccess(tx, job.id);
+      const items = await this.scoped(tx, job, claims, access);
       const context = await this.context(tx, claims, items);
-      return use(tx, job, this.bindNames(items, context), context);
+      return use(tx, job, this.bindNames(items, context), context, access);
     }) as Promise<T>;
   }
 
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
-    return this.within(claims, async (_tx, _job, items, context) => this.current(context, items));
+    return this.within(claims, async (_tx, _job, items, context, access) =>
+      access.missingAgent ? [] : this.current(context, items),
+    );
   }
 
   /** Used by trusted broker composition; does not load schemas or create a grant. */

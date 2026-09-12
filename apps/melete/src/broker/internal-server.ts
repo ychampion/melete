@@ -27,6 +27,9 @@ export function createInternalServer(options: {
   approvalTtlMs?: number;
   catalog?: BrokerOptions['catalog'];
   composeExecutor?: BrokerOptions['composeExecutor'];
+  resolveStandingGrant?: BrokerOptions['resolveStandingGrant'];
+  /** A broker the service already built, shared with its own routes. */
+  broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
   /** The service runner finalizes its attempt before the job changes state. */
   deferApprovalWaitToRunner?: boolean;
@@ -37,27 +40,30 @@ export function createInternalServer(options: {
   artifactRoots?: ArtifactRoots;
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
 }) {
-  const broker = new BrokerService({
-    sql: options.sql,
-    connectors: options.connectors,
-    boss: options.boss,
-    dispatchTimeoutMs: options.dispatchTimeoutMs,
-    resolveAuthority: options.resolveAuthority,
-    resolveTrust: options.resolveTrust,
-    approvalTtlMs: options.approvalTtlMs,
-    // A declared write becomes an artifact row with its checks beside it, in
-    // the same transaction that persists the receipt.
-    recordArtifact: createArtifactRecorder(options.artifactCritic, options.artifactRoots),
-    estimateSpend: (action) => {
-      const capability = options.connectors.get(action.connection_id)?.capability;
-      return capability?.available && capability.kind === action.kind
-        ? capability.unit_cost_usd
-        : Number.NaN;
-    },
-    catalog: options.catalog,
-    composeExecutor: options.composeExecutor,
-    deferApprovalWaitToRunner: options.deferApprovalWaitToRunner,
-  });
+  const broker =
+    options.broker ??
+    new BrokerService({
+      sql: options.sql,
+      connectors: options.connectors,
+      boss: options.boss,
+      dispatchTimeoutMs: options.dispatchTimeoutMs,
+      resolveAuthority: options.resolveAuthority,
+      resolveTrust: options.resolveTrust,
+      approvalTtlMs: options.approvalTtlMs,
+      // A declared write becomes an artifact row with its checks beside it, in
+      // the same transaction that persists the receipt.
+      recordArtifact: createArtifactRecorder(options.artifactCritic, options.artifactRoots),
+      estimateSpend: (action) => {
+        const capability = options.connectors.get(action.connection_id)?.capability;
+        return capability?.available && capability.kind === action.kind
+          ? capability.unit_cost_usd
+          : Number.NaN;
+      },
+      catalog: options.catalog,
+      composeExecutor: options.composeExecutor,
+      deferApprovalWaitToRunner: options.deferApprovalWaitToRunner,
+      resolveStandingGrant: options.resolveStandingGrant,
+    });
   const app = createBrokerApp({
     broker,
     capabilityKey: options.capabilityKey,

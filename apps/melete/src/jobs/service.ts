@@ -129,7 +129,17 @@ export class JobService {
   }
 
   /** Submission admission composes its receipt with the same job/wake transaction. */
-  async createInTransaction(tx: Transaction, input: CreateResponsibilityRequest): Promise<JobRow> {
+  async createInTransaction(
+    tx: Transaction,
+    input: CreateResponsibilityRequest,
+    experience?: {
+      kind: 'chat' | 'plan' | 'routine' | 'milestone';
+      agentId?: string;
+      planId?: string;
+      scheduledAt?: Date;
+      dormant?: boolean;
+    },
+  ): Promise<JobRow> {
     const value = createResponsibilityRequest.parse(input);
     const [parent] = await tx
       .select({ id: space.id })
@@ -147,7 +157,28 @@ export class JobService {
         objective: value.objective,
         constraints: jobConstraints.parse(value.constraints ?? {}),
         budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
-        nextWakeAt: new Date(),
+        nextWakeAt:
+          experience && (experience.dormant || ['chat', 'plan'].includes(experience.kind))
+            ? null
+            : (experience?.scheduledAt ?? new Date()),
+        ...(experience
+          ? {
+              kind: experience.kind,
+              agentId: experience.agentId,
+              planId: experience.planId,
+              ...(experience.dormant || ['chat', 'plan'].includes(experience.kind)
+                ? {
+                    state: 'waiting_for_input',
+                    wait: { kind: 'user_input', question: 'What would you like to do next?' },
+                  }
+                : experience.scheduledAt
+                  ? {
+                      state: 'waiting_for_event_or_time',
+                      wait: { kind: 'timer', wake_at: experience.scheduledAt.toISOString() },
+                    }
+                  : {}),
+            }
+          : {}),
         schedulingClass: value.scheduling_class,
         importance: value.importance,
         unreadThreshold: value.unread_threshold,
@@ -194,7 +225,16 @@ export class JobService {
       const [used] = await tx
         .select({ count: sql<number>`count(*)::int` })
         .from(attempt)
-        .where(eq(attempt.jobId, row.id));
+        .where(
+          and(
+            eq(attempt.jobId, row.id),
+            ['chat', 'routine'].includes(row.kind)
+              ? row.currentTurnId
+                ? eq(attempt.turnId, row.currentTurnId)
+                : sql`false`
+              : undefined,
+          ),
+        );
       if (Number(used?.count ?? 0) >= jobBudget.parse(row.budget).max_attempts)
         throw new ServiceError('budget_exhausted', 'This job has used its attempt budget.');
     }
@@ -260,6 +300,10 @@ export class JobService {
   async inputInTransaction(tx: Transaction, id: string, text: string): Promise<JobRow> {
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+    if (row.kind === 'chat' && (row.state === 'running' || row.state === 'queued' || row.paused))
+      throw new ServiceError('turn_in_progress', 'Wait for this turn to finish.', 409);
+    // A new conversation turn has its own attempt allowance. Earlier receipts remain durable.
+    if (row.kind === 'chat') row.currentTurnId = null;
     const updated = await this.move(tx, row, { kind: 'user_input_received' }, { reason: 'input' });
     await appendEvent(tx, {
       jobId: id,

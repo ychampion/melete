@@ -192,6 +192,8 @@ export function renderSinceLast(delta: SinceLast): string {
 export const attemptBundle = z.object({
   principal_id: prefixedId(ID_PREFIXES.owner).optional(),
   membership_generation: z.number().int().nonnegative().optional(),
+  /** Optional personalized identity, still bounded separately from working context. */
+  identity: z.string().max(1000).optional(),
   attempt: z.object({
     id: prefixedId(ID_PREFIXES.attempt),
     job_id: prefixedId(ID_PREFIXES.job),

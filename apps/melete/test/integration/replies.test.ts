@@ -15,7 +15,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { StubRuntimeAdapter, type StubStep } from '../../src/runtime/stub.ts';
-import { testDatabase } from '../helpers/database.ts';
+import { resetTestRows, testDatabase } from '../helpers/database.ts';
 import { processFault } from '../helpers/process-fault.ts';
 
 const handle = await testDatabase();
@@ -74,7 +74,7 @@ withDb('reply obligations and notification outbox', () => {
   beforeEach(async () => {
     const { handle, jobs, queue } = fixture();
     await queue.boss.deleteAllJobs(QUEUES.attempt);
-    await handle.sql`truncate "principal", "owner", "space" cascade`;
+    await resetTestRows(handle.sql);
     const ownerId = newId('own');
     spaceId = newId('sp');
     await handle.db

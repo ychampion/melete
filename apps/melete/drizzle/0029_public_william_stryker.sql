@@ -1,0 +1,1 @@
+ALTER TABLE "attempt" ADD COLUMN "turn_id" text;

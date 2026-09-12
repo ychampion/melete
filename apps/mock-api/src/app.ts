@@ -58,6 +58,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
+import { mountExperienceMock } from './experience.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
 import { MockConflict, newId, type Store } from './store.ts';
@@ -79,6 +80,7 @@ export type AppDeps = {
   runner: Runner;
   scenarios: Scenario[];
   spaceId: string;
+  experienceSpeed?: number;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -101,10 +103,12 @@ export function createMockApp(deps: AppDeps) {
     cors({
       origin: (origin) => origin ?? '*',
       credentials: true,
-      allowHeaders: ['content-type', 'accept', 'last-event-id'],
-      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['content-type', 'accept', 'last-event-id', 'idempotency-key'],
+      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     }),
   );
+
+  mountExperienceMock(app, deps);
 
   /**
    * Parse an outgoing body with the contract before it leaves. A failure here is

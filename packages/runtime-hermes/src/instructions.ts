@@ -26,7 +26,10 @@ export const IDENTITY: string = loadIdentity();
 
 /** A run's `instructions`: identity, then procedure, then what is already known. */
 export function renderInstructions(bundle: AttemptBundle): string {
-  const parts = [IDENTITY];
+  const identity = bundle.identity ?? IDENTITY;
+  if (estimateTokens(identity) > 250)
+    throw new Error('The agent identity exceeds its 250-token cap.');
+  const parts = [identity];
 
   if (bundle.skills.length > 0) {
     // The service has already applied the at-most-three rule; this only renders.

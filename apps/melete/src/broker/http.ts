@@ -38,6 +38,7 @@ export interface BrokerOperations {
     id: string,
     result: ExecutionSettlement,
   ): Promise<Action>;
+  say?(claims: CapabilityClaims, text: string, ref: string): Promise<void>;
 }
 
 export function createBrokerApp(options: {
@@ -77,6 +78,7 @@ export function createBrokerApp(options: {
       (c.req.method === 'POST' &&
         (path === '/actions' ||
           path === '/reactions' ||
+          path === '/say' ||
           ['/tools/search', '/tools/load', '/tools/call'].includes(path) ||
           /^\/actions\/[^/]+\/execution\/(start|settle)$/.test(path)));
     if (!decision && !runtime) return c.json({ error: { code: 'not_found' } }, 404);
@@ -147,6 +149,14 @@ export function createBrokerApp(options: {
     return c.json(
       await options.broker.discovery.callSkill(c.get('claims'), body.name, body.arguments),
     );
+  });
+  app.post('/say', async (c) => {
+    const input = z
+      .strictObject({ text: z.string().min(1).max(600), ref: z.string().min(1).max(200) })
+      .parse(await c.req.json());
+    if (!options.broker.say) return c.json({ error: { code: 'not_available' } }, 404);
+    await options.broker.say(c.get('claims'), input.text, input.ref);
+    return c.json({ status: 'ok' });
   });
   app.post('/actions', async (c) =>
     c.json(

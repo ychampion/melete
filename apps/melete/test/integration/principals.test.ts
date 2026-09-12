@@ -106,9 +106,11 @@ withDb('principal and shared-space authority', () => {
       await upgrade.sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget) values (${jobId}, ${spaceId}, 'Legacy job', 'Finish legacy work', 'running', 1, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
       await upgrade.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at) values (${attemptId}, ${jobId}, 1, 'legacy', 'stub', 'script', now() + interval '1 minute')`;
       await upgrade.sql`insert into session (token_hash, owner_id, expires_at) values (${createHash('sha256').update(token).digest('hex')}, ${ownerId}, now() + interval '1 minute')`;
-      await upgrade.sql.unsafe(
-        await readFile(new URL(`${migrationTag('petite_demogoblin')}.sql`, migrations), 'utf8'),
-      );
+      // This lane's migration and every later one, in journal order.
+      for (const tag of journalTags().slice(
+        journalTags().indexOf(migrationTag('petite_demogoblin')),
+      ))
+        await upgrade.sql.unsafe(await readFile(new URL(`${tag}.sql`, migrations), 'utf8'));
       const api = createApp({
         env: loadEnv({ NODE_ENV: 'test' }),
         db: upgrade.db,
