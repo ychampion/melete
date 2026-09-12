@@ -606,7 +606,7 @@ export class AttemptRunner {
           kind: resume ? 'experience_resumed' : 'experience_paused',
           turn_id: row.currentTurnId,
         },
-        dedupKey: newId('pause'),
+        dedupKey: `${row.currentTurnId}:${resume ? 'resumed' : 'paused'}`,
       });
       if (resume && updated?.state === 'queued') await this.jobs.enqueue(tx, updated, 'input');
     });

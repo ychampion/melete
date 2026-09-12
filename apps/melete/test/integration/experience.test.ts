@@ -124,7 +124,7 @@ withDb('experience rows and authenticated scope', () => {
     await runner?.stop();
     await queue?.stop();
     await handle?.close();
-  });
+  }, 30000);
   test('home uses the saved time zone and tasks; search excludes foreign rows', async () => {
     expect(
       (
@@ -561,6 +561,22 @@ withDb('experience rows and authenticated scope', () => {
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
     expect(messages.turns.map((turn) => turn.id)).toEqual([accepted.turn_id]);
+  });
+  test('retrying pause and resume appends one notice per turn and action', async () => {
+    const chat = await createConversation();
+    const accepted = messageAcceptance.parse(
+      await (
+        await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Plan dinner' })
+      ).json(),
+    );
+    for (const action of ['pause', 'pause', 'resume', 'resume'])
+      expect((await request(`/conversations/${chat.id}/${action}`, 'POST')).status).toBe(200);
+    const rows = await required(handle).sql`select payload from event where job_id = ${chat.id}
+      and payload->>'kind' in ('experience_paused', 'experience_resumed') order by seq`;
+    expect(rows.map((row) => row.payload)).toEqual([
+      { kind: 'experience_paused', turn_id: accepted.turn_id },
+      { kind: 'experience_resumed', turn_id: accepted.turn_id },
+    ]);
   });
   test('an unconfirmed change cannot produce a completed turn or done trail step', async () => {
     const chat = await createConversation();
