@@ -261,8 +261,9 @@ export class BrowserController {
           node.properties?.find((property) => property.name === 'required')?.value.value,
         ),
       });
+      // Refuse oversized pages before issuing locator queries for the rest of the AX tree.
+      if (schema.length > 128) throw new BrowserFault('schema_too_large');
     }
-    if (schema.length > 128) throw new BrowserFault('schema_too_large');
     return schema;
   }
 
