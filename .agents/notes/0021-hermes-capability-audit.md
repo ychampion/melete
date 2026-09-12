@@ -324,7 +324,7 @@ real HTTP with a scripted provider. No engine installation was needed.
 The single strict test is `real Hermes capability chain: discovery, hooks,
 learning, teammate context and revocation` in `capability-proof.test.ts`.
 Each stage records its own evidence; the test fails for any failed stage or
-missing implementation. The final strict run passes all five stages with
+missing implementation. The earlier release-gate strict run passed all five stages with
 85 assertions in 208.62 seconds, no failures and no missing entries. Evidence is
 `%TEMP%/melete-w14-capability-JAbcAJ/capability-evidence.json`, SHA-256
 `899c68b5b6470201ea378e0c2e70306255c499e160a9a317634dfb1aa3e7fa31`.
@@ -393,3 +393,48 @@ The final evidence path, checksum, focused checks and full-suite command ledger
 are in [REPORT.md](../../REPORT.md). Earlier red evidence in that
 append-only report describes superseded runs. The current capability matrix is
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
+
+## PR 27 verification - 2026-09-12
+
+Commits `d752616` and `6d0d531` fix the migration timestamps and initialization
+race respectively. Product changes are confined to the journal and connections
+route. The proof and jobs/broker source remain unchanged.
+
+- Focused command: `bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/runtime-mcp-revocation.test.ts apps/melete/test/integration/runtime-mcp.test.ts --max-concurrency=1 --timeout=30000` passes 6 tests and 147 assertions in 25.85 seconds. The production integration-schema upgrade verifies all three columns and repeat-startup idempotence.
+- `bun run typecheck` passes. `bun run lint` passes across 541 files with the pre-existing empty-import warning in `apps/melete/test/integration/postgres.ts`.
+- `bun run openapi` and `bun run client:generate` both pass from a clean tree at `6d0d531`; `git diff --exit-code` and `git status --porcelain` confirm clean regeneration.
+- `bun run test:plugin` passes all 61 tests in 25.42 seconds.
+
+The first unchanged real-engine rerun failed after 67 assertions in 303.09
+seconds. Its sealed evaluation records one `budget_exhausted` candidate attempt,
+with no model result, after the existing 15-second wall-time budget. Another
+lane held the shared test lock during that run. Evidence is retained at
+`%TEMP%/melete-w14-capability-wHcsDT/capability-evidence.json`; no proof assertion,
+fixture, model output or attempt budget was changed.
+
+The unchanged proof was then rerun while holding the shared lock. It passes
+all 85 assertions in 284.91 seconds, with every stage passed and empty failure
+and missing lists. Evidence is
+`%TEMP%/melete-w14-capability-trNDDu/capability-evidence.json`, SHA-256
+`899e178f4d13e40ff0269176c3e2f5a600de65a6269fe9e6b6596a546c23ca5c`.
+The proof source remains SHA-256
+`50f3ae8adf5b7b5c26dea07dc335a09128853f5481af6f7026bf39eb96b7ba99`.
+
+The full suite ran exactly once as `timeout 1200 bun test --max-concurrency=2`
+under the owned shared lock. It completed in 303.62 seconds with 1,560 passes,
+29 skips, one failure and 7,318 assertions across 152 files (exit 1). Both new
+review regressions passed in that run. The ownership marker and lock directory
+were removed, and inspection found no tracked test processes still running.
+The result and stdout/stderr logs remain under
+`%TEMP%/melete-w14-pr27-full-20260912.*`; its raw line counters include Bun's
+repeated failure/skip summary, while the counts above use Bun's final summary.
+
+The sole failure was `wired-assistant.test.ts:130`: the fixture changed the
+singleton owner's email/password, but login reads its principal. Updating that
+fixture principal reached a second stale expectation: the exact tool list must
+include the integrated `search_tools`, `load_tool` and `react` verbs alongside
+`test.send`. Only the fixture and its exact expected list changed. Its focused
+command, `bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1 --timeout=30000`,
+then passed 52 assertions in 29.00 seconds through real Hermes. Typecheck and
+lint pass after this test-only repair. The full suite was not repeated, so its
+recorded result remains non-green despite the passing focused repair.

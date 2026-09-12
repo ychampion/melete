@@ -35,7 +35,7 @@ connected to Melete's authority and tested.
 | Existing account upgrade | implemented-and-tested | `additive migration preserves the setup guard, login and an issued personal-space capability` now upgrades through production `migrateDatabase`. `production migration upgrades the integration schema with MCP setup and procedure promotion` starts with a real ledger through 0032, verifies all three new columns, and checks a second startup is idempotent. Migrations 0033/0034 have increasing timestamps after 0032. |
 | Adapter sequencing and prompt assembly | implemented-and-tested | `every event carries the one dedup key format` and `the instructions are identity, then skills, then knowledge` in the runtime adapter/client suites. Uses recorded HTTP responses. |
 | Real local Hermes hook run | implemented-and-tested | The real capability test passes its session start/end and pre/post tool assertions and records 23 lifecycle events across discovery and continuation with a successful MCP receipt. Actual compaction remains outside this executed scenario. |
-| Whole end-to-end capability proof | implemented-and-tested | `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` passes through the real pinned HTTP engine: 85 assertions, 208.62 seconds, all five stages passed, no missing entries. Evidence `melete-w14-capability-JAbcAJ` includes the actual provider requests. |
+| Whole end-to-end capability proof | implemented-and-tested | The unchanged `real Hermes capability chain: discovery, hooks, learning, teammate context and revocation` passes after the PR 27 fixes: 85 assertions, 284.91 seconds, all five stages passed, no missing entries. The run held the shared test lock; evidence `melete-w14-capability-trNDDu` includes actual provider requests. |
 
 ## Authority and observer behavior
 
@@ -158,14 +158,21 @@ trap 'rm C:/Users/gamin/.melete-test.lock/w14-owner; rmdir C:/Users/gamin/.melet
 bun test --max-concurrency=1 --timeout=30000
 ```
 
-The append-only [REPORT.md](../REPORT.md) records the passing strict proof,
-focused checks and final single full-suite run. The earlier dictionary-result,
-MCP receipt and context-matcher failures are historical. The final release-gate
-full suite ran once under the shared lock and reached its 180-second budget:
-1,312 passing test lines, no failing lines and 29 skips before termination
-(exit 124, 180.75 seconds). It remains incomplete and was not rerun. Typecheck,
-lint, clean database/OpenAPI/client regeneration, 61 plugin tests and 19 Compose
-declaration checks pass. Actual compaction and Docker isolation remain unverified.
+The append-only [REPORT.md](../REPORT.md) preserves earlier release-gate runs;
+[note 0021](../.agents/notes/0021-hermes-capability-audit.md) records PR 27 verification.
+The unchanged strict proof passes 85 assertions while holding the shared lock.
+An earlier concurrent run exhausted one evaluation attempt's existing 15-second
+budget; neither the proof nor its budgets were changed.
+
+The requested `timeout 1200 bun test --max-concurrency=2` ran once under the
+shared lock and completed in 303.62 seconds: 1,560 passed, 29 skipped, one failed
+(exit 1). The failure was the wired-assistant fixture's stale login credentials.
+That fixture now updates its principal credentials and expects the integrated
+discovery/reaction tools; its focused real-Hermes test passes 52 assertions.
+The full suite was not rerun and its recorded result remains non-green.
+Typecheck, lint, clean OpenAPI/client regeneration and 61 plugin tests pass;
+lint retains one pre-existing empty-import warning. Actual compaction and Docker
+isolation remain unverified.
 Skipping opt-in real-runtime checks during ordinary tests is not end-to-end proof.
 Tests use disposable PostgreSQL 17 and pg-boss when `DATABASE_URL` is
 unset. A skipped database test is not a pass. Docker isolation remains unverified
