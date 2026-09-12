@@ -273,6 +273,69 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     expect((await claim(runner(), row)).claims.epoch).toBe(1);
   });
 
+  test('a wake is judged by the database clock, not by a process clock up to 50 ms off', async () => {
+    const { handle, jobs } = fixture();
+    const realNow = Date.now;
+    const shift = (ms: number) => {
+      Date.now = () => realNow() + ms;
+    };
+    try {
+      // Due by the database clock. A process clock 50 ms behind Postgres would
+      // have called this wake early and dropped it until the recovery scan.
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      shift(-50);
+      expect((await claim(runner(), await jobs.get(row.id))).claims.epoch).toBe(1);
+      // Not yet due by the database clock. A process clock 50 ms ahead would
+      // have claimed it before its time.
+      const next = await create();
+      await handle.sql`update job set next_wake_at = now() + interval '30 milliseconds' where id = ${next.id}`;
+      shift(50);
+      expect(await runner().claim(wake(await jobs.get(next.id)))).toBeNull();
+      await Bun.sleep(60);
+      expect((await claim(runner(), await jobs.get(next.id))).claims.epoch).toBe(1);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test('an attempt still open when a later epoch claims the job ends as superseded', async () => {
+    const { handle, jobs } = fixture();
+    const row = await create();
+    const first = await claim(runner(), row);
+    // The job is queued again past the open attempt without ending it, as a
+    // crashed service or an out-of-band state repair can leave it.
+    await handle.sql`update job set state = 'queued', lease_epoch = lease_epoch + 1,
+      state_version = state_version + 1, next_wake_at = now() where id = ${row.id}`;
+    const second = await claim(runner(), await jobs.get(row.id));
+    expect(second.claims.attempt_id).not.toBe(first.claims.attempt_id);
+    const stale = await execution(first.claims.attempt_id);
+    expect(stale.endedAt).not.toBeNull();
+    expect(stale.outcome).toBe('fenced');
+    expect(stale.outcomeDetail).toEqual({ kind: 'superseded', by: second.claims.attempt_id });
+    const [ended] = await handle.sql`select count(*)::int as n from event
+      where attempt_id = ${first.claims.attempt_id} and type = 'attempt_ended'`;
+    expect(ended?.n).toBe(1);
+    expect(
+      await handle.sql`select id from attempt where job_id = ${row.id} and ended_at is null`,
+    ).toHaveLength(1);
+  });
+
+  test('the recovery scan closes an expired attempt a later epoch already fenced', async () => {
+    const { handle, jobs } = fixture();
+    const row = await create();
+    const first = await claim(runner(), row);
+    await handle.sql`update job set lease_epoch = lease_epoch + 1, state = 'waiting_for_input',
+      next_wake_at = null where id = ${row.id}`;
+    await handle.sql`update attempt set lease_expires_at = now() - interval '1 second'
+      where id = ${first.claims.attempt_id}`;
+    await runner().recover();
+    const stale = await execution(first.claims.attempt_id);
+    expect(stale.endedAt).not.toBeNull();
+    expect(stale.outcomeDetail).toEqual({ kind: 'superseded' });
+    expect((await jobs.get(row.id)).state).toBe('waiting_for_input');
+  });
+
   test('durable input cursors deliver new messages once while retaining completed tools in the transcript', async () => {
     const { jobs } = fixture();
     const worker = runner();

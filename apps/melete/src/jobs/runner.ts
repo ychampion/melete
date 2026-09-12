@@ -26,7 +26,7 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { attempt, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
@@ -80,6 +80,12 @@ export type OutcomeContext = {
 class AttemptBudgetExceeded extends Error {}
 
 /** An adapter invocation is disposable; every decision around it is a short database transaction. */
+/** The database's clock, read inside the transaction that reads the rows it is compared with. */
+async function databaseNow(tx: Transaction): Promise<Date> {
+  const [row] = await tx.execute<{ now: Date | string }>(sql`select now() as now`);
+  return row?.now instanceof Date ? row.now : new Date(String(row?.now));
+}
+
 export class AttemptRunner {
   private readonly active = new Map<
     string,
@@ -121,6 +127,9 @@ export class AttemptRunner {
     const capabilities = await this.runtime.capabilities();
     return this.jobs.transaction(async (tx) => {
       let row = await this.jobs.lock(tx, wake.job_id, true);
+      // pg-boss delivers a wake by the database clock; judge it by the same
+      // clock. A process clock a few milliseconds behind Postgres would otherwise
+      // call every on-time wake early and drop it until the recovery scan.
       if (
         !row ||
         row.paused ||
@@ -128,7 +137,7 @@ export class AttemptRunner {
         row.leaseEpoch !== wake.expected_epoch ||
         row.stateVersion !== wake.expected_version ||
         !row.nextWakeAt ||
-        row.nextWakeAt.getTime() > Date.now()
+        row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime()
       )
         return null;
       if (row.state === 'waiting_for_event_or_time') {
@@ -217,6 +226,28 @@ export class AttemptRunner {
         inputCursor: Number(latest?.seq ?? 0),
       });
       await captureAttemptVersions(tx, bundle, capabilities.version);
+      // The epoch bump below fences any attempt still open on this job. Its row
+      // must say so: an open row with no end timestamp would otherwise outlive
+      // the recovery scan, which only closes attempts of the current epoch.
+      const superseded = await tx
+        .update(attempt)
+        .set({
+          outcome: 'fenced',
+          outcomeDetail: { kind: 'superseded', by: attemptId },
+          endedAt: new Date(),
+          leaseStatus: 'ended',
+          leaseExpiresAt: null,
+        })
+        .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt), ne(attempt.id, attemptId)))
+        .returning({ id: attempt.id });
+      for (const stale of superseded)
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: stale.id,
+          type: 'attempt_ended',
+          payload: { kind: 'superseded', by: attemptId },
+          dedupKey: `${stale.id}:ended`,
+        });
       row = await this.jobs.move(
         tx,
         row,
@@ -747,7 +778,7 @@ export class AttemptRunner {
     const expired = await this.jobs.db
       .select({ id: attempt.id, jobId: attempt.jobId })
       .from(attempt)
-      .where(and(isNull(attempt.endedAt), lte(attempt.leaseExpiresAt, new Date())));
+      .where(and(isNull(attempt.endedAt), sql`${attempt.leaseExpiresAt} <= now()`));
     for (const candidate of expired) {
       const fenced = await this.jobs
         .transaction(async (tx) => {
@@ -758,11 +789,32 @@ export class AttemptRunner {
             !execution ||
             execution.endedAt ||
             !execution.leaseExpiresAt ||
-            execution.leaseExpiresAt.getTime() > Date.now() ||
-            row.state !== 'running' ||
-            row.leaseEpoch !== execution.epoch
+            execution.leaseExpiresAt.getTime() > (await databaseNow(tx)).getTime()
           )
             return false;
+          if (row.leaseEpoch !== execution.epoch) {
+            // Already fenced by a later epoch: the job moved on without this
+            // row. Close the row; the job's state is not this attempt's to change.
+            await tx
+              .update(attempt)
+              .set({
+                outcome: 'fenced',
+                outcomeDetail: { kind: 'superseded' },
+                endedAt: new Date(),
+                leaseStatus: 'ended',
+                leaseExpiresAt: null,
+              })
+              .where(eq(attempt.id, execution.id));
+            await appendEvent(tx, {
+              jobId: row.id,
+              attemptId: execution.id,
+              type: 'attempt_ended',
+              payload: { kind: 'superseded' },
+              dedupKey: `${execution.id}:ended`,
+            });
+            return false;
+          }
+          if (row.state !== 'running') return false;
           const [committed] = await tx
             .select()
             .from(event)
@@ -800,7 +852,7 @@ export class AttemptRunner {
       .where(
         and(
           inArray(job.state, ['queued', 'waiting_for_event_or_time']),
-          lte(job.nextWakeAt, new Date()),
+          sql`${job.nextWakeAt} <= now()`,
         ),
       );
     for (const candidate of due) {
@@ -808,7 +860,7 @@ export class AttemptRunner {
         const row = await this.jobs.lock(tx, candidate.id, true);
         if (
           !row?.nextWakeAt ||
-          row.nextWakeAt.getTime() > Date.now() ||
+          row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime() ||
           !['queued', 'waiting_for_event_or_time'].includes(row.state)
         )
           return;
