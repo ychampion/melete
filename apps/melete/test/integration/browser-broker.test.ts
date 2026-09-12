@@ -26,16 +26,9 @@ import {
 import { BrowserSessionService } from '../../src/workers/browser/routes.ts';
 import type { BrowserSession } from '../../src/workers/browser/sessions.ts';
 import { rejectionOf, seedJob } from '../helpers/broker.ts';
-import { createPostgresFixture } from '../helpers/postgres.ts';
+import { testDatabase } from '../helpers/database.ts';
 
-const fixture = await createPostgresFixture({
-  migrations: [
-    new URL('../../drizzle/0001_auth.sql', import.meta.url),
-    new URL('../../drizzle/0002_attempt_leases.sql', import.meta.url),
-    new URL('../../drizzle/0015_browser_recipes.sql', import.meta.url),
-    new URL('../../drizzle/0016_browser_sessions.sql', import.meta.url),
-  ],
-});
+const fixture = await testDatabase();
 const databaseTest = fixture ? test : test.skip;
 const boss = fixture ? new PgBoss({ connectionString: fixture.url, max: 2 }) : null;
 if (boss) {
