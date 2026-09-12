@@ -1,9 +1,7 @@
 [test]
 preload = ["./apps/melete/test/helpers/preload.ts"]
 maxConcurrency = 2
-# Most suites here start an embedded Postgres and run against it. On a machine
-# running several worktrees at once the wait for a connection is long enough
-# that the 5 s default reports contention as a failure, which is the one thing
-# a test result must never do. Thirty seconds is still short enough that a
-# genuine hang fails the run rather than stalling it.
-timeout = 30000
+# The per-test timeout lives in the `test` script rather than here: bun reads no
+# `timeout` key from this file, and a setting that is silently ignored is worse
+# than none. Run the suite with `bun run test`, or pass `--timeout=30000` when
+# invoking `bun test` directly.
