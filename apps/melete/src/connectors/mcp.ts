@@ -6,34 +6,25 @@ import {
   canonicalizePayload,
   connectorTool,
   type DispatchResult,
-  effectClass,
   type JsonObject,
   jsonObject,
   jsonSchema,
+  mcpHttpUrl,
+  mcpOperatorPolicy,
   type VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
+import { ConnectorFaultError } from './faults.ts';
 import {
   MCP_PROTOCOL_VERSION,
   type McpTransport,
+  type McpTransportOptions,
   openHttpMcpTransport,
   openStdioMcpTransport,
 } from './mcp-transport.ts';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from './schema-budget.ts';
 import type { ConnectorContext } from './types.ts';
 
-const scope = z.string().min(1).max(160);
-const operatorTool = z
-  .object({
-    name: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/),
-    alias: z
-      .string()
-      .regex(/^[a-z][a-z0-9_]*$/)
-      .max(80),
-    required_scopes: z.array(scope).min(1).max(32),
-    effect_class: effectClass.default('write_external'),
-  })
-  .strict();
 const endpoint = z.discriminatedUnion('transport', [
   z
     .object({
@@ -45,44 +36,13 @@ const endpoint = z.discriminatedUnion('transport', [
   z
     .object({
       transport: z.literal('http'),
-      url: z.url().refine((value) => {
-        const parsed = new URL(value);
-        return (
-          ['http:', 'https:'].includes(parsed.protocol) &&
-          !parsed.username &&
-          !parsed.password &&
-          !parsed.hash
-        );
-      }, 'MCP endpoint must be HTTP(S), without credentials or fragments'),
+      url: mcpHttpUrl,
     })
     .strict(),
 ]);
 
-/** Parsed only from an operator-owned file, never from a tool call or server response. */
-export const mcpServerConfig = z
-  .object({
-    id: z
-      .string()
-      .regex(/^[a-z][a-z0-9_]*$/)
-      .max(40),
-    endpoint,
-    allowed_scopes: z.array(scope).min(1).max(64),
-    audience: z.literal('owner'),
-    tools: z.array(operatorTool).min(1).max(256),
-  })
-  .strict()
-  .superRefine((config, ctx) => {
-    for (const field of ['name', 'alias'] as const) {
-      if (new Set(config.tools.map((tool) => tool[field])).size !== config.tools.length) {
-        ctx.addIssue({ code: 'custom', message: `MCP tool ${field} must be unique` });
-      }
-    }
-    for (const tool of config.tools) {
-      if (!tool.required_scopes.every((item) => config.allowed_scopes.includes(item))) {
-        ctx.addIssue({ code: 'custom', message: 'MCP tool scopes exceed operator allowed_scopes' });
-      }
-    }
-  });
+/** Parsed from authenticated operator installation or configuration, never a tool call. */
+export const mcpServerConfig = mcpOperatorPolicy.safeExtend({ endpoint });
 export type McpServerConfig = z.infer<typeof mcpServerConfig>;
 
 export async function readMcpConfig(path?: string): Promise<McpServerConfig[]> {
@@ -125,18 +85,75 @@ export type McpWorker = {
   execute(action: Action, context: McpExecutionContext): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
   health(): Promise<ConnectorHealth>;
+  reconnect(): Promise<void>;
   close(): Promise<void>;
+};
+
+export type McpWorkerOptions = McpTransportOptions & {
+  transport?: McpTransport;
+  transportFactory?: () => Promise<McpTransport>;
+  checkCredential?: () => Promise<void>;
 };
 
 /** Transport and operator policy stay outside the runtime cell. */
 export async function openMcpWorker(
   input: McpServerConfig,
   binding: { connectionId: string; spaceId: string },
-  options: { transport?: McpTransport; timeoutMs?: number } = {},
+  options: McpWorkerOptions = {},
 ): Promise<McpWorker> {
+  let current = await openMcpSession(input, binding, options);
+  const pinned = canonicalizePayload({ tools: current.tools }).hash;
+  let closed = false;
+  let reopening: Promise<void> | undefined;
+  return {
+    tools: structuredClone(current.tools),
+    catalog: current.catalog,
+    execute: (action, context) => current.execute(action, context),
+    verify: () => current.verify(),
+    health: () => current.health(),
+    async reconnect() {
+      if (closed) throw new Error('MCP worker is closed');
+      reopening ??= (async () => {
+        await current.close();
+        if (options.transport && !options.transportFactory)
+          throw new Error('MCP test transport has no reconnect factory');
+        const next = await openMcpSession(input, binding, { ...options, transport: undefined });
+        // Reconnection cannot silently replace an approved tool's schema or policy.
+        if (closed || canonicalizePayload({ tools: next.tools }).hash !== pinned) {
+          await next.close();
+          throw new Error('MCP catalog changed during reconnect');
+        }
+        current = next;
+      })()
+        .catch((error: unknown) => {
+          if (error instanceof ConnectorFaultError) throw error;
+          throw new ConnectorFaultError({
+            kind: 'transient_before_dispatch',
+            detail: 'MCP session could not be safely re-established before dispatch',
+          });
+        })
+        .finally(() => {
+          reopening = undefined;
+        });
+      await reopening;
+    },
+    async close() {
+      closed = true;
+      await reopening?.catch(() => {});
+      await current.close();
+    },
+  };
+}
+
+async function openMcpSession(
+  input: McpServerConfig,
+  binding: { connectionId: string; spaceId: string },
+  options: McpWorkerOptions,
+): Promise<Omit<McpWorker, 'reconnect'>> {
   const config = mcpServerConfig.parse(input);
   const transport =
     options.transport ??
+    (await options.transportFactory?.()) ??
     (config.endpoint.transport === 'stdio'
       ? await openStdioMcpTransport(config.endpoint, options)
       : openHttpMcpTransport(config.endpoint, options));
@@ -231,6 +248,7 @@ export async function openMcpWorker(
         }
         context.signal?.throwIfAborted();
         try {
+          await options.checkCredential?.();
           const result = jsonObject.parse(
             await transport.request(
               'tools/call',
@@ -264,7 +282,8 @@ export async function openMcpWorker(
               late: false,
             },
           };
-        } catch {
+        } catch (error) {
+          if (error instanceof ConnectorFaultError) throw error;
           return {
             outcome: 'unknown',
             reason:

@@ -7,11 +7,13 @@ import { join } from 'node:path';
 import type { CapabilityClaims, KnowledgeFrontmatter } from '@melete/contracts';
 import { serializeRecord } from '@melete/knowledge';
 import { eq } from 'drizzle-orm';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import { META_TOOLS } from '../../src/broker/catalog.ts';
 import { PostgresGatewayBudget } from '../../src/broker/gateway-budget.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { REACT_TOOL } from '../../src/connectors/catalog.ts';
 import { openDatabase } from '../../src/db/client.ts';
+import { migrateDatabase } from '../../src/db/migrate.ts';
 import { attempt, event, type job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { EventStream } from '../../src/events/stream.ts';
@@ -40,6 +42,29 @@ function migrationTag(name: string): string {
   const tag = journalTags().find((candidate) => candidate.replace(/^\d+_/, '') === name);
   if (!tag) throw new Error(`no migration named ${name} in drizzle/meta/_journal.json`);
   return tag;
+}
+
+/** Build a historical schema with a real migration ledger before testing production startup. */
+async function migrateThrough(handle: ReturnType<typeof openDatabase>, lastTag: string) {
+  const migrations = new URL('../../drizzle/', import.meta.url);
+  const journal = JSON.parse(await readFile(new URL('meta/_journal.json', migrations), 'utf8')) as {
+    version: string;
+    dialect: string;
+    entries: Array<{ tag: string; when: number }>;
+  };
+  const last = journal.entries.findIndex((entry) => entry.tag === lastTag);
+  if (last < 0) throw new Error(`Missing historical migration ${lastTag}`);
+  const entries = journal.entries.slice(0, last + 1);
+  const snapshot = await mkdtemp(join(root, 'migration-journal-'));
+  await mkdir(join(snapshot, 'meta'));
+  await writeFile(join(snapshot, 'meta', '_journal.json'), JSON.stringify({ ...journal, entries }));
+  for (const { tag } of entries)
+    await writeFile(
+      join(snapshot, `${tag}.sql`),
+      await readFile(new URL(`${tag}.sql`, migrations)),
+    );
+  await migrate(handle.db, { migrationsFolder: snapshot });
+  return entries.at(-1)?.when;
 }
 
 const handle = await testDatabase();
@@ -88,13 +113,10 @@ withDb('principal and shared-space authority', () => {
     url.pathname = `/${name}`;
     const upgrade = openDatabase(url.toString(), 2);
     try {
-      const migrations = new URL('../../drizzle/', import.meta.url);
       // The state immediately before this lane's migration, in journal order.
-      for (const tag of journalTags().slice(
-        0,
-        journalTags().indexOf(migrationTag('petite_demogoblin')),
-      ))
-        await upgrade.sql.unsafe(await readFile(new URL(`${tag}.sql`, migrations), 'utf8'));
+      const before = journalTags()[journalTags().indexOf(migrationTag('petite_demogoblin')) - 1];
+      if (!before) throw new Error('Missing pre-principal schema');
+      await migrateThrough(upgrade, before);
       const ownerId = newId('own');
       const spaceId = newId('sp');
       const jobId = newId('job');
@@ -106,11 +128,7 @@ withDb('principal and shared-space authority', () => {
       await upgrade.sql`insert into job (id, space_id, title, objective, state, lease_epoch, budget) values (${jobId}, ${spaceId}, 'Legacy job', 'Finish legacy work', 'running', 1, ${JSON.stringify(DEFAULT_BUDGET)}::jsonb)`;
       await upgrade.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at) values (${attemptId}, ${jobId}, 1, 'legacy', 'stub', 'script', now() + interval '1 minute')`;
       await upgrade.sql`insert into session (token_hash, owner_id, expires_at) values (${createHash('sha256').update(token).digest('hex')}, ${ownerId}, now() + interval '1 minute')`;
-      // This lane's migration and every later one, in journal order.
-      for (const tag of journalTags().slice(
-        journalTags().indexOf(migrationTag('petite_demogoblin')),
-      ))
-        await upgrade.sql.unsafe(await readFile(new URL(`${tag}.sql`, migrations), 'utf8'));
+      await migrateDatabase(upgrade);
       const api = createApp({
         env: loadEnv({ NODE_ENV: 'test' }),
         db: upgrade.db,
@@ -154,6 +172,45 @@ withDb('principal and shared-space authority', () => {
       ).toBe(ownerId);
       const [identity] = await upgrade.sql`select count(*)::int as count from principal`;
       expect(identity?.count).toBe(1);
+    } finally {
+      await upgrade.close();
+      await handle.sql`drop database ${handle.sql(name)} with (force)`;
+    }
+  }, 15_000);
+
+  test('production migration upgrades the integration schema with MCP setup and procedure promotion', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const name = `melete_w14_upgrade_${randomBytes(8).toString('hex')}`;
+    await handle.sql`create database ${handle.sql(name)}`;
+    const url = new URL(handle.url);
+    url.pathname = `/${name}`;
+    const upgrade = openDatabase(url.toString(), 2);
+    try {
+      const appliedThrough = await migrateThrough(upgrade, migrationTag('organic_maria_hill'));
+      const [before] =
+        await upgrade.sql`select max(created_at)::text as latest from drizzle.__drizzle_migrations`;
+      expect(before?.latest).toBe(String(appliedThrough));
+      const columns = () => upgrade.sql`
+        select table_name, column_name from information_schema.columns
+        where table_schema = 'public' and (
+          (table_name = 'connection' and column_name in ('configuration', 'setup_state')) or
+          (table_name = 'procedure_candidate' and column_name = 'promotion')
+        ) order by table_name, column_name`;
+      expect([...(await columns())]).toEqual([]);
+      await migrateDatabase(upgrade);
+      expect([...(await columns())]).toEqual([
+        { table_name: 'connection', column_name: 'configuration' },
+        { table_name: 'connection', column_name: 'setup_state' },
+        { table_name: 'procedure_candidate', column_name: 'promotion' },
+      ]);
+      const ledger =
+        await upgrade.sql`select hash, created_at::text from drizzle.__drizzle_migrations order by id`;
+      expect(ledger).toHaveLength(journalTags().length);
+      // A second service startup must retain the same applied-migration ledger.
+      await migrateDatabase(upgrade);
+      expect([
+        ...(await upgrade.sql`select hash, created_at::text from drizzle.__drizzle_migrations order by id`),
+      ]).toEqual([...ledger]);
     } finally {
       await upgrade.close();
       await handle.sql`drop database ${handle.sql(name)} with (force)`;

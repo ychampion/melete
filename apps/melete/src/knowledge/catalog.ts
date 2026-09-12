@@ -1,12 +1,12 @@
 import { join } from 'node:path';
-import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
+import { CONTEXT_LIMITS, skillsWithToolsAvailable, type ToolSpec } from '@melete/contracts';
+import { loadSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
-import { skillsForObjective } from './routes.ts';
 
 /** The API and runtime consult live grants against the same configured adapters. */
 export class RuntimeCatalog {
@@ -33,13 +33,18 @@ export class RuntimeCatalog {
       0,
       CONTEXT_LIMITS.max_tools,
     );
-    const latest = bundle.inputs.new_user_messages.at(-1)?.content ?? '';
-    const skills = skillsForObjective(
-      bundle.job.objective,
-      latest,
-      join(this.spacesRoot, claims.space_id, 'skills'),
-      tools,
-    ).map(({ skill }) => ({ name: skill.frontmatter.name, body: skill.body }));
+    const available = new Set(
+      skillsWithToolsAvailable(
+        loadSkills({ spaceSkillsDirectory: join(this.spacesRoot, claims.space_id, 'skills') })
+          .skills,
+        tools,
+      ).map((skill) => skill.frontmatter.name),
+    );
+    // Bundle construction already checked audience and evaluated-procedure evidence.
+    // Catalog enrichment may narrow those skills, but must not replace that selection.
+    const skills = bundle.skills.filter(
+      (skill) => skill.name.startsWith('procedure:') || available.has(skill.name),
+    );
     return { tools, skills };
   };
 }

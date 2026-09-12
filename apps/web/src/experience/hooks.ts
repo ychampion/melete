@@ -11,6 +11,7 @@ import {
   applyEvent,
   applyEvents,
   applyGap,
+  applyMessageEvent,
   emptyTranscript,
   fromTurns,
   setDelivery,
@@ -80,6 +81,8 @@ export type AppContextValue = {
   refreshProfile: () => void;
   refreshConversations: () => void;
   refreshAgents: () => void;
+  /** Ends the session on the service and returns to sign-in. */
+  signOut: () => Promise<void>;
 };
 
 export const AppContext = createContext<AppContextValue | null>(null);
@@ -104,7 +107,7 @@ export type ConversationState = {
   loading: boolean;
   /** Draw the message before the service confirms it; settle it when it answers. */
   local: (text: string, agentId: string, delivery: Turn['delivery']) => string;
-  accepted: (localId: string, turnId: string) => void;
+  accepted: (localId: string, turnId: string, receivedAt: string) => void;
   settle: (localId: string, delivery: Turn['delivery']) => void;
 };
 
@@ -167,6 +170,15 @@ export function useConversation(id: string | null): ConversationState {
       setTranscriptState(initial);
       setLoading(false);
 
+      // Start after the saved turns are installed so their state cannot overwrite message identities.
+      void (async () => {
+        for await (const item of adapter.messageEvents(id, controller.signal)) {
+          if (controller.signal.aborted) return;
+          if (item.type === 'event')
+            setTranscriptState((previous) => applyMessageEvent(previous, item.event));
+        }
+      })();
+
       for await (const item of subscribeConversation(id, {
         after: initial.lastSeq,
         signal: controller.signal,
@@ -209,8 +221,8 @@ export function useConversation(id: string | null): ConversationState {
     [id],
   );
   const accepted = useCallback(
-    (localId: string, turnId: string) =>
-      setTranscriptState((previous) => acceptLocalTurn(previous, localId, turnId)),
+    (localId: string, turnId: string, receivedAt: string) =>
+      setTranscriptState((previous) => acceptLocalTurn(previous, localId, turnId, receivedAt)),
     [],
   );
   const settle = useCallback(

@@ -95,6 +95,7 @@ export const connection = z.object({
   scopes: z.array(z.string()),
   status: connectionStatus,
   health: connectionHealth,
+  setup_state: z.enum(['available', 'connecting', 'connected', 'error']).optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

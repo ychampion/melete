@@ -483,6 +483,36 @@ you were reading it" on the card, and the person decides again.
 stated window, drawn under the card that caused it. An undone receipt says so
 in place; nothing disappears.
 
+**A setup answer is a saved detail, on the record.** Each answer in "Let Nova
+get to know you" is posted to `POST /memory/items` as it is chosen: a registered
+key, the value, and the sentence that was said. The service keeps it as an
+owner-trusted claim on that key (one current value per key; the same key again
+replaces it), lists it under `GET /memory/items` with source `onboarding`, and
+the memory profile picks it up after its queued rebuild. The first conversation
+opens with a message referencing a saved answer. Event and contact keys are
+refused with `409 extractor_owned_key`, because deterministic extractors maintain
+them; correct their existing items instead. Identity and space come from the
+session, and extra identity fields in the request are refused.
+
+**Signing out ends the session, not the account.** `POST /signout` removes the
+session behind the cookie and clears the cookie; the next request is refused
+until a new sign-in. Other sessions remain live. The web app offers it under
+Settings and returns to the sign-in screen, including after a reload with the
+revoked cookie.
+
+**A reaction sits on its bubble.** The web app follows the reaction rule
+above: the person answers an agent turn with one tap from a small fixed set,
+posted to `POST /messages/{seq}/reactions` with the seq of an identified text
+event. Card-only, receipt-only and acknowledgement-only turns have no reaction
+controls. The glyphs come from `GET /jobs/{id}/reactions`, read when a turn
+settles. The job event stream supplies the original message identities: an
+explicit turn ID when present, otherwise a unique match on the conversation,
+message text and transaction timestamp shared with the accepted turn. Projected
+text also retains its source event identity. Unknown or ambiguous targets are
+omitted; event ordering never chooses a neighboring bubble. Switching chats
+clears the reaction state. A refused reaction adds no glyph and hides that
+message's controls; nothing is drawn as a "reacted" line of its own.
+
 **An unconfirmed effect is a question, not a retry.** When a connector never
 answers, the action rests in the broker's ledger at `unknown`
 (`GET /actions?job_id=`), the transcript says so in a note, and the card asks

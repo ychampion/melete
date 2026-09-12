@@ -178,9 +178,9 @@ lease expiry/status. The service runner has more detailed lease checks. The
 expired-lease interval before recovery fences an attempt should be exercised
 across broker and gateway admission in a dedicated test and patch.
 
-**Active integration lanes.** PRs #11, #12 and #14 touch related broker files.
-Their reviewed diffs did not already fix these wake, proposal-view or event
-problems. In particular, the execution lane contains a `lockJob(this.sql, ...)`
-call: it must be converted to a transaction or to an explicitly non-locking
-read when rebased onto this patch. Re-run type checking and integration tests
-after combining those lanes; a green run on this base does not verify that merge.
+**Execution admission.** The reviewed execution-admission component contained
+a `lockJob(this.sql, ...)` call outside a transaction. The integrated component
+uses a transaction for its admission and settlement locks. Its named regression
+tests cover concurrent settlement, stale epochs, budgets and matching late
+results. The results above remain evidence for the reviewed base; current
+integration results are recorded in the README.

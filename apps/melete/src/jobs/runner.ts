@@ -26,10 +26,20 @@ import {
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
-import { attempt, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
+import { databaseNow } from '../db/clock.ts';
+import {
+  action,
+  attempt,
+  connection,
+  event,
+  experienceTurn,
+  job,
+  question,
+  trigger,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -60,6 +70,7 @@ export type RunnerOptions = {
   provider?: string;
   model?: string;
   scopes?: string[];
+  liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   heartbeatMs?: number;
   leaseMs?: number;
@@ -121,6 +132,9 @@ export class AttemptRunner {
     const capabilities = await this.runtime.capabilities();
     return this.jobs.transaction(async (tx) => {
       let row = await this.jobs.lock(tx, wake.job_id, true);
+      // pg-boss delivers a wake by the database clock; judge it by the same
+      // clock. A process clock a few milliseconds behind Postgres would otherwise
+      // call every on-time wake early and drop it until the recovery scan.
       if (
         !row ||
         row.paused ||
@@ -128,7 +142,7 @@ export class AttemptRunner {
         row.leaseEpoch !== wake.expected_epoch ||
         row.stateVersion !== wake.expected_version ||
         !row.nextWakeAt ||
-        row.nextWakeAt.getTime() > Date.now()
+        row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime()
       )
         return null;
       if (row.state === 'waiting_for_event_or_time') {
@@ -170,6 +184,11 @@ export class AttemptRunner {
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
+        ...(this.options.liveConnectionScopes &&
+        this.options.scopes === undefined &&
+        access.principalId
+          ? { live_connection_scopes: true }
+          : {}),
         scopes: this.options.scopes ??
           (await this.options.scopesForJob?.(tx, row)) ?? [
             ...new Set(available.flatMap((item) => item.scopes)),
@@ -213,10 +232,32 @@ export class AttemptRunner {
         provider: model.provider,
         model: model.model,
         usage: attemptUsage.parse({}),
-        leaseExpiresAt: new Date(Date.now() + this.leaseMs),
+        leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs),
         inputCursor: Number(latest?.seq ?? 0),
       });
       await captureAttemptVersions(tx, bundle, capabilities.version);
+      // The epoch bump below fences any attempt still open on this job. Its row
+      // must say so: an open row with no end timestamp would otherwise outlive
+      // the recovery scan, which only closes attempts of the current epoch.
+      const superseded = await tx
+        .update(attempt)
+        .set({
+          outcome: 'fenced',
+          outcomeDetail: { kind: 'superseded', by: attemptId },
+          endedAt: new Date(),
+          leaseStatus: 'ended',
+          leaseExpiresAt: null,
+        })
+        .where(and(eq(attempt.jobId, row.id), isNull(attempt.endedAt), ne(attempt.id, attemptId)))
+        .returning({ id: attempt.id });
+      for (const stale of superseded)
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId: stale.id,
+          type: 'attempt_ended',
+          payload: { kind: 'superseded', by: attemptId },
+          dedupKey: `${stale.id}:ended`,
+        });
       row = await this.jobs.move(
         tx,
         row,
@@ -249,7 +290,7 @@ export class AttemptRunner {
       }
       await tx
         .update(attempt)
-        .set({ leaseExpiresAt: new Date(Date.now() + this.leaseMs) })
+        .set({ leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs) })
         .where(eq(attempt.id, claims.attempt_id));
       return true;
     });
@@ -422,8 +463,31 @@ export class AttemptRunner {
       0,
       jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
     );
-    const outcome: AttemptOutcome =
-      remaining === 0 && original.kind.startsWith('waiting_')
+    const [reconnect] = await tx
+      .select({ text: question.text })
+      .from(question)
+      .innerJoin(
+        action,
+        and(
+          eq(action.jobId, question.jobId),
+          eq(action.attemptId, question.attemptId),
+          eq(action.repairDisposition, 'needs_reconnect'),
+        ),
+      )
+      .where(
+        and(
+          eq(question.jobId, row.id),
+          eq(question.attemptId, attemptId),
+          eq(question.state, 'open'),
+          eq(question.blocksExternalEffect, true),
+        ),
+      )
+      .limit(1);
+    // A runtime's final prose cannot withdraw the broker's unanswered revocation
+    // question, even on the last budgeted attempt. Only owner input resolves it.
+    const outcome: AttemptOutcome = reconnect
+      ? { kind: 'waiting_for_input', question: reconnect.text }
+      : remaining === 0 && original.kind.startsWith('waiting_')
         ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
         : original;
     let input: TransitionInput;
@@ -747,7 +811,7 @@ export class AttemptRunner {
     const expired = await this.jobs.db
       .select({ id: attempt.id, jobId: attempt.jobId })
       .from(attempt)
-      .where(and(isNull(attempt.endedAt), lte(attempt.leaseExpiresAt, new Date())));
+      .where(and(isNull(attempt.endedAt), sql`${attempt.leaseExpiresAt} <= now()`));
     for (const candidate of expired) {
       const fenced = await this.jobs
         .transaction(async (tx) => {
@@ -758,11 +822,32 @@ export class AttemptRunner {
             !execution ||
             execution.endedAt ||
             !execution.leaseExpiresAt ||
-            execution.leaseExpiresAt.getTime() > Date.now() ||
-            row.state !== 'running' ||
-            row.leaseEpoch !== execution.epoch
+            execution.leaseExpiresAt.getTime() > (await databaseNow(tx)).getTime()
           )
             return false;
+          if (row.leaseEpoch !== execution.epoch) {
+            // Already fenced by a later epoch: the job moved on without this
+            // row. Close the row; the job's state is not this attempt's to change.
+            await tx
+              .update(attempt)
+              .set({
+                outcome: 'fenced',
+                outcomeDetail: { kind: 'superseded' },
+                endedAt: new Date(),
+                leaseStatus: 'ended',
+                leaseExpiresAt: null,
+              })
+              .where(eq(attempt.id, execution.id));
+            await appendEvent(tx, {
+              jobId: row.id,
+              attemptId: execution.id,
+              type: 'attempt_ended',
+              payload: { kind: 'superseded' },
+              dedupKey: `${execution.id}:ended`,
+            });
+            return false;
+          }
+          if (row.state !== 'running') return false;
           const [committed] = await tx
             .select()
             .from(event)
@@ -800,7 +885,7 @@ export class AttemptRunner {
       .where(
         and(
           inArray(job.state, ['queued', 'waiting_for_event_or_time']),
-          lte(job.nextWakeAt, new Date()),
+          sql`${job.nextWakeAt} <= now()`,
         ),
       );
     for (const candidate of due) {
@@ -808,7 +893,7 @@ export class AttemptRunner {
         const row = await this.jobs.lock(tx, candidate.id, true);
         if (
           !row?.nextWakeAt ||
-          row.nextWakeAt.getTime() > Date.now() ||
+          row.nextWakeAt.getTime() > (await databaseNow(tx)).getTime() ||
           !['queued', 'waiting_for_event_or_time'].includes(row.state)
         )
           return;

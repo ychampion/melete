@@ -170,6 +170,52 @@ describe('the server over a socket', () => {
     expect(response.body).toContain('id="root"');
   });
 
+  test('one connection serves several requests in turn, then closes when asked', async () => {
+    // The web container sits behind a browser that reuses connections. A server
+    // that answered only the first request per socket, or never closed one it
+    // was asked to close, would look fine in a single fetch and fail in production.
+    const port = server?.port;
+    if (!port) throw new Error('the server is not listening');
+    const socket = connect(port, '127.0.0.1');
+    await new Promise<void>((ready) => socket.once('connect', ready));
+    let text = '';
+    socket.on('data', (chunk) => {
+      text += chunk.toString('utf8');
+    });
+    const ended = new Promise<void>((settle, fail) => {
+      socket.on('end', settle);
+      socket.on('error', fail);
+      socket.setTimeout(5000, () => fail(new Error('the server did not close the connection')));
+    });
+    const CRLF = '\r\n';
+    const request = (path: string, close = false) =>
+      socket.write(
+        [
+          `GET ${path} HTTP/1.1`,
+          'Host: 127.0.0.1',
+          ...(close ? ['Connection: close'] : []),
+          '',
+          '',
+        ].join(CRLF),
+      );
+    const responses = () => text.split('HTTP/1.1 ').length - 1;
+    const until = async (count: number) => {
+      const deadline = Date.now() + 5000;
+      while (responses() < count && Date.now() < deadline) await Bun.sleep(10);
+      expect(responses(), `after ${count} request(s)`).toBe(count);
+    };
+    request('/assets/app.js');
+    await until(1);
+    request('/jobs/job_01J');
+    await until(2);
+    request('/missing/%2e%2e/secret.txt', true);
+    await ended;
+    expect(responses()).toBe(3);
+    expect(text).toContain('export const ok = true;');
+    expect(text).toContain('id="root"');
+    expect(text).not.toContain(SENTINEL);
+  });
+
   test('reads an asset with HEAD, headers only', async () => {
     const response = await fetch(`${origin()}/assets/app.js`, { method: 'HEAD' });
     expect(response.status).toBe(200);

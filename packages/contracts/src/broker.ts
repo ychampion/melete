@@ -187,6 +187,8 @@ export const capabilityClaims = z.object({
   epoch: z.number().int().nonnegative(),
   revision: z.number().int().nonnegative(),
   scopes: z.array(z.string()),
+  /** Service-issued, principal-bound attempts may follow current operator connection grants. */
+  live_connection_scopes: z.boolean().optional(),
   budget: z.object({
     max_actions: z.number().int().nonnegative(),
     max_input_tokens: z.number().int().nonnegative().optional(),

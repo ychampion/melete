@@ -37,7 +37,7 @@ joins its own `browser-control` and `browser-egress` networks and none of the
 above; see [the browser worker](browser-worker.md).
 
 The static checker `checkCompose` in `deploy/scripts/compose-check.ts` reads
-this YAML (19 checks, `passes every boundary check` and its mutation tests). It
+this YAML (23 checks, `passes every boundary check` and its mutation tests). It
 does not open sockets inside a container. Live behavior was established by
 scenario 6 on a Linux Docker host: from a claimed cell and the warm cell, the
 internet, the host metadata address, a live host listener, Postgres (by DNS and

@@ -122,6 +122,70 @@ describe('the check catches the mistakes that would matter', () => {
     }
   });
 
+  test('depending on a service that is not in the file', () => {
+    // The landed file once depended on a runtime-image service it no longer
+    // declared; Compose refuses such a project before anything starts.
+    const broken = structuredClone(compose);
+    if (broken.services) delete broken.services['runtime-image'];
+    expect(failures(broken)).toContain('every dependency names a service in the file');
+    expect(failures(broken)).toContain('the supervisor image is built without a running engine');
+  });
+
+  test('building the supervisor image on a network, or with the engine running', () => {
+    const networked = structuredClone(compose);
+    const image = networked.services?.['runtime-image'];
+    if (image) image.network_mode = 'bridge';
+    expect(failures(networked)).toContain('the supervisor image is built without a running engine');
+    const running = structuredClone(compose);
+    const build = running.services?.['runtime-image'];
+    if (build) delete build.entrypoint;
+    expect(failures(running)).toContain('the supervisor image is built without a running engine');
+  });
+
+  test.each([
+    { environment: { MELETE_MASTER_KEY: 'dummy-master-key' } },
+    { environment: { OPENAI_API_KEY: 'dummy-provider-key' } },
+    { environment: { MELETE_ATTEMPT_TOKEN: 'dummy-attempt-token' } },
+    { environment: { MELETE_MASTER_KEY: null } },
+    { environment: ['MELETE_MASTER_KEY=dummy-master-key'] },
+    { environment: ['MELETE_MASTER_KEY'] },
+    { env_file: './build.env' },
+    { env_file: ['./build.env'] },
+    { env_file: [{ path: './build.env', required: false }] },
+    { secrets: ['master-key'] },
+    { secrets: [{ source: 'master-key', target: 'credentials' }] },
+    { volumes: ['./master-key:/run/secrets/master-key:ro'] },
+    { volumes: [{ type: 'bind', source: './build.env', target: '/credentials', read_only: true }] },
+  ])('giving the build-only service credentials through %j', (credentials) => {
+    const broken = structuredClone(compose);
+    const image = broken.services?.['runtime-image'];
+    if (!image) throw new Error('Expected build-only service');
+    Object.assign(image, credentials);
+    expect(failures(broken)).toContain('the build-only service carries no credentials');
+  });
+
+  test('handing the warm cell a service secret or a substituted attempt credential', () => {
+    const withSecret = structuredClone(compose);
+    if (withSecret.services?.runtime?.environment)
+      withSecret.services.runtime.environment.MELETE_CAPABILITY_KEY = [
+        '$',
+        '{MELETE_CAPABILITY_KEY}',
+      ].join('');
+    expect(failures(withSecret)).toContain('the warm cell carries no attempt authority');
+    const withToken = structuredClone(compose);
+    if (withToken.services?.runtime?.environment)
+      withToken.services.runtime.environment.MELETE_ATTEMPT_TOKEN = [
+        '$',
+        '{MELETE_ATTEMPT_TOKEN:?set}',
+      ].join('');
+    expect(failures(withToken)).toContain('the warm cell carries no attempt authority');
+    const withSigned = structuredClone(compose);
+    if (withSigned.services?.runtime?.environment)
+      withSigned.services.runtime.environment.MELETE_ATTEMPT_TOKEN =
+        'eyJhbGciOiJIUzI1NiJ9.eyJqb2IiOiJqb2JfMSJ9.c2lnbmF0dXJl';
+    expect(failures(withSigned)).toContain('the warm cell carries no attempt authority');
+  });
+
   test('removing the runtime service altogether', () => {
     const broken: ComposeFile = structuredClone(compose);
     if (broken.services) delete broken.services.runtime;

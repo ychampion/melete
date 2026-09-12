@@ -1,0 +1,2 @@
+ALTER TABLE "procedure_candidate" ADD COLUMN "promotion" jsonb DEFAULT '{"scope":"private","principal_id":null}'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "procedure_candidate" ADD CONSTRAINT "procedure_promotion_scope_check" CHECK ("procedure_candidate"."promotion"->>'scope' in ('private', 'space'));

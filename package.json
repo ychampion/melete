@@ -22,6 +22,7 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "bun test --max-concurrency=2 --timeout=30000",
+    "doctor": "bun run apps/melete/test/helpers/preflight.ts",
     "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 --with aiohttp==3.14.3 python -m pytest packages/runtime-hermes/tests -q",
     "openapi": "bun run packages/contracts/scripts/openapi.ts",
     "compose:check": "bun run deploy/scripts/compose-check.ts",

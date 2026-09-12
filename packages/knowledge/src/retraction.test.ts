@@ -23,25 +23,30 @@ const now = fixedClock();
 
 const RETRACTED = 'The lease was renewed, so the renewal window is wrong.';
 
-beforeAll(async () => {
-  template = await createSpaceTemplate('melete-retract-', async (paths) => {
-    await commitRecord(
-      paths,
-      'knowledge/landlord-contact.md',
-      serializeRecord(
-        aRecord({ id: IDS.landlord, title: 'Landlord contact and renewal window', type: 'fact' }),
-        'The lease renews in March. The landlord answers email but never the phone.',
-      ),
-      { proposedBy: 'user', now },
-    );
-    await commitRecord(
-      paths,
-      'knowledge/prefers-bun.md',
-      serializeRecord(aRecord({ id: IDS.bun }), 'Zara uses bun for every package operation.'),
-      { proposedBy: 'user', now },
-    );
-  });
-}, 20_000);
+beforeAll(
+  async () => {
+    template = await createSpaceTemplate('melete-retract-', async (paths) => {
+      await commitRecord(
+        paths,
+        'knowledge/landlord-contact.md',
+        serializeRecord(
+          aRecord({ id: IDS.landlord, title: 'Landlord contact and renewal window', type: 'fact' }),
+          'The lease renews in March. The landlord answers email but never the phone.',
+        ),
+        { proposedBy: 'user', now },
+      );
+      await commitRecord(
+        paths,
+        'knowledge/prefers-bun.md',
+        serializeRecord(aRecord({ id: IDS.bun }), 'Zara uses bun for every package operation.'),
+        { proposedBy: 'user', now },
+      );
+    });
+    // Two git commits into a fresh template; under memory contention they were
+    // the first thing to report a timeout. MELETE_TEST_CHILD_TIMEOUT_MS raises it.
+  },
+  Math.max(20_000, Number(process.env.MELETE_TEST_CHILD_TIMEOUT_MS ?? 0) || 0),
+);
 
 beforeEach(() => {
   ({ root, paths } = template.copy());

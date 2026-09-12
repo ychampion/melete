@@ -1,5 +1,7 @@
 import { afterAll, expect, test } from 'bun:test';
 import { type JsonObject, receipt } from '@melete/contracts';
+import { signCapability } from '../../src/broker/capability.ts';
+import { createInternalServer } from '../../src/broker/internal-server.ts';
 import { loadAction } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
@@ -307,6 +309,7 @@ databaseTest(
       },
     });
     let registry: ConnectorRegistry | undefined;
+    let internal: ReturnType<typeof createInternalServer> | undefined;
     try {
       registry = await configuredConnectors({
         sql: fixture.sql,
@@ -339,9 +342,27 @@ databaseTest(
         ).toMatchObject({ code: 'payload_invalid' });
       }
       expect(calls).toBe(0);
-      expect(
-        (await broker.propose(seed.claims, { ...request, payload: { tuple: ['valid'] } })).status,
-      ).toBe('succeeded');
+      const capabilityKey = 'mcp-http-receipt-proof-signing-key-0000';
+      internal = createInternalServer({
+        sql: fixture.sql,
+        connectors: registry,
+        broker,
+        capabilityKey,
+        approvalKey: 'mcp-http-receipt-proof-approval-key-000',
+      });
+      await new Promise<void>((resolve) => internal?.server.listen(0, '127.0.0.1', resolve));
+      const address = internal.server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing effect listener');
+      const response = await fetch(`http://127.0.0.1:${address.port}/actions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${signCapability(seed.claims, capabilityKey)}`,
+        },
+        body: JSON.stringify({ ...request, payload: { tuple: ['valid'] } }),
+      });
+      expect(response.status).toBe(201);
+      expect(((await response.json()) as { status: string }).status).toBe('succeeded');
       expect(calls).toBe(1);
       await fixture.sql`update connection set scopes = '[]'::jsonb where id = ${seed.connectionId}`;
       expect(
@@ -357,6 +378,7 @@ databaseTest(
         headers.slice(1).every((value) => value.get('mcp-session-id') === 'configured-fixture'),
       ).toBe(true);
     } finally {
+      if (internal) await new Promise<void>((resolve) => internal?.server.close(() => resolve()));
       await registry?.close();
       await server.stop(true);
     }

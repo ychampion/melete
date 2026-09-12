@@ -539,6 +539,7 @@ export type RepairPorts = {
   describe?(): Promise<ConnectorDescription>;
   /** True when a fresh credential is in hand and the grant still permits the call. */
   refreshCredential?(): Promise<boolean>;
+  reconnect?(): Promise<void>;
   routes?(): Promise<string[]>;
   /** Re-open a bad output and produce a revised payload, or nothing. */
   revise?(fault: ConnectorFault): Promise<JsonObject | null>;
@@ -624,6 +625,7 @@ export async function runRepair(
   let mapping: Record<string, string> | null = null;
   let candidateId: string | null = null;
   let pending: MappingProposal | null = null;
+  let reconnect = false;
   const state: RepairState = {
     attempt: 0,
     refreshed: false,
@@ -701,6 +703,15 @@ export async function runRepair(
     let outcome: DispatchResult;
     let fault: ConnectorFault | null = null;
     try {
+      if (reconnect) {
+        await ports.reconnect?.();
+        reconnect = false;
+        // Reinitialization can wait on a network; authority is checked again before sending.
+        if (await ports.authorityLost?.(state.attempt)) {
+          state.attempt -= 1;
+          continue;
+        }
+      }
       outcome = await ports.execute({ payload, route, mapping, attempt: state.attempt });
     } catch (error) {
       fault = options.classify(error);
@@ -962,6 +973,7 @@ export async function runRepair(
         pending = null;
         state.safeMapping = false;
       }
+      reconnect = choice.decision === 'retry_with_backoff' && Boolean(ports.reconnect);
       if (choice.delay_ms > 0) await sleep(choice.delay_ms);
       continue executions;
     }

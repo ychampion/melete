@@ -1,7 +1,8 @@
-import { type AttemptBundle, jsonObject } from '@melete/contracts';
+import { type AttemptBundle, jsonObject, procedurePromotion } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
+import { spaceAuthority } from '../principals/authority.ts';
 import type { ProcedureScope } from './contracts.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import { verifyDefinition } from './procedures.ts';
@@ -24,6 +25,8 @@ export async function selectProcedureSkills(
   if (jsonObject.parse(row.constraints).public_compartment || !runtimeVersion) return [];
   const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
   if (registration?.scope.role !== 'owner' || registration.scope.audience !== 'private') return [];
+  // Applicability metadata cannot grant membership or access to private evidence.
+  const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
   const state = await tx.execute(
     sql`select revoked, restore_ready from memory_spaces where space_id = ${row.spaceId}`,
   );
@@ -52,6 +55,7 @@ export async function selectProcedureSkills(
   };
   const [trial] = await tx.select().from(learningTrial).where(eq(learningTrial.jobId, row.id));
   if (trial) {
+    if (access.role !== 'owner') return [];
     // A withheld control can never accidentally pick up a different active procedure.
     if (!trial.useCandidate || trial.expiresAt <= new Date()) return [];
     const [entry] = await tx
@@ -68,8 +72,11 @@ export async function selectProcedureSkills(
           gt(episode.expiresAt, new Date()),
         ),
       );
+    // Sealed trials deliberately use isolated spaces; their durable trial grant
+    // may carry this principal's candidate across that boundary, never another principal's.
     if (
       !entry ||
+      entry.source.actor !== access.principalId ||
       entry.candidate.bodyHash !== trial.bodyHash ||
       !valid(entry.candidate, entry.source) ||
       entry.evaluation.evidence.status !== 'running' ||
@@ -95,6 +102,11 @@ export async function selectProcedureSkills(
     )
     .orderBy(desc(procedureCandidate.createdAt));
   for (const { candidate, source } of candidates) {
+    const promotion = procedurePromotion.safeParse(candidate.promotion);
+    if (!promotion.success) continue;
+    if (promotion.data.scope === 'space') {
+      if (access.space.kind !== 'shared' || candidate.state !== 'active') continue;
+    } else if ((promotion.data.principal_id ?? source.actor) !== access.principalId) continue;
     if (
       candidate.canarySpaceId !== row.spaceId ||
       !candidate.selectedEvaluationId ||
@@ -116,7 +128,13 @@ export async function selectProcedureSkills(
     if (!final || final.evidence.selection_evaluation_id !== candidate.selectedEvaluationId)
       continue;
     // One applicable procedure avoids contradictory instructions and remains below the three-skill cap.
-    return [{ name: `procedure:${candidate.id}`, body: candidate.body }];
+    return [
+      {
+        name: `procedure:${candidate.id}`,
+        body: candidate.body,
+        ...(promotion.data.scope === 'space' ? { space_id: row.spaceId } : {}),
+      },
+    ];
   }
   return [];
 }

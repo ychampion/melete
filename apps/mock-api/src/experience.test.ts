@@ -1,6 +1,12 @@
 import { expect, test } from 'bun:test';
 import * as C from '@melete/contracts';
 import { BACKEND_VOCABULARY } from '../../melete/src/experience/projectors.ts';
+import {
+  applyEvents,
+  applyMessageEvent,
+  fromTurns,
+  turnIndexForReaction,
+} from '../../web/src/experience/reduce.ts';
 import { createMock } from './index.ts';
 
 const call = async (
@@ -45,6 +51,33 @@ async function chatFixture(objective = 'Reply about the repair') {
   }
   throw new Error('Mock scenario did not settle');
 }
+
+test('the acknowledgement names the persisted person message and survives transcript replay', async () => {
+  const { mock, chat, accepted } = await chatFixture('Thanks, that is perfect.');
+  const { turns } = C.turnList.parse((await call(mock, `/conversations/${chat.id}/messages`)).body);
+  const messages = mock.store.eventsAfter(0, { jobId: chat.id, limit: 1000 }).events;
+  const person = messages.find((event) => event.payload.kind === 'user_message');
+  expect(person?.created_at).toBe(turns[0]?.created_at);
+  expect(person?.created_at).toBe(accepted.receipt.received_at);
+  const { reactions } = C.reactionListResponse.parse(
+    (await call(mock, `/jobs/${chat.id}/reactions`)).body,
+  );
+  expect(reactions).toHaveLength(1);
+  const acknowledged = reactions[0];
+  if (!acknowledged) throw new Error('Missing acknowledgement');
+  expect(acknowledged.message_id).toBe(String(person?.seq));
+  expect(acknowledged.by).toBe('assistant');
+  const page = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events`)).body,
+  );
+  const state = messages.reduce(
+    applyMessageEvent,
+    applyEvents(fromTurns(turns, 'send', 'done'), page.events),
+  );
+  expect(turnIndexForReaction(state, acknowledged)).toBe(0);
+  expect(state.turns[0]?.messageSeq).toBeNull();
+  expect(state.turns[0]?.turn.answer).toBe('');
+});
 
 test('experience scenario drafts first, reviews an explicit send, and replays safe events', async () => {
   const { mock, chat, accepted } = await chatFixture();

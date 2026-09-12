@@ -66,6 +66,8 @@ afterAll(async () => {
     const password = 'w15-local-proof-password';
     const passwordHash = await Bun.password.hash(password, { algorithm: 'argon2id' });
     await handle.sql`update owner set email = 'wired@example.test', password_hash = ${passwordHash}`;
+    // Login reads the principal created by the fixture, not the singleton setup record.
+    await handle.sql`update principal set email = 'wired@example.test', password_hash = ${passwordHash} where id = ${scope.ownerId}`;
     await handle.sql`insert into connection (id, space_id, provider, label, scopes, status)
       values (${newId('conn')}, ${scope.spaceId}, 'test', 'Scripted send', '["test.send"]'::jsonb, 'active')`;
     await new FileRestrictionJournal(join(spaces, '.memory', 'restrictions.jsonl')).initializeNew();
@@ -172,9 +174,17 @@ afterAll(async () => {
       expect(first.skills.map((skill) => skill.name)).toEqual(['alpha', 'beta', 'gamma']);
       expect(first.knowledge).toHaveLength(2);
       expect(first.knowledge.map((item) => item.handle)).toContain(`${seat.id}@1`);
-      expect(first.tools.map((tool) => tool.name)).toEqual(['test.send']);
-      expect(first.inputs.since_last?.previous_attempt_id).toBeNull();
-      expect(first.inputs.since_last?.evidence_handles).toEqual([`${seeded.sourceId}@1`]);
+      expect(first.tools.map((tool) => tool.name)).toEqual([
+        'search_tools',
+        'load_tool',
+        'react',
+        'test.send',
+      ]);
+      expect(first.inputs.since_last).toBeUndefined();
+      expect(first.since_last.attempt_id).toBeNull();
+      expect(first.since_last.evidence.map((item) => item.handle)).toEqual([
+        `source:${seeded.sourceId}@1`,
+      ]);
       expect(
         (
           await call('/memory/outputs', {
@@ -202,8 +212,8 @@ afterAll(async () => {
       const second = bundles[1];
       if (!second) throw new Error('No replacement bundle');
       expect(second.attempt.token).not.toBe(first.attempt.token);
-      expect(second.inputs.since_last?.previous_attempt_id).toBe(first.attempt.id);
-      expect(second.inputs.since_last?.actions.length).toBeGreaterThan(0);
+      expect(second.since_last.attempt_id).toBe(first.attempt.id);
+      expect(second.since_last.pending_approvals.length).toBeGreaterThan(0);
       expect(second.inputs.repair_briefs).toHaveLength(1);
       expect(second.inputs.repair_briefs[0]).toMatchObject({
         changed_handle: `${seat.id}@1`,
@@ -217,7 +227,13 @@ afterAll(async () => {
           expect(knowledge.handle).toBeDefined();
           expect(delivered).toContain(knowledge.handle ?? 'missing handle');
         }
-        expect(delivered).toContain('Since last attempt');
+        expect(delivered).toContain('Since the last attempt');
+        for (const evidence of bundle.since_last.evidence)
+          expect(delivered).toContain(evidence.handle);
+        for (const approval of bundle.since_last.pending_approvals)
+          expect(delivered).toContain(
+            `approval ${approval.approval_id} is waiting on action ${approval.action_id}`,
+          );
         const [context] =
           await handle.sql`select style_violations, items from memory_contexts where attempt_id = ${bundle.attempt.id}`;
         expect(context?.style_violations).toEqual([]);

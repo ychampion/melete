@@ -1,8 +1,10 @@
+import { type ProcedurePromotionScope, procedurePromotionScope } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import { spaceAuthority, visibleJob } from '../principals/authority.ts';
 import type { ProcedureState } from './contracts.ts';
 import { requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
@@ -67,6 +69,7 @@ export class ProcedureService {
       .where(
         and(
           eq(episode.id, candidate.episodeId),
+          visibleJob(episode.jobId, ownerId),
           eq(episode.restricted, false),
           gt(episode.expiresAt, new Date()),
         ),
@@ -86,6 +89,7 @@ export class ProcedureService {
         .where(
           and(
             eq(procedureCandidate.spaceId, spaceId),
+            visibleJob(episode.jobId, ownerId),
             eq(episode.restricted, false),
             gt(episode.expiresAt, new Date()),
           ),
@@ -189,7 +193,7 @@ export class ProcedureService {
         );
       await tx
         .update(procedureCandidate)
-        .set({ canarySpaceId: spaceId })
+        .set({ canarySpaceId: spaceId, promotion: { scope: 'private', principal_id: ownerId } })
         .where(eq(procedureCandidate.id, id));
       return transitionProcedure(
         tx,
@@ -201,9 +205,18 @@ export class ProcedureService {
     });
   }
 
-  async activate(ownerId: string, spaceId: string, id: string) {
+  async activate(
+    ownerId: string,
+    spaceId: string,
+    id: string,
+    delivery: ProcedurePromotionScope = 'private',
+  ) {
+    const scope = procedurePromotionScope.parse(delivery);
     return this.jobs.transaction(async (tx) => {
       const { candidate } = await this.locked(tx, ownerId, spaceId, id);
+      const access = await spaceAuthority(tx, spaceId, ownerId, true);
+      if (scope === 'space' && access.space.kind !== 'shared')
+        throw new ServiceError('scope_denied', 'Space promotion requires a shared space.', 403);
       verifyDefinition(candidate);
       if (candidate.state !== 'enabled_canary' || candidate.canarySpaceId !== spaceId)
         throw new ServiceError('invalid_procedure_state', 'Enable the one-space canary first.');
@@ -226,6 +239,8 @@ export class ProcedureService {
             eq(procedureCandidate.spaceId, spaceId),
             eq(procedureCandidate.scope, candidate.scope),
             eq(procedureCandidate.compatibleModels, candidate.compatibleModels),
+            sql`${procedureCandidate.promotion}->>'scope' = ${scope}`,
+            sql`coalesce(${procedureCandidate.promotion}->>'principal_id', ${ownerId}) = ${ownerId}`,
             inArray(procedureCandidate.state, ['active', 'enabled_canary']),
             isNull(procedureCandidate.rejectionReason),
           ),
@@ -241,12 +256,18 @@ export class ProcedureService {
             `Superseded by ${id} after its canary.`,
           );
       }
+      // This owner-controlled grant changes who may receive the evaluated body,
+      // never its bytes, applicability, source evidence or tool authority.
+      await tx
+        .update(procedureCandidate)
+        .set({ promotion: { scope, principal_id: ownerId } })
+        .where(eq(procedureCandidate.id, id));
       return transitionProcedure(
         tx,
         candidate,
         'active',
         ownerId,
-        'The owner activated a completed one-space canary.',
+        `The owner activated a completed private canary with ${scope} delivery.`,
       );
     });
   }

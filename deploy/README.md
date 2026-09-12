@@ -1,10 +1,13 @@
 # Docker deployment
 
-Copy `.env.example` to `.env` and fill in the required keys and database settings.
-Set `DOCKER_GID` to `stat -c %g /var/run/docker.sock` on the Docker host. There is
-no default group; Compose refuses an unset or empty value. From this directory,
-run `docker compose up --build`. Docker 27 or later is required for job volume
-subpaths. See the root README for provider configuration and local development.
+Use the [root README install procedure](../README.md#install-on-a-linux-docker-host)
+from the repository root. It requires Docker Engine 28 or newer for the isolated
+bridge gateway and Compose 2.33.1 or newer for volume subpaths and gateway
+priority. `bun run deploy/scripts/configure.ts --fake` generates `deploy/.env`,
+including independent secrets and the socket group. It refuses to overwrite an
+existing file. Start with
+`docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180`.
+The README explains provider configuration and the first sign-in.
 
 The service receives `/var/run/docker.sock`. This grants **host-root equivalent**
 authority: it can instruct Docker to start privileged containers or mount host

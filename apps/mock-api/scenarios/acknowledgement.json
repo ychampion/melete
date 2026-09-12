@@ -1,0 +1,14 @@
+{
+  "id": "acknowledgement",
+  "title": "The person says thanks and the agent answers with a glyph",
+  "summary": "A message that needs only acknowledgement gets a reaction on the person's bubble, not three sentences.",
+  "match": ["thanks", "thank you", "got it", "perfect"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-reply-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    { "step": "react", "delay_ms": 500, "emoji": "👍" },
+    { "step": "complete", "delay_ms": 200, "answer": "" }
+  ]
+}

@@ -16,7 +16,7 @@ bun run conformance
 
 Install dependencies with the command in [README](../README.md) first. The
 runner prints the catalog, then runs `bun test --max-concurrency=1
-conformance/scenarios` with the repository's thirty-second per-test timeout.
+conformance/scenarios`; each slow fixture declares its own timeout.
 The fixtures create isolated databases and use scripted/stub runtimes and test
 effects. Without `DATABASE_URL`, they start disposable embedded Postgres 17.
 With a URL, they create disposable databases on that server; the supplied user
@@ -71,7 +71,7 @@ providers is **not claimed**.
 bun run compose:check
 ```
 
-This reads YAML and checks nineteen declarations. Its test `passes every boundary
+This reads YAML and checks 23 declarations. Its test `passes every boundary
 check` and mutation tests exercise the checker, not a kernel/network boundary.
 The label printed as “no route out” means the internal-network flag was found;
 scenario 6 is what establishes live enforcement, on the host where it ran.

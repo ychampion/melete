@@ -9,7 +9,7 @@ import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
 import { Badge, Button, IconButton, Input, TabsUnderline } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useLoad } from '../experience/hooks.ts';
+import { useApp, useLoad } from '../experience/hooks.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
@@ -242,6 +242,8 @@ const ruleWhen = (rule: Rule) => {
 };
 
 export function SettingsScreen({ tab }: { tab: string }) {
+  const { profile, signOut } = useApp();
+  const [leaving, setLeaving] = useState(false);
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
@@ -260,6 +262,28 @@ export function SettingsScreen({ tab }: { tab: string }) {
               What Melete remembers, what it may reach, and what it may do without asking.
             </p>
           </div>
+        </div>
+        <div className="card-12 row" style={{ gap: 12, padding: '12px 16px', flexWrap: 'wrap' }}>
+          <div className="col grow" style={{ gap: 2, minWidth: 200 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+              Signed in as {profile?.name ?? 'you'}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Signing out ends this session on every open tab; nothing saved here is lost.
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            icon="logout"
+            loading={leaving}
+            disabled={leaving}
+            onClick={() => {
+              setLeaving(true);
+              void signOut().finally(() => setLeaving(false));
+            }}
+          >
+            Sign out
+          </Button>
         </div>
         <TabsUnderline
           label="Settings"

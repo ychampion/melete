@@ -13,6 +13,14 @@ Database tests use disposable Postgres, including embedded Postgres 17 when
 queue/database integration. A missing binary may produce a skip; it does not
 establish a pass.
 
+Run `bun run doctor` first: it names each missing test prerequisite. On Linux,
+set `DATABASE_URL` to a Postgres 17 you control (the helpers create disposable
+databases on it): the embedded Postgres build needs `libpq5` and an ICU 60
+runtime that current Debian and Ubuntu do not ship. Tests must run as a non-root
+user with a writable `TMPDIR`; embedded Postgres refuses to start as root.
+`bun run test:plugin` needs `uv` on `PATH`. The two integration tests that start
+an interpreter use `MELETE_PYTHON`, then `python3`, then `python`.
+
 OpenAPI and client declarations are generated. The tests `is byte-identical to
 a fresh run of client:generate` and the OpenAPI generation tests check drift.
 Inspect and commit generated changes when changing contracts.

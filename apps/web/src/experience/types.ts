@@ -43,6 +43,12 @@ export type ExperienceEvent = Success<
   Ok<paths['/conversations/{id}/events'], 'get'>
 >['events'][number];
 export type EventItem = ExperienceEvent['item'];
+/** Local stream state shared by the adapter and the environment-independent reducer. */
+export type StreamGap = {
+  after: number;
+  next: number | null;
+  reason: 'reconnect' | 'sequence_skip';
+};
 export type TrailStep = Extract<EventItem, { type: 'say' | 'action' | 'note' | 'done' }>;
 export type Source = Extract<EventItem, { type: 'action' }>['sources'][number];
 export type ResultCard = Success<Ok<paths['/conversations/{id}/cards'], 'get'>>['cards'][number];
@@ -65,6 +71,7 @@ export type AgentInput = Body<paths['/agents'], 'post'>;
 export type AgentTemplate = Success<Ok<paths['/agents/templates'], 'get'>>['templates'][number];
 export type MemoryItem = Success<Ok<paths['/memory/items'], 'get'>>['items'][number];
 export type MemoryExplanation = Success<Ok<paths['/memory/items/{id}/why'], 'get'>>;
+export type MemoryItemCreate = Body<paths['/memory/items'], 'post'>;
 
 /* ---------- plans, tasks, home, routines ---------- */
 
@@ -89,6 +96,12 @@ export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][numbe
  * effects resting at `unknown` or `unresolved`, and never shows its `kind`.
  */
 export type LedgerAction = Ok<paths['/actions'], 'get'>['actions'][number];
+/**
+ * A glyph on a message, from the person or the assistant. A message is
+ * addressed by the seq of the event that carries it; a conversation's
+ * reactions are listed under its job, which is the conversation's id.
+ */
+export type Reaction = Ok<paths['/jobs/{jobId}/reactions'], 'get'>['reactions'][number];
 export type ActionResolution = Body<paths['/actions/{actionId}/resolve'], 'post'>['resolution'];
 
 /* ---------- what the interface decides on its own ---------- */

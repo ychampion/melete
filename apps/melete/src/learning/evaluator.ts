@@ -238,8 +238,8 @@ export class ProcedureEvaluator {
       let latestCandidate: JobRow | undefined;
       for (const value of cases) {
         const occurredAt = new Date().toISOString();
-        const baseline = await this.runArm(candidate, evaluation, value, false, runner);
-        const learned = await this.runArm(candidate, evaluation, value, true, runner);
+        const baseline = await this.runArm(ownerId, candidate, evaluation, value, false, runner);
+        const learned = await this.runArm(ownerId, candidate, evaluation, value, true, runner);
         latestCandidate = learned.row;
         actualTokens += baseline.tokens + learned.tokens;
         rows.push({
@@ -442,6 +442,7 @@ export class ProcedureEvaluator {
   }
 
   private async runArm(
+    ownerId: string,
     candidate: Candidate,
     evaluation: Evaluation,
     value: RecordCase,
@@ -454,6 +455,7 @@ export class ProcedureEvaluator {
         id,
         name: `Procedure evaluation: ${evaluation.phase}`,
         gitPath: `evaluation/${id}`,
+        ownerPrincipalId: ownerId,
       });
       const row = await this.jobs.createInTransaction(tx, {
         space_id: id,

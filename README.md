@@ -18,10 +18,10 @@ real model is not claimed by any of it.
 
 Three principles decide every design choice.
 
-1. **A thin harness around a thick boundary.** The engine is an unmodified,
+1. **A thin harness around a thick boundary.** The engine is a
    pinned release of [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-   (`v2026.9.7`), started fresh for every attempt inside a container that has no
-   route out. Everything the model wants to do in the world goes through
+   (`v2026.9.7`) with a hash-checked lifecycle observer patch, started fresh
+   for every attempt inside a container that has no route out. Everything the model wants to do in the world goes through
    Melete's broker as a typed action: canonical payload, content hash, scope
    check, approval when the effect class needs one, budget reservation, and a
    receipt. A repair may change how an action is sent, never what it does.
@@ -44,9 +44,9 @@ configure, and the provider never sees your keys or your database.
 
 | Gate | v0.1 status | Evidence |
 | --- | --- | --- |
-| Reliability | **Passes the tested scenarios.** | The eight [conformance scenarios](conformance/README.md) ran against the Compose stack on a Linux Docker host: 44 passed, 1 skipped (the second-provider comparison, which needs a credential). Scenarios 1–5 (durable wakes, lease fencing, unknown outcomes, approval binding, runtime death) also run anywhere with disposable Postgres. The [memory runner](conformance/memory/README.md) passed ten scenarios across seven families, and every withheld-memory arm failed as it must. The whole Bun suite on the landed tree passed on Windows at the landing checkpoint (1,544 passed, 29 skipped, 0 failed across 148 files, with `runtime/context.test.ts` run separately because its fourth case hangs on that host) and on Linux against a real Postgres (1,518 passed, 4 failed: two `python` versus `python3` portability cases in the execution-admission tests and an ICU date string in the greeting test, both assigned to a fix pass). |
+| Reliability | **Passes the tested scenarios.** | The eight [conformance scenarios](conformance/README.md) previously ran against the Compose stack on a Linux Docker host: 44 passed, 1 skipped (the credential-gated second-provider comparison). Scenarios 1–5 also run with disposable Postgres. The [memory runner](conformance/memory/README.md) passed ten scenarios across seven families, with every withheld-memory arm failing as required. At source checkpoint `a01e380`, Bun 1.3.13 passed the whole suite on Windows: **1,624 passed, 29 skipped, 0 failed, 7,588 assertions across 160 files**. Linux with real Postgres: **1,596 passed, 62 skipped, 4 TODOs, 0 failed, 7,306 assertions across 160 files**. Linux lacked Chromium and the local Hermes environment; its extra omissions are explicit, and the Windows run exercised those fixtures. The opt-in Compose and real-provider scenarios were not rerun in these ordinary suites. |
 | Operations | **Partial.** | Measured on a clean Linux Docker host: the install procedure below completed in about 65 seconds; restart under an active job and under a parked approval recovered with one receipt; a restore into an empty database volume kept the newer removal journal and produced exactly one destination effect; egress, sibling-service and owner-control-plane isolation were asserted from inside a claimed cell and the warm cell; the runtime image reproduces its pinned engine commit, plugin hash and SBOM. Not claimed: virtual-machine isolation, execution on Windows or macOS hosts, rootless Docker, and an upgrade procedure between releases. See the [threat model](docs/THREAT-MODEL.md) and [deployment operations](docs/DEPLOYMENT.md). |
-| Capability | **Partial, with named gaps.** | Implemented and tested: tool discovery (`search_tools`, `load_tool`) with a token-budgeted core; brokered MCP servers over HTTP (stdio launch is refused until an isolated launcher exists); a browser worker outside the cell with recipes and person takeover; in-cell execution (`exec.run`, `exec.python`) with artifact validation; automatic skill selection bounded to three; correction → candidate → evaluation → promotion → rollback for one procedure family; membership revocation that fences delivered context. Implemented but unverified against the real engine: dynamic discovery inside a live run, lifecycle hooks. Missing: adding an MCP server after a session starts, MCP disconnect recovery, credential refresh for MCP connections, reuse of an evaluated skill by another member. The real-Hermes capability proof is pending. See the [capability matrix](docs/CAPABILITIES.md). |
+| Capability | **Implemented and tested within the stated scope.** | The real-Hermes proof passes all five stages with **85 assertions**: dynamic search/load and receipts; MCP installation after session start; bounded disconnect recovery and sealed credential refresh; session/tool lifecycle hooks; skill selection capped at three; correction → evaluation → promotion → rollback; evaluated procedure reuse by another authorized member; and revocation fencing. Browser takeover and in-cell execution have separate named tests. **Real transcript compaction and production stdio launch remain unclaimed.** The provider is scripted, so this proves integration behavior, not real-model answer quality. See the [capability matrix](docs/CAPABILITIES.md). |
 | Output quality | **Not claimed.** | No real-model evaluation of answers ships. Every test uses a scripted provider. |
 | Learning | **Scoped, not general.** | Episode → candidate → held-out evaluation gate → canary → activation, tested end to end with scripted providers for one family: ordering typed table records while preserving their shape. Nothing beyond that family is claimed. See [learning](docs/LEARNING.md). |
 | Adoption | **Not measurable before release.** | |
@@ -226,6 +226,7 @@ dependency and binary downloads can require network access.
 
 ```bash
 bun install --frozen-lockfile
+bun run doctor
 bun run typecheck
 bun run lint
 bun run test
@@ -238,8 +239,12 @@ bun run test:plugin
 ```
 
 The generators update the OpenAPI document and client declarations; generated
-differences must be inspected. The Compose command checks YAML (19 checks), not
+differences must be inspected. The Compose command checks YAML (23 checks), not
 live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
+Install Chromium with `bunx playwright install chromium` to include the local
+browser fixtures. Prepare the local engine below to include the wired HTTP
+fixture; the combined capability proof remains a separate opt-in command in
+the capability matrix. Run each suite sequentially on small machines.
 The `test` script passes `--max-concurrency=2 --timeout=30000`, which gives each
 test and fixture hook thirty seconds, not the whole suite; several minutes of
 output is normal progress. The memory runner's procedure-transfer scenario is a

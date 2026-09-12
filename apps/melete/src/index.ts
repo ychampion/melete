@@ -10,6 +10,7 @@
  */
 
 import type { AttemptBundle, RuntimeAdapter } from '@melete/contracts';
+import { brokerCatalogState } from '@melete/runtime-hermes';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -18,6 +19,7 @@ import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
+import { mountConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
@@ -162,6 +164,13 @@ export function createApp(deps: AppDeps) {
     });
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
+  if (deps.db && deps.sql && deps.registry)
+    mountConnections(app, {
+      db: deps.db,
+      sql: deps.sql,
+      registry: deps.registry,
+      masterKey: deps.env.MELETE_MASTER_KEY,
+    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -281,8 +290,9 @@ export async function bootstrap(
   } = {},
 ) {
   const env = options.env ?? loadEnv();
-  if (!options.runtime && !['hermes', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
-    throw new Error('MELETE_RUNTIME_ADAPTER must be hermes or stub.');
+  // Compose selects the supervised Docker adapter before any dependencies start.
+  if (!options.runtime && !['hermes', 'docker', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
+    throw new Error('MELETE_RUNTIME_ADAPTER must be hermes, docker or stub.');
   }
   if (!['process', 'docker'].includes(env.MELETE_RUNTIME_SUPERVISOR))
     throw new Error('MELETE_RUNTIME_SUPERVISOR must be process or docker.');
@@ -457,7 +467,12 @@ export async function bootstrap(
           dockerNetwork: env.MELETE_RUNTIME_NETWORK,
           dockerWorkVolume: env.MELETE_RUNTIME_WORK_VOLUME,
         });
-        hermesRuntime = new SupervisedHermesRuntime(supervisor, handle.sql, options.onTiming);
+        hermesRuntime = new SupervisedHermesRuntime(
+          supervisor,
+          handle.sql,
+          options.onTiming,
+          brokerCatalogState({ brokerUrl: env.MELETE_BROKER_URL }),
+        );
       }
       const runtime =
         options.runtime ??
@@ -503,6 +518,7 @@ export async function bootstrap(
         // The test connector's fixed scopes when it is enabled; otherwise the
         // scopes the space's active connections actually grant.
         scopes: env.MELETE_ENABLE_TEST_CONNECTOR ? ['test.send', 'test.read'] : undefined,
+        liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
         scopesForJob: async (tx, row) => {
           const granted = await tx
             .select({ scopes: connection.scopes })
@@ -515,7 +531,7 @@ export async function bootstrap(
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
-      learning = await startLearning(jobs, env, options.workers !== false);
+      learning = await startLearning(jobs, env, options.workers !== false, options.fakeProvider);
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);

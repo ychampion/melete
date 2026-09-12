@@ -494,54 +494,37 @@ export async function buildBundle(
   );
   const tools = (await options.catalog(skeleton)).slice(0, CONTEXT_LIMITS.max_tools);
   const repairBriefs = await pendingRepairBriefs(sql, scope, jobId);
-  const [previous] = await sql`select id, started_at from attempt
-    where job_id = ${jobId} and epoch < ${skeleton.attempt.epoch} order by epoch desc limit 1`;
-  // Handles reveal identity, not old claim text. Every join stays within the job's
-  // space, and the current recall gate remains the authority on usable knowledge.
-  const evidence = await sql`select s.id, s.source_version from memory_sources s
+  // The delta was built once, in the lease transaction, from the job's own
+  // rows. Memory sources are the one kind of evidence only readable here, under
+  // the memory scope, so they complete that same brief rather than start another.
+  // Handles reveal identity, not old claim text. Every join stays within the
+  // job's space, and the current recall gate remains the authority on usable knowledge.
+  const since = skeleton.since_last.ended_at;
+  const sources = await sql`select s.id, s.source_version, s.stream, s.source_type, s.ingested_at
+    from memory_sources s
     where s.space_id = ${scope.spaceId} and s.state = 'active'
       and s.audience = any(${scope.role === 'owner' ? ['private', 'space', 'public'] : ['space', 'public']})
       and ${skeleton.job.constraints.public_compartment !== true}
-      and (${previous?.started_at ?? null}::timestamptz is null
-      or s.ingested_at > ${previous?.started_at ?? null}::timestamptz) order by s.ingested_at, s.id limit 50`;
-  const actions =
-    await sql`select a.id, a.status, a.receipt->>'action_id' as receipt_id from action a
-    join job j on j.id = a.job_id where j.id = ${jobId} and j.space_id = ${scope.spaceId}
-    order by a.created_at desc, a.id limit 50`;
-  const questions =
-    await sql`select q.id, q.text as prompt from question q join job j on j.id = q.job_id
-    where j.id = ${jobId} and j.space_id = ${scope.spaceId} and q.state = 'open' order by q.created_at, q.id limit 20`;
-  const approvals =
-    await sql`select p.id, p.action_id from approval p join action a on a.id = p.action_id
-    join job j on j.id = a.job_id where j.id = ${jobId} and j.space_id = ${scope.spaceId}
-    and p.decision is null and a.status = 'needs_approval' and p.job_revision = j.revision
-    and (p.expires_at is null or p.expires_at > now()) order by p.requested_at, p.id limit 20`;
+      and (${since}::timestamptz is null or s.ingested_at > ${since}::timestamptz)
+    order by s.ingested_at, s.id limit 50`;
   return {
     recall: result,
     bundle: {
       ...skeleton,
       tools,
       knowledge: result.items.map(asKnowledge),
-      inputs: {
-        ...skeleton.inputs,
-        repair_briefs: repairBriefs,
-        since_last: {
-          previous_attempt_id: (previous?.id as string) ?? null,
-          evidence_handles: evidence.map((entry) => `${entry.id}@${entry.source_version}`),
-          actions: actions.map((entry) => ({
-            action_id: entry.id as string,
-            status: entry.status as string,
-            receipt_id: (entry.receipt_id as string) ?? null,
+      inputs: { ...skeleton.inputs, repair_briefs: repairBriefs },
+      since_last: {
+        ...skeleton.since_last,
+        evidence: [
+          ...skeleton.since_last.evidence,
+          ...sources.map((row) => ({
+            kind: 'source' as const,
+            handle: `source:${row.id}@${row.source_version}`,
+            label: `${row.stream} ${row.source_type}`,
+            at: new Date(row.ingested_at as string).toISOString(),
           })),
-          pending_questions: questions.map((entry) => ({
-            id: entry.id as string,
-            prompt: entry.prompt as string,
-          })),
-          pending_approvals: approvals.map((entry) => ({
-            approval_id: entry.id as string,
-            action_id: entry.action_id as string,
-          })),
-        },
+        ].slice(0, 50),
       },
     },
   };

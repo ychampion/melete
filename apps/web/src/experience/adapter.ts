@@ -8,7 +8,7 @@
  * `unavailable` is the reason a capability is not connected, and a surface
  * that gets one is not drawn.
  */
-import { createMeleteClient, errorMessage, readSse } from '@melete/client';
+import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import type {
   ActionResolution,
   Agent,
@@ -25,6 +25,7 @@ import type {
   LedgerAction,
   MemoryExplanation,
   MemoryItem,
+  MemoryItemCreate,
   MessageAcceptance,
   Permission,
   PermissionOutcome,
@@ -32,12 +33,14 @@ import type {
   PlanCreate,
   Profile,
   Question,
+  Reaction,
   Receipt,
   ResultCard,
   Rule,
   RuleBounds,
   SearchResult,
   SendOutcome,
+  StreamGap,
   Task,
   TaskInput,
   Turn,
@@ -46,7 +49,7 @@ import { isNotAvailable } from './types.ts';
 
 export type Result<T> =
   | { data: T; error: null; unavailable: null }
-  | { data: null; error: string; unavailable: null }
+  | { data: null; error: string; unavailable: null; unauthorized?: boolean }
   | { data: null; error: null; unavailable: string };
 
 const MOCK_API_BASE = 'http://localhost:3210';
@@ -71,7 +74,12 @@ function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Respon
       return { data: null, error: null, unavailable: outcome.data.reason };
     return { data: outcome.data as T, error: null, unavailable: null };
   }
-  return { data: null, error: errorMessage(outcome.error, OFFLINE), unavailable: null };
+  return {
+    data: null,
+    error: errorMessage(outcome.error, OFFLINE),
+    unavailable: null,
+    unauthorized: outcome.response?.status === 401,
+  };
 }
 
 async function guard<T>(
@@ -98,6 +106,8 @@ export const adapter = {
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
   signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
   signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
+  /** Ends the session; the next request needs a new sign-in. */
+  signOut: () => guard<{ status: 'ok' }>(() => api.POST('/signout')),
 
   /* ---------- home, tasks ---------- */
   home: () => guard<Home>(() => api.GET('/home')),
@@ -171,6 +181,21 @@ export const adapter = {
       api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
     ),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  /* ---------- reactions: a glyph on a message, either direction ---------- */
+  messageEvents: (conversationId: string, signal: AbortSignal) =>
+    subscribeEvents(client, { jobId: conversationId, signal }),
+  reactions: (conversationId: string) =>
+    guard<{ reactions: Reaction[] }>(() =>
+      api.GET('/jobs/{jobId}/reactions', { params: { path: { jobId: conversationId } } }),
+    ),
+  react: (messageSeq: number, emoji: string) =>
+    guard<{ reaction: Reaction }>(() =>
+      api.POST('/messages/{messageId}/reactions', {
+        params: { path: { messageId: String(messageSeq) } },
+        body: { emoji },
+      }),
+    ),
+
   /* ---------- the broker's ledger: effects the connector never confirmed ---------- */
   unknownActions: (jobId: string) =>
     guard<{ actions: LedgerAction[] }>(() =>
@@ -192,6 +217,9 @@ export const adapter = {
   updateAgent: (id: string, body: AgentInput) =>
     guard<{ agent: Agent }>(() => api.PATCH('/agents/{id}', { ...path(id), body })),
   memory: () => guard<{ items: MemoryItem[] }>(() => api.GET('/memory/items')),
+  /** A detail the person states outright; the same key again replaces the value. */
+  createMemoryItem: (body: MemoryItemCreate) =>
+    guard<{ item: MemoryItem }>(() => api.POST('/memory/items', { body })),
   editMemory: (id: string, value: string, version: string) =>
     guard<{ status: 'ok' }>(() =>
       api.PATCH('/memory/items/{id}', { ...path(id), body: { value, version } }),
@@ -244,11 +272,6 @@ export const adapter = {
 
 export type Adapter = typeof adapter;
 
-export type StreamGap = {
-  after: number;
-  next: number | null;
-  reason: 'reconnect' | 'sequence_skip';
-};
 export type StreamItem =
   | { type: 'open' }
   | { type: 'event'; event: ExperienceEvent }

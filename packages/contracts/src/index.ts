@@ -23,6 +23,7 @@ export * from './hooks.ts';
 export * from './job-state.ts';
 export * from './knowledge.ts';
 export * from './learning.ts';
+export * from './mcp.ts';
 export * from './memory.ts';
 export * from './model-budget.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
