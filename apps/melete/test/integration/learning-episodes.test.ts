@@ -2,9 +2,17 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { action, artifact, connection } from '../../src/db/schema.ts';
+import { learningTrial } from '../../src/learning/evaluation-schema.ts';
+import { compileProcedure, definitionHash } from '../../src/learning/procedure.ts';
+import { ProcedureService } from '../../src/learning/procedures.ts';
 import { expireEpisodes } from '../../src/learning/retention.ts';
 import { mountLearning } from '../../src/learning/routes.ts';
-import { episode } from '../../src/learning/schema.ts';
+import {
+  episode,
+  procedureCandidate,
+  procedureEvaluation,
+  procedureTransition,
+} from '../../src/learning/schema.ts';
 import { publishRevision } from '../../src/memory/claims.ts';
 import { assembleAttemptKnowledge } from '../../src/memory/context.ts';
 import { lockSpace, newId } from '../../src/memory/db.ts';
@@ -17,6 +25,105 @@ import { learningFixture, learningScope, rejectsWith, wake } from './learning-fi
 const fixture = await learningFixture();
 afterAll(async () => fixture?.close(), 15000);
 (fixture ? describe : describe.skip)('learning episode capture', () => {
+  test.each(['owner deletion', 'retention', 'memory removal'] as const)(
+    '%s erases derived candidates, evaluations and canary history',
+    async (removal) => {
+      if (!fixture) return;
+      const { handle, ownerId, spaceId, episodes } = fixture;
+      const row = await fixture.create(`derived-removal-${removal.replaceAll(' ', '-')}`);
+      const source = await episodes.intervene(ownerId, row.id, {
+        idempotency_key: removal,
+        kind: 'correction',
+        text: 'Use typed ordering.',
+        signal: 'typed_ordering',
+      });
+      const definition = {
+        ...compileProcedure({
+          target: 'skill_body',
+          steps: ['sort-typed-values'],
+          test: 'ordering-and-shape',
+        }),
+        scope: learningScope,
+        compatibleModels: ['fake/scripted-learning-v1'],
+      };
+      const id = newId('pc');
+      const evaluationId = newId('pe');
+      await handle.db.insert(procedureCandidate).values({
+        ...definition,
+        id,
+        episodeId: source.id,
+        spaceId,
+        bodyHash: definitionHash(definition),
+        state: 'enabled_canary',
+        canarySpaceId: spaceId,
+      });
+      await handle.db.insert(procedureEvaluation).values({
+        id: evaluationId,
+        candidateId: id,
+        bodyHash: definitionHash(definition),
+        phase: 'sealed_final',
+        suiteHash: 'removal-fixture',
+        evidence: {},
+        budget: {},
+        passed: true,
+      });
+      await handle.db.insert(procedureTransition).values({
+        id: newId('pt'),
+        candidateId: id,
+        fromState: 'evaluated',
+        toState: 'enabled_canary',
+        actor: ownerId,
+        reason: 'Removal fixture canary',
+      });
+      await handle.db.insert(learningTrial).values({
+        jobId: row.id,
+        candidateId: id,
+        evaluationId,
+        bodyHash: definitionHash(definition),
+        useCandidate: true,
+        expiresAt: new Date(Date.now() + 60000),
+      });
+      const service = new ProcedureService(fixture.jobs);
+      const before = await service.inspect(ownerId, spaceId, id);
+      expect(before.candidate.canarySpaceId).toBe(spaceId);
+      expect(before.evaluations).toHaveLength(1);
+      expect(before.history).toHaveLength(1);
+      if (removal === 'owner deletion') await episodes.remove(ownerId, spaceId, source.id);
+      else if (removal === 'retention') {
+        await handle.db
+          .update(episode)
+          .set({ expiresAt: new Date(0) })
+          .where(eq(episode.id, source.id));
+        await expireEpisodes(handle.sql);
+      } else
+        await forgetMemory(
+          handle.sql,
+          { ownerId, spaceId, publisher: 'owner', audience: 'private', role: 'owner' },
+          { all: true },
+          { read: async () => [], append: async () => {} },
+        );
+      expect(
+        await handle.db.select().from(procedureCandidate).where(eq(procedureCandidate.id, id)),
+      ).toEqual([]);
+      expect(
+        await handle.db
+          .select()
+          .from(procedureEvaluation)
+          .where(eq(procedureEvaluation.candidateId, id)),
+      ).toEqual([]);
+      expect(
+        await handle.db
+          .select()
+          .from(procedureTransition)
+          .where(eq(procedureTransition.candidateId, id)),
+      ).toEqual([]);
+      expect(
+        await handle.db.select().from(learningTrial).where(eq(learningTrial.candidateId, id)),
+      ).toEqual([]);
+      await rejectsWith(() => service.inspect(ownerId, spaceId, id), 'not_found');
+    },
+  );
+
   test('a correction during a job creates exactly one episode with intervention and receipts', async () => {
     if (!fixture) return;
     const { jobs, runner, episodes, ownerId, spaceId, handle } = fixture;
