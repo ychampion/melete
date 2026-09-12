@@ -2,10 +2,12 @@
 
 ## Scope and conclusion
 
-Reviewed the integration commit
+This is a historical review of integration commit
 `9484023cabd32b786cb4d336dec818f441cd0cc1`. This patch repairs three related
 broker/service contract failures. It does not declare the application ready for
-production, replace the runtime, change the UI, or merge the active feature lanes.
+production, replace the runtime, or change the UI. Current release evidence is
+recorded in the root README; the measurements and open review items below refer
+to this source checkpoint.
 
 The existing tests passed against real PostgreSQL before changes: **901 passed,
 14 TODO, zero failed**. Seven new checks then failed against the unchanged source.

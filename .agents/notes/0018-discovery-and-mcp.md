@@ -74,11 +74,13 @@ and scripts search, load, execution and receipt reporting through the model
 gateway. It measures the actual first request's system prompt and tool schemas,
 checks native history prefixes and saves local evidence. The estimator is
 `ceil((system prompt characters + serialized schema characters) / 4)`; fake
-provider usage fields are not used as a scaffolding measurement. The first
-request measured 7,426 system characters plus 2,774 schema characters, or 2,550
+provider usage fields are not used as a scaffolding measurement. The earlier
+probe measured 7,426 system characters plus 2,774 schema characters, or 2,550
 estimated tokens. The seven-tool core was 694 estimated tokens. Four scripted
 provider requests across two runs produced one broker receipt and one completed
-attempt outcome, with append-only history. `REPORT.md` records the command.
+attempt outcome, with append-only history. That historical report remains in
+Git history; the [runtime README](../../packages/runtime-hermes/README.md#what-the-thin-configuration-costs)
+records the current command and measurement.
 
 ## MCP registration and the remaining launch boundary
 

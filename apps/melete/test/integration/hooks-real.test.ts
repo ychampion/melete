@@ -75,7 +75,14 @@ realTest(
     });
     expect(catalogResponse.status).toBe(200);
     const catalog = (await catalogResponse.json()) as { tools: { name: string }[] };
-    expect(catalog.tools.map((tool) => tool.name)).toEqual(['files.read']);
+    // Native discovery and reactions need no connection grant; the only granted
+    // connector operation in this fixture must still be files.read.
+    expect(catalog.tools.map((tool) => tool.name)).toEqual([
+      'files.read',
+      'load_tool',
+      'react',
+      'search_tools',
+    ]);
     process.env.MELETE_BROKER_URL = 'http://127.0.0.1:3162';
     const home = hermesHome(3162, 3160, token);
     // Fault injection lives only in this disposable plugin copy. It uses the same

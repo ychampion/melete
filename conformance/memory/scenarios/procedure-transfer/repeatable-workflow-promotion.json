@@ -5,7 +5,7 @@
   "narrative": "The same expense workflow is used twice, then a counterexample arrives: the promoted procedure must carry its conditions and must not be applied where the counterexample holds.",
   "memory_required": true,
   "status": "todo",
-  "todo_reason": "Candidate-procedure promotion is not enabled in v0.1. docs/MEMORY.md records that the comparison here does not establish that its extra write cost is useful, so the assertion is written and the row stays todo until promotion lands.",
+  "todo_reason": "This expense-workflow scenario does not yet exercise the procedure-promotion pipeline. Promotion, held-out evaluation, canary reuse and rollback are tested separately for typed table records in the learning integration tests; that evidence does not make this conformance scenario pass.",
   "steps": [
     {
       "step": "say",

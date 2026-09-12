@@ -63,9 +63,16 @@ when only the person can decide.
   hash and writes a CycloneDX inventory, and a restore procedure that keeps the
   removal journal apart from the database snapshot.
 
+- **Evaluation evidence.** A resumable harness with bounded spend reservations,
+  durable phase checkpoints, 70 synthetic destination fixtures and separate
+  deterministic and language grades. Reads receive fresh identities on a new
+  attempt; writes retain their durable identity. Broker-owned waits and parked
+  settlement preserve approval and reconciliation boundaries. Gateway startup
+  and typed memory recall have regression coverage.
+
 ### Measured
 
-On one Linux Docker host: the clean-host install completed in about 65
+Previously measured on one Linux Docker host: the clean-host install completed in about 65
 seconds; conformance 1–8 passed 44 tests and skipped one (the second-provider
 comparison, which needs a credential); the memory runner passed ten scenarios
 across seven families with every withheld-memory arm failing as required;
@@ -77,8 +84,11 @@ passes five stages and 85 assertions with a scripted HTTP provider.
 
 ### Not claimed
 
-- Useful autonomous task performance or answer quality with a real model; every
-  test uses a scripted provider.
+- Passing autonomous task performance or answer quality with a real model. The
+  recorded Fireworks campaign failed its own gate: deterministic passes were
+  34, 32 and 38 of 70 across three runs. It observed zero duplicate effects and
+  zero successful injections within the documented fixture exposure. Ordinary
+  tests use scripted providers; the paid campaign is a separate explicit command.
 - Learning beyond the one evaluated procedure family.
 - Real transcript compaction and production stdio MCP launch; the latter
   requires an isolated launcher. Session and tool hooks, HTTP connection

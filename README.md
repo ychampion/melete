@@ -38,18 +38,22 @@ Three principles decide every design choice.
    survives a database restore because the removal journal is kept apart.
 
 Melete is model-agnostic: the gateway meters and forwards to the provider you
-configure, and the provider never sees your keys or your database.
+configure, and the runtime never sees provider keys or your database.
 
 ## The six gates, and where v0.1 stands
 
 | Gate | v0.1 status | Evidence |
 | --- | --- | --- |
-| Reliability | **Passes the tested scenarios.** | The eight [conformance scenarios](conformance/README.md) previously ran against the Compose stack on a Linux Docker host: 44 passed, 1 skipped (the credential-gated second-provider comparison). Scenarios 1–5 also run with disposable Postgres. The [memory runner](conformance/memory/README.md) passed ten scenarios across seven families, with every withheld-memory arm failing as required. At source checkpoint `a01e380`, Bun 1.3.13 passed the whole suite on Windows: **1,624 passed, 29 skipped, 0 failed, 7,588 assertions across 160 files**. Linux with real Postgres: **1,596 passed, 62 skipped, 4 TODOs, 0 failed, 7,306 assertions across 160 files**. Linux lacked Chromium and the local Hermes environment; its extra omissions are explicit, and the Windows run exercised those fixtures. The opt-in Compose and real-provider scenarios were not rerun in these ordinary suites. |
-| Operations | **Partial.** | Measured on a clean Linux Docker host: the install procedure below completed in about 65 seconds; restart under an active job and under a parked approval recovered with one receipt; a restore into an empty database volume kept the newer removal journal and produced exactly one destination effect; egress, sibling-service and owner-control-plane isolation were asserted from inside a claimed cell and the warm cell; the runtime image reproduces its pinned engine commit, plugin hash and SBOM. Not claimed: virtual-machine isolation, execution on Windows or macOS hosts, rootless Docker, and an upgrade procedure between releases. See the [threat model](docs/THREAT-MODEL.md) and [deployment operations](docs/DEPLOYMENT.md). |
+| Reliability | **Passes the tested scenarios.** | At source `ba839fc`, Bun 1.3.13 passed **1,733 tests on Windows, 29 skipped, 0 failed, in 347 seconds**, and **1,705 on Linux with real Postgres, 62 skipped, 4 TODOs, 0 failed, in 174 seconds**. [Service conformance](conformance/README.md): **26 passed, 25 skipped**, with five scenarios enabled and three deployment scenarios deferred. [Memory conformance](conformance/memory/README.md): **ten active scenarios passed, ten checks with recall withheld, one deferred**. The Python plugin passed **76 tests**. Linux lacked Chromium and the local Hermes environment; Windows exercised those fixtures. Skipped deployment and real-provider scenarios are not passing coverage. |
+| Operations | **Partial.** | Previously measured on a clean Linux Docker host: the install procedure below completed in about 65 seconds; restart under an active job and under a parked approval recovered with one receipt; a restore into an empty database volume kept the newer removal journal and produced exactly one destination effect; egress, sibling-service and owner-control-plane isolation were asserted from inside a claimed cell and the warm cell; the runtime image reproduces its pinned engine commit, plugin hash and SBOM. Not claimed: virtual-machine isolation, execution on Windows or macOS hosts, rootless Docker, and an upgrade procedure between releases. See the [threat model](docs/THREAT-MODEL.md) and [deployment operations](docs/DEPLOYMENT.md). |
 | Capability | **Implemented and tested within the stated scope.** | The real-Hermes proof passes all five stages with **85 assertions**: dynamic search/load and receipts; MCP installation after session start; bounded disconnect recovery and sealed credential refresh; session/tool lifecycle hooks; skill selection capped at three; correction → evaluation → promotion → rollback; evaluated procedure reuse by another authorized member; and revocation fencing. Browser takeover and in-cell execution have separate named tests. **Real transcript compaction and production stdio launch remain unclaimed.** The provider is scripted, so this proves integration behavior, not real-model answer quality. See the [capability matrix](docs/CAPABILITIES.md). |
-| Output quality | **Not claimed.** | No real-model evaluation of answers ships. Every test uses a scripted provider. |
+| Output quality | **Measured; does not pass its gate.** | DeepSeek V4.1 Flash on Fireworks completed **70 fixtures three times: 210 observed cells**. Deterministic checks passed **34/70, 32/70 and 38/70**; the separate language rubric passed **57/70, 51/70 and 60/70**. The fixtures recorded **zero duplicate effects and zero successful injections**, across nine accepted effects, six with lost acknowledgements. Some failed preconditions prevented later phases from running. The campaign **does not pass `--gate`**. See the [evaluation evidence and limits](docs/EVALS.md). |
 | Learning | **Scoped, not general.** | Episode → candidate → held-out evaluation gate → canary → activation, tested end to end with scripted providers for one family: ordering typed table records while preserving their shape. Nothing beyond that family is claimed. See [learning](docs/LEARNING.md). |
 | Adoption | **Not measurable before release.** | |
+
+The operations row records earlier deployment measurements. The ordinary suites
+do not repeat image builds, stack restarts, backup restoration or live-provider
+comparisons; those require a separate disposable installation.
 
 ## Demo
 
@@ -241,6 +245,7 @@ bun run test:plugin
 The generators update the OpenAPI document and client declarations; generated
 differences must be inspected. The Compose command checks YAML (23 checks), not
 live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
+The plugin command uses an isolated Python environment to avoid system-package conflicts.
 Install Chromium with `bunx playwright install chromium` to include the local
 browser fixtures. Prepare the local engine below to include the wired HTTP
 fixture; the combined capability proof remains a separate opt-in command in
@@ -297,8 +302,8 @@ the scenarios the mock plays and the rules the web app follows.
 - A hosted or multi-tenant service. Melete is one installation for one person,
   with additional accounts and shared spaces available as API primitives only
   (no invitation interface).
-- Real-model answer quality, and learning beyond the one evaluated procedure
-  family.
+- Passing real-model answer quality, and learning beyond the one evaluated
+  procedure family. The recorded evaluation measures a failure of its quality gate.
 - Virtual-machine isolation, confidential compute, host-compromise containment,
   and any operating system other than a Linux Docker host for the sealed cell.
 - Launching MCP servers over stdio from the service, interactive sign-in inside

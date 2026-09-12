@@ -80,9 +80,9 @@ starts and retires these containers itself when the Docker runtime is selected.
 
 The local discovery end-to-end test captures the first actual provider request
 from pinned commit `2237be355906fbe6065ce1815711eee52b2d646e`. With a seven-tool
-core, it measured 7,426 system-prompt characters and 2,774 tool-schema characters:
-**2,550 estimated tokens**, using `ceil((system + schemas).length / 4)`, below
-the 4,000-token tripwire. The broker core itself was 694 estimated tokens
+core, it measured 7,708 system-prompt characters and 2,886 tool-schema characters:
+**2,649 estimated tokens**, using `ceil((system + schemas).length / 4)`, below
+the 4,000-token tripwire. The broker core itself was 714 estimated tokens
 against its 750-token budget. This is a scaffolding estimate, not provider usage
 or a tokenizer-specific count. User input and subsequent tool results are metered
 separately by the gateway.
@@ -197,10 +197,11 @@ patch dispatches only after committed progress.
 
 Run `bun run test:plugin` and
 `bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=2`
-for the observer and persistence checks. The optional real-server check is
+for the observer and persistence checks. The optional Windows real-server check is
 `MELETE_HERMES_E2E=1 bun test apps/melete/test/integration/hooks-real.test.ts --max-concurrency=2`;
 prepare `.hermes-venv` using note 0009 and install the pin's `aiohttp==3.14.3`.
-That check's earlier broker-action failure is historical. The current combined
+That check passes with 17 assertions, including observer failure isolation and
+one successful tool call. The current combined
 proof is `MELETE_CAPABILITY_PROOF=1 bun test apps/melete/test/integration/capability-proof.test.ts --max-concurrency=1`.
 It uses the service's process supervisor, which prepares the same hash-checked
 observer bridge as the image before starting its first engine. Continuation
@@ -209,7 +210,7 @@ The proof records real lifecycle hooks and exercises runtime MCP installation,
 search/load, receipts, bounded reconnect, sealed credential refresh, private
 learning, evaluated teammate reuse and revocation. A lost acknowledgement stays
 unknown without replay. Real compaction is unverified. See the current
-[capability matrix](../../docs/CAPABILITIES.md) and [report](../../REPORT.md).
+[capability matrix](../../docs/CAPABILITIES.md) and [release evidence](../../README.md#the-six-gates-and-where-v01-stands).
 
 ## Per-attempt launch
 
