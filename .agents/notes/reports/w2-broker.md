@@ -4,8 +4,8 @@
 
 - SHA `65e26f1438cd5c8e95e7bf160f456be07d8cb534`: frozen contracts and architecture govern; the brief's section numbers differ from the checked-in headings.
 - Test `action status`: reconciliation resolves to `succeeded`, `failed`, or `unresolved`; the frozen contract has no `reconciled` status.
-- Command `bun install`: completed in `C:/Users/gamin/melete-oss-w2`, Bun 1.3.13, 126 packages installed.
-- Command `git -C C:/Users/gamin/melete-oss-w2 status --short --branch`: clean lane branch before edits; no other checkout is used.
+- Command `bun install`: completed in the lane worktree, Bun 1.3.13, 126 packages installed.
+- Command `git status --short --branch`: clean lane branch before edits; no other checkout is used.
 - Log `campaign start 2026-09-11 07:49 UTC`: five-hour limit ends at 12:49 UTC.
 - Test `private compartment`: missing public-compartment flag is treated as private; only trusted persisted job constraints select the compartment.
 
@@ -73,7 +73,7 @@
 ## Slice 6 — gateway integration in progress
 
 - SHA `7c6749a`: mail/calendar/sealed-secret slice pushed; focused mail suite is 18 pass / 96 assertions / 735 ms.
-- Command `git -C C:/Users/gamin/melete-oss-w2 status --short --branch`: re-read with REPORT.md at owner resume, 2026-09-11 08:25 UTC; continuing from existing edits.
+- Command `git status --short --branch`: re-read with REPORT.md at owner resume, 2026-09-11 08:25 UTC; continuing from existing edits.
 - Command `bun test apps/melete/src/gateway --max-concurrency=2`: 14 unit tests / 68 assertions green, including actual CONNECT with a test-only certificate and metered inner requests.
 - Test `scripted fake streams through the gateway, broker approval, destination, and final response`: passed against real HTTP and Postgres with two persisted model usage records and one destination delivery.
 - Test `service startup binds the W2 internal port and runs pg-boss against the fixture`: passed on 127.0.0.1:3112.
@@ -89,7 +89,7 @@
 
 - Command `bun test apps/melete/src/gateway --max-concurrency=2`: 14 pass, 68 assertions, 0 fail, 768 ms after integration shutdown changes.
 - Command `bun test apps/melete/test/integration/gateway.test.ts --max-concurrency=2`: 3 pass, 1 fail, 35 assertions, 26.49 seconds; scripted streaming/approval/destination round trip, concurrent request cap, and pg-boss startup pass.
-- Log `cancellation fences both broker and provider HTTP routes without a request record ... timed out after 5000ms`: persists after the two permitted fixes (HTTP shutdown ordering and rejected-request draining); no further fix cycles on this check.
+- Log `cancellation fences both broker and provider HTTP routes without a request record ... timed out after 5000ms`: persists after the two permitted fixes (HTTP shutdown ordering and rejected-request draining); no further fix passes on this check.
 - Command `bun run compose:check`: 11 checks pass; compose runtime stays on internal-only network, effect port unpublished, keys supplied only to Melete, shared work volume and proxy configuration added.
 - Command `if ($env:FIREWORKS_API_KEY)`: absent; real Fireworks smoke `skipped: no key`; no external provider request made.
 - Log `owner steering A-F`: preserve commits; add full approval binding and generation resolver, cancelled action listing, fenced late receipt reconciliation, execution generation fencing, post-destination timeout identity, and uncertain usage evidence before final report.
@@ -119,17 +119,17 @@
 ## Final verification — stop-rule handoff, 2026-09-11 09:00 UTC
 
 - Command `bun test --max-concurrency=2`: 297 pass, 1 existing DATABASE_URL ping skip, 26 pre-existing todos, 1 fail, 1030 assertions, 137.13 seconds; whole suite remains below the three-minute cap.
-- Log `(fail) cancellation fences both broker and provider HTTP routes without a request record [5015.00ms]`: `this test timed out after 5000ms`; two fix cycles were exhausted before the architecture sharpening, and the final full suite reproduces it.
+- Log `(fail) cancellation fences both broker and provider HTTP routes without a request record [5015.00ms]`: `this test timed out after 5000ms`; two fix passes were exhausted before the architecture sharpening, and the final full suite reproduces it.
 - Test `cancellation fences both broker and provider HTTP routes without a request record`: HTTP 403 and no-reservation assertions ran; earlier instrumentation localized the remaining wait to server.close cleanup. The failing test is retained for the handoff.
 - Command `bun run typecheck`: passed after validating action-list response JSON with the frozen schema.
 - Command `bun run lint`: passed, 107 files; focused formatter subsequently handled only added W2 source/test lines.
 - Command `bun run compose:check`: 11 pass; Docker is absent on this laptop, so Linux container/network execution remains unverified here.
-- Command `git -C C:/Users/gamin/melete-oss-w2 diff --exit-code 65e26f1438cd5c8e95e7bf160f456be07d8cb534 -- packages/contracts`: passed; frozen contracts unchanged.
-- Command `git -C C:/Users/gamin/melete-oss-w2 diff --check`: passed.
+- Command `git diff --exit-code 65e26f1438cd5c8e95e7bf160f456be07d8cb534 -- packages/contracts`: passed; frozen contracts unchanged.
+- Command `git diff --check`: passed.
 - Test `full effect authority binding`: both added action-id and connection-id substitution tests passed in the final suite, in addition to resource, recipient, principal, generation, policy and expiry checks.
 - Test `provider evidence parsing`: empty, partial, negative, malformed cache, and overflowing usage keep the reservation uncertain; actual returned model and parsed usage remain separate from the requested alias.
 - Log `FIREWORKS_API_KEY absent`: real smoke remains `skipped: no key`; all executed provider tests use the in-process fake or a local transport double.
-- Log `DONE not claimed`: one known teardown failure remains after the permitted fix cycles; preserve the implementation, open a draft PR, and do not merge.
+- Log `DONE not claimed`: one known teardown failure remains after the permitted fix passes; preserve the implementation, open a draft PR, and do not merge.
 - Log `temporary fixture cleanup`: automatic approval review rejected one recursive temporary-directory removal earlier in this run; its Postgres process was stopped and the directory remains preserved.
 
 ## Slice 7 — committed conformance handoff
@@ -144,8 +144,8 @@
 - SHA `bcd6f1ed42b059865a0031c9119eef28f5432d69`: conformance implementation committed and pushed to origin/lane/w2-broker after the final full-suite run.
 - Command `gh pr create --repo ychampion/melete --base main --head lane/w2-broker --draft`: opened https://github.com/ychampion/melete/pull/3 with working behavior, the retained teardown failure, verification commands and integration limits.
 - Command `gh pr view 3 --repo ychampion/melete --json url,state,isDraft,baseRefName,headRefName,headRefOid,mergeable`: OPEN, draft=true, main <- lane/w2-broker, head bcd6f1ed42b059865a0031c9119eef28f5432d69, MERGEABLE; not merged.
-- Command `git -C C:/Users/gamin/melete-oss-w2 log 65e26f1438cd5c8e95e7bf160f456be07d8cb534..HEAD`: every implementation commit uses ychampion <68075205+ychampion@users.noreply.github.com>; earlier commits preserved.
-- Command `git -C C:/Users/gamin/melete-oss-w2 status --short --branch`: clean at the implementation head and tracking origin/lane/w2-broker before this report-only commit.
+- Command `git log 65e26f1438cd5c8e95e7bf160f456be07d8cb534..HEAD`: every implementation commit uses ychampion <68075205+ychampion@users.noreply.github.com>; earlier commits preserved.
+- Command `git status --short --branch`: clean at the implementation head and tracking origin/lane/w2-broker before this report-only commit.
 - Log `campaign stop 2026-09-11 09:03 UTC`: within the five-hour cap; one failing check remains under the two-fix-cycle stop rule, so the draft PR is a partial handoff and DONE is not claimed.
 
 ## Slice 9 — gateway teardown root cause, 2026-09-11

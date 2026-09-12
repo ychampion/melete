@@ -130,9 +130,8 @@ its isolation verification land when W10a merges.
 
 ## Verification
 
-Acquire `C:/Users/gamin/.melete-test.lock` with the owner's atomic mkdir loop
-before a full `bun test --max-concurrency=2` run, and release it on success or
-failure. Focused runs need no lock. Run `bun run typecheck`, `bun run lint`,
+Run full `bun test --max-concurrency=2` suites one at a time on a machine that
+other test processes share; focused runs need no such serialization. Run `bun run typecheck`, `bun run lint`,
 `bun run test:plugin`, `bun run compose:check`, and the discovery e2e script.
 The e2e needs an ignored `.hermes-src` at the pinned revision and an isolated
 `.hermes-venv` with that source installed; it uses no real inference credentials.
@@ -143,6 +142,6 @@ are copied into separate real Git repositories rather than recreated per case.
 
 The final run with a preserved owner marker passed 982 tests, with 14 existing
 TODOs and no failures, in 211.91 seconds. The three-minute whole-suite target
-remains unmet after the brief's two fixture-performance fix cycles. The earlier
+remains unmet after two fixture-performance passes. The earlier
 reply/submission timeouts did not reproduce in this run; no fault-injection
 assertion or timeout was relaxed to obtain the pass.

@@ -6,17 +6,17 @@ Trial integration on `landing` only. Source baseline: `9484023cabd32b786cb4d336d
 
 - The requested worktree already existed, clean on `landing` at `origin/integration`, so it was reused without modifying another checkout.
 - Migrations are ordered by the production journal. Additional migrations in the current PR heads are preserved and assigned the next available index.
-- This landing run uses one Bun test process at a time. After waiting for repeated independent runs to finish, focused tests use the brief's no-lock rule; other agents control their own processes. Full suites acquire the shared directory lock and remove only this run's marker and lock on exit.
+- This landing run uses one Bun test process at a time. After waiting for repeated independent runs to finish, focused tests use the brief's no-lock rule; other agents control their own processes. Full suites run one at a time, serialized with the other test processes on the machine.
 - Test evidence is local and uses disposable fixtures. Optional credential-dependent or container proofs are reported separately from passing local checks.
 
 ## Merge ledger
 
 | Order | PR | Branch | Merge commit | Migrations | Checks and result |
 | --- | --- | --- | --- | --- | --- |
-| 1 | #16 | `fix/production-review-astra-20260912` | `c25c265cd986217938ca99ab0ef43e114508ce49` | None | Typecheck, lint, clean regeneration; plugin 20; Compose 12; focused 35 pass, 202 assertions, 0 failures |
+| 1 | #16 | the production review branch | `c25c265cd986217938ca99ab0ef43e114508ce49` | None | Typecheck, lint, clean regeneration; plugin 20; Compose 12; focused 35 pass, 202 assertions, 0 failures |
 | 2 | #12 | `lane/w12-repair` | `f6906f8110c98b41bf5528a4903a6d287d4f5fd4` | `0015_typed_repair` unchanged | Static checks green; plugin 20; Compose 12; first focused 100 pass / 2 fail; affected rerun 37 pass / 305 assertions / 0 fail |
 | 3 | #11 | `lane/w10a-execution` | `ccf1458b7ed1cde7c0a630ceee5f55a891f54c7e` | Artifact validation 0015 to 0016; content digest 0016 to 0017 | Typecheck, lint, clean regeneration; plugin 43; Compose 12; focused 175 pass / 767 assertions / 0 fail |
-| 1b | #16 | `fix/production-review-astra-20260912` again, head `ddf1d97` | `f91f962`, fixture fix `89bee15` | None | Typecheck, lint, clean regeneration; plugin 43; Compose 12; focused 38 pass / 210 assertions / 0 fail |
+| 1b | #16 | the production review branch again, head `ddf1d97` | `f91f962`, fixture fix `89bee15` | None | Typecheck, lint, clean regeneration; plugin 43; Compose 12; focused 38 pass / 210 assertions / 0 fail |
 | 3b | #11 | `lane/w10a-execution` again, head `8231cc7` | `b3a3ed9` | None | Typecheck, lint, clean regeneration; plugin 43; Compose 12; focused 15 pass / 103 assertions / 0 fail |
 | 4 | #14 | `lane/w9-product`, head `c854caf` | `9249ce9` | `0015_reactions_and_style` to 0018; `0016_watch_triggers` to 0019 | Typecheck, lint, clean regeneration; plugin 45; Compose 12; focused 326 pass / 1 skip / 1321 assertions / 0 fail |
 | 4b | integration | `origin/integration` moved to `062d7f7` (four commits) | `d1d2d1a` | None | Typecheck, lint, clean regeneration; plugin 45; Compose 12; focused 254 pass / 0 fail |
@@ -40,7 +40,7 @@ Typecheck passed. Lint passed across 308 files. OpenAPI and client regeneration 
 
 ## Full-suite checkpoints
 
-Checkpoint 1 (after step 4, head `e956aa0`): full Bun suite under the shared lock, `bun test --max-concurrency=1 --timeout=20000`: 1154 passed, 1 skipped (key-gated), 14 existing todos, 0 failures across 97 files in 264.36 s. Checkpoint 2 (after step 7, head `4c60d96`): every test file except `apps/melete/src/runtime/context.test.ts` in one process under the shared lock, `bun test --max-concurrency=1 --timeout=30000`: 1288 passed, 26 skipped, 0 failures across 109 files in 201.74 s. `runtime/context.test.ts` alone under a 180 s wall clock: its first three cases pass and the fourth times out as described under PR 18 (the process then has to be killed by the wall clock). Checkpoint 3 (after step 12, head `d0792c7`): every test file except `apps/melete/src/runtime/context.test.ts` in one process under the shared lock, `bun test --max-concurrency=1 --timeout=30000`: 1544 passed, 29 skipped, 0 failures across 148 files in 249.56 s. `runtime/context.test.ts` alone under a 180 s wall clock: the same fourth case times out at 30 s and the process has to be killed by the wall clock, unchanged since PR 18.
+Checkpoint 1 (after step 4, head `e956aa0`): full Bun suite in one serialized process, `bun test --max-concurrency=1 --timeout=20000`: 1154 passed, 1 skipped (key-gated), 14 existing todos, 0 failures across 97 files in 264.36 s. Checkpoint 2 (after step 7, head `4c60d96`): every test file except `apps/melete/src/runtime/context.test.ts` in one serialized process, `bun test --max-concurrency=1 --timeout=30000`: 1288 passed, 26 skipped, 0 failures across 109 files in 201.74 s. `runtime/context.test.ts` alone under a 180 s wall clock: its first three cases pass and the fourth times out as described under PR 18 (the process then has to be killed by the wall clock). Checkpoint 3 (after step 12, head `d0792c7`): every test file except `apps/melete/src/runtime/context.test.ts` in one serialized process, `bun test --max-concurrency=1 --timeout=30000`: 1544 passed, 29 skipped, 0 failures across 148 files in 249.56 s. `runtime/context.test.ts` alone under a 180 s wall clock: the same fourth case times out at 30 s and the process has to be killed by the wall clock, unchanged since PR 18.
 
 ## PR 12: typed repair
 

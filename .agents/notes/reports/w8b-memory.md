@@ -6,7 +6,7 @@ falsification that showed the rule was load-bearing.
 ## Assumptions
 
 - Branch `lane/w8b-memory` from `origin/integration` at `d822707`, worktree
-  `C:/Users/gamin/melete-oss-w8b`. No other worktree, `main` or `integration` was
+  the lane worktree. No other worktree, `main` or `integration` was
   touched, and nothing was stashed.
 - Toolchain bun 1.3.13; integration tests run against embedded Postgres 17 on
   127.0.0.1:3122, one disposable database per file.
@@ -124,7 +124,7 @@ SHA `f7ae26f` "Write down what the service proves and why".
 
 ## Final checks
 
-At SHA `f7ae26f`, in `C:/Users/gamin/melete-oss-w8b`:
+At SHA `f7ae26f`, in the lane worktree:
 
 - Command `bun run typecheck`: pass.
 - Command `bun run lint`: pass, 274 files checked.
@@ -175,7 +175,7 @@ is merged in here and the collision is resolved in the lane:
   Both sides are kept: integration's `testDatabase` helper and this branch's
   mediator imports.
 
-Checks after the merge, at `C:/Users/gamin/melete-oss-w8b`:
+Checks after the merge, at the lane worktree:
 
 - Command `bun run typecheck`: pass.
 - Command `bun run lint`: pass, 274 files checked.

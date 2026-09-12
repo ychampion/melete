@@ -11,10 +11,10 @@ Melete revision `9484023cabd32b786cb4d336dec818f441cd0cc1` was inspected in
 to that commit, not current upstream HEAD. Source inspection establishes an
 offered interface; only an executed Melete test establishes a Melete capability.
 
-Reproduce the source inventory from the W14 worktree:
+Reproduce the source inventory from a checkout with `.hermes-src` at the pin:
 
-```powershell
-git -C C:/Users/gamin/melete-oss-w14 --git-dir=C:/Users/gamin/melete-oss-w14/.hermes-src/.git --work-tree=C:/Users/gamin/melete-oss-w14/.hermes-src rev-parse HEAD
+```sh
+git -C .hermes-src rev-parse HEAD
 python packages/runtime-hermes/scripts/audit-pin.py .hermes-src
 ```
 
