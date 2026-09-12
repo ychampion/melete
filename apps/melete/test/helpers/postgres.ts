@@ -4,12 +4,9 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { migrateDatabase } from '../../src/db/migrate.ts';
-import { acquireTestServer } from './database.ts';
+import { acquireTestServer, type TestDatabase, testDatabase } from './database.ts';
 
-export type PostgresFixture = DatabaseHandle & {
-  url: string;
-  mode: 'embedded' | 'external';
-};
+export type PostgresFixture = TestDatabase;
 
 export type PostgresFixtureOptions = {
   /** Defaults to the production journal; overridden only by migration-loader tests. */
@@ -26,6 +23,9 @@ export type PostgresFixtureOptions = {
 export async function createPostgresFixture(
   options: PostgresFixtureOptions = {},
 ): Promise<PostgresFixture | null> {
+  // The committed journal with a real pg-boss schema is the shared template;
+  // only a fixture that supplies its own journal or extra SQL builds its own.
+  if (!options.migrationsFolder && !options.migrations?.length) return testDatabase();
   const databaseName = `melete_w2_${randomUUID().replaceAll('-', '')}`;
   const configuredUrl = process.env.DATABASE_URL;
   const shared = await acquireTestServer();

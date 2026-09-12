@@ -516,6 +516,162 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/browser/sessions/{id}/handback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return browser control to automation
+         * @description Requires the owner session and same-origin protection. Increments the control epoch and requires a fresh observation. The job stays parked until owner input.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Browser session id returned by browser.observe */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Automation requires fresh observation */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserControlResponse"];
+                    };
+                };
+                /** @description Owner authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+                /** @description Request origin refused */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+                /** @description No such browser session */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+                /** @description Browser control could not change */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/browser/sessions/{id}/takeover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take human control of a browser session
+         * @description Requires the owner session and same-origin protection. The controller increments its epoch before the service parks the job. Already planned inputs are refused.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Browser session id returned by browser.observe */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Human control fenced against automation */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserControlResponse"];
+                    };
+                };
+                /** @description Owner authentication required */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+                /** @description Request origin refused */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+                /** @description No such browser session */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+                /** @description Browser control could not change */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema70"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connections": {
         parameters: {
             query?: never;
@@ -4395,6 +4551,12 @@ export interface components {
         /** @constant */
         __schema183: 1;
         __schema184: string;
+        __schema185: string;
+        __schema186: number;
+        /** @enum {string} */
+        __schema187: "automation" | "human";
+        /** @constant */
+        __schema188: true;
         Action: {
             attempt_id: components["schemas"]["__schema142"];
             authorization_ref: components["schemas"]["__schema146"];
@@ -4435,6 +4597,12 @@ export interface components {
             runtime_version: components["schemas"]["__schema119"];
             started_at: components["schemas"]["__schema53"];
             usage: components["schemas"]["__schema123"];
+        };
+        BrowserControlResponse: {
+            control: components["schemas"]["__schema187"];
+            control_epoch: components["schemas"]["__schema186"];
+            fresh_observation_required: components["schemas"]["__schema188"];
+            session_id: components["schemas"]["__schema185"];
         };
         Connection: {
             created_at: components["schemas"]["__schema53"];

@@ -14,6 +14,7 @@ import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -130,7 +131,9 @@ withDb('durable jobs and contract transitions', () => {
         throw new Error('injected process death');
       },
     });
-    await expect(broken.input(row.id, 'resume')).rejects.toThrow('injected process death');
+    expect(await rejectionOf(broken.input(row.id, 'resume'))).toMatchObject({
+      message: 'injected process death',
+    });
     expect((await jobs.get(row.id)).state).toBe('waiting_for_input');
     expect(await handle.sql`select seq from event where job_id = ${row.id}`).toHaveLength(1);
     expect(
@@ -194,7 +197,7 @@ withDb('durable jobs and contract transitions', () => {
       const row = await create('running');
       const result = jobs.transaction((tx) => jobs.move(tx, row, input));
       if (expected) expect((await result).state).toBe(expected);
-      else await expect(result).rejects.toThrow();
+      else expect(await rejectionOf(result)).toBeInstanceOf(Error);
     }
     const approval = await create('waiting_for_approval');
     expect(

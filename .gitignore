@@ -19,3 +19,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 conformance/memory/report.json
+.agents/w10b-*.log
+.agents/w10b-measurements.json

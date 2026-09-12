@@ -148,6 +148,20 @@
       "when": 1789232400000,
       "tag": "0020_tool_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789232400001,
+      "tag": "0021_browser_recipes",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789232400002,
+      "tag": "0022_browser_sessions",
+      "breakpoints": true
     }
   ]
 }

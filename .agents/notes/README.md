@@ -49,3 +49,4 @@ Two rules:
 | [0015](0015-typed-repair.md) | Failures are classified and repaired, not retried | accepted |
 | [0017](0017-agentic-and-natural.md) | Reply style, reactions, delta briefs, watch predicates, capabilities | accepted |
 | [0020](0020-deployment-evidence.md) | Deployment claims require a running Linux stack | accepted |
+| [0024](0024-browser-worker.md) | A browser worker outside the cell, with recipes and takeover | accepted |

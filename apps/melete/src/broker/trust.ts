@@ -120,9 +120,26 @@ function walk(
  * Every value in a canonical payload that chooses a recipient, a destination,
  * an amount or a resource, in a stable order so two runs agree.
  */
-export function collectOriginFields(payload: JsonObject): OriginField[] {
+export function collectOriginFields(payload: JsonObject, kind?: string): OriginField[] {
   const found: OriginField[] = [];
   walk(payload, '', null, found);
+  if (kind === 'browser.submit') {
+    const intent = payload.intent;
+    const values =
+      intent && typeof intent === 'object' && !Array.isArray(intent) ? intent.fields : null;
+    if (values && typeof values === 'object' && !Array.isArray(values)) {
+      // A site controls its field names. An unfamiliar name must not hide a destination or amount.
+      for (const [name, value] of Object.entries(values)) {
+        const path = `intent.fields.${name}`;
+        if (typeof value === 'string' && value && !found.some((field) => field.path === path))
+          found.push({
+            path,
+            category: CATEGORY_BY_NAME.get(name.toLowerCase()) ?? 'resource',
+            value,
+          });
+      }
+    }
+  }
   return found.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 

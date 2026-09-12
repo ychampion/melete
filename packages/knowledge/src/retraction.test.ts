@@ -6,10 +6,9 @@
  * the index file from disk.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { aRecord, fixedClock, IDS, seededSpace } from './fixtures.ts';
+import { aRecord, createSpaceTemplate, fixedClock, IDS } from './fixtures.ts';
 import { serializeRecord } from './frontmatter.ts';
 import { SpaceIndex } from './fts.ts';
 import type { SpacePaths } from './layout.ts';
@@ -19,13 +18,13 @@ import { buildIndex, loadSpace, openIndex, sourceFingerprint } from './store.ts'
 
 let root: string;
 let paths: SpacePaths;
+let template: Awaited<ReturnType<typeof createSpaceTemplate>>;
 const now = fixedClock();
 
 const RETRACTED = 'The lease was renewed, so the renewal window is wrong.';
 
-let seed: Awaited<ReturnType<typeof seededSpace>>;
 beforeAll(async () => {
-  seed = await seededSpace(async (paths) => {
+  template = await createSpaceTemplate('melete-retract-', async (paths) => {
     await commitRecord(
       paths,
       'knowledge/landlord-contact.md',
@@ -42,12 +41,13 @@ beforeAll(async () => {
       { proposedBy: 'user', now },
     );
   });
-}, 30_000);
-afterAll(() => seed?.close());
+}, 20_000);
+
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'melete-retract-'));
-  paths = seed.copy(root);
+  ({ root, paths } = template.copy());
 });
+
+afterAll(() => template?.close());
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });

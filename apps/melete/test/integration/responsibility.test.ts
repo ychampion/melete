@@ -43,6 +43,7 @@ import { JobService, jobView } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 import { processFault } from '../helpers/process-fault.ts';
 
@@ -81,7 +82,7 @@ withDb('responsibility protocol', () => {
     await handle.db
       .insert(space)
       .values({ id: spaceId, name: 'Personal', gitPath: `/spaces/${spaceId}` });
-  });
+  }, 15_000);
   afterAll(async () => {
     await queue?.stop();
     await handle?.close();
@@ -120,9 +121,11 @@ withDb('responsibility protocol', () => {
           expect(recovered.state).toBe('interrupted');
           expect(recovered.substrateDisposition).toBe('local_process_interrupted');
           expect(await service.claim(id, recovered.version)).toBeNull();
-          await expect(service.rearm(id, recovered.version, new Date())).rejects.toMatchObject({
-            code: 'stale_operation',
-          });
+          expect(await rejectionOf(service.rearm(id, recovered.version, new Date()))).toMatchObject(
+            {
+              code: 'stale_operation',
+            },
+          );
         } else {
           const wakes =
             await handle.sql`select * from pgboss.job where name = ${QUEUES.operation} and data->>'id' = ${id}`;
@@ -150,9 +153,9 @@ withDb('responsibility protocol', () => {
     expect(
       (await service.register(row.id, { operation_key: 'uncertain', kind: 'remote_task' })).id,
     ).toBe(op.id);
-    await expect(
-      service.register(row.id, { operation_key: 'uncertain', kind: 'timer' }),
-    ).rejects.toMatchObject({ code: 'operation_conflict' });
+    expect(
+      await rejectionOf(service.register(row.id, { operation_key: 'uncertain', kind: 'timer' })),
+    ).toMatchObject({ code: 'operation_conflict' });
   });
 
   test('operation settlement before wait registration wakes once from the persisted event', async () => {

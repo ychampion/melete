@@ -2,13 +2,19 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SecureContextOptions } from 'node:tls';
 import { loadSkills } from '@melete/skills';
-import { connectorsFromEnv } from '../connectors/configured.ts';
+import {
+  type ConfiguredConnection,
+  configuredBrowserSessions,
+  connectorsFromEnv,
+  readConnectionConfig,
+} from '../connectors/configured.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { fakeProvider, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
+import type { BrowserSessionService } from '../workers/browser/routes.ts';
 import type { EffectAuthorityResolver } from './authority.ts';
 import type { ComposeExecutor } from './compose.ts';
 import { createInternalServer } from './internal-server.ts';
@@ -24,6 +30,8 @@ export async function startEffectBoundary(
     resolveTrust?: TrustResolver;
     /** Service-owned cell execution; never selected by runtime tool arguments. */
     composeExecutor?: ComposeExecutor;
+    browserSessions?: BrowserSessionService;
+    connections?: ConfiguredConnection[];
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -37,7 +45,15 @@ export async function startEffectBoundary(
   }
   const hostname = binding[1].replace(/^\[|\]$/g, '');
   const port = Number(binding[2]);
-  const registry = await connectorsFromEnv(handle.sql, env);
+  const connections =
+    dependencies.connections ?? (await readConnectionConfig(env.MELETE_CONNECTIONS_FILE));
+  const browser = dependencies.browserSessions
+    ? undefined
+    : await configuredBrowserSessions({ sql: handle.sql, env, connections });
+  const registry = await connectorsFromEnv(handle.sql, env, {
+    connections,
+    browserSessions: dependencies.browserSessions ?? browser?.sessions,
+  });
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   try {
     const providers = [
@@ -114,7 +130,11 @@ export async function startEffectBoundary(
         try {
           await activeQueue.stop();
         } finally {
-          await registry.close();
+          try {
+            await registry.close();
+          } finally {
+            await browser?.pool.close();
+          }
         }
       },
     };
@@ -122,7 +142,11 @@ export async function startEffectBoundary(
     try {
       await queue?.stop();
     } finally {
-      await registry.close();
+      try {
+        await registry.close();
+      } finally {
+        await browser?.pool.close();
+      }
     }
     throw error;
   }

@@ -55,6 +55,9 @@
     },
     {
       "name": "memory"
+    },
+    {
+      "name": "browser"
     }
   ],
   "paths": {
@@ -5225,6 +5228,152 @@
           }
         }
       }
+    },
+    "/browser/sessions/{id}/takeover": {
+      "post": {
+        "tags": [
+          "browser"
+        ],
+        "summary": "Take human control of a browser session",
+        "description": "Requires the owner session and same-origin protection. The controller increments its epoch before the service parks the job. Already planned inputs are refused.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Browser session id returned by browser.observe"
+            },
+            "required": true,
+            "description": "Browser session id returned by browser.observe"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Human control fenced against automation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserControlResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Owner authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request origin refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Browser control could not change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/browser/sessions/{id}/handback": {
+      "post": {
+        "tags": [
+          "browser"
+        ],
+        "summary": "Return browser control to automation",
+        "description": "Requires the owner session and same-origin protection. Increments the control epoch and requires a fresh observation. The job stays parked until owner input.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Browser session id returned by browser.observe"
+            },
+            "required": true,
+            "description": "Browser session id returned by browser.observe"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Automation requires fresh observation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserControlResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Owner authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request origin refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such browser session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Browser control could not change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema70"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6165,6 +6314,30 @@
           "health",
           "last_checked_at",
           "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "BrowserControlResponse": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "$ref": "#/components/schemas/__schema185"
+          },
+          "control_epoch": {
+            "$ref": "#/components/schemas/__schema186"
+          },
+          "control": {
+            "$ref": "#/components/schemas/__schema187"
+          },
+          "fresh_observation_required": {
+            "$ref": "#/components/schemas/__schema188"
+          }
+        },
+        "required": [
+          "session_id",
+          "control_epoch",
+          "control",
+          "fresh_observation_required"
         ],
         "additionalProperties": false
       },
@@ -8735,6 +8908,26 @@
       "__schema184": {
         "type": "string",
         "minLength": 1
+      },
+      "__schema185": {
+        "type": "string",
+        "minLength": 1
+      },
+      "__schema186": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema187": {
+        "type": "string",
+        "enum": [
+          "automation",
+          "human"
+        ]
+      },
+      "__schema188": {
+        "type": "boolean",
+        "const": true
       },
       "KnowledgeFrontmatterOutput": {
         "type": "object",

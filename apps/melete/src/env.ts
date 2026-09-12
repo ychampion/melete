@@ -56,6 +56,14 @@ export const envSchema = z.object({
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)
     .default('melete_work'),
   MELETE_RUNTIME_START_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  /** Browser credentials and endpoint are service-owned; neither is sent to the runtime cell. */
+  MELETE_BROWSER_URL: z.url().optional(),
+  MELETE_BROWSER_SPACE: z
+    .string()
+    .regex(/^sp_[A-Za-z0-9_-]+$/)
+    .optional(),
+  MELETE_BROWSER_TOKEN: z.string().min(32).optional(),
+  MELETE_BROWSER_IDLE_MS: z.coerce.number().int().positive().default(300_000),
 
   /** Provider keys. The gateway injects these; the runtime never sees them. */
   FIREWORKS_API_KEY: z.string().optional(),

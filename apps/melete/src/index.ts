@@ -30,7 +30,12 @@ import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
-import { connectorsFromEnv } from './connectors/configured.ts';
+import {
+  type ConfiguredConnection,
+  configuredBrowserSessions,
+  connectorsFromEnv,
+  readConnectionConfig,
+} from './connectors/configured.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { space } from './db/schema.ts';
@@ -58,6 +63,7 @@ import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts'
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter } from './runtime/docker.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
+import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -87,6 +93,7 @@ export type AppDeps = {
   /** Left out, the authenticated owner's database catalog resolves volume spaces. */
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
+  browserSessions?: BrowserSessionService;
 };
 
 export function createApp(deps: AppDeps) {
@@ -140,6 +147,7 @@ export function createApp(deps: AppDeps) {
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory) app.route('/', createMemoryRouter(deps.memory));
+  if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
@@ -199,6 +207,8 @@ export async function bootstrap(
   let supervisedRuntime: DockerHermesRuntimeAdapter | undefined;
   let deploymentMemory: Awaited<ReturnType<typeof startDeploymentMemory>> | undefined;
   let effectBoundary: Awaited<ReturnType<typeof startEffectBoundary>> | undefined;
+  let browser: Awaited<ReturnType<typeof configuredBrowserSessions>>;
+  let connections: ConfiguredConnection[] = [];
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -209,6 +219,7 @@ export async function bootstrap(
       () => supervisedRuntime?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
+      () => browser?.pool.close(),
       () => queue?.stop(),
       () => handle?.close(),
     ]) {
@@ -228,6 +239,10 @@ export async function bootstrap(
         await connectorsFromEnv(handle.sql, env),
         env.MELETE_SPACES_DIR,
       );
+    if (handle) {
+      connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
+      browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
+    }
     if (handle) {
       events = new EventStream(handle);
       await events.start();
@@ -290,6 +305,10 @@ export async function bootstrap(
         loadCatalog: catalog?.forAttempt,
         scopes: env.MELETE_ENABLE_TEST_CONNECTOR ? ['test.send', 'test.read'] : [],
       });
+      if (browser)
+        browser.sessions.onPark = (jobId, attemptIds) => {
+          for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
+        };
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
@@ -312,7 +331,10 @@ export async function bootstrap(
       // A child loads its broker catalog once at boot, so the listener must
       // precede workers that can claim a job and launch that child.
       if (handle && (options.effects ?? env.MELETE_RUNTIME_ADAPTER === 'docker'))
-        effectBoundary = await startEffectBoundary(handle, env);
+        effectBoundary = await startEffectBoundary(handle, env, {
+          browserSessions: browser?.sessions,
+          connections,
+        });
       if (options.workers !== false) {
         await operations.start();
         await triggers.start();
@@ -347,6 +369,7 @@ export async function bootstrap(
           }
         : undefined,
     memory: deploymentMemory?.routes,
+    browserSessions: browser?.sessions,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
@@ -370,6 +393,8 @@ export async function bootstrap(
     attention,
     questions,
     effectBoundary,
+    browserSessions: browser?.sessions,
+    connections,
     close,
   };
 }

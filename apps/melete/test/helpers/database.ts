@@ -1,18 +1,25 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtemp } from 'node:fs/promises';
+import { lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { migrateDatabase } from '../../src/db/migrate.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 
-export type TestDatabase = DatabaseHandle & { url: string };
-type TestServer = { url: string; stop: () => Promise<void> };
+export type TestDatabase = DatabaseHandle & { url: string; mode: 'embedded' | 'external' };
+type TestServer = { url: string; mode: TestDatabase['mode']; stop: () => Promise<void> };
 let server: Promise<TestServer | null> | undefined;
-let template: Promise<string> | undefined;
+const templates = new Map<string, Promise<string>>();
 let globalCleanup = false;
 let fixtures = 0;
+const tempPrefix = 'melete-w1-pg-';
+
+function trace(event: string) {
+  if (process.env.MELETE_FIXTURE_TIMINGS === '1') {
+    process.stdout.write(`Postgres fixture ${event} at ${performance.now().toFixed(0)}ms\n`);
+  }
+}
 
 /** The preload owns one throwaway server; every suite still gets its own database. */
 export function shareTestServer(): () => Promise<void> {
@@ -39,22 +46,26 @@ export async function acquireTestServer() {
     async release() {
       if (released) return;
       released = true;
-      fixtures--;
-      if (!globalCleanup && fixtures === 0) await stopTestServer();
+      await releaseFixture();
     },
   };
 }
 
 async function stopTestServer() {
+  trace('server.stop');
   const active = await server;
   server = undefined;
-  const templateName = await template?.catch(() => undefined);
-  template = undefined;
+  const templateNames = await Promise.all(
+    [...templates.values()].map((template) => template.catch(() => undefined)),
+  );
+  templates.clear();
   try {
-    if (active && templateName) {
+    if (active && templateNames.length) {
       const admin = openDatabase(active.url, 1);
       try {
-        await admin.sql`drop database ${admin.sql(templateName)} with (force)`;
+        for (const name of templateNames) {
+          if (name) await admin.sql`drop database ${admin.sql(name)} with (force)`;
+        }
       } finally {
         await admin.close();
       }
@@ -64,21 +75,34 @@ async function stopTestServer() {
   }
 }
 
-async function prepareTemplate(url: string) {
+async function prepareTemplate(
+  shared: TestServer,
+  initialize: (handle: DatabaseHandle) => Promise<void>,
+) {
+  trace('template.prepare');
+  const { url } = shared;
   const name = `melete_template_${randomBytes(10).toString('hex')}`;
   const admin = openDatabase(url, 2);
-  await admin.sql`create database ${admin.sql(name)}`;
   const target = new URL(url);
   target.pathname = `/${name}`;
   const handle = openDatabase(target.toString(), 2);
+  let created = false;
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   try {
-    await migrateDatabase(handle);
+    await admin.sql`create database ${admin.sql(name)}`;
+    created = true;
+    await initialize(handle);
+    // Clone an initialized real pg-boss schema, not a replacement queue implementation.
     queue = await startQueue(target.toString());
+    await queue.stop();
+    queue = undefined;
+    trace('template.ready');
     return name;
   } catch (error) {
+    await queue?.stop();
+    queue = undefined;
     await handle.close();
-    await admin.sql`drop database ${admin.sql(name)} with (force)`;
+    if (created) await admin.sql`drop database ${admin.sql(name)} with (force)`;
     throw error;
   } finally {
     await queue?.stop();
@@ -99,27 +123,55 @@ export async function unusedTestPort(): Promise<number> {
   return address.port;
 }
 
+async function removeOwnedTempRoot(root: string): Promise<void> {
+  const parent = await realpath(tmpdir());
+  const absolute = resolve(root);
+  if (
+    dirname(absolute) !== parent ||
+    !basename(absolute).startsWith(tempPrefix) ||
+    (await lstat(absolute)).isSymbolicLink() ||
+    (await realpath(absolute)) !== absolute
+  ) {
+    throw new Error(`Refusing to remove unverified fixture directory: ${absolute}`);
+  }
+  await rm(absolute, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+}
+
+function binaryUnavailable(error: unknown): boolean {
+  return /cannot find (package|module)|module_not_found|enoent|download|unsupported platform|no binaries/i.test(
+    String(error),
+  );
+}
+
+function reportUnavailable(error: unknown): null {
+  process.stdout.write(`embedded Postgres unavailable: ${String(error)}\n`);
+  process.stdout.write('db tests skipped: set DATABASE_URL to run them against a real Postgres\n');
+  return null;
+}
+
 async function startTestServer(): Promise<TestServer | null> {
-  if (process.env.DATABASE_URL) return { url: process.env.DATABASE_URL, stop: async () => {} };
+  trace('server.start');
+  if (process.env.DATABASE_URL) {
+    return { url: process.env.DATABASE_URL, mode: 'external', stop: async () => {} };
+  }
   let EmbeddedPostgres: typeof import('embedded-postgres').default;
   try {
     EmbeddedPostgres = (await import('embedded-postgres')).default;
   } catch (error) {
-    process.stdout.write(`embedded Postgres unavailable: ${String(error)}\n`);
-    process.stdout.write(
-      'db tests skipped: set DATABASE_URL to run them against a real Postgres\n',
-    );
-    return null;
+    if (!binaryUnavailable(error)) throw error;
+    return reportUnavailable(error);
   }
-  const databaseDir = await mkdtemp(join(tmpdir(), 'melete-w1-pg-'));
   const port = await unusedTestPort();
+  const tempRoot = await mkdtemp(join(await realpath(tmpdir()), tempPrefix));
   const password = randomBytes(24).toString('hex');
   const embedded = new EmbeddedPostgres({
-    databaseDir,
+    databaseDir: join(tempRoot, 'data'),
     port,
     user: 'postgres',
     password,
-    persistent: false,
+    authMethod: 'scram-sha-256',
+    persistent: true,
+    createPostgresUser: false,
     initdbFlags: ['--encoding=UTF8', '--locale=C'],
     postgresFlags: ['-h', '127.0.0.1', '-c', 'max_connections=80'],
     onLog: () => {},
@@ -128,49 +180,91 @@ async function startTestServer(): Promise<TestServer | null> {
   try {
     await embedded.initialise();
     await embedded.start();
+    trace('server.ready');
   } catch (error) {
     await embedded.stop();
+    await removeOwnedTempRoot(tempRoot);
     // Only absent binary downloads can skip tests; startup and migration errors fail.
-    if (!/ENOENT|Cannot find package|download/i.test(String(error))) throw error;
-    process.stdout.write(`embedded Postgres unavailable: ${String(error)}\n`);
-    process.stdout.write(
-      'db tests skipped: set DATABASE_URL to run them against a real Postgres\n',
-    );
-    return null;
+    if (!binaryUnavailable(error)) throw error;
+    return reportUnavailable(error);
   }
   return {
-    stop: () => embedded.stop(),
+    mode: 'embedded',
+    stop: async () => {
+      await embedded.stop();
+      await removeOwnedTempRoot(tempRoot);
+    },
     url: `postgres://postgres:${password}@127.0.0.1:${port}/postgres`,
   };
 }
 
-/** Each fixture owns a disposable database; an operator's existing tables are never reused. */
-export async function testDatabase(): Promise<TestDatabase | null> {
-  const shared = await acquireTestServer();
-  if (!shared) return null;
-  const { url } = shared;
-  template ??= prepareTemplate(url);
-  const templateName = await template;
-  const admin = openDatabase(url, 2);
+async function releaseFixture(): Promise<void> {
+  fixtures--;
+  if (!globalCleanup && fixtures === 0) await stopTestServer();
+}
+
+/**
+ * Each fixture owns a cloned disposable database. Template identity includes
+ * the migration input, so frozen broker tests retain exactly their own schema.
+ */
+export async function createTemplateDatabase(
+  key: string,
+  initialize: (handle: DatabaseHandle) => Promise<void>,
+  max = 4,
+): Promise<TestDatabase | null> {
+  fixtures++;
+  let admin: DatabaseHandle | undefined;
+  let handle: DatabaseHandle | undefined;
+  let created = false;
+  let closing: Promise<void> | undefined;
   const name = `melete_test_${randomBytes(10).toString('hex')}`;
-  await admin.sql`create database ${admin.sql(name)} template ${admin.sql(templateName)}`;
-  const target = new URL(url);
-  target.pathname = `/${name}`;
-  const handle = openDatabase(target.toString(), 4);
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    await handle.close();
-    await admin.sql`drop database ${admin.sql(name)} with (force)`;
-    await admin.close();
-    await shared.release();
+  const close = () => {
+    closing ??= (async () => {
+      try {
+        trace(`database.close.handle ${name}`);
+        await handle?.close();
+        trace(`database.close.drop ${name}`);
+        if (created && admin) await admin.sql`drop database ${admin.sql(name)} with (force)`;
+        trace(`database.close.done ${name}`);
+      } finally {
+        try {
+          await admin?.close();
+        } finally {
+          await releaseFixture();
+        }
+      }
+    })();
+    return closing;
   };
   try {
-    await migrateDatabase(handle);
-    return { ...handle, url: target.toString(), close };
+    server ??= startTestServer();
+    const shared = await server;
+    if (!shared) {
+      await close();
+      return null;
+    }
+    let template = templates.get(key);
+    if (!template) {
+      template = prepareTemplate(shared, initialize);
+      templates.set(key, template);
+    }
+    const templateName = await template;
+    admin = openDatabase(shared.url, 2);
+    trace('database.create');
+    await admin.sql`create database ${admin.sql(name)} template ${admin.sql(templateName)}`;
+    trace('database.ready');
+    created = true;
+    const target = new URL(shared.url);
+    target.pathname = `/${name}`;
+    handle = openDatabase(target.toString(), max);
+    return { ...handle, url: target.toString(), mode: shared.mode, close };
   } catch (error) {
     await close();
     throw error;
   }
+}
+
+/** The full service template includes every migration and retains their migration ledger. */
+export async function testDatabase(): Promise<TestDatabase | null> {
+  return createTemplateDatabase('service-migrations', migrateDatabase);
 }

@@ -21,6 +21,27 @@ const input = (payload: Record<string, unknown>) => ({
 });
 
 describe('the fields an effect is gated on', () => {
+  test('browser forms cannot conceal a gated value behind a site-specific field name', () => {
+    const payload = canonicalizePayload({
+      intent: {
+        url: 'https://example.com/save',
+        fields: {
+          destination_picker_7: 'stranger@example.com',
+          quantity: '2',
+          empty: '',
+        },
+      },
+    }).canonical;
+    expect(collectOriginFields(payload, 'browser.submit')).toEqual([
+      {
+        path: 'intent.fields.destination_picker_7',
+        category: 'resource',
+        value: 'stranger@example.com',
+      },
+      { path: 'intent.fields.quantity', category: 'amount', value: '2' },
+      { path: 'intent.url', category: 'destination', value: 'https://example.com/save' },
+    ]);
+  });
   test('a message body chooses nothing and is not gated', () => {
     expect(fields({ body: 'Meet at 3pm.', subject: 'Lunch' })).toEqual([]);
   });

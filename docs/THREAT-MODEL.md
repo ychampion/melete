@@ -249,3 +249,77 @@ when `MELETE_CONFORMANCE_COMPOSE=1` is set against a running Linux stack (see
 the README). The Linux deployment and restoration checks use a scripted model
 and a test destination; they do not establish live provider behavior or the
 safety of an arbitrary external account.
+
+## Browser worker boundary
+
+The browser worker is a connector process outside the runtime cell. A hostile
+page may influence the model's proposed actions, and a compromised Chromium or
+worker process may read the selected space's browser profile. The controller,
+broker, and container boundary have separate jobs:
+
+- **Controller authority.** Every dispatched input carries its planned
+  `control_epoch`. Takeover increments the epoch immediately, including while
+  another action is waiting for a locator; the next input is refused by the
+  controller. Handback increments it again and requires a fresh observation.
+  The service parks the job as `waiting_for_input`. This claim is falsified by a
+  second fill reaching the page after takeover. The local fixture tests inject
+  exactly that interleaving and require zero submissions.
+- **Consequential effects.** Form commits use `browser.submit` through the broker's
+  approval, intent-key, and trust-origin gates. The controller binds the observed
+  form and outgoing request to that approved intent. Reversible inputs have no
+  network budget; an approved submit has one matching mutation. An unapproved
+  request reaching the fixture ledger would falsify the gate. Unknown commit
+  outcomes are not replayed.
+- **Page networking.** Chromium's direct networking is pointed at a fail-closed
+  proxy, and trusted worker code relays checked requests. Public-address checks,
+  pinned DNS transport, redirect checks, and the private-context domain allow-list
+  apply there. WebSockets and service workers are denied. The public-web
+  compartment does not reuse a signed-in private profile. Private-address traffic
+  reaching a fixture transport would falsify these checks.
+- **Space and process isolation.** The browser override mounts only
+  `spaces/<space id>` at `/space`, runs uid 10003, and supplies no database URL,
+  vault key, provider key, runtime capability, all-spaces mount, global artifacts
+  root, or runtime work volume. It does not share the runtime or Postgres networks.
+  The YAML tests deliberately add each forbidden mount, credential, network, or
+  privilege and require the configuration check to reject it. A host operator
+  still has to create and permission the intended volume subdirectory.
+- **Narrow worker listener.** The control network is shared only with the broker,
+  no control port is published, and a separate worker token is required. The
+  listener accepts bounded JSON requests for health, leases, semantic commands,
+  release, takeover, and handback; it exposes no CDP or arbitrary code endpoint.
+  Browser-originated requests are rejected. The owner-facing control routes use
+  the service's existing authentication and same-origin protection.
+
+The worker can reach the internet by design, for the person's authorized sites.
+The relay policy constrains an intact worker; a compromised Node process can
+use its own outbound sockets and can steal or alter its mounted browser profile.
+It can read whatever the configured uid may read within that one mounted space.
+It has no direct mount of the vault, runtime cell, or another space. The container
+shares the host kernel; a kernel compromise removes those boundaries. This lane
+does not claim a separate virtual machine or a Chromium renderer-sandbox proof.
+
+Docker bridge membership is not directional. A compromised worker can reach the
+Melete service ports on `browser-control`, even though it cannot directly join the
+runtime or database network. The worker token grants no authority to those ports;
+owner authentication and broker capability checks must continue to reject it.
+Melete still holds credentials in the same process as the API, so an exploitable
+service bug remains a route to them. The topology does not claim otherwise.
+
+Development on Windows uses a same-user child process with a restricted
+environment, not an OS isolation boundary. Production requires an explicitly
+configured isolated endpoint and never silently starts that development child.
+The endpoint address is trusted operator configuration, not an attestation of
+the remote deployment. Takeover supplies fencing and owner control routes. A
+person may enter credentials on an operator-owned worker display using
+`MELETE_BROWSER_HEADLESS=false`; a remote desktop transport or login UI is not
+provided here. The network guard remains closed to unbrokered requests during
+takeover; interactive sign-in remains unsupported. Recipes and episodes exclude
+authentication factors, while Chromium's private profile may retain the cookies
+needed for a warm signed-in session.
+
+`bun run deploy/scripts/browser-compose-check.ts` checks deployment configuration;
+the browser and integration tests check live controller behavior on local
+fixtures. Docker is unavailable on this lane's Windows host. The image build,
+combined Compose startup, and Linux packet-level isolation checks therefore
+remain unexecuted here; static YAML checks do not substitute for them. Installation
+and operation are described in [browser-worker.md](browser-worker.md).
