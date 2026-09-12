@@ -2,7 +2,7 @@
 
 ## Scope and conclusion
 
-Reviewed `ychampion/melete` at integration commit
+Reviewed the integration commit
 `9484023cabd32b786cb4d336dec818f441cd0cc1`. This patch repairs three related
 broker/service contract failures. It does not declare the application ready for
 production, replace the runtime, change the UI, or merge the active feature lanes.
@@ -14,17 +14,14 @@ The final regression suite contains eleven tests; the full suite now reports
 pg-boss records, runner claims, and a durable test destination, not mocked database
 or queue responses.
 
-Work was done through Remote Desktop Commander in an isolated worktree on
-`fix/production-review-astra-20260912`, based on `integration`. The deployment
-worktree and existing PR branches were not edited. No application was deployed,
-no live model was called, and no real external message was sent.
+No application was deployed, no live inference request was made, and no real
+external message was sent.
 
 ## Fixed findings
 
 ### 1. P1: Broker events could be skipped by a persisted-event cursor
 
-**Locations:** `apps/melete/src/broker/records.ts`,
-`apps/melete/src/db/transaction.ts`.
+**Locations:** Broker records and service transactions.
 
 The service serializes event-producing transactions before taking job row locks.
 The broker took only a job row lock. Two transactions writing different jobs
@@ -60,7 +57,7 @@ and [explicit locking](https://www.postgresql.org/docs/17/explicit-locking.html)
 
 ### 2. P1: Approval and reconciliation wakes did not satisfy the runner contract
 
-**Location:** `apps/melete/src/broker/service.ts`, `wake()`.
+**Location:** Broker service, `wake()`.
 
 Broker wake messages lacked `expected_version`, although `AttemptRunner.claim`
 requires it to match the persisted `state_version`. Every such wake failed that
@@ -92,7 +89,7 @@ back. Retrying the decision after removing the failure creates one wake.
 
 ### 3. P2: Completed or denied actions still reported that approval was required
 
-**Location:** `apps/melete/src/broker/service.ts`, `proposalView()`.
+**Location:** Broker service, `proposalView()`.
 
 The approval query selected `id` and `origin_warnings`, but its result was later
 read as though it also included `decision`. Consequently, an action with an
@@ -110,18 +107,15 @@ again. Denied actions stay denied; uncertain sends are not re-executed.
 
 ## Test implementation and execution
 
-The new suite is
-`apps/melete/test/integration/broker-service-contract.test.ts`. It uses the full
+The new broker/service contract regression suite uses the full
 service migrations rather than the broker-only frozen schema. The existing
 broker fixture now also applies the already-shipped event-protocol and
 scheduling migrations, so its event and wake tests exercise production columns.
 No production migration was introduced or edited.
 
-The VPS runs the tool as root. The first ordinary test command failed because
-the embedded PostgreSQL fixture refuses root. Those startup errors were not
-counted as application failures or skipped to obtain a green result. A separate,
-non-root PostgreSQL instance was started on loopback; its random credentials
-were confined to a private test wrapper. Fixtures created and dropped their own
+The initial database fixture could not start. Those startup errors were not
+counted as application failures or skipped to obtain a green result. Fixtures
+then used a separate PostgreSQL instance and created and dropped their own
 disposable databases. No existing application database was used.
 
 | Check | Result |
@@ -129,17 +123,17 @@ disposable databases. No existing application database was used.
 | Existing tracked tests on the base commit | 901 passed, 14 TODO, 0 failed |
 | Initial seven new checks against unchanged source | 0 passed, 7 failed |
 | Final broker/service regression suite | 11 passed, 0 failed; five additional consecutive runs also passed |
-| Full `bun run test`, with isolated `DATABASE_URL` | 912 passed, 14 TODO, 0 failed; 926 tests across 74 files |
-| `bun run typecheck` | Passed |
-| `bun run lint` | Passed |
-| `bun run test:plugin` | 20 passed |
-| `bun run openapi` | Passed; generated document unchanged |
-| `bun run client:generate` | Passed; generated client types unchanged |
-| `bun run compose:check` | All 12 configuration assertions passed |
+| Full test suite, with an isolated database | 912 passed, 14 TODO, 0 failed; 926 tests across 74 files |
+| Type checking | Passed |
+| Lint | Passed |
+| Plugin tests | 20 passed |
+| API specification generation | Passed; generated document unchanged |
+| Client generation | Passed; generated client types unchanged |
+| Deployment configuration checks | All 12 configuration assertions passed |
 
 The 14 TODO cases are unchanged. They cover six live container-boundary checks,
 four knowledge-retraction conformance cases, and four two-provider conformance
-cases. Passing the static Compose check does not prove the running container's
+cases. Passing the static deployment check does not prove the running container's
 network isolation. This review did not run a complete deployed stack, browser
 acceptance tests, live-provider comparisons, or a production load benchmark.
 
@@ -167,7 +161,7 @@ acceptance tests, live-provider comparisons, or a production load benchmark.
 These are inspection findings, not additional regression-proven fixes in this PR.
 They should not be read as claims of an exhaustive security audit.
 
-**Memory event integration.** `apps/melete/src/memory/invalidate.ts` directly
+**Memory event integration.** Memory invalidation directly
 inserts into the shared event table without the epoch/notification behavior.
 Its callers lock memory state and jobs on a different path. That path needs a
 separate lock-order and replay review, including a concurrency reproducer.
