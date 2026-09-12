@@ -1,9 +1,9 @@
 # Building a client
 
-The typed client, reference web UI and scripted mock are separate from the
+The typed client, the web app and the scripted mock are separate from the
 deployed service. OpenAPI describes the contract; it is not proof every route is
-wired in the default entry point. This page describes code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1`.
+wired in the default entry point. This page describes the tree at the head of
+`integration`.
 
 ## Typed requests and errors
 
@@ -57,7 +57,7 @@ is absent from replay. The current helper also marks a sequence jump as a gap,
 but a filtered stream may skip global sequence
 numbers without losing durable history. The service test `a gap marker names
 its persisted notice and rollback holes never invent gaps` checks the server's
-more precise rule. A complete gap-aware reference UI across these surfaces is
+more precise rule. A complete gap-aware interface across these surfaces is
 **not claimed**.
 
 ## Approvals and uncertain outcomes
@@ -125,7 +125,7 @@ needs_reconciliation`. The mock is not a real-model assistant; full coverage
 of every newly added OpenAPI operation is **not claimed**.
 
 For real-service authentication, event and attention checks, use the full test
-command in [README](../README.md). Pull request #17 records outcomes.
+command in [README](../README.md).
 
 ## The reaction rule
 
@@ -249,10 +249,11 @@ connected app and the readable source title; `connection_id` selects its logo.
 
 ### Authentication and scope
 
-v0.1 has one owner. Set up or sign in with the existing password endpoints;
-the client sends the `HttpOnly` session cookie with `credentials: 'include'`.
-Experience routes derive their personal space from that session. Requests cannot
-supply an owner or space id. An item from another space is unavailable.
+v0.1 has one installation owner; additional accounts and shared spaces exist
+as API primitives without an invitation interface. Set up or sign in with the
+existing password endpoints; the client sends the `HttpOnly` session cookie with
+`credentials: 'include'`. Experience routes derive their personal space from
+that session. Requests cannot supply an owner or space id. An item from another space is unavailable.
 Browser mutations must originate from the same origin as the API.
 
 For email sign-in, configure `MELETE_PUBLIC_URL` and connect the owner's own

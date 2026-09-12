@@ -47,10 +47,13 @@ Two rules:
 | [0012](0012-provable-memory-properties.md) | Four memory properties the service enforces | accepted |
 | [0014](0014-memory-conformance-runner.md) | Memory quality is a suite with a counterfactual arm | accepted |
 | [0015](0015-typed-repair.md) | Failures are classified and repaired, not retried | accepted |
+| [0016](0016-execution-and-artifacts.md) | Code execution in the cell and artifact validation | accepted |
 | [0017](0017-agentic-and-natural.md) | Reply style, reactions, delta briefs, watch predicates, capabilities | accepted |
+| [0018](0018-discovery-and-mcp.md) | Discovery over a small core, with MCP and composition behind the broker | accepted |
 | [0019](0019-learning-loop.md) | Corrections become episodes and audited procedure candidates | accepted |
 | [0020](0020-deployment-evidence.md) | Deployment claims require a running Linux stack | accepted |
 | [0021](0021-hermes-capability-audit.md) | What the pinned engine is proven to do, and what awaits proof | accepted |
 | [0022](0022-wired-assistant.md) | The ordinary HTTP job runs one pinned engine per attempt | accepted |
 | [0023](0023-experience-adapter.md) | The experience API is an adapter over saved work, never a second truth | accepted |
 | [0024](0024-browser-worker.md) | A browser worker outside the cell, with recipes and takeover | accepted |
+| [0025](0025-web-app.md) | The web app is built from the design canvas, behind one adapter | accepted |

@@ -8,15 +8,16 @@ edits become protected revisions` in
 [`markdown-tests.ts`](../apps/melete/test/integration/markdown-tests.ts).
 
 The service entry point is more than health: it wires authenticated jobs,
-approvals, events and other service modules. With the `hermes` adapter,
-`bootstrap` starts the memory core and worker behind the restriction-journal
-restore gate, mounts the authenticated memory routes, and wraps each attempt's
-runtime with context recording and invalidation; the `docker` adapter starts
-the deployment memory the same way. An injected runtime receives memory only
-when the caller supplies it. The broker origin resolver is wired in
-`broker/start.ts` and tested by `an address read off a page is refused as
-untrusted_recipient_origin`. These statements describe code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1`.
+approvals, events and other service modules. Every Postgres-backed `bootstrap`
+starts the memory core and worker behind the restriction-journal restore gate,
+mounts the authenticated memory routes, and wraps each attempt's runtime with
+context recording and invalidation; the `docker` adapter starts the deployment
+memory the same way. An injected runtime receives context recording only when
+the caller supplies the `memory` dependency. The broker origin resolver is wired
+in `broker/start.ts` and tested by `an address read off a page is refused as
+untrusted_recipient_origin`. The scripted HTTP proof `wired-assistant.test.ts`
+corrects a claim over these routes through a real local engine. These
+statements describe the tree at the head of `integration`.
 
 ## Evidence, claims and correction
 
@@ -114,9 +115,10 @@ The core route implementation is `memory/routes.ts`; the interface's saved
 details are served by `experience/memory.ts` and `experience/routes.ts`.
 The Markdown round-trip and
 `review mediation stages diffs and revalidates apply against authoritative
-evidence` tests supply authentication, actual IDs and revisions. Runtime
-startup provides authenticated memory scope as described above. Run the
-fixture command below for a reproducible example.
+evidence` tests supply authentication, actual IDs and revisions. The default
+service mounts these routes whenever Postgres is configured, with scope derived
+from the authenticated principal's verified membership. Run the fixture command
+below for a reproducible example.
 
 ## Dependencies, contradictions and origin
 
@@ -165,19 +167,21 @@ after rolling both database and journal back together are **not claimed**.
 
 ## Startup and active attempts
 
-An embedding application must provision authenticated memory scope, initialize
-a new journal only for new storage, and call `startMemoryService` before
-serving memory traffic. It must inject `createMemoryRouter` and the
-`withMemoryRuntime` wrapper where required. The normal runtime bootstrap wires
-these components. Evidence: `startup gates serving, pg-boss derives scope
-from work, and background indexing catches up`; `runtime adapter discards
-delivered context and rejects events after an owner correction`.
+The default bootstrap provisions authenticated memory scope, initializes a new
+journal only for new storage, calls `startMemoryService` before serving memory
+traffic, mounts `createMemoryRouter`, and applies the `withMemoryRuntime`
+wrapper to the attempt runtime. An application that embeds the modules
+directly must do the same. Evidence for the components: `startup gates serving,
+pg-boss derives scope from work, and background indexing catches up`; `runtime
+adapter discards delivered context and rejects events after an owner
+correction`.
 
 Extraction and view publication use durable work and fenced leases
 (`continuation cursors and queue repair survive lost delivery and an obsolete
 lease holder`). pg-boss runs on the fixture database (`pg-boss uses the embedded
-database`). Automatic prepared-context reuse and procedure promotion are
-**not claimed**; procedure transfer is **written, not run** in conformance.
+database`). Automatic prepared-context reuse is **not claimed**. Procedure
+promotion is a separate, scoped loop with its own tests ([LEARNING](LEARNING.md));
+the memory runner's procedure-transfer scenario stays a recorded todo.
 
 ## Verify
 
@@ -190,7 +194,7 @@ bun run conformance:memory
 
 The integration fixture uses disposable Postgres and scripted HTTP extraction.
 The standalone runner uses ten scenarios across seven executed families and a
-withheld-memory arm; procedure transfer is **written, not run**. See the
-[memory conformance README](../conformance/memory/README.md) for exact scope,
-and pull request #17 for command outcomes. Neither establishes model
-reasoning quality, statistical superiority or production scale.
+withheld-memory arm; its procedure-transfer scenario is a recorded todo. See the
+[memory conformance README](../conformance/memory/README.md) for exact scope.
+Neither establishes model reasoning quality, statistical superiority or
+production scale.

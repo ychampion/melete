@@ -37,6 +37,11 @@ const sourceHashes = {
   'gateway/platforms/api_server_runs.py':
     '270f7e221b5486a6ac499732d0f5471f3f48dc0c0a0633186bc762bcb1345a39',
 };
+// The process supervisor applies this reviewed observer variant of the same pin.
+const observerHashes: Record<string, string> = {
+  'gateway/platforms/api_server_runs.py':
+    'b5c5b21170408f8cb117319ceb5ac0d85d6e4a92f3cd6c5f3eb9f04dfc94790f',
+};
 type WireMessage = { role?: string; content?: unknown; [key: string]: unknown };
 type WireTool = { function?: { name?: string } };
 type Capture = { attemptId: string; body: Record<string, unknown> };
@@ -51,14 +56,16 @@ async function main() {
     existsSync(join(ROOT, '.hermes-venv', 'Scripts', 'python.exe')),
     'Install the isolated Hermes venv first.',
   );
+  const observedSourceHashes: Record<string, string> = {};
   for (const [file, expected] of Object.entries(sourceHashes)) {
-    assert.equal(
-      createHash('sha256')
-        .update(readFileSync(join(ROOT, '.hermes-src', file)))
-        .digest('hex'),
-      expected,
+    const actual = createHash('sha256')
+      .update(readFileSync(join(ROOT, '.hermes-src', file)))
+      .digest('hex');
+    assert(
+      actual === expected || actual === observerHashes[file],
       `Pinned source differs: ${file}`,
     );
+    observedSourceHashes[file] = actual;
   }
   const db = await createPostgresFixture();
   assert(db, 'No disposable database could be started.');
@@ -356,7 +363,7 @@ async function main() {
     assert.equal(events.filter((event) => event.type === 'attempt_outcome').length, 1);
     const summary = {
       pin: PIN,
-      sourceHashes,
+      sourceHashes: observedSourceHashes,
       coldStartMs,
       database: db.mode,
       brokerPort: BROKER_PORT,

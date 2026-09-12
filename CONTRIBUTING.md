@@ -28,7 +28,7 @@ Inspect and commit generated changes when changing contracts.
 ## Change guidelines
 
 - Keep public claims tied to named tests and their actual fixture scope.
-  Label unexecuted scenarios **written, not run**, and unsupported properties
+  Label unexecuted scenarios as such, and unsupported properties
   **not claimed**.
 - Test behavior at boundaries. The conformance examples include stale epochs,
   payload-bound approvals and unknown sends that are not repeated.
@@ -36,8 +36,9 @@ Inspect and commit generated changes when changing contracts.
 - Record architectural decisions under `.agents/notes`; preserve the historical
   record. Current documentation must distinguish that history from current code.
 - Separate static configuration checks from inside-container probes. The
-  scenario 6 container tests are **written, not run**; a YAML check cannot make
-  them pass.
+  scenario 6 container tests run only against a Compose stack with the opt-in;
+  a YAML check cannot make them pass, and a run on one host does not make them
+  true on another.
 
 Use plain prose commit messages. Explain what changed, its tested behavior and
 remaining limits in the pull request. Avoid claiming full-suite success from

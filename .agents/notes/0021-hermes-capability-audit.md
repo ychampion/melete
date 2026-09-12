@@ -11,10 +11,10 @@ Melete revision `9484023cabd32b786cb4d336dec818f441cd0cc1` was inspected in
 to that commit, not current upstream HEAD. Source inspection establishes an
 offered interface; only an executed Melete test establishes a Melete capability.
 
-Reproduce the source inventory from the W14 worktree:
+Reproduce the source inventory from a checkout with `.hermes-src` at the pin:
 
-```powershell
-git -C C:/Users/gamin/melete-oss-w14 --git-dir=C:/Users/gamin/melete-oss-w14/.hermes-src/.git --work-tree=C:/Users/gamin/melete-oss-w14/.hermes-src rev-parse HEAD
+```sh
+git -C .hermes-src rev-parse HEAD
 python packages/runtime-hermes/scripts/audit-pin.py .hermes-src
 ```
 
@@ -412,7 +412,7 @@ lane held the shared test lock during that run. Evidence is retained at
 `%TEMP%/melete-w14-capability-wHcsDT/capability-evidence.json`; no proof assertion,
 fixture, model output or attempt budget was changed.
 
-The unchanged proof was then rerun while holding the shared lock. It passes
+The unchanged proof was then rerun while holding the serialized test guard. It passes
 all 85 assertions in 284.91 seconds, with every stage passed and empty failure
 and missing lists. Evidence is
 `%TEMP%/melete-w14-capability-trNDDu/capability-evidence.json`, SHA-256
@@ -421,7 +421,7 @@ The proof source remains SHA-256
 `50f3ae8adf5b7b5c26dea07dc335a09128853f5481af6f7026bf39eb96b7ba99`.
 
 The full suite ran exactly once as `timeout 1200 bun test --max-concurrency=2`
-under the owned shared lock. It completed in 303.62 seconds with 1,560 passes,
+under the owned serialized test guard. It completed in 303.62 seconds with 1,560 passes,
 29 skips, one failure and 7,318 assertions across 152 files (exit 1). Both new
 review regressions passed in that run. The ownership marker and lock directory
 were removed, and inspection found no tracked test processes still running.

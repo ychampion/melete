@@ -5,7 +5,7 @@ Append-only. What was built, the checks that ran, and what stays hidden.
 ## Assumptions
 
 - Branch `lane/w16c-reactions` from `origin/integration` at `55b6a50`, worktree
-  `C:/Users/gamin/melete-oss-w16c`. No other worktree, `main` or `integration`
+  `.`. No other worktree, `main` or `integration`
   was touched, and nothing was stashed.
 - The merged tree was checked before any change: `bun run --cwd apps/web typecheck`
   clean, `bunx biome check apps/web apps/mock-api` "Checked 53 files … No fixes
@@ -75,3 +75,18 @@ run, as instructed.
 - Reactions cannot be removed; the contract has no delete route, so a tap adds and
   a second tap on the same glyph is the same reaction.
 - Memory items from setup answers and sign-out: no route on any branch.
+
+## Current integration behavior
+
+The earlier ordering-based reaction association is replaced by message identity.
+The client retains job-stream message records and resolves an explicit turn ID
+or a unique conversation, text and transaction-timestamp match. Unknown and
+ambiguous targets are omitted. Text events provide the targets for controls;
+card-only, receipt-only and acknowledgement-only answers have none. Switching
+conversations resets reaction state.
+
+The regression file passes 20 cases, including two person messages before one
+reply, delayed projection, repeated text, ambiguous identity and rendered
+control visibility. The screen walk passes 130 checks. Setup answers and
+sign-out are also implemented on integration; the earlier limitations above
+describe the original reaction implementation only.

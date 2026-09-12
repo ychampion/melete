@@ -32,7 +32,7 @@ For a completed, failed, or cancelled job, the episode's `correctiveJobId` ident
 
 Only the finite signal and an audited vocabulary reach the proposal model. The gateway receives no private intervention text, task content, input handles, receipts, artifact paths, or sealed tasks. Model output must choose allowed steps in a strict schema. Melete compiles those steps into fixed skill text, checks the 400-token estimate limit, and binds the body, scope, compatible models, change, and tests with one definition hash. Arbitrary prose, code, and paths fail admission.
 
-The candidate keeps its source episode reference inside the origin space. Later jobs receive only the general skill body and procedure identifier. Exact space, family, app/version, owner/private audience, requested model, and runtime compatibility are checked again at every delivery. Public compartments, other spaces, and incompatible jobs receive no procedure. At most one matching procedure is delivered in this implementation.
+The candidate keeps its source episode reference inside the origin space. Later jobs receive only the general skill body and procedure identifier. Exact space, family, app/version, owner/private task applicability, requested model, and runtime compatibility are checked again at every delivery. Task applicability does not grant access: canaries and ordinary activation remain private to the authenticated promoter. Explicit space activation permits a current member to receive the compiled body only, with membership rechecked under the revocation lock. Source episodes, corrections, evaluations and job timelines remain private. Public compartments, other spaces, and incompatible jobs receive no procedure. At most one matching procedure is delivered in this implementation.
 
 `GET /episodes?space_id=...` lists accessible, unexpired evidence. `DELETE /episodes/{id}?space_id=...` erases its private fields and dependent candidates, evaluations, and transitions. Episodes expire after 30 days; a startup and minute-by-minute sweep applies retention. Existing memory removal/revocation and retained-journal replay also restrict matching episodes through their input handles, including whole-space removal. Restriction prevents future generation and delivery.
 
@@ -64,13 +64,13 @@ Each process permits one evaluation at a time. Across replicas sharing the same 
 
 ## Inspect, reject, enable, and roll back
 
-All endpoints use the existing owner authentication. Read a space's procedures with `GET /procedures?space_id=...` and inspect one with `GET /procedures/{id}?space_id=...`. Inspection includes transition actors/reasons and evaluation results and costs; raw final tasks and answers are not returned.
+All endpoints use authenticated sessions and verify the caller against the source principal and space. A shared-space membership alone does not permit reading or changing another principal's learning evidence. Read a space's procedures with `GET /procedures?space_id=...` and inspect one with `GET /procedures/{id}?space_id=...`. Inspection includes transition actors/reasons and evaluation results and costs; raw final tasks and answers are not returned.
 
 The lifecycle is `candidate → evaluated → enabled_canary → active → superseded | reverted`. Rejection is a recorded reason and transition in candidate/evaluated history, not another executable state.
 
 1. To reject an unevaluated or evaluated candidate, call `POST /procedures/{id}/reject` with `space_id` and `reason`.
 2. After both evaluation phases pass, call `POST /procedures/{id}/canary` with `space_id`. Delivery is limited to the origin space.
-3. After a canary job completes without an intervention, call `POST /procedures/{id}/activate` with `space_id`. Activation stays in that space and supersedes older compatible procedures for the same scope.
+3. After a canary job completes without an intervention, call `POST /procedures/{id}/activate` with `space_id` and optional `scope: private | space` (default `private`). Space activation requires the source owner and a shared space. The service records the authenticated promoter; the request cannot nominate one. Activation stays in that space and supersedes older compatible procedures for the same delivery scope and promoter.
 4. To stop future delivery, call `POST /procedures/{id}/rollback` once with `space_id` and `reason`. It records `reverted`; repeating rollback is idempotent. Rollback does not restore the predecessor that activation marked `superseded`; that predecessor remains disabled. Returning to earlier behavior requires a new candidate to pass evaluation and canary. A running attempt already holding the general skill is not interrupted by rollback, but subsequent attempt claims cannot receive it.
 
 Nothing in a procedure grants permissions, changes operation identity, unlocks credentials, or changes which sources a job may access. Facts and access rules continue through memory and the broker.
@@ -80,7 +80,7 @@ Nothing in a procedure grants permissions, changes operation identity, unlocks c
 Use scripted providers for the integration tests:
 
 ```sh
-bun test --max-concurrency=1 --timeout=30000 apps/melete/src/learning/gate.test.ts apps/melete/test/integration/learning-evaluation.test.ts apps/melete/test/integration/learning-three-act.test.ts
+bun test --max-concurrency=1 --timeout=30000 apps/melete/src/learning/gate.test.ts apps/melete/test/integration/learning-evaluation.test.ts apps/melete/test/integration/learning-three-act.test.ts apps/melete/test/integration/shared-procedure.test.ts
 bun run typecheck
 bun run lint
 bun run test:plugin

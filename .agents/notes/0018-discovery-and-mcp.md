@@ -74,11 +74,13 @@ and scripts search, load, execution and receipt reporting through the model
 gateway. It measures the actual first request's system prompt and tool schemas,
 checks native history prefixes and saves local evidence. The estimator is
 `ceil((system prompt characters + serialized schema characters) / 4)`; fake
-provider usage fields are not used as a scaffolding measurement. The first
-request measured 7,426 system characters plus 2,774 schema characters, or 2,550
+provider usage fields are not used as a scaffolding measurement. The earlier
+probe measured 7,426 system characters plus 2,774 schema characters, or 2,550
 estimated tokens. The seven-tool core was 694 estimated tokens. Four scripted
 provider requests across two runs produced one broker receipt and one completed
-attempt outcome, with append-only history. `REPORT.md` records the command.
+attempt outcome, with append-only history. That historical report remains in
+Git history; the [runtime README](../../packages/runtime-hermes/README.md#what-the-thin-configuration-costs)
+records the current command and measurement.
 
 ## MCP registration and the remaining launch boundary
 
@@ -130,9 +132,8 @@ its isolation verification land when W10a merges.
 
 ## Verification
 
-Acquire `C:/Users/gamin/.melete-test.lock` with the owner's atomic mkdir loop
-before a full `bun test --max-concurrency=2` run, and release it on success or
-failure. Focused runs need no lock. Run `bun run typecheck`, `bun run lint`,
+Run full `bun test --max-concurrency=2` suites one at a time on a machine that
+other test processes share; focused runs need no such serialization. Run `bun run typecheck`, `bun run lint`,
 `bun run test:plugin`, `bun run compose:check`, and the discovery e2e script.
 The e2e needs an ignored `.hermes-src` at the pinned revision and an isolated
 `.hermes-venv` with that source installed; it uses no real inference credentials.
@@ -143,6 +144,6 @@ are copied into separate real Git repositories rather than recreated per case.
 
 The final run with a preserved owner marker passed 982 tests, with 14 existing
 TODOs and no failures, in 211.91 seconds. The three-minute whole-suite target
-remains unmet after the brief's two fixture-performance fix cycles. The earlier
+remains unmet after two fixture-performance passes. The earlier
 reply/submission timeouts did not reproduce in this run; no fault-injection
 assertion or timeout was relaxed to obtain the pass.

@@ -2,9 +2,10 @@
 
 This runner calls real memory functions against isolated Postgres, with
 scripted extraction and scripted answers over local HTTP. It does not boot the
-normal service entry point or a Compose stack. At code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1`, ten executable scenarios cover
-seven families; procedure transfer is **written, not run** as one todo.
+normal service entry point or a Compose stack. Ten executable scenarios cover
+seven families; the procedure-transfer scenario is a recorded todo, because
+promotion is exercised by the [learning](../../docs/LEARNING.md) tests rather
+than by this harness. This page describes the tree at the head of `integration`.
 
 See [MEMORY](../../docs/MEMORY.md) for authority and integration limits and
 [ENGINEERING](../../docs/ENGINEERING.md#e6-memory-scenarios-with-a-withheld-memory-arm)
@@ -44,7 +45,7 @@ Each row links to the scenario whose exact checks the harness executes.
 | Source authority | [document-paraphrase-dispute](scenarios/source-authority/document-paraphrase-dispute.json), [no-nearby-message-citation](scenarios/source-authority/no-nearby-message-citation.json) |
 | Forgetting and access | [forget-survives-restore](scenarios/forgetting-and-access/forget-survives-restore.json), [revoked-source-leaves-retrieval](scenarios/forgetting-and-access/revoked-source-leaves-retrieval.json) |
 | Low-value memory | [noise-does-not-crowd-out](scenarios/low-value-memory/noise-does-not-crowd-out.json) |
-| Procedure transfer | [repeatable-workflow-promotion](scenarios/procedure-transfer/repeatable-workflow-promotion.json): **written, not run**, one todo; promotion is not enabled |
+| Procedure transfer | [repeatable-workflow-promotion](scenarios/procedure-transfer/repeatable-workflow-promotion.json): one recorded todo; this harness does not enable promotion |
 
 These are small scripted fixtures. Real-model reasoning, learning, useful
 autonomous capability and production scale are **not claimed**. The successful
@@ -104,4 +105,6 @@ actually needs recall; absence-only checks may pass with memory withheld.
 Use a supported registry key and exact source spans. Scenario loading validates
 the schema, duplicate IDs and presence of every family.
 
-Results for this documentation revision are in the documentation lane's pull request (#17).
+The measured Linux run (all ten active scenarios passed, all ten withheld-memory
+arms failed as required) is recorded in
+[note 0020](../../.agents/notes/0020-deployment-evidence.md).

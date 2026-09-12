@@ -291,8 +291,9 @@ export async function bootstrap(
   } = {},
 ) {
   const env = options.env ?? loadEnv();
-  if (!options.runtime && !['hermes', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
-    throw new Error('MELETE_RUNTIME_ADAPTER must be hermes or stub.');
+  // Compose selects the supervised Docker adapter before any dependencies start.
+  if (!options.runtime && !['hermes', 'docker', 'stub'].includes(env.MELETE_RUNTIME_ADAPTER)) {
+    throw new Error('MELETE_RUNTIME_ADAPTER must be hermes, docker or stub.');
   }
   if (!['process', 'docker'].includes(env.MELETE_RUNTIME_SUPERVISOR))
     throw new Error('MELETE_RUNTIME_SUPERVISOR must be process or docker.');

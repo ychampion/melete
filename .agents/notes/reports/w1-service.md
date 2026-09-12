@@ -10,7 +10,7 @@
 
 ## Initial inspection
 
-- Command `git -C C:/Users/gamin/melete-oss-w1 status --short --branch`: `lane/w1-service...origin/main`, clean before dependency installation.
+- Command `git status --short --branch`: `lane/w1-service...origin/main`, clean before dependency installation.
 - Command `bun install`: `126 packages installed [4.67s]`.
 - Command `bun add --dev embedded-postgres@17`: no stable version matched; command `bun add --dev --exact embedded-postgres@17.10.0-beta.17` succeeded (`6 packages installed [9.13s]`).
 - SHA `65e26f1438cd5c8e95e7bf160f456be07d8cb534`: read `docs/ARCHITECTURE.md`, frozen contracts, `.agents/notes/`, service skeleton and conformance assertions 1, 2, 5.
@@ -42,7 +42,7 @@
 - Command `bun test apps/melete/test/integration/runner.test.ts`: initial new regression run returned `25 pass`, `1 fail` (`ERR_INVALID_ARG_TYPE` for a raw SQL Date parameter); one fix uses its ISO string.
 - Command `bun test apps/melete/test/integration/runner.test.ts`: `26 pass`, `0 fail`, `186 expect() calls`, `Ran 26 tests across 1 file. [36.76s]`.
 - Test `scripted stub runtime` and test `attempt capabilities`: prepared unit modules passed 40 tests; test `bundle assembly and completion evidence` passed 28 tests in their focused runs.
-- Command `git -C C:/Users/gamin/melete-oss-w1 status --short --branch`: continuation remains on `lane/w1-service`; runner, waits, approvals and SSE edits remain uncommitted pending their ordered slice checks.
+- Command `git status --short --branch`: continuation remains on `lane/w1-service`; runner, waits, approvals and SSE edits remain uncommitted pending their ordered slice checks.
 
 ## Slice 3: runner committed verification
 
@@ -58,7 +58,7 @@
 - Test `durable waits, triggers and approval inputs`: event registration checks buffered events in the transition transaction, consumes a persisted cursor once, and rejects missing, foreign or disabled predicates.
 - Test `cron registrations are restored from durable trigger rows and disabled schedules disappear`: pg-boss schedules are restored on recovery; the real schedule worker persists one occurrence before waking a wait.
 - Test `approval gate`: request hash, stored canonical payload, job revision, expiry and cancellation reject stale approval decisions; early decisions, duplicate decisions, multiple approvals and denials resume correctly.
-- Command `bun test apps/melete/test/integration/waits.test.ts`: initial `17 pass`, `2 fail` from a raw SQL timestamp string and a too-short fixture session token; one fix cycle corrected both fixtures. Rerun: `19 pass`, `0 fail`, `91 expect() calls`, `30.39s`.
+- Command `bun test apps/melete/test/integration/waits.test.ts`: initial `17 pass`, `2 fail` from a raw SQL timestamp string and a too-short fixture session token; one fix pass corrected both fixtures. Rerun: `19 pass`, `0 fail`, `91 expect() calls`, `30.39s`.
 - Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: one formatting fix, then `Checked 87 files in 155ms. No fixes applied.`.
 - Command `bun test --dots`: `329 pass`, `36 todo`, `0 fail`, `1192 expect() calls`, `Ran 365 tests across 26 files. [112.01s]`.
 
@@ -84,7 +84,7 @@
 - Test `conformance 1`: an actual child process exits after the transition/event writes and before enqueue; Postgres rolls back that transaction, the prior due wait survives queue deletion, recovery re-enqueues it, and duplicated timers admit one replacement attempt.
 - Test `conformance 2`: A resumes while B holds the live lease; A's admission and outcome reject with `stale_epoch`; B admits normally; a duplicate late receipt records one event without changing B's running state, epoch or state version.
 - Test `conformance 5`: child processes die mid-stream and after a persisted tool result; replacement attempts recover stored context, produce one fake effect, end the old attempt as lost and expose a real SSE gap marker.
-- Command `bun test conformance`: initial import/type failures required declaring the existing Drizzle dependency in the conformance package and omitting an invalid null draft; one fix cycle. Rerun: `12 pass`, `24 todo`, `0 fail`, `59 expect() calls`, `Ran 36 tests across 8 files. [27.55s]`.
+- Command `bun test conformance`: initial import/type failures required declaring the existing Drizzle dependency in the conformance package and omitting an invalid null draft; one fix pass. Rerun: `12 pass`, `24 todo`, `0 fail`, `59 expect() calls`, `Ran 36 tests across 8 files. [27.55s]`.
 - Command `bun run typecheck`: passed (`$ tsc -b`); command `bun run lint`: passed (`Checked 91 files in 164ms. No fixes applied.`).
 - Command `bun test --dots`: `352 pass`, `24 todo`, `0 fail`, `1331 expect() calls`, `Ran 376 tests across 27 files. [87.44s]`.
 - Command `bun run conformance`: now executes the suite after listing its assertions; conformance scenarios 3, 4, 6, 7 and 8 remain outside this lane's requested conformance scope.
@@ -97,7 +97,7 @@
 - Test `racing repeats`: canonical JSON key order deduplicates admission; input text bytes and operation identity remain significant; a changed payload under the same key returns 409 and preserves the original receipt.
 - Test `receipt_missing`, test `history_missing`, test `history_corrupt` and test `marker_only`: damaged history becomes persisted `unknown_durability`; the service never admits replacement work for that known submission ID.
 - Command `bun test apps/melete/test/integration/submissions.test.ts apps/melete/test/integration/jobs.test.ts`: `25 pass`, `0 fail`, `319 expect() calls`, `57.91s` before adding the persisted-uncertainty assertions.
-- Command `bun run typecheck`: three assertion typings corrected in one fix cycle; final run passed (`$ tsc -b`).
+- Command `bun run typecheck`: three assertion typings corrected in one fix pass; final run passed (`$ tsc -b`).
 - Command `bun test --dots`: first full run found the old exact-table-list assertion; one fix lets the original entity assertion accept additive tables. Final run: `363 pass`, `24 todo`, `0 fail`, `1402 expect() calls`, `Ran 387 tests across 28 files. [138.98s]`.
 - Command `bun run lint`: passed (`Checked 96 files in 371ms. No fixes applied.`); command `bun run openapi`: regenerated the new receipt lookup and input paths.
 - Test `global database preload`: suites clone one migrated template into separate disposable databases; tests assert `fsync=on` and `synchronous_commit=on`.
@@ -174,7 +174,7 @@
 - Test `cron cadence reduction persists skipped occurrences and important schedules continue every occurrence`: a routine schedule defers three occurrences with a `routine_check_deferred` notice and runs the fourth; the important schedule runs on its first occurrence.
 - Test `responsibility HTTP admission preserves scheduling preferences and old-class hints cannot start work`: `POST /responsibilities` returns an accepted receipt with the requested class, importance and threshold; `POST /jobs/:id/scheduling` moves the responsibility to another class, leaves exactly one hint on the new queue, and makes the pre-change hint unable to claim; `POST /jobs/:id/read` requires a session and then returns 200.
 - Contracts stayed additive and confined to `packages/contracts/src/responsibility.ts` plus new paths in `packages/contracts/src/openapi.ts`. A dereferenced comparison of `packages/contracts/openapi.json` against `47cf37d` removes no path and no schema; it adds `POST /responsibilities`, `GET /jobs/{id}/responsibility`, `POST /jobs/{id}/scheduling` and `POST /jobs/{id}/read`, and adds optional-with-default request fields and new response fields. The only pre-existing paths whose schemas changed are `/snapshot` and `/jobs/{id}/snapshot`, which gained the new responsibility fields and lost none.
-- Command `bun run typecheck`: passed (`$ tsc -b`), no fix cycles needed.
+- Command `bun run typecheck`: passed (`$ tsc -b`), no fix passes needed.
 - Command `bun run lint`: passed (`Checked 112 files in 94ms. No fixes applied.`).
 - Command `bun test --max-concurrency=2`: `389 pass`, `24 todo`, `0 fail`, `1592 expect() calls`, `Ran 413 tests across 31 files. [67.49s]`.
 - Command `bun test apps/melete/test/integration/responsibility.test.ts`: `16 pass`, `0 fail`, `137 expect() calls`, `Ran 16 tests across 1 file. [20.80s]` against embedded Postgres.

@@ -183,11 +183,11 @@ Browser-dependent tests become `todo` with an install reason when Chromium is
 absent, including CI. The integration fixture uses `DATABASE_URL` when supplied
 or a throwaway embedded Postgres 17 otherwise; a failed binary download retains
 the existing skip fallback. The six local form variants and both observation
-modes are measured in [note 0017](../.agents/notes/0017-browser-worker.md), excluding
+modes are measured in [note 0024](../.agents/notes/0024-browser-worker.md), excluding
 browser launch and model latency.
 
 The Compose check parses YAML and rejects mutations that broaden networks,
 mounts, credentials, uids, or privileges. It does not prove Linux packet filtering,
-volume ownership, Chromium startup, or container escape resistance. Docker was
-unavailable on the Windows machine for this lane, so the image and combined stack
-have not been built or run there. Those deployment checks remain for a Linux host.
+volume ownership, Chromium startup, or container escape resistance. The browser
+image and the combined stack with this override have not been built or run;
+those deployment checks remain for a Linux host.

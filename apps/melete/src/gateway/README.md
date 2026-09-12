@@ -3,7 +3,8 @@
 `createModelGateway` validates capabilities, configured endpoints and model
 selection before forwarding. `PostgresGatewayBudget` provides durable budget
 integration. The gateway does not itself establish container network isolation;
-inside-container egress probes are **written, not run**.
+scenario 6 on a Linux Docker host found this listener to be the cell's only
+reachable peer.
 
 Named tests in `index.test.ts` cover:
 
@@ -19,12 +20,11 @@ Named tests in `index.test.ts` cover:
 
 The fixtures use fake transports/providers and local TLS. General real-provider
 compatibility and real-model quality are **not claimed**. The optional Fireworks
-smoke helper in `smoke.ts` is **written, not run** for this documentation
-verification; it needs a configured gateway and capability. No paid smoke is part
-of this documentation task.
+smoke helper in `smoke.ts` needs a configured gateway, capability and key; it is
+not part of the test suite.
 
 The effect listener loads configured connections and optional operator-provided
 TLS termination certificates. Certificates under `fixtures/` are test-only.
-Default service startup still needs an injected runtime or explicit stub;
-a ready-to-run Compose assistant is **not claimed**.
+The Compose stack runs this gateway with the scripted provider; a useful
+assistant with a real model is **not claimed**.
 See [ARCHITECTURE](../../../../docs/ARCHITECTURE.md).

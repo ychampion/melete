@@ -6,7 +6,7 @@ support. `ConnectorRegistry` validates manifests and refuses duplicate entries
 (`registry refuses ambiguous tools and invalid manifests`;
 `registry rejects duplicate connections and returns a stable connection order`).
 
-This describes code baseline `9484023cabd32b786cb4d336dec818f441cd0cc1`.
+This describes the tree at the head of `integration`.
 The tests use temporary files, fake destinations and local protocol servers.
 General compatibility with live mail/calendar accounts is **not claimed**.
 
@@ -51,6 +51,7 @@ succeeded and the job continues`.
 | Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` |
 | Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` |
 | MCP | Operator-configured HTTP servers behind the broker with operator-chosen effect classes, scopes and audience | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
+| Browser | Semantic observe, open, fill, click, select, read and an approved `browser.submit`, carried out by a worker process outside the cell with epoch-fenced takeover | `approval binds the exact browser intent and repeated proposals dispatch one effect`; `an unapproved submit has no external effects and its warning identifies the observed destination`; see [the browser worker](browser-worker.md) |
 
 The code paths are in [the connector directory](../apps/melete/src/connectors).
 `configuredConnectors` reads active connections and owner-controlled endpoint
@@ -279,8 +280,9 @@ The script receives only JSON data; it cannot call tools, select connections or
 grant itself authority. The broker returns bounded JSON plus the underlying
 action evidence handles, and derived output retains inferred provenance.
 
-The execution interface is ready for the W10a cell executor. Without an injected
-executor the service does not expose `compose`. The in-process fallback is
-restricted to tests; `node:vm` is not a production security boundary and does not
-provide a memory limit. Connecting and verifying the cell executor remains
-required when W10a lands.
+The broker offers `compose` only when a `ComposeExecutor` is injected, and the
+default service entry point injects none, so the shipped catalog does not carry
+it (`HTTP composition is unavailable without the service-owned cell executor`).
+The in-process fallback is restricted to tests; `node:vm` is not a production
+security boundary and does not provide a memory limit. Connecting the in-cell
+executor to this seam and verifying its isolation remains open work.
