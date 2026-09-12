@@ -26,6 +26,7 @@ import {
   markPermission,
   markQuestion,
   openQuestion,
+  reactionMessageSeq,
   setDrafts,
   type TranscriptTurn,
   turnIndexForReaction,
@@ -277,7 +278,7 @@ function TurnView({
             {showText ? <Trail turn={turn} now={now} /> : null}
             {rendered}
             {unconfirmed}
-            {finished ? (
+            {finished && text.trim() ? (
               <ActionBar
                 turn={turn}
                 touch={touch}
@@ -372,8 +373,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   }, [conversationId]);
 
   const react = (turn: TranscriptTurn, emoji: string) => {
-    if (turn.firstSeq === null || !conversationId) return;
-    void adapter.react(turn.firstSeq, emoji).then((result) => {
+    const messageSeq = reactionMessageSeq(turn);
+    if (messageSeq === null || !conversationId) return;
+    void adapter.react(messageSeq, emoji).then((result) => {
       if (result.data === null) {
         // Not a message the service lets anyone react to: the control goes away.
         setUnreactable((previous) => new Set(previous).add(turn.id));
@@ -468,7 +470,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           });
           return;
         }
-        state.accepted(localId, accepted.data.turn_id);
+        state.accepted(localId, accepted.data.turn_id, accepted.data.receipt.received_at);
         refreshConversations();
       };
       if (!navigator.onLine) {
@@ -647,7 +649,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   onResolve={resolve}
                   reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
                   onReact={
-                    turn.firstSeq !== null && !unreactable.has(turn.id)
+                    reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
                       ? (emoji) => react(turn, emoji)
                       : undefined
                   }

@@ -8,7 +8,7 @@
  * `unavailable` is the reason a capability is not connected, and a surface
  * that gets one is not drawn.
  */
-import { createMeleteClient, errorMessage, readSse } from '@melete/client';
+import { createMeleteClient, errorMessage, readSse, subscribeEvents } from '@melete/client';
 import type {
   ActionResolution,
   Agent,
@@ -173,6 +173,8 @@ export const adapter = {
     ),
   rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
   /* ---------- reactions: a glyph on a message, either direction ---------- */
+  messageEvents: (conversationId: string, signal: AbortSignal) =>
+    subscribeEvents(client, { jobId: conversationId, signal }),
   reactions: (conversationId: string) =>
     guard<{ reactions: Reaction[] }>(() =>
       api.GET('/jobs/{jobId}/reactions', { params: { path: { jobId: conversationId } } }),

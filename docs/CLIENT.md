@@ -484,12 +484,16 @@ in place; nothing disappears.
 
 **A reaction sits on its bubble.** The web app follows the reaction rule
 above: the person answers an agent turn with one tap from a small fixed set,
-posted to `POST /messages/{seq}/reactions` with the seq of the turn's first
-event, and the agent's glyph on the person's message is drawn under that
-bubble. Both come from `GET /jobs/{id}/reactions`, read when a turn settles,
-since this client follows the conversation stream rather than the job stream.
-No control is drawn on a message the service will not accept a reaction on,
-and nothing is ever drawn as a "reacted" line of its own.
+posted to `POST /messages/{seq}/reactions` with the seq of an identified text
+event. Card-only, receipt-only and acknowledgement-only turns have no reaction
+controls. The glyphs come from `GET /jobs/{id}/reactions`, read when a turn
+settles. The job event stream supplies the original message identities: an
+explicit turn ID when present, otherwise a unique match on the conversation,
+message text and transaction timestamp shared with the accepted turn. Projected
+text also retains its source event identity. Unknown or ambiguous targets are
+omitted; event ordering never chooses a neighboring bubble. Switching chats
+clears the reaction state. A refused reaction adds no glyph and hides that
+message's controls; nothing is drawn as a "reacted" line of its own.
 
 **An unconfirmed effect is a question, not a retry.** When a connector never
 answers, the action rests in the broker's ledger at `unknown`

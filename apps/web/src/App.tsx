@@ -169,7 +169,7 @@ export function App() {
   } else if (!onboarded || head === 'setup') {
     screen = <OnboardingScreen />;
   } else if (head === 'chat') {
-    screen = <ChatScreen id={second ?? null} />;
+    screen = <ChatScreen key={second ?? 'new'} id={second ?? null} />;
   } else if (head === 'agents') {
     screen = <AgentsScreen selected={second ?? null} />;
   } else if (head === 'plans') {

@@ -11,7 +11,7 @@ import { Logo, type LogoName } from '../design/logos.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Avatar, Badge, Button, Dialog, Field, IconButton, Select } from '../design/primitives.tsx';
 import { lookOf } from '../experience/hooks.ts';
-import { answerOf, type TranscriptTurn } from '../experience/reduce.ts';
+import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import type {
   ActionResolution,
   Agent,
@@ -981,7 +981,7 @@ export function ActionBar({
       {reactions.length ? <ReactionRow reactions={reactions} /> : null}
       <div className="action-bar">
         <IconButton name="copy" label="Copy" size={s} iconSize={i} onClick={onCopy} />
-        {onReact
+        {onReact && reactionMessageSeq(turn) !== null
           ? REACTION_SET.map((emoji) => (
               <button
                 key={emoji}

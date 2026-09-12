@@ -249,9 +249,20 @@ await surface(
     prepare: async (page) => {
       const button = page.getByRole('button', { name: 'React with 👍' }).first();
       await button.click();
-      await page.locator('.reaction[data-mine="true"]').first().waitFor({ timeout: 10_000 });
-      if ((await page.locator('.bubble-wrap .reaction').count()) === 0)
-        throw new Error('the agent reaction is not drawn on the person bubble');
+      await page
+        .locator('.turn')
+        .first()
+        .locator('.reaction[data-mine="true"]')
+        .waitFor({ timeout: 10_000 });
+      await page
+        .locator('.bubble-wrap')
+        .filter({ hasText: 'Thanks, that is perfect.' })
+        .locator('.reaction')
+        .waitFor({ timeout: 10_000 });
+      if ((await page.locator('.bubble-wrap').first().locator('.reaction').count()) !== 0)
+        throw new Error('the acknowledgement moved onto the earlier person message');
+      if ((await page.locator('.turn').last().locator('.react-btn').count()) !== 0)
+        throw new Error('a reaction-only answer has reaction controls');
       await page.waitForTimeout(500);
     },
   },

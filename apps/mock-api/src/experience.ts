@@ -894,10 +894,12 @@ export class ExperienceMock {
     chat.turns.push(turn);
     // The person's message is an event too, so a reaction can land on it.
     const spoken = this.deps.store.append({
-      type: 'turn_started',
+      type: 'notice',
       job_id: chat.view.id,
-      payload: { from: 'owner', text: input.text, turn_id: turn.id },
+      payload: { kind: 'user_message', text: input.text },
     });
+    // The service stores both records in one transaction with the same creation timestamp.
+    turn.created_at = spoken.created_at;
     chat.messageSeqs.set(turn.id, spoken.seq);
     chat.script = chooseScenario(this.deps.scenarios, `${chat.view.title} ${input.text}`);
     chat.position = 0;
@@ -905,7 +907,7 @@ export class ExperienceMock {
     chat.stopped = false;
     const result = C.messageAcceptance.parse({
       turn_id: turn.id,
-      receipt: { id: newId('sub'), status: 'accepted', received_at: this.now() },
+      receipt: { id: newId('sub'), status: 'accepted', received_at: turn.created_at },
     });
     if (key) this.submissions.set(fingerprint, { text: input.text, result });
     this.state(chat, 'working');
