@@ -21,6 +21,8 @@ type Plan = ReturnType<typeof C.experiencePlan.parse>;
 type Chat = {
   view: C.Conversation;
   turns: Turn[];
+  /** The store seq of each person message, keyed by turn id, so the agent can react to it. */
+  messageSeqs: Map<string, number>;
   events: C.ExperienceEvent[];
   cards: C.ResultCard[];
   receipts: C.ExperienceReceipt[];
@@ -125,7 +127,6 @@ export class ExperienceMock {
     time_zone: 'UTC',
     day_hours: { start: '08:00', end: '22:00' },
   });
-  seq = 0;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
     const allowed = [...deps.store.connections.values()]
       .filter((row) => row.space_id === deps.spaceId)
@@ -458,10 +459,23 @@ export class ExperienceMock {
     japan.conversation_ids = [kyoto.id];
     this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
   }
+  /**
+   * Every experience event is also a store event on the conversation's job, so
+   * its seq is a message id the reaction routes accept and the two streams
+   * share one seq space. Streamed text keeps its type; the rest are notices.
+   */
   event(chat: Chat, item: C.ExperienceEvent['item']) {
+    const mirrored = this.deps.store.append({
+      type: item.type === 'text_delta' ? 'text_delta' : 'notice',
+      job_id: chat.view.id,
+      payload:
+        item.type === 'text_delta'
+          ? { text: item.text }
+          : { level: 'info', title: item.type, body: '', experience: true },
+    });
     chat.events.push(
       C.experienceEvent.parse({
-        seq: ++this.seq,
+        seq: mirrored.seq,
         conversation_id: chat.view.id,
         turn_id: chat.turns.at(-1)?.id ?? null,
         created_at: this.now(),
@@ -498,6 +512,7 @@ export class ExperienceMock {
     const chat: Chat = {
       view,
       turns: [],
+      messageSeqs: new Map(),
       events: [],
       cards: [],
       receipts: [],
@@ -530,19 +545,23 @@ export class ExperienceMock {
       (chat.script?.steps[chat.position]?.delay_ms ?? 100) * (this.deps.experienceSpeed ?? 1);
     chat.timer = setTimeout(() => this.step(chat), delay);
   }
+  /** End the turn. An empty summary means the agent said nothing in words (it reacted instead). */
   finish(chat: Chat, summary: string) {
     this.flush(chat);
     const turn = chat.turns.at(-1);
-    if (turn && !turn.answer) {
+    if (turn && !turn.answer && summary) {
       turn.answer = summary;
       this.event(chat, { type: 'text_delta', text: summary });
     }
+    // The resting line counts this turn's sources, not the whole conversation's.
     const sources = chat.events.flatMap((event) =>
-      event.item.type === 'action' ? event.item.sources : [],
+      event.item.type === 'action' && event.turn_id === (turn?.id ?? null)
+        ? event.item.sources
+        : [],
     );
     this.event(chat, {
       type: 'done',
-      summary,
+      summary: summary || 'Answered with a reaction.',
       elapsed_ms: Math.max(0, Date.now() - Date.parse(turn?.created_at ?? this.now())),
       apps: [...new Set(sources.map((source) => source.app))],
       source_count: sources.length,
@@ -559,6 +578,17 @@ export class ExperienceMock {
     if (step.step === 'say') {
       this.flush(chat);
       this.event(chat, { type: 'say', text: plainText(step.text, 'Working on it.', 600) });
+    } else if (step.step === 'react') {
+      // The agent answers the person's message with a glyph: a reaction event on
+      // the job stream, by the assistant, on the seq of the message it read.
+      const turn = chat.turns.at(-1);
+      const target = turn ? chat.messageSeqs.get(turn.id) : undefined;
+      if (target !== undefined)
+        this.deps.store.append({
+          type: 'reaction',
+          job_id: chat.view.id,
+          payload: { message_id: String(target), emoji: step.emoji, by: 'assistant' },
+        });
     } else if (step.step === 'tool' && step.sources.length) {
       // Scripted evidence with human labels: one action, its sources with their apps.
       this.flush(chat);
@@ -824,7 +854,11 @@ export class ExperienceMock {
         text: plainText(step.body || step.title, 'There is an update.'),
       });
     else if (step.step === 'complete') {
-      this.finish(chat, plainText(step.answer, 'Your request is ready.'));
+      const reacted = chat.script?.steps.some((entry) => entry.step === 'react');
+      this.finish(
+        chat,
+        reacted && !step.answer.trim() ? '' : plainText(step.answer, 'Your request is ready.'),
+      );
       return;
     } else if (step.step === 'fail') {
       this.event(chat, { type: 'note', text: 'This request could not be completed.' });
@@ -858,6 +892,13 @@ export class ExperienceMock {
       created_at: this.now(),
     });
     chat.turns.push(turn);
+    // The person's message is an event too, so a reaction can land on it.
+    const spoken = this.deps.store.append({
+      type: 'turn_started',
+      job_id: chat.view.id,
+      payload: { from: 'owner', text: input.text, turn_id: turn.id },
+    });
+    chat.messageSeqs.set(turn.id, spoken.seq);
     chat.script = chooseScenario(this.deps.scenarios, `${chat.view.title} ${input.text}`);
     chat.position = 0;
     chat.paused = false;
@@ -868,8 +909,9 @@ export class ExperienceMock {
     });
     if (key) this.submissions.set(fingerprint, { text: input.text, result });
     this.state(chat, 'working');
-    // A scenario that opens with its own words does not get a generic opener too.
-    if (chat.script?.steps[0]?.step !== 'say')
+    // A scenario that opens with its own words, or with a glyph, gets no generic opener.
+    const opening = chat.script?.steps[0]?.step;
+    if (opening !== 'say' && opening !== 'react')
       this.event(chat, {
         type: 'say',
         text: 'I’ll check what you need and prepare the next step.',
