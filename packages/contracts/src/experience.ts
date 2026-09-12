@@ -1,5 +1,6 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
 import { z } from 'zod';
+import { memoryKey } from './memory.ts';
 
 const id = z.string().min(1).max(240);
 const text = z.string().min(1).max(4000);
@@ -265,6 +266,18 @@ export const memoryItem = z.strictObject({
   version: id,
 });
 export const memoryItemEdit = z.strictObject({ value: z.string().min(1).max(16000), version: id });
+/**
+ * A detail the person states directly, during setup or later. It becomes an
+ * owner-trusted claim on a registered key; stating the same key again replaces
+ * the value, so one key has one current answer. `statement` is the sentence
+ * that was said, kept as the claim's evidence; it defaults to the value.
+ */
+export const memoryItemCreate = z.strictObject({
+  key: memoryKey,
+  value: z.string().min(1).max(16000),
+  statement: z.string().min(1).max(16000).optional(),
+});
+export const memoryItemResponse = z.strictObject({ item: memoryItem });
 export const memoryItemList = z.strictObject({ items: z.array(memoryItem) });
 export const memoryExplanation = z.strictObject({
   reasons: z.array(text),
@@ -465,6 +478,7 @@ export const experienceOperations = {
   'GET /agents/templates': { response: agentTemplateList },
   'PATCH /agents/{id}': { request: agentInput, response: agentResponse },
   'GET /memory/items': { response: memoryItemList },
+  'POST /memory/items': { request: memoryItemCreate, response: memoryItemResponse },
   'PATCH /memory/items/{id}': { request: memoryItemEdit, response: experienceOk },
   'DELETE /memory/items/{id}': { response: experienceOk },
   'GET /memory/items/{id}/why': { response: memoryExplanation },
@@ -499,6 +513,8 @@ export const experienceOperations = {
   'POST /signin/magic-link/consume': { request: magicLinkConsume, response: experienceOk },
   'POST /signin/google': { response: notAvailable },
   'POST /signin/apple': { response: notAvailable },
+  /** Ends the session behind the cookie; the next request needs a new sign-in. */
+  'POST /signout': { response: experienceOk },
   'GET /browser/sessions/{id}': { response: browserResponse },
   'POST /browser/sessions/{id}/control': { request: browserControl, response: browserResponse },
   'GET /experience/now-playing': { response: nowPlaying },
