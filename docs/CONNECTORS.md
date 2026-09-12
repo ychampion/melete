@@ -1,146 +1,128 @@
 # Connectors
 
-A connector is how Melete touches something outside itself. Each one ships a
-manifest, and the manifest is what policy reads: the tools, their arguments, what
-class of effect each has, which scopes it needs, and whether it can answer the
-question that matters after a timeout.
+Connectors are trusted service-side code selected by persisted connection IDs.
+The manifest declares tool schemas, scopes, effect classes and verification
+support. `ConnectorRegistry` validates manifests and refuses duplicate entries
+(`registry refuses ambiguous tools and invalid manifests`;
+`registry rejects duplicate connections and returns a stable connection order`).
 
-The shared manifest schema and effect classes are in `packages/contracts`.
-Implementations and boundary tests live in `apps/melete/src/connectors`; the
-broker persists the canonical action and reserves budget before calling them.
+This describes code baseline `9484023cabd32b786cb4d336dec818f441cd0cc1`.
+The tests use temporary files, fake destinations and local protocol servers.
+General compatibility with live mail/calendar accounts is **not claimed**.
 
-## The contract
+## Contract and policy
 
-```ts
-type ConnectorManifest = {
-  name: string;
-  version: string;
-  provider: 'imap' | 'smtp' | 'caldav' | 'web' | 'files' | 'test' | 'mcp';
-  description: string;
-  tools: ConnectorTool[];
-  credentials: CredentialRequirement[];
-  health: boolean;
-};
+Implement `Connector` from
+[`types.ts`](../apps/melete/src/connectors/types.ts): a manifest,
+`execute(action, ctx)`, `verify(action, ctx)`, and `health()`.
+The trusted context carries job/space identity, constraints, cancellation signal
+and an idempotency key equal to the admitted action ID. Request payloads do not
+select arbitrary code or credentials.
 
-type ConnectorTool = {
-  name: string;             // `connector.tool`, shown to the model verbatim
-  description: string;
-  input_schema: JsonSchema; // carried through to the model's catalog
-  effect_class: 'read' | 'write_reversible' | 'write_external' | 'spend';
-  required_scopes: string[];
-  verify: boolean;          // can verify() decide this tool's outcome?
-  requires_approval: boolean;
-};
+| Effect class | Default broker rule |
+| --- | --- |
+| `read` | Eligible for admission within scope and budget |
+| `write_reversible` | Eligible for admission within scope and budget; manifest approval requirements still apply |
+| `write_external` | Requires payload-bound approval in the configured default boundary |
+| `spend` | Requires approval and a budget reservation |
+
+The default boundary has no configured reusable send authorization; such a
+product feature is **not claimed**. Broker tests use injected policy seams and
+must not be described as shipped owner configuration.
+Evidence for the default effect gate is conformance 4, `An approval cannot be
+spent on different content`. Schema declarations alone do not prove admission.
+
+A timeout after dispatch becomes `unknown`. Verification inspects destination
+evidence without repeating the effect. If verification cannot decide, uncertainty
+remains visible. Conformance 3 tests `the action is never dispatched a second
+time, including after broker restart` and `verify resolves the action to
+succeeded and the job continues`.
+
+## Implementations and evidence
+
+| Connector | Implemented surface | Named test |
+| --- | --- | --- |
+| Files | List/read/write/move in configured work and space-artifact roots; content-hash verification | `files manifests parse and workspace/artifact writes can be read and verified` |
+| Web | HTTP(S) fetch with address, redirect and trusted-compartment checks | `redirects repeat compartment and DNS checks, with no request to the denied destination` |
+| Email | IMAP search/read, local draft, SMTP send; Message-ID verification in Sent | `accepted send with lost acknowledgement is unknown, then verified without resending` |
+| Calendar | Read-only ICS import; CalDAV list/create/update with UID and content verification | `CalDAV create uses action UID and conditional PUT; list and verify use real HTTP locally` |
+| Test destination | Durable acceptance with optional lost acknowledgement | `destination drops its acknowledgement only after acceptance and verify resolves it` |
+| Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
+| Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` |
+| Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` |
+| MCP | Operator-configured HTTP servers behind the broker with operator-chosen effect classes, scopes and audience | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
+
+The code paths are in [the connector directory](../apps/melete/src/connectors).
+`configuredConnectors` reads active connections and owner-controlled endpoint
+configuration; email/CalDAV need matching configuration and sealed credentials.
+End-to-end connection onboarding is **not claimed**.
+
+### Files
+
+Traversal, absolute paths, alternate streams, device names and links are
+rejected in the tested paths:
+`file boundary rejects parent traversal, absolute paths, alternate streams and
+device names` and `file boundary rejects directory junctions and final
+symlinks without touching outside content`. These are connector checks, not
+proof of container filesystem isolation; that boundary was probed live in
+scenario 6 on a Linux Docker host, where a sibling job's canary was unreadable
+from the cell while its own workspace was writable.
+
+### Web
+
+Public research is still subject to SSRF restrictions; it cannot fetch
+arbitrary private or metadata addresses. Private-context requests require the
+trusted exact-host allowlist. Tests include `web validates every DNS answer,
+so a mixed public/private answer never reaches transport` and `checked DNS
+answer is passed unchanged to transport and DNS is not repeated`.
+No claim of arbitrary-data exfiltration prevention follows from a domain
+allowlist; comprehensive containment is **not claimed**.
+
+### Email
+
+Drafting stays local (`a draft is durable local output and never loads
+credentials or calls SMTP`). Local IMAP/SMTP fixtures exercise the real
+libraries (`real libraries authenticate, decode MIME for hygiene, send with
+stable Message-ID and verify Sent`). Header injection and extra fields are
+rejected (`context mismatch, header injection and unapproved extra fields never
+reach SMTP`). Hygiene patterns do not detect every sensitive message.
+
+Provider-specific OAuth onboarding and live-account acceptance are **not
+claimed**. Tests use credentials belonging to local fixtures.
+
+### Calendar
+
+Imported ICS exposes only the read tool (`manifests conform and imported ICS
+exposes only the read tool`). CalDAV updates preserve UID and check ETags
+(`update preserves original UID, records its new action, and fails stale
+ETags`); lost acknowledgements remain uncertain until verified
+(`a dropped acknowledgement remains unknown until exact UID and content
+verification`). Compatibility with every CalDAV implementation is **not claimed**.
+
+### Knowledge and memory
+
+The configured connector registry does not register a knowledge connector.
+Knowledge routes, Markdown mediation and the Postgres memory service exist as
+separate modules. A shipped broker catalog containing `knowledge.search` and
+`knowledge.propose_write` is **not claimed**. File-view tests and authoritative
+memory tests are described in [MEMORY](MEMORY.md); do not use SQLite search hits
+as authority to disclose memory.
+
+## Credentials and verification
+
+Sealed secret storage is tested by `stores randomized sealed boxes and only
+decrypts in the owning space` and `rejects a wrong master key, changed
+ciphertext and cross-row swaps`. The service process and its master key remain
+trusted; stronger host isolation is **not claimed**.
+
+Run from the repository root:
+
+```bash
+bun test apps/melete/src/connectors
 ```
 
-Alongside the manifest, a connector implements `execute(action)`,
-`verify(action)`, and `health()`.
-
-## Effect classes
-
-The class decides what an action costs before anyone looks at its content.
-
-| Class | Meaning | Policy in v0.1 |
-|---|---|---|
-| `read` | Observes without changing anything | Auto-admits within budget |
-| `write_reversible` | Changes something inside the workspace or a git-tracked space | Auto-admits within budget; the change is reviewable and revertible |
-| `write_external` | Changes something outside, where an undo is not ours to give | Requires an approval bound to the payload hash |
-| `spend` | Costs money | Requires an approval and a budget reservation |
-
-v0.1 ships no standing grants for external sends. Every one is approved once, per
-payload hash. Editing a draft produces a new action with a new hash.
-
-## Why `verify` matters more than it looks
-
-A dispatch that times out leaves an action `unknown`: it may have happened or it
-may not. Melete never retries an unknown external action, because the failure
-people actually notice is the message that arrived twice.
-
-`verify` is the connector's answer to "did this actually happen?". A connector
-that can answer turns most unknowns into a fact. A connector that cannot leaves
-the action at `unresolved`, and Melete says so in plain words rather than
-guessing: *Melete cannot confirm whether this email was sent. Check your Sent
-folder, then mark it.*
-
-That is why `verify` is a field in the manifest and not an assumption.
-
-## The v0.1 set
-
-| Connector | Tools | Effect class | verify |
-|---|---|---|---|
-| **files** | `files.list`, `files.read`, `files.write`, `files.move` within `/work` and the space's artifacts | read, write_reversible | content hash |
-| **web** | `web.fetch` | read, with a data-release check | none |
-| **email** | `email.search`, `email.read`, `email.draft`, `email.send` over IMAP and SMTP | read, write_external | Message-ID in the Sent folder |
-| **calendar** | `calendar.list`, `calendar.create`, `calendar.update` over ICS import and CalDAV | read, write_external | GET by UID |
-| **knowledge** | `knowledge.search`, `knowledge.propose_write` | read, write_reversible | git sha |
-| **test** | `test.send` with an optional `drop_ack` | write_external | the destination's ledger |
-
-### files
-
-Reads and writes are confined to `/work` and the space's artifacts directory. A
-path that resolves outside is an error at the connector, not a permission check
-somewhere later.
-
-### web
-
-`web.fetch` has two modes and the difference is the point. A job in
-public-research mode carries no private knowledge in its context and may fetch
-anything. A job carrying private context may fetch only allow-listed domains.
-Query strings are recorded in the action ledger, because a URL is itself a way to
-send data.
-
-### email
-
-IMAP and SMTP with an app password you supply. Not OAuth: Google and Microsoft
-restricted scopes need weeks of verification, and this release would rather work
-now than promise a nicer login later.
-
-`email.send` is the archetypal `write_external`. Its payload is canonicalised
-before hashing: recipient addresses are reduced to the address itself, so
-`Zara <ZARA@Example.COM>` and `zara@example.com` are the same recipient, and
-recipient lists are treated as sets, so reordering To: does not invalidate an
-approval you already gave. One character of the body does.
-
-Verification searches the Sent folder for the Message-ID.
-
-### calendar
-
-ICS import for read-only calendars, CalDAV for read and write. Verification is a
-GET by UID.
-
-### knowledge
-
-`knowledge.search` is scoped to exactly one space by the index handle the process
-holds, not by an argument the model passes. Cross-space search is impossible
-rather than disallowed.
-
-`knowledge.propose_write` is the only write path an agent has. The proposal is
-validated against the frontmatter schema and the lint rules, then rendered as a
-diff for the owner. Applying it is a git commit, which is both the audit record
-and the undo.
-
-### test
-
-A destination that exists so the conformance suite can be deterministic. It
-accepts sends, records them in a ledger, and can be told to drop its
-acknowledgement, which is how scenario 3 produces a genuine `unknown` without
-anything real going wrong.
-
-## Writing a connector
-
-Implement `Connector` from `apps/melete/src/connectors/types.ts`, then register
-the trusted instance under its persisted connection id with `ConnectorRegistry`.
-`execute(action, ctx)` receives the admitted canonical action, trusted job/space
-constraints, and `ctx.idempotency_key === action.id`. Return a typed dispatch
-result; exceptions after dispatch remain unknown. `verify` reads destination
-evidence and never repeats the effect. Keep secrets in the service-side instance.
-
-Two rules that will not change:
-
-1. **Declare the effect class honestly.** Calling a send `read` to skip the
-   approval defeats the only mechanism protecting the person running this.
-2. **Implement `verify` if you possibly can.** A connector without it leaves its
-   users with unresolved actions and a question they have to answer by hand.
+The broker's database scenarios also run under the full test command in
+[README](../README.md).
 
 ## Watching a feed without spending on it
 

@@ -1,11 +1,19 @@
-# Persisted stream and SSE
+# Persisted events and SSE
 
-Events are written before they are streamed. `GET /jobs/:id/events?after=` and
-the global `GET /events?after=` both replay from the `event` table, and
-`Last-Event-ID` resumes exactly where a dropped connection stopped.
+The event store and stream are implemented. They use persisted sequence cursors,
+a database listener and bounded stream buffering. Evidence in
+`test/integration/events.test.ts` includes:
 
-`dedup_key` is unique, so duplicate delivery of the same runtime event writes one
-row. Text deltas are best-effort and a gap in them is shown as an ellipsis,
-never as missing history.
+- `receives an append concurrent with subscription establishment exactly once`.
+- `duplicate event delivery emits one stored row and no duplicate frame`.
+- `a slow consumer retains one page and receives every persisted event in order`.
+- `replays across a terminated LISTEN connection and cleans it up on shutdown`.
+- `a gap marker names its persisted notice and rollback holes never invent gaps`.
 
-Not implemented yet.
+The contract helper labels text deltas non-durable, but the current attempt
+runner persists incoming text-delta events. Conformance 5's `the gap in the
+event stream is recorded, and history is never shown as missing` checks those
+stored rows and the gap notice. The client helper's sequence-skip gap behavior
+differs from explicit server gap notices; a jump alone is not proof that a
+filtered stream lost durable history. Complete gap-aware reference-UI integration
+is **not claimed**. See [CLIENT](../../../../docs/CLIENT.md).

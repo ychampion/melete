@@ -1,7 +1,7 @@
 # Linux deployment operations
 
 Start with the literal [README install procedure](../README.md#install-on-a-linux-docker-host).
-The [deployment report](../REPORT.md) records the tested revision, image sizes,
+The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records the tested revision, image sizes,
 build and startup times, conformance results, and clean-host timing. Timings
 depend on the host and network; the startup timeout does not bound image builds.
 
@@ -181,5 +181,5 @@ finishes with exactly one destination receipt.
 
 Each run writes a private directory under `/tmp/melete-compose-restore` containing
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
-to choose another parent directory. The [deployment report](../REPORT.md) records
+to choose another parent directory. The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records
 the measured run and its evidence.

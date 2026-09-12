@@ -1,59 +1,60 @@
 # Melete
 
-An open-source, self-hosted, model-agnostic personal assistant.
+An open-source, self-hosted personal assistant in development.
 
-**Give Melete a responsibility, close the tab, come back to progress, a result,
-or one precise question.**
+**Status: pre-release. Durable service components work in scripted tests, and
+the Linux Compose stack builds from source and runs the scripted provider; a
+complete assistant with a real model is not claimed.** The test-mapped evidence
+below was recorded at code baseline `9484023cabd32b786cb4d336dec818f441cd0cc1`;
+the deployment evidence was recorded on a Linux Docker host on 2026-09-11 and
+2026-09-12 (see [the threat model](docs/THREAT-MODEL.md)).
 
-> **Status: pre-release. The Linux Compose stack builds from source.**
-> The installation below uses a deterministic local provider to exercise jobs,
-> approvals, and receipts without a model key. That check does not establish
-> real-provider behavior. See the [deployment report](REPORT.md) for measured
-> results and remaining limitations.
+Melete represents a responsibility as a Postgres job with disposable attempts,
+waits, approvals and action receipts. The first five [conformance
+scenarios](conformance/README.md) test recovery, fencing, unknown outcomes,
+approval binding and runtime death with isolated Postgres and scripted runtimes.
+Scenarios 6 to 8 run against the Compose stack when the opt-in below is set.
+None of them runs a real model.
 
-## What it is
+## v0.1 release gates
 
-Most assistants are a chat window: you stay, you watch, you steer. Melete is
-built around the opposite shape. You hand over something that takes time, and it
-keeps working after you have gone.
+| Gate | Honest status and evidence |
+| --- | --- |
+| Reliability | Passes the tested scenarios: durable wakes; stale-attempt fencing; unknown sends without redispatch; payload/revision-bound approvals; runtime death recovery. See scenarios 1–5 and their named assertions in [conformance](conformance/README.md). This is fixture evidence, not a deployed-system guarantee. |
+| Operations | Partial: database migrations and health (`answers a ping on the migrated Postgres instance`); persisted sessions (`a second service instance recognizes the persisted session`); queue recovery (scenario 1); event replay (`replays across a terminated LISTEN connection and cleans it up on shutdown`); memory restore gating (`deletion hides synchronously, cleanup failures retry, and startup refuses a missing journal`); static Compose checks. Container egress probes ran from a claimed cell and the warm cell on a Linux Docker host (scenario 6, 2026-09-12); a clean-host install was measured at 64.93 seconds; the Postgres restore proof passed with one destination effect. Upgrades are **not claimed**. |
+| Capability | **Not claimed**: scripted fixtures do not establish useful autonomous task performance. |
+| Output quality | **Not claimed**: no real-model answer-quality evaluation is established here. |
+| Learning | **Not claimed**: procedure transfer is **written, not run** (`procedure-transfer` todo); memory correction tests are not learning evidence. |
+| Adoption | **Not measurable before release**. |
 
-That only makes sense if three things are true, and they are what the code is
-about:
+## What the code does
 
-1. **A responsibility outlives any process.** Jobs, waits, approvals, actions,
-   and receipts live in Postgres. A runtime attempt is disposable. Your client
-   can close, the runtime can die, the machine can reboot; the job remains.
-2. **Effects have identity.** Every external action is a record before it is a
-   request. An approval binds to the exact bytes you were shown. A retry reuses
-   the same action. An outcome nobody can confirm stays `unknown`, and is never
-   quietly re-sent.
-3. **Every boundary is described exactly as strong as it is.** v0.1 isolation is
-   a container on a network with no route out. That is not a virtual machine,
-   and [the threat model](docs/THREAT-MODEL.md) says so in those words.
-
-The last point is why there is a [conformance suite](conformance/), and a
-[memory conformance runner](conformance/memory/README.md) beside it. Anyone can
-run them and check the claims rather than believe them.
-
-## The shape of it
-
-```
-you  ->  job  ->  attempt  ->  proposed action  ->  approval  ->  receipt
-          |                          |
-          |                          the broker: canonicalise, classify,
-          |                          admit or refuse, dispatch once, verify
-          |
-          durable in Postgres, with a bounded state machine
-```
-
-The model plans and writes. Melete enforces. The model sees short things: an
-identity under 250 tokens, at most three skills, bounded retrieved knowledge, a
-catalog of at most 15 tools. Everything it does passes through a typed, durable,
-auditable gate that behaves the same whether the model cooperated or not.
-
-Memory claims, revisions, and restrictions live in Postgres. Knowledge records
-also have a Markdown surface with provenance frontmatter, one Git repository
-per space, which you can read, edit, and diff with the tools you already have.
+- The broker records canonical effects and checks authority before dispatch.
+  Unknown sends remain visible and are not blindly repeated (conformance 3,
+  `the action is never dispatched a second time, including after broker restart`).
+- The service has authenticated job, approval, scheduling, attention, event and
+  reaction APIs. With `MELETE_RUNTIME_ADAPTER=docker` the service supervises one
+  Hermes container per attempt itself; otherwise startup requires a supplied
+  runtime or the explicit scripted stub when Postgres is configured. See
+  [architecture](docs/ARCHITECTURE.md) for the wiring and named tests.
+- Memory authority is Postgres evidence and versioned claims. Markdown in git
+  is a derived inspection/edit surface; a raw file edit alone is not an
+  authoritative correction (`Markdown round trips support, preserves local
+  edits, and owner edits become protected revisions`). Memory startup and its
+  routes are wired when the Docker runtime is selected and stay optional
+  otherwise; see [memory](docs/MEMORY.md).
+- The broker catalog is filtered by scopes and served as a token-budgeted core
+  (750 estimated tokens) plus `search_tools` and `load_tool`; a universal
+  15-tool limit is **not claimed**. The contract constant is not an enforced
+  catalog cap.
+- The pinned Hermes adapter and model gateway have fixture tests. Compatibility
+  with every provider and real-model policy equivalence are **not claimed**;
+  conformance 8 is **written, not run**.
+- Compose hardening is declared, statically checked, and was probed live on a
+  Linux Docker host: from inside a claimed cell and the warm cell, the internet,
+  the host metadata address, Postgres, the web service and the owner control
+  plane were unreachable, and the broker with its model gateway was the only
+  peer. See the [threat model](docs/THREAT-MODEL.md).
 
 ## Install on a Linux Docker host
 
@@ -100,8 +101,7 @@ docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 
 docker compose -f deploy/docker-compose.yml ps
 ```
 
-For an unmerged deployment PR, use that PR's branch instead of `integration`
-in the `git switch` command. Record `git rev-parse HEAD` with your install timing.
+Record `git rev-parse HEAD` with your install timing.
 Bun 1.3.13 was used for the initial deployment checks; the clean-host install
 also passed with Bun 1.4.2 from the installer above.
 
@@ -110,12 +110,11 @@ credential to the new host. From an existing checkout, create a bundle for the
 branch you are installing:
 
 ```bash
-git bundle create /tmp/melete-source.bundle lane/w6-deploy
+git bundle create /tmp/melete-source.bundle integration
 ```
 
 Transfer that file to the new host. In the install block, replace the GitHub
-clone command with `git clone /path/to/melete-source.bundle melete`, and select
-`lane/w6-deploy` in the `git switch` command. A bundle contains committed source
+clone command with `git clone /path/to/melete-source.bundle melete`. A bundle contains committed source
 and history; local configuration and untracked files are excluded.
 
 `configure.ts --fake` creates `deploy/.env` from `deploy/.env.example`, generates
@@ -175,87 +174,55 @@ service harness in disposable databases on that same server and writes
 HTTP flow. Run the Compose scenarios sequentially because they restart shared
 services; a skipped scenario is not a passing deployment check.
 
-## In scope for v0.1
+## Verify from the repository root
 
-- Single-owner self-hosting with Docker Compose on Linux. Docker Desktop on
-  macOS and Windows is outside the Linux verification reported here.
-- Durable jobs with waits, schedules, approvals, and recovery after a restart.
-- A thin runtime in a sandboxed container with no route to the internet. Tool
-  calls only through the broker.
-- A broker with an action ledger, approvals bound to payload hashes, budgets,
-  receipts, reconciliation, and a key-injecting model gateway.
-- Connectors: workspace files, public web fetch in its own compartment, email
-  over IMAP and SMTP with an app password, calendar over ICS import and CalDAV,
-  and a test destination the conformance suite uses.
-- Knowledge as Markdown with provenance, a git repository per space, full-text
-  retrieval, and browse, edit, and delete from the client.
-- Short Markdown skills with triggers, built in and user-added.
-- A configurable model gateway for Fireworks, Anthropic, OpenAI, Google, and
-  OpenAI-compatible endpoints. Deployment conformance uses the explicit fake
-  provider. Real providers require their own credentials and verification;
-  the requested and actually served models are recorded per attempt.
-- A conformance suite you can run with one command.
-
-## Out of scope for v0.1
-
-- **Multi-user accounts, shared spaces, invitations.** The schema carries
-  `space.audience` so this can come later; the client shows one owner.
-- **Google and Microsoft OAuth.** Restricted scopes need weeks of verification.
-  IMAP, SMTP, and CalDAV instead.
-- **Virtual-machine isolation.** A Firecracker microVM is the target and gVisor
-  is the documented step in between. Neither is in v0.1.
-- **A desktop app, a mobile app, a plugin marketplace, autonomous purchases.**
-
-## Repository
-
-| Path | What is in it |
-|---|---|
-| `packages/contracts` | Zod schemas, types, the job state machine, the broker protocol, the OpenAPI document |
-| `packages/knowledge` | Record parsing, space layout, the SQLite full-text index, write mediation |
-| `packages/runtime-hermes` | The pinned runtime image, its Melete plugin, and a typed run client |
-| `packages/client` | The typed HTTP client: generated types, a thin fetch wrapper, a resumable event stream |
-| `apps/melete` | The service: API, jobs, broker, gateway, connectors, knowledge, events |
-| `apps/mock-api` | Every operation in `openapi.json`, in memory, driven by scripted scenarios |
-| `apps/web` | A small reference client, to show the API is enough to build one |
-| `deploy` | `docker-compose.yml`, `.env.example`, and the check that the sandbox is really a sandbox |
-| `conformance` | Eight scenarios that prove the durability and boundary claims, and [eight memory scenario families](conformance/memory/README.md) that prove the memory ones |
-| `docs` | [Architecture](docs/ARCHITECTURE.md), [deployment](docs/DEPLOYMENT.md), [memory](docs/MEMORY.md), [what the service proves](docs/ENGINEERING.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [building a client](docs/CLIENT.md) |
-| `.agents/notes` | Why things are the way they are, one decision per file |
-
-## Working on it
-
-Requires [bun](https://bun.sh) 1.3 or newer.
+Use Bun 1.3 or newer. These commands finish without a development server.
+Database fixtures use disposable Postgres 17 when `DATABASE_URL` is unset;
+otherwise they create disposable databases on the supplied server, requiring
+database-creation permission. An unavailable embedded binary produces a skip,
+which is not a pass. Tests use fake providers. Initial dependency/binary downloads
+can require network access.
 
 ```bash
 bun install --frozen-lockfile
 bun run typecheck
 bun run lint
-bun test
-bun run openapi          # regenerate packages/contracts/openapi.json
-bun run client:generate  # regenerate the client's types from openapi.json
-bun run compose:check    # validate the Compose boundary configuration
-bun run conformance        # run scenarios; Compose checks need the opt-in above
-bun run conformance:memory # run the eight memory families, counterfactual arm included
+bun run test
+bun run openapi
+bun run client:generate
+bun run compose:check
+bun run conformance
+bun run conformance:memory
+bun run test:plugin
 ```
 
-Database tests create disposable fixtures. Without `DATABASE_URL`, they start
-embedded Postgres, which must run as a non-root user. The Compose conformance
-command above supplies the existing Docker Postgres server instead.
+The generators update the OpenAPI document and client declarations; generated
+differences must be inspected. The Compose command checks YAML, not live
+networking. `bun run conformance` runs scenarios 1–5 and reports 6–8 as todo
+unless the Compose opt-in above is set, in which case all eight run against the
+stack. `bun run test:plugin` runs the Python plugin suite. The full suite took
+454.72 seconds, about seven and a half minutes, on the measured host; the `test`
+script passes `--max-concurrency=2 --timeout=30000`, which gives each test and
+fixture hook thirty seconds, not the whole suite. Several minutes of test output
+can therefore be normal progress. The shorter default produced fixture-hook
+timeouts in a run that took 628.07 seconds. The memory runner executes ten
+scenarios across seven families plus ten withheld-memory runs; procedure
+transfer is **written, not run**.
 
-For client-only development, the mock API provides scripted data:
+## Repository guide
 
-```bash
-bun run dev:mock   # the whole API in memory on :3190, with scripted jobs
-bun run dev:web    # the reference client on :5173, pointed at the mock
-```
-
-Delegate something, watch the job stop for approval, approve it, and see the
-receipt. [docs/CLIENT.md](docs/CLIENT.md) is what a second client needs to know
-before it starts.
+| Path | Role |
+| --- | --- |
+| `apps/melete` | Service modules and database integration tests |
+| `packages/contracts` | Schemas, state transitions and generated OpenAPI |
+| `packages/client`, `apps/web`, `apps/mock-api` | Typed client, reference UI and scripted mock; see [CLIENT](docs/CLIENT.md) |
+| `packages/runtime-hermes` | Pinned engine configuration, the Melete plugin and HTTP adapter, and the runtime image |
+| `packages/knowledge`, `apps/melete/src/memory` | File-view utilities and authoritative memory service |
+| `deploy` | `docker-compose.yml`, `.env.example`, the configuration generator, and the check that the sandbox is really a sandbox; verified on a Linux Docker host |
+| `conformance` | Eight scenarios (6–8 need the Compose opt-in) and [eight memory scenario families](conformance/memory/README.md) |
+| `docs` | [Architecture](docs/ARCHITECTURE.md), [memory](docs/MEMORY.md), [engineering evidence](docs/ENGINEERING.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md) |
+| `.agents/notes` | Historical engineering decisions; retained as history, not current release claims |
 
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-Melete is named for the muse of practice, on the theory that an assistant earns
-its place by doing the same unglamorous thing reliably.
