@@ -358,3 +358,12 @@ configure a gateway or automatically requeue rejected evidence.
 Only the POSIX mode-bit assertion is skipped on `win32`; the rest of the startup
 test still runs there, and Linux still requires mode 0600. This campaign runs
 on Linux and does not claim Windows execution. `git diff --check`: exit 0.
+
+### LOW (c): lost conformance owner credentials
+
+The helper names a missing saved-credentials file when the stack already has
+an owner, before trying a generated password. A rejected existing file now
+names a possible lost/recreated file or different stack, and the recovery
+setting `MELETE_CONFORMANCE_STATE_FILE`. Neither diagnostic includes a password.
+An isolated missing-file fixture against the existing stack passed four
+assertions, exit 0; the original owner credentials were retained.

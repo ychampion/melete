@@ -82,6 +82,7 @@ async function ownerCookie(): Promise<string> {
       `melete-compose-${createHash('sha256').update(repositoryRoot).digest('hex').slice(0, 16)}.json`,
     );
   let credentials: { email: string; password: string };
+  let createdCredentials = false;
   try {
     credentials = JSON.parse(await readFile(statePath, 'utf8'));
   } catch (error) {
@@ -91,6 +92,7 @@ async function ownerCookie(): Promise<string> {
       password: randomBytes(32).toString('hex'),
     };
     await writeFile(statePath, JSON.stringify(credentials), { flag: 'wx', mode: 0o600 });
+    createdCredentials = true;
   }
   const init = {
     method: 'POST',
@@ -99,7 +101,21 @@ async function ownerCookie(): Promise<string> {
     redirect: 'error' as const,
   };
   let response = await fetch(`${apiBase}/setup`, init);
-  if (response.status === 409) response = await fetch(`${apiBase}/login`, init);
+  if (response.status === 409) {
+    if (createdCredentials)
+      throw new Error(
+        `Compose already has an owner, but its saved conformance credentials were missing at ${statePath}. ` +
+          'Restore the original credentials file or point MELETE_CONFORMANCE_STATE_FILE to it; ' +
+          'a newly generated file cannot authenticate the existing owner.',
+      );
+    response = await fetch(`${apiBase}/login`, init);
+    if (response.status === 401)
+      throw new Error(
+        `Compose owner login rejected the saved credentials at ${statePath}. ` +
+          'The temporary file may have been lost and recreated, or may belong to a different stack. ' +
+          'Restore the original file or point MELETE_CONFORMANCE_STATE_FILE to the matching saved credentials.',
+      );
+  }
   if (!response.ok) throw new Error(`Compose owner authentication answered ${response.status}`);
   const token = response.headers.get('set-cookie')?.split(';')[0];
   if (!token?.startsWith('melete_session=')) throw new Error('Owner setup returned no session');
