@@ -280,6 +280,23 @@ The [contract-additions note](proposed/2026-09-12-w14-contract-additions.md)
 records compatibility details. The current three-state matrix is in
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
 
+## PR 27 upgrade review - 2026-09-12
+
+The original account-upgrade test executed migration SQL directly, so its
+passing result did not prove production timestamp selection. The new regression
+`production migration upgrades the integration schema with MCP setup and
+procedure promotion` creates the schema and real migration ledger through 0032,
+then calls the actual `migrateDatabase` startup function. Before the fix it
+failed with all three requested columns absent (`3` assertions, `12.44s`).
+
+Migrations 0033 and 0034 now use timestamps `1789232400013` and `1789232400014`,
+following 0032's `1789232400012`. The existing account regression now also uses
+the production upgrader after constructing its historical ledger. The focused
+`principals.test.ts` run passes all three tests and 87 assertions in 15.44 seconds,
+including setup/login preservation, legacy capability fences, the three new
+columns, and an idempotent second startup. The upgrade evidence row is restored
+only with this production-path proof.
+
 ## Integrated release-gate proof - 2026-09-12
 
 The findings above describe the original audit and first delivery. Integration
