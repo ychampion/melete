@@ -31,6 +31,56 @@ type Chat = {
   timer?: ReturnType<typeof setTimeout>;
   paused: boolean;
   stopped: boolean;
+  /** Effects a scenario proposed, keyed by the scenario's ref, awaiting or holding a decision. */
+  proposals: Map<string, Proposal>;
+  /** The last card a scenario drew, which a following proposal shows as its preview. */
+  lastCard: C.ResultCard | null;
+};
+type Proposal = {
+  ref: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  what: string;
+  where: string;
+  decision: 'allow_once' | 'always' | 'deny' | null;
+  onDenied: string | null;
+  permissionId: string | null;
+};
+
+/** Human words for the apps a scenario's evidence names. Never a tool name. */
+const SOURCE_APPS: Record<string, string> = {
+  gcal: 'Google Calendar',
+  gmail: 'Gmail',
+  gmaps: 'Google Maps',
+  whatsapp: 'WhatsApp',
+  imessage: 'Messages',
+  slack: 'Slack',
+  notion: 'Notion',
+  gdrive: 'Google Drive',
+  linear: 'Linear',
+  google: 'Google',
+  reddit: 'Reddit',
+  yelp: 'Yelp',
+  youtube: 'YouTube',
+  tripadvisor: 'Tripadvisor',
+  globe: 'Web',
+  web: 'Web',
+};
+const SOURCE_KINDS: Record<string, C.ExperienceSource['kind']> = {
+  gcal: 'event',
+  imessage: 'draft',
+  whatsapp: 'draft',
+  gdrive: 'file',
+  notion: 'page',
+};
+/** What a proposed change is, in the person's words, by the kind of change. */
+const PROPOSAL_WORDS: Record<string, { what: string; where: string; reversible: boolean }> = {
+  'calendar.event.create': {
+    what: 'Add an event to your calendar',
+    where: 'Google Calendar',
+    reversible: true,
+  },
+  'browser.reserve': { what: 'Hold a table through the browser', where: 'Resy', reversible: false },
 };
 
 class MockExperienceError extends Error {
@@ -105,8 +155,285 @@ export class ExperienceMock {
       );
     }
   }
+  /** Permissions raised by scenario proposals, so a decision knows where to go back to. */
+  readonly permissionProposals = new Map<string, { chatId: string; ref: string }>();
+  /** Receipts whose change can still be reversed, by receipt id. */
+  readonly undoable = new Map<string, { chatId: string; what: string }>();
+  /** Calendar events the seed placed, for the home panel. */
+  readonly calendarEvents: ReturnType<typeof C.experienceCalendarEvent.parse>[] = [];
   now() {
     return this.deps.store.now().toISOString();
+  }
+  /** The connection scripted evidence is attributed to: the calendar when seeded, else any. */
+  evidenceConnection() {
+    const rows = [...this.deps.store.connections.values()].filter(
+      (row) => row.space_id === this.deps.spaceId,
+    );
+    return rows.find((row) => row.provider === 'caldav') ?? rows[0] ?? null;
+  }
+  isDraftKind(kind: string, payload: Record<string, unknown>) {
+    return (
+      kind === 'email.send' ||
+      kind === 'email.draft' ||
+      (kind === 'test.write' && typeof payload.body === 'string')
+    );
+  }
+  /** Reverse a receipt while its undo is valid. The reversal has its own receipt. */
+  undo(id: string) {
+    const entry = this.undoable.get(id);
+    const chat = entry ? this.chats.get(entry.chatId) : undefined;
+    const receipt = chat?.receipts.find((row) => row.id === id);
+    if (!entry || !chat || !receipt?.undo)
+      return C.unavailable('This change cannot be reversed from here.');
+    if (Date.parse(receipt.undo.valid_until) < Date.now())
+      return C.unavailable('The time to undo this has passed.');
+    this.undoable.delete(id);
+    const reversal = C.experienceReceipt.parse({
+      id: newId('receipt'),
+      what: `Removed again: ${receipt.what.replace(/^Added to your calendar: /, '')}`,
+      where: receipt.where,
+      when: this.now(),
+    });
+    chat.receipts.push(reversal);
+    this.event(chat, { type: 'receipt', receipt: reversal });
+    return { receipt: reversal };
+  }
+  /** Decide a scenario proposal. Returns null when the permission is a draft send. */
+  decideProposal(id: string, input: ReturnType<typeof C.permissionDecision.parse>) {
+    const link = this.permissionProposals.get(id);
+    if (!link) return null;
+    const chat = required(this.chats, link.chatId);
+    const proposal = chat.proposals.get(link.ref);
+    const permission = required(this.permissions, id);
+    if (!proposal) return null;
+    let rule: C.StandingRule | null = null;
+    if (input.option === 'always') {
+      if (Date.parse(input.bounds.expires_at) <= Date.now())
+        throw new MockExperienceError(400, 'Choose a future expiry.');
+      rule = C.standingRule.parse({
+        id: newId('rule'),
+        text: `${proposal.what.split(':')[0]} without asking, up to ${input.bounds.count_cap} times before ${input.bounds.expires_at.slice(0, 10)}.`,
+        kind: proposal.kind.startsWith('calendar') ? 'create_event' : 'send_message',
+        connection_id:
+          permission.preview?.source_connection ??
+          this.evidenceConnection()?.id ??
+          this.deps.spaceId,
+        recipient_class: proposal.where,
+        bounds: input.bounds,
+        used: 0,
+        created_at: this.now(),
+      });
+      this.rules.set(rule.id, rule);
+    }
+    proposal.decision = input.option;
+    this.permissions.delete(id);
+    if (input.option === 'deny') {
+      this.event(chat, { type: 'note', text: 'Nothing was changed.' });
+      const target = proposal.onDenied
+        ? chat.script?.steps.findIndex((step) => step.label === proposal.onDenied)
+        : -1;
+      if (target !== undefined && target >= 0) chat.position = target;
+    }
+    this.state(chat, 'working');
+    this.schedule(chat);
+    return C.permissionOutcome.parse({ status: 'ok', option: input.option, rule });
+  }
+  /** Start a scripted conversation without an HTTP round trip, for seeding. */
+  start(title: string, agentId: string, text: string, planId?: string) {
+    const { conversation } = this.create({ title, agent_id: agentId, plan_id: planId });
+    this.message(required(this.chats, conversation.id), { text });
+    return conversation;
+  }
+  /** What the web app needs on first paint. Only the server calls this. */
+  seed() {
+    const store = this.deps.store;
+    const now = store.now();
+    const iso = (d: Date) => d.toISOString();
+    const at = (dayOffset: number, hour: number, minute = 0) => {
+      const d = new Date(now);
+      d.setDate(now.getDate() + dayOffset);
+      d.setHours(hour, minute, 0, 0);
+      return d;
+    };
+    const connection = (provider: 'caldav' | 'web' | 'files', label: string, scopes: string[]) => {
+      const id = newId('conn');
+      store.connections.set(id, {
+        id,
+        space_id: this.deps.spaceId,
+        provider,
+        label,
+        secret_ref: newId('secret'),
+        scopes,
+        status: 'active',
+        health: 'ok',
+        last_checked_at: iso(now),
+        created_at: iso(now),
+      });
+      return id;
+    };
+    const calendar = connection('caldav', 'Google Calendar', ['calendar.read', 'calendar.create']);
+    connection('web', 'Web', ['web.fetch']);
+    connection('files', 'Files', ['files.read']);
+    for (const [offset, hour, minute, title, length] of [
+      [0, 11, 0, 'Deep work · review prep', 60],
+      [0, 19, 30, 'Dinner with Alex & Priya · Luna Trattoria', 90],
+      [1, 7, 0, 'Run club', 45],
+    ] as const) {
+      const starts = at(offset, hour, minute);
+      this.calendarEvents.push(
+        C.experienceCalendarEvent.parse({
+          id: newId('evt'),
+          title,
+          starts_at: iso(starts),
+          ends_at: iso(new Date(starts.getTime() + length * 60_000)),
+          connection_id: calendar,
+        }),
+      );
+    }
+    this.profile = C.profileInput.parse({
+      name: 'Jamie Davis',
+      time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      day_hours: { start: '08:00', end: '22:00' },
+    });
+    for (const [title, done] of [
+      ['Send Priya the Kyoto list', false],
+      ['Renew passport before Oct 3', false],
+      ['Read 20 pages', false],
+      ['Book the dentist', true],
+    ] as const) {
+      const task = C.experienceTask.parse({
+        id: newId('task'),
+        title,
+        due_at: null,
+        done,
+        created_at: iso(now),
+        updated_at: iso(now),
+      });
+      this.tasks.set(task.id, task);
+    }
+    const agents = [...this.agents.values()];
+    const nova = agents.find((agent) => agent.name === 'Nova') ?? agents[0];
+    const sage = agents.find((agent) => agent.name === 'Sage') ?? agents[0];
+    const atlas = agents.find((agent) => agent.name === 'Atlas') ?? agents[0];
+    if (!nova || !sage || !atlas) return;
+    // The designed looks, on the seeded agents.
+    Object.assign(nova, {
+      role: 'Concierge',
+      colour: '#4aa3f7',
+      surface: 'blob',
+      eye_colour: '#ffffff',
+      tone: 'Warm',
+      standing_instruction: 'One option first, not five. Confirm before paying.',
+    });
+    Object.assign(sage, {
+      role: 'Coach',
+      colour: '#5ab4a0',
+      surface: 'octagon',
+      eye_colour: '#16181d',
+      tone: 'Direct',
+      standing_instruction: 'Ask how the last run went before suggesting the next.',
+    });
+    Object.assign(atlas, {
+      role: 'Researcher',
+      colour: '#ec8a2b',
+      surface: 'diamond',
+      eye_colour: '#ffffff',
+      tone: 'Direct',
+      standing_instruction: 'Cite every claim. Say when the sources disagree.',
+    });
+    const plan = (
+      title: string,
+      category: string,
+      milestones: [string, boolean, string | null][],
+    ) => {
+      const value = C.experiencePlan.parse({
+        id: newId('plan'),
+        title,
+        category,
+        milestones: milestones.map(([text, done, agentId]) => ({
+          id: newId('mile'),
+          title: text,
+          assignee: agentId ? { kind: 'agent', agent_id: agentId } : { kind: 'person' },
+          done,
+          status: done ? 'done' : 'idle',
+        })),
+        next_step: milestones.find(([, done]) => !done)?.[0] ?? null,
+        progress_percent: Math.round(
+          (milestones.filter(([, done]) => done).length / milestones.length) * 100,
+        ),
+        conversation_ids: [],
+        file_ids: [],
+        updated_at: iso(at(-2, 9)),
+      });
+      this.plans.set(value.id, value);
+      return value;
+    };
+    const japan = plan('Japan, two weeks in October', 'Travel', [
+      ['Pick the dates · Oct 10–24', true, null],
+      ['Set a budget', true, null],
+      ['Book the Kyoto ryokan', false, nova.id],
+      ['Find flights', false, nova.id],
+      ['Plan two days outside the cities', false, null],
+    ]);
+    plan('Run a 10K by November', 'Wellbeing', [
+      ['Get checked out and pick shoes', true, null],
+      ['Weeks 1–4 · run-walk to 3K', true, sage.id],
+      ['Weeks 5–8 · steady 5K', false, sage.id],
+      ['Weeks 9–11 · long runs to 9K', false, sage.id],
+      ['Race day · Nov 15', false, null],
+    ]);
+    plan('Spanish, conversational by spring', 'Learning', [
+      ['Pick a course and a tutor', true, null],
+      ['Learn 100 useful phrases', false, atlas.id],
+      ['First 15-minute conversation', false, null],
+    ]);
+    plan('Three-month emergency fund', 'Finances', [
+      ['Open the savings account', true, null],
+      ['Move 400 into savings on the 1st', false, null],
+      ['Month two', false, null],
+      ['Month three', false, null],
+    ]);
+    for (const [title, cron, enabled] of [
+      ['Morning brief', '30 8 * * 1,2,3,4,5', true],
+      ['Expenses on Fridays', '0 16 * * 5', true],
+      ['Long-run check-in', '0 7 * * 0', false],
+    ] as const) {
+      const routine = C.experienceAutomation.parse({
+        id: newId('routine'),
+        title,
+        schedule: scheduleSentence(cron, this.profile.time_zone),
+        enabled,
+        runs: [
+          {
+            id: newId('run'),
+            status: 'done',
+            started_at: iso(at(0, 8, 30)),
+            finished_at: iso(at(0, 8, 31)),
+          },
+          {
+            id: newId('run'),
+            status: 'done',
+            started_at: iso(at(-1, 8, 30)),
+            finished_at: iso(at(-1, 8, 31)),
+          },
+          {
+            id: newId('run'),
+            status: 'failed',
+            started_at: iso(at(-3, 8, 30)),
+            finished_at: iso(at(-3, 8, 32)),
+          },
+        ],
+      });
+      this.automations.set(routine.id, routine);
+    }
+    const kyoto = this.start(
+      'Kyoto in October',
+      nova.id,
+      'Help me plan two weeks in Japan, slow pace.',
+      japan.id,
+    );
+    japan.conversation_ids = [kyoto.id];
+    this.start('Passport renewal', atlas.id, 'Which documents do I need to renew in person?');
   }
   event(chat: Chat, item: C.ExperienceEvent['item']) {
     chat.events.push(
@@ -156,6 +483,8 @@ export class ExperienceMock {
       pending: [],
       paused: false,
       stopped: false,
+      proposals: new Map(),
+      lastCard: null,
     };
     this.chats.set(view.id, chat);
     if (input.plan_id) required(this.plans, input.plan_id).conversation_ids.push(view.id);
@@ -181,8 +510,10 @@ export class ExperienceMock {
   finish(chat: Chat, summary: string) {
     this.flush(chat);
     const turn = chat.turns.at(-1);
-    if (turn) turn.answer = summary;
-    this.event(chat, { type: 'text_delta', text: summary });
+    if (turn && !turn.answer) {
+      turn.answer = summary;
+      this.event(chat, { type: 'text_delta', text: summary });
+    }
     const sources = chat.events.flatMap((event) =>
       event.item.type === 'action' ? event.item.sources : [],
     );
@@ -202,7 +533,162 @@ export class ExperienceMock {
       this.finish(chat, 'Your request is ready.');
       return;
     }
-    if (step.step === 'text') {
+    if (step.step === 'say') {
+      this.flush(chat);
+      this.event(chat, { type: 'say', text: plainText(step.text, 'Working on it.', 600) });
+    } else if (step.step === 'tool' && step.sources.length) {
+      // Scripted evidence with human labels: one action, its sources with their apps.
+      this.flush(chat);
+      const connection = this.evidenceConnection();
+      this.event(chat, {
+        type: 'action',
+        label: plainText(step.title, 'Checked something', 4000),
+        meta: step.meta,
+        sources: step.sources.map((source) =>
+          C.experienceSource.parse({
+            app: SOURCE_APPS[source.app] ?? plainText(source.app, 'Web'),
+            title: plainText(source.label, 'Source'),
+            kind: SOURCE_KINDS[source.app] ?? 'page',
+            connection_id: connection?.id ?? `${this.deps.spaceId}:${source.app}`,
+            ...(source.url ? { url: source.url } : {}),
+          }),
+        ),
+      });
+    } else if (step.step === 'card') {
+      this.flush(chat);
+      const card = C.resultCard.parse({
+        id: `${chat.view.id}:${step.id}`,
+        title: step.title,
+        meta: [step.overline, step.rating ? `★ ${step.rating}` : '', ...step.facts]
+          .filter(Boolean)
+          .join(' · '),
+        facts: [
+          ...(step.description ? [{ label: 'About', value: step.description }] : []),
+          ...step.chips.map((chip) => ({ label: 'When', value: chip })),
+        ].slice(0, 20),
+        primary_action: null,
+        secondary_actions: [],
+        source_connection: this.evidenceConnection()?.id ?? null,
+      });
+      chat.cards.push(card);
+      chat.lastCard = card;
+      this.event(chat, { type: 'card', card });
+    } else if (step.step === 'draft') {
+      this.flush(chat);
+      const connection = this.evidenceConnection();
+      const draft = C.experienceDraft.parse({
+        id: newId('draft'),
+        recipient: step.recipient.name,
+        channel: 'message',
+        body: step.body,
+        connection_id: connection?.id ?? `${this.deps.spaceId}:messages`,
+        status: 'draft',
+      });
+      chat.drafts.push(draft);
+      const card = C.resultCard.parse({
+        id: draft.id,
+        title: `Message to ${draft.recipient}`,
+        meta: `${step.channel_label} · nothing is sent until you confirm`,
+        facts: [{ label: 'Draft', value: draft.body }],
+        primary_action: { label: `Send via ${step.channel_label}`, kind: 'send', handle: draft.id },
+        secondary_actions: [],
+        source_connection: connection?.id ?? null,
+      });
+      chat.cards.push(card);
+      this.event(chat, { type: 'card', card });
+    } else if (step.step === 'ask') {
+      this.flush(chat);
+      const question = C.experienceQuestion.parse({
+        id: newId('q'),
+        conversation_id: chat.view.id,
+        text: plainText(step.question, 'What should happen next?'),
+        why: ['Your answer decides the next step.'],
+        if_ignored: 'This conversation waits for your answer.',
+        options: step.options.map((option, index) => ({
+          id: `option-${index + 1}`,
+          label: option.description
+            ? `${option.label} · ${option.description}`.slice(0, 4000)
+            : option.label,
+        })),
+      });
+      this.questions.set(question.id, question);
+      this.event(chat, { type: 'question', question });
+      this.state(chat, 'needs_you');
+      return;
+    } else if (step.step === 'browser') {
+      // The contract has no way to announce a browser session yet; nothing is drawn.
+    } else if (step.step === 'propose' && !this.isDraftKind(step.kind, step.payload)) {
+      this.flush(chat);
+      const words = PROPOSAL_WORDS[step.kind] ?? {
+        what: 'Make a change through a connected app',
+        where: 'a connected app',
+        reversible: false,
+      };
+      const title = plainText(step.payload.title, '');
+      chat.proposals.set(step.ref, {
+        ref: step.ref,
+        kind: step.kind,
+        payload: step.payload,
+        what: title ? `${words.what}: ${title}` : words.what,
+        where: words.where,
+        decision: null,
+        onDenied: null,
+        permissionId: null,
+      });
+    } else if (step.step === 'await_approval') {
+      const proposal = chat.proposals.get(step.ref);
+      if (proposal && proposal.decision === null) {
+        proposal.onDenied = step.on_denied;
+        const detail = [step.ref, ...Object.entries(proposal.payload)]
+          .slice(1)
+          .map(([key, value]) => `${key}: ${plainText(value, '')}`)
+          .filter((line) => !line.endsWith(': '));
+        const permission = C.permissionCard.parse({
+          id: newId('permission'),
+          conversation_id: chat.view.id,
+          what: proposal.what,
+          why: detail.length ? detail : ['You asked for this.'],
+          options: ['allow_once', 'always', 'deny'],
+          version: newId('v'),
+          preview: chat.lastCard,
+        });
+        proposal.permissionId = permission.id;
+        this.permissions.set(permission.id, permission);
+        this.permissionProposals.set(permission.id, { chatId: chat.view.id, ref: step.ref });
+        this.event(chat, { type: 'permission', permission });
+        this.state(chat, 'needs_you');
+        return;
+      }
+    } else if (step.step === 'dispatch') {
+      const proposal = chat.proposals.get(step.ref);
+      if (proposal && proposal.decision !== 'deny' && step.outcome === 'succeeded') {
+        const words = PROPOSAL_WORDS[proposal.kind];
+        const receipt = C.experienceReceipt.parse({
+          id: newId('receipt'),
+          what: proposal.what
+            .replace(/^Add an event to your calendar/, 'Added to your calendar')
+            .replace(/^Hold a table/, 'Held a table'),
+          where: proposal.where,
+          when: this.now(),
+          ...(words?.reversible
+            ? {
+                undo: {
+                  handle: newId('undo'),
+                  valid_until: new Date(Date.now() + 10 * 60_000).toISOString(),
+                },
+              }
+            : {}),
+        });
+        chat.receipts.push(receipt);
+        this.undoable.set(receipt.id, { chatId: chat.view.id, what: proposal.what });
+        this.event(chat, { type: 'receipt', receipt });
+      } else if (proposal && step.outcome !== 'succeeded') {
+        this.event(chat, {
+          type: 'note',
+          text: 'The change could not be confirmed. It has not been repeated.',
+        });
+      }
+    } else if (step.step === 'text') {
       this.flush(chat);
       const text = answerText(step.text);
       if (text) {
@@ -427,6 +913,14 @@ export class ExperienceMock {
   }
   decide(id: string, raw: unknown) {
     const input = C.permissionDecision.parse(raw);
+    if (this.permissionProposals.has(id)) {
+      const permission = this.permissions.get(id);
+      if (!permission) throw new MockExperienceError(409, 'This request was already answered.');
+      if (input.version !== permission.version)
+        throw new MockExperienceError(409, 'Review the current permission before deciding.');
+      const outcome = this.decideProposal(id, input);
+      if (outcome) return outcome;
+    }
     const previous = this.decisions.get(id);
     if (previous) {
       if (previous.version !== input.version || previous.result.option !== input.option)
@@ -637,7 +1131,7 @@ export class ExperienceMock {
       case 'POST /drafts/{id}/send':
         return this.send(id);
       case 'POST /receipts/{id}/undo':
-        return C.unavailable('This scenario has no reversible external change.');
+        return this.undo(id);
       case 'GET /quick-answers':
         return { questions: [...this.questions.values()] };
       case 'POST /quick-answers/{id}': {
@@ -681,7 +1175,9 @@ export class ExperienceMock {
         const tasks = [...this.tasks.values()].filter((task) => !task.done);
         return {
           ...dayGreeting(this.profile, this.deps.store.now()),
-          upcoming: C.unavailable('No calendar is connected in this scenario.'),
+          upcoming: this.calendarEvents.length
+            ? this.calendarEvents.filter((event) => Date.parse(event.ends_at) > Date.now())
+            : C.unavailable('No calendar is connected in this scenario.'),
           tasks,
           open_task_count: tasks.length,
         };

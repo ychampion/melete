@@ -40,6 +40,7 @@ export function createMock(options: MockOptions = {}) {
     scenarios,
     spaceId,
     experienceSpeed: options.speed ?? 1,
+    seedExperience: options.experience?.seed ?? false,
   });
   const surfaces = createSurfaces({
     store,
