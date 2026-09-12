@@ -5,7 +5,8 @@
  *
  * The patterns are deliberately literal: an absolute Windows user path, a Linux
  * root home, a per-lane worktree name, and two phrases that only ever described
- * the mechanics of a working session.
+ * the mechanics of a working session. This file is the one tracked file that
+ * has to spell them out, so it skips itself.
  */
 import { fileURLToPath } from 'node:url';
 
@@ -13,8 +14,8 @@ const PATTERN = /C:\/Users|\/root\/|melete-oss-|fix cycle|shared lock/;
 
 /**
  * Lines a matching pattern is allowed on, keyed by tracked path. The runtime
- * image build removes the build container's own uv cache under `/root/.cache`;
- * that is the image's path, not a path on a contributor's machine.
+ * image build removes the build container's own uv package cache; that is the
+ * image's path, not a path on a contributor's machine.
  */
 const ALLOWED: Record<string, RegExp> = {
   'packages/runtime-hermes/Dockerfile': /rm -rf \/root\/\.cache\/uv/,
@@ -26,7 +27,11 @@ if (listed.exitCode !== 0) {
   process.stderr.write(listed.stderr.toString());
   process.exit(listed.exitCode);
 }
-const files = listed.stdout.toString().split('\0').filter(Boolean);
+const SELF = 'scripts/scrub-check.ts';
+const files = listed.stdout
+  .toString()
+  .split('\0')
+  .filter((file) => file && file !== SELF);
 
 const findings: string[] = [];
 for (const file of files) {

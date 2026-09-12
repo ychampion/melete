@@ -20,11 +20,12 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
   `codex_responses` API mode name, the `claude-` and `gpt-` redaction pattern in
   the experience projector, a `claude-served` fake model id in a gateway test,
   the `astra` variable in the supervisor test for the `gpt-6-astra` provider,
-  the pinned `ghcr.io/astral-sh/uv` image digest and `rm -rf /root/.cache/uv` in
-  the runtime Dockerfile. Code is out of this lane's scope, so those stay; the
-  CI scrub check therefore matches the brief's narrower pattern
-  (`C:/Users|/root/|melete-oss-|fix cycle|shared lock`) and excludes the
-  runtime Dockerfile, where `/root/.cache` is the build container's own cache path.
+  the pinned `ghcr.io/astral-sh/uv` image digest and the removal of the build
+  container's root-home uv cache in the runtime Dockerfile. Code is out of this
+  lane's scope, so those stay; the CI scrub check therefore matches the brief's
+  narrower pattern (the Windows user-profile prefix, the Linux root home, the
+  per-lane worktree prefix, and the two working-session phrases) and allows the
+  one Dockerfile line, whose path belongs to the build container.
 - `docs/CAPABILITIES.md` is rewritten against the landed tree. The capability
   gate uses the statuses from `docs/CAPABILITIES.md` on `lane/w14-capabilities`
   as the team lead instructed, but cites only tests that exist on `55b6a50`; the
@@ -39,11 +40,11 @@ Branch `lane/w13-release`, worktree created from `origin/integration` at
 - Command `bun install`: 378 packages installed.
 - Command `bun run compose:check`: `compose:check passed (19 checks)`.
 - Command `git grep -i -E "managed hosting|enterprise|compan(y|ies)|business plan" -- . ':!node_modules' ':!bun.lock'`: no output at the landed head.
-- Command `git grep -n -E "C:/Users|/root/|melete-oss-|fix cycle|shared lock|codex|astra|opus|fable|claude" -- . ':!node_modules' ':!bun.lock' | grep -v gpt-6-astra`: 44 lines across 13 files at the landed head; docs and notes hits are handled in the scrub slice, code hits are listed under Assumptions.
+- Command: the brief's full scrub grep (the two path prefixes, the worktree prefix, the two session phrases, and the five model or harness names) over tracked files minus `node_modules` and `bun.lock`, with the `gpt-6-astra` lines removed: 44 lines across 13 files at the landed head; docs and notes hits are handled in the scrub slice, code hits are listed under Assumptions.
 
 ## Scrub and README (commits below)
 
-- Command `git grep -n -E "C:/Users|/root/|melete-oss-|fix cycle|shared lock|codex|astra|opus|fable|claude" -- . ':!node_modules' ':!bun.lock' | grep -v gpt-6-astra` after the rewrite: 11 lines, all code (`experience/projectors.ts:33` redaction pattern, `gateway/index.test.ts:420,424` fake model id, `runtime/supervisor.test.ts:69,74` and `runtime/supervisor.ts:86` for the `gpt-6-astra` provider's `codex_responses` API mode, `packages/runtime-hermes/Dockerfile:38,53` pinned `astral-sh/uv` image and its `/root/.cache`). No documentation or note line remains.
+- Command: the same full scrub grep after the rewrite: 11 lines, all code (`experience/projectors.ts:33` redaction pattern, `gateway/index.test.ts:420,424` fake model id, `runtime/supervisor.test.ts:69,74` and `runtime/supervisor.ts:86` for the `gpt-6-astra` provider's `codex_responses` API mode, `packages/runtime-hermes/Dockerfile:38,53` pinned `astral-sh/uv` image and its build-container cache path). No documentation or note line remains.
 - Command `bun run lint`: `Checked 531 files`, one pre-existing Biome warning, then `scrub:check passed (794 tracked files)`, exit 0.
 - Command `bun run typecheck`: exit 0.
 - Commit `Scrub local paths and working-session phrases from the record and check for them in lint`: `.agents/notes/{0018,0021}`, four lane reports, `LANDING-REPORT.md`, `docs/CAPABILITIES.md`, `scripts/scrub-check.ts`, `package.json` (`lint` now runs `scrub:check`).
