@@ -223,6 +223,40 @@ await surface(
   },
 );
 
+// A message that needs only acknowledgement: the agent reacts to the person's
+// bubble, and the person answers the earlier result with a tap.
+await api(
+  'POST',
+  `/conversations/${created.id}/messages`,
+  { text: 'Thanks, that is perfect.' },
+  { 'Idempotency-Key': `walk-thanks-${Date.now()}` },
+);
+await waitFor(async () => {
+  const list = await events(created.id);
+  const dones = list.filter((e) => e.item.type === 'done');
+  return dones.length >= 2 ? dones : null;
+});
+await waitFor(async () =>
+  (await api('GET', `/jobs/${created.id}/reactions`)).reactions?.find((r) => r.by === 'assistant'),
+);
+await surface(
+  'chat-reactions',
+  'Reactions drawn on the bubbles they belong to: the agent\u2019s glyph on the person\u2019s thanks, the person\u2019s tap on the earlier result.',
+  `/chat/${created.id}`,
+  {
+    settle: 1500,
+    only: [WIDTHS[0], WIDTHS[2]],
+    prepare: async (page) => {
+      const button = page.getByRole('button', { name: 'React with 👍' }).first();
+      await button.click();
+      await page.locator('.reaction[data-mine="true"]').first().waitFor({ timeout: 10_000 });
+      if ((await page.locator('.bubble-wrap .reaction').count()) === 0)
+        throw new Error('the agent reaction is not drawn on the person bubble');
+      await page.waitForTimeout(500);
+    },
+  },
+);
+
 if (kyoto)
   await surface(
     'chat-question',

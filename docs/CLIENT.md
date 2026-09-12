@@ -482,6 +482,15 @@ you were reading it" on the card, and the person decides again.
 stated window, drawn under the card that caused it. An undone receipt says so
 in place; nothing disappears.
 
+**A reaction sits on its bubble.** The web app follows the reaction rule
+above: the person answers an agent turn with one tap from a small fixed set,
+posted to `POST /messages/{seq}/reactions` with the seq of the turn's first
+event, and the agent's glyph on the person's message is drawn under that
+bubble. Both come from `GET /jobs/{id}/reactions`, read when a turn settles,
+since this client follows the conversation stream rather than the job stream.
+No control is drawn on a message the service will not accept a reaction on,
+and nothing is ever drawn as a "reacted" line of its own.
+
 **An unconfirmed effect is a question, not a retry.** When a connector never
 answers, the action rests in the broker's ledger at `unknown`
 (`GET /actions?job_id=`), the transcript says so in a note, and the card asks

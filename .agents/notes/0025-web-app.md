@@ -72,6 +72,14 @@ question decided from somewhere else closes on the first event that follows
 its `needs_you` status, without claiming which way it went; the contract has
 no decision event, and the note lists one.
 
+Reactions come from the W9 contract rather than the experience one. A
+conversation is a job, so its reactions list under `GET /jobs/{id}/reactions`,
+and a message is addressed by an event seq: the mock mirrors every experience
+event and every person message into the store's job stream so the two share
+one seq space and the reaction routes accept them. The interface posts a tap to
+the turn's first event seq, maps an agent's glyph to the turn whose events
+follow the person's message, and reads the list when a turn settles.
+
 Text deltas are streamed live and never stored, so a reconnect draws a gap
 marker where streamed text may be missing rather than stitching two halves
 together. Durable events replay from the last seq the client drew.
