@@ -4,13 +4,13 @@
  * apps/web/docs/screens carries.
  *
  * Needs the mock on :3210 and the dev server on :5180:
- *   bun run dev:mock            (in one shell; MOCK_PORT=3210)
- *   bun run dev:web             (in another)
+ *   MOCK_PORT=3210 bun run dev:mock   (in one shell)
+ *   bun run dev:web                   (in another)
  *   bun run --cwd apps/web screens
  *
  * The chat states are real: the script starts the dinner conversation through
- * the mock, waits for the agent to reach each state, decides the permission,
- * and sends the follow-up that opens the sandboxed browser.
+ * the experience contract, waits for the agent to reach each state, decides
+ * the permission, and sends the draft.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -32,16 +32,16 @@ const THEMES = ['light', 'dark'];
 const COMMIT = new Set(['1440-light', '390-light', '1440-dark']);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const api = async (method, path, body) => {
-  const response = await fetch(`${API}/surfaces${path}`, {
+const api = async (method, path, body, headers = {}) => {
+  const response = await fetch(`${API}${path}`, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : {},
+    headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
   return response.json();
 };
 
-const waitFor = async (check, timeoutMs = 30_000) => {
+const waitFor = async (check, timeoutMs = 40_000) => {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const value = await check();
@@ -51,9 +51,8 @@ const waitFor = async (check, timeoutMs = 30_000) => {
   throw new Error('timed out waiting for the mock');
 };
 
-const permissionOf = (conversation) =>
-  conversation.events.find((e) => e.type === 'block' && e.payload.block.kind === 'permission')
-    ?.payload.block.permission;
+const events = async (id) => (await api('GET', `/conversations/${id}/events?since=0`)).events ?? [];
+const find = (list, type) => list.find((e) => e.item.type === type)?.item;
 
 const results = [];
 const captions = [];
@@ -100,11 +99,15 @@ async function surface(name, caption, route, { prepare, settle = 1200, only } = 
   }
 }
 
-// ---- state the mock needs before the walk ----
+// ---- state the mock holds ----
 
-const seeded = await api('GET', '/conversations');
-const kyoto = seeded.conversations.find((c) => c.title === 'Kyoto in October');
-const passport = seeded.conversations.find((c) => c.title === 'Passport renewal');
+const { agents } = await api('GET', '/agents');
+const nova = agents.find((a) => a.name === 'Nova') ?? agents[0];
+const { conversations } = await api('GET', '/conversations');
+const kyoto = conversations.find((c) => c.title === 'Kyoto in October');
+const passport = conversations.find((c) => c.title === 'Passport renewal');
+const { plans } = await api('GET', '/plans');
+const japan = plans.find((p) => p.title.startsWith('Japan')) ?? plans[0];
 
 // ---- the walk ----
 
@@ -114,94 +117,81 @@ await surface(
   '/design',
   { settle: 800 },
 );
-
-await api('POST', '/session/sign-out');
 await surface(
   'sign-in',
-  'Sign-in: magic link, and the OAuth buttons the adapter reports as available.',
-  '/',
+  'Sign-in: the magic link; OAuth buttons only when the service says they work, and the honest reason when it does not.',
+  '/welcome',
 );
-await api('POST', '/session/complete', {});
-
 await surface(
   'home',
-  'Home with the day panel: composer first, then active plans and recent chats.',
+  'Home with the day panel from the contract: composer first, then active plans and recent chats.',
   '/',
 );
 
-const dinner = (
-  await api('POST', '/conversations', {
-    text: 'Find a lovely spot for dinner with Alex and Priya tonight at 7:30.',
-    agent_id: 'nova',
-  })
+const created = (
+  await api('POST', '/conversations', { title: 'Dinner with friends', agent_id: nova.id })
 ).conversation;
+await api(
+  'POST',
+  `/conversations/${created.id}/messages`,
+  { text: 'Find a lovely spot for dinner with Alex and Priya tonight at 7:30.' },
+  { 'Idempotency-Key': `walk-${Date.now()}` },
+);
 await surface(
   'chat-working',
-  'The dinner conversation while Nova works: trail with say and action steps, sources with logos, Pause in the composer.',
-  `/chat/${dinner.id}`,
+  'The dinner conversation while Nova works: say and action steps with app-named sources, Stop in the composer.',
+  `/chat/${created.id}`,
   { settle: 1200, only: [WIDTHS[0], WIDTHS[2]] },
 );
 
-await waitFor(async () => permissionOf(await api('GET', `/conversations/${dinner.id}`)));
+await waitFor(async () => find(await events(created.id), 'permission'));
 await surface(
   'chat-decide',
-  'The result card whose primary button decides the calendar permission, the draft with explicit send, the trail collapsed.',
-  `/chat/${dinner.id}`,
+  'The permission card with its result-card preview, the draft with explicit send, the trail collapsed.',
+  `/chat/${created.id}`,
   { settle: 1500 },
 );
 
-const permission = permissionOf(await api('GET', `/conversations/${dinner.id}`));
+const permission = find(await events(created.id), 'permission').permission;
 await api('POST', `/permissions/${permission.id}`, {
-  decision: 'allow_once',
-  payload_hash: permission.payload_hash,
+  option: 'allow_once',
+  version: permission.version,
 });
-await waitFor(async () =>
-  (await api('GET', `/conversations/${dinner.id}`)).events.some(
-    (e) => e.type === 'trail_step' && e.payload.step.kind === 'done',
-  ),
-);
+await waitFor(async () => find(await events(created.id), 'done'));
 await surface(
   'chat-done',
-  'The finished turn: card confirmed with the receipt and undo, draft still unsent, reactions inline.',
-  `/chat/${dinner.id}`,
+  'The finished turn: the receipt with undo, the draft still unsent, the collapsed trail.',
+  `/chat/${created.id}`,
   { settle: 1500 },
 );
 
-await api('POST', `/conversations/${dinner.id}/messages`, {
-  text: 'Perfect, book it and remind me at 6.',
-});
-await waitFor(async () =>
-  (await api('GET', `/conversations/${dinner.id}`)).events.some(
-    (e) => e.type === 'block' && e.payload.block.kind === 'browser',
-  ),
-);
+const draft = (await api('GET', `/conversations/${created.id}/drafts`)).drafts[0];
+if (draft) await api('POST', `/drafts/${draft.id}/send`);
 await surface(
-  'chat-browser',
-  'The browser task card and the docked browser panel while Nova books the table; hidden entirely when the adapter reports no browser.',
-  `/chat/${dinner.id}`,
-  { settle: 2000 },
+  'chat-sent',
+  'After the person pressed send on the draft: the sent receipt, nothing recalled.',
+  `/chat/${created.id}`,
+  { settle: 1500, only: [WIDTHS[0]] },
 );
 
-if (kyoto) {
+if (kyoto)
   await surface(
     'chat-question',
-    'A question with keyboard answers (1–4) and the unknown-outcome-free plain turn with sources.',
+    'A question with keyboard answers (1–4) waiting for the person.',
     `/chat/${kyoto.id}`,
     { settle: 1500 },
   );
-}
-if (passport) {
+if (passport)
   await surface(
     'chat-plain',
     'A plain answer with its one source; nothing to decide.',
     `/chat/${passport.id}`,
     { settle: 1200 },
   );
-}
 
 await surface(
   'command-palette',
-  'The command palette (⌘K) with typed results across chats, plans, tasks, events, connections and actions.',
+  'The command palette (⌘K) with typed results across chats, plans, tasks, connections and actions.',
   '/',
   {
     prepare: async (page) => {
@@ -213,32 +203,32 @@ await surface(
 
 await surface(
   'plans',
-  'Plans with the sheet open on Japan: milestones with assignees, linked chat and file, Ask Melete about this plan.',
-  '/plans/japan',
+  'Plans with the sheet open on Japan: milestones with assignees, the linked chat, Ask Melete about this plan.',
+  `/plans/${japan?.id ?? ''}`,
 );
 await surface(
   'agents',
   'Agents with Nova open in the editor: look, the nine states, the face wall, templates.',
-  '/agents/nova',
+  `/agents/${nova.id}`,
 );
 await surface(
   'automations',
-  'Automations: sentence triggers, run history with retry, test run.',
+  'Automations: schedule sentences, run history, test run, and a new routine.',
   '/automations',
 );
 await surface(
   'settings-memory',
-  'Settings › Memory in plain language with edit, delete and why.',
+  'Settings › Memory in plain language with edit, forget and why.',
   '/settings/memory',
 );
 await surface(
   'settings-connections',
-  'Settings › Connections with the available → connecting → connected → error states and what each may do.',
+  'Settings › Connections: status and what each may do.',
   '/settings/connections',
 );
 await surface(
   'settings-rules',
-  'Settings › Rules: standing grants with revoke.',
+  'Settings › Rules: standing grants with their limits and revoke.',
   '/settings/rules',
 );
 
@@ -249,7 +239,7 @@ await surface(
 );
 await surface(
   'onboarding-tour',
-  'Setup step 2: the tour, only the stages the adapter reports as available.',
+  'Setup step 2: the tour, only the stages this instance can do.',
   '/setup',
   {
     prepare: async (page) => {
@@ -258,7 +248,7 @@ await surface(
     },
   },
 );
-await surface('onboarding-connect', 'Setup step 3: plug in apps.', '/setup', {
+await surface('onboarding-connect', 'Setup step 3: what Melete may look at.', '/setup', {
   prepare: async (page) => {
     await page.getByRole('button', { name: 'Show me' }).click();
     for (let i = 0; i < 6; i += 1) {
@@ -266,48 +256,23 @@ await surface('onboarding-connect', 'Setup step 3: plug in apps.', '/setup', {
       if ((await next.count()) === 0) break;
       await next.first().click();
       await page.waitForTimeout(200);
-      if ((await page.getByText('Plug in what Melete may look at').count()) > 0) break;
+      if ((await page.getByText('What Melete may look at').count()) > 0) break;
     }
     await page.waitForTimeout(500);
   },
 });
-await surface(
-  'onboarding-agent',
-  'Setup step 4: meet your first agent, with import SVG/PNG.',
-  '/setup',
-  {
-    prepare: async (page) => {
-      await page.getByRole('button', { name: 'Show me' }).click();
-      for (let i = 0; i < 8; i += 1) {
-        const next = page.getByRole('button', { name: /^(Next|Continue)$/ });
-        if ((await next.count()) === 0) break;
-        await next.first().click();
-        await page.waitForTimeout(200);
-      }
-      await page.waitForTimeout(500);
-    },
+await surface('onboarding-agent', 'Setup step 4: meet your first agent.', '/setup', {
+  prepare: async (page) => {
+    await page.getByRole('button', { name: 'Show me' }).click();
+    for (let i = 0; i < 8; i += 1) {
+      const next = page.getByRole('button', { name: /^(Next|Continue)$/ });
+      if ((await next.count()) === 0) break;
+      await next.first().click();
+      await page.waitForTimeout(200);
+    }
+    await page.waitForTimeout(500);
   },
-);
-await surface(
-  'onboarding-know-you',
-  'Setup step 5: four answers that become memory items.',
-  '/setup',
-  {
-    prepare: async (page) => {
-      await page.getByRole('button', { name: 'Show me' }).click();
-      for (let i = 0; i < 8; i += 1) {
-        const next = page.getByRole('button', { name: /^(Next|Continue)$/ });
-        if ((await next.count()) === 0) break;
-        await next.first().click();
-        await page.waitForTimeout(200);
-      }
-      await page.getByRole('button', { name: 'Say hello' }).click();
-      await page.waitForTimeout(1200);
-      await page.getByRole('button', { name: 'New York' }).click();
-      await page.waitForTimeout(1600);
-    },
-  },
-);
+});
 
 await surface('phone-drawer', 'The phone layout with the sidebar drawer open.', '/', {
   only: [WIDTHS[2]],
@@ -329,7 +294,7 @@ await browser.close();
 const lines = [
   '# Screens',
   '',
-  'Written by `bun run --cwd apps/web screens` against the mock. Every surface is checked at 1440, 1024 and 390 px in light and dark for horizontal overflow and console errors; the committed images are 1440 light, 390 light and 1440 dark.',
+  'Written by `bun run --cwd apps/web screens` against the mock serving the experience contract. Every surface is checked at 1440, 1024 and 390 px in light and dark for horizontal overflow and console errors; the committed images are 1440 light, 390 light and 1440 dark.',
   '',
   ...captions,
   '',

@@ -48,8 +48,10 @@ export type FaceEyes = 'white' | 'black' | 'none';
 export type FaceLook = {
   color: string;
   eyes: FaceEyes;
+  /** The exact eye colour when the record carries one; `eyes` is the fallback. */
+  eyeColor?: string;
   shape: FaceShape;
-  /** An imported SVG or PNG face, as a data URL, replaces the drawn one. */
+  /** An imported SVG or PNG face, as a URL, replaces the drawn one. */
   image?: string | null;
 };
 
@@ -132,7 +134,7 @@ export function AgentFace({
   const id = useId();
   const clipId = `af${id.replace(/[^a-zA-Z0-9]/g, '')}`;
   const { color, eyes, shape } = look;
-  const eye = eyes === 'white' ? '#ffffff' : '#16181d';
+  const eye = look.eyeColor ?? (eyes === 'white' ? '#ffffff' : '#16181d');
 
   if (look.image) {
     return (

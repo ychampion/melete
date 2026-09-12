@@ -1,60 +1,89 @@
 /**
  * The pieces of a chat turn: the person's bubble, the agent's trail, and the
- * cards that carry a result, a draft, a decision, a receipt, a question, an
- * unknown outcome, or a browser session. Each renders from typed data and
- * calls back with the one thing a person can do to it.
+ * cards that carry a result, a draft, a decision, a receipt, or a question.
+ * Each renders from the contract's typed data and calls back with the one
+ * thing a person can do to it.
  */
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
-import { isLogo, Logo } from '../design/logos.tsx';
+import { Logo, type LogoName } from '../design/logos.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
-import {
-  Avatar,
-  Badge,
-  Button,
-  IconButton,
-  Menu,
-  MenuItem,
-  Popover,
-} from '../design/primitives.tsx';
+import { Avatar, Badge, Button, Dialog, Field, IconButton, Select } from '../design/primitives.tsx';
+import { lookOf } from '../experience/hooks.ts';
+import { answerOf, type TranscriptTurn } from '../experience/reduce.ts';
 import type {
   Agent,
-  BrowserSessionData,
-  DraftData,
-  PermissionData,
-  QuestionData,
-  Reaction,
-  ReceiptData,
-  ResultCardData,
+  Draft,
+  Permission,
+  PermissionOption,
+  Question,
+  Receipt,
+  ResultCard as ResultCardData,
+  RuleBounds,
   Source,
   TrailStep,
-  Turn,
-  UnknownOutcomeData,
-  UserMessage,
+  TurnStatus,
 } from '../experience/types.ts';
 
 export const timeOf = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
+/** The logo for an app the contract names in plain words. */
+const LOGO_BY_APP: Record<string, LogoName> = {
+  'google calendar': 'gcal',
+  calendar: 'gcal',
+  gmail: 'gmail',
+  mail: 'gmail',
+  'google maps': 'gmaps',
+  whatsapp: 'whatsapp',
+  messages: 'imessage',
+  imessage: 'imessage',
+  slack: 'slack',
+  notion: 'notion',
+  spotify: 'spotify',
+  'google drive': 'gdrive',
+  files: 'gdrive',
+  uber: 'uber',
+  zoom: 'zoom',
+  linear: 'linear',
+  github: 'github',
+  google: 'google',
+  yelp: 'yelp',
+  reddit: 'reddit',
+  x: 'x',
+  youtube: 'youtube',
+  tripadvisor: 'tripadvisor',
+};
+export const logoFor = (app: string): LogoName | null => LOGO_BY_APP[app.toLowerCase()] ?? null;
+
+const KIND_ICON: Record<Source['kind'], IconName> = {
+  event: 'calendar',
+  message: 'messages',
+  draft: 'messages',
+  file: 'fileText',
+  page: 'globe',
+  task: 'check',
+};
+
 /* ---------- user bubble ---------- */
 
-export function UserBubble({ message, onRetry }: { message: UserMessage; onRetry?: () => void }) {
-  const pending = message.delivery !== 'sent';
+export function UserBubble({ turn, onRetry }: { turn: TranscriptTurn; onRetry?: () => void }) {
+  const delivery = turn.delivery;
   return (
     <div className="bubble-wrap">
-      <div className="bubble" data-pending={pending ? 'true' : undefined}>
-        {message.text}
+      <div className="bubble" data-pending={delivery ? 'true' : undefined}>
+        {turn.turn.text}
       </div>
       <div className="bubble-meta">
-        {message.delivery === 'sending' ? (
+        {delivery === 'sending' ? (
           <span className="row" style={{ gap: 6 }}>
             <Icon name="loader" size={12} stroke={2} className="spin" />
             Sending…
           </span>
-        ) : message.delivery === 'queued' ? (
+        ) : delivery === 'queued_offline' ? (
           <span>Will send when you’re back online</span>
-        ) : message.delivery === 'failed' ? (
+        ) : delivery === 'failed_retry' ? (
           <>
             <span className="row" style={{ gap: 6, color: 'var(--danger)' }}>
               <Icon name="alert" size={12} />
@@ -70,7 +99,7 @@ export function UserBubble({ message, onRetry }: { message: UserMessage; onRetry
             </button>
           </>
         ) : (
-          <span>{timeOf(message.at)}</span>
+          <span>{timeOf(turn.turn.created_at)}</span>
         )}
       </div>
     </div>
@@ -80,90 +109,73 @@ export function UserBubble({ message, onRetry }: { message: UserMessage; onRetry
 /* ---------- trail ---------- */
 
 function SourceChip({ source }: { source: Source }) {
-  const inner = isLogo(source.app) ? (
-    <Logo name={source.app} size={16} />
+  const logo = logoFor(source.app);
+  const inner = logo ? (
+    <Logo name={logo} size={16} />
   ) : (
     <span style={{ color: 'var(--muted)', display: 'flex' }}>
-      <Icon
-        name={source.app === 'web' ? 'globe' : source.app === 'globe' ? 'globe' : 'mapPin'}
-        size={13}
-      />
+      <Icon name={KIND_ICON[source.kind]} size={13} />
     </span>
   );
   const body = (
     <>
       {inner}
-      <span>{source.label}</span>
+      <span>{source.title}</span>
     </>
   );
   return source.url ? (
-    <a className="trail-chip" href={source.url} target="_blank" rel="noreferrer">
+    <a className="trail-chip" href={source.url} target="_blank" rel="noreferrer" title={source.app}>
       {body}
     </a>
   ) : (
-    <span className="trail-chip">{body}</span>
+    <span className="trail-chip" title={source.app}>
+      {body}
+    </span>
   );
 }
 
-const ACTION_ICON = (step: Extract<TrailStep, { kind: 'action' }>): IconName => {
-  const apps = step.sources.map((s) => s.app);
-  if (apps.includes('gcal')) return 'calendar';
-  if (apps.includes('gmaps')) return 'mapPin';
-  if (apps.includes('imessage') || apps.includes('whatsapp') || apps.includes('slack'))
-    return 'messages';
-  if (apps.includes('notion') || apps.includes('gdrive')) return 'book';
-  if (apps.includes('globe')) return 'globe';
-  if (apps.length) return 'search';
+const actionIcon = (step: Extract<TrailStep, { type: 'action' }>): IconName => {
+  const kinds = step.sources.map((s) => s.kind);
+  const apps = step.sources.map((s) => s.app.toLowerCase());
+  if (apps.some((a) => a.includes('calendar'))) return 'calendar';
+  if (apps.some((a) => a.includes('maps'))) return 'mapPin';
+  if (kinds.includes('draft') || kinds.includes('message')) return 'messages';
+  if (kinds.includes('file')) return 'fileText';
+  if (kinds.includes('event')) return 'calendar';
+  if (kinds.includes('page')) return 'search';
   const label = step.label.toLowerCase();
   if (label.includes('calendar')) return 'calendar';
   if (label.includes('draft') || label.includes('message')) return 'messages';
-  if (label.includes('browser') || label.includes('open')) return 'globe';
-  if (label.includes('slot') || label.includes('chose') || label.includes('choosing'))
-    return 'cursor';
+  if (label.includes('browser') || label.includes('opened')) return 'globe';
+  if (label.includes('slot') || label.includes('chose')) return 'cursor';
   return 'search';
 };
 
-function stepSummaryApps(steps: TrailStep[]): string {
-  const words = new Set<string>();
-  for (const step of steps) {
-    if (step.kind !== 'action') continue;
-    for (const source of step.sources) {
-      const app = source.app;
-      words.add(
-        app === 'gcal'
-          ? 'calendar'
-          : app === 'gmaps'
-            ? 'Maps'
-            : app === 'imessage'
-              ? 'Messages'
-              : ['google', 'reddit', 'yelp', 'youtube', 'tripadvisor', 'web'].includes(app)
-                ? 'web'
-                : app,
-      );
-    }
-  }
-  return [...words].join(', ');
-}
+const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 
-export function Trail({ turn, now }: { turn: Turn; now: number }) {
-  const running = turn.status === 'running' || turn.status === 'queued' || turn.status === 'paused';
+export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
+  const running = RUNNING.includes(turn.status);
   const doneStep = turn.trail.find(
-    (s): s is Extract<TrailStep, { kind: 'done' }> => s.kind === 'done',
+    (s): s is Extract<TrailStep, { type: 'done' }> => s.type === 'done',
   );
   const [open, setOpen] = useState<boolean | null>(null);
-  const [openStep, setOpenStep] = useState<string | null>(null);
-  const expanded = open ?? !doneStep;
-  const end = turn.ended_at ? new Date(turn.ended_at).getTime() : now;
-  const elapsed = Math.max(0, Math.round((end - new Date(turn.started_at).getTime()) / 1000));
-  const steps = turn.trail.filter((s) => s.kind !== 'done');
+  const steps = turn.trail.filter((s) => s.type !== 'done');
   if (turn.trail.length === 0) return null;
-  const sourceCount = steps.reduce((n, s) => n + (s.kind === 'action' ? s.sources.length : 0), 0);
-  const summary =
-    doneStep?.summary ??
-    [`Worked for ${elapsed}s`, stepSummaryApps(steps), sourceCount ? `${sourceCount} sources` : '']
-      .filter(Boolean)
-      .join(' · ');
-  const headText = running ? (
+  const expanded = open ?? !doneStep;
+  const elapsed = doneStep
+    ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
+    : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
+  const rest = doneStep
+    ? [
+        doneStep.apps.join(', '),
+        doneStep.source_count
+          ? `${doneStep.source_count} source${doneStep.source_count === 1 ? '' : 's'}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const head = running ? (
     <>
       <span className="working-dots" aria-hidden="true">
         <span className="pulse" />
@@ -174,12 +186,13 @@ export function Trail({ turn, now }: { turn: Turn; now: number }) {
     </>
   ) : turn.status === 'stopped' ? (
     <span>Stopped after {elapsed}s</span>
-  ) : turn.status === 'waiting' ? (
+  ) : turn.status === 'needs_you' ? (
     <span>Waiting for you · {elapsed}s</span>
+  ) : turn.status === 'failed' ? (
+    <span>Stopped without finishing</span>
   ) : (
-    <span>{doneStep ? summary.split(' · ')[0] : `Worked for ${elapsed}s`}</span>
+    <span>Worked for {elapsed}s</span>
   );
-  const rest = doneStep ? summary.split(' · ').slice(1).join(' · ') : '';
   return (
     <div className="col" style={{ gap: 4 }}>
       <button
@@ -189,7 +202,7 @@ export function Trail({ turn, now }: { turn: Turn; now: number }) {
         onClick={() => setOpen(!expanded)}
       >
         <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} />
-        {headText}
+        {head}
         {!expanded && rest ? (
           <span className="clamp1" style={{ color: 'var(--muted)', fontWeight: 400 }}>
             · {rest}
@@ -198,16 +211,17 @@ export function Trail({ turn, now }: { turn: Turn; now: number }) {
       </button>
       {expanded ? (
         <div className="trail-steps">
-          {steps.map((step) => {
-            if (step.kind === 'say')
+          {steps.map((step, index) => {
+            const key = `${step.type}-${index}`;
+            if (step.type === 'say')
               return (
-                <div key={step.id} className="trail-say">
+                <div key={key} className="trail-say">
                   {step.text}
                 </div>
               );
-            if (step.kind === 'note')
+            if (step.type === 'note')
               return (
-                <div key={step.id} className="trail-row" data-note="true">
+                <div key={key} className="trail-row" data-note="true">
                   <span className="trail-icon">
                     <span
                       style={{
@@ -221,57 +235,44 @@ export function Trail({ turn, now }: { turn: Turn; now: number }) {
                   <span style={{ flex: 1, fontSize: 13, color: 'var(--muted)' }}>{step.text}</span>
                 </div>
               );
-            const active = step.status === 'running';
-            const isOpen = openStep === step.id;
+            if (step.type !== 'action') return null;
             return (
-              <div key={step.id} className="col">
-                <button
-                  type="button"
-                  className="trail-row"
-                  aria-expanded={isOpen}
-                  disabled={active || step.sources.length === 0}
-                  onClick={() => setOpenStep(isOpen ? null : step.id)}
-                >
+              <div key={key} className="col">
+                <div className="trail-row">
                   <span className="trail-icon">
-                    {active ? (
-                      <span style={{ color: 'var(--primary)', display: 'flex' }}>
-                        <Icon name="loader" size={14} stroke={2} className="spin" />
-                      </span>
-                    ) : (
-                      <span style={{ color: 'var(--secondary)', display: 'flex' }}>
-                        <Icon name={ACTION_ICON(step)} size={15} />
-                      </span>
-                    )}
+                    <span style={{ color: 'var(--secondary)', display: 'flex' }}>
+                      <Icon name={actionIcon(step)} size={15} />
+                    </span>
                   </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      fontSize: 13,
-                      color: active ? 'var(--text)' : 'var(--secondary)',
-                      minWidth: 0,
-                    }}
-                  >
+                  <span style={{ flex: 1, fontSize: 13, color: 'var(--secondary)', minWidth: 0 }}>
                     {step.label}
                     {step.meta ? (
                       <span style={{ color: 'var(--muted)' }}> · {step.meta}</span>
                     ) : null}
                   </span>
-                  {!active && step.sources.length > 0 ? (
-                    <span style={{ color: 'var(--placeholder)', display: 'flex' }}>
-                      <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={14} />
-                    </span>
-                  ) : null}
-                </button>
-                {!active && step.sources.length > 0 && (isOpen || steps.length <= 12) ? (
+                </div>
+                {step.sources.length ? (
                   <div className="trail-chips">
                     {step.sources.map((source) => (
-                      <SourceChip key={`${source.app}-${source.label}`} source={source} />
+                      <SourceChip key={`${source.app}-${source.title}`} source={source} />
                     ))}
                   </div>
                 ) : null}
               </div>
             );
           })}
+          {running && steps.length > 0 ? (
+            <div className="trail-row">
+              <span className="trail-icon">
+                <span style={{ color: 'var(--primary)', display: 'flex' }}>
+                  <Icon name="loader" size={14} stroke={2} className="spin" />
+                </span>
+              </span>
+              <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
+                {turn.status === 'paused' ? 'Paused' : 'Still working'}
+              </span>
+            </div>
+          ) : null}
           {doneStep ? (
             <div className="trail-row">
               <span className="trail-icon">
@@ -280,7 +281,7 @@ export function Trail({ turn, now }: { turn: Turn; now: number }) {
                 </span>
               </span>
               <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: 'var(--heading)' }}>
-                {doneStep.summary}
+                Worked for {elapsed}s{rest ? ` · ${rest}` : ''}
               </span>
             </div>
           ) : null}
@@ -294,161 +295,164 @@ export function Trail({ turn, now }: { turn: Turn; now: number }) {
 
 export function ResultCard({
   card,
-  permission,
-  onDecide,
-  children,
+  draft,
+  onSend,
+  onUndo,
   touch = false,
+  sending = false,
+  readOnly = false,
+  children,
 }: {
   card: ResultCardData;
-  permission: PermissionData | null;
-  onDecide: (decision: 'allow_once' | 'always' | 'deny') => void;
-  children?: ReactNode;
+  /** The draft this card carries, when its send button raised one. */
+  draft?: Draft;
+  onSend?: (handle: string) => void;
+  onUndo?: (handle: string) => void;
   touch?: boolean;
+  sending?: boolean;
+  readOnly?: boolean;
+  children?: ReactNode;
 }) {
-  const [more, setMore] = useState(false);
-  const [broken, setBroken] = useState(false);
   const size = touch ? 'xl' : 'sm';
-  const iconSize = touch ? 44 : 32;
-  const decided = permission
-    ? permission.status !== 'pending' && permission.status !== 'changed'
-    : false;
-  const allowed = permission?.status === 'allowed_once' || permission?.status === 'allowed_always';
-  const primaryIcon = (card.primary.icon ?? 'calendar') as IconName;
+  const about = card.facts.find((f) => f.label === 'About')?.value ?? null;
+  const chips = card.facts.filter((f) => f.label === 'When').map((f) => f.value);
+  const rows = card.facts.filter(
+    (f) => f.label !== 'About' && f.label !== 'When' && f.label !== 'Draft',
+  );
+  const draftBody = draft?.body ?? card.facts.find((f) => f.label === 'Draft')?.value ?? null;
+  const [broken, setBroken] = useState(false);
+  const action = (a: NonNullable<ResultCardData['primary_action']>, primary: boolean) => {
+    if (a.kind === 'open' || a.kind === 'download') {
+      return a.url ? (
+        <a
+          key={a.handle}
+          className={`btn btn-${size} btn-${primary ? 'primary' : 'outline'}`}
+          href={a.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {a.label}
+        </a>
+      ) : null;
+    }
+    if (a.kind === 'send') {
+      if (draft?.status === 'sent')
+        return (
+          <Badge key={a.handle} tone="success" dot>
+            Sent
+          </Badge>
+        );
+      if (draft?.status === 'awaiting_permission')
+        return (
+          <Badge key={a.handle} tone="outline">
+            Waiting for your decision
+          </Badge>
+        );
+      return (
+        <Button
+          key={a.handle}
+          size={size}
+          icon="send"
+          block={touch}
+          loading={sending}
+          disabled={readOnly}
+          onClick={() => onSend?.(a.handle)}
+        >
+          {a.label}
+        </Button>
+      );
+    }
+    return (
+      <Button
+        key={a.handle}
+        size={size}
+        variant="outline"
+        block={touch}
+        disabled={readOnly}
+        onClick={() => onUndo?.(a.handle)}
+      >
+        {a.label}
+      </Button>
+    );
+  };
+  const isDraft = Boolean(draftBody);
   return (
     <div className="result-card">
       <div className="result-body">
         {card.image && !broken ? (
-          <img
-            src={card.image.src}
-            alt={card.image.alt}
-            loading="lazy"
-            onError={() => setBroken(true)}
-          />
-        ) : card.image ? (
-          <div className="result-image-missing" role="img" aria-label={card.image.alt}>
-            <Icon name="image" size={22} />
-          </div>
+          <img src={card.image} alt="" loading="lazy" onError={() => setBroken(true)} />
         ) : null}
-        <div className="col grow" style={{ gap: 6 }}>
-          <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{card.overline}</span>
-            {card.example ? <Badge tone="outline">Example</Badge> : null}
-          </div>
-          <h3 style={{ fontSize: 20, fontWeight: 600, lineHeight: '26px' }}>{card.title}</h3>
-          <div className="result-facts">
-            {card.rating ? (
-              <span className="row" style={{ gap: 4, color: 'var(--rating)', fontWeight: 600 }}>
-                <Icon name="star" size={14} />
-                {card.rating}
-              </span>
-            ) : null}
-            {card.facts.map((fact, index) => (
-              <span key={fact} className="row" style={{ gap: 8 }}>
-                {index > 0 || card.rating ? (
-                  <span style={{ color: 'var(--line-strong)' }}>·</span>
-                ) : null}
-                <span>{fact}</span>
-              </span>
-            ))}
-          </div>
-          {card.description ? (
+        <div className="col grow" style={{ gap: 6, minWidth: 0 }}>
+          {isDraft ? (
+            <div className="row" style={{ gap: 10 }}>
+              <Avatar
+                initials={(draft?.recipient ?? card.title).slice(0, 2).toUpperCase()}
+                size={28}
+                tone="sage"
+              />
+              <div className="col grow" style={{ gap: 1 }}>
+                <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
+                  {card.title}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>{card.meta}</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>{card.meta}</span>
+              <h3 style={{ fontSize: 20, fontWeight: 600, lineHeight: '26px' }}>{card.title}</h3>
+            </>
+          )}
+          {isDraft ? (
+            <div className="draft-body">
+              {draft?.subject ? (
+                <div style={{ fontWeight: 500, marginBottom: 4 }}>{draft.subject}</div>
+              ) : null}
+              {draftBody}
+            </div>
+          ) : null}
+          {draft ? (
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              To {draft.recipient}
+              {draft.cc?.length ? ` · cc ${draft.cc.join(', ')}` : ''}
+              {draft.bcc?.length ? ` · bcc ${draft.bcc.join(', ')}` : ''}
+            </span>
+          ) : null}
+          {about ? (
             <p
               className="clamp2"
               style={{ fontSize: 13, lineHeight: '18px', color: 'var(--secondary)' }}
             >
-              {card.description}
+              {about}
             </p>
           ) : null}
-          {card.chips.length ? (
+          {rows.length ? (
+            <div className="col">
+              {rows.map((fact) => (
+                <div key={`${fact.label}-${fact.value}`} className="field-row">
+                  <span>{fact.label}</span>
+                  <span>{fact.value}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {chips.length ? (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-              {card.chips.map((chip) => (
+              {chips.map((chip) => (
                 <Badge key={chip} tone="chip">
                   {chip}
                 </Badge>
               ))}
             </div>
           ) : null}
-          <div className="card-actions" style={{ paddingTop: 4, position: 'relative' }}>
-            {permission ? (
-              allowed ? (
-                <Button size={size} variant="secondary" icon="check" disabled block={touch}>
-                  {card.primary.done_label ?? 'Done'}
-                </Button>
-              ) : permission.status === 'denied' ? (
-                <Button size={size} variant="secondary" disabled block={touch}>
-                  Not added
-                </Button>
-              ) : (
-                <Button
-                  size={size}
-                  icon={primaryIcon}
-                  block={touch}
-                  onClick={() => onDecide('allow_once')}
-                >
-                  {card.primary.label}
-                </Button>
-              )
-            ) : card.primary.effect.kind === 'link' ? (
-              <a
-                className="btn btn-sm btn-primary"
-                href={card.primary.effect.url}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {card.primary.label}
-              </a>
-            ) : (
-              <Button size="sm" icon={primaryIcon} disabled>
-                {card.primary.label}
-              </Button>
-            )}
-            <IconButton
-              name="mapPin"
-              label="Open in Maps"
-              variant="outline"
-              size={iconSize}
-              iconSize={touch ? 18 : 16}
-            />
-            {permission && !decided ? (
-              <div style={{ position: 'relative' }}>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  iconRight="chevronDown"
-                  onClick={() => setMore((m) => !m)}
-                  aria-expanded={more}
-                >
-                  More
-                </Button>
-                <Popover open={more} onClose={() => setMore(false)}>
-                  <Menu label="More" width={232}>
-                    <MenuItem
-                      icon="check"
-                      onSelect={() => {
-                        setMore(false);
-                        onDecide('always');
-                      }}
-                    >
-                      Always allow this
-                    </MenuItem>
-                    <MenuItem
-                      icon="x"
-                      onSelect={() => {
-                        setMore(false);
-                        onDecide('deny');
-                      }}
-                    >
-                      Don’t add it
-                    </MenuItem>
-                  </Menu>
-                </Popover>
-              </div>
-            ) : null}
-          </div>
-          {permission?.status === 'changed' ? (
-            <span style={{ fontSize: 12, color: 'var(--danger)' }}>
-              This changed while you were reading it. Take another look and decide again.
-            </span>
+          {card.primary_action || card.secondary_actions.length ? (
+            <div
+              className="card-actions"
+              style={{ paddingTop: 4, justifyContent: isDraft ? 'flex-end' : undefined }}
+            >
+              {card.primary_action ? action(card.primary_action, true) : null}
+              {card.secondary_actions.map((a) => action(a, false))}
+            </div>
           ) : null}
         </div>
       </div>
@@ -461,13 +465,22 @@ export function ResultCard({
 
 export function ReceiptRow({
   receipt,
+  reversed,
+  now,
   onUndo,
   standalone = false,
 }: {
-  receipt: ReceiptData;
+  receipt: Receipt;
+  reversed: boolean;
+  now: number;
   onUndo: () => void;
   standalone?: boolean;
 }) {
+  const canUndo =
+    Boolean(receipt.undo) &&
+    !reversed &&
+    (receipt.undo ? Date.parse(receipt.undo.valid_until) > now : false);
+  const reversal = receipt.what.startsWith('Removed again');
   return (
     <div className="receipt" data-standalone={standalone ? 'true' : undefined}>
       <span
@@ -477,27 +490,33 @@ export function ReceiptRow({
           width: 20,
           height: 20,
           borderRadius: 999,
-          background: receipt.undone ? 'var(--line)' : 'var(--success-soft)',
-          color: receipt.undone ? 'var(--muted)' : 'var(--success)',
+          background: reversed || reversal ? 'var(--line)' : 'var(--success-soft)',
+          color: reversed || reversal ? 'var(--muted)' : 'var(--success)',
           flexShrink: 0,
         }}
       >
-        <Icon name={receipt.undone ? 'refresh' : 'check'} size={12} stroke={3} />
+        <Icon name={reversed || reversal ? 'refresh' : 'check'} size={12} stroke={3} />
       </span>
-      <span className="grow" style={{ fontSize: 13, color: 'var(--text)', minWidth: 0 }}>
-        {receipt.undone ? `Undone · ${receipt.what.toLowerCase()} was reversed` : receipt.what}{' '}
-        {!receipt.undone ? (
-          <span style={{ color: 'var(--muted)' }}>
-            · {receipt.when} · {receipt.where}
-          </span>
-        ) : null}
+      <span
+        className="grow"
+        style={{
+          fontSize: 13,
+          color: 'var(--text)',
+          minWidth: 0,
+          textDecoration: reversed ? 'line-through' : undefined,
+        }}
+      >
+        {receipt.what}{' '}
+        <span style={{ color: 'var(--muted)' }}>
+          · {timeOf(receipt.when)} · {receipt.where}
+        </span>
       </span>
-      {receipt.undo && !receipt.undone ? (
+      {canUndo ? (
         <Button
           variant="outline"
           size="sm"
           onClick={onUndo}
-          title={`Undo within ${receipt.undo.until}`}
+          title={`Undo until ${timeOf(receipt.undo?.valid_until ?? receipt.when)}`}
         >
           Undo
         </Button>
@@ -506,99 +525,37 @@ export function ReceiptRow({
   );
 }
 
-/* ---------- draft ---------- */
-
-export function DraftCard({
-  draft,
-  onSend,
-  onEdit,
-}: {
-  draft: DraftData;
-  onSend: () => void;
-  onEdit: (body: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [body, setBody] = useState(draft.body);
-  useEffect(() => setBody(draft.body), [draft.body]);
-  const sent = draft.status === 'sent';
-  return (
-    <div className="card-pad" style={{ gap: 10 }}>
-      <div className="row" style={{ gap: 10 }}>
-        <Avatar initials={draft.recipient.initials} size={28} tone="sage" />
-        <div className="col grow" style={{ gap: 1 }}>
-          <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-            Message to {draft.recipient.name}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {sent ? `Sent via ${draft.channel_label}` : 'Nothing is sent until you confirm'}
-          </span>
-        </div>
-        {isLogo(draft.channel) ? <Logo name={draft.channel} size={24} /> : null}
-      </div>
-      <div className="draft-body">
-        {editing ? (
-          <textarea
-            value={body}
-            onChange={(event) => setBody(event.target.value)}
-            aria-label="Draft"
-          />
-        ) : (
-          body
-        )}
-      </div>
-      <div className="card-actions" style={{ justifyContent: 'flex-end' }}>
-        {sent ? (
-          <Badge tone="success" dot>
-            Sent
-          </Badge>
-        ) : editing ? (
-          <>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                setEditing(false);
-                onEdit(body);
-              }}
-            >
-              Save draft
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button size="sm" variant="ghost" icon="pencil" onClick={() => setEditing(true)}>
-              Edit draft
-            </Button>
-            <Button size="sm" icon="send" onClick={onSend} loading={draft.status === 'sending'}>
-              Send via {draft.channel_label}
-            </Button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ---------- permission ---------- */
+
+const DAYS = [1, 7, 14, 30] as const;
 
 export function PermissionCard({
   permission,
+  decided,
   onDecide,
+  touch = false,
 }: {
-  permission: PermissionData;
-  onDecide: (decision: 'allow_once' | 'always' | 'deny') => void;
+  permission: Permission;
+  decided: PermissionOption | 'closed' | null;
+  onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
+  touch?: boolean;
 }) {
-  const pending = permission.status === 'pending' || permission.status === 'changed';
+  const [always, setAlways] = useState(false);
+  const [cap, setCap] = useState('10');
+  const [days, setDays] = useState('30');
+  const [reconsent, setReconsent] = useState('7');
+  const pending = decided === null;
   const outcome =
-    permission.status === 'allowed_once'
+    decided === 'allow_once'
       ? 'Allowed once'
-      : permission.status === 'allowed_always'
+      : decided === 'always'
         ? 'Always allowed'
-        : permission.status === 'denied'
+        : decided === 'deny'
           ? 'Denied'
-          : null;
+          : decided === 'closed'
+            ? 'Decided'
+            : null;
+  const can = (option: PermissionOption) => permission.options.includes(option);
   return (
     <div className="card-pad">
       <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
@@ -614,58 +571,157 @@ export function PermissionCard({
             flexShrink: 0,
           }}
         >
-          {isLogo(permission.connection.app) ? (
-            <Logo name={permission.connection.app} size={24} />
-          ) : (
-            <Icon name="lock" size={20} />
-          )}
+          <Icon name="lock" size={20} />
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-            {permission.title}
+            {permission.what}
           </span>
-          {permission.detail ? (
-            <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{permission.detail}</span>
-          ) : null}
+          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{permission.why[0]}</span>
         </div>
         {outcome ? (
-          <Badge tone={permission.status === 'denied' ? 'neutral' : 'success'}>{outcome}</Badge>
+          <Badge tone={decided === 'allow_once' || decided === 'always' ? 'success' : 'neutral'}>
+            {outcome}
+          </Badge>
         ) : null}
       </div>
-      <div className="col">
-        {Object.entries(permission.fields).map(([key, value]) => (
-          <div key={key} className="field-row">
-            <span>{key.replace(/_/g, ' ')}</span>
-            <span>{Array.isArray(value) ? value.join(', ') : String(value)}</span>
+      {permission.why.length > 1 ? (
+        <div className="col">
+          {permission.why.slice(1).map((line) => {
+            const [label, ...value] = line.split(': ');
+            return (
+              <div key={line} className="field-row">
+                <span>{label}</span>
+                <span>{value.join(': ')}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {permission.preview ? <ResultCard card={permission.preview} readOnly touch={touch} /> : null}
+      {permission.draft ? (
+        <div className="col" style={{ gap: 6 }}>
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+            To {permission.draft.recipient}
+            {permission.draft.cc?.length ? ` · cc ${permission.draft.cc.join(', ')}` : ''}
+            {permission.draft.bcc?.length ? ` · bcc ${permission.draft.bcc.join(', ')}` : ''}
+            {' · '}
+            {permission.draft.channel === 'email' ? 'email' : 'message'}
+          </span>
+          <div className="draft-body">
+            {permission.draft.subject ? (
+              <div style={{ fontWeight: 500, marginBottom: 4 }}>{permission.draft.subject}</div>
+            ) : null}
+            {permission.draft.body}
           </div>
-        ))}
-      </div>
+        </div>
+      ) : null}
       <div
         className="row"
         style={{ gap: 8, fontSize: 12, color: 'var(--muted)', alignItems: 'flex-start' }}
       >
         <Icon name="lock" size={14} />
-        <span>{permission.rule_text}</span>
-      </div>
-      {permission.status === 'changed' ? (
-        <span style={{ fontSize: 13, color: 'var(--danger)' }}>
-          This changed while you were reading it. Take another look and decide again.
+        <span>
+          {can('always')
+            ? '“Always allow” creates a rule with a limit and an expiry you can see and revoke in Settings.'
+            : 'This request can be allowed once or denied.'}
         </span>
-      ) : null}
+      </div>
       {pending ? (
         <div className="card-actions">
-          <Button size="sm" onClick={() => onDecide('allow_once')}>
-            Allow once
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => onDecide('always')}>
-            Always allow
-          </Button>
+          {can('allow_once') ? (
+            <Button size={touch ? 'xl' : 'sm'} block={touch} onClick={() => onDecide('allow_once')}>
+              Allow once
+            </Button>
+          ) : null}
+          {can('always') ? (
+            <Button
+              size={touch ? 'xl' : 'sm'}
+              variant="outline"
+              block={touch}
+              onClick={() => setAlways(true)}
+            >
+              Always allow
+            </Button>
+          ) : null}
           <div className="grow" />
-          <Button size="sm" variant="ghost" onClick={() => onDecide('deny')}>
-            Deny
-          </Button>
+          {can('deny') ? (
+            <Button
+              size={touch ? 'xl' : 'sm'}
+              variant="ghost"
+              block={touch}
+              onClick={() => onDecide('deny')}
+            >
+              Deny
+            </Button>
+          ) : null}
         </div>
       ) : null}
+      <Dialog
+        open={always}
+        onClose={() => setAlways(false)}
+        title="Always allow this?"
+        sub="A rule with a limit and an expiry. You can revoke it any time under Settings › Rules."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setAlways(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setAlways(false);
+                onDecide('always', {
+                  count_cap: Number(cap),
+                  expires_at: new Date(Date.now() + Number(days) * 86_400_000).toISOString(),
+                  reconsent_after_days: Number(reconsent),
+                });
+              }}
+            >
+              Create the rule
+            </Button>
+          </>
+        }
+      >
+        <Field label="Up to">
+          <Select
+            label="Up to"
+            value={cap}
+            onChange={setCap}
+            width="100%"
+            options={['1', '5', '10', '25', '50'].map((n) => ({
+              value: n,
+              label: `${n} time${n === '1' ? '' : 's'}`,
+            }))}
+          />
+        </Field>
+        <Field label="For the next">
+          <Select
+            label="For the next"
+            value={days}
+            onChange={setDays}
+            width="100%"
+            options={DAYS.map((n) => ({
+              value: String(n),
+              label: `${n} day${n === 1 ? '' : 's'}`,
+            }))}
+          />
+        </Field>
+        <Field
+          label="Ask me again after"
+          hint="Even inside the limit, Melete checks in again after this many days."
+        >
+          <Select
+            label="Ask me again after"
+            value={reconsent}
+            onChange={setReconsent}
+            width="100%"
+            options={['1', '3', '7', '14', '30'].map((n) => ({
+              value: n,
+              label: `${n} day${n === '1' ? '' : 's'}`,
+            }))}
+          />
+        </Field>
+      </Dialog>
     </div>
   );
 }
@@ -674,40 +730,28 @@ export function PermissionCard({
 
 export function Questionnaire({
   question,
-  onAnswer,
+  answered,
   active,
+  onAnswer,
+  onOwn,
 }: {
-  question: QuestionData;
-  onAnswer: (text: string) => void;
+  question: Question;
+  answered: string | null;
   /** Only the newest open question listens to the number keys. */
   active: boolean;
+  onAnswer: (optionId: string) => void;
+  onOwn: (text: string) => void;
 }) {
   const [own, setOwn] = useState('');
-  const answered = question.answered;
   const options = question.options.slice(0, 4);
-  useEffect(() => {
-    if (!active || answered) return;
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-      const n = Number(event.key);
-      if (!Number.isInteger(n) || n < 1 || n > options.length + 1) return;
-      event.preventDefault();
-      const option = options[n - 1];
-      if (option) onAnswer(option.label);
-      else document.getElementById(`own-${question.id}`)?.focus();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [active, answered, options, onAnswer, question.id]);
   return (
-    <div className="question">
+    <div className="question" data-active={active ? 'true' : undefined}>
       <div
         className="row"
         style={{ justifyContent: 'space-between', padding: '0 2px 4px', gap: 8 }}
       >
         <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-          {question.title}
+          {question.text}
         </span>
         {!answered ? (
           <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
@@ -716,15 +760,16 @@ export function Questionnaire({
         ) : null}
       </div>
       {options.map((option, index) => {
-        const on = answered === option.label;
+        const [label, ...description] = option.label.split(' · ');
+        const on = answered === option.id;
         return (
           <button
-            key={option.label}
+            key={option.id}
             type="button"
             className="question-option"
             data-on={on ? 'true' : undefined}
             disabled={Boolean(answered)}
-            onClick={() => onAnswer(option.label)}
+            onClick={() => onAnswer(option.id)}
           >
             <span className="kbd">{index + 1}</span>
             <span
@@ -735,10 +780,10 @@ export function Questionnaire({
                 whiteSpace: 'nowrap',
               }}
             >
-              {option.label}
+              {label}
             </span>
             <span className="clamp1 grow" style={{ fontSize: 13, color: 'var(--muted)' }}>
-              {option.description}
+              {description.join(' · ')}
             </span>
             {on ? (
               <span
@@ -763,7 +808,7 @@ export function Questionnaire({
           className="question-own"
           onSubmit={(event) => {
             event.preventDefault();
-            if (own.trim()) onAnswer(own.trim());
+            if (own.trim()) onOwn(own.trim());
           }}
         >
           <span className="kbd">{options.length + 1}</span>
@@ -775,321 +820,12 @@ export function Questionnaire({
             aria-label="Your own answer"
           />
         </form>
-      ) : answered && !options.some((o) => o.label === answered) ? (
-        <div className="question-own">
-          <span className="kbd">{options.length + 1}</span>
-          <span style={{ fontSize: 14, color: 'var(--heading)' }}>{answered}</span>
-        </div>
       ) : null}
-    </div>
-  );
-}
-
-/* ---------- unknown outcome ---------- */
-
-export function UnknownCard({
-  unknown,
-  onResolve,
-}: {
-  unknown: UnknownOutcomeData;
-  onResolve: (resolution: 'succeeded' | 'failed' | 'unresolved') => void;
-}) {
-  const settled = unknown.resolution;
-  return (
-    <div className="card-pad">
-      <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
-        <span
-          className="row"
-          style={{
-            justifyContent: 'center',
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: 'var(--sand)',
-            color: 'var(--sand-ink)',
-            flexShrink: 0,
-          }}
-        >
-          <Icon name="alert" size={20} />
+      {question.if_ignored && !answered ? (
+        <span style={{ fontSize: 12, color: 'var(--muted)', padding: '0 2px' }}>
+          {question.if_ignored}
         </span>
-        <div className="col grow" style={{ gap: 2 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-            I sent this once and never heard back.
-          </span>
-          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>
-            It may or may not have arrived. I have not sent it again. What I tried: {unknown.what}.
-          </span>
-        </div>
-        {settled ? (
-          <Badge
-            tone={settled === 'succeeded' ? 'success' : settled === 'failed' ? 'danger' : 'neutral'}
-          >
-            {settled === 'succeeded'
-              ? 'It arrived'
-              : settled === 'failed'
-                ? 'It did not'
-                : 'Still unsure'}
-          </Badge>
-        ) : null}
-      </div>
-      {!settled ? (
-        <div className="card-actions">
-          <Button size="sm" onClick={() => onResolve('succeeded')}>
-            It arrived
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => onResolve('failed')}>
-            It did not
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => onResolve('unresolved')}>
-            I can’t tell yet
-          </Button>
-        </div>
       ) : null}
-    </div>
-  );
-}
-
-/* ---------- browser ---------- */
-
-export function BrowserFrame({
-  session,
-  dense = false,
-  height,
-}: {
-  session: BrowserSessionData;
-  dense?: boolean;
-  height?: number;
-}) {
-  const p = session.preview;
-  return (
-    <div className="browser-frame" style={{ height }}>
-      <div className="browser-bar" data-dense={dense ? 'true' : undefined}>
-        <span className="browser-dots" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </span>
-        <span className="browser-url">
-          <Icon name="lock" size={dense ? 12 : 9} />
-          {session.url}
-        </span>
-      </div>
-      <div className="browser-page" data-dense={dense ? 'true' : undefined}>
-        <div className="row" style={{ gap: dense ? 12 : 6 }}>
-          <span
-            style={{
-              width: dense ? 72 : 44,
-              height: dense ? 14 : 8,
-              borderRadius: 4,
-              background: 'var(--line)',
-            }}
-          />
-          <span
-            style={{
-              width: dense ? 220 : 120,
-              height: dense ? 26 : 14,
-              borderRadius: 4,
-              background: 'var(--line)',
-            }}
-          />
-          <span className="grow" />
-          <span
-            style={{
-              width: dense ? 64 : 36,
-              height: dense ? 26 : 14,
-              borderRadius: 4,
-              background: 'var(--line)',
-            }}
-          />
-        </div>
-        <div className="col" style={{ gap: dense ? 6 : 3 }}>
-          <span
-            style={{
-              fontFamily: 'var(--font-head)',
-              fontSize: dense ? 22 : 13,
-              fontWeight: 700,
-              color: 'var(--heading)',
-              lineHeight: 1.2,
-            }}
-          >
-            {p.title}
-          </span>
-          <span style={{ fontSize: dense ? 13 : 9, color: 'var(--secondary)' }}>{p.sub}</span>
-        </div>
-        {p.chips.length ? (
-          <div className="row" style={{ gap: dense ? 12 : 6, flexWrap: 'wrap' }}>
-            {p.chips.map((chip) => (
-              <span key={chip} className="browser-pill">
-                {chip}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {p.slots.length ? (
-          <div className="row" style={{ gap: dense ? 8 : 4, flexWrap: 'wrap' }}>
-            {p.slots.map((slot) => (
-              <span
-                key={slot}
-                className="browser-pill"
-                data-on={slot === p.chosen ? 'true' : undefined}
-              >
-                {slot}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {dense ? (
-          <div className="col" style={{ gap: 8 }}>
-            <span
-              style={{ width: '100%', height: 10, borderRadius: 4, background: 'var(--line)' }}
-            />
-            <span
-              style={{ width: '92%', height: 10, borderRadius: 4, background: 'var(--line)' }}
-            />
-            <span
-              style={{ width: '60%', height: 10, borderRadius: 4, background: 'var(--line)' }}
-            />
-          </div>
-        ) : null}
-        {session.status === 'working' ? (
-          <span
-            style={{
-              position: 'absolute',
-              left: dense ? '47%' : '45%',
-              top: dense ? '47%' : '62%',
-              color: 'var(--heading)',
-              display: 'flex',
-            }}
-          >
-            <Icon name="cursor" size={dense ? 18 : 12} fill="#ffffff" />
-          </span>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-export function BrowserCard({
-  session,
-  onTakeControl,
-  onHandBack,
-  onStop,
-  onOpen,
-}: {
-  session: BrowserSessionData;
-  onTakeControl: () => void;
-  onHandBack: () => void;
-  onStop: () => void;
-  onOpen: () => void;
-}) {
-  const sub =
-    session.status === 'working' ? (
-      <span className="row" style={{ gap: 6, fontSize: 13, color: 'var(--secondary)' }}>
-        <span className="spin" style={{ display: 'flex', color: 'var(--primary)' }}>
-          <Icon name="loader" size={12} stroke={2} />
-        </span>
-        Working · {session.task}
-      </span>
-    ) : session.status === 'needs-you' ? (
-      <span className="row" style={{ gap: 6, fontSize: 13, color: 'var(--secondary)' }}>
-        <span style={{ color: 'var(--danger)', display: 'flex' }}>
-          <Icon name="alert" size={14} />
-        </span>
-        Needs you · {session.attention ?? 'Take over, then hand it back'}
-      </span>
-    ) : session.status === 'stopped' ? (
-      <span className="row" style={{ gap: 6, fontSize: 13, color: 'var(--secondary)' }}>
-        <Icon name="square" size={14} />
-        Stopped · nothing was booked
-      </span>
-    ) : (
-      <span className="row" style={{ gap: 6, fontSize: 13, color: 'var(--secondary)' }}>
-        <span style={{ color: 'var(--success)', display: 'flex' }}>
-          <Icon name="circleCheck" size={14} />
-        </span>
-        Completed · {session.task}
-      </span>
-    );
-  return (
-    <div className="card-pad">
-      <div className="row" style={{ gap: 12 }}>
-        <span
-          className="row"
-          style={{
-            justifyContent: 'center',
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: 'var(--soft)',
-            border: '1px solid var(--line)',
-            color: 'var(--secondary)',
-            flexShrink: 0,
-          }}
-        >
-          <Icon name="globe" size={20} />
-        </span>
-        <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>Browser</span>
-          {sub}
-        </div>
-        {session.status === 'needs-you' ? (
-          <Badge tone="danger">Action needed</Badge>
-        ) : (
-          <Badge tone="outline">Sandboxed</Badge>
-        )}
-      </div>
-      <BrowserFrame session={session} height={200} />
-      {session.status === 'working' ? (
-        <div className="card-actions">
-          <Button size="sm" icon="cursor" onClick={onTakeControl}>
-            Take control
-          </Button>
-          <Button size="sm" variant="outline" icon="square" onClick={onStop}>
-            Stop the task
-          </Button>
-          <div className="grow" />
-          <Button size="sm" variant="ghost" icon="maximize" onClick={onOpen}>
-            Open browser
-          </Button>
-        </div>
-      ) : session.status === 'needs-you' ? (
-        <div className="col" style={{ gap: 10 }}>
-          <div
-            className="row"
-            style={{
-              gap: 10,
-              padding: '10px 12px',
-              borderRadius: 10,
-              background: 'var(--danger-soft)',
-              fontSize: 13,
-              color: 'var(--text)',
-            }}
-          >
-            <span style={{ color: 'var(--danger)', display: 'flex' }}>
-              <Icon name="lock" size={16} />
-            </span>
-            <span className="grow">
-              Melete never types your passwords. Do this step yourself, then hand it back.
-            </span>
-          </div>
-          <div className="card-actions">
-            <Button size="sm" icon="check" onClick={onHandBack}>
-              I’m done, continue
-            </Button>
-            <Button size="sm" variant="outline" icon="maximize" onClick={onOpen}>
-              Open browser
-            </Button>
-            <div className="grow" />
-            <Button size="sm" variant="ghost" onClick={onStop}>
-              Stop the task
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <Button size="sm" variant="outline" icon="maximize" block onClick={onOpen}>
-          Open browser
-        </Button>
-      )}
     </div>
   );
 }
@@ -1098,60 +834,37 @@ export function BrowserCard({
 
 export function ActionBar({
   turn,
-  onReact,
   onCopy,
-  onSave,
   touch,
 }: {
-  turn: Turn;
-  onReact: (reaction: Reaction) => void;
+  turn: TranscriptTurn;
   onCopy: () => void;
-  onSave: () => void;
   touch: boolean;
 }) {
   const s = touch ? 40 : 28;
   const i = touch ? 18 : 15;
   return (
     <div className="action-bar">
-      <button
-        type="button"
-        className="btn btn-sm btn-ghost"
-        style={{ height: s, paddingLeft: 8, paddingRight: 8, color: 'var(--text)' }}
-        onClick={onSave}
-      >
-        <Icon name="bookmark" size={i} />
-        Save to plan
-      </button>
       <IconButton name="copy" label="Copy" size={s} iconSize={i} onClick={onCopy} />
-      <IconButton
-        name="thumbsUp"
-        label="Good answer"
-        size={s}
-        iconSize={i}
-        on={turn.reaction === 'up'}
-        onClick={() => onReact(turn.reaction === 'up' ? null : 'up')}
-      />
-      <IconButton
-        name="thumbsDown"
-        label="Not helpful"
-        size={s}
-        iconSize={i}
-        on={turn.reaction === 'down'}
-        onClick={() => onReact(turn.reaction === 'down' ? null : 'down')}
-      />
       <div className="grow" />
-      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-        {timeOf(turn.ended_at ?? turn.at)}
-      </span>
+      <span style={{ fontSize: 12, color: 'var(--muted)' }}>{timeOf(turn.turn.created_at)}</span>
     </div>
   );
 }
 
 /* ---------- avatars ---------- */
 
-export function TurnAvatar({ agent, turn }: { agent: Agent | null; turn: Turn }) {
+export function TurnAvatar({ agent, status }: { agent: Agent | null; status: TurnStatus }) {
   if (!agent) return <MeleteAvatar size={28} />;
-  const status =
-    turn.status === 'waiting' ? 'idle' : turn.status === 'stopped' ? 'inactive' : turn.status;
-  return <AgentFace look={agent.look} size={28} state={faceStateFor(status)} />;
+  const mapped =
+    status === 'working'
+      ? 'running'
+      : status === 'needs_you'
+        ? 'idle'
+        : status === 'stopped'
+          ? 'inactive'
+          : status;
+  return <AgentFace look={lookOf(agent)} size={28} state={faceStateFor(mapped)} />;
 }
+
+export const answerText = answerOf;

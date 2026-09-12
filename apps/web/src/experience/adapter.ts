@@ -1,175 +1,241 @@
 /**
- * The one place the interface talks to a backend. Everything a surface needs
- * is a method here, typed by ./types.ts. The mock serves these routes under
- * /surfaces; the experience contract in packages/contracts/src/experience.ts is
- * the target, and this file is where its shapes are adopted.
+ * The one place the interface talks to a backend: the experience contract in
+ * packages/contracts/src/experience.ts, through the typed client generated
+ * from openapi.json. The same calls reach apps/mock-api and a real service.
  *
  * Requests never throw on a non-2xx status: every call resolves to
- * { data, error }, and `error` is the sentence the service gave.
+ * { data, error, unavailable }. `error` is the sentence the service gave;
+ * `unavailable` is the reason a capability is not connected, and a surface
+ * that gets one is not drawn.
  */
-import { readSse } from '@melete/client';
+import { createMeleteClient, errorMessage, readSse } from '@melete/client';
 import type {
   Agent,
+  AgentInput,
   AgentTemplate,
   Automation,
-  Capabilities,
-  ConnectionData,
+  AutomationCreate,
+  BrowserSession,
   Conversation,
-  ConversationEvent,
-  ConversationSummary,
-  DayPanel,
-  HomeData,
+  ConversationCreate,
+  Draft,
+  ExperienceEvent,
+  Home,
+  MemoryExplanation,
   MemoryItem,
-  OnboardingAnswer,
-  PaletteHit,
+  MessageAcceptance,
+  Permission,
+  PermissionOutcome,
   Plan,
-  PlanTemplate,
+  PlanCreate,
   Profile,
-  Reaction,
+  Question,
+  Receipt,
+  ResultCard,
   Rule,
-  Session,
-  StreamItem,
+  RuleBounds,
+  SearchResult,
+  SendOutcome,
+  Task,
+  TaskInput,
+  Turn,
 } from './types.ts';
+import { isNotAvailable } from './types.ts';
 
-export type Result<T> = { data: T; error: null } | { data: null; error: string };
+export type Result<T> =
+  | { data: T; error: null; unavailable: null }
+  | { data: null; error: string; unavailable: null }
+  | { data: null; error: null; unavailable: string };
 
 export const API_BASE_URL: string =
   (import.meta.env.VITE_MELETE_API as string | undefined) ?? 'http://localhost:3210';
 
-const base = API_BASE_URL.replace(/\/+$/, '');
+export const client = createMeleteClient({ baseUrl: API_BASE_URL });
 
-async function call<T>(
-  method: 'GET' | 'POST' | 'DELETE',
-  path: string,
-  body?: unknown,
+const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
+
+/** Turn an openapi-fetch result into a Result, reading not_available as a reason. */
+function settle<T>(outcome: { data?: unknown; error?: unknown; response?: Response }): Result<T> {
+  if (outcome.data !== undefined) {
+    if (isNotAvailable(outcome.data))
+      return { data: null, error: null, unavailable: outcome.data.reason };
+    return { data: outcome.data as T, error: null, unavailable: null };
+  }
+  return { data: null, error: errorMessage(outcome.error, OFFLINE), unavailable: null };
+}
+
+async function guard<T>(
+  call: () => Promise<{ data?: unknown; error?: unknown }>,
 ): Promise<Result<T>> {
   try {
-    const response = await fetch(`${base}/surfaces${path}`, {
-      method,
-      credentials: 'include',
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    const parsed: unknown = text ? JSON.parse(text) : null;
-    if (!response.ok) {
-      const message =
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        'error' in parsed &&
-        typeof (parsed as { error: { message?: unknown } }).error?.message === 'string'
-          ? (parsed as { error: { message: string } }).error.message
-          : `The request failed (${response.status}).`;
-      return { data: null, error: message };
-    }
-    return { data: parsed as T, error: null };
+    return settle<T>(await call());
   } catch {
-    return { data: null, error: 'Couldn’t reach Melete. Check that the service is running.' };
+    return { data: null, error: OFFLINE, unavailable: null };
   }
 }
 
-const get = <T>(path: string) => call<T>('GET', path);
-const post = <T>(path: string, body?: unknown) => call<T>('POST', path, body ?? {});
-const del = <T>(path: string) => call<T>('DELETE', path);
+const api = client.api;
+const path = (id: string) => ({ params: { path: { id } } });
 
 export const adapter = {
-  capabilities: () => get<Capabilities>('/capabilities'),
-  session: () => get<Session>('/session'),
-  signIn: (email: string) => post<{ sent: true }>('/session/sign-in', { email }),
-  oauth: (provider: 'google' | 'apple') => post<Session>('/session/oauth', { provider }),
-  signOut: () => post<Session>('/session/sign-out'),
-  /** The magic link the mock answers with. A real service sends mail. */
-  completeSignIn: (email: string) => post<Session>('/session/complete', { email }),
-  saveProfile: (profile: Partial<Profile>) => post<Session>('/session/profile', profile),
-  saveAnswers: (answers: OnboardingAnswer[]) =>
-    post<{ items: MemoryItem[] }>('/onboarding/answers', { answers }),
-  completeOnboarding: (body: { agent_id: string | null; first_message: string | null }) =>
-    post<{ session: Session; conversation_id: string | null }>('/onboarding/complete', body),
+  /* ---------- session ---------- */
+  profile: () => guard<{ profile: Profile }>(() => api.GET('/profile')),
+  saveProfile: (profile: Profile) =>
+    guard<{ profile: Profile }>(() => api.PATCH('/profile', { body: profile })),
+  magicLink: (email: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link', { body: { email } })),
+  consumeMagicLink: (token: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link/consume', { body: { token } })),
+  signInGoogle: () => guard<{ status: 'ok' }>(() => api.POST('/signin/google')),
+  signInApple: () => guard<{ status: 'ok' }>(() => api.POST('/signin/apple')),
 
-  home: () => get<HomeData>('/home'),
-  day: () => get<DayPanel>('/day'),
-  toggleTask: (id: string, done: boolean) => post<DayPanel>(`/day/tasks/${id}`, { done }),
-  addTask: (text: string) => post<DayPanel>('/day/tasks', { text }),
+  /* ---------- home, tasks ---------- */
+  home: () => guard<Home>(() => api.GET('/home')),
+  tasks: () => guard<{ tasks: Task[] }>(() => api.GET('/tasks')),
+  addTask: (title: string) =>
+    guard<{ task: Task }>(() => api.POST('/tasks', { body: { title, due_at: null, done: false } })),
+  setTask: (task: Task, patch: Partial<TaskInput>) =>
+    guard<{ task: Task }>(() =>
+      api.PATCH('/tasks/{id}', {
+        ...path(task.id),
+        body: { title: task.title, due_at: task.due_at, done: task.done, ...patch },
+      }),
+    ),
+  deleteTask: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/tasks/{id}', path(id))),
 
-  conversations: () => get<{ conversations: ConversationSummary[] }>('/conversations'),
-  conversation: (id: string) => get<Conversation>(`/conversations/${id}`),
-  startConversation: (body: { text: string; agent_id: string | null; plan_id?: string }) =>
-    post<{ conversation: Conversation }>('/conversations', body),
-  send: (id: string, text: string) =>
-    post<{ conversation: Conversation }>(`/conversations/${id}/messages`, { text }),
-  pause: (id: string) => post<{ ok: true }>(`/conversations/${id}/pause`),
-  resume: (id: string) => post<{ ok: true }>(`/conversations/${id}/resume`),
-  stop: (id: string) => post<{ ok: true }>(`/conversations/${id}/stop`),
-  setAgent: (id: string, agent_id: string | null) =>
-    post<{ conversation: Conversation }>(`/conversations/${id}/agent`, { agent_id }),
-  react: (id: string, turn_id: string, reaction: Reaction) =>
-    post<{ ok: true }>(`/conversations/${id}/reactions`, { turn_id, reaction }),
-  rename: (id: string, title: string) =>
-    post<{ conversation: Conversation }>(`/conversations/${id}/rename`, { title }),
-  pin: (id: string, pinned: boolean) =>
-    post<{ conversation: Conversation }>(`/conversations/${id}/pin`, { pinned }),
-  deleteConversation: (id: string) => del<{ ok: true }>(`/conversations/${id}`),
+  /* ---------- conversations ---------- */
+  conversations: () => guard<{ conversations: Conversation[] }>(() => api.GET('/conversations')),
+  conversation: (id: string) =>
+    guard<{ conversation: Conversation }>(() => api.GET('/conversations/{id}', path(id))),
+  createConversation: (body: ConversationCreate) =>
+    guard<{ conversation: Conversation }>(() => api.POST('/conversations', { body })),
+  turns: (id: string) =>
+    guard<{ turns: Turn[] }>(() => api.GET('/conversations/{id}/messages', path(id))),
+  send: (id: string, text: string, key: string) =>
+    guard<MessageAcceptance>(() =>
+      api.POST('/conversations/{id}/messages', {
+        ...path(id),
+        headers: { 'Idempotency-Key': key },
+        body: { text },
+      }),
+    ),
+  pause: (id: string) =>
+    guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/pause', path(id))),
+  resume: (id: string) =>
+    guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/resume', path(id))),
+  stop: (id: string) =>
+    guard<{ conversation: Conversation }>(() => api.POST('/conversations/{id}/stop', path(id))),
+  setAgent: (id: string, agent_id: string) =>
+    guard<{ conversation: Conversation }>(() =>
+      api.PATCH('/conversations/{id}/agent', { ...path(id), body: { agent_id } }),
+    ),
+  cards: (id: string) =>
+    guard<{ cards: ResultCard[] }>(() => api.GET('/conversations/{id}/cards', path(id))),
+  receipts: (id: string) =>
+    guard<{ receipts: Receipt[] }>(() => api.GET('/conversations/{id}/receipts', path(id))),
+  drafts: (id: string) =>
+    guard<{ drafts: Draft[] }>(() => api.GET('/conversations/{id}/drafts', path(id))),
+  eventsSince: (id: string, since: number) =>
+    guard<{ events: ExperienceEvent[]; next_cursor: number; has_more: boolean }>(() =>
+      api.GET('/conversations/{id}/events', {
+        params: { path: { id }, query: { since, limit: 200 } },
+      }),
+    ),
 
-  decide: (
-    permission_id: string,
-    decision: 'allow_once' | 'always' | 'deny',
-    payload_hash: string,
-  ) => post<{ ok: true }>(`/permissions/${permission_id}`, { decision, payload_hash }),
-  undo: (receipt_id: string) => post<{ ok: true }>(`/receipts/${receipt_id}/undo`),
-  sendDraft: (draft_id: string) => post<{ ok: true }>(`/drafts/${draft_id}/send`),
-  editDraft: (draft_id: string, body: string) =>
-    post<{ ok: true }>(`/drafts/${draft_id}`, { body }),
-  answer: (question_id: string, text: string) =>
-    post<{ ok: true }>(`/questions/${question_id}/answer`, { text }),
-  resolveUnknown: (id: string, resolution: 'succeeded' | 'failed' | 'unresolved', note: string) =>
-    post<{ ok: true }>(`/unknown/${id}/resolve`, { resolution, note }),
+  /* ---------- decisions ---------- */
+  decide: (id: string, option: 'allow_once' | 'deny', version: string) =>
+    guard<PermissionOutcome>(() =>
+      api.POST('/permissions/{id}', { ...path(id), body: { option, version } }),
+    ),
+  decideAlways: (id: string, version: string, bounds: RuleBounds) =>
+    guard<PermissionOutcome>(() =>
+      api.POST('/permissions/{id}', { ...path(id), body: { option: 'always', version, bounds } }),
+    ),
+  permissions: () => guard<{ permissions: Permission[] }>(() => api.GET('/permissions')),
+  undo: (id: string) =>
+    guard<{ receipt: Receipt }>(() => api.POST('/receipts/{id}/undo', path(id))),
+  sendDraft: (id: string) => guard<SendOutcome>(() => api.POST('/drafts/{id}/send', path(id))),
+  questions: () => guard<{ questions: Question[] }>(() => api.GET('/quick-answers')),
+  answer: (id: string, option_id: string) =>
+    guard<{ status: 'ok' }>(() =>
+      api.POST('/quick-answers/{id}', { ...path(id), body: { option_id } }),
+    ),
+  rules: () => guard<{ rules: Rule[] }>(() => api.GET('/rules')),
+  revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
 
-  browserTakeControl: (id: string) => post<{ ok: true }>(`/browser/${id}/take-control`),
-  browserHandBack: (id: string) => post<{ ok: true }>(`/browser/${id}/hand-back`),
-  browserStop: (id: string) => post<{ ok: true }>(`/browser/${id}/stop`),
+  /* ---------- agents, memory ---------- */
+  agents: () => guard<{ agents: Agent[] }>(() => api.GET('/agents')),
+  agentTemplates: () => guard<{ templates: AgentTemplate[] }>(() => api.GET('/agents/templates')),
+  createAgent: (body: AgentInput) => guard<{ agent: Agent }>(() => api.POST('/agents', { body })),
+  updateAgent: (id: string, body: AgentInput) =>
+    guard<{ agent: Agent }>(() => api.PATCH('/agents/{id}', { ...path(id), body })),
+  memory: () => guard<{ items: MemoryItem[] }>(() => api.GET('/memory/items')),
+  editMemory: (id: string, value: string, version: string) =>
+    guard<{ status: 'ok' }>(() =>
+      api.PATCH('/memory/items/{id}', { ...path(id), body: { value, version } }),
+    ),
+  deleteMemory: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.DELETE('/memory/items/{id}', path(id))),
+  memoryWhy: (id: string) =>
+    guard<MemoryExplanation>(() => api.GET('/memory/items/{id}/why', path(id))),
 
-  plans: () => get<{ plans: Plan[]; templates: PlanTemplate[] }>('/plans'),
-  plan: (id: string) => get<Plan>(`/plans/${id}`),
-  createPlan: (body: { title: string; category: string; why: string }) =>
-    post<{ plan: Plan }>('/plans', body),
-  toggleMilestone: (plan_id: string, id: string, done: boolean) =>
-    post<Plan>(`/plans/${plan_id}/milestones/${id}`, { done }),
-  addMilestone: (plan_id: string, text: string) =>
-    post<Plan>(`/plans/${plan_id}/milestones`, { text }),
-  completePlan: (plan_id: string) => post<Plan>(`/plans/${plan_id}/complete`),
+  /* ---------- plans ---------- */
+  plans: () => guard<{ plans: Plan[] }>(() => api.GET('/plans')),
+  plan: (id: string) => guard<{ plan: Plan }>(() => api.GET('/plans/{id}', path(id))),
+  createPlan: (body: PlanCreate) => guard<{ plan: Plan }>(() => api.POST('/plans', { body })),
+  setMilestone: (planId: string, milestoneId: string, done: boolean) =>
+    guard<{ plan: Plan }>(() =>
+      api.PATCH('/plans/{id}/milestones/{milestoneId}', {
+        params: { path: { id: planId, milestoneId } },
+        body: { done },
+      }),
+    ),
+  planConversation: (id: string, agent_id: string) =>
+    guard<{ conversation: Conversation }>(() =>
+      api.POST('/plans/{id}/conversation', { ...path(id), body: { agent_id } }),
+    ),
+  sharePlan: (id: string) => guard<never>(() => api.POST('/plans/{id}/share', path(id))),
 
-  agents: () => get<{ agents: Agent[]; templates: AgentTemplate[] }>('/agents'),
-  saveAgent: (agent: Omit<Agent, 'stats' | 'id'> & { id: string | null }) =>
-    post<{ agent: Agent }>('/agents', agent),
-  deleteAgent: (id: string) => del<{ ok: true }>(`/agents/${id}`),
-
-  automations: () => get<{ automations: Automation[] }>('/automations'),
-  toggleAutomation: (id: string, enabled: boolean) =>
-    post<Automation>(`/automations/${id}`, { enabled }),
-  testRun: (id: string) => post<Automation>(`/automations/${id}/test-run`),
-  retryRun: (id: string, run_id: string) =>
-    post<Automation>(`/automations/${id}/runs/${run_id}/retry`),
-
-  memory: () => get<{ items: MemoryItem[] }>('/memory'),
-  updateMemory: (id: string, value: string) => post<MemoryItem>(`/memory/${id}`, { value }),
-  deleteMemory: (id: string) => del<{ ok: true }>(`/memory/${id}`),
-
-  connections: () => get<{ connections: ConnectionData[] }>('/connections'),
-  connect: (id: string) => post<ConnectionData>(`/connections/${id}/connect`),
-  disconnect: (id: string) => post<ConnectionData>(`/connections/${id}/disconnect`),
-
-  rules: () => get<{ rules: Rule[] }>('/rules'),
-  revokeRule: (id: string) => del<{ ok: true }>(`/rules/${id}`),
-
-  search: (q: string) => get<{ hits: PaletteHit[] }>(`/search?q=${encodeURIComponent(q)}`),
+  /* ---------- routines, connections, browser, search ---------- */
+  automations: () => guard<{ automations: Automation[] }>(() => api.GET('/automations')),
+  createAutomation: (body: AutomationCreate) =>
+    guard<{ automation: Automation }>(() => api.POST('/automations', { body })),
+  testAutomation: (id: string) =>
+    guard<{ status: 'ok' }>(() => api.POST('/automations/{id}/test', path(id))),
+  morningBrief: (agent_id: string, at: string) =>
+    guard<{ automation: Automation }>(() =>
+      api.POST('/automations/morning-brief', { body: { agent_id, at } }),
+    ),
+  connections: () =>
+    guard<{ connections: import('./types.ts').Connection[] }>(() =>
+      api.GET('/experience/connections'),
+    ),
+  browserSession: (id: string) =>
+    guard<{ session: BrowserSession }>(() => api.GET('/browser/sessions/{id}', path(id))),
+  browserControl: (id: string, control: 'take_control' | 'resume' | 'stop') =>
+    guard<{ session: BrowserSession }>(() =>
+      api.POST('/browser/sessions/{id}/control', { ...path(id), body: { control } }),
+    ),
+  search: (q: string) =>
+    guard<{ results: SearchResult[] }>(() => api.GET('/search', { params: { query: { q } } })),
 };
 
 export type Adapter = typeof adapter;
 
+export type StreamGap = {
+  after: number;
+  next: number | null;
+  reason: 'reconnect' | 'sequence_skip';
+};
+export type StreamItem =
+  | { type: 'open' }
+  | { type: 'event'; event: ExperienceEvent }
+  | { type: 'gap'; gap: StreamGap };
+
 /**
- * Follow one conversation. Durable events are replayed on reconnect from the
- * `after` cursor; a break yields a gap so the transcript can say text may be
- * missing rather than stitching two halves together.
+ * Follow one conversation's events. Durable items replay on reconnect from
+ * the cursor; a break yields a gap so the transcript can say streamed text may
+ * be missing rather than stitching two halves together.
  */
 export async function* subscribeConversation(
   id: string,
@@ -187,14 +253,15 @@ export async function* subscribeConversation(
     }
     let body: ReadableStream<Uint8Array> | null = null;
     try {
-      const response = await fetch(
-        `${base}/surfaces/conversations/${encodeURIComponent(id)}/events?after=${cursor}`,
+      const response = await client.options.fetch(
+        `${client.options.baseUrl}/conversations/${encodeURIComponent(id)}/events?since=${cursor}`,
         {
           headers: {
-            accept: 'text/event-stream',
-            ...(cursor > 0 ? { 'last-event-id': String(cursor) } : {}),
+            ...client.options.headers,
+            Accept: 'text/event-stream',
+            ...(cursor > 0 ? { 'Last-Event-ID': String(cursor) } : {}),
           },
-          credentials: 'include',
+          credentials: client.options.credentials,
           ...(options.signal ? { signal: options.signal } : {}),
         },
       );
@@ -209,17 +276,13 @@ export async function* subscribeConversation(
     try {
       for await (const frame of readSse(body)) {
         if (frame.comment) continue;
-        let event: ConversationEvent;
+        let event: ExperienceEvent;
         try {
-          event = JSON.parse(frame.data) as ConversationEvent;
+          event = JSON.parse(frame.data) as ExperienceEvent;
         } catch {
           continue;
         }
-        if (typeof event.seq !== 'number') continue;
-        if (event.seq <= cursor) continue;
-        if (cursor > 0 && event.seq > cursor + 1) {
-          yield { type: 'gap', gap: { after: cursor, next: event.seq, reason: 'sequence_skip' } };
-        }
+        if (typeof event.seq !== 'number' || event.seq <= cursor) continue;
         cursor = event.seq;
         yield { type: 'event', event };
       }

@@ -1,7 +1,9 @@
 /**
- * Sign-in and the guided setup: the tour (only stages the adapter reports as
- * available), plugging in apps, meeting the first agent, and four questions
- * whose answers become memory items the first message refers back to.
+ * Sign-in and the guided setup on the contract: a magic link (OAuth buttons
+ * only when the service says they work), the tour (only stages this instance
+ * can do), plugging in apps, and meeting the first agent. What Melete learns
+ * about a person is learned in conversation and shown under Settings, so the
+ * setup ends by opening the app rather than pretending to save answers.
  */
 import { type ReactNode, useEffect, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
@@ -10,11 +12,11 @@ import { Logo } from '../design/logos.tsx';
 import { MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import type { AgentTone, ConnectionData, TourStage } from '../experience/types.ts';
-import { navigate } from '../router.ts';
+import { lookOf, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import type { AgentInput, TourStage } from '../experience/types.ts';
+import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
-import { type AgentDraft, blankAgent, LookFields, readFace } from './Agents.tsx';
+import { blankAgent, LookFields } from './Agents.tsx';
 import { ConnectionCard } from './Settings.tsx';
 
 const studio = {
@@ -32,12 +34,33 @@ const ATLAS = { color: '#ec8a2b', eyes: 'white', shape: 'diamond', image: null }
 
 /* ---------- sign in ---------- */
 
-export function SignInScreen() {
-  const { capabilities, refreshSession } = useApp();
+export function SignInScreen({ signedIn }: { signedIn: boolean }) {
+  const { refreshProfile } = useApp();
+  const route = useRoute();
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [google, setGoogle] = useState<boolean | null>(null);
+  const [apple, setApple] = useState<boolean | null>(null);
   const phone = useMedia('(max-width: 900px)');
+
+  // The OAuth buttons are drawn only when the service says they work.
+  useEffect(() => {
+    void adapter.signInGoogle().then((r) => setGoogle(r.unavailable === null && r.error === null));
+    void adapter.signInApple().then((r) => setApple(r.unavailable === null && r.error === null));
+  }, []);
+
+  // A magic link lands here with its token in the fragment; consume it once.
+  useEffect(() => {
+    const token = route.query.get('token');
+    if (!token) return;
+    void adapter.consumeMagicLink(token).then((r) => {
+      window.history.replaceState(null, '', `${window.location.pathname}#/`);
+      if (r.data) refreshProfile();
+      else setNotice(r.error ?? r.unavailable ?? 'That link did not work.');
+    });
+  }, [route.query, refreshProfile]);
 
   const sendLink = async () => {
     if (!email.includes('@')) {
@@ -45,16 +68,10 @@ export function SignInScreen() {
       return;
     }
     setBusy(true);
-    const result = await adapter.signIn(email);
+    const result = await adapter.magicLink(email);
     setBusy(false);
-    if (result.error) toast({ kind: 'err', title: result.error });
-    else setSent(true);
-  };
-
-  const oauth = async (provider: 'google' | 'apple') => {
-    const result = await adapter.oauth(provider);
-    if (result.error) toast({ kind: 'err', title: result.error });
-    else refreshSession();
+    if (result.data) setSent(true);
+    else setNotice(result.error ?? result.unavailable ?? 'Couldn’t send the link.');
   };
 
   const kcard = (inner: ReactNode, width = 320, extra?: React.CSSProperties) => (
@@ -315,6 +332,16 @@ export function SignInScreen() {
               Sign in or create your account. No password to remember.
             </p>
           </div>
+          {signedIn ? (
+            <div className="col card" style={{ gap: 10, padding: 16 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
+                You’re already signed in on this device.
+              </span>
+              <Button icon="chevronRight" onClick={() => navigate('/')}>
+                Continue to Melete
+              </Button>
+            </div>
+          ) : null}
           {sent ? (
             <div className="col card" style={{ gap: 10, padding: 16 }}>
               <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
@@ -323,36 +350,40 @@ export function SignInScreen() {
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>
                 A sign-in link went to {email}. It works once and expires in ten minutes.
               </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void adapter.completeSignIn(email).then(refreshSession)}
-              >
-                I opened the link
-              </Button>
             </div>
           ) : (
             <>
-              {capabilities.oauth_google === 'available' ||
-              capabilities.oauth_apple === 'available' ? (
+              {google || apple ? (
                 <div className="col" style={{ gap: 10 }}>
-                  {capabilities.oauth_google === 'available' ? (
+                  {google ? (
                     <button
                       type="button"
                       className="btn btn-xl btn-outline"
                       style={{ width: '100%', gap: 10, fontSize: 14 }}
-                      onClick={() => void oauth('google')}
+                      onClick={() =>
+                        void adapter
+                          .signInGoogle()
+                          .then((r) =>
+                            r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
+                          )
+                      }
                     >
                       <Logo name="google" size={18} />
                       <span>Continue with Google</span>
                     </button>
                   ) : null}
-                  {capabilities.oauth_apple === 'available' ? (
+                  {apple ? (
                     <button
                       type="button"
                       className="btn btn-xl btn-outline"
                       style={{ width: '100%', gap: 10, fontSize: 14 }}
-                      onClick={() => void oauth('apple')}
+                      onClick={() =>
+                        void adapter
+                          .signInApple()
+                          .then((r) =>
+                            r.data ? refreshProfile() : setNotice(r.error ?? r.unavailable ?? ''),
+                          )
+                      }
                     >
                       <Icon name="apple" size={18} />
                       <span>Continue with Apple</span>
@@ -365,31 +396,45 @@ export function SignInScreen() {
                   </div>
                 </div>
               ) : null}
-              {capabilities.magic_link === 'available' ? (
-                <form
-                  className="col"
-                  style={{ gap: 12 }}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void sendLink();
+              <form
+                className="col"
+                style={{ gap: 12 }}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void sendLink();
+                }}
+              >
+                <Field label="Email">
+                  <Input
+                    type="email"
+                    icon="mail"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="you@example.com"
+                    width="100%"
+                    height={44}
+                    autoComplete="email"
+                  />
+                </Field>
+                <Button size="lg" icon="send" block type="submit" loading={busy}>
+                  Send me a sign-in link
+                </Button>
+              </form>
+              {notice ? (
+                <div
+                  className="row"
+                  style={{
+                    gap: 8,
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    background: 'var(--sand)',
+                    color: 'var(--sand-ink)',
+                    fontSize: 13,
                   }}
                 >
-                  <Field label="Email">
-                    <Input
-                      type="email"
-                      icon="mail"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      placeholder="you@example.com"
-                      width="100%"
-                      height={44}
-                      autoComplete="email"
-                    />
-                  </Field>
-                  <Button size="lg" icon="send" block type="submit" loading={busy}>
-                    Send me a sign-in link
-                  </Button>
-                </form>
+                  <Icon name="info" size={14} />
+                  <span>{notice}</span>
+                </div>
               ) : null}
             </>
           )}
@@ -620,51 +665,6 @@ function Stage({ stage }: { stage: TourStage }) {
             </>,
             3,
           )}
-          <div
-            className="row pop"
-            style={{
-              gap: 8,
-              padding: '8px 8px 8px 12px',
-              borderRadius: 10,
-              background: 'var(--studio-panel)',
-              border: '1px solid var(--studio-line)',
-              animationDelay: '3.6s',
-              flexWrap: 'wrap',
-            }}
-          >
-            <span style={{ fontSize: 12, flex: 1 }}>
-              Total <b>$214.30</b>. Submit to Finance?
-            </span>
-            <span
-              className="row"
-              style={{
-                height: 28,
-                padding: '0 10px',
-                borderRadius: 8,
-                fontSize: 12,
-                fontWeight: 500,
-                background: 'var(--primary)',
-                color: '#fff',
-              }}
-            >
-              Submit
-            </span>
-            <span
-              className="row"
-              style={{
-                gap: 6,
-                height: 28,
-                padding: '0 10px',
-                borderRadius: 8,
-                fontSize: 12,
-                fontWeight: 500,
-                color: 'var(--studio-text)',
-              }}
-            >
-              <Icon name="cursor" size={14} />
-              Take control
-            </span>
-          </div>
         </div>
       ) : stage === 'plans' ? (
         <div
@@ -807,32 +807,6 @@ function Stage({ stage }: { stage: TourStage }) {
   );
 }
 
-let entrySeq = 0;
-const entry = (who: 'a' | 'u', text: string) => ({ id: ++entrySeq, who, text });
-
-const QUESTIONS = [
-  {
-    key: 'Home',
-    ask: 'Where are you based? I use it for time zones, weather and how far things are.',
-    choices: ['New York', 'London', 'Somewhere else'],
-  },
-  {
-    key: 'People',
-    ask: 'Who should I know by name?',
-    choices: ['Alex and Priya', 'My family', 'My team at work'],
-  },
-  {
-    key: 'This month',
-    ask: 'What eats your week right now?',
-    choices: ['Meetings and follow-ups', 'Email and admin', 'A launch at work', 'Family logistics'],
-  },
-  {
-    key: 'Check-ins',
-    ask: 'How should I check in?',
-    choices: ['Morning brief at 8:30', 'Only when it matters', 'Never first'],
-  },
-] as const;
-
 function Card({
   title,
   sub,
@@ -903,92 +877,62 @@ function Card({
 }
 
 export function OnboardingScreen() {
-  const { capabilities, session, refreshSession, refreshAgents, refreshConversations } = useApp();
-  const stages = capabilities.tour_stages;
+  const { capabilities, profile, setOnboarded, refreshProfile, refreshAgents } = useApp();
+  const stages = (['calendar', 'drafting', 'browser', 'plans', 'memory'] as TourStage[]).filter(
+    (stage) =>
+      stage === 'calendar'
+        ? capabilities.calendar
+        : stage === 'browser'
+          ? capabilities.browser
+          : true,
+  );
   const connections = useLoad(() => adapter.connections(), []);
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
-  const [name, setName] = useState(session.profile?.name ?? '');
-  const [short, setShort] = useState(session.profile?.short_name ?? '');
+  const [name, setName] = useState(profile?.name ?? '');
   const [brief, setBrief] = useState(true);
-  const [agent, setAgent] = useState<AgentDraft>({
+  const [agent, setAgent] = useState<AgentInput>({
     ...blankAgent(),
     name: 'Nova',
     role: 'Concierge',
-    blurb: 'Meetings, dinners, trips and bookings. Confirms before anything is paid.',
+    tone: 'Warm',
     standing_instruction: 'One option first, not five. Confirm before paying.',
-    reaches: ['calendar', 'places', 'messages'],
   });
-  const [log, setLog] = useState<{ id: number; who: 'a' | 'u'; text: string }[]>([]);
-
-  const [q, setQ] = useState(0);
-  const [answers, setAnswers] = useState<{ key: string; value: string }[]>([]);
-  const [own, setOwn] = useState('');
-  const [typing, setTyping] = useState(false);
   const [busy, setBusy] = useState(false);
-  const total = 5;
-
-  useEffect(() => {
-    if (step !== 5 || log.length > 0) return;
-    setTyping(true);
-    const timer = setTimeout(() => {
-      setTyping(false);
-      setLog([entry('a', QUESTIONS[0].ask)]);
-    }, 700);
-    return () => clearTimeout(timer);
-  }, [step, log.length]);
-
-  const answer = (value: string) => {
-    const question = QUESTIONS[q];
-    if (!question) return;
-    const next = [...answers, { key: question.key, value }];
-    setAnswers(next);
-    setLog((l) => [...l, entry('u', value)]);
-    setOwn('');
-    setTyping(true);
-    setTimeout(() => {
-      setTyping(false);
-      const following = QUESTIONS[q + 1];
-      setLog((l) => [
-        ...l,
-        entry(
-          'a',
-          following
-            ? following.ask
-            : 'Perfect, that’s plenty to start. I’ll remember these and learn the rest as we go.',
-        ),
-      ]);
-      setQ(q + 1);
-    }, 700);
-  };
+  const total = 4;
 
   const finish = async () => {
     setBusy(true);
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     await adapter.saveProfile({
-      name: name || 'You',
-      short_name: short || name.split(' ')[0] || 'You',
-      morning_brief: brief,
+      name: name.trim() || profile?.name || 'You',
+      time_zone: profile?.time_zone ?? timeZone,
+      day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
     });
-    if (answers.length)
-      await adapter.saveAnswers([
-        ...answers,
-        ...(short ? [{ key: 'Melete calls you', value: short }] : []),
-      ]);
     let agentId: string | null = null;
     if (agent.name.trim()) {
-      const saved = await adapter.saveAgent({ ...agent, id: null });
-      agentId = saved.data?.agent.id ?? null;
+      const saved = await adapter.createAgent({ ...agent, name: agent.name.trim() });
+      if (saved.data) agentId = saved.data.agent.id;
+      else
+        toast({
+          kind: 'err',
+          title: saved.error ?? saved.unavailable ?? 'Couldn’t create the agent',
+        });
     }
-    const done = await adapter.completeOnboarding({ agent_id: agentId, first_message: null });
+    if (brief && agentId) {
+      const routine = await adapter.morningBrief(agentId, '08:30');
+      if (routine.data === null)
+        toast({
+          kind: 'info',
+          title: 'The morning brief is not available here yet',
+          sub: routine.unavailable ?? routine.error ?? '',
+        });
+    }
     setBusy(false);
-    if (done.error !== null) {
-      toast({ kind: 'err', title: done.error });
-      return;
-    }
-    refreshSession();
+    refreshProfile();
     refreshAgents();
-    refreshConversations();
-    navigate(done.data.conversation_id ? `/chat/${done.data.conversation_id}` : '/');
+    setOnboarded(true);
+    navigate('/');
   };
 
   const stepLabel = (
@@ -1076,15 +1020,7 @@ export function OnboardingScreen() {
               comes back for the moments that need you.
             </span>
           </div>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-              gap: 12,
-              width: 520,
-              maxWidth: '100%',
-            }}
-          >
+          <div style={{ width: 520, maxWidth: '100%' }}>
             <Field label="Your name">
               <Input
                 value={name}
@@ -1092,15 +1028,6 @@ export function OnboardingScreen() {
                 width="100%"
                 height={40}
                 placeholder="Jamie Davis"
-              />
-            </Field>
-            <Field label="Melete calls you">
-              <Input
-                value={short}
-                onChange={(event) => setShort(event.target.value)}
-                width="100%"
-                height={40}
-                placeholder="Jamie"
               />
             </Field>
           </div>
@@ -1210,16 +1137,13 @@ export function OnboardingScreen() {
     const list = connections.data?.connections ?? [];
     card = (
       <Card
-        title="Plug in what Melete may look at"
-        sub="Pick as few as you like. Melete reads what you connect and asks before it writes anywhere."
+        title="What Melete may look at"
+        sub="These are the apps connected on this instance. Melete reads what is connected and asks before it writes anywhere."
         footer={
           <>
             {back}
             <div className="grow" />
             {stepLabel}
-            <Button variant="ghost" onClick={() => setStep(4)}>
-              Skip for now
-            </Button>
             <Button iconRight="chevronRight" onClick={() => setStep(4)}>
               Continue
             </Button>
@@ -1234,37 +1158,32 @@ export function OnboardingScreen() {
           }}
         >
           {list.map((connection) => (
-            <ConnectionCard
-              key={connection.id}
-              connection={connection}
-              compact
-              onChange={(next: ConnectionData) =>
-                connections.set({ connections: list.map((c) => (c.id === next.id ? next : c)) })
-              }
-            />
+            <ConnectionCard key={connection.id} connection={connection} compact />
           ))}
         </div>
+        {connections.data && list.length === 0 ? (
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
+        ) : null}
         <div className="row" style={{ gap: 8, fontSize: 12, color: 'var(--muted)' }}>
           <Icon name="lock" size={14} />
           Access is per agent. Anything that costs money or sends a message gets a confirmation card
           first.
-          {capabilities.browser === 'available' ? ' The sandboxed browser is included.' : ''}
         </div>
       </Card>
     );
-  } else if (step === 4) {
-    const list = connections.data?.connections.filter((c) => c.state === 'connected') ?? [];
+  } else {
+    const list = connections.data?.connections.filter((c) => c.status === 'connected') ?? [];
     card = (
       <Card
         title="Meet your first agent"
-        sub="Give it a name, a look and one standing instruction. Change anything later in Agents."
+        sub="Give it a name, a look and one standing instruction. Change anything later in Agents. Anything Melete learns about you shows up under Settings › Memory."
         footer={
           <>
             {back}
             <div className="grow" />
             {stepLabel}
-            <Button iconRight="chevronRight" onClick={() => setStep(5)}>
-              Say hello
+            <Button iconRight="chevronRight" loading={busy} onClick={() => void finish()}>
+              Open Melete
             </Button>
           </>
         }
@@ -1283,29 +1202,10 @@ export function OnboardingScreen() {
               justifyContent: 'center',
             }}
           >
-            <AgentFace look={agent.look} size={116} glow />
+            <AgentFace look={lookOf(agent)} size={116} glow />
             <span style={{ fontSize: 12, color: 'var(--studio-muted)' }}>
               Idle · blinks now and then
             </span>
-            <label
-              className="btn btn-sm btn-ghost"
-              style={{ cursor: 'pointer', color: 'var(--studio-text)' }}
-            >
-              <Icon name="upload" size={14} />
-              <span>Import SVG or PNG</span>
-              <input
-                type="file"
-                accept="image/svg+xml,image/png"
-                hidden
-                onChange={async (event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  const image = await readFace(file);
-                  if (image) setAgent({ ...agent, look: { ...agent.look, image } });
-                  else toast({ kind: 'err', title: 'That file isn’t an SVG or a PNG.' });
-                }}
-              />
-            </label>
           </div>
           <div className="col grow" style={{ gap: 14, minWidth: 260 }}>
             <div
@@ -1320,6 +1220,7 @@ export function OnboardingScreen() {
                   value={agent.name}
                   onChange={(event) => setAgent({ ...agent, name: event.target.value })}
                   width="100%"
+                  maxLength={40}
                 />
               </Field>
               <Field label="Job">
@@ -1335,11 +1236,11 @@ export function OnboardingScreen() {
               <Segmented
                 label="Tone"
                 value={agent.tone}
-                onChange={(tone: AgentTone) => setAgent({ ...agent, tone })}
+                onChange={(tone) => setAgent({ ...agent, tone })}
                 options={[
-                  { value: 'warm', label: 'Warm' },
-                  { value: 'direct', label: 'Direct' },
-                  { value: 'playful', label: 'Playful' },
+                  { value: 'Warm', label: 'Warm' },
+                  { value: 'Direct', label: 'Direct' },
+                  { value: 'Playful', label: 'Playful' },
                 ]}
               />
             </Field>
@@ -1350,13 +1251,14 @@ export function OnboardingScreen() {
                   setAgent({ ...agent, standing_instruction: event.target.value })
                 }
                 width="100%"
+                maxLength={200}
               />
             </Field>
             {list.length ? (
               <Field label="May use">
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                   {list.map((connection) => {
-                    const on = agent.allowed_connections.includes(connection.id);
+                    const on = agent.allowed_connection_ids.includes(connection.id);
                     return (
                       <Chip
                         key={connection.id}
@@ -1364,13 +1266,13 @@ export function OnboardingScreen() {
                         onClick={() =>
                           setAgent({
                             ...agent,
-                            allowed_connections: on
-                              ? agent.allowed_connections.filter((id) => id !== connection.id)
-                              : [...agent.allowed_connections, connection.id],
+                            allowed_connection_ids: on
+                              ? agent.allowed_connection_ids.filter((id) => id !== connection.id)
+                              : [...agent.allowed_connection_ids, connection.id],
                           })
                         }
                       >
-                        {connection.name}
+                        {connection.label}
                       </Chip>
                     );
                   })}
@@ -1396,155 +1298,6 @@ export function OnboardingScreen() {
         </div>
       </Card>
     );
-  } else {
-    const question = QUESTIONS[q];
-    const done = q >= QUESTIONS.length;
-    card = (
-      <Card
-        title={`Let ${agent.name || 'Melete'} get to know you`}
-        sub="Four quick questions, so it can help from day one. Change any answer later in Settings."
-        footer={
-          <>
-            {back}
-            <div className="grow" />
-            {stepLabel}
-            {done ? (
-              <Button iconRight="chevronRight" loading={busy} onClick={() => void finish()}>
-                Open Melete
-              </Button>
-            ) : (
-              <Button variant="ghost" loading={busy} onClick={() => void finish()}>
-                Skip, I’ll tell it later
-              </Button>
-            )}
-          </>
-        }
-      >
-        <div
-          className="col"
-          style={{
-            height: 330,
-            borderRadius: 14,
-            background: 'var(--canvas)',
-            border: '1px solid var(--line)',
-            overflow: 'hidden',
-            position: 'relative',
-          }}
-        >
-          <div
-            className="col"
-            style={{
-              justifyContent: 'flex-end',
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              bottom: 0,
-              padding: '14px 16px',
-              maxHeight: '100%',
-              overflow: 'hidden',
-              gap: 12,
-            }}
-          >
-            {log.map((item) =>
-              item.who === 'a' ? (
-                <div key={item.id} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
-                  <AgentFace look={agent.look} size={24} />
-                  <p
-                    style={{
-                      fontSize: 14,
-                      lineHeight: '21px',
-                      color: 'var(--text)',
-                      paddingTop: 1,
-                    }}
-                  >
-                    {item.text}
-                  </p>
-                </div>
-              ) : (
-                <div key={item.id} className="col" style={{ alignItems: 'flex-end' }}>
-                  <span
-                    style={{
-                      padding: '7px 12px',
-                      borderRadius: '14px 14px 4px 14px',
-                      background: 'var(--bubble)',
-                      color: 'var(--bubble-ink)',
-                      fontSize: 14,
-                    }}
-                  >
-                    {item.text}
-                  </span>
-                </div>
-              ),
-            )}
-            {typing ? (
-              <div className="row" style={{ gap: 10 }}>
-                <AgentFace look={agent.look} size={24} state="thinking" />
-                <span
-                  className="row"
-                  style={{
-                    gap: 4,
-                    height: 26,
-                    padding: '0 12px',
-                    borderRadius: 13,
-                    background: 'var(--soft)',
-                    border: '1px solid var(--line)',
-                  }}
-                >
-                  <span
-                    className="pulse"
-                    style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--muted)' }}
-                  />
-                  <span
-                    className="pulse"
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: 999,
-                      background: 'var(--muted)',
-                      animationDelay: '.2s',
-                    }}
-                  />
-                  <span
-                    className="pulse"
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: 999,
-                      background: 'var(--muted)',
-                      animationDelay: '.4s',
-                    }}
-                  />
-                </span>
-              </div>
-            ) : null}
-            {question && !typing && log.length > 0 ? (
-              <form
-                className="row"
-                style={{ gap: 6, flexWrap: 'wrap', paddingLeft: 34 }}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (own.trim()) answer(own.trim());
-                }}
-              >
-                {question.choices.map((choice) => (
-                  <Chip key={choice} onClick={() => answer(choice)}>
-                    {choice}
-                  </Chip>
-                ))}
-                <Input
-                  value={own}
-                  onChange={(event) => setOwn(event.target.value)}
-                  placeholder="Or type your own"
-                  height={32}
-                  width={180}
-                  aria-label="Your own answer"
-                />
-              </form>
-            ) : null}
-          </div>
-        </div>
-      </Card>
-    );
   }
 
   return (
@@ -1565,7 +1318,14 @@ export function OnboardingScreen() {
           Melete
         </span>
         <div className="grow" />
-        <Button size="sm" variant="ghost" onClick={() => void finish()}>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setOnboarded(true);
+            navigate('/');
+          }}
+        >
           Skip setup
         </Button>
       </header>

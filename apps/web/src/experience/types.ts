@@ -1,399 +1,103 @@
 /**
- * What the designed surfaces need from the backend, shaped exactly as
- * docs/design/INTEGRATION.md describes. This is the seam: the experience
- * contract replaces these types when it lands, and nothing above the adapter
- * has to change.
+ * The shapes the interface renders, derived from the generated client types
+ * for the experience contract (packages/contracts/src/experience.ts, through
+ * packages/client/src/schema.d.ts). Nothing here is hand-written: change the
+ * contract, regenerate the client, and these names follow or stop compiling.
  *
  * The interface shows outcomes, receipts and the one decision only the person
- * can make. Nothing here carries a tool name, a model name, a token count or a
- * log line.
+ * can make. Nothing in the contract carries a tool name, a model name, a token
+ * count or a log line, and nothing here adds one.
  */
-import type { FaceLook } from '../design/face.tsx';
+import type { paths } from '@melete/client';
 
-export type Capability = 'available' | 'unavailable';
+type Json<T> = T extends { content: { 'application/json': infer B } } ? B : never;
+type Ok<P, M extends keyof P> = P[M] extends { responses: infer R }
+  ? R extends Record<200, unknown>
+    ? Json<R[200]>
+    : R extends Record<201, unknown>
+      ? Json<R[201]>
+      : never
+  : never;
+type Body<P, M extends keyof P> = P[M] extends { requestBody?: infer B }
+  ? Json<NonNullable<B>>
+  : never;
 
-export type TourStage = 'calendar' | 'drafting' | 'browser' | 'plans' | 'memory';
+/** A response that says the capability is not connected, with a plain reason. */
+export type NotAvailable = { status: 'not_available'; reason: string };
+export type Success<T> = Exclude<T, NotAvailable>;
+export const isNotAvailable = (value: unknown): value is NotAvailable =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as { status?: unknown }).status === 'not_available';
 
-export type Capabilities = {
-  browser: Capability;
-  oauth_google: Capability;
-  oauth_apple: Capability;
-  magic_link: Capability;
-  voice: Capability;
-  attachments: Capability;
-  tour_stages: TourStage[];
-};
+/* ---------- conversations ---------- */
 
-export type Session = {
-  signed_in: boolean;
-  onboarded: boolean;
-  profile: Profile | null;
-};
+export type Conversation = Success<Ok<paths['/conversations/{id}'], 'get'>>['conversation'];
+export type TurnStatus = Conversation['status'];
+export type ComposerState = Conversation['composer'];
+export type ConversationCreate = Body<paths['/conversations'], 'post'>;
+export type Turn = Success<Ok<paths['/conversations/{id}/messages'], 'get'>>['turns'][number];
+export type DeliveryState = NonNullable<Turn['delivery']>;
+export type MessageAcceptance = Success<Ok<paths['/conversations/{id}/messages'], 'post'>>;
+export type ExperienceEvent = Success<
+  Ok<paths['/conversations/{id}/events'], 'get'>
+>['events'][number];
+export type EventItem = ExperienceEvent['item'];
+export type TrailStep = Extract<EventItem, { type: 'say' | 'action' | 'note' | 'done' }>;
+export type Source = Extract<EventItem, { type: 'action' }>['sources'][number];
+export type ResultCard = Success<Ok<paths['/conversations/{id}/cards'], 'get'>>['cards'][number];
+export type CardAction = NonNullable<ResultCard['primary_action']>;
+export type Receipt = Success<Ok<paths['/conversations/{id}/receipts'], 'get'>>['receipts'][number];
+export type Draft = Success<Ok<paths['/conversations/{id}/drafts'], 'get'>>['drafts'][number];
+export type SendOutcome = Success<Ok<paths['/drafts/{id}/send'], 'post'>>;
+export type Permission = Success<Ok<paths['/permissions'], 'get'>>['permissions'][number];
+export type PermissionOption = Permission['options'][number];
+export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
+export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
+export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
+export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+export type Question = Success<Ok<paths['/quick-answers'], 'get'>>['questions'][number];
 
-export type Profile = {
-  name: string;
-  short_name: string;
-  email: string;
-  timezone: string;
-  day_start: string;
-  day_end: string;
-  morning_brief: boolean;
-  space: string;
-};
+/* ---------- agents, memory ---------- */
 
-/* ---------- agents ---------- */
+export type Agent = Success<Ok<paths['/agents'], 'get'>>['agents'][number];
+export type AgentInput = Body<paths['/agents'], 'post'>;
+export type AgentTemplate = Success<Ok<paths['/agents/templates'], 'get'>>['templates'][number];
+export type MemoryItem = Success<Ok<paths['/memory/items'], 'get'>>['items'][number];
+export type MemoryExplanation = Success<Ok<paths['/memory/items/{id}/why'], 'get'>>;
 
-export type AgentTone = 'warm' | 'direct' | 'playful';
+/* ---------- plans, tasks, home, routines ---------- */
 
-export type Agent = {
-  id: string;
-  name: string;
-  role: string;
-  blurb: string;
-  look: FaceLook;
-  tone: AgentTone;
-  standing_instruction: string;
-  /** Connection ids this agent may use. */
-  allowed_connections: string[];
-  asks_before_acting: boolean;
-  /** Human words for what it reaches for: "calendar", "places", "messages". */
-  reaches: string[];
-  stats: { chats: number; last_used: string | null };
-};
+export type Plan = Success<Ok<paths['/plans/{id}'], 'get'>>['plan'];
+export type Milestone = Plan['milestones'][number];
+export type PlanCreate = Body<paths['/plans'], 'post'>;
+export type Task = Success<Ok<paths['/tasks'], 'get'>>['tasks'][number];
+export type TaskInput = Body<paths['/tasks'], 'post'>;
+export type Home = Success<Ok<paths['/home'], 'get'>>;
+export type CalendarEvent = Success<Home['upcoming']>[number];
+export type Profile = Success<Ok<paths['/profile'], 'get'>>['profile'];
+export type Automation = Success<Ok<paths['/automations'], 'get'>>['automations'][number];
+export type AutomationRun = Automation['runs'][number];
+export type AutomationCreate = Body<paths['/automations'], 'post'>;
+export type Connection = Success<
+  Ok<paths['/experience/connections'], 'get'>
+>['connections'][number];
+export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
+export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 
-export type AgentTemplate = {
-  id: string;
-  title: string;
-  description: string;
-  agent: Omit<Agent, 'id' | 'stats'>;
-};
-
-/* ---------- chat ---------- */
-
-export type Source = {
-  /** A connection or a place a source came from: a logo name, or "web". */
-  app: string;
-  label: string;
-  url?: string;
-};
-
-export type TrailStep =
-  | { kind: 'say'; id: string; text: string }
-  | {
-      kind: 'action';
-      id: string;
-      label: string;
-      meta: string;
-      sources: Source[];
-      status: 'running' | 'done';
-    }
-  | { kind: 'note'; id: string; text: string }
-  | { kind: 'done'; id: string; summary: string };
-
-export type CardAction = {
-  label: string;
-  icon?: string;
-  /** What pressing it does: decide a pending permission, open a link, or nothing yet. */
-  effect:
-    | { kind: 'permission'; permission_id: string }
-    | { kind: 'link'; url: string }
-    | { kind: 'none' };
-  done_label?: string;
-};
-
-export type ResultCardData = {
-  id: string;
-  overline: string;
-  title: string;
-  rating: string | null;
-  facts: string[];
-  description: string;
-  chips: string[];
-  image: { src: string; alt: string } | null;
-  primary: CardAction;
-  example: boolean;
-};
-
-export type ReceiptData = {
-  id: string;
-  /** The card this receipt confirms, when a card's button was the decision. */
-  attaches_to?: string | null;
-  what: string;
-  where: string;
-  when: string;
-  undo: { until: string } | null;
-  undone: boolean;
-};
-
-export type DraftData = {
-  id: string;
-  recipient: { name: string; initials: string };
-  channel: string;
-  channel_label: string;
-  body: string;
-  status: 'draft' | 'sending' | 'sent' | 'failed';
-};
-
-export type PermissionData = {
-  id: string;
-  /** "Nova wants to add an event to Google Calendar" */
-  title: string;
-  detail: string;
-  connection: { app: string; label: string };
-  rule_text: string;
-  /** The canonical bytes the connector will be handed, one row per field. */
-  fields: Record<string, unknown>;
-  payload_hash: string;
-  status: 'pending' | 'allowed_once' | 'allowed_always' | 'denied' | 'changed';
-};
-
-export type QuestionData = {
-  id: string;
-  title: string;
-  options: { label: string; description: string }[];
-  answered: string | null;
-};
-
-export type UnknownOutcomeData = {
-  id: string;
-  what: string;
-  resolution: 'succeeded' | 'failed' | 'unresolved' | null;
-};
-
-export type BrowserSessionData = {
-  id: string;
-  status: 'working' | 'needs-you' | 'done' | 'stopped';
-  url: string;
-  task: string;
-  preview: { title: string; sub: string; chips: string[]; slots: string[]; chosen: string };
-  attention: string | null;
-};
-
-export type Block =
-  | { kind: 'card'; card: ResultCardData }
-  | { kind: 'receipt'; receipt: ReceiptData }
-  | { kind: 'draft'; draft: DraftData }
-  | { kind: 'permission'; permission: PermissionData }
-  | { kind: 'question'; question: QuestionData }
-  | { kind: 'unknown'; unknown: UnknownOutcomeData }
-  | { kind: 'browser'; browser: BrowserSessionData }
-  | { kind: 'notice'; level: 'info' | 'attention' | 'problem'; title: string; body: string }
-  | { kind: 'error'; what: string; done_about_it: string };
-
-export type TurnStatus =
-  | 'queued'
-  | 'running'
-  | 'streaming'
-  | 'paused'
-  /** Parked on a decision or an answer only the person can give. */
-  | 'waiting'
-  | 'done'
-  | 'failed'
-  | 'stopped';
-
-export type Reaction = 'up' | 'down' | null;
-
-export type UserMessage = {
-  id: string;
-  role: 'user';
-  text: string;
-  at: string;
-  delivery: 'sent' | 'sending' | 'queued' | 'failed';
-  attachments: { name: string; kind: 'image' | 'doc' }[];
-};
-
-export type Turn = {
-  id: string;
-  role: 'assistant';
-  agent_id: string | null;
-  status: TurnStatus;
-  text: string;
-  /** True while the text is arriving; false once the turn has its final text. */
-  text_streaming: boolean;
-  trail: TrailStep[];
-  started_at: string;
-  ended_at: string | null;
-  blocks: Block[];
-  reaction: Reaction;
-  at: string;
-};
-
-export type Message = UserMessage | Turn;
-
-export type ConversationSummary = {
-  id: string;
-  title: string;
-  agent_id: string | null;
-  preview: string;
-  updated_at: string;
-  pinned: boolean;
-};
-
-export type Conversation = ConversationSummary & {
-  messages: Message[];
-};
+/* ---------- what the interface decides on its own ---------- */
 
 /**
- * One item from a conversation's live stream. Durable items are replayed on
- * reconnect; text deltas are not, and the client draws a gap where they were
- * lost rather than pretending the transcript is whole.
+ * Which surfaces exist on this instance. Nothing in the contract lists them;
+ * each is learned from the one call that would serve it answering
+ * not_available, and a surface whose call is unavailable is not drawn.
  */
-export type ConversationEvent = {
-  seq: number;
-  conversation_id: string;
-  type:
-    | 'user_message'
-    | 'turn_started'
-    | 'turn_status'
-    | 'trail_step'
-    | 'trail_step_updated'
-    | 'text_delta'
-    | 'text_final'
-    | 'block'
-    | 'block_updated'
-    | 'reaction';
-  payload: Record<string, unknown>;
-  created_at: string;
+export type Capabilities = {
+  calendar: boolean;
+  browser: boolean;
+  google_sign_in: boolean;
+  apple_sign_in: boolean;
+  magic_link: boolean;
 };
 
-export type StreamGap = {
-  after: number;
-  next: number | null;
-  reason: 'reconnect' | 'sequence_skip';
-};
-
-export type StreamItem =
-  | { type: 'open' }
-  | { type: 'event'; event: ConversationEvent }
-  | { type: 'gap'; gap: StreamGap };
-
-/* ---------- home, day ---------- */
-
-export type DayEvent = {
-  id: string;
-  day: string;
-  time: string;
-  title: string;
-  duration: string;
-  place: string | null;
-  tint: 'primary' | 'sage' | 'sand' | 'lilac';
-  date: string;
-};
-
-export type DayTask = { id: string; text: string; done: boolean };
-
-export type DayPanel = {
-  today: string;
-  month: string;
-  week: { label: string; num: number; date: string; has_events: boolean; today: boolean }[];
-  events: DayEvent[];
-  tasks: DayTask[];
-  connections_synced: number;
-};
-
-export type HomeData = {
-  greeting: string;
-  date_line: string;
-  prompts: { label: string; icon: string; text: string }[];
-  recent: ConversationSummary[];
-  files: { id: string; name: string; size: string; updated_at: string }[];
-};
-
-/* ---------- plans ---------- */
-
-export type PlanCategory = 'travel' | 'wellbeing' | 'learning' | 'finance';
-
-export type Milestone = {
-  id: string;
-  text: string;
-  done: boolean;
-  assignee: { kind: 'person'; name: string } | { kind: 'agent'; agent_id: string } | null;
-};
-
-export type Plan = {
-  id: string;
-  title: string;
-  description: string;
-  category: PlanCategory;
-  next_step: string;
-  progress: number;
-  status: 'in_progress' | 'completed';
-  milestones: Milestone[];
-  linked: { kind: 'chat' | 'file'; id: string; title: string; sub: string }[];
-  updated_at: string;
-  needs_you: string | null;
-};
-
-export type PlanTemplate = {
-  id: string;
-  category: PlanCategory;
-  title: string;
-  description: string;
-};
-
-/* ---------- automations ---------- */
-
-export type AutomationRun = {
-  id: string;
-  status: 'running' | 'ok' | 'failed';
-  when: string;
-  note: string;
-};
-
-export type Automation = {
-  id: string;
-  name: string;
-  /** "Every weekday at 8:30 AM" */
-  trigger: string;
-  cron: string;
-  description: string;
-  enabled: boolean;
-  runs: AutomationRun[];
-  next_run: string;
-};
-
-/* ---------- settings ---------- */
-
-export type MemoryItem = {
-  id: string;
-  key: string;
-  value: string;
-  source: 'onboarding' | 'conversation' | 'inferred';
-  created: string;
-  last_used: string | null;
-  why: string;
-};
-
-export type ConnectionState = 'available' | 'connecting' | 'connected' | 'error';
-
-export type ConnectionData = {
-  id: string;
-  app: string;
-  name: string;
-  what: string;
-  state: ConnectionState;
-  access: 'read' | 'write' | 'draft';
-  error: string | null;
-};
-
-export type Rule = {
-  id: string;
-  text: string;
-  connection: { app: string; label: string };
-  agent_id: string | null;
-  created: string;
-};
-
-/* ---------- command palette ---------- */
-
-export type PaletteHit = {
-  kind: 'chat' | 'plan' | 'task' | 'event' | 'connection' | 'action';
-  id: string;
-  title: string;
-  meta: string;
-  href: string;
-};
-
-/* ---------- onboarding ---------- */
-
-export type OnboardingAnswer = { key: string; value: string };
+export type TourStage = 'calendar' | 'drafting' | 'browser' | 'plans' | 'memory';

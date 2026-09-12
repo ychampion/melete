@@ -219,13 +219,16 @@ The web app in `apps/web` also uses the mock: run it on `3210` (`MOCK_PORT=3210 
   numbered answers, a plain answer with its source, and the first message
   after setup.
 
-The designed surfaces (conversations, plans, agents, automations, memory,
-connections, rules, the day panel) are served under `/surfaces/*` by
-`apps/mock-api/src/surfaces.ts`. A conversation there is a view over jobs:
-every message becomes a job, and the cards a person sees are derived from that
-job's persisted events, so the rules above hold in the web app without a second
-implementation. `MOCK_FRESH=1` starts signed out so the setup flow can be
-walked; `MOCK_BROWSER=off` reports the browser capability unavailable.
+The web app reads only the experience contract
+(`packages/contracts/src/experience.ts`, through the generated client in
+`packages/client`): conversations, turns, events, cards, receipts, drafts,
+permissions, questions, agents, memory, plans, tasks, home, automations,
+connections, rules and search. The mock serves those routes from
+`apps/mock-api/src/experience.ts`, seeded with a person, three agents, calendar
+events, plans, tasks and routines so every surface has something to show;
+`MOCK_SEED=off` starts it empty, which is how the tests run it. There is no
+second set of routes for the interface: what the web app can do against the
+mock, it can do against the service.
 
 Adding a case is a JSON file, not a branch. The mock parses every request with
 the contract's schemas on the way in and every response on the way out, so a

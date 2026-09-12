@@ -1,58 +1,65 @@
-# Proposed: the experience shapes the web app needs
+# Proposed: what the web app still needs from the experience contract
 
-The web app in `apps/web` builds against `apps/web/src/experience/types.ts`,
-shaped as `docs/design/INTEGRATION.md` describes, and the mock serves them
-under `/surfaces/*` (`apps/mock-api/src/surfaces.ts`). No contract file was
-changed: the experience contract is being defined separately, and these are
-the shapes it needs to carry for the designed surfaces to run against a real
-service. Everything here is additive.
+The web app in `apps/web` reads `packages/contracts/src/experience.ts` (lane
+W16a) through the generated client, and nothing else. The retarget is done:
+`apps/web/src/experience/types.ts` is derived from the generated `paths`, the
+adapter is the one file that talks to the service, and the mock serves the
+same routes seeded with the designed scenarios. This note started as the
+shapes the interface was built against before the contract landed; what
+remains is the list of surfaces the design draws that the contract does not
+carry. Each is hidden today under the same rule as any `not_available`
+answer, and each is proposed here as an additive change. Nothing is faked.
 
-## Conversations
+## What the interface reads from the contract today
 
-- `GET /experience/conversations` → summaries: `id, title, agent_id, preview, updated_at, pinned`.
-- `GET /experience/conversations/{id}` → the summary plus durable `events`.
-- `GET /experience/conversations/{id}/events` → SSE with `id: seq`, honouring `after` and `Last-Event-ID`; text deltas are live-only.
-- `POST /experience/conversations` `{ text, agent_id, plan_id? }`; `POST …/{id}/messages` `{ text }`.
-- `POST …/{id}/pause | resume | stop`; `POST …/{id}/agent`, `/reactions`, `/rename`, `/pin`; `DELETE …/{id}`.
+| Surface | Contract |
+|---|---|
+| Sign-in, profile | `POST /signin/magic-link`, `…/consume`, `POST /signin/google`, `POST /signin/apple` (probed: a `not_available` answer hides the button), `GET/PATCH /profile` |
+| Home, day panel | `GET /home` (greeting, upcoming events), `GET/POST/PATCH/DELETE /tasks`, `GET /experience/connections` |
+| Chat | `GET/POST /conversations`, `GET …/{id}`, `GET …/{id}/messages`, `POST …/{id}/messages` with `Idempotency-Key`, `POST …/{id}/pause\|resume\|stop`, `PATCH …/{id}/agent`, SSE `GET …/{id}/events?since=` with `Last-Event-ID`; `GET …/{id}/cards\|receipts\|drafts` |
+| Decisions | `POST /permissions/{id}` `{option, version, bounds?}`, `POST /receipts/{id}/undo`, `POST /drafts/{id}/send`, `POST /quick-answers/{id}` |
+| Plans | `GET/POST /plans`, `GET /plans/{id}`, `PATCH …/milestones/{id}`, `POST /plans/{id}/conversations`, `POST /plans/{id}/share` |
+| Agents | `GET/POST /agents`, `PATCH /agents/{id}`, `GET /agents/templates` |
+| Automations | `GET/POST /automations`, `POST …/{id}/test`, `POST /automations/morning-brief` |
+| Settings | `GET/PATCH/DELETE /memory/items`, `GET …/{id}/why`, `GET /experience/connections`, `GET /rules`, `DELETE /rules/{id}` |
+| Search | `GET /search?q=` |
 
-Event types: `user_message`, `turn_started`, `turn_status`
-(`queued | running | streaming | paused | waiting | done | failed | stopped`),
-`trail_step`, `trail_step_updated`, `text_delta`, `text_final`, `block`,
-`block_updated`, `reaction`.
+Capabilities are not a contract listing; the interface probes them: the
+calendar from `home.upcoming`, the browser from `GET /browser/sessions/{id}`,
+the OAuth buttons from the sign-in routes.
 
-Trail steps: `say {text}`, `action {label, meta, sources[{app,label,url?}], status}`,
-`note {text}`, `done {summary}`. No `thought`.
+## Remaining gaps, proposed as additive changes
 
-Blocks: `card`, `receipt` (`what, where, when, undo{until}|null, undone, attaches_to`),
-`draft` (`recipient, channel, channel_label, body, status`), `permission`
-(`title, detail, connection{app,label}, rule_text, fields, payload_hash, status`),
-`question` (`title, options[≤4], answered`), `unknown` (`what, resolution`),
-`browser` (`status, url, task, preview, attention`), `notice`, `error {what, done_about_it}`.
+Each row is a surface the design draws and the interface currently hides or
+narrows. None changes an existing field.
 
-## Decisions and receipts
+| Designed surface | What the interface does today | Proposed addition |
+|---|---|---|
+| Browser task card and docked panel (sandboxed browsing with take control / hand back / stop) | not drawn; the `browser` scenario step is skipped | an event item `browser { session_id, url, task, attention }` so a conversation can announce its browser session, and a `preview` field on `browserSession` (image URL or data) for the card |
+| A permission decided elsewhere (another device, the same person earlier) | the card is closed with a plain "Decided" badge once the turn's status leaves `needs_you`; the option is unknown | an event item `permission_decided { permission_id, option, rule_id? }` so every client can show which way it went |
+| A question answered elsewhere | the options are disabled once the turn moves on; none is highlighted | an event item `question_answered { question_id, option_id }` |
+| Action step while it runs (spinner, then done) | action steps are drawn only when done | optional `status: running \| done` and `id` on the `action` item, with a second emission updating it |
+| Reactions on an agent turn | not offered | `POST /conversations/{id}/turns/{turn_id}/reaction` `{ kind }` |
+| Rename, pin, delete, share a chat | not offered (the row menu is not drawn) | `PATCH /conversations/{id}` `{ title?, pinned? }`, `DELETE /conversations/{id}`, `POST …/share` |
+| Save a conversation or card to a plan | not offered | `POST /plans/{id}/items` `{ conversation_id \| card_id }` |
+| Add a milestone, complete a plan, plan templates | milestones are updated only; no add, no complete, no templates | `POST /plans/{id}/milestones`, `POST /plans/{id}/complete`, `GET /plans/templates` |
+| Milestone assignee's name | the kind (person/agent) is drawn, no name for a person | `assignee.name?` |
+| Connect and disconnect a connection | status and access only | `POST /experience/connections/{id}/connect` (returns a URL to open) and `…/disconnect` |
+| Enable/disable, retry, edit an automation | enabled is drawn as a badge | `PATCH /automations/{id}` `{ enabled?, schedule?, agent_id? }`, `POST …/runs/{id}/retry` |
+| Automation run notes | the run's status and time only | `note?` on `automationRun` |
+| Delete an agent; import a face image | not offered; `face_image` is a URL field | `DELETE /agents/{id}`; allow a data URL in `face_image` or add `POST /agents/{id}/face` |
+| "Get to know you" onboarding answers | the step is not drawn | `POST /memory/items` `{ text, source: 'onboarding' }` |
+| Unknown outcome resolve ("It went through" / "It did not") | drawn as a note; no resolve | a `question` with `kind: 'unknown_outcome'` whose answer is the resolution, or `POST /receipts/{id}/confirm` `{ happened: boolean }` |
+| "Example" badge on a result card | not drawn | `example?: boolean` on `resultCard` |
+| Rule text with the agent it applies to | rule text and bounds only | `agent_id?` on `rule` |
+| The day panel's week strip | today only | `GET /home?days=7` or `range` on the upcoming query |
+| Sign out | not offered (the account menu has no item) | `POST /signout` |
+| Capabilities listing | probed per surface | `GET /capabilities` `{ calendar, browser, google_sign_in, apple_sign_in, magic_link }` so a client does not probe with writes |
 
-- `POST /experience/permissions/{id}` `{ decision: allow_once | always | deny, payload_hash }` → 409 with a plain sentence on a hash mismatch; `always` creates a rule.
-- `POST /experience/receipts/{id}/undo`; `POST /experience/drafts/{id}/send`; `POST /experience/drafts/{id}` `{ body }`.
-- `POST /experience/questions/{id}/answer` `{ text }`; `POST /experience/unknown/{id}/resolve` `{ resolution, note }`.
-- `POST /experience/browser/{id}/take-control | hand-back | stop`.
+## The original mapping (kept for the record)
 
-## Everything else
-
-`capabilities`, `session` (+ `sign-in`, `complete`, `oauth`, `sign-out`, `profile`),
-`onboarding/answers` and `onboarding/complete`, `home`, `day` (+ tasks), `plans`
-(+ milestones, complete), `agents` (create, update, delete), `automations`
-(toggle, test-run, retry), `memory` (update, delete), `connections` (connect,
-disconnect), `rules` (revoke), `search?q=`.
-
-Field names and states are in `apps/web/src/experience/types.ts`.
-
-## Now that the contract has landed: the mapping
-
-`packages/contracts/src/experience.ts` (lane W16a, merged into this branch at
-e639b22) carries the same ideas under different names. The web app still runs
-against its own shapes in `apps/web/src/experience/types.ts` and the mock's
-`/surfaces/*`; the adapter (`apps/web/src/experience/adapter.ts`) is the one
-file to retarget, and this table is what that retargeting has to translate.
+The table below is what the retarget translated. Names on the left were this
+lane's shapes before the contract landed; they no longer exist in the code.
 
 | This lane (`types.ts`) | Contract (`experience.ts`) | Note |
 |---|---|---|

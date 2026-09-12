@@ -123,7 +123,7 @@ and nothing else.
 The client surface is further along than the service, and does not wait for it:
 
 ```bash
-MOCK_PORT=3210 bun run dev:mock   # the whole API in memory, with scripted jobs and the designed surfaces
+MOCK_PORT=3210 bun run dev:mock   # the whole API in memory, seeded, playing the scripted scenarios
 bun run dev:web                   # the web app on :5180, pointed at the mock
 ```
 

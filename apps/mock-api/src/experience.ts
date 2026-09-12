@@ -311,6 +311,18 @@ export class ExperienceMock {
       });
       this.tasks.set(task.id, task);
     }
+    // One standing rule, as an earlier "always allow" would have left it.
+    const rule = C.standingRule.parse({
+      id: newId('rule'),
+      text: 'Add events to your calendar without asking, up to 10 times before Oct 12.',
+      kind: 'create_event',
+      connection_id: calendar,
+      recipient_class: 'Google Calendar',
+      bounds: { count_cap: 10, expires_at: iso(at(30, 0)), reconsent_after_days: 7 },
+      used: 1,
+      created_at: iso(at(-2, 9)),
+    });
+    this.rules.set(rule.id, rule);
     const agents = [...this.agents.values()];
     const nova = agents.find((agent) => agent.name === 'Nova') ?? agents[0];
     const sage = agents.find((agent) => agent.name === 'Sage') ?? agents[0];
@@ -832,10 +844,12 @@ export class ExperienceMock {
     });
     if (key) this.submissions.set(fingerprint, { text: input.text, result });
     this.state(chat, 'working');
-    this.event(chat, {
-      type: 'say',
-      text: 'Iâ€™ll check what you need and prepare the next step.',
-    });
+    // A scenario that opens with its own words does not get a generic opener too.
+    if (chat.script?.steps[0]?.step !== 'say')
+      this.event(chat, {
+        type: 'say',
+        text: 'I’ll check what you need and prepare the next step.',
+      });
     this.schedule(chat);
     return result;
   }

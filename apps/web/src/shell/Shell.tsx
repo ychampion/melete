@@ -1,7 +1,8 @@
 /**
  * The frame every signed-in screen sits in: sidebar, topbar, the day panel on
- * the right, and the phone layout with a drawer and a bottom sheet. Surfaces
- * the adapter reports as unavailable are simply not offered.
+ * the right, and the phone layout with a drawer and a bottom sheet. Every
+ * section reads from the experience contract; a section whose call answers
+ * not_available is not drawn.
  */
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
@@ -11,7 +12,6 @@ import {
   Avatar,
   Button,
   Checkbox,
-  Dialog,
   IconButton,
   Input,
   Kbd,
@@ -24,8 +24,8 @@ import {
   Toggle,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import type { ConversationSummary, DayPanel } from '../experience/types.ts';
+import { agentById, lookOf, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import type { CalendarEvent, Conversation } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
 import { CommandPalette } from './CommandPalette.tsx';
@@ -95,184 +95,28 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   },
 ];
 
-function groupChats(chats: ConversationSummary[]): [string, ConversationSummary[]][] {
+function groupChats(chats: Conversation[]): [string, Conversation[]][] {
   const today = new Date().toDateString();
   const yesterday = new Date(Date.now() - 86_400_000).toDateString();
-  const groups = new Map<string, ConversationSummary[]>();
-  for (const chat of chats) {
+  const groups = new Map<string, Conversation[]>();
+  const sorted = [...chats].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  for (const chat of sorted) {
     const day = new Date(chat.updated_at).toDateString();
-    const label = chat.pinned
-      ? 'Pinned'
-      : day === today
-        ? 'Today'
-        : day === yesterday
-          ? 'Yesterday'
-          : 'Earlier';
+    const label = day === today ? 'Today' : day === yesterday ? 'Yesterday' : 'Earlier';
     groups.set(label, [...(groups.get(label) ?? []), chat]);
   }
-  const order = ['Pinned', 'Today', 'Yesterday', 'Earlier'];
-  return order.filter((key) => groups.has(key)).map((key) => [key, groups.get(key) ?? []]);
-}
-
-function ChatRow({ chat, active }: { chat: ConversationSummary; active: boolean }) {
-  const { refreshConversations } = useApp();
-  const [menu, setMenu] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  const [rename, setRename] = useState<string | null>(null);
-  const close = useCallback(() => setMenu(false), []);
-  return (
-    <div style={{ position: 'relative' }}>
-      <a
-        className="chat-row"
-        href={href(`/chat/${chat.id}`)}
-        aria-current={active ? 'page' : undefined}
-        data-menu={menu ? 'true' : undefined}
-      >
-        <span className="chat-dot">
-          {active ? (
-            <span
-              style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--primary)' }}
-            />
-          ) : null}
-        </span>
-        <span className="clamp1 grow">{chat.title}</span>
-        <span style={{ width: 22, flexShrink: 0 }} />
-      </a>
-      <button
-        type="button"
-        className="chat-more"
-        style={{
-          position: 'absolute',
-          right: 10,
-          top: 6,
-          display: 'flex',
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          color: 'var(--muted)',
-          background: 'var(--line)',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-        aria-label={`Options for ${chat.title}`}
-        aria-haspopup="menu"
-        aria-expanded={menu}
-        onClick={() => setMenu((open) => !open)}
-      >
-        <Icon name="more" size={14} />
-      </button>
-      <Popover open={menu} onClose={close} align="right" offset={-4}>
-        <Menu label={`Options for ${chat.title}`}>
-          <MenuItem
-            icon="pencil"
-            onSelect={() => {
-              close();
-              setRename(chat.title);
-            }}
-          >
-            Rename
-          </MenuItem>
-          <MenuItem
-            icon="pin"
-            onSelect={() => {
-              close();
-              void adapter.pin(chat.id, !chat.pinned).then(refreshConversations);
-            }}
-          >
-            {chat.pinned ? 'Unpin' : 'Pin to top'}
-          </MenuItem>
-          <MenuItem
-            icon="share"
-            onSelect={() => {
-              close();
-              void navigator.clipboard?.writeText(`${window.location.origin}/#/chat/${chat.id}`);
-              toast({ kind: 'ok', title: 'Link copied', sub: 'Anyone with it sees this chat.' });
-            }}
-          >
-            Share chat
-          </MenuItem>
-          <MenuSep />
-          <MenuItem
-            icon="trash"
-            danger
-            onSelect={() => {
-              close();
-              setConfirm(true);
-            }}
-          >
-            Delete
-          </MenuItem>
-        </Menu>
-      </Popover>
-      <Dialog
-        open={confirm}
-        onClose={() => setConfirm(false)}
-        title="Delete this chat?"
-        sub="The conversation and its drafts are removed. Anything you saved to a plan stays."
-        icon="trash"
-        tone="danger"
-        width={400}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirm(false);
-                void adapter.deleteConversation(chat.id).then(() => {
-                  refreshConversations();
-                  if (active) navigate('/chat');
-                });
-              }}
-            >
-              Delete chat
-            </Button>
-          </>
-        }
-      />
-      <Dialog
-        open={rename !== null}
-        onClose={() => setRename(null)}
-        title="Rename chat"
-        width={400}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setRename(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                const title = rename?.trim();
-                setRename(null);
-                if (!title) return;
-                void adapter.rename(chat.id, title).then(refreshConversations);
-              }}
-            >
-              Save
-            </Button>
-          </>
-        }
-      >
-        <Input
-          value={rename ?? ''}
-          onChange={(event) => setRename(event.target.value)}
-          width="100%"
-          aria-label="Chat title"
-        />
-      </Dialog>
-    </div>
-  );
+  return ['Today', 'Yesterday', 'Earlier']
+    .filter((key) => groups.has(key))
+    .map((key) => [key, groups.get(key) ?? []]);
 }
 
 function AccountMenu() {
-  const { session, refreshSession } = useApp();
+  const { profile } = useApp();
   const [open, setOpen] = useState(false);
   const [theme, setTheme, dark] = useTheme();
   const close = useCallback(() => setOpen(false), []);
-  const profile = session.profile;
-  const initials = (profile?.name ?? 'You')
+  const name = profile?.name ?? 'You';
+  const initials = name
     .split(' ')
     .map((part) => part[0] ?? '')
     .join('')
@@ -293,10 +137,10 @@ function AccountMenu() {
             className="clamp1"
             style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
           >
-            {profile?.name ?? 'You'}
+            {name}
           </span>
           <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {profile?.space ?? 'Personal'} workspace
+            Personal workspace
           </span>
         </span>
         <span style={{ color: 'var(--muted)', display: 'flex' }}>
@@ -305,13 +149,13 @@ function AccountMenu() {
       </button>
       <Popover open={open} onClose={close} side="top" offset={4}>
         <Menu label="Account" width={232}>
-          <Overline style={{ padding: '6px 8px 2px' }}>{profile?.name ?? 'You'}</Overline>
+          <Overline style={{ padding: '6px 8px 2px' }}>{name}</Overline>
           <div style={{ padding: '0 8px 6px', fontSize: 12, color: 'var(--muted)' }}>
-            {profile?.email ?? ''}
+            {profile?.time_zone ?? ''}
           </div>
           <MenuSep />
           <MenuItem icon="user" on>
-            {profile?.space ?? 'Personal'}
+            Personal
           </MenuItem>
           <MenuSep />
           <MenuItem
@@ -338,20 +182,6 @@ function AccountMenu() {
               Follow the system
             </MenuItem>
           ) : null}
-          <MenuSep />
-          <MenuItem
-            icon="logout"
-            danger
-            onSelect={() => {
-              close();
-              void adapter.signOut().then(() => {
-                refreshSession();
-                navigate('/welcome');
-              });
-            }}
-          >
-            Sign out
-          </MenuItem>
         </Menu>
       </Popover>
     </div>
@@ -414,14 +244,41 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         </button>
         {recentsOpen
           ? groupChats(conversations).map(([label, chats]) => (
-              <div
-                key={label}
-                className="col"
-                style={{ marginTop: label === 'Pinned' || label === 'Today' ? 4 : 8 }}
-              >
+              <div key={label} className="col" style={{ marginTop: label === 'Today' ? 4 : 8 }}>
                 <div className="group-label">{label}</div>
                 {chats.map((chat) => (
-                  <ChatRow key={chat.id} chat={chat} active={chat.id === activeChat} />
+                  <a
+                    key={chat.id}
+                    className="chat-row"
+                    href={href(`/chat/${chat.id}`)}
+                    aria-current={chat.id === activeChat ? 'page' : undefined}
+                    onClick={onClose}
+                  >
+                    <span className="chat-dot">
+                      {chat.id === activeChat ? (
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: 999,
+                            background: 'var(--primary)',
+                          }}
+                        />
+                      ) : null}
+                    </span>
+                    <span className="clamp1 grow">{chat.title}</span>
+                    {chat.status === 'needs_you' ? (
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 999,
+                          background: 'var(--sand-ink)',
+                        }}
+                        title="Waiting for you"
+                      />
+                    ) : null}
+                  </a>
                 ))}
               </div>
             ))
@@ -460,7 +317,6 @@ function Topbar({
   onPalette: () => void;
   railAvailable: boolean;
 }) {
-  const { session } = useApp();
   return (
     <header className="topbar">
       <button
@@ -468,7 +324,7 @@ function Topbar({
         className="btn btn-sm btn-ghost"
         style={{ paddingLeft: 10, paddingRight: 8, color: 'var(--text)' }}
       >
-        {session.profile?.space ?? 'Personal'}
+        Personal
         <Icon name="chevronDown" size={14} />
       </button>
       <div className="topbar-search">
@@ -504,20 +360,48 @@ function Topbar({
   );
 }
 
-const TINT: Record<DayPanel['events'][number]['tint'], string> = {
-  primary: 'var(--primary)',
-  sage: 'var(--sage-ink)',
-  sand: 'var(--sand-ink)',
-  lilac: 'var(--lilac-ink)',
+const dayLabel = (iso: string, today: Date): string => {
+  const d = new Date(iso);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  return d.toLocaleDateString('en-US', { weekday: 'short' });
+};
+const timeLabel = (iso: string) =>
+  new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+const durationLabel = (event: CalendarEvent) => {
+  const minutes = Math.round((Date.parse(event.ends_at) - Date.parse(event.starts_at)) / 60_000);
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = Number.isInteger(minutes / 60) ? minutes / 60 : (minutes / 60).toFixed(1);
+  return `${hours} hour${minutes > 60 ? 's' : ''}`;
 };
 
 export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?: boolean }) {
-  const day = useLoad(() => adapter.day(), []);
+  const home = useLoad(() => adapter.home(), []);
+  const tasks = useLoad(() => adapter.tasks(), []);
+  const connections = useLoad(() => adapter.connections(), []);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState('');
-  const data = day.data;
-  const doneCount = data?.tasks.filter((t) => t.done).length ?? 0;
-  const total = data?.tasks.length ?? 0;
+  const today = new Date();
+  const upcoming: CalendarEvent[] | null =
+    home.data && Array.isArray(home.data.upcoming) ? (home.data.upcoming as CalendarEvent[]) : null;
+  const list = tasks.data?.tasks ?? [];
+  const doneCount = list.filter((t) => t.done).length;
+  const dow = (today.getDay() + 6) % 7;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - dow);
+  const eventDays = new Set((upcoming ?? []).map((e) => new Date(e.starts_at).toDateString()));
+  const week = ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return {
+      label,
+      num: d.getDate(),
+      key: d.toDateString(),
+      today: i === dow,
+      has: eventDays.has(d.toDateString()),
+    };
+  });
+  const connected =
+    connections.data?.connections.filter((c) => c.status === 'connected').length ?? 0;
   let lastDay = '';
   return (
     <aside className="rail" aria-label="Your day">
@@ -526,7 +410,7 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Your day</h2>
           <span className="row" style={{ gap: 0 }}>
             <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted)', paddingRight: 4 }}>
-              {data?.month ?? ''}
+              {today.toLocaleDateString('en-US', { month: 'long' })}
             </span>
             {sheet && onClose ? (
               <IconButton name="x" label="Close" size={28} iconSize={14} onClick={onClose} />
@@ -534,8 +418,8 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
           </span>
         </div>
         <div className="rail-week">
-          {(data?.week ?? []).map((d) => (
-            <div key={d.date} className="rail-day">
+          {week.map((d) => (
+            <div key={d.key} className="rail-day">
               <span
                 style={{
                   fontSize: 11,
@@ -565,7 +449,7 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
                   width: 4,
                   height: 4,
                   borderRadius: 999,
-                  background: d.has_events
+                  background: d.has
                     ? d.today
                       ? 'var(--primary)'
                       : 'var(--control)'
@@ -577,49 +461,69 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
         </div>
       </div>
       <div className="hairline" />
-      <section className="col" style={{ gap: 8 }}>
-        <div className="row" style={{ justifyContent: 'space-between', height: 28 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600 }}>Upcoming</h3>
-        </div>
-        <div className="col" style={{ gap: 4 }}>
-          {(data?.events ?? []).map((event) => {
-            const showDay = event.day && event.day !== lastDay;
-            if (event.day) lastDay = event.day;
-            return (
-              <div key={event.id} className="event-row">
-                <div className="col" style={{ width: 60, flexShrink: 0, gap: 2 }}>
-                  {showDay ? <span className="overline">{event.day}</span> : null}
-                  <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--secondary)' }}>
-                    {event.time}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    width: 2,
-                    height: 28,
-                    borderRadius: 2,
-                    background: TINT[event.tint],
-                    flexShrink: 0,
-                  }}
-                />
-                <div className="col" style={{ minWidth: 0, gap: 2 }}>
-                  <span
-                    className="clamp1"
-                    style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
-                  >
-                    {event.title}
-                  </span>
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {event.duration}
-                    {event.place ? ` · ${event.place}` : ''}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-      <div className="hairline" />
+      {upcoming ? (
+        <>
+          <section className="col" style={{ gap: 8 }}>
+            <div className="row" style={{ justifyContent: 'space-between', height: 28 }}>
+              <h3 style={{ fontSize: 13, fontWeight: 600 }}>Upcoming</h3>
+            </div>
+            <div className="col" style={{ gap: 4 }}>
+              {upcoming.map((event) => {
+                const day = dayLabel(event.starts_at, today);
+                const showDay = day !== lastDay;
+                lastDay = day;
+                const title = event.title;
+                return (
+                  <div key={event.id} className="event-row">
+                    <div className="col" style={{ width: 60, flexShrink: 0, gap: 2 }}>
+                      {showDay ? <span className="overline">{day}</span> : null}
+                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--secondary)' }}>
+                        {timeLabel(event.starts_at)}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        width: 2,
+                        height: 28,
+                        borderRadius: 2,
+                        background: 'var(--primary)',
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div className="col" style={{ minWidth: 0, gap: 2 }}>
+                      {event.url ? (
+                        <a
+                          className="clamp1"
+                          href={event.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                        >
+                          {title}
+                        </a>
+                      ) : (
+                        <span
+                          className="clamp1"
+                          style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
+                        >
+                          {title}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        {durationLabel(event)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+              {upcoming.length === 0 ? (
+                <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing coming up.</span>
+              ) : null}
+            </div>
+          </section>
+          <div className="hairline" />
+        </>
+      ) : null}
       <section className="col" style={{ gap: 8 }}>
         <div className="row" style={{ justifyContent: 'space-between', height: 28 }}>
           <h3 style={{ fontSize: 13, fontWeight: 600 }}>Tasks</h3>
@@ -637,29 +541,32 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
               <span
                 style={{
                   display: 'block',
-                  width: `${total ? (doneCount / total) * 100 : 0}%`,
+                  width: `${list.length ? (doneCount / list.length) * 100 : 0}%`,
                   height: '100%',
                   background: 'var(--primary)',
                 }}
               />
             </span>
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-              {doneCount} of {total}
+              {doneCount} of {list.length}
             </span>
             <IconButton name="plus" label="Add a task" size={28} onClick={() => setAdding(true)} />
           </span>
         </div>
         <div className="col">
-          {(data?.tasks ?? []).map((task) => (
+          {list.map((task) => (
             <div key={task.id} className="task-row" data-done={task.done ? 'true' : undefined}>
               <Checkbox
                 checked={task.done}
-                label={task.text}
+                label={task.title}
                 onChange={(done) =>
-                  void adapter.toggleTask(task.id, done).then((r) => r.data && day.set(r.data))
+                  void adapter.setTask(task, { done }).then((r) => {
+                    if (r.data)
+                      tasks.set({ tasks: list.map((t) => (t.id === task.id ? r.data.task : t)) });
+                  })
                 }
               />
-              <span className="clamp1">{task.text}</span>
+              <span className="clamp1">{task.title}</span>
             </div>
           ))}
           {adding ? (
@@ -670,7 +577,9 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
                 event.preventDefault();
                 const text = draft.trim();
                 if (!text) return;
-                void adapter.addTask(text).then((r) => r.data && day.set(r.data));
+                void adapter.addTask(text).then((r) => {
+                  if (r.data) tasks.set({ tasks: [...list, r.data.task] });
+                });
                 setDraft('');
                 setAdding(false);
               }}
@@ -692,26 +601,26 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
         </div>
       </section>
       <div className="grow" />
-      <a
-        href={href('/settings/connections')}
-        className="row"
-        style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
-      >
-        <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--success)' }} />
-        {data?.connections_synced ?? 0} connections · synced
-      </a>
+      {connections.data ? (
+        <a
+          href={href('/settings/connections')}
+          className="row"
+          style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--success)' }} />
+          {connected} connection{connected === 1 ? '' : 's'} · connected
+        </a>
+      ) : null}
     </aside>
   );
 }
 
 export type ShellProps = {
   children: ReactNode;
-  /** The phone header's title and the agent chip beside it. */
   title?: string;
   agentId?: string | null;
-  /** A docked panel replaces the rail (plans sheet, agent editor, browser). */
+  /** A docked panel replaces the rail (plans sheet, agent editor). */
   panel?: ReactNode;
-  /** Hide the rail entirely for this screen. */
   rail?: boolean;
   phoneActions?: ReactNode;
 };
@@ -774,7 +683,7 @@ export function Shell({ children, title, agentId, panel, rail = true, phoneActio
                   color: 'var(--heading)',
                 }}
               >
-                {agent ? <AgentFace look={agent.look} size={18} /> : null}
+                {agent ? <AgentFace look={lookOf(agent)} size={18} /> : null}
                 {title ?? 'Melete'}
               </span>
             </div>

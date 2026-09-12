@@ -5,7 +5,7 @@ import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { adapter } from './experience/adapter.ts';
 import { AppContext, type AppContextValue, useLoad } from './experience/hooks.ts';
-import type { Agent, Capabilities, ConversationSummary, Session } from './experience/types.ts';
+import type { Agent, Capabilities, Conversation } from './experience/types.ts';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
 import { AutomationsScreen } from './screens/Automations.tsx';
@@ -15,15 +15,16 @@ import { PlansScreen } from './screens/Plans.tsx';
 import { SettingsScreen } from './screens/Settings.tsx';
 import { useTheme } from './theme.ts';
 
-const FALLBACK_CAPABILITIES: Capabilities = {
-  browser: 'unavailable',
-  oauth_google: 'unavailable',
-  oauth_apple: 'unavailable',
-  magic_link: 'available',
-  voice: 'unavailable',
-  attachments: 'unavailable',
-  tour_stages: [],
-};
+const ONBOARDED_KEY = 'melete.onboarded';
+
+function readOnboarded(): boolean | null {
+  try {
+    const stored = window.localStorage.getItem(ONBOARDED_KEY);
+    return stored === null ? null : stored === 'true';
+  } catch {
+    return null;
+  }
+}
 
 function Unreachable({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
@@ -55,27 +56,50 @@ export function App() {
   const route = useRoute();
   useTheme();
 
-  const capabilities = useLoad(() => adapter.capabilities(), []);
-  const session = useLoad(() => adapter.session(), []);
+  // The profile is the session: a signed-in person has one, a stranger does not.
+  const profile = useLoad(() => adapter.profile(), []);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
+  const [onboardedStored, setOnboardedStored] = useState<boolean | null>(readOnboarded);
+  const [capabilities, setCapabilities] = useState<Capabilities>({
+    calendar: false,
+    browser: false,
+    google_sign_in: false,
+    apple_sign_in: false,
+    magic_link: true,
+  });
 
   const refreshAgents = useCallback(() => {
     void adapter.agents().then((result) => {
-      if (result.error === null) setAgents(result.data.agents);
+      if (result.data) setAgents(result.data.agents);
+      setAgentsLoaded(true);
     });
   }, []);
   const refreshConversations = useCallback(() => {
     void adapter.conversations().then((result) => {
-      if (result.error === null) setConversations(result.data.conversations);
+      if (result.data) setConversations(result.data.conversations);
     });
   }, []);
 
-  const signedIn = session.data?.signed_in ?? false;
+  const signedIn = profile.data !== null;
   useEffect(() => {
     if (!signedIn) return;
     refreshAgents();
     refreshConversations();
+    // Capabilities are learned from the calls that would serve them.
+    void adapter.home().then((home) => {
+      setCapabilities((c) => ({
+        ...c,
+        calendar: Boolean(home.data && Array.isArray(home.data.upcoming)),
+      }));
+    });
+    void adapter.browserSession('probe').then((session) => {
+      setCapabilities((c) => ({
+        ...c,
+        browser: session.unavailable === null && session.error === null,
+      }));
+    });
   }, [signedIn, refreshAgents, refreshConversations]);
 
   // Conversations move while the person is elsewhere; keep the sidebar honest.
@@ -85,28 +109,39 @@ export function App() {
     return () => clearInterval(timer);
   }, [signedIn, refreshConversations]);
 
-  const sessionData: Session = session.data ?? {
-    signed_in: false,
-    onboarded: false,
-    profile: null,
-  };
+  const setOnboarded = useCallback((next: boolean) => {
+    setOnboardedStored(next);
+    try {
+      window.localStorage.setItem(ONBOARDED_KEY, String(next));
+    } catch {
+      // A browser with storage blocked still gets a working session.
+    }
+  }, []);
+
+  // Nothing in the contract records setup. A stored flag wins; otherwise an
+  // instance with agents already made has been set up.
+  const onboarded = onboardedStored ?? (agentsLoaded ? agents.length > 0 : true);
 
   const value = useMemo<AppContextValue>(
     () => ({
-      capabilities: capabilities.data ?? FALLBACK_CAPABILITIES,
-      session: sessionData,
+      capabilities,
+      profile: profile.data?.profile ?? null,
+      onboarded,
+      setOnboarded,
       agents,
       conversations,
-      refreshSession: session.reload,
+      refreshProfile: profile.reload,
       refreshConversations,
       refreshAgents,
     }),
     [
-      capabilities.data,
-      sessionData,
+      capabilities,
+      profile.data,
+      profile.reload,
+      onboarded,
+      setOnboarded,
       agents,
       conversations,
-      session.reload,
       refreshConversations,
       refreshAgents,
     ],
@@ -122,20 +157,17 @@ export function App() {
     );
   }
 
-  if (session.error && !session.data)
-    return <Unreachable error={session.error} onRetry={session.reload} />;
-  if (session.loading && !session.data) return null;
+  if (profile.error && !profile.data)
+    return <Unreachable error={profile.error} onRetry={profile.reload} />;
+  if (profile.loading && !profile.data) return null;
 
   const [head, second] = route.parts;
 
   let screen: React.ReactNode;
-  if (!sessionData.signed_in) {
-    screen = <SignInScreen />;
-  } else if (!sessionData.onboarded || head === 'setup') {
+  if (!signedIn || head === 'welcome') {
+    screen = <SignInScreen signedIn={signedIn} />;
+  } else if (!onboarded || head === 'setup') {
     screen = <OnboardingScreen />;
-  } else if (head === 'welcome') {
-    navigate('/');
-    screen = null;
   } else if (head === 'chat') {
     screen = <ChatScreen id={second ?? null} />;
   } else if (head === 'agents') {
@@ -147,6 +179,7 @@ export function App() {
   } else if (head === 'settings') {
     screen = <SettingsScreen tab={second ?? 'memory'} />;
   } else {
+    if (head) navigate('/');
     screen = <HomeScreen />;
   }
 

@@ -1,6 +1,8 @@
 /**
  * Plans: a table of objectives with milestones, a docked sheet for the
- * selected plan, templates to start from, and a way to ask Melete about one.
+ * selected plan, and a way to ask Melete about one. Everything reads from
+ * the contract's plans; what it has no call for (templates, sharing, adding a
+ * milestone later) is not offered.
  */
 import { useMemo, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
@@ -20,13 +22,15 @@ import {
   TabsUnderline,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, useApp, useLoad } from '../experience/hooks.ts';
-import type { Plan, PlanCategory, PlanTemplate } from '../experience/types.ts';
+import { agentById, lookOf, useApp, useLoad } from '../experience/hooks.ts';
+import type { Plan } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 
+type Category = 'travel' | 'wellbeing' | 'learning' | 'finance' | 'other';
+
 export const CATEGORY: Record<
-  PlanCategory,
+  Category,
   { label: string; icon: IconName; tone: BadgeTone; bg: string; ink: string }
 > = {
   travel: {
@@ -57,9 +61,26 @@ export const CATEGORY: Record<
     bg: 'var(--sand)',
     ink: 'var(--sand-ink)',
   },
+  other: {
+    label: 'Plan',
+    icon: 'plans',
+    tone: 'neutral',
+    bg: 'var(--soft)',
+    ink: 'var(--secondary)',
+  },
 };
 
-export function CategoryTile({ category, size = 36 }: { category: PlanCategory; size?: number }) {
+/** The contract's category is free text; the tint follows the closest word. */
+export function categoryOf(text: string): Category {
+  const lower = text.toLowerCase();
+  if (/travel|trip|holiday/.test(lower)) return 'travel';
+  if (/well|health|run|fit|sleep/.test(lower)) return 'wellbeing';
+  if (/learn|study|language|course|spanish/.test(lower)) return 'learning';
+  if (/financ|money|saving|fund|budget/.test(lower)) return 'finance';
+  return 'other';
+}
+
+export function CategoryTile({ category, size = 36 }: { category: Category; size?: number }) {
   const c = CATEGORY[category];
   return (
     <span
@@ -138,6 +159,7 @@ export function PlanTable({
       ) : null}
       {plans.map((plan) => {
         const on = plan.id === selected;
+        const category = categoryOf(plan.category);
         return (
           <a
             key={plan.id}
@@ -155,7 +177,7 @@ export function PlanTable({
             aria-current={on ? 'true' : undefined}
           >
             <div className="row" style={{ gap: 12, minWidth: 0 }}>
-              <CategoryTile category={plan.category} />
+              <CategoryTile category={category} />
               <div className="col" style={{ minWidth: 0, gap: 2 }}>
                 <span
                   className="clamp1"
@@ -164,13 +186,13 @@ export function PlanTable({
                   {plan.title}
                 </span>
                 <span className="clamp1" style={{ fontSize: 13, color: 'var(--muted)' }}>
-                  {plan.next_step}
+                  {plan.next_step ?? 'All milestones done'}
                 </span>
               </div>
             </div>
             {compact ? null : (
               <div>
-                <Badge tone={CATEGORY[plan.category].tone}>{CATEGORY[plan.category].label}</Badge>
+                <Badge tone={CATEGORY[category].tone}>{plan.category}</Badge>
               </div>
             )}
             <div className="row" style={{ gap: 10 }}>
@@ -185,7 +207,7 @@ export function PlanTable({
               >
                 <div
                   style={{
-                    width: `${plan.progress}%`,
+                    width: `${plan.progress_percent}%`,
                     height: '100%',
                     borderRadius: 4,
                     background: 'var(--primary)',
@@ -202,7 +224,7 @@ export function PlanTable({
                   textAlign: 'right',
                 }}
               >
-                {plan.progress}%
+                {Math.round(plan.progress_percent)}%
               </span>
             </div>
             <span style={{ color: 'var(--secondary)', display: 'flex', justifyContent: 'center' }}>
@@ -224,40 +246,43 @@ function PlanSheet({
   onChange: (next: Plan) => void;
   onClose: () => void;
 }) {
-  const { agents } = useApp();
-  const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState('');
+  const { agents, conversations } = useApp();
   const done = plan.milestones.filter((m) => m.done).length;
   const r = 28;
   const circ = 2 * Math.PI * r;
-  const dash = (plan.progress / 100) * circ;
-  const c = CATEGORY[plan.category];
+  const dash = (plan.progress_percent / 100) * circ;
+  const category = categoryOf(plan.category);
+  const linked = plan.conversation_ids
+    .map((id) => conversations.find((c) => c.id === id))
+    .filter((c): c is NonNullable<typeof c> => Boolean(c));
+  const updated = new Date(plan.updated_at).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
   return (
     <aside className="side-panel" aria-label={plan.title}>
       <div className="panel-body">
         <div className="row" style={{ justifyContent: 'space-between' }}>
-          <Badge tone={c.tone}>{c.label}</Badge>
+          <Badge tone={CATEGORY[category].tone}>{plan.category}</Badge>
           <div className="row" style={{ gap: 2 }}>
             <IconButton
               name="share"
               label="Share plan"
-              onClick={() => {
-                void navigator.clipboard?.writeText(`${window.location.origin}/#/plans/${plan.id}`);
-                toast({
-                  kind: 'ok',
-                  title: 'Link copied',
-                  sub: 'People with the link can follow along. Only you can edit.',
-                });
-              }}
+              onClick={() =>
+                void adapter.sharePlan(plan.id).then((r) => {
+                  toast({
+                    kind: 'info',
+                    title: 'Sharing is not available yet',
+                    sub: r.unavailable ?? r.error ?? '',
+                  });
+                })
+              }
             />
             <IconButton name="x" label="Close" onClick={onClose} />
           </div>
         </div>
         <div className="col" style={{ gap: 6 }}>
           <h2 style={{ fontSize: 20, fontWeight: 600, lineHeight: '26px' }}>{plan.title}</h2>
-          {plan.description ? (
-            <p style={{ fontSize: 14, color: 'var(--secondary)' }}>{plan.description}</p>
-          ) : null}
         </div>
         <div
           className="row"
@@ -301,44 +326,26 @@ function PlanSheet({
                 color: 'var(--heading)',
               }}
             >
-              {plan.progress}%
+              {Math.round(plan.progress_percent)}%
             </span>
           </div>
           <div className="col" style={{ gap: 4, minWidth: 0 }}>
             <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
               {done} of {plan.milestones.length} milestones done
             </span>
-            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Updated {plan.updated_at}</span>
+            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Updated {updated}</span>
           </div>
         </div>
-        {plan.needs_you ? (
-          <div
-            className="row"
-            style={{
-              gap: 10,
-              padding: '10px 12px',
-              borderRadius: 10,
-              background: 'var(--sand)',
-              color: 'var(--sand-ink)',
-              fontSize: 13,
-            }}
-          >
-            <Icon name="hand" size={16} />
-            <span>{plan.needs_you}</span>
-          </div>
-        ) : null}
         <div className="col" style={{ gap: 4 }}>
           <div className="row" style={{ justifyContent: 'space-between', height: 24 }}>
             <Overline>Milestones</Overline>
-            <Button size="sm" variant="ghost" icon="plus" onClick={() => setAdding(true)}>
-              Add
-            </Button>
           </div>
           {plan.milestones.map((milestone) => {
             const agent =
-              milestone.assignee?.kind === 'agent'
+              milestone.assignee.kind === 'agent'
                 ? agentById(agents, milestone.assignee.agent_id)
                 : null;
+            const byAgent = milestone.assignee.kind === 'agent';
             return (
               <div
                 key={milestone.id}
@@ -347,11 +354,17 @@ function PlanSheet({
               >
                 <Checkbox
                   checked={milestone.done}
-                  label={milestone.text}
+                  disabled={byAgent}
+                  label={milestone.title}
                   onChange={(next) =>
-                    void adapter
-                      .toggleMilestone(plan.id, milestone.id, next)
-                      .then((r) => r.data && onChange(r.data))
+                    void adapter.setMilestone(plan.id, milestone.id, next).then((r) => {
+                      if (r.data) onChange(r.data.plan);
+                      else
+                        toast({
+                          kind: 'info',
+                          title: r.unavailable ?? r.error ?? 'Couldn’t change that',
+                        });
+                    })
                   }
                 />
                 <span
@@ -362,63 +375,42 @@ function PlanSheet({
                     textDecoration: milestone.done ? 'line-through' : 'none',
                   }}
                 >
-                  {milestone.text}
+                  {milestone.title}
                 </span>
                 {agent ? (
                   <span
                     className="row"
                     style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}
-                    title={`${agent.name} owns this`}
+                    title={`${agent.name} does this step`}
                   >
                     <AgentFace
-                      look={agent.look}
+                      look={lookOf(agent)}
                       size={20}
-                      state={milestone.done ? 'done' : 'idle'}
+                      state={
+                        milestone.done
+                          ? 'done'
+                          : milestone.status === 'working'
+                            ? 'working'
+                            : 'idle'
+                      }
                     />
                     {agent.name}
                   </span>
-                ) : milestone.assignee?.kind === 'person' ? (
+                ) : (
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>you</span>
-                ) : null}
+                )}
               </div>
             );
           })}
-          {adding ? (
-            <form
-              className="row"
-              style={{ gap: 8, paddingTop: 4 }}
-              onSubmit={(event) => {
-                event.preventDefault();
-                const text = draft.trim();
-                if (!text) return;
-                void adapter.addMilestone(plan.id, text).then((r) => r.data && onChange(r.data));
-                setDraft('');
-                setAdding(false);
-              }}
-            >
-              <Input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="A milestone"
-                aria-label="New milestone"
-                width="100%"
-                height={32}
-                autoFocus
-              />
-              <Button size="sm" type="submit">
-                Add
-              </Button>
-            </form>
-          ) : null}
         </div>
-        {plan.linked.length ? (
+        {linked.length ? (
           <div className="col" style={{ gap: 6 }}>
             <Overline>Linked</Overline>
-            {plan.linked.map((link) => (
+            {linked.map((chat) => (
               <a
-                key={`${link.kind}-${link.id}`}
+                key={chat.id}
                 className="row hoverable"
-                href={link.kind === 'chat' ? href(`/chat/${link.id}`) : '#'}
+                href={href(`/chat/${chat.id}`)}
                 style={{
                   gap: 10,
                   height: 44,
@@ -430,16 +422,16 @@ function PlanSheet({
                 }}
               >
                 <span style={{ color: 'var(--muted)', display: 'flex' }}>
-                  <Icon name={link.kind === 'chat' ? 'chat' : 'fileText'} size={18} />
+                  <Icon name="chat" size={18} />
                 </span>
                 <span className="col grow" style={{ minWidth: 0 }}>
                   <span
                     className="clamp1"
                     style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
                   >
-                    {link.title}
+                    {chat.title}
                   </span>
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>{link.sub}</span>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>Chat</span>
                 </span>
                 <span style={{ color: 'var(--muted)', display: 'flex' }}>
                   <Icon name="chevronRight" size={16} />
@@ -453,37 +445,21 @@ function PlanSheet({
         <Button
           icon="chat"
           block
-          onClick={() =>
-            void adapter
-              .startConversation({
-                text: `About the plan “${plan.title}”: what should I do next?`,
-                agent_id: 'nova',
-                plan_id: plan.id,
-              })
-              .then((r) => {
-                if (r.data) navigate(`/chat/${r.data.conversation.id}`);
-                else toast({ kind: 'err', title: r.error ?? 'Couldn’t start the chat' });
-              })
-          }
+          onClick={() => {
+            const agent = agents[0];
+            if (!agent) return;
+            void adapter.planConversation(plan.id, agent.id).then((r) => {
+              if (r.data) navigate(`/chat/${r.data.conversation.id}`);
+              else
+                toast({
+                  kind: 'err',
+                  title: r.error ?? r.unavailable ?? 'Couldn’t start the chat',
+                });
+            });
+          }}
         >
           Ask Melete about this plan
         </Button>
-        {plan.status === 'in_progress' ? (
-          <Button
-            variant="outline"
-            icon="check"
-            block
-            onClick={() =>
-              void adapter.completePlan(plan.id).then((r) => r.data && onChange(r.data))
-            }
-          >
-            Mark complete
-          </Button>
-        ) : (
-          <Badge tone="success" dot>
-            Completed
-          </Badge>
-        )}
       </div>
     </aside>
   );
@@ -499,15 +475,15 @@ function NewPlanDialog({
   onCreated: (plan: Plan) => void;
 }) {
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState<PlanCategory>('wellbeing');
-  const [why, setWhy] = useState('');
+  const [category, setCategory] = useState('Wellbeing');
+  const [first, setFirst] = useState('');
   const [busy, setBusy] = useState(false);
   return (
     <Dialog
       open={open}
       onClose={onClose}
       title="Create a plan"
-      sub="Melete will suggest milestones once you save."
+      sub="Start with one milestone; add the rest from a chat."
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -518,15 +494,27 @@ function NewPlanDialog({
             disabled={!title.trim()}
             onClick={() => {
               setBusy(true);
-              void adapter.createPlan({ title: title.trim(), category, why }).then((r) => {
-                setBusy(false);
-                if (r.data) {
-                  onCreated(r.data.plan);
-                  setTitle('');
-                  setWhy('');
-                  onClose();
-                } else toast({ kind: 'err', title: r.error ?? 'Couldn’t create the plan' });
-              });
+              void adapter
+                .createPlan({
+                  title: title.trim(),
+                  category,
+                  milestones: first.trim()
+                    ? [{ title: first.trim(), assignee: { kind: 'person' } }]
+                    : [],
+                })
+                .then((r) => {
+                  setBusy(false);
+                  if (r.data) {
+                    onCreated(r.data.plan);
+                    setTitle('');
+                    setFirst('');
+                    onClose();
+                  } else
+                    toast({
+                      kind: 'err',
+                      title: r.error ?? r.unavailable ?? 'Couldn’t create the plan',
+                    });
+                });
             }}
           >
             Create plan
@@ -547,24 +535,27 @@ function NewPlanDialog({
         <Select
           label="Category"
           value={category}
-          onChange={(v) => setCategory(v as PlanCategory)}
+          onChange={setCategory}
           width="100%"
-          options={Object.entries(CATEGORY).map(([value, c]) => ({ value, label: c.label }))}
+          options={['Travel', 'Wellbeing', 'Learning', 'Finances', 'Home', 'Work'].map((value) => ({
+            value,
+            label: value,
+          }))}
         />
       </Field>
       <Field
         label={
           <span>
-            Why it matters{' '}
+            First milestone{' '}
             <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(optional)</span>
           </span>
         }
       >
-        <textarea
-          className="textarea"
-          value={why}
-          onChange={(event) => setWhy(event.target.value)}
-          placeholder="A sentence or two."
+        <Input
+          value={first}
+          onChange={(event) => setFirst(event.target.value)}
+          placeholder="Get checked out and pick shoes"
+          width="100%"
         />
       </Field>
     </Dialog>
@@ -576,35 +567,24 @@ export function PlansScreen({ selected }: { selected: string | null }) {
   const data = useLoad(() => adapter.plans(), []);
   const [tab, setTab] = useState<'progress' | 'done'>('progress');
   const [filter, setFilter] = useState('');
-  const [category, setCategory] = useState<'all' | PlanCategory>('all');
+  const [category, setCategory] = useState<'all' | Category>('all');
   const [view, setView] = useState<'table' | 'board'>('table');
   const [creating, setCreating] = useState(route.query.get('new') === '1');
 
   const plans = data.data?.plans ?? [];
-  const templates = data.data?.templates ?? [];
   const visible = useMemo(
     () =>
       plans.filter(
         (plan) =>
-          (tab === 'progress' ? plan.status === 'in_progress' : plan.status === 'completed') &&
-          (category === 'all' || plan.category === category) &&
+          (tab === 'progress' ? plan.progress_percent < 100 : plan.progress_percent >= 100) &&
+          (category === 'all' || categoryOf(plan.category) === category) &&
           plan.title.toLowerCase().includes(filter.toLowerCase()),
       ),
     [plans, tab, category, filter],
   );
   const current = plans.find((plan) => plan.id === selected) ?? null;
   const update = (next: Plan) =>
-    data.set({ plans: plans.map((p) => (p.id === next.id ? next : p)), templates });
-
-  const startFromTemplate = (template: PlanTemplate) =>
-    void adapter
-      .createPlan({ title: template.title, category: template.category, why: template.description })
-      .then((r) => {
-        if (r.data) {
-          data.set({ plans: [r.data.plan, ...plans], templates });
-          navigate(`/plans/${r.data.plan.id}`);
-        }
-      });
+    data.set({ plans: plans.map((p) => (p.id === next.id ? next : p)) });
 
   return (
     <Shell
@@ -637,12 +617,12 @@ export function PlansScreen({ selected }: { selected: string | null }) {
               {
                 value: 'progress',
                 label: 'In progress',
-                count: plans.filter((p) => p.status === 'in_progress').length,
+                count: plans.filter((p) => p.progress_percent < 100).length,
               },
               {
                 value: 'done',
                 label: 'Completed',
-                count: plans.filter((p) => p.status === 'completed').length,
+                count: plans.filter((p) => p.progress_percent >= 100).length,
               },
             ]}
           />
@@ -662,9 +642,9 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                 onChange={setCategory}
                 options={[
                   { value: 'all', label: 'All' },
-                  ...Object.entries(CATEGORY).map(([value, c]) => ({
-                    value: value as PlanCategory,
-                    label: c.label,
+                  ...(['travel', 'wellbeing', 'learning', 'finance'] as const).map((value) => ({
+                    value,
+                    label: CATEGORY[value].label,
                   })),
                 ]}
               />
@@ -691,17 +671,16 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                 gap: 12,
               }}
             >
-              {(Object.keys(CATEGORY) as PlanCategory[]).map((key) => (
-                <div key={key} className="col" style={{ gap: 8 }}>
-                  <div className="row" style={{ gap: 8 }}>
-                    <Badge tone={CATEGORY[key].tone}>{CATEGORY[key].label}</Badge>
-                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                      {visible.filter((p) => p.category === key).length}
-                    </span>
-                  </div>
-                  {visible
-                    .filter((p) => p.category === key)
-                    .map((plan) => (
+              {(['travel', 'wellbeing', 'learning', 'finance', 'other'] as const).map((key) => {
+                const column = visible.filter((p) => categoryOf(p.category) === key);
+                if (column.length === 0) return null;
+                return (
+                  <div key={key} className="col" style={{ gap: 8 }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <Badge tone={CATEGORY[key].tone}>{CATEGORY[key].label}</Badge>
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>{column.length}</span>
+                    </div>
+                    {column.map((plan) => (
                       <a
                         key={plan.id}
                         className="card-12 hoverable"
@@ -721,7 +700,7 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                           {plan.title}
                         </span>
                         <span className="clamp1" style={{ fontSize: 13, color: 'var(--muted)' }}>
-                          {plan.next_step}
+                          {plan.next_step ?? 'All milestones done'}
                         </span>
                         <div
                           style={{
@@ -733,7 +712,7 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                         >
                           <div
                             style={{
-                              width: `${plan.progress}%`,
+                              width: `${plan.progress_percent}%`,
                               height: '100%',
                               background: 'var(--primary)',
                             }}
@@ -741,47 +720,18 @@ export function PlansScreen({ selected }: { selected: string | null }) {
                         </div>
                       </a>
                     ))}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           )}
-        </div>
-        <div className="col" style={{ gap: 12 }}>
-          <div className="section-head">
-            <h2>Start from a template</h2>
-          </div>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-              gap: 12,
-            }}
-          >
-            {templates.map((template) => (
-              <button
-                key={template.id}
-                type="button"
-                className="card-12 hoverable col"
-                style={{ alignItems: 'flex-start', gap: 10, padding: 14, textAlign: 'left' }}
-                onClick={() => startFromTemplate(template)}
-              >
-                <CategoryTile category={template.category} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-                  {template.title}
-                </span>
-                <span style={{ fontSize: 13, color: 'var(--muted)', lineHeight: '18px' }}>
-                  {template.description}
-                </span>
-              </button>
-            ))}
-          </div>
         </div>
       </div>
       <NewPlanDialog
         open={creating}
         onClose={() => setCreating(false)}
         onCreated={(plan) => {
-          data.set({ plans: [plan, ...plans], templates });
+          data.set({ plans: [plan, ...plans] });
           navigate(`/plans/${plan.id}`);
         }}
       />

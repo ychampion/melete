@@ -1,17 +1,18 @@
 /**
- * ⌘K. Search across chats, plans, tasks, events, connections and actions,
- * with typed results. Arrow keys move, Enter opens, Tab cycles the type filter.
+ * ⌘K. Search across conversations, plans, tasks, events, connections and
+ * actions, with typed results from the contract's search. Arrow keys move,
+ * Enter opens, Tab cycles the type filter.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Kbd } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import type { PaletteHit } from '../experience/types.ts';
+import type { SearchResult } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 
 const TABS = [
   ['all', 'All'],
-  ['chat', 'Chats'],
+  ['conversation', 'Chats'],
   ['plan', 'Plans'],
   ['task', 'Tasks'],
   ['event', 'Events'],
@@ -19,8 +20,8 @@ const TABS = [
   ['action', 'Actions'],
 ] as const;
 
-const ICONS: Record<PaletteHit['kind'], IconName> = {
-  chat: 'chat',
+const ICONS: Record<SearchResult['kind'], IconName> = {
+  conversation: 'chat',
   plan: 'plans',
   task: 'check',
   event: 'calendar',
@@ -28,8 +29,8 @@ const ICONS: Record<PaletteHit['kind'], IconName> = {
   action: 'compose',
 };
 
-const KIND_LABEL: Record<PaletteHit['kind'], string> = {
-  chat: 'Chat',
+const KIND_LABEL: Record<SearchResult['kind'], string> = {
+  conversation: 'Chat',
   plan: 'Plan',
   task: 'Task',
   event: 'Event',
@@ -37,10 +38,26 @@ const KIND_LABEL: Record<PaletteHit['kind'], string> = {
   action: 'Action',
 };
 
+/** Where a result opens. Actions open the conversation they happened in. */
+export function hrefOf(hit: SearchResult): string {
+  switch (hit.kind) {
+    case 'conversation':
+      return `/chat/${hit.id}`;
+    case 'plan':
+      return `/plans/${hit.id}`;
+    case 'connection':
+      return '/settings/connections';
+    case 'action':
+      return hit.conversation_id ? `/chat/${hit.conversation_id}` : '/';
+    default:
+      return '/';
+  }
+}
+
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<(typeof TABS)[number][0]>('all');
-  const [hits, setHits] = useState<PaletteHit[]>([]);
+  const [hits, setHits] = useState<SearchResult[]>([]);
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -56,8 +73,9 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   useEffect(() => {
     if (!open) return;
     let live = true;
-    void adapter.search(query).then((result) => {
-      if (live && result.error === null) setHits(result.data.hits);
+    // The contract wants a non-empty query; an empty box lists everything.
+    void adapter.search(query.trim() || ' ').then((result) => {
+      if (live && result.data) setHits(result.data.results);
     });
     return () => {
       live = false;
@@ -65,15 +83,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   }, [open, query]);
 
   const visible = hits.filter((hit) => tab === 'all' || hit.kind === tab);
-  const grouped = new Map<PaletteHit['kind'], PaletteHit[]>();
+  const grouped = new Map<SearchResult['kind'], SearchResult[]>();
   for (const hit of visible) grouped.set(hit.kind, [...(grouped.get(hit.kind) ?? []), hit]);
   const flat = [...grouped.values()].flat();
   const current = flat[Math.min(index, Math.max(0, flat.length - 1))];
 
-  const openHit = (hit: PaletteHit | undefined) => {
+  const openHit = (hit: SearchResult | undefined) => {
     if (!hit) return;
     onClose();
-    navigate(hit.href);
+    navigate(hrefOf(hit));
   };
 
   if (!open) return null;
@@ -153,7 +171,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 <a
                   key={`${hit.kind}-${hit.id}`}
                   className="palette-item"
-                  href={`#${hit.href}`}
+                  href={`#${hrefOf(hit)}`}
                   data-on={current === hit ? 'true' : undefined}
                   onClick={(event) => {
                     event.preventDefault();

@@ -1,16 +1,16 @@
 /**
- * Settings: the only place the technology shows. Memory in plain language
- * with edit, delete and why; Connections with their state machine and what
- * each may do; Rules, the standing grants a person created, with revoke.
+ * Settings: the only place the technology shows. Saved details in plain
+ * language with edit, forget and why; connections with their state and what
+ * each may do; standing rules with their limits and revoke.
  */
-import { useEffect, useState } from 'react';
-import { AgentFace } from '../design/face.tsx';
+import { useState } from 'react';
+import { logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
-import { isLogo, Logo } from '../design/logos.tsx';
+import { Logo } from '../design/logos.tsx';
 import { Badge, Button, IconButton, Input, TabsUnderline } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, useApp, useLoad } from '../experience/hooks.ts';
-import type { ConnectionData, MemoryItem } from '../experience/types.ts';
+import { useLoad } from '../experience/hooks.ts';
+import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 
@@ -19,6 +19,9 @@ const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
   conversation: 'Learned in a conversation',
   inferred: 'Melete worked this out',
 };
+
+const dateOf = (iso: string | null) =>
+  iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
 
 function MemoryRow({
   item,
@@ -31,7 +34,24 @@ function MemoryRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(item.value);
-  const [why, setWhy] = useState(false);
+  const [why, setWhy] = useState<string[] | null>(null);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const explain = () => {
+    if (whyOpen) {
+      setWhyOpen(false);
+      return;
+    }
+    void adapter.memoryWhy(item.id).then((r) => {
+      setWhy(
+        r.data
+          ? r.data.reasons.length
+            ? r.data.reasons
+            : ['No recent use of this detail is recorded.']
+          : [r.error ?? r.unavailable ?? 'No explanation is available.'],
+      );
+      setWhyOpen(true);
+    });
+  };
   return (
     <div
       className="col"
@@ -62,8 +82,14 @@ function MemoryRow({
                 event.preventDefault();
                 const next = value.trim();
                 if (!next) return;
-                void adapter.updateMemory(item.id, next).then((r) => {
-                  if (r.data) onChange(r.data);
+                void adapter.editMemory(item.id, next, item.version).then(async (r) => {
+                  if (r.data === null) {
+                    toast({ kind: 'err', title: r.error ?? r.unavailable ?? 'Couldn’t save' });
+                    return;
+                  }
+                  const fresh = await adapter.memory();
+                  const updated = fresh.data?.items.find((i) => i.id === item.id);
+                  if (updated) onChange(updated);
                   setEditing(false);
                 });
               }}
@@ -87,12 +113,14 @@ function MemoryRow({
             <span style={{ fontSize: 14, color: 'var(--text)' }}>{item.value}</span>
           )}
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {SOURCE_LABEL[item.source]} · {item.created}
-            {item.last_used ? ` · used ${item.last_used}` : ''}
+            {SOURCE_LABEL[item.source]} · {dateOf(item.created)}
+            {item.last_used ? ` · used ${dateOf(item.last_used)}` : ''}
           </span>
-          {why ? (
-            <span
+          {whyOpen && why ? (
+            <div
+              className="col"
               style={{
+                gap: 4,
                 fontSize: 13,
                 color: 'var(--secondary)',
                 padding: '8px 12px',
@@ -100,21 +128,25 @@ function MemoryRow({
                 background: 'var(--soft)',
               }}
             >
-              {item.why}
-            </span>
+              {why.map((line) => (
+                <span key={line}>{line}</span>
+              ))}
+            </div>
           ) : null}
         </div>
         <div className="row" style={{ gap: 2 }}>
-          <Button size="sm" variant="ghost" onClick={() => setWhy((w) => !w)} aria-expanded={why}>
+          <Button size="sm" variant="ghost" onClick={explain} aria-expanded={whyOpen}>
             Why
           </Button>
-          <IconButton
-            name="pencil"
-            label={`Edit ${item.key}`}
-            size={28}
-            iconSize={14}
-            onClick={() => setEditing(true)}
-          />
+          {item.editable ? (
+            <IconButton
+              name="pencil"
+              label={`Edit ${item.key}`}
+              size={28}
+              iconSize={14}
+              onClick={() => setEditing(true)}
+            />
+          ) : null}
           <IconButton
             name="trash"
             label={`Forget ${item.key}`}
@@ -128,85 +160,36 @@ function MemoryRow({
   );
 }
 
-const ACCESS_LABEL: Record<ConnectionData['access'], string> = {
-  read: 'Read only',
-  write: 'Read and write',
-  draft: 'Draft only · you always send',
+const ACCESS_LABEL: Record<Connection['access'], string> = {
+  read_only: 'Read only',
+  asks_before_acting: 'Asks before acting',
+  draft_only: 'Draft only · you always send',
 };
 
 export function ConnectionCard({
   connection,
-  onChange,
   compact = false,
 }: {
-  connection: ConnectionData;
-  onChange: (next: ConnectionData) => void;
+  connection: Connection;
   compact?: boolean;
 }) {
-  const [busy, setBusy] = useState(false);
-  // "connecting" resolves on the service; poll until it does.
-  useEffect(() => {
-    if (connection.state !== 'connecting') return;
-    const timer = setInterval(() => {
-      void adapter.connections().then((r) => {
-        const next = r.data?.connections.find((c) => c.id === connection.id);
-        if (next && next.state !== 'connecting') onChange(next);
-      });
-    }, 600);
-    return () => clearInterval(timer);
-  }, [connection.state, connection.id, onChange]);
-
-  const connect = () => {
-    setBusy(true);
-    void adapter.connect(connection.id).then((r) => {
-      setBusy(false);
-      if (r.data) onChange(r.data);
-      else toast({ kind: 'err', title: r.error ?? 'Couldn’t connect' });
-    });
-  };
+  const logo = logoFor(connection.app);
   const tail =
-    connection.state === 'connected' ? (
-      <div className="row" style={{ gap: 8 }}>
-        <Badge tone="success" dot>
-          Connected
-        </Badge>
-        {compact ? null : (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() =>
-              void adapter.disconnect(connection.id).then((r) => r.data && onChange(r.data))
-            }
-          >
-            Disconnect
-          </Button>
-        )}
-      </div>
-    ) : connection.state === 'connecting' ? (
+    connection.status === 'connected' ? (
+      <Badge tone="success" dot>
+        Connected
+      </Badge>
+    ) : connection.status === 'connecting' ? (
       <span className="row" style={{ gap: 8, fontSize: 12, color: 'var(--muted)' }}>
         <Icon name="loader" size={14} stroke={2} className="spin" />
-        Opening the sign-in…
+        Connecting…
       </span>
-    ) : connection.state === 'error' ? (
-      <div className="row" style={{ gap: 8 }}>
-        <Badge tone="danger" dot>
-          Needs attention
-        </Badge>
-        <Button size="sm" variant="outline" loading={busy} onClick={connect}>
-          Reconnect
-        </Button>
-      </div>
+    ) : connection.status === 'error' ? (
+      <Badge tone="danger" dot>
+        Needs attention
+      </Badge>
     ) : (
-      <Button
-        size="sm"
-        variant={compact ? 'outline' : 'primary'}
-        icon={compact ? undefined : 'connectors'}
-        loading={busy}
-        onClick={connect}
-        block={compact}
-      >
-        Connect
-      </Button>
+      <Badge tone="outline">Available</Badge>
     );
   return (
     <div
@@ -219,8 +202,8 @@ export function ConnectionCard({
       }}
     >
       <div className="row" style={{ gap: 10, flex: 1, minWidth: 200 }}>
-        {isLogo(connection.app) ? (
-          <Logo name={connection.app} size={40} />
+        {logo ? (
+          <Logo name={logo} size={40} />
         ) : (
           <span
             className="row"
@@ -233,19 +216,15 @@ export function ConnectionCard({
               color: 'var(--blue-ink)',
             }}
           >
-            <Icon name="globe" size={20} />
+            <Icon name="connectors" size={20} />
           </span>
         )}
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
-            {connection.name}
+            {connection.label}
           </span>
           <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {connection.state === 'error' && connection.error
-              ? connection.error
-              : connection.state === 'connected'
-                ? ACCESS_LABEL[connection.access]
-                : connection.what}
+            {connection.app} · {ACCESS_LABEL[connection.access]}
           </span>
         </div>
       </div>
@@ -254,16 +233,22 @@ export function ConnectionCard({
   );
 }
 
+const ruleWhen = (rule: Rule) => {
+  const expires = new Date(rule.bounds.expires_at).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+  });
+  return `${rule.used} of ${rule.bounds.count_cap} used · until ${expires} · asks again after ${rule.bounds.reconsent_after_days} day${rule.bounds.reconsent_after_days === 1 ? '' : 's'}`;
+};
+
 export function SettingsScreen({ tab }: { tab: string }) {
-  const { agents } = useApp();
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
   const current = tab === 'connections' || tab === 'rules' ? tab : 'memory';
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
-  const setConnection = (next: ConnectionData) =>
-    connections.set({ connections: list.map((c) => (c.id === next.id ? next : c)) });
+  const byId = new Map(list.map((c) => [c.id, c]));
 
   return (
     <Shell title="Settings">
@@ -285,7 +270,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
             {
               value: 'connections',
               label: 'Connections',
-              count: list.filter((c) => c.state === 'connected').length,
+              count: list.filter((c) => c.status === 'connected').length,
             },
             { value: 'rules', label: 'Rules', count: rules.data?.rules.length ?? 0 },
           ]}
@@ -294,8 +279,11 @@ export function SettingsScreen({ tab }: { tab: string }) {
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
               Agents use these quietly. Anything here can be changed or forgotten, and Melete can
-              always say why it used one.
+              say why it used one.
             </p>
+            {memory.error ? (
+              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{memory.error}</p>
+            ) : null}
             <div className="card-12" style={{ overflow: 'hidden' }}>
               <div style={{ height: 1 }} />
               {items.map((item) => (
@@ -306,7 +294,14 @@ export function SettingsScreen({ tab }: { tab: string }) {
                     memory.set({ items: items.map((i) => (i.id === next.id ? next : i)) })
                   }
                   onDelete={() =>
-                    void adapter.deleteMemory(item.id).then(() => {
+                    void adapter.deleteMemory(item.id).then((r) => {
+                      if (r.data === null) {
+                        toast({
+                          kind: 'err',
+                          title: r.error ?? r.unavailable ?? 'Couldn’t forget that',
+                        });
+                        return;
+                      }
                       memory.set({ items: items.filter((i) => i.id !== item.id) });
                       toast({ kind: 'ok', title: `Forgot “${item.key}”` });
                     })
@@ -351,47 +346,52 @@ export function SettingsScreen({ tab }: { tab: string }) {
             ) : null}
             <div className="col" style={{ gap: 8 }}>
               {list.map((connection) => (
-                <ConnectionCard
-                  key={connection.id}
-                  connection={connection}
-                  onChange={setConnection}
-                />
+                <ConnectionCard key={connection.id} connection={connection} />
               ))}
             </div>
+            {connections.data && list.length === 0 ? (
+              <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
+            ) : null}
           </div>
         ) : (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
-              Each rule came from an “Always allow” you chose. Revoke one and the agent asks again
-              next time.
+              Each rule came from an “Always allow” you chose. It has a limit and an expiry; revoke
+              it and the agent asks again next time.
             </p>
+            {rules.error ? (
+              <p style={{ color: 'var(--danger)', fontSize: 13 }}>{rules.error}</p>
+            ) : null}
             <div className="card-12" style={{ overflow: 'hidden' }}>
               <div style={{ height: 1 }} />
               {(rules.data?.rules ?? []).map((rule) => {
-                const agent = agentById(agents, rule.agent_id);
+                const connection = byId.get(rule.connection_id);
+                const logo = connection ? logoFor(connection.app) : null;
                 return (
                   <div key={rule.id} className="list-row" style={{ minHeight: 60 }}>
-                    {isLogo(rule.connection.app) ? (
-                      <Logo name={rule.connection.app} size={32} />
-                    ) : (
-                      <Icon name="lock" size={18} />
-                    )}
+                    {logo ? <Logo name={logo} size={32} /> : <Icon name="lock" size={18} />}
                     <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
                       <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}>
                         {rule.text}
                       </span>
-                      <span className="row" style={{ gap: 6, fontSize: 12, color: 'var(--muted)' }}>
-                        {agent ? <AgentFace look={agent.look} size={16} /> : null}
-                        {agent?.name ?? 'Melete'} · {rule.connection.label} · since {rule.created}
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        {connection?.label ?? 'A connection'} · {ruleWhen(rule)}
                       </span>
                     </div>
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() =>
-                        void adapter.revokeRule(rule.id).then(() => {
+                        void adapter.revokeRule(rule.id).then((r) => {
+                          if (r.data === null) {
+                            toast({
+                              kind: 'err',
+                              title: r.error ?? r.unavailable ?? 'Couldn’t revoke',
+                            });
+                            return;
+                          }
                           rules.set({
-                            rules: (rules.data?.rules ?? []).filter((r) => r.id !== rule.id),
+                            rules: (rules.data?.rules ?? []).filter((x) => x.id !== rule.id),
                           });
                           toast({
                             kind: 'ok',

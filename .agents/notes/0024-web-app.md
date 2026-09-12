@@ -43,17 +43,25 @@ and is not offered: the browser task card and its docked panel, the OAuth
 buttons, the voice control, attachments, and the tour stages. There is no
 "coming soon".
 
-## How conversations run against the mock
+## How conversations run against the contract
 
-`apps/mock-api` serves the designed surfaces under `/surfaces`. A
-conversation is a view over jobs: each message a person sends becomes a job
-played by a scenario through the real state machine, and the trail, cards,
-permissions, receipts, questions and unknown outcomes are derived from that
-job's persisted events (`apps/mock-api/src/surfaces.ts`). So the approval
-flow, the hash mismatch, the one-question-at-a-time rule and the unknown
-outcome all hold in the new interface with the same mock that held them in the
-reference client. The scenario vocabulary grew additively: `say`, `card`,
-`draft`, `ask`, `browser`, and human `title` / `meta` / `sources` on `tool`.
+The web app reads `packages/contracts/src/experience.ts` through the generated
+client and nothing else. `apps/web/src/experience/adapter.ts` is the single
+file that talks to the service: every call returns data, an error, or the
+contract's `not_available` reason, and a surface whose call answers
+`not_available` is not drawn. `apps/web/src/experience/reduce.ts` folds the
+event stream (`say`, `action`, `note`, `done`, `text_delta`, `card`,
+`receipt`, `permission`, `question`, `status`) into turns with their trail and
+blocks; the `status` item carries the composer state, so the interface never
+guesses whether the agent can be paused or stopped.
+
+`apps/mock-api/src/experience.ts` plays the designed scenarios
+(`apps/mock-api/scenarios/*.json`) through those routes: a message picks a
+scenario by what it says, tool steps become `action` steps with app-named
+sources, `await_approval` becomes a permission card with the result card as
+its preview, `dispatch` becomes a receipt with an undo handle. Every body it
+emits is validated against the contract's schemas, and its text is checked
+against the backend vocabulary list, so a tool name cannot reach the interface.
 
 Text deltas are streamed live and never stored, so a reconnect draws a gap
 marker where streamed text may be missing rather than stitching two halves
@@ -61,8 +69,9 @@ together. Durable events replay from the last seq the client drew.
 
 ## Consequences
 
-- When `packages/contracts/src/experience.ts` lands, the adapter is the file
-  to change; the screens and the reducer stay.
+- What the contract does not carry is not drawn, and each such gap is listed
+  as a proposed additive change in
+  `.agents/notes/proposed/2026-09-12-w16b-experience-shapes.md`.
 - `bun run --cwd apps/web screens` walks every surface at 1440, 1024 and 390
   in light and dark, checks for horizontal overflow and console errors, and
   writes `apps/web/docs/screens/`. It is the visual regression check.
