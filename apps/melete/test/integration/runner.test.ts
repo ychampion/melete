@@ -17,7 +17,7 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { bootstrap } from '../../src/index.ts';
 import { verifyCapability } from '../../src/jobs/capability.ts';
-import { requireCurrentAttempt, withCapability } from '../../src/jobs/fence.ts';
+import { recordReceipt, requireCurrentAttempt, withCapability } from '../../src/jobs/fence.ts';
 import { type AttemptWake, QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, type ClaimedAttempt, type RunnerOptions } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
@@ -298,6 +298,112 @@ withDb('attempt runner against Postgres and pg-boss', () => {
       Date.now = realNow;
     }
   });
+
+  test.each([-120_000, 120_000])(
+    'claim leases use database time with process skew %i',
+    async (skew) => {
+      const { handle } = fixture();
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + skew;
+        const admitted = await claim(runner(), row);
+        const [lease] =
+          await handle.sql`select extract(epoch from (lease_expires_at - now()))::float as remaining
+        from attempt where id = ${admitted.claims.attempt_id}`;
+        expect(lease?.remaining).toBeWithin(40, 46);
+      } finally {
+        Date.now = realNow;
+      }
+    },
+  );
+
+  test.each([-120_000, 120_000])(
+    'heartbeat then recovery preserves live work with process skew %i',
+    async (skew) => {
+      const { handle, jobs } = fixture();
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      const worker = runner();
+      const admitted = await claim(worker, row);
+      const id = admitted.claims.attempt_id;
+      // Isolate renewal from creation: the starting lease is healthy by Postgres time.
+      await handle.sql`update attempt set lease_expires_at = now() + interval '10 seconds' where id = ${id}`;
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + skew;
+        expect(await worker.heartbeat(admitted.claims)).toBe(true);
+        await worker.recover();
+        expect((await jobs.get(row.id)).state).toBe('running');
+        expect((await jobs.get(row.id)).leaseEpoch).toBe(1);
+        expect(await execution(id)).toMatchObject({
+          endedAt: null,
+          outcome: null,
+          leaseStatus: 'active',
+        });
+        await jobs.transaction((tx) => requireCurrentAttempt(tx, admitted.claims));
+        const [lease] =
+          await handle.sql`select extract(epoch from (lease_expires_at - now()))::float as remaining
+        from attempt where id = ${id}`;
+        expect(lease?.remaining).toBeWithin(40, 46);
+        expect(
+          await handle.sql`select seq from event where attempt_id = ${id} and type = 'attempt_ended'`,
+        ).toHaveLength(0);
+
+        // A slow process clock must not admit or revive work that Postgres has expired.
+        await handle.sql`update attempt set lease_expires_at = now() - interval '1 second' where id = ${id}`;
+        await rejects(
+          () => jobs.transaction((tx) => requireCurrentAttempt(tx, admitted.claims)),
+          'stale_epoch',
+        );
+        expect(await worker.heartbeat(admitted.claims)).toBe(false);
+        await worker.recover();
+        expect(await execution(id)).toMatchObject({
+          leaseStatus: 'lost',
+          outcomeDetail: { reason: 'lease_expired' },
+        });
+      } finally {
+        Date.now = realNow;
+      }
+    },
+  );
+
+  test.each([-120_000, 120_000])(
+    'receipt lateness uses database time with process skew %i',
+    async (skew) => {
+      const { handle, jobs } = fixture();
+      const row = await create();
+      await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+      const admitted = await claim(runner(), row);
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + skew;
+        for (const late of [false, true]) {
+          const id = await effect(admitted, 'dispatched');
+          const [dispatched] = await handle.db
+            .update(action)
+            .set({ dispatchedAt: new Date() })
+            .where(eq(action.id, id))
+            .returning();
+          if (!dispatched) throw new Error('Expected dispatched action');
+          await handle.sql`update attempt set lease_expires_at = now() + ${late ? -1 : 45} * interval '1 second'
+          where id = ${admitted.claims.attempt_id}`;
+          const receipt = await recordReceipt(jobs, admitted.claims.attempt_id, {
+            action_id: id,
+            connection_id: dispatched.connectionId,
+            external_ref: id,
+            detail: {},
+            received_at: new Date().toISOString(),
+            late: false,
+          });
+          expect(receipt.late).toBe(late);
+        }
+      } finally {
+        Date.now = realNow;
+      }
+    },
+  );
 
   test('an attempt still open when a later epoch claims the job ends as superseded', async () => {
     const { handle, jobs } = fixture();

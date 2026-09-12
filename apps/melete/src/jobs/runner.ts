@@ -29,6 +29,7 @@ import {
 import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
+import { databaseNow } from '../db/clock.ts';
 import { attempt, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -80,12 +81,6 @@ export type OutcomeContext = {
 class AttemptBudgetExceeded extends Error {}
 
 /** An adapter invocation is disposable; every decision around it is a short database transaction. */
-/** The database's clock, read inside the transaction that reads the rows it is compared with. */
-async function databaseNow(tx: Transaction): Promise<Date> {
-  const [row] = await tx.execute<{ now: Date | string }>(sql`select now() as now`);
-  return row?.now instanceof Date ? row.now : new Date(String(row?.now));
-}
-
 export class AttemptRunner {
   private readonly active = new Map<
     string,
@@ -222,7 +217,7 @@ export class AttemptRunner {
         provider: model.provider,
         model: model.model,
         usage: attemptUsage.parse({}),
-        leaseExpiresAt: new Date(Date.now() + this.leaseMs),
+        leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs),
         inputCursor: Number(latest?.seq ?? 0),
       });
       await captureAttemptVersions(tx, bundle, capabilities.version);
@@ -280,7 +275,7 @@ export class AttemptRunner {
       }
       await tx
         .update(attempt)
-        .set({ leaseExpiresAt: new Date(Date.now() + this.leaseMs) })
+        .set({ leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs) })
         .where(eq(attempt.id, claims.attempt_id));
       return true;
     });
