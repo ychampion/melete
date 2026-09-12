@@ -17,6 +17,7 @@ import { startQueue } from '../jobs/queue.ts';
 import { databaseSpaces } from '../knowledge/spaces.ts';
 import { startDeploymentMemory } from '../memory/bootstrap.ts';
 import { listClaims } from '../memory/claims.ts';
+import { MemoryError } from '../memory/db.ts';
 import { ingest } from '../memory/evidence.ts';
 import { forgetMemory } from '../memory/forget.ts';
 import { runExtractionWork } from '../memory/service.ts';
@@ -210,7 +211,15 @@ withDb('deployment attempt context', () => {
       const notices = await f.sql`select payload from event where type = 'notice' order by seq`;
       expect(notices.map((row) => row.payload.record_ids)).toEqual([[record.id], []]);
       expect(await f.sql`select seq from event where type = 'turn_started'`).toHaveLength(2);
-      await expect(f.memory.scopeForJob(newId('job'))).rejects.toThrow('scope_denied');
+      // Settled by hand rather than through `.rejects.toThrow`: on Windows that
+      // matcher never settles for this rejection, and the test hung at every
+      // head since PR #18 while the same promise rejects within a millisecond.
+      const denied = await f.memory.scopeForJob(newId('job')).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(denied).toBeInstanceOf(MemoryError);
+      expect((denied as MemoryError).code).toBe('scope_denied');
     } finally {
       await f.close();
     }
@@ -293,9 +302,14 @@ withDb('deployment attempt context', () => {
       expect(f.snapshots[0]?.length).toBeLessThan(10);
       const stale = await f.makeAttempt('bounded');
       stale.attempt.epoch += 1;
-      await expect(f.adapter.start(stale, f.sink, new AbortController().signal)).rejects.toThrow(
-        'stale_attempt',
+      // Settled by hand for the same reason as the retraction case above: this
+      // rejection never settles through `.rejects.toThrow` on Windows.
+      const refused = await f.adapter.start(stale, f.sink, new AbortController().signal).then(
+        () => null,
+        (error: unknown) => error,
       );
+      expect(refused).toBeInstanceOf(MemoryError);
+      expect((refused as MemoryError).code).toBe('stale_attempt');
       expect(
         await f.sql`select seq from event where attempt_id = ${stale.attempt.id}`,
       ).toHaveLength(0);
