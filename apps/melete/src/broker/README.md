@@ -58,6 +58,60 @@ state, with uncertain actions ordered first. On the internal listener,
 mount the same read adapter behind its owner authentication. Cancellation stays
 visible alongside any unconfirmed send.
 
+## Typed faults and the repair policy
+
+`repair.ts` is the policy: one pure decision function and a driver that performs
+only what the decision chose. A connector raises a typed `ConnectorFault`; the
+policy reads the class and repairs the cause. It retries a transient failure
+with jittered backoff inside the dispatch deadline, parks a rate limit on a
+timer and releases the worker, refreshes an expired credential once and rechecks
+the grant, stops dead on a revoked one, re-discovers a drifted schema and
+proposes a mapping, takes one equivalent authorized route for the same
+operation, reconciles an uncertain outcome through `verify`, and escalates one
+diagnosis when nothing else applies.
+
+A repair may change a selector, a wrapper, the route, the credential, or a
+field's name under a mapping whose every value survives unchanged. It may never
+change a recipient, an amount, a resource, or the business intent. The action
+row is not rewritten: the id, the `payload_hash`, the `intent_key` and the
+approval are the same on every attempt, and only the payload handed to the
+connector differs. Each line of `action.repair_trace` carries the hash of the
+bytes that attempt sent, so the record shows exactly when and why the wire form
+changed.
+
+`checkAuthority(tx, job, action)` is everything that has to be true for those
+bytes to leave: the connection is still this connection and still active, the
+generation admission reviewed is current, the tool and scopes are still held,
+the binding still matches, and the origins are still the approved ones. The
+dispatch asks it once before marking the action dispatched, and the policy asks
+it again before every further execution, so a grant revoked during a backoff
+fences the retry instead of being out-run by it.
+
+A revision never re-aims an effect. For `write_external` and `spend` the person
+approved exact bytes and the action keeps that hash, so no revision is accepted
+at all; elsewhere a revision may correct content but never a recipient, a
+destination, an amount, a resource, or the set of fields the person saw, and it
+is measured against the approved payload rather than the last one sent.
+
+`repair_candidate` holds a drift mapping as a proposal with the test it must
+pass. The connector must have declared the rename, a field that decides where
+the effect lands keeps its name, and the test names the operation and the values
+that must survive rather than recomputing the expected payload with the same
+rename. A candidate becomes `applied` only after that test passed and after the
+send it carried landed; anything ambiguous is `rejected` and the action stops.
+
+Parking a rate-limited action ends its attempt as well as moving the job onto a
+timer, because the runner's recovery sweep only fences attempts whose job is
+still running. `parkAttempt` is the seam for the jobs module to own that
+release. The due time is enforced under the dispatch row lock, and the recovery
+scan passes the instant it selected with, so two clocks cannot disagree about
+whether an action is ready.
+
+Per-class counters and the disposition live on the action row, and
+`GET /jobs/{id}/repairs` reports them with the trace and the candidates.
+`completed` is the only disposition that means the effect happened; every other
+one is a safe stop and is never summed with a completion.
+
 ## Effect identity across attempts
 
 At proposal the broker derives

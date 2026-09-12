@@ -8,6 +8,56 @@ next step.
 
 See `docs/CONNECTORS.md` for the tool tables.
 
+## Typed faults
+
+A connector that fails on purpose throws `ConnectorFaultError` with a kind from
+`CONNECTOR_FAULT_KINDS`, a `may_have_committed` flag, an optional `retry_after`
+in seconds, and plain-words detail. The broker's repair policy reads the class;
+see `.agents/notes/0015-typed-repair.md` for what each class does.
+
+`may_have_committed` is the field with teeth. True means no retry of any shape
+until `verify` has spoken, whatever the kind says, and a connector that is
+unsure must say true. Anything thrown that is not a `ConnectorFaultError` reads
+as `unclassified` with `may_have_committed: true`, so an untyped throw behaves
+exactly as it did before typed faults existed: the action rests at `unknown` and
+reconciliation stays a separate step.
+
+Three optional methods let a connector be repaired rather than only retried.
+
+`describe()` answers with the fields the destination requires now, plus the
+fields it accepts, plus `equivalent_fields`: the renames the connector itself
+vouches for, old name to new name. A repair applies only what is declared there.
+Nothing infers an equivalence from a missing field and a surplus field lining
+up, because from outside a payload that is what a recipient and a memo look
+like, and a field that decides where the effect lands keeps its name whatever
+the destination now calls it.
+
+`refreshCredential()` borrows the credential inside the store's `withSecret`,
+uses it, and keeps nothing but the fact that a refresh happened; it answers
+false when the grant is gone, and it never substitutes another identity. The
+broker re-checks the connection row afterwards, so a fresh token on a revoked
+connection is still a stop. A connector with no credential store cannot refresh
+and stops at `needs_reconnect`.
+
+`routes()` offers equivalent authorized routes for the same operation, used only
+after a route said definitively that it did not execute.
+
+A connector that implements none of them simply stops instead, which is the
+correct outcome rather than a missing feature.
+
+Which connectors classify what, in v0.1:
+
+| Connector | Classes it raises |
+|---|---|
+| `test` | every class, on demand, for the falsifiers |
+| `calendar` | `rate_limited` (with the server's `Retry-After`), `expired_credential` on 401, `revoked_credential` on 403. Every other refusal stays a plain failure |
+| `files` | `bad_output` when a move's source is not the content the action recorded, and when a write does not read back as what was written |
+| `web`, `email` | none yet. A web fetch reports the destination's status in its receipt rather than failing on it, and mail transport errors are not yet distinguishable enough to classify honestly |
+
+A connector that classifies nothing behaves exactly as it did before typed
+faults existed. Adding a class is a per-connector change with its own falsifier,
+and guessing one would be the same guess the policy exists to refuse.
+
 ## Core connectors
 
 `ConnectorRegistry` registers trusted connector instances by connection id and
@@ -27,13 +77,20 @@ Reads and writes default to a 2 MiB limit. A write is verified by its expected
 content hash. A move needs `content_hash` in its recorded payload to decide an
 unknown outcome; without that evidence verification remains undecided.
 
-`createTestConnector(sql)` uses its own durable `test_destination_ledger` table;
+`createTestConnector(sql, { fault })` uses its own durable
+`test_destination_ledger` table;
 call `initializeTestLedger(sql)` once when preparing the database. Accepting the
 same action id never inserts a second destination row. `drop_ack: true` throws
 only after that acceptance, and `verify` looks up the action id and hash without
 sending anything. `{ verify: false }` makes verification unsupported. The
 `memoryTestLedger()` implementation is for unit tests; conformance and the
-running service use Postgres.
+running service use Postgres. It also fails on purpose, once per fault class:
+name a case from `TEST_FAULT_CASES` in the payload's `fault` field, or set
+`MELETE_TEST_CONNECTOR_FAULT` for the whole connector, and the payload field
+wins. Every case that did not commit raises before the ledger is touched, so a
+repaired retry of one of them cannot leave a second delivery behind;
+`lost_ack_verifiable` and `lost_ack_unverifiable` accept first and then lose the
+acknowledgement, and only the first of those can be verified afterwards.
 
 `createWebConnector()` accepts only HTTP(S) URLs without credentials. A trusted
 `constraints.public_compartment: true` permits public addresses; otherwise the

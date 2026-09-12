@@ -5,6 +5,7 @@
  * machinery already in the service is what carries it.
  */
 import {
+  attentionHandle,
   type DeferredQuestion,
   deferredQuestion,
   isTerminal,
@@ -41,6 +42,11 @@ const deadlineRank = (at: string | null): number =>
   at ? Date.parse(at) : Number.POSITIVE_INFINITY;
 
 export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQuestion {
+  // Older broker writers stored their explanation where the public contract
+  // expects durable handles. Keep that explanation visible and cite the actual
+  // question record so closing it cannot roll back a reconciliation wake.
+  const handles = row.because.filter((value) => attentionHandle.safeParse(value).success);
+  const explanation = row.because.filter((value) => !attentionHandle.safeParse(value).success);
   return ownerQuestion.parse({
     id: row.id,
     source: row.source,
@@ -49,8 +55,8 @@ export function questionView(row: QuestionRow, jobTitle: string | null): OwnerQu
     attempt_id: row.attemptId,
     space_id: row.spaceId,
     key: row.key,
-    text: row.text,
-    because: row.because,
+    text: [row.text, ...explanation].join('\n\n').slice(0, 4000),
+    because: handles.length > 0 ? handles : [`question:${row.id}`],
     if_ignored: row.ifIgnored,
     blocks_external_effect: row.blocksExternalEffect,
     deadline_at: row.deadlineAt?.toISOString() ?? null,

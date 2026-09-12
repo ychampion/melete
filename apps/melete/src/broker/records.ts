@@ -72,7 +72,8 @@ export function actionFromRow(row: Record<string, unknown>): Action {
     Object.entries(row).map(([key, value]) => [
       key,
       // Drizzle's shared postgres.js client returns timestamp text; normalize at the read boundary.
-      value !== null && ['created_at', 'dispatched_at', 'resolved_at'].includes(key)
+      value !== null &&
+      ['created_at', 'dispatched_at', 'resolved_at', 'retry_after_at'].includes(key)
         ? new Date(value as string | Date).toISOString()
         : value,
     ]),

@@ -1,5 +1,13 @@
-import type { Action, ConnectorManifest, JsonValue, Receipt } from '@melete/contracts';
+import type {
+  Action,
+  ConnectorFaultKind,
+  ConnectorManifest,
+  JsonValue,
+  Receipt,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { type ConnectorDescription, ConnectorFaultError } from './faults.ts';
+import type { SecretAccess } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
 export type TestDelivery = {
@@ -110,12 +118,123 @@ function checkIdentity(action: Action, ctx: ConnectorContext): void {
   }
 }
 
+/**
+ * One fault case per class in the taxonomy, so the repair policy can be run
+ * against a destination that fails on purpose and always the same way.
+ *
+ * A case is chosen per action with a `fault` field in the payload, or for the
+ * whole connector with `MELETE_TEST_CONNECTOR_FAULT`. The payload field wins,
+ * so one fixture can hold a healthy send and a drifting one at once.
+ */
+export const TEST_FAULT_CASES = [
+  'healthy',
+  'transient_before_dispatch',
+  'persistent_transient',
+  'rate_limited',
+  'expired_credential',
+  'revoked_credential',
+  'schema_drift',
+  'unsupported_route',
+  'bad_output',
+  'lost_ack_verifiable',
+  'lost_ack_unverifiable',
+  'unclassified',
+] as const;
+export type TestFaultCase = (typeof TEST_FAULT_CASES)[number];
+
+const isFaultCase = (value: unknown): value is TestFaultCase =>
+  typeof value === 'string' && (TEST_FAULT_CASES as readonly string[]).includes(value);
+
+/** The route the destination accepts once the first one has refused the call. */
+export const TEST_FALLBACK_ROUTE = 'test.send/authorized-fallback';
+
+/** Fields the drifted destination accepts without requiring them. */
+const DRIFT_OPTIONAL = ['fault', 'drop_ack', 'retry_after'];
+
+/**
+ * Where a refreshed credential comes from. The connector never holds the value:
+ * it borrows it inside `withSecret`, uses it, and keeps only the fact that a
+ * refresh happened. Nothing derived from the value is written anywhere a
+ * runtime, an event, a receipt or an owner-facing record can read.
+ */
+export type TestCredentials = { access: SecretAccess; secret_ref: string };
+
 export function createTestConnector(
   destination: Sql | TestDestinationLedger,
-  options: { verify?: boolean } = {},
+  options: { verify?: boolean; fault?: TestFaultCase; credentials?: TestCredentials } = {},
 ): Connector {
   const ledger = typeof destination === 'function' ? postgresTestLedger(destination) : destination;
   const canVerify = options.verify !== false;
+  const configured = options.fault ?? process.env.MELETE_TEST_CONNECTOR_FAULT;
+  const fallbackCase: TestFaultCase = isFaultCase(configured) ? configured : 'healthy';
+  // Per-action, so a repaired re-execution meets the same destination it met before.
+  const executions = new Map<string, number>();
+  const refreshed = new Set<string>();
+  const caseFor = (action: Action): TestFaultCase => {
+    const declared = action.canonical_payload.fault;
+    return isFaultCase(declared) ? declared : fallbackCase;
+  };
+  const raise = (
+    kind: ConnectorFaultKind,
+    detail: string,
+    extra: { may_have_committed?: boolean; retry_after?: number | null } = {},
+  ): never => {
+    throw new ConnectorFaultError({ kind, detail, ...extra });
+  };
+  /**
+   * Fail the way the named case says to. Returns when the case is satisfied and
+   * the send should go through; throws the typed fault otherwise.
+   */
+  const injectFault = (action: Action, ctx: ConnectorContext): void => {
+    const attempts = (executions.get(action.id) ?? 0) + 1;
+    executions.set(action.id, attempts);
+    const payload = action.canonical_payload;
+    switch (caseFor(action)) {
+      case 'healthy':
+        return;
+      case 'transient_before_dispatch':
+        if (attempts === 1) raise('transient_before_dispatch', 'the socket closed before the send');
+        return;
+      case 'persistent_transient':
+        raise('transient_before_dispatch', 'the socket closed before the send, again');
+        return;
+      case 'rate_limited': {
+        // The parked job comes back on a new dispatch, so the counter, not the
+        // clock, is what says the destination is willing again.
+        if (attempts === 1) {
+          const asked = payload.retry_after;
+          raise('rate_limited', 'the destination asked to be left alone for a while', {
+            retry_after: typeof asked === 'number' ? asked : 60,
+          });
+        }
+        return;
+      }
+      case 'expired_credential':
+        if (!refreshed.has(action.id)) raise('expired_credential', 'the access token has expired');
+        return;
+      case 'revoked_credential':
+        raise('revoked_credential', 'the owner revoked this connection');
+        return;
+      case 'schema_drift':
+        // The destination renamed `body` to `content` under a working call.
+        if (!('content' in payload)) {
+          raise('schema_drift', 'the destination no longer accepts a field named body');
+        }
+        return;
+      case 'unsupported_route':
+        if (ctx.repair?.route !== TEST_FALLBACK_ROUTE) {
+          raise('unsupported_route', 'this route cannot carry the send and did not try');
+        }
+        return;
+      case 'bad_output':
+        raise('bad_output', 'the destination wrote a file that does not pass its own validation');
+        return;
+      case 'unclassified':
+        throw new Error('the destination failed in a way it does not describe');
+      default:
+        return;
+    }
+  };
   const manifest: ConnectorManifest = {
     name: 'test',
     version: '0.1.0',
@@ -152,6 +271,9 @@ export function createTestConnector(
         return { outcome: 'failed', reason: 'drop_ack must be a boolean', retryable: false };
       }
       ctx.signal?.throwIfAborted();
+      // Every case that did not commit raises before the ledger is touched, so
+      // a repaired retry of one of them cannot leave a second delivery behind.
+      injectFault(action, ctx);
       const accepted = await ledger.accept({
         action_id: action.id,
         connection_id: action.connection_id,
@@ -170,13 +292,61 @@ export function createTestConnector(
         };
       }
       // Throw only after the durable acceptance: the broker must retain unknown.
+      const lostCase = caseFor(action);
+      if (lostCase === 'lost_ack_verifiable' || lostCase === 'lost_ack_unverifiable') {
+        throw new ConnectorFaultError({
+          kind: 'uncertain_outcome',
+          detail: 'the destination accepted the send and the acknowledgement was lost',
+          may_have_committed: true,
+        });
+      }
       if (action.canonical_payload.drop_ack === true) throw new TestAcknowledgementDropped();
       return { outcome: 'succeeded', receipt: receiptFor(accepted) };
+    },
+    async describe(action): Promise<ConnectorDescription> {
+      // The drifted destination wants `content`; every other case is unchanged.
+      const drifted = caseFor(action) === 'schema_drift';
+      return {
+        required: [drifted ? 'content' : 'body'],
+        optional: DRIFT_OPTIONAL,
+        // The destination vouches for this one rename and nothing else.
+        ...(drifted ? { equivalent_fields: { body: 'content' } } : {}),
+        schema: { type: 'object', required: [drifted ? 'content' : 'body'] },
+      };
+    },
+    async refreshCredential(action, ctx) {
+      // A revoked grant is not a stale token. Nothing is read and nothing is
+      // substituted; the broker is told the grant is gone.
+      if (caseFor(action) === 'revoked_credential') return false;
+      if (!options.credentials) return false;
+      try {
+        await options.credentials.access.withSecret(
+          options.credentials.secret_ref,
+          ctx.space_id,
+          async (value) => {
+            // The value is used here and nowhere else. What survives the call is
+            // that a refresh succeeded, which is not a secret.
+            if (!value) throw new Error('the credential store returned nothing');
+            return true;
+          },
+        );
+      } catch {
+        return false;
+      }
+      refreshed.add(action.id);
+      return true;
+    },
+    async routes(action) {
+      return caseFor(action) === 'unsupported_route' ? [TEST_FALLBACK_ROUTE] : [];
     },
     async verify(action, ctx) {
       checkIdentity(action, ctx);
       if (!canVerify)
         return { decision: 'unsupported', reason: 'destination verification is disabled' };
+      // The unverifiable case is the honest one: the destination kept the send
+      // and cannot say so, and no amount of asking turns that into evidence.
+      if (caseFor(action) === 'lost_ack_unverifiable')
+        return { decision: 'undecided', reason: 'the destination cannot confirm this send' };
       const accepted = await ledger.find(action.id);
       if (!accepted)
         return { decision: 'undecided', reason: 'destination has no acceptance record yet' };

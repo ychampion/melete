@@ -3355,6 +3355,312 @@
         }
       }
     },
+    "/jobs/{id}/repairs": {
+      "get": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "What was repaired on this responsibility, and what stopped safely",
+        "description": "One entry per action that met a typed connector fault: the classes it met, the decisions the repair policy took, and where it came to rest. `completed` is the only disposition that means the effect happened; every other one is a safe stop and `safe_stop` is true. A schema-drift mapping appears as the proposal it is, with the test it had to pass before anything could use it.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Job id"
+            },
+            "required": true,
+            "description": "Job id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repairs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "job_id": {
+                      "type": "string",
+                      "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                    },
+                    "repairs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "action_id": {
+                            "type": "string",
+                            "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "job_id": {
+                            "type": "string",
+                            "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "effect_class": {
+                            "$ref": "#/components/schemas/__schema100"
+                          },
+                          "status": {
+                            "$ref": "#/components/schemas/__schema101"
+                          },
+                          "payload_hash": {
+                            "$ref": "#/components/schemas/__schema102"
+                          },
+                          "intent_key": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "$ref": "#/components/schemas/__schema103"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "disposition": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "$ref": "#/components/schemas/__schema104"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "safe_stop": {
+                            "type": "boolean"
+                          },
+                          "retry_after_at": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "$ref": "#/components/schemas/__schema41"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "counters": {
+                            "default": {},
+                            "$ref": "#/components/schemas/__schema105"
+                          },
+                          "trace": {
+                            "default": [],
+                            "$ref": "#/components/schemas/__schema106"
+                          },
+                          "candidates": {
+                            "default": [],
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^rpc_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                                },
+                                "action_id": {
+                                  "type": "string",
+                                  "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                                },
+                                "job_id": {
+                                  "type": "string",
+                                  "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                                },
+                                "connection_id": {
+                                  "type": "string",
+                                  "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "fault_kind": {
+                                  "$ref": "#/components/schemas/__schema107"
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "candidate",
+                                    "evaluated",
+                                    "applied",
+                                    "rejected"
+                                  ]
+                                },
+                                "observed_schema": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/components/schemas/__schema61"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "proposed_mapping": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "test": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "operation": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "input": {
+                                      "$ref": "#/components/schemas/__schema61"
+                                    },
+                                    "expected": {
+                                      "$ref": "#/components/schemas/__schema61"
+                                    },
+                                    "preserves": {
+                                      "default": [],
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "path": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "value": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "path",
+                                          "value"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "operation",
+                                    "input",
+                                    "expected",
+                                    "preserves"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "evaluation": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "passed": {
+                                          "type": "boolean"
+                                        },
+                                        "detail": {
+                                          "type": "string"
+                                        },
+                                        "evaluated_at": {
+                                          "$ref": "#/components/schemas/__schema41"
+                                        }
+                                      },
+                                      "required": [
+                                        "passed",
+                                        "detail",
+                                        "evaluated_at"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "safe": {
+                                  "type": "boolean"
+                                },
+                                "created_at": {
+                                  "$ref": "#/components/schemas/__schema41"
+                                },
+                                "updated_at": {
+                                  "$ref": "#/components/schemas/__schema41"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "action_id",
+                                "job_id",
+                                "connection_id",
+                                "kind",
+                                "fault_kind",
+                                "state",
+                                "observed_schema",
+                                "proposed_mapping",
+                                "test",
+                                "evaluation",
+                                "safe",
+                                "created_at",
+                                "updated_at"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "action_id",
+                          "job_id",
+                          "kind",
+                          "effect_class",
+                          "status",
+                          "payload_hash",
+                          "intent_key",
+                          "disposition",
+                          "safe_stop",
+                          "retry_after_at",
+                          "counters",
+                          "trace",
+                          "candidates"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "repairs"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such responsibility",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema58"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/actions": {
       "get": {
         "tags": [
@@ -3424,7 +3730,7 @@
                     "actions": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema100"
+                        "$ref": "#/components/schemas/__schema108"
                       }
                     }
                   },
@@ -3463,7 +3769,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema103"
+                  "$ref": "#/components/schemas/__schema109"
                 }
               }
             }
@@ -3532,7 +3838,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema103"
+                  "$ref": "#/components/schemas/__schema109"
                 }
               }
             }
@@ -3590,7 +3896,7 @@
                             "type": "string"
                           },
                           "effect_class": {
-                            "$ref": "#/components/schemas/__schema101"
+                            "$ref": "#/components/schemas/__schema100"
                           },
                           "connection_id": {
                             "type": "string",
@@ -3799,7 +4105,7 @@
                     "connections": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema104"
+                        "$ref": "#/components/schemas/__schema110"
                       }
                     }
                   },
@@ -3876,7 +4182,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema105"
+                  "$ref": "#/components/schemas/__schema111"
                 }
               }
             }
@@ -3918,7 +4224,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema105"
+                  "$ref": "#/components/schemas/__schema111"
                 }
               }
             }
@@ -3960,7 +4266,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema105"
+                  "$ref": "#/components/schemas/__schema111"
                 }
               }
             }
@@ -4009,10 +4315,10 @@
                             "type": "string"
                           },
                           "type": {
-                            "$ref": "#/components/schemas/__schema106"
+                            "$ref": "#/components/schemas/__schema112"
                           },
                           "status": {
-                            "$ref": "#/components/schemas/__schema107"
+                            "$ref": "#/components/schemas/__schema113"
                           },
                           "tags": {
                             "type": "array",
@@ -4130,7 +4436,7 @@
                             "type": "string"
                           },
                           "status": {
-                            "$ref": "#/components/schemas/__schema107"
+                            "$ref": "#/components/schemas/__schema113"
                           },
                           "score": {
                             "type": "number"
@@ -4183,7 +4489,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema108"
+                  "$ref": "#/components/schemas/__schema114"
                 }
               }
             }
@@ -4246,7 +4552,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema108"
+                  "$ref": "#/components/schemas/__schema114"
                 }
               }
             }
@@ -4435,7 +4741,7 @@
                                 "minItems": 1,
                                 "type": "array",
                                 "items": {
-                                  "$ref": "#/components/schemas/__schema111"
+                                  "$ref": "#/components/schemas/__schema117"
                                 }
                               },
                               "tools": {
@@ -7110,6 +7416,176 @@
         "additionalProperties": false
       },
       "__schema100": {
+        "type": "string",
+        "enum": [
+          "read",
+          "write_reversible",
+          "write_external",
+          "spend"
+        ]
+      },
+      "__schema101": {
+        "type": "string",
+        "enum": [
+          "proposed",
+          "needs_approval",
+          "approved",
+          "denied",
+          "admitted",
+          "dispatched",
+          "succeeded",
+          "failed",
+          "unknown",
+          "unresolved"
+        ]
+      },
+      "__schema102": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "__schema103": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "__schema104": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "parked_until_retry",
+          "needs_reconciliation",
+          "needs_reconnect",
+          "needs_input",
+          "repair_exhausted"
+        ]
+      },
+      "__schema105": {
+        "type": "object",
+        "propertyNames": {
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "__schema106": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "at": {
+              "$ref": "#/components/schemas/__schema41"
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "fault_kind": {
+              "default": null,
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/__schema107"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "decision": {
+              "type": "string",
+              "enum": [
+                "verified_completion",
+                "retry_with_backoff",
+                "park_until_retry_after",
+                "refresh_credential_once",
+                "stop_connection_revoked",
+                "rediscover_schema",
+                "record_repair_candidate",
+                "apply_safe_mapping",
+                "change_route",
+                "reconcile_by_verify",
+                "revise_and_revalidate",
+                "stop_needs_input",
+                "escalate_diagnosis"
+              ]
+            },
+            "detail": {
+              "type": "string"
+            },
+            "delay_ms": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "retry_after": {
+              "default": null,
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/__schema41"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "candidate_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "payload_hash": {
+              "$ref": "#/components/schemas/__schema102"
+            }
+          },
+          "required": [
+            "at",
+            "attempt",
+            "fault_kind",
+            "decision",
+            "detail",
+            "delay_ms",
+            "retry_after",
+            "candidate_id",
+            "route",
+            "payload_hash"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema107": {
+        "type": "string",
+        "enum": [
+          "transient_before_dispatch",
+          "rate_limited",
+          "expired_credential",
+          "revoked_credential",
+          "schema_drift",
+          "unsupported_route",
+          "uncertain_outcome",
+          "bad_output",
+          "unclassified"
+        ]
+      },
+      "__schema108": {
         "type": "object",
         "properties": {
           "id": {
@@ -7133,7 +7609,7 @@
             "minLength": 1
           },
           "effect_class": {
-            "$ref": "#/components/schemas/__schema101"
+            "$ref": "#/components/schemas/__schema100"
           },
           "canonical_payload": {
             "$ref": "#/components/schemas/__schema61"
@@ -7145,8 +7621,7 @@
             "default": null,
             "anyOf": [
               {
-                "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
+                "$ref": "#/components/schemas/__schema103"
               },
               {
                 "type": "null"
@@ -7154,19 +7629,7 @@
             ]
           },
           "status": {
-            "type": "string",
-            "enum": [
-              "proposed",
-              "needs_approval",
-              "approved",
-              "denied",
-              "admitted",
-              "dispatched",
-              "succeeded",
-              "failed",
-              "unknown",
-              "unresolved"
-            ]
+            "$ref": "#/components/schemas/__schema101"
           },
           "authorization_ref": {
             "anyOf": [
@@ -7234,6 +7697,36 @@
               }
             ]
           },
+          "repair_trace": {
+            "default": [],
+            "$ref": "#/components/schemas/__schema106"
+          },
+          "repair_counters": {
+            "default": {},
+            "$ref": "#/components/schemas/__schema105"
+          },
+          "repair_disposition": {
+            "default": null,
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema104"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry_after_at": {
+            "default": null,
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema41"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "$ref": "#/components/schemas/__schema41"
           }
@@ -7256,28 +7749,19 @@
           "receipt",
           "resolved_at",
           "reconciliation",
+          "repair_trace",
+          "repair_counters",
+          "repair_disposition",
+          "retry_after_at",
           "created_at"
         ],
         "additionalProperties": false
       },
-      "__schema101": {
-        "type": "string",
-        "enum": [
-          "read",
-          "write_reversible",
-          "write_external",
-          "spend"
-        ]
-      },
-      "__schema102": {
-        "type": "string",
-        "pattern": "^[0-9a-f]{64}$"
-      },
-      "__schema103": {
+      "__schema109": {
         "type": "object",
         "properties": {
           "action": {
-            "$ref": "#/components/schemas/__schema100"
+            "$ref": "#/components/schemas/__schema108"
           }
         },
         "required": [
@@ -7285,7 +7769,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema104": {
+      "__schema110": {
         "type": "object",
         "properties": {
           "id": {
@@ -7362,11 +7846,11 @@
         ],
         "additionalProperties": false
       },
-      "__schema105": {
+      "__schema111": {
         "type": "object",
         "properties": {
           "connection": {
-            "$ref": "#/components/schemas/__schema104"
+            "$ref": "#/components/schemas/__schema110"
           }
         },
         "required": [
@@ -7374,7 +7858,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema106": {
+      "__schema112": {
         "type": "string",
         "enum": [
           "fact",
@@ -7385,7 +7869,7 @@
           "event"
         ]
       },
-      "__schema107": {
+      "__schema113": {
         "type": "string",
         "enum": [
           "active",
@@ -7394,7 +7878,7 @@
           "disputed"
         ]
       },
-      "__schema108": {
+      "__schema114": {
         "type": "object",
         "properties": {
           "id": {
@@ -7408,7 +7892,7 @@
             "type": "object",
             "properties": {
               "id": {
-                "$ref": "#/components/schemas/__schema109"
+                "$ref": "#/components/schemas/__schema115"
               },
               "title": {
                 "type": "string",
@@ -7428,10 +7912,10 @@
                 ]
               },
               "type": {
-                "$ref": "#/components/schemas/__schema106"
+                "$ref": "#/components/schemas/__schema112"
               },
               "status": {
-                "$ref": "#/components/schemas/__schema107"
+                "$ref": "#/components/schemas/__schema113"
               },
               "confidence": {
                 "type": "string",
@@ -7492,16 +7976,16 @@
                 "additionalProperties": false
               },
               "observed_at": {
-                "$ref": "#/components/schemas/__schema110"
+                "$ref": "#/components/schemas/__schema116"
               },
               "valid_from": {
-                "$ref": "#/components/schemas/__schema110"
+                "$ref": "#/components/schemas/__schema116"
               },
               "valid_until": {
                 "default": null,
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/__schema110"
+                    "$ref": "#/components/schemas/__schema116"
                   },
                   {
                     "type": "null"
@@ -7512,14 +7996,14 @@
                 "default": [],
                 "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/__schema109"
+                  "$ref": "#/components/schemas/__schema115"
                 }
               },
               "superseded_by": {
                 "default": null,
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/__schema109"
+                    "$ref": "#/components/schemas/__schema115"
                   },
                   {
                     "type": "null"
@@ -7527,10 +8011,10 @@
                 ]
               },
               "created": {
-                "$ref": "#/components/schemas/__schema110"
+                "$ref": "#/components/schemas/__schema116"
               },
               "updated": {
-                "$ref": "#/components/schemas/__schema110"
+                "$ref": "#/components/schemas/__schema116"
               },
               "tags": {
                 "default": [],
@@ -7543,7 +8027,7 @@
                 "default": [],
                 "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/__schema109"
+                  "$ref": "#/components/schemas/__schema115"
                 }
               },
               "schema_version": {
@@ -7586,16 +8070,16 @@
         ],
         "additionalProperties": false
       },
-      "__schema109": {
+      "__schema115": {
         "type": "string",
         "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema110": {
+      "__schema116": {
         "type": "string",
         "format": "date",
         "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
       },
-      "__schema111": {
+      "__schema117": {
         "type": "string",
         "minLength": 1
       }

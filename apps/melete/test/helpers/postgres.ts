@@ -13,10 +13,23 @@ export type PostgresFixture = DatabaseHandle & {
 };
 
 export type PostgresFixtureOptions = {
-  /** The production journal runs before these additional fixture migrations. */
+  /**
+   * Extra SQL to apply after the committed journal. For a fixture that needs a
+   * table nothing in the repository owns yet, never for skipping a migration.
+   */
   migrations?: Array<string | URL>;
 };
 
+/**
+ * Every fixture applies the committed journal, in the order the journal gives.
+ *
+ * Naming migrations by filename let a fixture hold a schema no install has ever
+ * had: the broker subset that used to live here ran 0000, 0012 and 0015 and
+ * nothing else, so a property that reached a table another module owns failed
+ * for a reason no deployment could reproduce. The journal is the only ordering
+ * that exists in production, so it is the only one a test may prove anything
+ * against.
+ */
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {

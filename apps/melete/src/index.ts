@@ -21,6 +21,7 @@ import { mountJobs } from './api/jobs.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
+import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
@@ -61,6 +62,7 @@ export type AppDeps = {
   policy?: PolicyService;
   attention?: AttentionService;
   questions?: QuestionService;
+  repairs?: RepairReadService;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -95,6 +97,7 @@ export function createApp(deps: AppDeps) {
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
   if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
   if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
+  if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
   if (deps.approvals) mountApprovals(app, deps.approvals);
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);

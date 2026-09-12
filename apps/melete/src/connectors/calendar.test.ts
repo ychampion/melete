@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { connectorManifest } from '@melete/contracts';
 import { CalendarConnector, calendarManifest, importIcs } from './calendar.ts';
+import { asConnectorFault } from './faults.ts';
 import { mailAction, mailContext } from './mail-fixtures.ts';
 import type { SecretAccess } from './secrets.ts';
 
@@ -20,6 +21,28 @@ const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
 });
+
+/** A server that answers every write with one status, for the typed faults. */
+function refusingCaldav(status: number, headers: Record<string, string> = {}) {
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response(null, { status, headers }),
+  });
+  servers.push(server);
+  return new CalendarConnector(
+    {
+      id: 'con_test',
+      spaceId: 'spc_test',
+      mode: 'caldav' as const,
+      calendarUrl: `${server.url}calendar/`,
+      username: 'owner',
+      secretRef: 'sec_private',
+      allowInsecureLocalForTests: true,
+    },
+    secret,
+  );
+}
 
 function caldavDouble() {
   const records = new Map<string, { body: string; etag: string }>();
@@ -75,6 +98,44 @@ function caldavDouble() {
   };
   return { records, requests, config, puts: () => puts };
 }
+
+describe('calendar faults are typed, so the broker can repair the cause', () => {
+  const raised = async (status: number, headers?: Record<string, string>) => {
+    const connector = refusingCaldav(status, headers);
+    try {
+      await connector.execute(mailAction('calendar.create', payload), mailContext());
+    } catch (error) {
+      return asConnectorFault(error);
+    }
+    throw new Error(`expected a typed fault for ${status}`);
+  };
+
+  test('a rate limit carries the wait the server asked for', async () => {
+    expect(await raised(429, { 'retry-after': '45' })).toMatchObject({
+      kind: 'rate_limited',
+      retry_after: 45,
+      may_have_committed: false,
+    });
+  });
+
+  test('a rate limit without a readable wait leaves the length to the policy', async () => {
+    expect(await raised(429, { 'retry-after': 'soon' })).toMatchObject({
+      kind: 'rate_limited',
+      retry_after: null,
+    });
+  });
+
+  test('a refused credential is expired and a refused account is revoked', async () => {
+    expect(await raised(401)).toMatchObject({ kind: 'expired_credential' });
+    expect(await raised(403)).toMatchObject({ kind: 'revoked_credential' });
+  });
+
+  test('every other refusal is still a plain failure', async () => {
+    const connector = refusingCaldav(422);
+    const result = await connector.execute(mailAction('calendar.create', payload), mailContext());
+    expect(result).toMatchObject({ outcome: 'failed', retryable: false });
+  });
+});
 
 describe('calendar connector', () => {
   test('manifests conform and imported ICS exposes only the read tool', () => {

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { connectorManifest } from '@melete/contracts';
+import { asConnectorFault } from './faults.ts';
 import { createFilesConnector, filesManifest } from './files.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
 
@@ -50,6 +51,36 @@ test('files manifests parse and workspace/artifact writes can be read and verifi
     if (read.outcome !== 'succeeded') throw new Error('expected readable file');
     expect(read.receipt.detail.content).toBe('hello');
   }
+});
+
+test('a move whose source is not the recorded content is a bad output, not an unknown', async () => {
+  await execute('files.write', { path: 'brief.txt', content: 'the current text' });
+  let fault: unknown;
+  try {
+    await execute('files.move', {
+      from: 'brief.txt',
+      to: 'archive/brief.txt',
+      content_hash: 'a'.repeat(64),
+    });
+  } catch (error) {
+    fault = asConnectorFault(error);
+  }
+  // Nothing moved, so this is a question for a person rather than a retry or a
+  // dispatch nobody can decide.
+  expect(fault).toMatchObject({ kind: 'bad_output', may_have_committed: false });
+  const still = await execute('files.read', { path: 'brief.txt' });
+  expect(still.outcome).toBe('succeeded');
+});
+
+test('a write is read back before it is called delivered', async () => {
+  const action = connectorAction('files.write', { path: 'note.txt', content: 'written once' });
+  const result = await connector().execute(action, connectorContext(action));
+  if (result.outcome !== 'succeeded') throw new Error('expected a written file');
+  // The receipt's hash is the hash of what is on disk, not of what was asked
+  // for: the connector read it back and compared before answering.
+  const read = await execute('files.read', { path: 'note.txt' });
+  if (read.outcome !== 'succeeded') throw new Error('expected a readable file');
+  expect(read.receipt.detail.content_hash).toBe(result.receipt.detail.content_hash);
 });
 
 test('files list order is deterministic', async () => {

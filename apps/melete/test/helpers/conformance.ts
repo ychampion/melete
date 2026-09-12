@@ -1,13 +1,21 @@
 import type { Action, CapabilityClaims, DispatchResult, JsonObject } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
 import { recordId } from '../../src/broker/records.ts';
-import { BrokerService, type StandingGrantResolver } from '../../src/broker/service.ts';
+import {
+  type BrokerOptions,
+  BrokerService,
+  type StandingGrantResolver,
+} from '../../src/broker/service.ts';
 import type { TrustResolver } from '../../src/broker/trust.ts';
-import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
+import {
+  createTestConnector,
+  initializeTestLedger,
+  type TestCredentials,
+} from '../../src/connectors/test.ts';
 import type { Connector, ConnectorContext } from '../../src/connectors/types.ts';
 import { QUEUES } from '../../src/jobs/queue.ts';
 import { seedJob } from './broker.ts';
-import { createPostgresFixture } from './postgres.ts';
+import { createPostgresFixture, type PostgresFixtureOptions } from './postgres.ts';
 
 export function deferred() {
   let resolve = () => {};
@@ -18,8 +26,8 @@ export function deferred() {
 }
 
 /** Each scenario file owns its database, queue, and destination ledger. */
-export async function createConformanceFixture() {
-  const fixture = await createPostgresFixture();
+export async function createConformanceFixture(options: PostgresFixtureOptions = {}) {
+  const fixture = await createPostgresFixture(options);
   if (!fixture) return null;
   const boss = new PgBoss({ connectionString: fixture.url, max: 2 });
   boss.on('error', () => {});
@@ -50,6 +58,10 @@ export async function createConformanceFixture() {
         resolveTrust?: TrustResolver;
         /** Whether a standing grant covers the effect; absent means none does. */
         resolveStandingGrant?: StandingGrantResolver;
+        /** Re-open an output that failed validation; absent means none can be. */
+        reviseOutput?: BrokerOptions['reviseOutput'];
+        /** Where a refreshed credential is read from; absent means none can be. */
+        credentials?: TestCredentials;
         execute?: (
           action: Action,
           ctx: ConnectorContext,
@@ -58,7 +70,10 @@ export async function createConformanceFixture() {
       } = {},
     ) {
       const seed = await seedJob(fixture.sql, { scopes: ['test.send'] });
-      const destination = createTestConnector(fixture.sql, { verify: options.verify });
+      const destination = createTestConnector(fixture.sql, {
+        verify: options.verify,
+        credentials: options.credentials,
+      });
       let executions = 0;
       const connector: Connector = {
         ...destination,
@@ -78,6 +93,7 @@ export async function createConformanceFixture() {
           dispatchTimeoutMs: options.dispatchTimeoutMs,
           resolveTrust: options.resolveTrust,
           resolveStandingGrant: options.resolveStandingGrant,
+          reviseOutput: options.reviseOutput,
         });
       const broker = restart();
       /**
@@ -121,6 +137,8 @@ export async function createConformanceFixture() {
       return {
         ...seed,
         sql: fixture.sql,
+        /** The bare destination, for a control that deliberately skips the policy. */
+        destination,
         broker,
         restart,
         approve,
