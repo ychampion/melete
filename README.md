@@ -155,11 +155,13 @@ proof uses no provider key:
 bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=2
 ```
 
-The current gateway reserves input bytes and output together against
-`budget.max_output_tokens`. The Hermes proof explicitly supplies `200000`; the
-default `8000` can reject the engine prompt with `token_cap_exceeded`. Choose a
-bounded budget when creating a real-engine job; the service does not enlarge it
-after admission.
+`budget.max_output_tokens` remains the cumulative output ceiling (8,000 by
+default). The optional `max_input_tokens` bounds each request's context separately;
+when omitted it uses the pinned model context window minus the output ceiling
+(120,000 for the 128,000-token fallback). Input is conservatively estimated as
+UTF-8 bytes plus framing. The service refuses an oversized assembled prompt with
+`input_context_exceeded` before launching Hermes; the gateway checks the final
+request again before provider admission. The HTTP proof uses the default budget.
 
 The reference client can also run against the scripted mock:
 

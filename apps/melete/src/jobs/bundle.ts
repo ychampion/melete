@@ -8,6 +8,7 @@ import {
   CONTEXT_LIMITS,
   type ContextGenerations,
   type Deliverable,
+  inputTokenAllowance,
   jobBudget,
   jobConstraints,
   jsonObject,
@@ -321,7 +322,10 @@ export async function buildAttemptSkeleton(
       open_question: open ? questionView(open, row.title) : null,
       deferred_questions: readDeferred(row),
     },
-    budget: jobBudget.parse(row.budget),
+    budget: {
+      ...jobBudget.parse(row.budget),
+      max_input_tokens: inputTokenAllowance(model.model, jobBudget.parse(row.budget)),
+    },
     model,
   });
 }

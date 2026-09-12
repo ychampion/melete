@@ -110,6 +110,7 @@ export type JobConstraints = z.infer<typeof jobConstraints>;
 
 export const jobBudget = z.object({
   max_turns: z.number().int().positive(),
+  max_input_tokens: z.number().int().nonnegative().optional(),
   max_output_tokens: z.number().int().positive(),
   max_wall_ms: z.number().int().positive(),
   max_actions: z.number().int().nonnegative(),

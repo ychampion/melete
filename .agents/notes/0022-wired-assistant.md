@@ -63,10 +63,10 @@ array, and prints cold-start and attempt wall times. Missing local engine
 installation skips this specific proof with a reason; it must run before a
 release claim. Timing and final results belong in `REPORT.md`.
 
-The gateway currently reserves prompt bytes plus requested output against
-`max_output_tokens`; the default 8,000 is too small for the engine prompt. The
-proof supplies an explicit 200,000 cap with the fake provider. It does not
-widen a job's accepted budget. `style_violations` is currently an empty array:
+The gateway charges output against `max_output_tokens` (8,000 by default) and
+checks request input against the separate, model-derived `max_input_tokens`
+allowance. Oversized assembled prompts are refused before engine launch with
+`input_context_exceeded`. The fake-provider proof posts a job with no budget. `style_violations` is currently an empty array:
 there is no configured prose style checker. Automatic extraction of arbitrary
 text still needs an extraction gateway; existing claims, recall, explicit
 corrections and deterministic structured observations work without one.

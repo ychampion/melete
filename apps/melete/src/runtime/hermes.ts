@@ -1,5 +1,16 @@
-import type { AttemptBundle, EventSink, RuntimeAdapter } from '@melete/contracts';
-import { HermesRuntimeAdapter, RUNTIME_VERSION } from '@melete/runtime-hermes';
+import {
+  type AttemptBundle,
+  type AttemptOutcome,
+  type EventSink,
+  inputTokenAllowance,
+  type RuntimeAdapter,
+} from '@melete/contracts';
+import {
+  HermesRuntimeAdapter,
+  RUNTIME_VERSION,
+  renderInput,
+  renderInstructions,
+} from '@melete/runtime-hermes';
 import type { MemorySql } from '../memory/db.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
@@ -17,7 +28,22 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
     // server's capabilities again after launch, before sending it the bundle.
     return { streaming: true, tools: true, interrupt: true, version: RUNTIME_VERSION };
   }
-  async start(bundle: AttemptBundle, sink: EventSink, signal: AbortSignal) {
+  async start(
+    bundle: AttemptBundle,
+    sink: EventSink,
+    signal: AbortSignal,
+  ): Promise<AttemptOutcome> {
+    // Reserve conservative framing for the pinned engine preamble and plugin schemas.
+    const promptBytes =
+      Buffer.byteLength(
+        JSON.stringify([renderInstructions(bundle), renderInput(bundle), bundle.tools]),
+        'utf8',
+      ) + 32768;
+    if (promptBytes > inputTokenAllowance(bundle.model.model, bundle.budget))
+      return {
+        kind: 'budget_exhausted',
+        summary: 'input_context_exceeded: assembled prompt exceeds the model input allowance',
+      };
     const started = Date.now();
     const instance = await this.supervisor.launch(bundle, signal);
     try {

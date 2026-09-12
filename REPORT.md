@@ -93,3 +93,13 @@
 - Test `skills, handled recall, delta and correction repair reach the model from bootstrap`: uses the scripted provider and an explicit 200,000-token reservation. The gateway's current 8,000 default can reject the Hermes prompt. Context `style_violations` is recorded as an empty array; no prose style checker is configured.
 - Commands `bun run typecheck`, `bun run lint`, `bun run openapi`, `bun run client:generate`, `bun run compose:check`, `bun run test:plugin` and the locked full test command passed their functional checks. The later changes are documentation and this report only; no additional full-suite run was required.
 - Log `2026-09-11 23:21:04 UTC`: final publication verification occurred within the five-hour campaign cap. No other worktree, shared lock owner or unrelated process was modified; no force push or merge was performed.
+
+## Review fixes — 2026-09-12
+
+### 1. Separate context and output allowances
+
+- `bun test apps/melete/src/gateway/index.test.ts --test-name-pattern 'default output ceiling' --max-concurrency=1`: exit 1, expected regression reproduced (0 pass, 1 fail, 15 filtered); a default output ceiling rejected valid input with HTTP 429.
+- Input admission now uses the optional `max_input_tokens`, defaulting to the pinned model context window minus output capacity. The gateway stores estimated input and its allowance in the request event; the output ledger reserves requested output and settles actual output. Unknown output usage retains its reservation. Input context is a per-request bound, not a cumulative output charge.
+- The supervised adapter returns `budget_exhausted` with the named `input_context_exceeded` summary before engine launch when the assembled prompt plus conservative engine framing cannot fit. The gateway rechecks the final encoded request before provider admission and returns the same named error (HTTP 413).
+- `bun test apps/melete/src/gateway/index.test.ts apps/melete/test/integration/budget.test.ts apps/melete/src/runtime/hermes.test.ts packages/contracts/src/model-budget.test.ts --max-concurrency=1`: exit 0, 24 pass, 0 fail, 106 assertions (11.95s). The first combined run had one outdated output-accounting expectation (21 pass, 1 fail); it was corrected from total-token to output-token usage.
+- The HTTP proof now posts a job without a budget and asserts output 8,000 and resolved input 120,000.

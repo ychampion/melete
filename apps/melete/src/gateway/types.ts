@@ -6,6 +6,7 @@ export interface GatewayPrincipal {
   revision: number;
   maxRequests: number;
   maxTokens: number;
+  maxInputTokens?: number;
   /** Include the explicitly authorized fallback here; the proxy never chooses one. */
   allowedModels: { provider: string; model: string }[];
 }

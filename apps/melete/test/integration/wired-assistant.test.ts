@@ -143,7 +143,6 @@ afterAll(async () => {
           space_id: scope.spaceId,
           title: 'Travel plan',
           objective: 'travel',
-          budget: { max_output_tokens: 200_000 },
         },
         { 'Idempotency-Key': 'w15-wired-job' },
       );
@@ -168,6 +167,8 @@ afterAll(async () => {
       await waitForAttempt(1);
       const first = bundles[0];
       if (!first) throw new Error('No first bundle');
+      expect(first.budget.max_output_tokens).toBe(8000);
+      expect(first.budget.max_input_tokens).toBe(120000);
       expect(first.skills.map((skill) => skill.name)).toEqual(['alpha', 'beta', 'gamma']);
       expect(first.knowledge).toHaveLength(2);
       expect(first.knowledge.map((item) => item.handle)).toContain(`${seat.id}@1`);

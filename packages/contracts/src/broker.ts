@@ -184,6 +184,7 @@ export const capabilityClaims = z.object({
   scopes: z.array(z.string()),
   budget: z.object({
     max_actions: z.number().int().nonnegative(),
+    max_input_tokens: z.number().int().nonnegative().optional(),
     max_output_tokens: z.number().int().nonnegative(),
     max_usd_est: z.number().nonnegative(),
   }),

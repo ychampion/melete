@@ -44,17 +44,17 @@ class TestBudget implements GatewayBudget {
     const reserved = [...this.outstanding.values()].reduce((sum, amount) => sum + amount, 0);
     if (
       this.reservations.length >= request.principal.maxRequests ||
-      this.spent + reserved + request.estimatedTokens > request.principal.maxTokens
+      this.spent + reserved + request.maxOutputTokens > request.principal.maxTokens
     ) {
       throw new GatewayError(429, 'budget_exceeded');
     }
     this.reservations.push(request);
-    this.outstanding.set(request.requestId, request.estimatedTokens);
+    this.outstanding.set(request.requestId, request.maxOutputTokens);
     return { id: request.requestId };
   }
 
   async settle(reservation: GatewayReservation, settlement: GatewaySettlement): Promise<void> {
-    this.spent += settlement.usage?.totalTokens ?? this.outstanding.get(reservation.id) ?? 0;
+    this.spent += settlement.usage?.outputTokens ?? this.outstanding.get(reservation.id) ?? 0;
     this.outstanding.delete(reservation.id);
     this.settlements.push(settlement);
   }
@@ -112,6 +112,18 @@ async function start(overrides: Partial<GatewayOptions> = {}) {
 }
 
 describe('model gateway effect boundary', () => {
+  test('a default output ceiling does not consume the separate context allowance', async () => {
+    const { post } = await start({
+      authenticate: async () => ({ ...principal, maxTokens: 8000, maxInputTokens: 120000 }),
+      budget: { reserve: async () => ({ id: 'context-admitted' }), settle: async () => {} },
+    });
+    const response = await post('/v1/chat/completions', {
+      max_tokens: 512,
+      messages: [{ role: 'user', content: 'prompt context '.repeat(1000) }],
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+  });
   test('streams the fake tool conversation end to end and records actual model and usage', async () => {
     const { post, budget } = await start();
     const first = await post('/v1/chat/completions', {
@@ -151,7 +163,7 @@ describe('model gateway effect boundary', () => {
       usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
       status: 'succeeded',
     });
-    expect(budget.spent).toBe(45);
+    expect(budget.spent).toBe(16);
     expect(budget.outstanding.size).toBe(0);
   });
 
@@ -235,12 +247,12 @@ describe('model gateway effect boundary', () => {
 
   test('enforces output and input token estimates and rejects multiplied or unmetered input', async () => {
     const { post, budget } = await start({
-      authenticate: async () => ({ ...principal, maxTokens: 600 }),
+      authenticate: async () => ({ ...principal, maxTokens: 600, maxInputTokens: 600 }),
     });
     expect((await post('/v1/chat/completions', { max_tokens: 601 })).status).toBe(429);
     expect(
       (await post('/v1/chat/completions', { messages: [{ content: 'x'.repeat(700) }] })).status,
-    ).toBe(429);
+    ).toBe(413);
     expect((await post('/v1/chat/completions', { n: 2 })).status).toBe(400);
     expect(
       (
@@ -311,7 +323,7 @@ describe('model gateway effect boundary', () => {
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain('real-openai-secret');
     expect(budget.settlements[0]).toMatchObject({ status: 'failed', usage: null, httpStatus: 401 });
-    expect(budget.spent).toBe(budget.reservations[0]?.estimatedTokens ?? -1);
+    expect(budget.spent).toBe(budget.reservations[0]?.maxOutputTokens ?? -1);
   });
 
   test('a truncated SSE stream stays unknown and keeps the reservation charged', async () => {
@@ -329,7 +341,7 @@ describe('model gateway effect boundary', () => {
       usage: null,
       modelActual: 'served',
     });
-    expect(budget.spent).toBe(budget.reservations[0]?.estimatedTokens ?? -1);
+    expect(budget.spent).toBe(budget.reservations[0]?.maxOutputTokens ?? -1);
   });
 
   test('absolute-form proxy requests only admit configured inference endpoints', async () => {

@@ -7,6 +7,7 @@ import {
   type ContextAwareRuntimeAdapter,
   type ContextInvalidated,
   dedupKey,
+  inputTokenAllowance,
   isOutcomeEnvelope,
   isTerminal,
   type JobState,
@@ -121,6 +122,11 @@ export class AttemptRunner {
         row = await this.jobs.move(tx, row, { kind: 'timer_fired' }, { reason: 'timer' });
       }
       if (row.state !== 'queued') return null;
+      const model = {
+        provider: this.options.provider ?? 'stub',
+        model: this.options.model ?? 'script',
+        fallback: null,
+      };
       const budget = jobBudget.parse(row.budget);
       const [previous] = await tx
         .select()
@@ -144,14 +150,10 @@ export class AttemptRunner {
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
+          max_input_tokens: inputTokenAllowance(model.model, budget),
           max_usd_est: budget.max_usd_est,
         },
         exp: Math.floor(Date.now() / 1000) + CAPABILITY_TTL_SECONDS,
-      };
-      const model = {
-        provider: this.options.provider ?? 'stub',
-        model: this.options.model ?? 'script',
-        fallback: null,
       };
       const generations = await readGenerations(tx, row.spaceId);
       const bundle = await buildAttemptSkeleton(
