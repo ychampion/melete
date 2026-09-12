@@ -72,6 +72,15 @@ question decided from somewhere else closes on the first event that follows
 its `needs_you` status, without claiming which way it went; the contract has
 no decision event, and the note lists one.
 
+Setup answers are memory items from the moment they are chosen. The "get to
+know you" step posts each answer to `POST /memory/items` with a registered key
+(`pref.home.city`, `pref.people.names`, `pref.focus.this-month`,
+`pref.checkins.style`), the value and the sentence said; the service keeps an
+owner-trusted preference claim per key, so the profile in every attempt bundle
+carries them and the first message can be answered with one. Sign-out is
+`POST /signout` from Settings; the app returns to sign-in after the service
+confirms, and a revoked cookie also opens sign-in after a page reload.
+
 Text deltas are streamed live and never stored, so a reconnect draws a gap
 marker where streamed text may be missing rather than stitching two halves
 together. Durable events replay from the last seq the client drew.

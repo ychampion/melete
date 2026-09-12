@@ -1,19 +1,18 @@
 /**
  * Sign-in and the guided setup on the contract: a magic link (OAuth buttons
  * only when the service says they work), the tour (only stages this instance
- * can do), plugging in apps, and meeting the first agent. What Melete learns
- * about a person is learned in conversation and shown under Settings, so the
- * setup ends by opening the app rather than pretending to save answers.
+ * can do), plugging in apps, meeting the first agent, and saving four answers
+ * as memory before opening a conversation that refers to one of them.
  */
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
 import { MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { lookOf, useApp, useLoad, useMedia } from '../experience/hooks.ts';
-import type { AgentInput, TourStage } from '../experience/types.ts';
+import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { blankAgent, LookFields } from './Agents.tsx';
@@ -876,6 +875,54 @@ function Card({
   );
 }
 
+/**
+ * Four quick questions. Each answer is a detail the person states outright,
+ * saved on its own key the moment it is chosen, so setup never pretends and
+ * Settings › Memory shows exactly what was kept.
+ */
+const QUESTIONS = [
+  {
+    key: 'pref.home.city',
+    ask: 'Where are you based? I use it for time zones, weather and how far things are.',
+    choices: ['New York', 'London', 'Somewhere else'],
+    reply: (answer: string) =>
+      answer === 'Somewhere else'
+        ? 'No problem, I’ll pick it up from your calendar.'
+        : `${answer}. Noted, and I’ll assume that time zone unless you travel.`,
+  },
+  {
+    key: 'pref.people.names',
+    ask: 'Who should I know by name?',
+    choices: ['Alex and Priya', 'My family', 'My team at work'],
+    reply: (answer: string) =>
+      `Got it. When you say “${answer.split(' ')[0]}”, I’ll know who you mean.`,
+  },
+  {
+    key: 'pref.focus.this-month',
+    ask: 'What eats your week right now?',
+    choices: ['Meetings and follow-ups', 'Email and admin', 'A launch at work', 'Family logistics'],
+    reply: (answer: string) =>
+      answer === 'A launch at work'
+        ? 'A launch. I’ll offer to set it up as a plan when you’re ready.'
+        : 'That’s the kind of thing I take off your plate first. I’ll start there.',
+  },
+  {
+    key: 'pref.checkins.style',
+    ask: 'How should I check in?',
+    choices: ['Morning brief at 8:30', 'Only when it matters', 'Never first'],
+    reply: () =>
+      'Perfect, that’s plenty to start. I’ll remember these and learn the rest as we go.',
+  },
+] as const;
+
+type Exchange = { id: number; who: 'agent' | 'you'; text: string };
+let exchangeId = 0;
+const exchange = (who: Exchange['who'], text: string): Exchange => ({
+  id: ++exchangeId,
+  who,
+  text,
+});
+
 export function OnboardingScreen() {
   const { capabilities, profile, setOnboarded, refreshProfile, refreshAgents } = useApp();
   const stages = (['calendar', 'drafting', 'browser', 'plans', 'memory'] as TourStage[]).filter(
@@ -899,28 +946,74 @@ export function OnboardingScreen() {
     standing_instruction: 'One option first, not five. Confirm before paying.',
   });
   const [busy, setBusy] = useState(false);
-  const total = 4;
+  const [asked, setAsked] = useState(0);
+  const [log, setLog] = useState<Exchange[]>(() => [exchange('agent', QUESTIONS[0].ask)]);
+  const [kept, setKept] = useState<MemoryItem[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  // Keep accepted steps across a failed welcome request so retrying cannot
+  // create a second agent, conversation, or first message.
+  const completed = useRef({ agentId: '', chatId: '', messageKey: messageKey(), brief: false });
+  const total = 5;
+
+  const answer = async (choice: string) => {
+    const question = QUESTIONS[asked];
+    if (!question || saving) return;
+    setSaving(true);
+    setLog((previous) => [...previous, exchange('you', choice)]);
+    const saved = await adapter.createMemoryItem({
+      key: question.key,
+      value: choice,
+      statement: `${question.ask} ${choice}`,
+    });
+    setSaving(false);
+    if (saved.data === null) {
+      toast({
+        kind: 'err',
+        title: 'Couldn’t save that',
+        sub: saved.error ?? saved.unavailable ?? '',
+      });
+      setLog((previous) => previous.slice(0, -1));
+      return;
+    }
+    const item = saved.data.item;
+    setKept((previous) => [...previous.filter((entry) => entry.id !== item.id), item]);
+    setAnswers((previous) => ({ ...previous, [question.key]: choice }));
+    const next = QUESTIONS[asked + 1];
+    setLog((previous) => [
+      ...previous,
+      exchange('agent', question.reply(choice)),
+      ...(next ? [exchange('agent', next.ask)] : []),
+    ]);
+    setAsked(asked + 1);
+  };
 
   const finish = async () => {
+    if (busy || saving) return;
     setBusy(true);
+    const fail = (title: string) => {
+      toast({ kind: 'err', title });
+      setBusy(false);
+    };
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    await adapter.saveProfile({
+    const savedProfile = await adapter.saveProfile({
       name: name.trim() || profile?.name || 'You',
       time_zone: profile?.time_zone ?? timeZone,
       day_hours: profile?.day_hours ?? { start: '08:00', end: '22:00' },
     });
-    let agentId: string | null = null;
-    if (agent.name.trim()) {
+    if (!savedProfile.data)
+      return fail(savedProfile.error ?? savedProfile.unavailable ?? 'Couldn’t save your profile');
+    let agentId = completed.current.agentId;
+    if (!agentId) {
+      if (!agent.name.trim()) return fail('Give your agent a name first.');
       const saved = await adapter.createAgent({ ...agent, name: agent.name.trim() });
-      if (saved.data) agentId = saved.data.agent.id;
-      else
-        toast({
-          kind: 'err',
-          title: saved.error ?? saved.unavailable ?? 'Couldn’t create the agent',
-        });
+      if (!saved.data) return fail(saved.error ?? saved.unavailable ?? 'Couldn’t create the agent');
+      agentId = saved.data.agent.id;
+      completed.current.agentId = agentId;
     }
-    if (brief && agentId) {
+    if (brief && !completed.current.brief) {
       const routine = await adapter.morningBrief(agentId, '08:30');
+      completed.current.brief = true;
       if (routine.data === null)
         toast({
           kind: 'info',
@@ -928,11 +1021,39 @@ export function OnboardingScreen() {
           sub: routine.unavailable ?? routine.error ?? '',
         });
     }
+    // The first message names one thing the person just said, so the agent's
+    // reply can show it was kept.
+    const focus = answers['pref.focus.this-month'];
+    const first = focus
+      ? `${focus} is what eats my week right now. Where do we start?`
+      : kept[0]
+        ? `I told you: ${kept[0].value}. Where do we start?`
+        : null;
+    if (first) {
+      if (!completed.current.chatId) {
+        const opened = await adapter.createConversation({
+          title: 'Getting started',
+          agent_id: agentId,
+        });
+        if (!opened.data)
+          return fail(
+            opened.error ?? opened.unavailable ?? 'Couldn’t open your first conversation',
+          );
+        completed.current.chatId = opened.data.conversation.id;
+      }
+      const sent = await adapter.send(
+        completed.current.chatId,
+        first,
+        completed.current.messageKey,
+      );
+      if (!sent.data)
+        return fail(sent.error ?? sent.unavailable ?? 'Couldn’t send your first message');
+    }
     setBusy(false);
     refreshProfile();
     refreshAgents();
     setOnboarded(true);
-    navigate('/');
+    navigate(completed.current.chatId ? `/chat/${completed.current.chatId}` : '/');
   };
 
   const stepLabel = (
@@ -943,6 +1064,7 @@ export function OnboardingScreen() {
   const back = (
     <Button
       variant="ghost"
+      disabled={busy || saving}
       onClick={() =>
         step === 2 && stage > 0 ? setStage(stage - 1) : setStep(Math.max(1, step - 1))
       }
@@ -1171,6 +1293,134 @@ export function OnboardingScreen() {
         </div>
       </Card>
     );
+  } else if (step === 5) {
+    const question = QUESTIONS[asked];
+    card = (
+      <Card
+        title={`Let ${agent.name || 'your agent'} get to know you`}
+        sub="Four quick questions, so it can help from day one. Each answer is kept under Settings › Memory and can be changed there."
+        footer={
+          <>
+            {back}
+            <div className="grow" />
+            {stepLabel}
+            {asked >= QUESTIONS.length ? (
+              <Button
+                iconRight="chevronRight"
+                loading={busy}
+                disabled={busy}
+                onClick={() => void finish()}
+              >
+                Open Melete
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                loading={busy}
+                disabled={saving || busy}
+                onClick={() => void finish()}
+              >
+                Skip, I’ll tell it later
+              </Button>
+            )}
+          </>
+        }
+      >
+        <div className="row" style={{ gap: 16, alignItems: 'stretch', flexWrap: 'wrap' }}>
+          <div
+            className="col grow"
+            style={{
+              gap: 12,
+              minWidth: 260,
+              minHeight: 280,
+              padding: 14,
+              borderRadius: 14,
+              background: 'var(--canvas)',
+              border: '1px solid var(--line)',
+              justifyContent: 'flex-end',
+            }}
+          >
+            {log.slice(-6).map((entry) =>
+              entry.who === 'agent' ? (
+                <div key={entry.id} className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
+                  <AgentFace look={lookOf(agent)} size={24} />
+                  <p style={{ fontSize: 14, lineHeight: '21px', textWrap: 'pretty' }}>
+                    {entry.text}
+                  </p>
+                </div>
+              ) : (
+                <div key={entry.id} className="col" style={{ alignItems: 'flex-end' }}>
+                  <span
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: '14px 14px 4px 14px',
+                      background: 'var(--bubble)',
+                      color: 'var(--bubble-ink)',
+                      fontSize: 14,
+                    }}
+                  >
+                    {entry.text}
+                  </span>
+                </div>
+              ),
+            )}
+            {question ? (
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap', paddingLeft: 34 }}>
+                {question.choices.map((choice) => (
+                  <Chip key={choice} disabled={saving} onClick={() => void answer(choice)}>
+                    {choice}
+                  </Chip>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="col" style={{ gap: 8, width: 220, flexShrink: 0 }}>
+            <span className="overline">What {agent.name || 'your agent'} will remember</span>
+            {kept.length === 0 ? (
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Nothing yet. Each answer appears here as it is saved.
+              </span>
+            ) : null}
+            {kept.map((item) => (
+              <div
+                key={item.id}
+                className="row pop"
+                style={{
+                  gap: 10,
+                  padding: '8px 10px',
+                  borderRadius: 10,
+                  background: 'var(--surface)',
+                  border: '1px solid var(--line)',
+                }}
+              >
+                <span
+                  className="row"
+                  style={{
+                    justifyContent: 'center',
+                    width: 24,
+                    height: 24,
+                    borderRadius: 7,
+                    background: 'var(--blue-soft)',
+                    color: 'var(--blue-ink)',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Icon name="bookmark" size={13} />
+                </span>
+                <span className="col grow" style={{ minWidth: 0 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--heading)' }}>
+                    {item.key}
+                  </span>
+                  <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    {item.value}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+    );
   } else {
     const list = connections.data?.connections.filter((c) => c.status === 'connected') ?? [];
     card = (
@@ -1182,8 +1432,12 @@ export function OnboardingScreen() {
             {back}
             <div className="grow" />
             {stepLabel}
-            <Button iconRight="chevronRight" loading={busy} onClick={() => void finish()}>
-              Open Melete
+            <Button
+              iconRight="chevronRight"
+              disabled={!agent.name.trim()}
+              onClick={() => setStep(5)}
+            >
+              Continue
             </Button>
           </>
         }

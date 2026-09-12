@@ -1,7 +1,7 @@
 # Proposed: what the web app still needs from the experience contract
 
-The web app in `apps/web` reads `packages/contracts/src/experience.ts` (lane
-W16a) through the generated client, and nothing else. The retarget is done:
+The web app in `apps/web` reads `packages/contracts/src/experience.ts`
+through the generated client, and nothing else. The retarget is done:
 `apps/web/src/experience/types.ts` is derived from the generated `paths`, the
 adapter is the one file that talks to the service, and the mock serves the
 same routes seeded with the designed scenarios. This note started as the
@@ -39,7 +39,7 @@ narrows. None changes an existing field.
 | A permission decided elsewhere (another device, the same person earlier) | the card is closed with a plain "Decided" badge once the turn's status leaves `needs_you`; the option is unknown | an event item `permission_decided { permission_id, option, rule_id? }` so every client can show which way it went |
 | A question answered elsewhere | the options are disabled once the turn moves on; none is highlighted | an event item `question_answered { question_id, option_id }` |
 | Action step while it runs (spinner, then done) | action steps are drawn only when done | optional `status: running \| done` and `id` on the `action` item, with a second emission updating it |
-| Reactions on a turn, either direction | not offered | none needed: `packages/contracts/src/reactions.ts` on `lane/w9-product` carries `POST /messages/{seq}/reactions`, `GET /jobs/{id}/reactions` and a `reaction` job event (a message is addressed by its event seq). The web lane adopts it as soon as that lane is on `integration`; a merge of `lane/w9-product` into this lane conflicted across `apps/melete` and was not attempted here. One addition for the experience stream: a `reaction { message_seq, emoji, by }` item so a client on `/conversations/{id}/events` sees the assistant's glyph without a second subscription |
+| Reactions on a turn, either direction | not offered | `packages/contracts/src/reactions.ts` carries `POST /messages/{seq}/reactions`, `GET /jobs/{id}/reactions` and a `reaction` job event (a message is addressed by its event seq). The experience stream still needs a `reaction { message_seq, emoji, by }` item so a client on `/conversations/{id}/events` sees the assistant's glyph without a second subscription |
 | Rename, pin, delete, share a chat | not offered (the row menu is not drawn) | `PATCH /conversations/{id}` `{ title?, pinned? }`, `DELETE /conversations/{id}`, `POST …/share` |
 | Save a conversation or card to a plan | not offered | `POST /plans/{id}/items` `{ conversation_id \| card_id }` |
 | Add a milestone, complete a plan, plan templates | milestones are updated only; no add, no complete, no templates | `POST /plans/{id}/milestones`, `POST /plans/{id}/complete`, `GET /plans/templates` |
@@ -48,20 +48,18 @@ narrows. None changes an existing field.
 | Enable/disable, retry, edit an automation | enabled is drawn as a badge | `PATCH /automations/{id}` `{ enabled?, schedule?, agent_id? }`, `POST …/runs/{id}/retry` |
 | Automation run notes | the run's status and time only | `note?` on `automationRun` |
 | Delete an agent; import a face image | not offered; `face_image` is a URL field | `DELETE /agents/{id}`; allow a data URL in `face_image` or add `POST /agents/{id}/face` |
-| "Get to know you" onboarding answers | the step is not drawn; no route creates a memory item (`/memory/claims` is read-only, `/memory/corrections` needs an existing claim, `/memory/sources` ingests evidence for extraction rather than a plain owner statement) | `POST /memory/items` `{ key?, value, source: 'onboarding' }`, answering with the `memoryItem` that `GET /memory/items` already lists |
 | Unknown outcome resolve ("It arrived" / "It did not" / "I can't tell yet") | closed through the broker: the card is read from `GET /actions?job_id={conversation_id}` (status `unknown` or `unresolved`, or settled with `reconciliation.decided_by = owner`) and settled with `POST /actions/{id}/resolve` `{ resolution }`; the transcript carries the notes | one addition so the card is live rather than fetched when the turn settles: an `unknown { action_id, what }` item on the experience stream |
 | "Example" badge on a result card | not drawn | `example?: boolean` on `resultCard` |
 | Rule text with the agent it applies to | rule text and bounds only | `agent_id?` on `rule` |
 | The day panel's week strip | today only | `GET /home?days=7` or `range` on the upcoming query |
-| Sign out | not offered (the account menu has no item); no branch carries an auth route for it | `POST /signout` |
 | Capabilities listing | probed per surface | `GET /capabilities` `{ calendar, browser, google_sign_in, apple_sign_in, magic_link }` so a client does not probe with writes |
 
 ## The original mapping (kept for the record)
 
-The table below is what the retarget translated. Names on the left were this
-lane's shapes before the contract landed; they no longer exist in the code.
+The table below is what the retarget translated. Names on the left were the
+interface's shapes before the contract landed; they no longer exist in the code.
 
-| This lane (`types.ts`) | Contract (`experience.ts`) | Note |
+| Original interface (`types.ts`) | Contract (`experience.ts`) | Note |
 |---|---|---|
 | `TurnStatus` `running` / `waiting` | `turnStatus` `working` / `needs_you` | rename; `idle` is new |
 | `UserMessage.delivery` `sending` / `queued` / `failed` | `deliveryState` `sending` / `queued_offline` / `failed_retry` | rename |
@@ -81,7 +79,7 @@ lane's shapes before the contract landed; they no longer exist in the code.
 | `Capabilities` | none; each response may be `{ status: 'not_available', reason }` | the interface hides a surface when its call answers `not_available` |
 | `/surfaces/session*`, `/surfaces/onboarding/*` | `POST /signin/magic-link`, `…/consume` `{ token }`, `GET/PATCH /profile` | onboarding answers become memory items through the service's own path |
 
-Not in the contract at all (this lane's mock only): browser preview content
+Not in the contract at all (the original interface mock only): browser preview content
 (`preview_frame` is a URL there), automation runs' notes and retry, plan
 templates, plan `needs_you`, connection `connect`/`disconnect`, rule text with
 an agent, the day panel's week strip.

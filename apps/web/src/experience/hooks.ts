@@ -80,6 +80,8 @@ export type AppContextValue = {
   refreshProfile: () => void;
   refreshConversations: () => void;
   refreshAgents: () => void;
+  /** Ends the session on the service and returns to sign-in. */
+  signOut: () => Promise<void>;
 };
 
 export const AppContext = createContext<AppContextValue | null>(null);

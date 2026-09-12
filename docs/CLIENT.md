@@ -125,7 +125,7 @@ needs_reconciliation`. The mock is not a real-model assistant; full coverage
 of every newly added OpenAPI operation is **not claimed**.
 
 For real-service authentication, event and attention checks, use the full test
-command in [README](../README.md). The documentation lane's pull request (#17) records outcomes.
+command in [README](../README.md). Pull request #17 records outcomes.
 
 ## The reaction rule
 
@@ -481,6 +481,23 @@ you were reading it" on the card, and the person decides again.
 **Every write leaves a receipt.** What, where, when, with an undo valid for a
 stated window, drawn under the card that caused it. An undone receipt says so
 in place; nothing disappears.
+
+**A setup answer is a saved detail, on the record.** Each answer in "Let Nova
+get to know you" is posted to `POST /memory/items` as it is chosen: a registered
+key, the value, and the sentence that was said. The service keeps it as an
+owner-trusted claim on that key (one current value per key; the same key again
+replaces it), lists it under `GET /memory/items` with source `onboarding`, and
+the memory profile picks it up after its queued rebuild. The first conversation
+opens with a message referencing a saved answer. Event and contact keys are
+refused with `409 extractor_owned_key`, because deterministic extractors maintain
+them; correct their existing items instead. Identity and space come from the
+session, and extra identity fields in the request are refused.
+
+**Signing out ends the session, not the account.** `POST /signout` removes the
+session behind the cookie and clears the cookie; the next request is refused
+until a new sign-in. Other sessions remain live. The web app offers it under
+Settings and returns to the sign-in screen, including after a reload with the
+revoked cookie.
 
 **An unconfirmed effect is a question, not a retry.** When a connector never
 answers, the action rests in the broker's ledger at `unknown`
