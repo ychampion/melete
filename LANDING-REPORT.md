@@ -23,7 +23,7 @@ Trial integration on `landing` only. Source baseline: `9484023cabd32b786cb4d336d
 | 5 | #15 | `lane/w10c-discovery`, head `17d65c8` | `5a89677` | `0018_tool_catalog` to 0020 | Typecheck, lint, clean regeneration; plugin 50; Compose 12; focused 356 pass / 0 fail after two test fixes |
 | 6 | #18 | `lane/w6-deploy`, head `007aee9` | `0f000c6` | None | Typecheck, lint, clean regeneration; plugin 53; Compose 17; focused: 9 of 10 lane files pass (77 tests), `runtime/context.test.ts` last case hangs on this Windows box at the lane's own head too (see section) |
 | 7 | #17 | `lane/w13a-docs`, head `7cfd41e` | `c6bbac8` | None | Typecheck, lint, clean regeneration; plugin 53; Compose 17; docs only, 40 sentences corrected (listed below) |
-| 8 | #20 | `lane/w10b-browser` | Not attempted | Pending | Not run |
+| 8 | #20 | `lane/w10b-browser`, head `f42557f` | `1a577f4` | `0015_browser_recipes` to 0021; `0016_browser_sessions` to 0022 | Typecheck, lint, clean regeneration; plugin 53; Compose 17 and browser Compose 11; focused 409 pass / 1 fail then fixture fix, rerun 40 pass / 0 fail |
 | 9 | #19 | `lane/w11-learning` | Not attempted | Pending | Not run |
 | 10 | #13 | `lane/w14-capabilities` | Not attempted | Pending | Not run; real Hermes effect proof pending in draft |
 | 11 | #21 | `lane/w15-wire` | Not attempted | Pending | Not run |
@@ -281,4 +281,21 @@ Corrected sentences (before and after, whitespace collapsed):
   - now: provider. The documentation lane's pull request (#17) records the result.
 
 Checks: typecheck; lint 395 files; OpenAPI and client regeneration unchanged; plugin 53 passed; Compose 17 checks; public-copy scan empty; no `REPORT.md` link remains outside `.agents/notes` and this report.
+
+## PR 20: browser lane
+
+Source head: `f42557feef9e00df3dc262461069d71d5c33e78a` (the head GitHub reported at merge time). Merge commit `1a577f4`. Removed incoming `REPORT.md`. Eighteen conflicting paths:
+
+- Migrations: `0015_browser_recipes` and `0016_browser_sessions` become `0021_browser_recipes` (when 1789232400001) and `0022_browser_sessions` (when 1789232400002), appended after the discovery lane's 0020. The lane shipped no snapshots; 0021 and 0022 are copies of 0020 with a fresh id chain. Earlier SQL and snapshots are byte-identical to their parent.
+- `apps/melete/src/broker/start.ts`: landing's try/finally structure (discovery and deploy lanes) with the lane's browser worker: connections are read once, `configuredBrowserSessions` builds the worker pool unless a service passed its own, and the pool is closed on the failure path and in `close()` after the registry. `connectorsFromEnv` (product lane) gained an optional `{ connections, browserSessions }` argument so both entry points share one path.
+- `apps/melete/src/connectors/configured.ts`: imports, the `browser` connection kind, the `browserSessions` option and the `web` plus `browser` registration branch were added beside generation, exec, artifacts, MCP and the deploy lane's try that closes the registry on failure.
+- `apps/melete/src/index.ts`: the deploy lane's bootstrap (Docker supervision, deployment memory, effect boundary started inside bootstrap) keeps its shape; the lane's `browser` and `connections` state, pool close in the shutdown list, session setup after migration, the runner's `onPark` interrupt hook, `browserSessions` on the app and on the returned service were added, and the in-bootstrap `startEffectBoundary` call now passes the browser sessions and connections (the lane passed them from `main`, which the deploy lane had already moved into bootstrap). `env.ts`: both option groups.
+- Test helpers: took the lane's `database.ts` (template map keyed by initializer, tracing, temp-root ownership) and kept the discovery lane's `unusedTestPort` name and `acquireTestServer`, whose release now goes through the lane's `releaseFixture`. `postgres.ts` keeps the execution lane's `migrationsFolder` override for migration-loader tests; the default call now returns the shared migrated template with a real pg-boss schema, which the lane's new `database.test.ts` expects (that test failed once before this change).
+- Knowledge fixtures: the lane's `createSpaceTemplate` replaces the earlier `seededSpace` helper in `packages/knowledge/src/fixtures.ts` and its three test files and `knowledge/routes.test.ts` (which needed `initSpace` imported and the old import removed); both did the same job.
+- `packages/contracts/src/{index,openapi}.ts`: both the product lane's artifact content path and the lane's browser takeover and handback paths are exposed. `docs/THREAT-MODEL.md`: kept the corrected attacker 4 from the docs merge and appended the lane's "Browser worker boundary" section. Generated `openapi.json` and `schema.d.ts` regenerated and stable.
+- Notes: the lane numbered its note 0017, already taken; renamed to `0024-browser-worker.md` and indexed.
+
+One fact the deploy lane changed broke the lane's `browser:compose:check`: the broker now also sits on the `database` network (Postgres left the runtime network), so "only the broker shares a browser network" expected exactly edge, internal and browser-control. The check now expects the base stack's broker networks plus the control network, still refuses the worker on any base network, and its unit tests pass (34).
+
+Checks: typecheck; lint 428 files; OpenAPI and client regenerated and stable; `bun install` added the lane's Playwright dependency (Chromium was already installed on this box); plugin 53 passed; Compose 17 checks; browser Compose 11 checks; public-copy scan empty. Focused run of the lane's 23 test files (real Chromium fixtures included) plus `broker`, `gateway`, `catalog`, `execution-admission`, `knowledge/spaces`, `memory/bootstrap`, `since-last`, `reactions`, `broker-service-contract`, `postgres`: 409 passed, 1 failed (the `database.test.ts` fixture expectation above) across 33 files in 126.16 s; after the fixture change, `database.test.ts`, `postgres`, `broker-service-contract`, `broker`: 40 passed, 0 failures.
 
