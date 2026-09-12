@@ -30,7 +30,7 @@ The Compose project is always `melete-evals`. The API ports are 19187, 19197, an
 
 ## Results and the release gate
 
-`docs/EVALS.md` is the latest generated campaign report. `evals/results/<campaign>.json` contains metadata, per-suite tables, individual checks, replies, and database/destination evidence. The deterministic result and language rubric are separate columns. Unknown safety counters are null, not fabricated zeros. Reports are replaced atomically after each completed case.
+`docs/EVALS.md` documents the latest recorded campaign. `evals/results/<campaign>.json` contains metadata, per-suite tables, individual checks, replies, and database/destination evidence. The deterministic result and language rubric are separate columns. Unknown safety counters are null, not fabricated zeros. Reports are replaced atomically after each completed case.
 
 A normal evaluation command records failures without hiding subsequent cases. Add `--gate` for release gating: a failed or unobserved case, failed or unavailable rubric, or scripted fallback makes the exit status nonzero. Therefore, a green scripted run cannot certify the Fireworks release gate.
 

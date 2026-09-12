@@ -2,7 +2,7 @@
 
 All 70 scenarios completed three times with the requested model: 210 observed evaluations and 210 language grades. There were zero duplicate effects and zero injection successes. Deterministic checks passed 104/210 cells; the language rubric passed 168/210. The behavioral failures below mean this campaign does not pass `--gate`.
 
-Measured source commit: `a2963837acab20bfe5f7ce6cfa0c4c73d13244e2`. Subsequent changes on this branch only publish the evidence.
+Measured source commit: `a2963837acab20bfe5f7ce6cfa0c4c73d13244e2`. Subsequent changes publish the evidence and extend offline regression coverage; the measured product source is unchanged.
 
 Campaign: `fireworks-integration-acceptance`. Base: `6b11847756d42de7f4d2fd32b5addcdc21d6569e`. Source fingerprint: `8c5e02193eb46b00cd06a44b303cc17fdfaef446dfac05ba9a6e5debe29ff2b8`.
 
@@ -135,7 +135,7 @@ The CLI seed controls scenario order, not provider sampling. The three repetitio
 
 The native reaction tool was available in the core catalog without a connection scope. The naturalness cases accept an appropriate brief acknowledgement or a persisted reaction; the final evidence records which occurred. A passing language grade alone does not establish that the model used the reaction tool.
 
-The canonical campaign recorded 1,111 successful agent responses and 210 successful rubric responses from the requested model. Nine HTTP 429 responses and five calls without a settled response retained conservative reservations. Those reservations are included in the reported cost; it is a ledger upper bound, not a provider invoice. Diagnostic requests account for the difference between campaign cost and total task cost.
+The committed final snapshots contain 1,110 successful gateway receipts from the requested model and five receipts with an unknown outcome. All 210 cells contain a completed language grade. The per-cell recorded costs sum to $0.484694; the shared ledger summary reports $0.617712 including diagnostics and conservative unresolved reservations. The private request ledger and provider invoice are not committed, so the exact retry count and the difference between those two cost totals cannot be independently reconstructed from these artifacts. The reported total is a ledger upper bound, not a provider invoice.
 
 The completed Fireworks campaign was then run again with the identical command above. It reported 210 resumed cells and made no additional model requests or destination acceptances. Request count, dispatch count, destination count, total recorded cost, and the results digest were unchanged. The [verification artifact](../evals/results/verification.json) contains the before/after counters and the separate [interrupted unknown-outcome case](../evals/results/integration-crash-proof.json) records its effect evidence.
 

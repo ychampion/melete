@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeEvent } from '@melete/contracts';
+import {
+  type AttemptBundle,
+  EMPTY_SINCE_LAST,
+  type RuntimeEvent,
+  type WaitSpec,
+} from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { type DockerApi, DockerError, DockerHermesRuntimeAdapter } from './docker.ts';
 
@@ -121,7 +126,7 @@ class Daemon implements DockerApi {
 }
 
 const fixtures: Array<{ root: string; runtime: DockerHermesRuntimeAdapter }> = [];
-async function setup() {
+async function setup(pendingWait?: () => Promise<WaitSpec | null>) {
   const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
   const daemon = new Daemon();
   const httpCalls: string[] = [];
@@ -139,6 +144,7 @@ async function setup() {
     docker: daemon,
     startTimeoutMs: 2000,
     parkedActions: async () => [],
+    pendingWait,
     fetch: async (url) => {
       httpCalls.push(url);
       if (mode.unavailable) throw new Error('Not listening yet');
@@ -179,6 +185,18 @@ afterEach(async () => {
 });
 
 describe('Docker attempt supervision', () => {
+  test('a broker-owned wait survives the Docker adapter boundary', async () => {
+    const wait: WaitSpec = { kind: 'timer', wake_at: '2030-01-01T00:00:00Z' };
+    const f = await setup(async () => wait);
+    expect(await f.runtime.start(bundle(), f.sink, new AbortController().signal)).toEqual({
+      kind: 'waiting_for_event_or_time',
+      wait,
+    });
+    expect(f.events.at(-1)).toMatchObject({
+      type: 'attempt_outcome',
+      outcome: { kind: 'waiting_for_event_or_time', wait },
+    });
+  });
   test('pins the image, mounts only the job subpath, and isolates its sole broker peer', async () => {
     const f = await setup();
     expect((await f.runtime.capabilities()).version).toContain('hermes@');

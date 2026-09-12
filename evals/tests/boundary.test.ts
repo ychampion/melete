@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import type { AttemptBundle, CapabilityClaims, ConnectorManifest } from '@melete/contracts';
+import { signCapability } from '../../apps/melete/src/broker/capability.ts';
+import { createInternalServer } from '../../apps/melete/src/broker/internal-server.ts';
 import { recordId } from '../../apps/melete/src/broker/records.ts';
 import {
   pendingRuntimeWait,
@@ -149,6 +151,55 @@ describe('read freshness without weakening external effect identity', () => {
 });
 
 describe('typed lifecycle waits', () => {
+  databaseTest(
+    'the shared gateway routes only an authenticated scoped lifecycle wait',
+    async () => {
+      const s = await setup();
+      const capabilityKey = 'lifecycle-http-fixture-signing-key-00000000';
+      const internal = createInternalServer({
+        sql: sql(),
+        connectors: { get: () => undefined },
+        broker: s.broker,
+        capabilityKey,
+        approvalKey: 'lifecycle-http-fixture-approval-key-0000000',
+        providers: [],
+        gatewayFetch: async () => {
+          throw new Error('A lifecycle wait must never invoke a provider');
+        },
+      });
+      await new Promise<void>((resolve) => internal.server.listen(0, '127.0.0.1', resolve));
+      try {
+        const address = internal.server.address();
+        if (!address || typeof address === 'string') throw new Error('No fixture listener');
+        const wait = await eventTrigger(s.claims.job_id);
+        const post = (claims?: CapabilityClaims) =>
+          fetch(`http://127.0.0.1:${address.port}/attempt/wait`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...(claims
+                ? { authorization: `Bearer ${signCapability(claims, capabilityKey)}` }
+                : {}),
+            },
+            body: JSON.stringify(wait),
+          });
+        const anonymous = await post();
+        expect(anonymous.status).toBe(401);
+        await anonymous.arrayBuffer();
+        const unscoped = await post({ ...s.claims, scopes: ['test.read'] });
+        expect(unscoped.status).toBe(403);
+        await unscoped.arrayBuffer();
+        expect(await pendingRuntimeWait(sql(), bundle(s.claims))).toBeNull();
+        const accepted = await post(s.claims);
+        expect(accepted.status).toBe(200);
+        expect(await accepted.json()).toMatchObject({ status: 'waiting_for_event_or_time', wait });
+        expect(await pendingRuntimeWait(sql(), bundle(s.claims))).toEqual(wait);
+        expect(s.calls()).toBe(0);
+      } finally {
+        await new Promise<void>((resolve) => internal.server.close(() => resolve()));
+      }
+    },
+  );
   databaseTest('a registered event wait is durable and idempotent', async () => {
     const s = await setup();
     const wait = await eventTrigger(s.claims.job_id);
