@@ -1,9 +1,11 @@
 # Architecture
 
-This is the implementation and evidence map for code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1`. A schema, a configuration check and
-a running deployment are different evidence. Deployment behavior is **not
-claimed** unless a named test below exercises it.
+This is the implementation and evidence map for the tree at the head of
+`integration`. A schema, a configuration check and a running deployment are
+different evidence. Deployment behavior is **not claimed** unless a named test
+below exercises it, and the Linux deployment evidence is what it says: one
+tested Docker host configuration, recorded in
+[note 0020](../.agents/notes/0020-deployment-evidence.md).
 
 ## 1. Authority and process boundaries
 
@@ -19,63 +21,74 @@ covers that distinction. See [MEMORY](MEMORY.md).
 
 ## 2. Declared topology
 
-`deploy/docker-compose.yml` declares these networks:
+`deploy/docker-compose.yml` declares three networks and five kinds of
+container:
 
-| Service | Network | Relevant configuration |
+| Service | Networks | Relevant configuration |
 | --- | --- | --- |
-| Postgres | internal | Unpublished port, persistent database volume |
-| Melete | edge, internal | Public API and internal effect/gateway listener in one process |
-| Runtime | internal | Non-root, read-only root, dropped capabilities, process/memory limits |
-| Web | edge | Optional web profile |
+| Postgres | `database` (`internal: true`) | Unpublished port, persistent database volume |
+| Melete | `edge`, `database`, `internal` | Owner API bound only to its `edge` address (port 8787); broker and model gateway on port 8788 for the runtime network; holds the Docker socket to supervise attempts |
+| Warm runtime cell | `internal` (`internal: true`, isolated bridge gateway) | Non-root UID 10001, read-only root, dropped capabilities, no-new-privileges, process and memory limits, only the `_probe` work subpath; no valid job capability |
+| Per-attempt runtime cells | `internal` | Started and retired by the service; each mounts only its job's `work/<job>` subpath, a named Hermes home and a size-limited `/tmp` |
+| Web | `edge` | Serves the web app and proxies `/api` to Melete on the browser's own origin |
 
-The internal network declares `internal: true`, intended to remove external
-routing. The runtime egress probes in scenario 6 are **written, not run**.
-The static checker reads YAML; it does not open sockets inside a container.
-Postgres and the runtime share this network, so a boundary allowing only broker
-reachability is **not claimed**. The probe expecting Postgres DNS to fail is
-inconsistent with that declaration.
+The browser worker, when the `docker-compose.browser.yml` override is added,
+joins its own `browser-control` and `browser-egress` networks and none of the
+above; see [the browser worker](browser-worker.md).
 
-The runtime has writable `/work` and `/var/lib/hermes` volumes and a `/tmp`
-tmpfs. The Hermes home supports run-idempotency persistence; it is not correct
-to describe `/work` as the only writable path. Container behavior is **written,
-not run**; configuration is checked by `checkCompose` in
-`deploy/scripts/compose-check.ts` and its tests.
+The static checker `checkCompose` in `deploy/scripts/compose-check.ts` reads
+this YAML (19 checks, `passes every boundary check` and its mutation tests). It
+does not open sockets inside a container. Live behavior was established by
+scenario 6 on a Linux Docker host: from a claimed cell and the warm cell, the
+internet, the host metadata address, a live host listener, Postgres (by DNS and
+by container IP), the web service and the owner control plane were unreachable,
+and the broker with its gateway was the only reachable peer. The
+[threat model](THREAT-MODEL.md) records that evidence and what would falsify it.
 
 ## 3. Service startup and entities
 
-`apps/melete/src/index.ts` mounts authentication, knowledge routes and health;
-with dependencies it also mounts jobs, replies, operations, policy, questions,
-attention, triggers, approvals and events. The executable entry point starts
-the effect boundary when a database handle exists.
+`apps/melete/src/index.ts` mounts authentication, artifacts, principals and
+spaces, and health; with Postgres and a job service it also mounts jobs,
+learning episodes, proposals and procedures, replies, operations, policy,
+attention, reactions, questions, repairs, triggers, approvals, the experience
+routes, events, the memory routes and, when a browser worker is configured, the
+browser session controls. The knowledge file-view routes are mounted with a
+space catalog confined to the spaces directory.
 
-With Postgres, `bootstrap` migrates, starts pg-boss and, with the default
-`MELETE_RUNTIME_ADAPTER=hermes`, starts memory behind the restriction-journal
-restore gate, the effect boundary and a supervisor that launches one pinned
-Hermes engine per attempt (`MELETE_RUNTIME_SUPERVISOR=process` for local
-development with the current user's OS access, `docker` for a container per
-attempt). The deploy lane's `MELETE_RUNTIME_ADAPTER=docker` is the Compose
-path verified on a Linux host; `stub` is an explicit scripted choice and
+With Postgres, `bootstrap` migrates, starts pg-boss, starts memory behind the
+restriction-journal restore gate (the `docker` adapter starts the deployment
+memory the same way), and then chooses the runtime. With the default
+`MELETE_RUNTIME_ADAPTER=hermes` it starts the effect boundary and a supervisor
+that launches one pinned Hermes engine per attempt (`MELETE_RUNTIME_SUPERVISOR=process`
+for local development with the current user's OS access, `docker` for a
+container per attempt). `MELETE_RUNTIME_ADAPTER=docker` is the Compose path
+verified on a Linux host: the service supervises one container per attempt
+through the Docker socket (`pins the image, mounts only the job subpath, and
+isolates its sole broker peer`). `stub` is an explicit scripted choice and
 `external` expects an injected `RuntimeAdapter`. The scripted HTTP proof
 `wired-assistant.test.ts` creates a job, corrects a claim and checks the
 requests delivered through a real local Hermes to a scripted provider.
 
-Memory routes and the memory worker start with the `hermes` and `docker`
-adapters; an injected runtime still receives them only when the caller supplies
-the `memory` dependency. The effect boundary does
-install `createMemoryTrustResolver`, so the broker-memory origin seam is no
-longer a missing stub (`an address read off a page is refused as
-untrusted_recipient_origin` in `broker-seam-tests.ts`).
+Memory routes and the memory worker start with every Postgres-backed bootstrap;
+an injected runtime receives context recording only when the caller supplies
+the `memory` dependency. The effect boundary installs
+`createMemoryTrustResolver`, so the broker-memory origin seam is wired (`an
+address read off a page is refused as untrusted_recipient_origin` in
+`broker-seam-tests.ts`).
 
 Schema existence is checked by `every entity in the contract has a table`.
 Authentication tests include `racing setup requests atomically create one owner,
 space, and session`, `a second service instance recognizes the persisted
 session`, and `all other routes require a valid cookie while health stays public`.
 
-The legacy knowledge file-view routes still select a space using
-`x-melete-space` after session authentication. Their fixture test `asking for a
-different space than the session holds is refused` supplies that header; it does
-not prove a membership-derived scope. A complete trusted-scope bridge for those
-routes is **not claimed**. The optional memory router has separate scope checks.
+The knowledge file-view routes select a space from the `x-melete-space` header
+or a query parameter after session authentication, with a single-space
+fallback, then ask the service whether the authenticated principal may use that
+space; non-owners read only, and skills and records are filtered by audience.
+The fixture test `asking for a different space than the session holds is
+refused` supplies the header; `a space id that names nothing is a 404, not an
+empty result` covers the catalog. The memory routes derive scope from the
+principal's verified membership and never from the request body.
 
 ## 4. Durable jobs
 
@@ -91,9 +104,17 @@ uses Postgres transactions and pg-boss wakes.
 | Check completion against stored deliverables | `artifact completion requires a referenced record matching the declared glob`; `message-sent completion checks connection and the matching stored receipt` |
 | Bound replay context without forgetting completed tool identity | `fails closed when completed tool identities exceed either context cap` |
 | Recover from runtime death | Conformance 5: `A job survives the death of the process running it` |
+| Recover across a whole-stack restart | The Linux vertical check restarted the stack under an active job and under a parked approval; each recovered with one succeeded action and one receipt (note 0020) |
+| Repair a failing connector without changing the effect | `a transient failure before dispatch retries the same bytes`, `a rate limit parks the job and releases the worker`, `an expired credential is refreshed through the store, once`, `a revocation during backoff fences the retry before it is sent`, `schema drift is repaired through a candidate that passed its test` in `repair.test.ts` |
 
-These tests use scripted runtimes; host reboot and installed Hermes recovery
-are **not claimed**.
+An action comes to rest at one repair disposition: `completed` is the only one
+that means the effect happened; `parked_until_retry`, `needs_reconciliation`,
+`needs_reconnect`, `needs_input` and `repair_exhausted` are safe stops, counted
+apart (`completions and safe stops are counted apart, never summed`).
+`GET /jobs/{id}/repairs` reports the trace, counters and candidates.
+
+Host reboot recovery is **not claimed**; the restart evidence above is a
+Compose restart on one Linux host.
 
 ## 5. Runtime and context
 
@@ -108,18 +129,23 @@ The adapter denies unexpected shell approvals (`a shell-command approval is
 denied, never allowed for the session`). An interrupted stream is not resumed
 (`an interrupted run fails retryably and says history is missing`).
 
-The contract has context-budget constants, including 15 tools, but
-`Broker.catalog` returns all eligible tools without that truncation. A universal
-15-tool cap is **not claimed**. Transcript bounds are implemented as 100 messages
-and 32,000 serialized characters in `jobs/bundle.ts`, tested by `bounds escaped
-serialized content and marks abbreviation without mutating history`.
-The memory adapter separately bounds recall. `budget.max_output_tokens` remains
-the cumulative output ceiling (8,000 by default); the optional
-`max_input_tokens` bounds each request's context and defaults to the pinned
-model's context window minus the output ceiling. An oversized assembled prompt is
-refused with `input_context_exceeded` before the engine launches, and the
-gateway checks the final request again before provider admission. Provider-side
-token accounting for every prompt component is **not claimed**.
+The broker serves a token-budgeted core catalog (750 estimated tokens, `core
+uses a serialized token budget, never a count cap, with stable ordering`) plus
+`search_tools` and `load_tool`; the contract's 15-tool constant is not an
+enforced cap, and a universal cap is **not claimed**. A schema loaded on demand
+is persisted for the attempt (`loaded schema persists across service restart
+without leaking to another attempt`); because the pinned engine snapshots its
+toolset when a run starts, the adapter ends the run and starts a continuation
+with the same attempt authority. Transcript bounds are 100 messages and 32,000
+serialized characters in `jobs/bundle.ts`, tested by `bounds escaped serialized
+content and marks abbreviation without mutating history`. The memory adapter
+separately bounds recall. `budget.max_output_tokens` remains the cumulative
+output ceiling (8,000 by default); the optional `max_input_tokens` bounds each
+request's context and defaults to the pinned model's context window minus the
+output ceiling. An oversized assembled prompt is refused with
+`input_context_exceeded` before the engine launches, and the gateway checks the
+final request again before provider admission. Provider-side token accounting
+for every prompt component is **not claimed**.
 
 ## 6. Broker and gateway
 
@@ -135,6 +161,7 @@ and approval, reserves budget, dispatches, and records receipts or uncertainty.
 | Gateway meters before forwarding | `reserves before injecting credentials and strips capability and caller headers` |
 | Reject stale/budget-exhausted calls | `stale epoch and concurrent budget exhaustion stop requests before transport` |
 | Provider-specific request handling | `Astra requires Responses and Anthropic drops sampling controls without rewriting history` |
+| A cell capability cannot approve | Scenario 8 on the Linux stack: a valid cell capability read the catalog (200) but could not approve (401); an altered owner approval hash was refused (409) |
 
 The gateway tests use fake transports/providers, including local TLS fixtures.
 Real-provider compatibility, automatic fallback correctness and an exportable
@@ -142,11 +169,13 @@ tamper-evident action ledger are **not claimed**.
 
 ## 7. Connectors
 
-Files, web, email, calendar and the test destination have implementations and
-fixture tests; [CONNECTORS](CONNECTORS.md) maps each to evidence. They run as
-trusted code in the service process. General live-account compatibility is
-**not claimed**. Knowledge routes and memory services are separate from the
-configured connector registry.
+Files, web, email, calendar, the test destination, in-cell execution,
+artifacts, speech generation, operator-configured MCP servers over HTTP and the
+browser worker have implementations and fixture tests; [CONNECTORS](CONNECTORS.md)
+maps each to evidence. They run as trusted code in the service process, except
+the browser worker, which is a separate process outside the runtime cell.
+General live-account compatibility is **not claimed**. Knowledge routes and
+memory services are separate from the configured connector registry.
 
 A connector that fails says what kind of failure it was: a typed
 `ConnectorFault` with a class, a `may_have_committed` flag, and an optional
@@ -157,9 +186,7 @@ a mapping with a test, takes one equivalent authorized route for the same
 operation, and reconciles an uncertain outcome through `verify`. A repair may
 change a selector, a route or a field's name; it may never change a recipient,
 an amount, a resource, or what the person asked for, and the action's payload
-hash and approval are the same on every attempt. `completed` is the only
-disposition that means the effect happened; every other one is a safe stop,
-counted apart and never summed with a completion. Connectors may also offer
+hash and approval are the same on every attempt. Connectors may also offer
 `describe`, `refreshCredential` and `routes`; one that offers none simply stops.
 See `.agents/notes/0015-typed-repair.md`.
 
@@ -171,18 +198,25 @@ and suppression state; the Markdown tree is an inspection/edit view.
 and `source and space revocation invalidate delivered context and block stale
 serving` test the authority path.
 
-Skills use deterministic trigger matching, with at most three selected and a
-400-token frontmatter cap (`returns nothing when nothing matches`,
-`respects a lower maximum`, and `refuses a skill that is longer than the
-contract allows` in `packages/contracts/src/skills.test.ts`). These are
-selection/schema properties; malicious-skill harmlessness is **not claimed**.
+Initial skill selection is deterministic, with at most three selected, a
+400-token frontmatter cap, and membership and audience filtering (`returns
+nothing when nothing matches`, `respects a lower maximum`, `refuses a skill
+that is longer than the contract allows` in `packages/contracts/src/skills.test.ts`;
+`member bundles select at most three shared skills; revocation fences work,
+replay, knowledge and old capabilities` in `principals.test.ts`). On-demand
+discovery can load a skill the model asks for, filtered by the job's scopes.
+An evaluated procedure from the [learning loop](LEARNING.md) joins the bundle
+first, private to the space owner. These are selection and schema properties;
+malicious-skill harmlessness is **not claimed**.
 
 ## 9. Security limits
 
 The [threat model](THREAT-MODEL.md) separates broker rejection tests from
-container probes that are **written, not run**. A shared kernel, trusted
-connectors and a broker/API process holding secrets remain trust boundaries.
-Virtual-machine isolation and resistance to a compromised host are **not claimed**.
+the container probes that ran on a Linux Docker host. A shared kernel, trusted
+connectors and a broker/API process holding secrets remain trust boundaries,
+and the service holds the Docker socket, which is host-root equivalent.
+Virtual-machine isolation and resistance to a compromised host are
+**not claimed**.
 
 ## 10. Events and client replay
 
@@ -200,15 +234,21 @@ be recovered from that store.
 
 The client helper still reports a sequence skip as a gap (`reports a skipped
 sequence as a gap with both ends`); that is not proof of missing durable rows
-in a filtered stream. See [CLIENT](CLIENT.md).
+in a filtered stream. The experience routes project the same events into the
+items the web app draws. See [CLIENT](CLIENT.md).
 
 ## 11. Conformance
 
 Scenarios 1–5 execute on isolated Postgres with scripted runtimes and test
-effects. Scenario 6 (container egress), 7 (whole-stack retraction/restart), and 8
-(two-provider policy equivalence) are **written, not run**: 14 todo assertions.
-Memory has a separate runner with ten executable scenarios and one procedure
-transfer todo, **written, not run**. Neither runner proves real-model quality.
+effects. Scenarios 6 (container egress and control-plane isolation), 7
+(whole-stack retraction and restart) and 8 (policy equivalence across
+providers) run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1`
+is set and are reported as deferred otherwise. On the Linux Docker host the
+whole suite passed 44 tests and skipped one: the second-provider comparison,
+which needs a credential. Memory has a separate runner with ten executable
+scenarios across seven families and one recorded todo (procedure transfer,
+whose promotion path is exercised by the learning tests instead). Neither
+runner proves real-model quality.
 
 ## 12. Verification
 
@@ -216,8 +256,17 @@ Run from the repository root:
 
 ```bash
 bun run compose:check
-bun test --max-concurrency=2 --timeout=15000 conformance/scenarios
+bun run conformance
 ```
 
-The first command checks configuration only; the second executes fixture
-scenarios and prints the todos. See the documentation lane's pull request (#17) for run outcomes.
+The first command checks configuration only; the second lists the scenarios,
+runs 1–5 on disposable Postgres, and says which are deferred. The README
+describes the Compose opt-in for 6–8.
+
+## 13. Further maps
+
+[CAPABILITIES](CAPABILITIES.md) is the capability matrix against the pinned
+engine; [LEARNING](LEARNING.md) the correction-to-procedure loop;
+[the browser worker](browser-worker.md) the out-of-cell browser;
+[DEPLOYMENT](DEPLOYMENT.md) operations on the Linux stack;
+[ENGINEERING](ENGINEERING.md) the seven provable properties.

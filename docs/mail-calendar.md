@@ -1,8 +1,8 @@
 # Mail and calendars
 
 Email and calendar connectors run inside the trusted service. This page
-describes the implementations tested with local protocols at code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1`. Live-account onboarding and
+describes the implementations tested with local protocols on the tree at the
+head of `integration`. Live-account onboarding and
 compatibility with every mail/CalDAV server are **not claimed**.
 See [CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
 
@@ -72,4 +72,4 @@ bun test apps/melete/src/connectors
 ```
 
 The fixtures use local sockets and HTTP with test credentials. No real mailbox
-or remote calendar is used. See the documentation lane's pull request (#17) for results.
+or remote calendar is used.

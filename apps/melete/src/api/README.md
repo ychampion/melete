@@ -12,9 +12,11 @@ injected space authorization. Its existence does not prove the public entry
 point exposes every action route. Complete default routing of every OpenAPI
 operation is **not claimed**.
 
-The optional memory router is not supplied by default bootstrap. The legacy
-knowledge module still selects its file-view space from a header after public
-session authentication; that is not authoritative memory scope validation.
+The memory router is mounted by every Postgres-backed bootstrap with scope
+derived from the authenticated principal's membership. The knowledge module
+selects its file-view space from a header or query parameter after session
+authentication and then asks the service whether the principal may use it;
+that check is separate from the memory routes' scope.
 
 See [CLIENT](../../../../docs/CLIENT.md) for client behavior and
 [ARCHITECTURE](../../../../docs/ARCHITECTURE.md) for wiring and test references.

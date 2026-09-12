@@ -8,9 +8,9 @@ steps and observed impact. A response-time guarantee is **not claimed**.
 
 ## Verified scope
 
-Melete is pre-release. The [threat model](docs/THREAT-MODEL.md) describes code
-baseline `9484023cabd32b786cb4d336dec818f441cd0cc1` and names the tests behind
-its boundary claims.
+Melete is pre-release. The [threat model](docs/THREAT-MODEL.md) describes the
+tree at the head of `integration` and names the tests behind its boundary
+claims.
 
 - Payload/revision approval checks: conformance 4, `An approval cannot be spent
   on different content`.
@@ -22,19 +22,23 @@ its boundary claims.
 - Memory origin at admission: `an address read off a page is refused as
   untrusted_recipient_origin`.
 
-These are fixture tests, not proof against arbitrary compromised code.
-Container egress and filesystem probes are **written, not run** in scenario 6.
-Static Compose checks do not prove live networking; Postgres shares the runtime
-network, so exclusive broker reachability is **not claimed**. Writable runtime
-paths include the workspace, Hermes home and temporary storage.
+These are fixture tests, not proof against arbitrary compromised code. The
+container egress, sibling-service, workspace and owner-control-plane probes of
+scenario 6 ran from inside a claimed cell and the warm cell on one Linux Docker
+host; the broker and model gateway were the only reachable peers. Static Compose
+checks do not prove live networking on any other host. Writable runtime paths
+are the job's own `work/<job>` subpath, the attempt's Hermes home and a
+size-limited temporary filesystem.
 
-The API, broker and trusted connectors share a process. Host-compromise
-containment, virtual-machine isolation, confidential compute, subscription OAuth
-isolation and an exportable tamper-evident action ledger are **not claimed**.
-See [MEMORY](docs/MEMORY.md) for the narrower removal-journal and restore tests.
+The API, broker and trusted connectors share a process, and that process holds
+the Docker socket, which is host-root equivalent. The browser worker and MCP
+servers run outside the cell and are bounded by the broker, not by the cell's
+network. Host-compromise containment, virtual-machine isolation, confidential
+compute, provider OAuth stored inside the runtime and an exportable
+tamper-evident action ledger are **not claimed**. See [MEMORY](docs/MEMORY.md)
+for the narrower removal-journal and restore tests.
 
 ## Release support
 
 A released-version security maintenance guarantee is **not claimed** for this
-pre-release. The documentation lane's pull request (#17) records the verification performed for the
-documentation revision.
+pre-release.

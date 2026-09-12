@@ -87,7 +87,7 @@ against its 750-token budget. This is a scaffolding estimate, not provider usage
 or a tokenizer-specific count. User input and subsequent tool results are metered
 separately by the gateway.
 
-The earlier W3 prompt-assembly probe in `.agents/notes/0009-hermes-surface.md`
+The earlier prompt-assembly probe in `.agents/notes/0009-hermes-surface.md`
 used a different tool fixture and is historical evidence. The discovery test
 measures the wire request after the current plugin and configuration are active.
 
@@ -200,8 +200,9 @@ Run `bun run test:plugin` and
 for the observer and persistence checks. The optional real-server check is
 `MELETE_HERMES_E2E=1 bun test apps/melete/test/integration/hooks-real.test.ts --max-concurrency=2`;
 prepare `.hermes-venv` using note 0009 and install the pin's `aiohttp==3.14.3`.
-That check currently reaches the real hooks but fails its final broker-action
-assertion (recorded in the lane's pull request, #13). It is not a passing end-to-end capability proof.
+On this tree that check reaches the real hooks but its final broker-action
+assertion has not passed; a complete real-engine capability proof is pending
+in a separate pass. See the [capability matrix](../../docs/CAPABILITIES.md).
 
 ## Per-attempt launch
 
@@ -234,7 +235,7 @@ bun test packages/runtime-hermes/src
 ```
 
 This command uses fake HTTP responses and does not start Docker or call a paid
-provider. The documentation lane's pull request (#17) records the result.
+provider.
 
 ## Licence
 

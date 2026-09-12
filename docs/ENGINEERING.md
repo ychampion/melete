@@ -1,9 +1,8 @@
 # Engineering evidence
 
-This maps implementation properties at code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1` to tests. It does not equate a design
-goal, an injected test seam or a small scripted fixture with a released feature.
-Run outcomes are in the documentation lane's pull request (#17).
+This maps implementation properties on the tree at the head of `integration`
+to tests. It does not equate a design goal, an injected test seam or a small
+scripted fixture with a released feature.
 
 ## E1. Declared dependencies and repair briefs
 
@@ -83,8 +82,9 @@ deduplication of differently worded effects is **not claimed**.
 The [memory runner](../conformance/memory/README.md) calls the real memory
 functions against disposable Postgres, with scripted extraction and answers
 over local HTTP. It does not boot the normal service entry point or exercise
-a Compose installation. Ten executable scenarios span seven families; procedure
-transfer is **written, not run** as a todo.
+a Compose installation. Ten executable scenarios span seven families; the
+procedure-transfer scenario is a recorded todo, because promotion is exercised
+by the [learning](LEARNING.md) tests rather than this harness.
 
 Each executable scenario requiring memory runs again with empty recall; a
 scenario that still passes fails the suite as `memory not exercised`.
@@ -108,7 +108,7 @@ the middle one wakes only that job`;
 one that cites its reason`; and `the outbox refuses a notification that cites
 nothing`.
 
-These tests cover service state and outbox behavior. A complete reference client
+These tests cover service state and outbox behavior. A complete interface
 for every new attention surface, absence of approval fatigue and perfect
 notification relevance are **not claimed**.
 
@@ -125,5 +125,6 @@ bun run conformance:memory
 
 The memory test entry imports the E1–E4 and broker-seam modules. Database tests
 use embedded Postgres when no URL is supplied; missing binaries may cause skips,
-which are not passes. The general suite and the **written, not run** container
-probes are described in [conformance](../conformance/README.md).
+which are not passes. The general suite and the container probes (scenario 6,
+run with the Compose opt-in) are described in
+[conformance](../conformance/README.md).

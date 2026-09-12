@@ -1,8 +1,7 @@
 # Threat model
 
-This document describes code baseline
-`9484023cabd32b786cb4d336dec818f441cd0cc1`. It distinguishes rejection tests
-from deployment claims. A fixture pass proves the exercised gate under its
+This document describes the tree at the head of `integration`. It
+distinguishes rejection tests from deployment claims. A fixture pass proves the exercised gate under its
 inputs, not that every attack is contained.
 
 The service container mounts the host Docker socket to supervise attempt
@@ -75,8 +74,10 @@ model identity.
 
 `Astra requires Responses and Anthropic drops sampling controls without
 rewriting history` tests request handling against fake transport. Every-provider
-compatibility is **not claimed**, and conformance 8's two-provider policy
-comparison is **written, not run**. API-key forwarding through the gateway is
+compatibility is **not claimed**. Conformance 8 ran against the Linux stack with
+the scripted provider (a cell capability could read the catalog but not approve,
+and an altered approval hash was refused); its comparison against a second, real
+provider was skipped because no credential was configured. API-key forwarding through the gateway is
 the verified path. Configuring provider OAuth inside Hermes would place those
 credentials in the runtime's auth store, outside this boundary: a runtime
 compromise exposes an OAuth token stored there, and it does not expose a
@@ -142,12 +143,13 @@ the container's job and only the container's job. Two consequences worth naming:
 - **A command can write anywhere the container can write.** Today that is
   `/work`, the Hermes home, and a small `/tmp`. There is no second sandbox
   inside the cell and the code says so.
-- **`/work` is currently the whole volume.** `deploy/docker-compose.yml` mounts
-  it at `/work` in the runtime container, so a snippet can read another job's
-  workspace even though the execution tool refuses to name one. The per-attempt
-  container the service will start has to mount `work/<job>` instead. Until it
-  does, two jobs' workspaces are separated by a tool-level refusal and not by a
-  filesystem boundary.
+- **`/work` is the job's own subpath.** Each per-attempt container mounts
+  `work/<job>` with a volume subpath, so a sibling job's directory is not
+  present in the cell at all. Scenario 6 planted a canary in a sibling
+  directory and read it through three cell paths; all three returned ENOENT
+  while the job's own workspace stayed writable. Two jobs' workspaces are
+  separated by the OS mount, and the tool-level refusal is a second check
+  rather than the boundary.
 
 ## Linux deployment verification
 
@@ -224,10 +226,10 @@ The [isolation proposal](../.agents/notes/proposed/2026-09-12-mcp-provider.md)
 requires a separate OS identity or sandbox, no vault/database mounts or
 credentials, and a verified network policy before the service can launch local
 untrusted installations. Both the production adapter and raw stdio transport
-reject an unisolated launch; tests prove rejection before spawning. Docker
-isolation was not tested on the Windows host.
-Composition likewise requires the cell executor; its test-only `node:vm`
-fallback is not an OS or memory boundary.
+reject an unisolated launch; tests prove rejection before spawning. A
+container-isolated MCP launcher has not been built or tested.
+Composition likewise requires the cell executor, which the default service does
+not inject; its test-only `node:vm` fallback is not an OS or memory boundary.
 
 ## Credentials, host and storage
 
@@ -305,8 +307,8 @@ The relay policy constrains an intact worker; a compromised Node process can
 use its own outbound sockets and can steal or alter its mounted browser profile.
 It can read whatever the configured uid may read within that one mounted space.
 It has no direct mount of the vault, runtime cell, or another space. The container
-shares the host kernel; a kernel compromise removes those boundaries. This lane
-does not claim a separate virtual machine or a Chromium renderer-sandbox proof.
+shares the host kernel; a kernel compromise removes those boundaries. A separate
+virtual machine and a Chromium renderer-sandbox proof are **not claimed**.
 
 Docker bridge membership is not directional. A compromised worker can reach the
 Melete service ports on `browser-control`, even though it cannot directly join the
@@ -329,7 +331,7 @@ needed for a warm signed-in session.
 
 `bun run deploy/scripts/browser-compose-check.ts` checks deployment configuration;
 the browser and integration tests check live controller behavior on local
-fixtures. Docker is unavailable on this lane's Windows host. The image build,
-combined Compose startup, and Linux packet-level isolation checks therefore
-remain unexecuted here; static YAML checks do not substitute for them. Installation
-and operation are described in [browser-worker.md](browser-worker.md).
+fixtures. The browser image build, the combined Compose startup with the browser
+override, and Linux packet-level isolation of the worker have not been run;
+static YAML checks do not substitute for them. Installation and operation are
+described in [browser-worker.md](browser-worker.md).
