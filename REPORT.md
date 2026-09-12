@@ -130,3 +130,37 @@
 - `git -C C:/Users/gamin/melete-oss-w16a push -u origin lane/w16a-experience`: pushed the verified source branch.
 - `gh pr create --repo ychampion/melete --base integration --head lane/w16a-experience`: opened https://github.com/ychampion/melete/pull/22; no merge was performed.
 - `2026-09-11 23:36:48 UTC`: implementation, full verification, and PR creation completed within the five-hour campaign cap.
+
+## 2026-09-12 PR #22 review results
+
+- `864ee80`: home read commands finish their attempts and jobs on resolved success or failure, record an attempt-ended event, and use a five-minute lease with one allowed attempt for terminal recovery.
+- `5877b8e`: pause/resume notice keys use the turn ID and action. The experience integration fixture has a 30-second cleanup timeout.
+- `e1dd474`: agent identity limits count characters consistently with the contract and token estimator; excess length raises `ServiceError` with status 400.
+- `fb96e44`: space-wide event projection selects conversations updated in the preceding 24 hours. Explicit conversation requests retain unrestricted history projection.
+
+| Reproduction command | Exit | Counts |
+| --- | --- | --- |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience-effects.test.ts` before the lifecycle fix | 1 | 10 passed, 2 failed, 65 assertions |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience.test.ts -t 'retrying pause and resume'` before the notice fix | 1 | 0 passed, 1 failed, 7 assertions |
+| `bun test --max-concurrency=1 apps/melete/src/experience/agents.test.ts` before the identity fix | 1 | 0 passed, 2 failed, 1 assertion |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience.test.ts -t 'space event sync'` before the projection fix | 1 | 0 passed, 1 failed, 4 assertions; PostgreSQL `55P03` on the locked idle conversation |
+
+| Verification command | Exit | Counts |
+| --- | --- | --- |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience-effects.test.ts` | 0 | 12 passed, 0 failed, 73 assertions |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience.test.ts -t 'pause'` with the original cleanup timeout | 1 | 2 passed, 1 cleanup-hook failure, 13 assertions |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience.test.ts -t 'pause'` with the 30-second cleanup timeout | 0 | 2 passed, 0 failed, 13 assertions |
+| `bun test --max-concurrency=1 apps/melete/src/experience/agents.test.ts apps/melete/src/experience/projectors.test.ts` | 0 | 5 passed, 0 failed, 25 assertions |
+| `bun test --max-concurrency=1 apps/melete/test/integration/experience.test.ts -t 'space event sync'` | 0 | 1 passed, 0 failed, 7 assertions |
+| `bun run typecheck` | 0 | Both TypeScript checks passed |
+| `bun run lint` | 0 | 333 files checked; no fixes applied |
+| `bun run openapi` followed by `bun run client:generate` | 0 each | Both generated files unchanged |
+| `git -C C:/Users/gamin/melete-oss-w16a status --porcelain` before and after generation | 0 each | 0 working-tree changes |
+| `git -C C:/Users/gamin/melete-oss-w16a diff --exit-code` after generation | 0 | 0 changed lines |
+
+- `bun test --max-concurrency=1 apps/melete/src/experience/agents.test.ts apps/melete/src/experience/home.test.ts apps/melete/src/experience/projectors.test.ts apps/melete/test/integration/experience.test.ts apps/melete/test/integration/experience-effects.test.ts apps/melete/test/integration/experience-signin.test.ts apps/mock-api/src/experience.test.ts packages/contracts/src/experience.test.ts`: exit 0; 40 passed, 0 failed, 278 assertions across 8 files in 41.27 seconds.
+- `%TEMP%/melete-w16a-review-experience-tests-20260912.log`: complete final focused-test output.
+- `bun test` without file filters: not run; the full suite is reserved for the orchestrator by the continuation instructions.
+- `git -C C:/Users/gamin/melete-oss-w16a diff --check`: exit 0.
+- `git -C C:/Users/gamin/melete-oss-w16a log -4 --format='%h %an <%ae> %s'`: exit 0; all four fix commits use `ychampion <68075205+ychampion@users.noreply.github.com>`.
+- `git -C C:/Users/gamin/melete-oss-w16a push -u origin lane/w16a-experience`: exit 0; published `723c748..fb96e44` to the existing PR #22 branch.
