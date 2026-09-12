@@ -57,6 +57,64 @@ async function candidate(template: string, selected: string[]) {
 }
 
 (fixture ? describe : describe.skip)('real jobs and unchanged memory conformance promotion', () => {
+  test('selected validation cannot enable canary without passing final evidence bound to and after selection', async () => {
+    if (!fixture || !evaluator || !procedures) return;
+    const proposed = await candidate('sealed-final-falsifier', [
+      'sort-typed-values',
+      'keep-header-and-rows',
+    ]);
+    await evaluator.evaluate(fixture.ownerId, fixture.spaceId, proposed.id);
+    const rows = await fixture.handle.db
+      .select()
+      .from(procedureEvaluation)
+      .where(eq(procedureEvaluation.candidateId, proposed.id));
+    const validation = rows.find((row) => row.phase === 'validation');
+    const final = rows.find((row) => row.phase === 'sealed_final');
+    if (!validation?.selectedAt || !validation.passed || !final?.passed)
+      throw new Error('Expected real selected validation and passing final evidence');
+    const errors: (string | undefined)[] = [];
+    for (const changed of [
+      null,
+      { ...final, passed: false },
+      { ...final, evidence: { ...final.evidence, selection_evaluation_id: 'another-selection' } },
+      { ...final, createdAt: new Date(validation.selectedAt.getTime() - 1000) },
+    ]) {
+      await fixture.handle.db
+        .delete(procedureEvaluation)
+        .where(eq(procedureEvaluation.id, final.id));
+      if (changed) await fixture.handle.db.insert(procedureEvaluation).values(changed);
+      let code: string | undefined;
+      try {
+        await procedures.enableCanary(fixture.ownerId, fixture.spaceId, proposed.id);
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
+      errors.push(code);
+      // Reset even under the mutation, so every corrupted final has the same valid selection.
+      await fixture.handle.db
+        .update(procedureCandidate)
+        .set({ state: 'evaluated', canarySpaceId: null })
+        .where(eq(procedureCandidate.id, proposed.id));
+    }
+    expect(errors).toEqual([
+      'promotion_denied',
+      'promotion_denied',
+      'promotion_denied',
+      'promotion_denied',
+    ]);
+    await fixture.handle.db.delete(procedureEvaluation).where(eq(procedureEvaluation.id, final.id));
+    await fixture.handle.db.insert(procedureEvaluation).values(final);
+    expect(
+      (await procedures.enableCanary(fixture.ownerId, fixture.spaceId, proposed.id)).state,
+    ).toBe('enabled_canary');
+    await procedures.rollback(
+      fixture.ownerId,
+      fixture.spaceId,
+      proposed.id,
+      'End falsifier canary',
+    );
+  }, 90000);
+
   test('validation selects before final; one-space canary and one-call rollback fence delivery', async () => {
     if (!fixture || !evaluator || !procedures) return;
     const proposed = await candidate('evaluation-training-positive', [

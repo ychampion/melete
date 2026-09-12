@@ -136,3 +136,7 @@
 - Command `bun run compose:check`: static configuration checks pass; container execution was unavailable because this Windows environment has no Docker. Command `bun run test:plugin` verifies the local plugin with a fake HTTP broker; all model calls in lane tests use scripted providers, and no real-provider smoke step was specified.
 - Log `docs/LEARNING.md` and `.agents/notes/0019-learning-loop.md`: document captured evidence, bounded generation, trusted evaluation, rejection history, one-space canary, activation, rollback, retention, and the separation from memory and authority. Log `proposed/2026-09-12-w11-contract-additions.md` records the authorized additive API changes; W12's separate candidate table can be unified at integration.
 - Command `gh pr create --repo ychampion/melete --base integration --head lane/w11-learning --body-file`: final publication targets the DONE branch `integration` with this append-only report. No merge or force push is part of the lane.
+
+## Review results — 2026-09-12
+
+- Finding 1; command `bun test --max-concurrency=1 --timeout=30000 -t 'selected validation cannot enable' apps/melete/test/integration/learning-evaluation.test.ts`: reviewer mutation exit 1, 0 pass / 1 fail / 3 filtered, 44.13 s; all four corrupted final cases improperly enabled. Restored guard exit 0, 1 pass / 0 fail / 3 filtered, 51.43 s; missing, failed, differently bound, and older final evidence each return `promotion_denied`; valid restored evidence enables canary. `docs/LEARNING.md` cites the falsifier.
