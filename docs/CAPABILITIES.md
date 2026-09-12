@@ -14,7 +14,7 @@ connected to Melete's authority and tested.
 
 | Capability | Status | Test or reason |
 |---|---|---|
-| Dynamic tool discovery through `search_tools` / `load_tool` | implemented-but-unverified | The real capability test records search, load and a continuation with the loaded schema. Its MCP action becomes `unknown`, without a receipt; the fixture receives zero `tools/call` requests. The complete discover-and-use proof fails. |
+| Dynamic tool discovery through `search_tools` / `load_tool` | implemented-and-tested | The real capability test's `dynamic discovery and broker receipt` stage passes search, load, continuation, one MCP call and a durable receipt. MCP HTTP exchanges use dedicated connections to avoid the pinned Windows Bun pool stalling a request while Hermes streams. |
 | MCP connect after session start | missing | During a running real-Hermes job, `POST /connections` returns 404. MCP configuration is read from an operator file at startup; service-side stdio launch is disabled. |
 | MCP disconnect recovery | missing | The MCP adapter has no repair callback that reconnects the session and resolves an uncertain action. The capability test observes health failing and recovering, which does not prove job recovery or exactly one effect. |
 | Connection auth refresh and reconnect | missing | Generic connection repair exists, but the configured MCP adapter has no credential-refresh or reconnect callback. |

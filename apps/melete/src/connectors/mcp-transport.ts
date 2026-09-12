@@ -234,6 +234,10 @@ export function openHttpMcpTransport(
       const response = await fetch(endpoint.url, {
         method: 'POST',
         redirect: 'error',
+        // The pinned Windows Bun pool can stall MCP posts while Hermes streams.
+        // A dedicated HTTP connection preserves the MCP session header without
+        // turning an unsent pooled request into an uncertain broker action.
+        keepalive: false,
         signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
