@@ -10,6 +10,8 @@ import {
   type DispatchResult,
   dispatchResult,
   type EffectProposalResponse,
+  type ExecutionSettlement,
+  executionIntent,
   findTool,
   hashOriginWarnings,
   intentKey,
@@ -72,6 +74,16 @@ export type BrokerOptions = {
   /** Trusted connector pricing, never a cost supplied by the model. */
   estimateSpend?: (action: Action) => number;
   resolveAuthority?: EffectAuthorityResolver;
+  /**
+   * Called inside the transaction that persists a successful receipt, with the
+   * receipt already written. This is where a file that declared an expectation
+   * becomes an artifact row with its validation results beside it. Optional:
+   * a broker with no recorder still dispatches, it just records nothing extra.
+   */
+  recordArtifact?: (
+    tx: Query,
+    input: { job: LockedJob; action: Action; receipt: Receipt },
+  ) => Promise<void>;
   /**
    * Where the values in a payload came from. The memory lane supplies the real
    * resolver; without one the broker asks nobody and warns about nothing, which
@@ -228,6 +240,10 @@ export class BrokerService implements BrokerOperations {
             input_schema: tool.input_schema,
             effect_class: tool.effect_class,
             connection_id: connection.id,
+            // The cell needs to know which tools it carries out itself, and
+            // the shape of the record it owes the ledger afterwards.
+            execution: tool.execution,
+            record_schema: tool.record_schema,
           });
         }
       }
@@ -252,8 +268,23 @@ export class BrokerService implements BrokerOperations {
     });
   }
 
+  /**
+   * In-cell intents validate the arguments before execution. Legacy completed
+   * records retain their schema, and settlement uses it for the later result.
+   * An in-cell connector must declare that record schema so neither proposal
+   * form nor settlement can admit an unchecked shape.
+   */
   private validatePayload(tool: ConnectorTool, payload: Action['canonical_payload']) {
-    if (!this.validator.validate(tool.input_schema, payload))
+    if (tool.execution === 'in_cell' && !tool.record_schema)
+      throw new BrokerFault('payload_invalid', 'An in-cell tool must declare a record schema');
+    const intent = tool.execution === 'in_cell' ? executionIntent.safeParse(payload) : null;
+    if (intent?.success) {
+      if (!this.validator.validate(tool.input_schema, intent.data.intent))
+        throw new BrokerFault('payload_invalid');
+      return;
+    }
+    const schema = tool.execution === 'in_cell' ? tool.record_schema : tool.input_schema;
+    if (!schema || !this.validator.validate(schema, payload))
       throw new BrokerFault('payload_invalid');
   }
 
@@ -403,12 +434,33 @@ export class BrokerService implements BrokerOperations {
     claims: CapabilityClaims,
     request: ProposeActionRequest,
   ): Promise<EffectProposalResponse> {
-    const canonical = canonicalizePayload(request.payload);
     const proposal = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const { tool } = await this.tool(tx, job, claims, request.connection_id, request.kind);
+      const { tool, connector } = await this.tool(
+        tx,
+        job,
+        claims,
+        request.connection_id,
+        request.kind,
+      );
+      let canonical = canonicalizePayload(request.payload);
       this.validatePayload(tool, canonical.canonical);
+      if (connector.prepare) {
+        canonical = canonicalizePayload(
+          await connector.prepare(
+            canonical.canonical,
+            {
+              job_id: job.id,
+              space_id: job.space_id,
+              idempotency_key: '',
+              constraints: jobConstraints.parse(job.constraints),
+            },
+            tx,
+          ),
+        );
+        this.validatePayload(tool, canonical.canonical);
+      }
       // The identity of the effect itself, independent of which attempt is
       // alive. A runtime that died between proposing and hearing back proposes
       // the same key and is handed the action it already made.
@@ -483,7 +535,7 @@ export class BrokerService implements BrokerOperations {
     const { action, key, repeated } = proposal;
     // Repeated proposals retrieve the durable disposition; unknown is never replayed.
     if (action.status === 'proposed' || action.status === 'approved') {
-      await this.admit(claims, action.id, canonical.hash);
+      await this.admit(claims, action.id, action.payload_hash);
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     }
     // A crash between the two durable steps has not sent anything yet.
@@ -564,7 +616,14 @@ export class BrokerService implements BrokerOperations {
         await checkAttempt(tx, job, claims);
         const action = await loadAction(tx, id, true);
         if (action.job_id !== job.id) throw new BrokerFault('action_not_found');
-        const { tool } = await this.tool(tx, job, claims, action.connection_id, action.kind);
+        const { tool, connector } = await this.tool(
+          tx,
+          job,
+          claims,
+          action.connection_id,
+          action.kind,
+        );
+        await connector.validateBinding?.(action, this.context(job, action), tx);
         if (
           canonicalizePayload(action.canonical_payload).hash !== action.payload_hash ||
           action.payload_hash !== expectedHash ||
@@ -694,6 +753,9 @@ export class BrokerService implements BrokerOperations {
       ![tool.name, ...tool.required_scopes].every((scope) => connection.scopes.includes(scope))
     )
       throw new BrokerFault('scope_denied');
+    // Repair retries must recheck the same artifact and mailbox binding as
+    // initial dispatch, since either can change during a backoff.
+    await connector.validateBinding?.(action, this.context(job, action), tx);
     requireMatchingBinding(
       stored,
       bindEffect(action, job, authority, stored.tuple.expires_at as string | null),
@@ -749,11 +811,23 @@ export class BrokerService implements BrokerOperations {
    * chosen by one clock and refused by another; everything else takes the wall
    * clock and never notices.
    */
-  async dispatch(id: string, now = Date.now()): Promise<Action> {
+  async dispatch(
+    id: string,
+    now = Date.now(),
+    cellClaim?: { claims: CapabilityClaims; claimed: () => void },
+  ): Promise<Action> {
     const original = await loadAction(this.sql, id);
     const prepared = await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
+      if (cellClaim) {
+        await checkAttempt(tx, job, cellClaim.claims);
+        if (
+          action.job_id !== cellClaim.claims.job_id ||
+          action.attempt_id !== cellClaim.claims.attempt_id
+        )
+          throw new BrokerFault('action_not_found');
+      }
       if (action.status !== 'admitted') return { action, context: null };
       // A parked action is admitted and not yet due. The row lock is what makes
       // this a decision rather than a race: a wake, a repeated proposal and a
@@ -762,6 +836,14 @@ export class BrokerService implements BrokerOperations {
       if (action.retry_after_at && Date.parse(action.retry_after_at) > now) {
         return { action, context: null };
       }
+      const inCell =
+        this.options.connectors
+          .get(action.connection_id)
+          ?.manifest.tools.some(
+            (tool) => tool.name === action.kind && tool.execution === 'in_cell',
+          ) && executionIntent.safeParse(action.canonical_payload).success;
+      if (cellClaim && !inCell) throw new BrokerFault('unknown_tool');
+      if (inCell && !cellClaim) return { action, context: null };
       try {
         const fenced = await this.checkAuthority(tx, job, action);
         if (fenced)
@@ -789,6 +871,10 @@ export class BrokerService implements BrokerOperations {
       return { action: await loadAction(tx, id), context: this.context(job, action) };
     });
     if (!prepared.context) return prepared.action;
+    if (cellClaim) {
+      cellClaim.claimed();
+      return prepared.action;
+    }
     const connector = this.options.connectors.get(prepared.action.connection_id);
     if (!connector)
       return this.recordResult(id, {
@@ -1084,6 +1170,66 @@ export class BrokerService implements BrokerOperations {
     return rows.length;
   }
 
+  async startExecution(claims: CapabilityClaims, id: string): Promise<{ execute: boolean }> {
+    let execute = false;
+    await this.dispatch(id, Date.now(), {
+      claims,
+      claimed: () => {
+        execute = true;
+      },
+    });
+    return { execute };
+  }
+
+  async settleExecution(
+    claims: CapabilityClaims,
+    id: string,
+    result: ExecutionSettlement,
+  ): Promise<Action> {
+    const action = await loadAction(this.sql, id);
+    // Settlement accepts late evidence. Read context without a transaction lock;
+    // recordResult re-locks the job and action before persisting the receipt.
+    const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
+    if (!job) throw new BrokerFault('stale_epoch', 'Job is not available');
+    if (
+      action.job_id !== claims.job_id ||
+      job.space_id !== claims.space_id ||
+      action.attempt_id !== claims.attempt_id
+    )
+      throw new BrokerFault('action_not_found');
+    const connector = this.options.connectors.get(action.connection_id);
+    const tool = connector && findTool(connector.manifest, action.kind);
+    const proposed = executionIntent.safeParse(action.canonical_payload);
+    if (!connector || tool?.execution !== 'in_cell' || !proposed.success)
+      throw new BrokerFault('unknown_tool');
+    if (!['dispatched', 'unknown', 'unresolved'].includes(action.status)) {
+      if (['succeeded', 'failed'].includes(action.status)) return action;
+      throw new BrokerFault('action_not_admissible');
+    }
+    if ('error' in result)
+      return this.recordResult(id, { outcome: 'failed', reason: result.error, retryable: false });
+    const { record } = result;
+    const intent = proposed.data.intent;
+    if (
+      record.command !== (intent.code ?? intent.command) ||
+      record.cwd !== (intent.cwd ?? '.') ||
+      record.language !== (action.kind === 'exec.python' ? 'python' : 'shell')
+    )
+      throw new BrokerFault(
+        'payload_invalid',
+        'Execution result does not match the admitted command',
+      );
+    if (!tool.record_schema || !this.validator.validate(tool.record_schema, record))
+      throw new BrokerFault('payload_invalid');
+    // The immutable intent stays on the action; the connector validates the
+    // separate result and records it on the receipt, including late receipts.
+    const checked = await connector.execute(
+      { ...action, canonical_payload: record },
+      this.context(job, action),
+    );
+    return this.recordResult(id, checked);
+  }
+
   async recordResult(id: string, result: DispatchResult): Promise<Action> {
     result = dispatchResult.parse(result);
     const original = await loadAction(this.sql, id);
@@ -1130,6 +1276,12 @@ export class BrokerService implements BrokerOperations {
         outcome: result.outcome,
         late,
       });
+      // A receipt that carries a declared artifact becomes rows here, in the
+      // same transaction, so an artifact never exists without the receipt that
+      // produced it and a validation never exists without its artifact.
+      if (receipt && this.options.recordArtifact) {
+        await this.options.recordArtifact(tx, { job, action, receipt });
+      }
       if (
         result.outcome === 'unknown' &&
         !late &&

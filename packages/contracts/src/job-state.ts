@@ -57,6 +57,13 @@ export const transitionInput = z.discriminatedUnion('kind', [
     has_unknown_action: z.boolean(),
     deliverable_declared: z.boolean(),
     deliverable_satisfied: z.boolean(),
+    /**
+     * Every declared artifact check on this job's latest files holds. Defaults
+     * to true so a caller that knows nothing about artifacts is unaffected; a
+     * caller that does know says false and the job waits with the failure named
+     * instead of claiming a deliverable that does not add up.
+     */
+    artifact_validations_passed: z.boolean().optional(),
   }),
   z.object({ kind: z.literal('attempt_waiting_for_input') }),
   z.object({ kind: z.literal('attempt_waiting_for_approval') }),
@@ -156,6 +163,9 @@ export function transition(
           if (input.deliverable_declared && !input.deliverable_satisfied) {
             return ok('waiting_for_input');
           }
+          // A file that failed its own declared check is not a deliverable, no
+          // matter how confidently the attempt summarised it.
+          if (input.artifact_validations_passed === false) return ok('waiting_for_input');
           return ok('completed');
         }
         case 'attempt_waiting_for_input':

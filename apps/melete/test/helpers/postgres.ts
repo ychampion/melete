@@ -3,9 +3,11 @@ import { lstat, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
-import { migrateDatabase } from '../../src/db/migrate.ts';
+import { sharedTestServerUrl } from './database.ts';
 
 export type PostgresFixture = DatabaseHandle & {
   url: string;
@@ -13,23 +15,11 @@ export type PostgresFixture = DatabaseHandle & {
 };
 
 export type PostgresFixtureOptions = {
-  /**
-   * Extra SQL to apply after the committed journal. For a fixture that needs a
-   * table nothing in the repository owns yet, never for skipping a migration.
-   */
+  /** Defaults to the production journal; overridden only by migration-loader tests. */
+  migrationsFolder?: string;
+  /** Additional fixture-only SQL runs after the journal, never instead of it. */
   migrations?: Array<string | URL>;
 };
-
-/**
- * Every fixture applies the committed journal, in the order the journal gives.
- *
- * Naming migrations by filename let a fixture hold a schema no install has ever
- * had: the broker subset that used to live here ran 0000, 0012 and 0015 and
- * nothing else, so a property that reached a table another module owns failed
- * for a reason no deployment could reproduce. The journal is the only ordering
- * that exists in production, so it is the only one a test may prove anything
- * against.
- */
 const tempPrefix = 'melete-w2-postgres-';
 
 async function availablePort(): Promise<number> {
@@ -77,7 +67,9 @@ export async function createPostgresFixture(
 ): Promise<PostgresFixture | null> {
   const databaseName = `melete_w2_${randomUUID().replaceAll('-', '')}`;
   const configuredUrl = process.env.DATABASE_URL;
-  let adminUrl = configuredUrl;
+  const sharedUrl = configuredUrl ? undefined : await sharedTestServerUrl();
+  if (sharedUrl === null) return null;
+  let adminUrl = configuredUrl ?? sharedUrl;
   let stopEmbedded: (() => Promise<void>) | undefined;
   let tempRoot: string | undefined;
 
@@ -143,7 +135,12 @@ export async function createPostgresFixture(
     const url = new URL(adminUrl);
     url.pathname = `/${databaseName}`;
     handle = openDatabase(url.toString(), 2);
-    await migrateDatabase(handle);
+    // The same migrator as production reads order and dependencies from the
+    // journal. Renaming or adding an entry needs no fixture-specific edit.
+    await migrate(handle.db, {
+      migrationsFolder:
+        options.migrationsFolder ?? fileURLToPath(new URL('../../drizzle', import.meta.url)),
+    });
     for (const migration of options.migrations ?? []) {
       await handle.sql.unsafe(await readFile(migration, 'utf8'));
     }

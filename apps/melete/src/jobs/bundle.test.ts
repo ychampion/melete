@@ -247,6 +247,8 @@ describe('persisted completion evidence', () => {
       has_unknown_action: false,
       deliverable_declared: false,
       deliverable_satisfied: true,
+      artifact_validations_passed: true,
+      artifact_failures: [],
     });
   });
 

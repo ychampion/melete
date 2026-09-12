@@ -113,6 +113,20 @@
       "when": 1789152918161,
       "tag": "0015_typed_repair",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789152918162,
+      "tag": "0016_artifact_validation",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789161120201,
+      "tag": "0017_artifact_content_digest",
+      "breakpoints": true
     }
   ]
 }

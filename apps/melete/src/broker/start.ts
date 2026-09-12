@@ -71,6 +71,7 @@ export async function startEffectBoundary(
   const queue = await startQueue(env.DATABASE_URL);
   queue.boss.on('error', () => process.stderr.write('effect queue error\n'));
   const internal = createInternalServer({
+    artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
     sql: handle.sql,
     connectors: registry,
     capabilityKey: env.MELETE_CAPABILITY_KEY,

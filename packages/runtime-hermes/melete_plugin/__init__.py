@@ -22,6 +22,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
+from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
 
 logger = logging.getLogger("melete.plugin")
@@ -59,6 +60,16 @@ def tool_schema(tool: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+#: Catalog entries this container carries out itself. Everything else is
+#: forwarded untouched. The broker says which is which; the plugin does not
+#: decide, so a tool cannot become locally executed by being named cleverly.
+IN_CELL = "in_cell"
+
+#: How a locally executed tool maps to a language. A catalog entry outside this
+#: table that claims in_cell execution is refused rather than guessed at.
+IN_CELL_LANGUAGES = {"exec.run": "shell", "exec.python": "python"}
+
+
 def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., Dict[str, Any]]:
     """Build the forwarder for one catalog entry.
 
@@ -66,9 +77,14 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
     connection id comes from the catalog rather than from the model: letting the
     model name the connection would let it choose which mailbox an email leaves
     from, which is a policy decision and not its to make.
+
+    An `in_cell` entry reserves its intent before starting. A one-use dispatch
+    claim prevents a retried proposal from running it twice; its result settles
+    that same action after execution.
     """
     name = str(tool.get("name"))
     connection_id = tool.get("connection_id")
+    language = IN_CELL_LANGUAGES.get(name) if tool.get("execution") == IN_CELL else None
 
     def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
         # Hermes dispatches as `handler(args, **kwargs)` with the model's
@@ -81,15 +97,47 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
             return from_error("unknown_connection", f"{name} has no connection in the catalog")
+        if tool.get("execution") == IN_CELL and language is None:
+            # The broker asked for local execution of something this plugin has
+            # no way to run. Refusing is the only honest answer: proposing the
+            # arguments as if they were a record would put a fiction in the ledger.
+            return from_error("unknown_tool", f"{name} cannot be carried out in this runtime")
+
+        display = None
+        payload = {"intent": arguments} if language is not None else arguments
+
         try:
             response = client.propose(
                 kind=name,
                 connection_id=str(connection_id),
-                payload=arguments,
-                client_ref=_client_ref(name, arguments),
+                payload=payload,
+                client_ref=_client_ref(name, payload),
             )
         except BrokerError as error:
             return from_error(error.code, error.message)
+
+        if language is not None and response.get("status") == "admitted":
+            action_id = str(response["action_id"])
+            try:
+                if not client.start_execution(action_id).get("execute"):
+                    return from_response({"action_id": action_id, "status": "dispatched"})
+                # Execute the admitted canonical arguments, which are also what
+                # settlement checks. The fallback supports older broker fakes.
+                admitted = response.get("canonical_payload", {}).get("intent", arguments)
+                try:
+                    display = run_in_cell(language, admitted)
+                except (ExecRefused, OSError) as failure:
+                    client.settle_execution(action_id, error=str(failure))
+                    return from_error("payload_invalid", str(failure))
+                settled = client.settle_execution(action_id, record=display["record"])["action"]
+                result = from_response({"action_id": action_id, "status": settled["status"]}, settled.get("receipt"))
+                result["execution"] = _execution_view(display)
+                return result
+            except BrokerError as error:
+                result = from_error(error.code, error.message)
+                if display is not None:
+                    result["execution"] = _execution_view(display)
+                return result
 
         if needs_approval(response):
             return from_response(response)
@@ -103,11 +151,34 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
                 receipt = client.action(str(response["action_id"])).get("receipt")
             except BrokerError as error:
                 logger.warning("melete: receipt read failed for %s: %s", name, error.message)
-        return from_response(response, receipt)
+        result = from_response(response, receipt)
+        if display is not None:
+            result["execution"] = _execution_view(display)
+        return result
 
     handler.__name__ = "melete_" + name.replace(".", "_").replace("-", "_")
     handler.__doc__ = f"Forward {name} to the Melete broker."
     return handler
+
+
+def _execution_view(outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """What the model reads about a command it ran.
+
+    The record distinguishes emitted and retained bytes. A capped capture names
+    a stored prefix and explicitly reports that the rest was discarded.
+    """
+    record = outcome["record"]
+    return {
+        "exit_code": record["exit_code"],
+        "timed_out": record["timed_out"],
+        "duration_ms": record["duration_ms"],
+        "truncated": record["truncated"],
+        "output_path": record["output_path"],
+        "output": outcome["display"],
+        "captured_bytes": record.get("captured_bytes", record["output_bytes"]),
+        "total_bytes": record.get("total_bytes"),
+        "capture_limited": record.get("capture_limited"),
+    }
 
 
 def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
@@ -133,6 +204,18 @@ def _client_ref(name: str, arguments: Dict[str, Any]) -> str:
         json.dumps(arguments, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:32]
     return f"{scope}:{name}:{digest}"
+
+
+def _runtime_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., str]:
+    forward = build_handler(client, tool)
+
+    def handler(args: Optional[Dict[str, Any]] = None, **context: Any) -> str:
+        # Hermes supplies task/session metadata separately from model arguments.
+        # Only the latter belong in the admitted intent; its registry consumes
+        # JSON text so the broker result survives logging and persistence.
+        return json.dumps(forward(args), ensure_ascii=False)
+
+    return handler
 
 
 def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
@@ -166,7 +249,7 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
             name=name,
             toolset=TOOLSET,
             schema=tool_schema(tool),
-            handler=build_handler(client, tool),
+            handler=_runtime_handler(client, tool),
             description=str(tool.get("description", "")),
             emoji="",
         )

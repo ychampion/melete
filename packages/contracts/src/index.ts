@@ -6,12 +6,15 @@
  */
 
 export * from './api.ts';
+export * from './artifacts.ts';
 export * from './broker.ts';
 export * from './common.ts';
 export * from './connector.ts';
 export * from './effects.ts';
 export * from './entities.ts';
 export * from './events.ts';
+export * from './execution.ts';
+export * from './execution-admission.ts';
 export * from './job-state.ts';
 export * from './knowledge.ts';
 export * from './memory.ts';

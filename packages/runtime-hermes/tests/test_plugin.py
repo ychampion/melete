@@ -165,6 +165,17 @@ def test_schema_is_the_openai_function_body_without_the_name():
     assert schema["parameters"] == CATALOG[0]["input_schema"]
 
 
+def test_registered_handler_keeps_runtime_context_out_of_admission_and_returns_json(client, broker):
+    ctx = RecordingContext()
+    register(ctx, client)
+    handler = ctx.tools[1]["handler"]
+    result = handler({"query": "invoice"}, task_id="runtime-task", session_id="runtime-session", user_task="find it")
+    assert isinstance(result, str), "the pinned Hermes registry requires a JSON string"
+    assert json.loads(result)["status"] == "succeeded"
+    proposal = next(request for request in broker.requests if request["method"] == "POST")
+    assert proposal["body"]["payload"] == {"query": "invoice"}
+
+
 def test_a_tool_with_no_schema_still_gets_a_valid_parameters_object():
     assert tool_schema({"name": "x"})["parameters"] == {"type": "object", "properties": {}}
 
@@ -323,3 +334,47 @@ def test_the_client_opens_no_socket_without_configuration():
     with pytest.raises(BrokerError) as caught:
         BrokerClient(base_url="", token="t").tools()
     assert caught.value.code == "not_configured"
+
+
+@pytest.mark.parametrize("reason", ["stale_epoch", "budget_exceeded"])
+def test_admission_before_execution(client, broker, tmp_path, monkeypatch, reason):
+    monkeypatch.setenv("MELETE_WORK_DIR", str(tmp_path))
+    # The catalog was already delivered; fencing or budget exhaustion happened later.
+    tool = {"name": "exec.python", "connection_id": CONNECTION, "execution": "in_cell"}
+    handler = build_handler(client, tool)
+    broker.status_code = 403
+    broker.error_body = {"error": {"code": reason, "message": "refused before execution"}}
+    result = handler(code="open('marker', 'w').write('ran')")
+    assert result["error"]["code"] == reason
+    assert not (tmp_path / "marker").exists(), "command ran before admission"
+
+
+def test_admission_reserves_stable_intent_then_settles(client, broker, tmp_path, monkeypatch):
+    monkeypatch.setenv("MELETE_WORK_DIR", str(tmp_path))
+    broker.propose_response = {"action_id": ACTION, "status": "admitted"}
+    previous = broker.handle
+    claimed = False
+
+    def handle(method, path, body, auth):
+        nonlocal claimed
+        if path.endswith("/execution/start"):
+            execute = not claimed
+            claimed = True
+            return 200, {"execute": execute}
+        if path.endswith("/execution/settle"):
+            assert (tmp_path / "marker").read_text() == "ran"
+            broker.settled = body["record"]
+            return 200, {"action": {"status": "succeeded", "receipt": {"recorded": True}}}
+        assert not (tmp_path / "marker").exists() or claimed
+        return previous(method, path, body, auth)
+
+    broker.handle = handle
+    handler = build_handler(client, {"name": "exec.python", "connection_id": CONNECTION, "execution": "in_cell"})
+    args = {"code": "open('marker', 'a').write('ran')"}
+    assert handler(args)["status"] == "succeeded"
+    handler(args)
+    assert (tmp_path / "marker").read_text() == "ran"
+    assert broker.settled["exit_code"] == 0
+    proposals = [r["body"] for r in broker.requests if r["path"] == "/actions"]
+    assert proposals[0]["payload"] == {"intent": args}
+    assert proposals[0]["client_ref"] == proposals[1]["client_ref"]

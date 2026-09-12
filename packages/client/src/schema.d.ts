@@ -95,6 +95,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/actions/{actionId}/execution/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle an in-cell command using the capability of its dispatching attempt */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Action id */
+                    actionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        record: {
+                            capture_limited?: boolean;
+                            captured_bytes?: number;
+                            command: string;
+                            cwd: string;
+                            duration_ms: number;
+                            exit_code: number | null;
+                            /** @enum {string} */
+                            language: "shell" | "python";
+                            output_bytes: number;
+                            output_digest: string;
+                            /** @default null */
+                            output_path?: string | null;
+                            /** @default null */
+                            signal?: string | null;
+                            /** @default false */
+                            timed_out?: boolean;
+                            total_bytes?: number;
+                            /** @default false */
+                            truncated?: boolean;
+                        };
+                    } | {
+                        error: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Recorded result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema109"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/actions/{actionId}/execution/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim an admitted in-cell command once using its attempt capability */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Action id */
+                    actionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Dispatch claim */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            execute: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/actions/{actionId}/resolve": {
         parameters: {
             query?: never;
@@ -375,7 +483,7 @@ export interface paths {
                         };
                         label: string;
                         /** @enum {string} */
-                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test";
+                        provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts";
                         /** @default [] */
                         scopes?: string[];
                         space_id: string;
@@ -4061,7 +4169,7 @@ export interface components {
             label: string;
             last_checked_at: components["schemas"]["__schema41"] | null;
             /** @enum {string} */
-            provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test";
+            provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts";
             scopes: string[];
             space_id: string;
             /** @enum {string} */

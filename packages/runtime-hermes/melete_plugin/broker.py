@@ -125,6 +125,14 @@ class BrokerClient:
         action = result.get("action") if isinstance(result, dict) else None
         return action if isinstance(action, dict) else {}
 
+    def start_execution(self, action_id: str) -> Dict[str, Any]:
+        """Claim one admitted intent once; a lost response is never replayed."""
+        return self._call("POST", f"/actions/{action_id}/execution/start", {})
+
+    def settle_execution(self, action_id: str, **result: Any) -> Dict[str, Any]:
+        """Attach the result to the reserved action, including a late result."""
+        return self._call("POST", f"/actions/{action_id}/execution/settle", result)
+
 
 def _error_from_body(error: "urllib.error.HTTPError") -> tuple:
     """Pull the broker's own error code out of a non-2xx body.

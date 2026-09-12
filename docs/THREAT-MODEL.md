@@ -167,6 +167,40 @@ What contains it:
   dropped, `no-new-privileges`, process and memory limits, and `/work` as the only
   mount.
 
+### The runtime runs code on purpose
+
+Since 0.1 the cell can run shell commands and Python snippets, and no approval
+stands in front of it. That is not a weakening of this section, it is a
+statement about where the boundary is. The container is what contains a command,
+and it contains one exactly as well as it contains the agent loop that started
+it: no route out, no credentials, non-root, read-only root filesystem, all
+capabilities dropped, `no-new-privileges`, process and memory limits, `/work` as
+the only writable mount. An attacker who can make the model run a command has
+gained nothing an attacker who already had code execution in the container did
+not have.
+
+What running code does add is a record. Every execution is a
+`write_reversible` action with the command, the working directory, the exit
+code, the duration and a digest of the output, so a command that ran is
+something the owner can see rather than something that happened inside a tool
+result. The plugin refuses a working directory outside the job's workspace
+before starting anything, the broker refuses the same thing again when the
+record arrives, and a stored output is re-hashed on the service side before the
+receipt says it verified.
+
+What that does **not** contain: the command's effects on the filesystem. That is
+the container's job and only the container's job. Two consequences worth naming:
+
+- **A command can write anywhere the container can write.** Today that is
+  `/work`, the Hermes home, and a small `/tmp`. There is no second sandbox
+  inside the cell and the code says so.
+- **`/work` is currently the whole volume.** `deploy/docker-compose.yml` mounts
+  it at `/work` in the runtime container, so a snippet can read another job's
+  workspace even though the execution tool refuses to name one. The per-attempt
+  container the service will start has to mount `work/<job>` instead. Until it
+  does, two jobs' workspaces are separated by a tool-level refusal and not by a
+  filesystem boundary.
+
 What is not contained:
 
 - **The kernel is shared with the host.** This is a container, not a virtual

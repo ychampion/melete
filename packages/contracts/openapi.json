@@ -3856,6 +3856,214 @@
         }
       }
     },
+    "/actions/{actionId}/execution/start": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Claim an admitted in-cell command once using its attempt capability",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "actionId",
+            "schema": {
+              "type": "string",
+              "description": "Action id"
+            },
+            "required": true,
+            "description": "Action id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dispatch claim",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "execute": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "execute"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actions/{actionId}/execution/settle": {
+      "post": {
+        "tags": [
+          "actions"
+        ],
+        "summary": "Settle an in-cell command using the capability of its dispatching attempt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "actionId",
+            "schema": {
+              "type": "string",
+              "description": "Action id"
+            },
+            "required": true,
+            "description": "Action id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "record": {
+                        "type": "object",
+                        "properties": {
+                          "language": {
+                            "type": "string",
+                            "enum": [
+                              "shell",
+                              "python"
+                            ]
+                          },
+                          "command": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 20000
+                          },
+                          "cwd": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1024
+                          },
+                          "exit_code": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "signal": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 64
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "timed_out": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "duration_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "output_digest": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$"
+                          },
+                          "output_bytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "captured_bytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "total_bytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "capture_limited": {
+                            "type": "boolean"
+                          },
+                          "truncated": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "output_path": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 1024
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "language",
+                          "command",
+                          "cwd",
+                          "exit_code",
+                          "duration_ms",
+                          "output_digest",
+                          "output_bytes"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "record"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "error": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      }
+                    },
+                    "required": [
+                      "error"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema109"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/approvals": {
       "get": {
         "tags": [
@@ -4142,7 +4350,9 @@
                       "caldav",
                       "web",
                       "files",
-                      "test"
+                      "test",
+                      "exec",
+                      "artifacts"
                     ]
                   },
                   "label": {
@@ -7788,7 +7998,9 @@
               "caldav",
               "web",
               "files",
-              "test"
+              "test",
+              "exec",
+              "artifacts"
             ]
           },
           "label": {

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
 import { attemptUsage, waitSpec } from './entities.ts';
+import { executionMode } from './execution.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
 import { repairBrief } from './provenance.ts';
 
@@ -36,6 +37,10 @@ export const toolSpec = z.object({
   input_schema: jsonSchema,
   effect_class: effectClass,
   connection_id: prefixedId(ID_PREFIXES.connection).nullable(),
+  /** `in_cell` tells the runtime to do the work itself and propose the record. */
+  execution: executionMode.optional(),
+  /** The shape of that record, for an `in_cell` tool. Null otherwise. */
+  record_schema: jsonSchema.nullable().optional(),
 });
 export type ToolSpec = z.infer<typeof toolSpec>;
 

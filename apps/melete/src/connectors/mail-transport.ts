@@ -26,6 +26,18 @@ export type MailMessage = {
   html: string;
 };
 
+/**
+ * One attachment, already read by trusted service code from a recorded
+ * artifact. The bytes never come from a payload: a model names an artifact and
+ * the service reads the file it recorded, so an approval that was given over a
+ * file is spent on that file.
+ */
+export type MailAttachment = {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+};
+
 export type OutgoingMail = {
   to: string[];
   cc: string[];
@@ -33,6 +45,7 @@ export type OutgoingMail = {
   subject: string;
   body: string;
   messageId: string;
+  attachments?: MailAttachment[];
 };
 
 export interface MailTransport {
@@ -159,6 +172,13 @@ export class ImapSmtpTransport implements MailTransport {
       subject: message.subject,
       text: message.body,
       messageId: message.messageId,
+      // Buffers only: file and URL access stay disabled, so nodemailer never
+      // reads a path this process did not already read itself.
+      attachments: message.attachments?.map((entry) => ({
+        filename: entry.filename,
+        content: entry.content,
+        contentType: entry.contentType,
+      })),
       disableFileAccess: true,
       disableUrlAccess: true,
     });

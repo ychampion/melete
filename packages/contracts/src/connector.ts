@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { jsonSchema } from './common.ts';
 import { connectionProvider } from './entities.ts';
+import { executionMode } from './execution.ts';
 
 export const connectorTool = z.object({
   /** Namespaced, for example `email.send`. The catalog shows this verbatim. */
@@ -24,6 +25,22 @@ export const connectorTool = z.object({
   verify: z.boolean(),
   /** Reversible writes inside the workspace auto-admit; external sends never do. */
   requires_approval: z.boolean().default(false),
+  /**
+   * Where the work happens. `brokered` is the normal case: the runtime proposes
+   * and a connector in the service carries it out. `in_cell` means the cell
+   * does the work itself and then proposes the record of what it did, which is
+   * the only order available for anything that must not touch the service's
+   * credentials, such as running a command.
+   */
+  execution: executionMode.optional(),
+  /**
+   * For an `in_cell` tool, the schema of the proposed record, which is not the
+   * schema of the tool's arguments: the model asks for a command, the ledger
+   * receives a command that has already finished. The broker validates against
+   * this when it is present. Null for every brokered tool, where the arguments
+   * and the payload are the same thing.
+   */
+  record_schema: jsonSchema.nullable().optional(),
 });
 export type ConnectorTool = z.infer<typeof connectorTool>;
 

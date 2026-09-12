@@ -72,6 +72,21 @@ class MailDouble implements MailTransport {
 const sendPayload = { to: ['friend@example.test'], subject: 'Hello', body: 'See you Friday.' };
 
 describe('email connector', () => {
+  test('cross_space_mailbox: asMailer refuses another space before opening its transport', async () => {
+    const fake = new MailDouble();
+    const mailer = new EmailConnector(config, secret, () => fake).asMailer();
+    let refusal: unknown;
+    try {
+      await mailer.send(
+        { ...sendPayload, messageId: '<test@example.test>', attachments: [] },
+        { space_id: 'other-space', connection_id: config.id },
+      );
+    } catch (error) {
+      refusal = error;
+    }
+    expect(fake.sends).toBe(0);
+    expect(refusal).toBeInstanceOf(Error);
+  });
   test('manifest requires approval for send and has no credential-bearing runtime fields', () => {
     expect(connectorManifest.safeParse(emailManifest).success).toBe(true);
     expect(emailManifest.tools.find((t) => t.name === 'email.send')?.requires_approval).toBe(true);
