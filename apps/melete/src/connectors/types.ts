@@ -55,6 +55,8 @@ export interface Connector {
    * refreshed. It never substitutes a different identity.
    */
   refreshCredential?(action: Action, ctx: ConnectorContext): Promise<boolean>;
+  /** Reopen a transport only after repair has proved the previous call did not execute. */
+  reconnect?(action: Action, ctx: ConnectorContext): Promise<void>;
   /**
    * Equivalent authorized routes for the SAME operation, best first. Consulted
    * only after a route said definitively that it did not execute.

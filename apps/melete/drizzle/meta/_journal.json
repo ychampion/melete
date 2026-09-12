@@ -232,6 +232,20 @@
       "when": 1789232400012,
       "tag": "0032_organic_maria_hill",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789232400013,
+      "tag": "0033_busy_whiplash",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789232400014,
+      "tag": "0034_clumsy_harry_osborn",
+      "breakpoints": true
     }
   ]
 }

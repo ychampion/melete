@@ -206,6 +206,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   private readonly starting = new Set<Promise<RuntimeInstance>>();
   private readonly deferredHomes = new Set<string>();
   private readonly shutdown = new AbortController();
+  private observerBridge?: Promise<unknown>;
   constructor(readonly options: SupervisorOptions) {}
   launch(bundle: AttemptBundle, outerSignal: AbortSignal): Promise<RuntimeInstance> {
     const pending = this.launchOwned(bundle, outerSignal).finally(() =>
@@ -224,6 +225,14 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
     const pin = (await readFile(join(this.options.engineRoot, '.git', 'HEAD'), 'utf8')).trim();
     if (pin !== HERMES_PINNED_COMMIT)
       throw new Error(`Hermes checkout must be pinned at ${HERMES_PINNED_COMMIT}`);
+    // Process mode needs the same hash-checked observer bridge as the image.
+    // Preparing it once before any owned engine starts avoids modifying a live import.
+    this.observerBridge ??= exec(
+      this.options.python,
+      [join(this.options.runtimePackage, 'patches', 'observer_bridge.py'), this.options.engineRoot],
+      { windowsHide: true, timeout: 15000, env: platformEnvironment() },
+    );
+    await this.observerBridge;
     const workspace = await jobWorkspace(this.options.workRoot, bundle.attempt.job_id);
     const home = await mkdtemp(join(await realpath(tmpdir()), 'melete-runtime-'));
     const token = randomBytes(32).toString('base64url');

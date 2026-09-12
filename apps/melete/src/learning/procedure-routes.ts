@@ -1,6 +1,7 @@
 import {
   learningSpaceQuery,
   learningSpaceRequest,
+  procedureActivationRequest,
   procedureId,
   procedureReasonRequest,
 } from '@melete/contracts';
@@ -47,7 +48,11 @@ export function mountProcedures(
   });
   for (const action of ['canary', 'activate'] as const)
     app.post(`/procedures/:id/${action}`, async (c) => {
-      const input = learningSpaceRequest.parse(await c.req.json());
+      const raw = await c.req.json();
+      const input =
+        action === 'activate'
+          ? procedureActivationRequest.parse(raw)
+          : learningSpaceRequest.parse(raw);
       const args = [
         c.get('owner').id,
         input.space_id,
@@ -57,7 +62,7 @@ export function mountProcedures(
         candidate:
           action === 'canary'
             ? await service.enableCanary(...args)
-            : await service.activate(...args),
+            : await service.activate(...args, procedureActivationRequest.parse(raw).scope),
       });
     });
   for (const action of ['reject', 'rollback'] as const)

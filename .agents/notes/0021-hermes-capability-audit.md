@@ -279,3 +279,162 @@ This does not supply W11's evaluated promotion or the gated MCP chain.
 The [contract-additions note](proposed/2026-09-12-w14-contract-additions.md)
 records compatibility details. The current three-state matrix is in
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
+
+## PR 27 upgrade review - 2026-09-12
+
+The original account-upgrade test executed migration SQL directly, so its
+passing result did not prove production timestamp selection. The new regression
+`production migration upgrades the integration schema with MCP setup and
+procedure promotion` creates the schema and real migration ledger through 0032,
+then calls the actual `migrateDatabase` startup function. Before the fix it
+failed with all three requested columns absent (`3` assertions, `12.44s`).
+
+Migrations 0033 and 0034 now use timestamps `1789232400013` and `1789232400014`,
+following 0032's `1789232400012`. The existing account regression now also uses
+the production upgrader after constructing its historical ledger. The focused
+`principals.test.ts` run passes all three tests and 87 assertions in 15.44 seconds,
+including setup/login preservation, legacy capability fences, the three new
+columns, and an idempotent second startup. The upgrade evidence row is restored
+only with this production-path proof.
+
+The second review reproduction pauses an actual HTTP MCP initialization and
+revokes through `POST /connections/:id/lifecycle`. Both cases fail before the
+route fix: successful initialization revives the row at generation 1, while
+failed initialization overwrites its revoked status with error (`2` failures,
+`12` assertions, `12.16s`). Completion now compares the original generation and
+disabled/connecting state atomically in both update paths. A stale opened worker
+is removed and closed; a changed generation returns a conflict without changing
+the connection response contract.
+
+`runtime-mcp-revocation.test.ts` preserves every revoked state field across both
+handshake outcomes, verifies session disposal and registry removal, and refuses
+discovery, loading and dispatch from a fresh attempt. It and `runtime-mcp.test.ts`
+pass together: 3 tests, 60 assertions, 29.99 seconds. No jobs or broker source was
+changed, and the 85-assertion real-engine proof file remains byte-for-byte
+unchanged at SHA-256 `50f3ae8adf5b7b5c26dea07dc335a09128853f5481af6f7026bf39eb96b7ba99`.
+
+## Integrated release-gate proof - 2026-09-12
+
+The findings above describe the original audit and first delivery. Integration
+`55b6a50` includes W10c, W11, W12, W15 and the W14 migration as `0027`. The
+release-gate continuation starts at `c83c3e5`. It uses the retained engine at the
+same pin, adapter `hermes@v2026.9.7+melete-observers.2`, through `bootstrap()` and
+real HTTP with a scripted provider. No engine installation was needed.
+
+The single strict test is `real Hermes capability chain: discovery, hooks,
+learning, teammate context and revocation` in `capability-proof.test.ts`.
+Each stage records its own evidence; the test fails for any failed stage or
+missing implementation. The earlier release-gate strict run passed all five stages with
+85 assertions in 208.62 seconds, no failures and no missing entries. Evidence is
+`%TEMP%/melete-w14-capability-JAbcAJ/capability-evidence.json`, SHA-256
+`899c68b5b6470201ea378e0c2e70306255c499e160a9a317634dfb1aa3e7fa31`.
+
+| Capability | Status | Current evidence and limit |
+|---|---|---|
+| Dynamic tool discovery | implemented-and-tested | Real search/load, catalog continuation, one MCP call and a durable receipt. Dedicated HTTP connections fix the reproduced Windows Bun pool stall during the runtime stream. |
+| MCP connect after session start | implemented-and-tested | The proof starts without a connection and installs through authenticated `POST /connections` during a running attempt. The same attempt discovers and calls the tool. |
+| MCP disconnect recovery | implemented-and-tested | An expired HTTP session causes typed W12 repair, new initialization, one call and a receipt. HTTP and stdio fixtures prove bounded reconnect; acknowledgement loss remains unknown without replay. |
+| Connection auth refresh and reconnect | implemented-and-tested | Real Hermes observes one sealed credential refresh and a receipt. Revocation stops dispatch and preserves an open question with `waiting_for_input`. Both transport fixtures cover refresh and grant loss during repair. |
+| Lifecycle hooks | implemented-but-unverified | The real discovery stage passes session start/end and pre/post tool capture with 23 events. Recorded-stream and Python checks prove deduplication, replay, failure isolation and continuation identity. Actual compaction remains unverified. |
+| Automatic skill selection | implemented-and-tested | Real member context selects alpha/beta/gamma, caps at three and excludes the private canary from the bundle and provider requests. |
+| Correction, candidate, evaluation, promotion, rollback | implemented-and-tested | Real correction, bounded candidate generation, validation and sealed evaluation, private owner canary, activation and rollback. Both evaluation phases require held-out improvement without regression. |
+| Teammate reuse of an evaluated shared skill | implemented-and-tested | A explicitly activates space delivery; B's different record task receives only the evaluated compiled procedure. Private delivery denies B before sharing. Public and other-space denial are also checked in `shared-procedure.test.ts`. |
+| Revocation prevents subsequent use | implemented-and-tested | Revoking B cancels queued evaluated reuse, refuses selection and old capabilities, and dispatches no action. General shared-context tests additionally cover delivered-context invalidation and regrant fencing. |
+
+### MCP ownership and uncertain outcomes
+
+The operator route persists HTTP configuration, setup state and sealed
+credentials, opens a worker and publishes its verified catalog after activation.
+Service-issued principal-bound attempts can opt into signed
+`live_connection_scopes`; explicitly restricted and legacy tokens retain fixed
+scopes. Operator grants remain bounded by the existing principal, membership,
+space, epoch, compartment and agent restrictions. Search and loaded schemas
+cannot authorize a dispatch. Approval, intent keys, trust origin and declared
+effect classes remain broker-owned.
+
+Repair classifies only proved pre-dispatch failures, session termination and
+explicit authentication refusal as retryable typed faults. Reconnect checks the
+pinned catalog. W12 bounds attempts; refresh occurs once against the sealed,
+operator-configured token endpoint and publishes a new sealed reference only if
+the original grant remains current. A dropped acknowledgement is never replayed.
+Revocation leaves an open question even if Hermes claims completion. Production
+stdio launch remains disabled pending OS isolation; stdio repair is tested with
+explicit fixtures.
+
+### Evaluated sharing and private context
+
+`POST /procedures/:id/activate` adds `scope: private | space`, default private.
+The additive promotion record captures that choice and the authenticated
+principal. The existing evaluated applicability object does not grant access.
+Canary delivery stays private; space activation requires the origin shared-space
+owner, validation and sealed evidence, and a completed private canary.
+
+Selection checks current membership under the same authority lock used by
+revocation, matching space, task applicability, model, runtime, body hash and
+live evaluation evidence. Members receive only the verified compiled procedure
+body. Episodes, corrections, evaluation records and job timelines remain private
+to their principal. Revocation cancels queued reuse and fences previously
+issued capabilities; rollback removes subsequent selection.
+
+Both evaluation phases use three paired record tasks through real Hermes plus
+scope and memory checks. The record baseline scores 1/3 and the candidate 3/3;
+all evidence rows pass the promotion gate. The bounded provider derives output
+from actual HTTP prompts and sees neither expected answers nor database state.
+Private correction text is absent from the proposal, later member bundle and
+provider requests. This establishes integration behavior with a fake provider,
+not learning quality across real models.
+
+The single locked full suite reached the 180-second budget with 1,312 passing
+test lines, zero failing lines and 29 skips (exit 124, 180.75 seconds). It was
+not rerun and is incomplete. Typecheck, lint, clean schema/OpenAPI/client
+regeneration, 61 plugin tests and 19 Compose declaration checks pass.
+
+The final evidence path, checksum, focused checks and full-suite command ledger
+are in [REPORT.md](../../REPORT.md). Earlier red evidence in that
+append-only report describes superseded runs. The current capability matrix is
+[docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
+
+## PR 27 verification - 2026-09-12
+
+Commits `d752616` and `6d0d531` fix the migration timestamps and initialization
+race respectively. Product changes are confined to the journal and connections
+route. The proof and jobs/broker source remain unchanged.
+
+- Focused command: `bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/runtime-mcp-revocation.test.ts apps/melete/test/integration/runtime-mcp.test.ts --max-concurrency=1 --timeout=30000` passes 6 tests and 147 assertions in 25.85 seconds. The production integration-schema upgrade verifies all three columns and repeat-startup idempotence.
+- `bun run typecheck` passes. `bun run lint` passes across 541 files with the pre-existing empty-import warning in `apps/melete/test/integration/postgres.ts`.
+- `bun run openapi` and `bun run client:generate` both pass from a clean tree at `6d0d531`; `git diff --exit-code` and `git status --porcelain` confirm clean regeneration.
+- `bun run test:plugin` passes all 61 tests in 25.42 seconds.
+
+The first unchanged real-engine rerun failed after 67 assertions in 303.09
+seconds. Its sealed evaluation records one `budget_exhausted` candidate attempt,
+with no model result, after the existing 15-second wall-time budget. Another
+lane held the shared test lock during that run. Evidence is retained at
+`%TEMP%/melete-w14-capability-wHcsDT/capability-evidence.json`; no proof assertion,
+fixture, model output or attempt budget was changed.
+
+The unchanged proof was then rerun while holding the shared lock. It passes
+all 85 assertions in 284.91 seconds, with every stage passed and empty failure
+and missing lists. Evidence is
+`%TEMP%/melete-w14-capability-trNDDu/capability-evidence.json`, SHA-256
+`899e178f4d13e40ff0269176c3e2f5a600de65a6269fe9e6b6596a546c23ca5c`.
+The proof source remains SHA-256
+`50f3ae8adf5b7b5c26dea07dc335a09128853f5481af6f7026bf39eb96b7ba99`.
+
+The full suite ran exactly once as `timeout 1200 bun test --max-concurrency=2`
+under the owned shared lock. It completed in 303.62 seconds with 1,560 passes,
+29 skips, one failure and 7,318 assertions across 152 files (exit 1). Both new
+review regressions passed in that run. The ownership marker and lock directory
+were removed, and inspection found no tracked test processes still running.
+The result and stdout/stderr logs remain under
+`%TEMP%/melete-w14-pr27-full-20260912.*`; its raw line counters include Bun's
+repeated failure/skip summary, while the counts above use Bun's final summary.
+
+The sole failure was `wired-assistant.test.ts:130`: the fixture changed the
+singleton owner's email/password, but login reads its principal. Updating that
+fixture principal reached a second stale expectation: the exact tool list must
+include the integrated `search_tools`, `load_tool` and `react` verbs alongside
+`test.send`. Only the fixture and its exact expected list changed. Its focused
+command, `bun test apps/melete/test/integration/wired-assistant.test.ts --max-concurrency=1 --timeout=30000`,
+then passed 52 assertions in 29.00 seconds through real Hermes. Typecheck and
+lint pass after this test-only repair. The full suite was not repeated, so its
+recorded result remains non-green despite the passing focused repair.

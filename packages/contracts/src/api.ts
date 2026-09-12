@@ -24,6 +24,7 @@ import {
   proposedWrite,
 } from './knowledge.ts';
 import { jobLearningScope } from './learning.ts';
+import { mcpConnectionConfig } from './mcp.ts';
 import { skillFrontmatter } from './skills.ts';
 
 export const healthResponse = z.object({
@@ -146,6 +147,7 @@ export const createConnectionRequest = z.object({
    * connector-specific; the manifest declares what is required.
    */
   credentials: z.record(z.string(), z.string()).optional(),
+  mcp: mcpConnectionConfig.optional(),
 });
 
 export const connectionListResponse = z.object({ connections: z.array(connectionView) });

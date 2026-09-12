@@ -28,6 +28,19 @@ const parent = await testDatabase();
 afterAll(async () => parent?.close());
 const withDb = parent ? describe : describe.skip;
 
+async function expectMemoryRefusal(operation: Promise<unknown>, code: string) {
+  // Await the database operation before matching its error: Bun's async
+  // rejection matcher can stall database callbacks on this Windows runner.
+  let refusal: unknown;
+  try {
+    await operation;
+  } catch (error) {
+    refusal = error;
+  }
+  expect(refusal).toBeInstanceOf(MemoryError);
+  expect((refusal as MemoryError).code).toBe(code);
+}
+
 async function fixture() {
   const handle = await testDatabase();
   if (!handle) throw new Error('Postgres unavailable');
@@ -211,15 +224,7 @@ withDb('deployment attempt context', () => {
       const notices = await f.sql`select payload from event where type = 'notice' order by seq`;
       expect(notices.map((row) => row.payload.record_ids)).toEqual([[record.id], []]);
       expect(await f.sql`select seq from event where type = 'turn_started'`).toHaveLength(2);
-      // Settled by hand rather than through `.rejects.toThrow`: on Windows that
-      // matcher never settles for this rejection, and the test hung at every
-      // head since PR #18 while the same promise rejects within a millisecond.
-      const denied = await f.memory.scopeForJob(newId('job')).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(denied).toBeInstanceOf(MemoryError);
-      expect((denied as MemoryError).code).toBe('scope_denied');
+      await expectMemoryRefusal(f.memory.scopeForJob(newId('job')), 'scope_denied');
     } finally {
       await f.close();
     }
@@ -281,7 +286,8 @@ withDb('deployment attempt context', () => {
         },
         f.options,
       );
-      await expect(adapter.start(bundle, f.sink, new AbortController().signal)).rejects.toThrow(
+      await expectMemoryRefusal(
+        adapter.start(bundle, f.sink, new AbortController().signal),
         'context_invalidated',
       );
     } finally {
@@ -302,14 +308,10 @@ withDb('deployment attempt context', () => {
       expect(f.snapshots[0]?.length).toBeLessThan(10);
       const stale = await f.makeAttempt('bounded');
       stale.attempt.epoch += 1;
-      // Settled by hand for the same reason as the retraction case above: this
-      // rejection never settles through `.rejects.toThrow` on Windows.
-      const refused = await f.adapter.start(stale, f.sink, new AbortController().signal).then(
-        () => null,
-        (error: unknown) => error,
+      await expectMemoryRefusal(
+        f.adapter.start(stale, f.sink, new AbortController().signal),
+        'stale_attempt',
       );
-      expect(refused).toBeInstanceOf(MemoryError);
-      expect((refused as MemoryError).code).toBe('stale_attempt');
       expect(
         await f.sql`select seq from event where attempt_id = ${stale.attempt.id}`,
       ).toHaveLength(0);

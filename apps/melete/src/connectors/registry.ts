@@ -52,6 +52,13 @@ export class ConnectorRegistry {
     return this.connections.get(connectionId);
   }
 
+  /** Failed installation can remove only the worker it opened, never a replacement. */
+  async remove(connectionId: string, expected: Connector): Promise<void> {
+    if (this.connections.get(connectionId) !== expected) return;
+    this.connections.delete(connectionId);
+    await expected.close?.();
+  }
+
   entries(): [string, Connector][] {
     return [...this.connections.entries()].sort(([left], [right]) =>
       left < right ? -1 : left > right ? 1 : 0,

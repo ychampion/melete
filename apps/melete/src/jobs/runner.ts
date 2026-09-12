@@ -30,7 +30,16 @@ import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { databaseNow } from '../db/clock.ts';
-import { attempt, connection, event, experienceTurn, job, trigger } from '../db/schema.ts';
+import {
+  action,
+  attempt,
+  connection,
+  event,
+  experienceTurn,
+  job,
+  question,
+  trigger,
+} from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
@@ -61,6 +70,7 @@ export type RunnerOptions = {
   provider?: string;
   model?: string;
   scopes?: string[];
+  liveConnectionScopes?: boolean;
   scopesForJob?: (tx: Transaction, row: JobRow) => Promise<string[]>;
   heartbeatMs?: number;
   leaseMs?: number;
@@ -174,6 +184,11 @@ export class AttemptRunner {
         space_id: row.spaceId,
         epoch,
         revision: row.revision,
+        ...(this.options.liveConnectionScopes &&
+        this.options.scopes === undefined &&
+        access.principalId
+          ? { live_connection_scopes: true }
+          : {}),
         scopes: this.options.scopes ??
           (await this.options.scopesForJob?.(tx, row)) ?? [
             ...new Set(available.flatMap((item) => item.scopes)),
@@ -448,8 +463,31 @@ export class AttemptRunner {
       0,
       jobBudget.parse(row.budget).max_attempts - Number(counts?.n ?? 0),
     );
-    const outcome: AttemptOutcome =
-      remaining === 0 && original.kind.startsWith('waiting_')
+    const [reconnect] = await tx
+      .select({ text: question.text })
+      .from(question)
+      .innerJoin(
+        action,
+        and(
+          eq(action.jobId, question.jobId),
+          eq(action.attemptId, question.attemptId),
+          eq(action.repairDisposition, 'needs_reconnect'),
+        ),
+      )
+      .where(
+        and(
+          eq(question.jobId, row.id),
+          eq(question.attemptId, attemptId),
+          eq(question.state, 'open'),
+          eq(question.blocksExternalEffect, true),
+        ),
+      )
+      .limit(1);
+    // A runtime's final prose cannot withdraw the broker's unanswered revocation
+    // question, even on the last budgeted attempt. Only owner input resolves it.
+    const outcome: AttemptOutcome = reconnect
+      ? { kind: 'waiting_for_input', question: reconnect.text }
+      : remaining === 0 && original.kind.startsWith('waiting_')
         ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
         : original;
     let input: TransitionInput;

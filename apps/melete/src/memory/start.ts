@@ -104,17 +104,27 @@ export async function startServiceMemory(
     : undefined;
   timer?.unref();
 
-  async function scopeForSpace(ownerId: string, spaceId: string): Promise<MemoryScope> {
-    const [authorized] = await sql`select s.id from space s cross join owner o
-      where s.id = ${spaceId} and o.id = ${ownerId}`;
-    if (!authorized) throw new MemoryError('scope_denied');
+  async function scopeForSpace(principalId: string, spaceId: string): Promise<MemoryScope> {
+    const [authorized] = await sql`select s.kind,
+      coalesce(s.owner_principal_id, (select id from owner limit 1)) as owner_id,
+      m.role, m.generation from space s left join space_membership m
+      on m.space_id = s.id and m.principal_id = ${principalId} and m.revoked_at is null
+      where s.id = ${spaceId}`;
+    const isOwner = authorized?.owner_id === principalId;
+    if (!authorized || (authorized.kind === 'personal' ? !isOwner : !authorized.role))
+      throw new MemoryError('scope_denied');
+    const ownerId = authorized.owner_id as string;
     await prepareSpaceRepository(spacesRoot, spaceId);
+    // The storage owner is not the reader. Retaining the reader's identity and
+    // membership generation lets every memory transaction fence later revocation.
     const scope: MemoryScope = {
       ownerId,
+      principalId,
+      membershipGeneration: Number(authorized.generation ?? 0),
       spaceId,
-      publisher: 'authenticated-owner',
-      audience: 'private',
-      role: 'owner',
+      publisher: 'authenticated-principal',
+      audience: isOwner ? 'private' : 'space',
+      role: isOwner ? 'owner' : 'reader',
     };
     const [known] = await sql`select space_id from memory_spaces where space_id = ${spaceId}`;
     if (!known) {
@@ -144,9 +154,10 @@ export async function startServiceMemory(
     markdown,
     async scopeForJob(jobId: string): Promise<MemoryScope> {
       const [row] =
-        await sql`select j.space_id, o.id as owner_id from job j cross join owner o where j.id = ${jobId}`;
+        await sql`select j.space_id, coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
+          from job j where j.id = ${jobId}`;
       if (!row) throw new MemoryError('scope_denied');
-      return scopeForSpace(row.owner_id as string, row.space_id as string);
+      return scopeForSpace(row.principal_id as string, row.space_id as string);
     },
     async resolveScope(request: Request): Promise<MemoryScope | null> {
       const cookies = request.headers.get('cookie') ?? '';
@@ -157,12 +168,12 @@ export async function startServiceMemory(
         ?.slice(SESSION_COOKIE.length + 1);
       if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
       const digest = createHash('sha256').update(token).digest('hex');
-      const [authenticated] =
-        await sql`select owner_id from session where token_hash = ${digest} and expires_at > now()`;
+      const [authenticated] = await sql`select coalesce(principal_id, owner_id) as principal_id
+          from session where token_hash = ${digest} and expires_at > now()`;
       if (!authenticated) return null;
       const requested = prefixedId('sp').safeParse(request.headers.get('x-melete-space'));
       if (!requested.success) throw new MemoryError('scope_denied');
-      return scopeForSpace(authenticated.owner_id as string, requested.data);
+      return scopeForSpace(authenticated.principal_id as string, requested.data);
     },
   };
 }
