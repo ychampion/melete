@@ -1,13 +1,14 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { BrokerService } from '../../src/broker/service.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
+import { event } from '../../src/db/schema.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
 import { compileProcedure, definitionHash } from '../../src/learning/procedure.ts';
 import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
 import { learningModelCall } from '../../src/learning/proposal-schema.ts';
 import { ProcedureProposer } from '../../src/learning/proposer.ts';
-import { learningRuntimeFetch } from '../../src/learning/runtime-route.ts';
+import { LEARNING_TOOL, learningRuntimeFetch } from '../../src/learning/runtime-route.ts';
 import {
   episode,
   learningAttempt,
@@ -67,6 +68,60 @@ async function correction(key: string) {
 }
 
 (fixture ? describe : describe.skip)('bounded procedure generation through the gateway', () => {
+  test('a full catalog preserves its tools and records one learning omission notice per attempt', async () => {
+    if (!fixture) return;
+    const row = await fixture.create('catalog-full');
+    await fixture.episodes.intervene(fixture.ownerId, row.id, {
+      idempotency_key: 'catalog-full',
+      kind: 'correction',
+      text: 'Use typed ordering.',
+      signal: 'typed_ordering',
+    });
+    const current = await fixture.runner.claim(wake(await fixture.jobs.get(row.id)));
+    if (!current) throw new Error('No attempt');
+    const tools = Array.from({ length: 15 }, (_, index) => ({
+      ...LEARNING_TOOL,
+      name: `fixture.tool${index}`,
+    }));
+    const serve = learningRuntimeFetch({
+      sql: fixture.handle.sql,
+      capabilityKey: 'learning-tests-capability-key-at-least-32',
+      broker: new BrokerService({ sql: fixture.handle.sql, connectors: new ConnectorRegistry() }),
+      fallback: () => Response.json({ tools }),
+    });
+    for (let count = 0; count < 2; count++) {
+      const response = await serve(
+        new Request('http://learning.test/tools', {
+          headers: { authorization: `Bearer ${current.bundle.attempt.token}` },
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ tools });
+    }
+    const notes = await fixture.handle.db
+      .select()
+      .from(event)
+      .where(and(eq(event.attemptId, current.claims.attempt_id), eq(event.type, 'notice')));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({
+      jobId: row.id,
+      payload: {
+        kind: 'learning_catalog_full',
+        tool: 'learning.propose',
+        limit: 15,
+        tool_count: 15,
+      },
+    });
+    const [captured] = await fixture.handle.db
+      .select()
+      .from(learningAttempt)
+      .where(eq(learningAttempt.attemptId, current.claims.attempt_id));
+    expect(captured?.versions.tools.map((tool) => tool.name)).toEqual(
+      tools.map((tool) => tool.name),
+    );
+    await fixture.jobs.cancel(row.id);
+  }, 15000);
+
   test('Hermes skill creation refers only this current job owner intervention', async () => {
     if (!fixture) return;
     const row = await fixture.create('runtime-handoff');

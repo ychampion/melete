@@ -46,6 +46,8 @@ The durable proposal worker processes corrected, classified episodes. It reserve
 
 Hermes is configured with only the Melete toolset in API-server mode. Its built-in skill creator and shell tools are therefore unavailable. The Melete plugin adds the narrow `learning.propose` handoff to the authenticated broker catalog only when this job has an owner intervention. The handoff accepts no body or path; it refers existing episode evidence to the worker. This is a configuration and plugin change, with no upstream Hermes patch and no direct live-skill directory write.
 
+The learning handoff is added only when the existing catalog has fewer than 15 tools. A full catalog is preserved, and `learning.propose` is omitted with one `learning_catalog_full` notice event per attempt. The automatic worker still processes eligible owner interventions. The plugin handler test verifies its authenticated proposal request and returned reply; filesystem publication is controlled by the toolset configuration and service gate.
+
 ## Evaluation and promotion
 
 Use `POST /procedures/{id}/evaluate` with `space_id`. The trusted evaluator runs actual jobs in fresh evaluation spaces with a baseline arm and a candidate arm. Validation uses different task templates, spaces, and later timestamps from the source episode. Selection is committed before the final fixture module is loaded. The final templates and spaces are separate again, and final execution must follow selection. Each definition receives one validation and, if selected, one final evaluation; failures remain qualified history.

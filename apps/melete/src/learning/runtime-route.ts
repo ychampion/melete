@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { AuthenticationError, verifyCapability } from '../broker/capability.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { BrokerOperations } from '../broker/http.ts';
+import { appendEvent, checkAttempt, lockJob } from '../broker/records.ts';
 
 export const LEARNING_TOOL: ToolSpec = {
   name: 'learning.propose',
@@ -69,8 +70,31 @@ export function learningRuntimeFetch(options: {
         if (!response.ok) return response;
         const body = z.object({ tools: z.array(toolSpec) }).parse(await response.json());
         const claims = await principal(request);
-        // A full catalog stays intact; explicit owner interventions still drain automatically.
-        if (body.tools.length < 15 && (await source(claims))) body.tools.push(LEARNING_TOOL);
+        if (await source(claims)) {
+          if (body.tools.length < 15) body.tools.push(LEARNING_TOOL);
+          else {
+            // Preserve the delivered catalog and record the omission once per attempt.
+            await options.sql.begin(async (tx) => {
+              await tx`select pg_advisory_xact_lock(31003103)`;
+              await checkAttempt(tx, await lockJob(tx, claims.job_id), claims);
+              await appendEvent(
+                tx,
+                claims.job_id,
+                claims.attempt_id,
+                'notice',
+                {
+                  kind: 'learning_catalog_full',
+                  tool: LEARNING_TOOL.name,
+                  limit: 15,
+                  tool_count: body.tools.length,
+                  message:
+                    'Learning handoff omitted from the full catalog; owner interventions still drain automatically.',
+                },
+                `learning:${claims.attempt_id}:catalog-full`,
+              );
+            });
+          }
+        }
         // Hermes obtains its actual catalog over HTTP after claim; bind those delivered specs too.
         const versions = body.tools.map((tool) => ({
           name: tool.name,

@@ -193,19 +193,12 @@ def test_a_refused_catalog_registers_nothing(client, broker):
 # -- calling ------------------------------------------------------------------
 
 
-def test_skill_creation_goes_to_learning_without_writing_live_skills(client, broker, tmp_path, monkeypatch):
-    skills = tmp_path / "skills"
-    skills.mkdir()
-    existing = skills / "existing.md"
-    existing.write_text("Owner-reviewed procedure", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def test_learning_handler_forwards_to_the_proposal_endpoint_and_returns_its_reply(client, broker):
     result = build_handler(client, {"name": "learning.propose", "connection_id": None})({})
     assert result == {"status": "candidate_pending", "episode_id": "ep_recorded"}
     assert broker.requests == [{
         "method": "POST", "path": "/tools/learning/propose", "body": {}, "auth": "Bearer cap-token"
     }]
-    assert sorted(path.name for path in skills.iterdir()) == ["existing.md"]
-    assert existing.read_text(encoding="utf-8") == "Owner-reviewed procedure"
 
 
 def test_a_dispatched_call_returns_the_receipt(client, broker):
