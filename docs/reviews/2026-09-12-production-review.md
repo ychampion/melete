@@ -98,12 +98,15 @@ execution or denial. This misrepresented the durable disposition to the runtime
 and could make a re-proposal look like another question for the owner.
 
 **Change:** Select `decision` explicitly and report approval as required only
-when the action is `needs_approval` and the decision is pending. Keep the approval
+when the action is `needs_approval` and the decision is pending or no matching
+approval row exists. Keep the approval
 ID, origin warnings, action identity, and durable result in the response.
 
 **Evidence:** Re-proposing a pending action still reports that it needs approval.
 Re-proposing a succeeded, denied, or unknown action does not ask for approval
-again. Denied actions stay denied; uncertain sends are not re-executed.
+again. Denied actions stay denied; uncertain sends are not re-executed. A unit
+regression confirms that a pending action still requires approval when the
+lookup returns no matching row.
 
 ## Test implementation and execution
 
