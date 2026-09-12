@@ -4,6 +4,7 @@
  * something the contract describes" are the same assertion.
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
   actionListResponse,
   actionResponse,
@@ -21,13 +22,18 @@ import {
   knowledgeRecordResponse,
   knowledgeSearchResponse,
   proposeKnowledgeResponse,
+  reactionListResponse,
+  reactionResponse,
   SCHEMA_VERSION,
   skillListResponse,
   spaceListResponse,
+  THUMBS_DOWN,
+  THUMBS_UP,
 } from '@melete/contracts';
+import { silentWav } from '../../melete/src/connectors/wav.ts';
 import { createMock } from './index.ts';
 import type { Runner } from './runner.ts';
-import type { Store } from './store.ts';
+import { newId, type Store } from './store.ts';
 
 type Mock = ReturnType<typeof createMock>;
 
@@ -67,6 +73,44 @@ const toApproval = async (mock: Mock, objective: string) => {
 
 beforeEach(() => {
   mock = createMock({ speed: 0 });
+});
+
+test('the mock content endpoint serves WAV bytes only for its session space', async () => {
+  const created = await call(mock.app, 'POST', '/jobs', {
+    space_id: mock.spaceId,
+    title: 'Audio',
+    objective: 'Audio fixture',
+  });
+  const jobId = jobResponse.parse(created.json).job.id;
+  const id = newId('art');
+  const bytes = silentWav({ script: 'Mock artifact.' });
+  mock.store.artifacts.set(id, {
+    artifact: {
+      id,
+      space_id: mock.spaceId,
+      job_id: jobId,
+      path: 'artifacts/episode.wav',
+      content_hash: createHash('sha256').update(bytes).digest('hex'),
+      mime: 'audio/wav',
+      size: bytes.length,
+      audience: 'owner',
+      created_at: new Date().toISOString(),
+    },
+    bytes,
+  });
+  const session = await mock.app.request('/spaces');
+  const cookie = session.headers.get('set-cookie')?.split(';')[0] ?? '';
+  const response = await mock.app.request(`/artifacts/${id}/content`, { headers: { cookie } });
+  expect(response.status).toBe(200);
+  expect(response.headers.get('content-type')).toBe('audio/wav');
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array(bytes));
+  expect((await mock.app.request(`/artifacts/${id}/content`)).status).toBe(401);
+  const entry = mock.store.artifacts.get(id);
+  if (!entry) throw new Error('Missing fixture artifact');
+  entry.artifact.space_id = newId('sp');
+  expect((await mock.app.request(`/artifacts/${id}/content`, { headers: { cookie } })).status).toBe(
+    404,
+  );
 });
 
 describe('every route answers with a body the contract describes', () => {
@@ -522,6 +566,80 @@ describe('the runner uses the real state machine', () => {
         (event.payload as { status?: string }).status === 'dispatched',
     );
     expect(dispatches).toHaveLength(1);
+  });
+});
+
+describe('reactions', () => {
+  /** The mock's transcript is its event log, so a message id is an event seq. */
+  const aMessage = async (): Promise<{ jobId: string; messageId: string }> => {
+    const created = await call(mock.app, 'POST', '/jobs', {
+      space_id: mock.spaceId,
+      title: 'Chase the heating repair',
+      objective: 'Chase the heating repair by email.',
+    });
+    const jobId = jobResponse.parse(created.json).job.id;
+    const events = eventPage.parse(
+      (await call(mock.app, 'GET', `/jobs/${jobId}/events?limit=1000`)).json,
+    ).events;
+    const message = events.find((event) => event.type !== 'reaction');
+    if (!message) throw new Error('the mock produced no message');
+    return { jobId, messageId: String(message.seq) };
+  };
+
+  test('a reaction is recorded, streamed as an event, and listed on its message', async () => {
+    const { jobId, messageId } = await aMessage();
+    const posted = await call(mock.app, 'POST', `/messages/${messageId}/reactions`, {
+      emoji: THUMBS_UP,
+    });
+    expect(posted.status).toBe(201);
+    const parsed = reactionResponse.parse(posted.json).reaction;
+    expect(parsed.message_id).toBe(messageId);
+    expect(parsed.by).toBe('person');
+    expect(parsed.job_id).toBe(jobId);
+
+    const listed = await call(mock.app, 'GET', `/messages/${messageId}/reactions`);
+    expect(reactionListResponse.parse(listed.json).reactions).toHaveLength(1);
+
+    const perJob = await call(mock.app, 'GET', `/jobs/${jobId}/reactions`);
+    expect(reactionListResponse.parse(perJob.json).reactions).toHaveLength(1);
+
+    const events = eventPage.parse(
+      (await call(mock.app, 'GET', `/jobs/${jobId}/events?limit=1000`)).json,
+    ).events;
+    expect(events.filter((event) => event.type === 'reaction')).toHaveLength(1);
+  });
+
+  test('the public mock route rejects assistant attribution without writing', async () => {
+    const { messageId } = await aMessage();
+    const spoofed = await call(mock.app, 'POST', `/messages/${messageId}/reactions`, {
+      emoji: THUMBS_UP,
+      by: 'assistant',
+    });
+    expect(spoofed.status).toBe(400);
+    const listed = await call(mock.app, 'GET', `/messages/${messageId}/reactions`);
+    expect(reactionListResponse.parse(listed.json).reactions).toHaveLength(0);
+  });
+
+  test('reacting twice with the same emoji records one reaction', async () => {
+    const { messageId } = await aMessage();
+    await call(mock.app, 'POST', `/messages/${messageId}/reactions`, { emoji: THUMBS_DOWN });
+    await call(mock.app, 'POST', `/messages/${messageId}/reactions`, { emoji: THUMBS_DOWN });
+    const listed = await call(mock.app, 'GET', `/messages/${messageId}/reactions`);
+    expect(reactionListResponse.parse(listed.json).reactions).toHaveLength(1);
+  });
+
+  test('a message that does not exist is a 404, and a word is not an emoji', async () => {
+    const missing = await call(mock.app, 'POST', '/messages/999999/reactions', {
+      emoji: THUMBS_UP,
+    });
+    expect(missing.status).toBe(404);
+    expect(errorResponse.parse(missing.json).error.code).toBe('not_found');
+
+    const { messageId } = await aMessage();
+    const word = await call(mock.app, 'POST', `/messages/${messageId}/reactions`, {
+      emoji: 'thumbsup',
+    });
+    expect(word.status).toBe(400);
   });
 });
 

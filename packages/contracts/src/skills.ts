@@ -107,5 +107,7 @@ export const BUILT_IN_SKILLS = [
   'research-with-sources',
   'schedule-a-check-in',
   'remember-this',
+  /** Offered only where a speech capability is configured. */
+  'make-a-podcast',
 ] as const;
 export type BuiltInSkill = (typeof BUILT_IN_SKILLS)[number];

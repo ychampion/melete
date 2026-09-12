@@ -11,6 +11,9 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { ID_PREFIXES } from '@melete/contracts';
 import { isGitRepo, type SpacePaths, spacePaths } from '@melete/knowledge';
+import { eq, or } from 'drizzle-orm';
+import type { Database } from '../db/client.ts';
+import { space } from '../db/schema.ts';
 import { stableUlid } from './ids.ts';
 
 export type SpaceRef = {
@@ -61,6 +64,29 @@ export function filesystemSpaces(spacesRoot: string): SpaceResolver {
     byId: async (spaceId) => {
       const name = names().find((candidate) => spaceIdFor(candidate) === spaceId);
       return name ? refFor(spacesRoot, name) : null;
+    },
+  };
+}
+
+/** Database identities are the identities used by connection grants and jobs. */
+export function databaseSpaces(db: Database, spacesRoot: string): SpaceResolver {
+  const ref = (row: typeof space.$inferSelect): SpaceRef => ({
+    id: row.id,
+    name: row.id,
+    paths: spacePaths(spacesRoot, row.id),
+  });
+  return {
+    list: async () => (await db.select().from(space)).map(ref),
+    byId: async (id) => {
+      const [row] = await db.select().from(space).where(eq(space.id, id));
+      return row ? ref(row) : null;
+    },
+    byName: async (name) => {
+      const [row] = await db
+        .select()
+        .from(space)
+        .where(or(eq(space.id, name), eq(space.name, name)));
+      return row ? ref(row) : null;
     },
   };
 }

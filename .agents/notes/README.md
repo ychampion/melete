@@ -47,3 +47,4 @@ Two rules:
 | [0012](0012-provable-memory-properties.md) | Four memory properties the service enforces | accepted |
 | [0014](0014-memory-conformance-runner.md) | Memory quality is a suite with a counterfactual arm | accepted |
 | [0015](0015-typed-repair.md) | Failures are classified and repaired, not retried | accepted |
+| [0017](0017-agentic-and-natural.md) | Reply style, reactions, delta briefs, watch predicates, capabilities | accepted |

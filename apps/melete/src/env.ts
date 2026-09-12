@@ -52,6 +52,7 @@ export const envSchema = z.object({
 
   MELETE_DEFAULT_PROVIDER: z.string().default('fireworks'),
   MELETE_DEFAULT_MODEL: z.string().default('deepseek-v4p1-flash'),
+  MELETE_SPEECH_MODEL: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

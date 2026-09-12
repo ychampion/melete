@@ -68,6 +68,7 @@ import {
   trustRequest,
   trustResolution,
 } from './provenance.ts';
+import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import { jobRepairsResponse } from './repair.ts';
 import {
   backgroundOperation,
@@ -129,13 +130,18 @@ export function buildOpenApiDocument() {
         license: { name: 'Apache-2.0', identifier: 'Apache-2.0' },
       },
       servers: [{ url: 'http://localhost:8787', description: 'Default self-hosted address' }],
+      components: {
+        securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: 'melete_session' } },
+      },
       tags: [
         { name: 'health' },
         { name: 'spaces' },
         { name: 'jobs' },
         { name: 'attempts' },
         { name: 'events' },
+        { name: 'reactions' },
         { name: 'actions' },
+        { name: 'artifacts' },
         { name: 'approvals' },
         { name: 'connections' },
         { name: 'knowledge' },
@@ -626,6 +632,40 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/messages/{messageId}/reactions': {
+          post: {
+            tags: ['reactions'],
+            summary: 'React to a message with one emoji',
+            description:
+              'A message is an event, and its id is that event seq. The reaction is persisted and streamed ' +
+              'like any other event, and a client draws it on the message bubble rather than as a row of its ' +
+              'own. A thumbs-down from a person counts the result it lands on as two unread ones; a thumbs-up ' +
+              'clears the unread streak. Reacting twice with the same emoji records one reaction.',
+            requestParams: idParam('messageId', 'Message id: the event seq'),
+            requestBody: json(personReactionRequest),
+            responses: {
+              '201': jsonResponse('Recorded', reactionResponse),
+              '404': problem('No such message'),
+              '409': problem('That event is not a message'),
+            },
+          },
+          get: {
+            tags: ['reactions'],
+            summary: 'The reactions drawn on one message',
+            requestParams: idParam('messageId', 'Message id: the event seq'),
+            responses: { '200': jsonResponse('Reactions', reactionListResponse) },
+          },
+        },
+
+        '/jobs/{jobId}/reactions': {
+          get: {
+            tags: ['reactions'],
+            summary: 'Every reaction on one job stream, for a client rendering a transcript',
+            requestParams: idParam('jobId', 'Job id'),
+            responses: { '200': jsonResponse('Reactions', reactionListResponse) },
+          },
+        },
+
         '/jobs/{jobId}/attempts': {
           get: {
             tags: ['attempts'],
@@ -877,6 +917,38 @@ export function buildOpenApiDocument() {
             tags: ['skills'],
             summary: 'List built-in and space skills',
             responses: { '200': jsonResponse('Skills', skillListResponse) },
+          },
+        },
+        '/artifacts/{id}/content': {
+          get: {
+            tags: ['artifacts'],
+            summary: 'Retrieve an artifact in the authenticated space',
+            description:
+              'Returns the recorded bytes only while their hash matches the artifact receipt. Audio can be played directly; a single byte range can be requested for seeking.',
+            security: [{ session: [] }],
+            requestParams: {
+              ...idParam('id', 'Artifact id from the action receipt'),
+              header: z.object({ Range: z.string().optional() }),
+            },
+            responses: {
+              '200': {
+                description: 'Artifact bytes',
+                content: {
+                  'audio/wav': { schema: z.string().meta({ format: 'binary' }) },
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '206': {
+                description: 'Requested byte range',
+                content: {
+                  'audio/wav': { schema: z.string().meta({ format: 'binary' }) },
+                  'application/octet-stream': { schema: z.string().meta({ format: 'binary' }) },
+                },
+              },
+              '401': problem('A session is required'),
+              '404': problem('No matching artifact in this space'),
+              '416': { description: 'Requested range is outside the artifact' },
+            },
           },
         },
       },

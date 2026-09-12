@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AttemptBundle, RuntimeEvent } from '@melete/contracts';
+import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeEvent } from '@melete/contracts';
 import { brokerParkedActions, type FetchLike, HermesRuntimeAdapter } from './adapter.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
@@ -20,6 +20,7 @@ const bundle: AttemptBundle = {
     deliverable: {},
   },
   inputs: { new_user_messages: [], approval_results: [], trigger_events: [], repair_briefs: [] },
+  since_last: EMPTY_SINCE_LAST,
   transcript: [],
   tools: [],
   skills: [],
@@ -351,4 +352,58 @@ describe('the default ledger lookup', () => {
     });
     expect(lookup(bundle)).rejects.toThrow(/answered 401/);
   });
+});
+
+test('the actual Hermes run request carries the since-last receipt and pending question', async () => {
+  const requests: Array<{ input: string; instructions: string }> = [];
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 3190,
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === '/v1/runs' && request.method === 'POST') {
+        requests.push((await request.json()) as { input: string; instructions: string });
+        return Response.json({ run_id: 'run_delta', status: 'started' }, { status: 202 });
+      }
+      if (path === '/v1/runs/run_delta/events') {
+        return new Response(RECORDED, { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  try {
+    const adapter = new HermesRuntimeAdapter({
+      baseUrl: server.url.toString(),
+      parkedActions: async () => [],
+    });
+    const outcome = await adapter.start(
+      {
+        ...bundle,
+        since_last: {
+          ...EMPTY_SINCE_LAST,
+          attempt_id: ATTEMPT,
+          actions: [
+            {
+              action_id: ACTION,
+              kind: 'email.send',
+              status: 'succeeded',
+              receipt_ref: 'receipt-marker-w9-delta@example.test',
+              at: '2026-09-11T10:00:00Z',
+            },
+          ],
+          pending_questions: [
+            { id: 'qst_delta', text: 'Which recording should I use?', state: 'asked' },
+          ],
+        },
+      },
+      new Collector(),
+      new AbortController().signal,
+    );
+    expect(outcome.kind).toBe('completed');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.input).toContain('receipt receipt-marker-w9-delta@example.test');
+    expect(requests[0]?.input).toContain('question asked: Which recording should I use?');
+  } finally {
+    await server.stop(true);
+  }
 });

@@ -1,6 +1,6 @@
 import type { Action, Attempt, Job, StoredEvent } from '@melete/client';
 import { fetchEventPage } from '@melete/client';
-import { client, errorMessage, unwrap } from '../api.ts';
+import { API_BASE_URL, client, errorMessage, unwrap } from '../api.ts';
 import {
   ActionChip,
   Banner,
@@ -169,6 +169,7 @@ export function JobDetail({ jobId }: { jobId: string }) {
                     </code>
                   </p>
                 ) : null}
+                <ArtifactPlayer receipt={action.receipt as Record<string, unknown> | null} />
               </div>
             ))}
           </div>
@@ -251,3 +252,33 @@ const summarise = (type: string, payload: unknown): string => {
   if (type === 'tool_call_proposed' || type === 'tool_result') return pick('name') ?? '';
   return JSON.stringify(fields).slice(0, 160);
 };
+
+/**
+ * An audio artifact is something to listen to, not a path to read. When a
+ * receipt names a file the browser can play, offer the player; when it names
+ * one it cannot, say what was written and stop there rather than pretending.
+ */
+export function ArtifactPlayer({ receipt }: { receipt: Record<string, unknown> | null }) {
+  const detail = (receipt?.detail ?? null) as Record<string, unknown> | null;
+  if (detail?.kind !== 'artifact' || typeof detail.path !== 'string') return null;
+  const mime = typeof detail.mime === 'string' ? detail.mime : '';
+  const source =
+    typeof detail.artifact_id === 'string'
+      ? `${API_BASE_URL}/artifacts/${encodeURIComponent(detail.artifact_id)}/content`
+      : null;
+  return (
+    <div className="stack" style={{ marginTop: 8 }}>
+      <p className="muted">
+        {detail.path}
+        {typeof detail.bytes === 'number' ? ` · ${Math.round(detail.bytes / 1024)} kB` : ''}
+        {mime ? ` · ${mime}` : ''}
+      </p>
+      {source && mime.startsWith('audio/') ? (
+        // biome-ignore lint/a11y/useMediaCaption: the script is the artifact beside it.
+        <audio className="artifact-audio" controls preload="none" src={source}>
+          <a href={source}>Download the audio</a>
+        </audio>
+      ) : null}
+    </div>
+  );
+}

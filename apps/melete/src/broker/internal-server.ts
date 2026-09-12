@@ -43,6 +43,12 @@ export function createInternalServer(options: {
     // A declared write becomes an artifact row with its checks beside it, in
     // the same transaction that persists the receipt.
     recordArtifact: createArtifactRecorder(options.artifactCritic, options.artifactRoots),
+    estimateSpend: (action) => {
+      const capability = options.connectors.get(action.connection_id)?.capability;
+      return capability?.available && capability.kind === action.kind
+        ? capability.unit_cost_usd
+        : Number.NaN;
+    },
   });
   const app = createBrokerApp({
     broker,

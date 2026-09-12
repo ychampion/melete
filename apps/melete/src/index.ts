@@ -10,9 +10,11 @@
  */
 
 import type { RuntimeAdapter } from '@melete/contracts';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { mountApprovals } from './api/approvals.ts';
+import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
 import { ServiceError } from './api/errors.ts';
@@ -21,12 +23,15 @@ import { mountJobs } from './api/jobs.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
 import { mountQuestions } from './api/questions.ts';
+import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
 import { mountReplies } from './api/replies.ts';
 import { mountTriggers } from './api/triggers.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { connectorsFromEnv } from './connectors/configured.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
+import { space } from './db/schema.ts';
 import { type Env, loadEnv } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { ApprovalService } from './jobs/approvals.ts';
@@ -35,13 +40,15 @@ import { OperationService } from './jobs/operations.ts';
 import { PolicyService } from './jobs/policy.ts';
 import { QuestionService } from './jobs/questions.ts';
 import { startQueue } from './jobs/queue.ts';
+import { ReactionService } from './jobs/reactions.ts';
 import { ReplyService } from './jobs/replies.ts';
 import { AttemptRunner } from './jobs/runner.ts';
 import { JobService } from './jobs/service.ts';
 import { SubmissionService } from './jobs/submissions.ts';
 import { TriggerService } from './jobs/triggers.ts';
+import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
-import { filesystemSpaces } from './knowledge/spaces.ts';
+import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
@@ -63,6 +70,13 @@ export type AppDeps = {
   attention?: AttentionService;
   questions?: QuestionService;
   repairs?: RepairReadService;
+  reactions?: ReactionService;
+  /**
+   * Which space a request speaks for. Left out, it is the owner's personal
+   * space, which is the only one v0.1 creates. Supplied, it is whatever the
+   * trusted session resolver says; request headers never supply this authority.
+   */
+  resolveSpace?: SpaceResolver;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
   /** Left out, the spaces on the volume are used, which is what a deployment wants. */
   knowledge?: KnowledgeDeps;
@@ -86,6 +100,20 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
+  // One owner, one personal space: use session authority and never a request header.
+  const personalSpace: SpaceResolver =
+    deps.resolveSpace ??
+    (async (c) => {
+      if (!deps.db || !c.get('owner')) return null;
+      const [row] = await deps.db
+        .select({ id: space.id })
+        .from(space)
+        .where(eq(space.kind, 'personal'))
+        .orderBy(space.createdAt, space.id)
+        .limit(1);
+      return row ? { spaceId: row.id } : null;
+    });
+  if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -95,7 +123,11 @@ export function createApp(deps: AppDeps) {
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
-  if (deps.jobs) mountAttention(app, deps.attention ?? new AttentionService(deps.jobs));
+  const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);
+  if (deps.jobs && attention) mountAttention(app, attention);
+  if (deps.jobs) {
+    mountReactions(app, deps.reactions ?? new ReactionService(deps.jobs, attention), personalSpace);
+  }
   if (deps.jobs) mountQuestions(app, deps.questions ?? new QuestionService(deps.jobs, submissions));
   if (deps.db) mountRepairs(app, deps.repairs ?? new RepairReadService(deps.db));
   if (deps.triggers) mountTriggers(app, deps.triggers);
@@ -151,6 +183,7 @@ export async function bootstrap(
   let policy: PolicyService | undefined;
   let attention: AttentionService | undefined;
   let questions: QuestionService | undefined;
+  let catalog: RuntimeCatalog | undefined;
   const close = async () => {
     try {
       await Promise.all([events?.close(), triggers?.stop(), runner?.stop(), operations?.stop()]);
@@ -164,6 +197,12 @@ export async function bootstrap(
   };
   try {
     if (handle) await migrateDatabase(handle);
+    if (handle)
+      catalog = new RuntimeCatalog(
+        handle.db,
+        await connectorsFromEnv(handle.sql, env),
+        env.MELETE_SPACES_DIR,
+      );
     if (handle) {
       events = new EventStream(handle);
       await events.start();
@@ -184,6 +223,7 @@ export async function bootstrap(
         artifactRoots: { workRoot: env.MELETE_WORK_DIR, spacesRoot: env.MELETE_SPACES_DIR },
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
+        loadCatalog: catalog?.forAttempt,
       });
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
@@ -230,6 +270,13 @@ export async function bootstrap(
     policy,
     attention,
     questions,
+    knowledge:
+      handle && catalog
+        ? {
+            spaces: databaseSpaces(handle.db, env.MELETE_SPACES_DIR),
+            toolsForSpace: (space) => catalog?.toolsForSpace(space.id) ?? Promise.resolve([]),
+          }
+        : undefined,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

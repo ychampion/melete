@@ -693,3 +693,73 @@ dialog::backdrop {
     margin-top: 6px;
   }
 }
+
+/**
+ * A reaction is drawn on the message it belongs to. It is never a row in the
+ * transcript: a system line saying "the owner reacted" is the noise a reaction
+ * exists to replace.
+ */
+.bubble-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  max-width: 100%;
+}
+
+.bubble-block-owner {
+  align-items: flex-end;
+  align-self: flex-end;
+}
+
+.reactions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+  padding: 0 4px;
+}
+
+.reaction {
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+}
+
+/* The controls stay quiet until the bubble is under the pointer or focused. */
+.reaction-controls {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.bubble-block:hover .reaction-controls,
+.reaction-controls:focus-within {
+  opacity: 1;
+}
+
+.reaction-add {
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+}
+
+.reaction-add:hover,
+.reaction-add:focus-visible {
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+
+/* An audio artifact is something to listen to, not a path to read. */
+.artifact-audio {
+  width: 100%;
+  max-width: 420px;
+}

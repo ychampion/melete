@@ -220,7 +220,10 @@ databaseTest(
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({
-        tools: [{ name: 'test.send', connection_id: seed.connectionId }],
+        tools: [
+          { name: 'react', connection_id: null },
+          { name: 'test.send', connection_id: seed.connectionId },
+        ],
       });
       const [queue] =
         await fixture.sql`select name from pgboss.queue where name = ${QUEUES.attempt}`;

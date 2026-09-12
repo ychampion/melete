@@ -141,3 +141,53 @@ Two rules that will not change:
    approval defeats the only mechanism protecting the person running this.
 2. **Implement `verify` if you possibly can.** A connector without it leaves its
    users with unresolved actions and a question they have to answer by hand.
+
+## Watching a feed without spending on it
+
+An `event` trigger wakes the job on every observation the connector delivers. On
+a busy feed that means an attempt, a model call and a bill for every message,
+most of which say nothing the person wanted to hear. A `watch` trigger is the
+other thing: the service tests the observation itself, and wakes the job only if
+a small deterministic predicate holds.
+
+```ts
+await client.api.POST('/jobs/{jobId}/triggers', {
+  params: { path: { jobId } },
+  body: {
+    kind: 'watch',
+    connection_id,
+    event_name: 'mail.new',
+    predicate: {
+      all: [
+        { field: 'from.address', op: 'eq', value: 'billing@example.test' },
+        { field: 'subject', op: 'contains', value: 'overdue' },
+        { field: 'amount', op: 'gt', value: 100 },
+      ],
+    },
+  },
+});
+```
+
+The language is deliberately too small to hide a decision in: dotted field paths
+into the observation, at most five clauses, all of which must hold, and six
+operators.
+
+| Operator | Holds when |
+|---|---|
+| `eq` | the field is exactly the value |
+| `contains` | the text contains the value, or the list has it as an item |
+| `matches` | the text matches the regular expression; a pattern that does not compile is refused when the watch is made |
+| `lt`, `gt` | both sides are numbers, or both are timestamps |
+| `changed` | the field differs from the last observation this watch looked at |
+
+There is no `or`. Two reasons to wake are two watches, which keeps every wake
+traceable to one predicate a person can read.
+
+Everything unclear is false: a missing field, a comparison between things that
+are not comparable, a first sighting under `changed`. A watch that cannot tell
+is a watch that does not wake.
+
+When one does match, the job wakes with that observation as its evidence and the
+consumed-event notice carries `because: ["event:<seq>"]`, so the wake can always
+name the observation that caused it. Observations that do not match advance the
+trigger's cursor and cost nothing else: no attempt, no model call, no row.

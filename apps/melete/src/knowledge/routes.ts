@@ -18,6 +18,8 @@ import {
   knowledgeSearchQuery,
   proposedWrite,
   retractKnowledgeRequest,
+  skillsWithToolsAvailable,
+  type ToolSpec,
 } from '@melete/contracts';
 import {
   DEFAULT_POLICY,
@@ -46,6 +48,8 @@ export type KnowledgeDeps = {
   /** What each space lets an agent do without a person. */
   policyFor?: (space: SpaceRef) => SpacePolicy;
   now?: () => Date;
+  /** Only tools backed by configured adapters and this space's active grants. */
+  toolsForSpace?: (space: SpaceRef) => Promise<readonly ToolSpec[]>;
 };
 
 type Variables = { space: SpaceRef };
@@ -282,11 +286,15 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
     }
   });
 
-  app.get('/skills', (c) => {
+  app.get('/skills', async (c) => {
     const space = c.get('space');
     const loaded = loadSkills({ spaceSkillsDirectory: space.paths.skills });
+    const offered = skillsWithToolsAvailable(
+      loaded.skills,
+      (await deps.toolsForSpace?.(space)) ?? [],
+    );
     return c.json({
-      skills: loaded.skills.map((skill) => ({
+      skills: offered.map((skill) => ({
         id: `${ID_PREFIXES.skill}_${stableUlid(`skill:${skill.frontmatter.name}`)}`,
         space_id: skill.source === 'space' ? space.id : null,
         path: skill.path,
@@ -304,11 +312,15 @@ export const skillsForObjective = (
   objective: string,
   latestMessage: string,
   spaceSkillsDirectory?: string,
+  catalog: readonly ToolSpec[] = [],
 ) =>
   chooseSkills(
     objective,
     latestMessage,
-    loadSkills(spaceSkillsDirectory ? { spaceSkillsDirectory } : {}).skills,
+    skillsWithToolsAvailable(
+      loadSkills(spaceSkillsDirectory ? { spaceSkillsDirectory } : {}).skills,
+      catalog,
+    ),
   );
 
 const findRecord = (space: SpaceRef, id: string): LoadedRecord | undefined =>

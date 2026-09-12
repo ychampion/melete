@@ -1,0 +1,1 @@
+ALTER TABLE "memory_contexts" ADD COLUMN "style_violations" jsonb DEFAULT '[]'::jsonb NOT NULL;

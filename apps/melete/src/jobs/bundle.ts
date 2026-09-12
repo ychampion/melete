@@ -12,16 +12,20 @@ import {
   QUESTION_GUIDANCE,
   type ResponsibilityAttemptBundle,
   receipt,
+  receipt as receiptContract,
   responsibilityAttemptBundle,
+  type SinceLast,
+  sinceLast as sinceLastContract,
   TERMINAL_ACTION_STATUSES,
   waitSpec,
 } from '@melete/contracts';
-import { and, asc, desc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
 import {
   action,
+  approval,
   artifact,
   attempt,
   connection,
@@ -189,6 +193,109 @@ export function assembleHistory(
   return { inputs, transcript: boundTranscript(transcript), progressSummary };
 }
 
+/**
+ * The delta brief, built from durable rows only.
+ *
+ * An attempt is disposable and the responsibility is not, so every wake would
+ * otherwise reread the whole history to learn the one thing it needs: what
+ * happened while it was not running. Nothing here is remembered by a process;
+ * it is all read back from the tables that already had to be right.
+ */
+export async function buildSinceLast(
+  tx: Transaction,
+  jobId: string,
+  spaceId: string,
+  previous: { id: string; endedAt: Date | null } | null,
+  deferred: readonly { text: string }[] = [],
+): Promise<SinceLast> {
+  if (!previous?.endedAt) return sinceLastContract.parse({});
+  const since = previous.endedAt;
+  const actions = await tx
+    .select()
+    .from(action)
+    .where(and(eq(action.jobId, jobId), gt(action.createdAt, since)))
+    .orderBy(asc(action.createdAt));
+  const settled = await tx
+    .select()
+    .from(action)
+    .where(and(eq(action.jobId, jobId), isNotNull(action.resolvedAt), gt(action.resolvedAt, since)))
+    .orderBy(asc(action.createdAt));
+  const seen = new Map<string, (typeof actions)[number]>();
+  for (const row of [...actions, ...settled]) seen.set(row.id, row);
+  const artifacts = await tx
+    .select()
+    .from(artifact)
+    .where(and(eq(artifact.jobId, jobId), gt(artifact.createdAt, since)))
+    .orderBy(asc(artifact.createdAt));
+  const records = await tx
+    .select()
+    .from(knowledgeRecord)
+    .where(and(eq(knowledgeRecord.spaceId, spaceId), gt(knowledgeRecord.updatedAt, since)))
+    .orderBy(asc(knowledgeRecord.updatedAt));
+  const open = await tx
+    .select()
+    .from(question)
+    .where(and(eq(question.jobId, jobId), eq(question.state, 'open')));
+  const waiting = await tx
+    .select({
+      id: approval.id,
+      actionId: approval.actionId,
+      requestedAt: approval.requestedAt,
+      kind: action.kind,
+    })
+    .from(approval)
+    .innerJoin(action, eq(action.id, approval.actionId))
+    .where(and(eq(action.jobId, jobId), isNull(approval.decidedAt)))
+    .orderBy(asc(approval.requestedAt));
+
+  // A receipt is what makes "it was sent" a fact. Say the connector's own
+  // handle, not the action id, because that is the thing a person can look up.
+  const receiptRef = (value: unknown): string | null => {
+    const parsed = receiptContract.safeParse(value);
+    return parsed.success ? parsed.data.external_ref : null;
+  };
+
+  return sinceLastContract.parse({
+    attempt_id: previous.id,
+    ended_at: since.toISOString(),
+    actions: [...seen.values()].slice(0, 50).map((row) => ({
+      action_id: row.id,
+      kind: row.kind,
+      status: row.status,
+      receipt_ref: receiptRef(row.receipt),
+      at: (row.resolvedAt ?? row.createdAt).toISOString(),
+    })),
+    evidence: [
+      ...artifacts.map((row) => ({
+        kind: 'artifact' as const,
+        handle: `artifact:${row.id}`,
+        label: row.path,
+        at: row.createdAt.toISOString(),
+      })),
+      ...records.map((row) => ({
+        kind: 'knowledge' as const,
+        handle: `knowledge:${row.id}`,
+        label: row.path,
+        at: row.updatedAt.toISOString(),
+      })),
+    ].slice(0, 50),
+    pending_questions: [
+      ...open.map((row) => ({ id: row.id, text: row.text, state: 'asked' as const })),
+      ...deferred.map((row, index) => ({
+        id: `deferred:${index}`,
+        text: row.text,
+        state: 'held' as const,
+      })),
+    ].slice(0, 50),
+    pending_approvals: waiting.slice(0, 50).map((row) => ({
+      approval_id: row.id,
+      action_id: row.actionId,
+      kind: row.kind,
+      requested_at: row.requestedAt.toISOString(),
+    })),
+  });
+}
+
 export async function buildBundle(
   tx: Transaction,
   row: JobRow,
@@ -277,6 +384,17 @@ export async function buildBundle(
     .from(question)
     .where(and(eq(question.jobId, row.id), eq(question.state, 'open')))
     .limit(1);
+  // The newest attempt that actually finished, current context only: a delta
+  // measured from an attempt whose context was revoked would name work the
+  // next attempt is not allowed to build on.
+  const [previous] = attempts.filter(contextMatches);
+  const delta = await buildSinceLast(
+    tx,
+    row.id,
+    row.spaceId,
+    previous ? { id: previous.id, endedAt: previous.endedAt } : null,
+    readDeferred(row),
+  );
   return responsibilityAttemptBundle.parse({
     ...generations,
     attempt: { ...attemptIdentity, job_id: row.id },
@@ -289,6 +407,7 @@ export async function buildBundle(
       deliverable: constraints.deliverable,
     },
     inputs: history.inputs,
+    since_last: delta,
     transcript: history.transcript,
     tools: [],
     skills: [],

@@ -21,7 +21,9 @@ import {
   type OriginWarning,
   originWarnings,
   type ProposeActionRequest,
+  type ReactRequest,
   type Receipt,
+  reactRequest,
   repairCounters,
   repairTrace,
   type ToolSpec,
@@ -31,6 +33,7 @@ import {
 import { Ajv } from 'ajv';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
+import { type ConnectionGrant, grantedToolCatalog } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
   type ConnectorDescription,
@@ -40,6 +43,7 @@ import {
 import { checkConnectionGeneration } from '../connectors/generation.ts';
 import type { Connector, ConnectorContext } from '../connectors/types.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
+import { recordGeneratedArtifact } from './artifacts.ts';
 import {
   bindEffect,
   type EffectAuthorityResolver,
@@ -202,7 +206,11 @@ export class BrokerService implements BrokerOperations {
       where id = ${connectionId} and space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
     const connector = this.options.connectors.get(connectionId);
-    if (!connector || connector.manifest.provider !== connection.provider)
+    if (
+      !connector ||
+      connector.manifest.provider !== connection.provider ||
+      connector.capability?.available === false
+    )
       throw new BrokerFault('connector_unavailable');
     const tool = findTool(connector.manifest, kind);
     if (!tool) throw new BrokerFault('unknown_tool');
@@ -217,43 +225,40 @@ export class BrokerService implements BrokerOperations {
     return { tool, connector };
   }
 
+  /**
+   * Answer a message with a glyph. It writes one event on this job's own
+   * stream, touches nothing outside the installation, and is refused for a
+   * message belonging to another job: a reaction is still a statement about
+   * something, and the runtime may only speak about its own responsibility.
+   */
+  async react(claims: CapabilityClaims, request: ReactRequest) {
+    const value = reactRequest.parse(request);
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, claims.job_id);
+      await checkAttempt(tx, job, claims);
+      const [target] = await tx`select seq, job_id, type from event
+        where seq = ${Number(value.message_id)}`;
+      if (!target || target.job_id !== job.id || target.type === 'reaction')
+        throw new BrokerFault('action_not_found');
+      await appendEvent(
+        tx,
+        job.id,
+        claims.attempt_id,
+        'reaction',
+        { message_id: value.message_id, emoji: value.emoji, by: 'assistant' },
+        `reaction:${value.message_id}:assistant:${value.emoji}`,
+      );
+      return { message_id: value.message_id, emoji: value.emoji };
+    });
+  }
+
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const connections = await tx`select id, provider, scopes from connection
+      const connections = await tx<ConnectionGrant[]>`select id, provider, scopes from connection
         where space_id = ${job.space_id} and status = 'active' order by id`;
-      const tools: ToolSpec[] = [];
-      for (const connection of connections) {
-        const connector = this.options.connectors.get(connection.id);
-        if (!connector || connector.manifest.provider !== connection.provider) continue;
-        for (const tool of connector.manifest.tools) {
-          if (
-            ![tool.name, ...tool.required_scopes].every(
-              (s) => claims.scopes.includes(s) && connection.scopes.includes(s),
-            )
-          )
-            continue;
-          tools.push({
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.input_schema,
-            effect_class: tool.effect_class,
-            connection_id: connection.id,
-            // The cell needs to know which tools it carries out itself, and
-            // the shape of the record it owes the ledger afterwards.
-            execution: tool.execution,
-            record_schema: tool.record_schema,
-          });
-        }
-      }
-      return tools.sort((a, b) =>
-        a.name < b.name
-          ? -1
-          : a.name > b.name
-            ? 1
-            : (a.connection_id ?? '').localeCompare(b.connection_id ?? '', 'en'),
-      );
+      return grantedToolCatalog(connections, this.options.connectors, claims.scopes);
     });
   }
 
@@ -1251,7 +1256,8 @@ export class BrokerService implements BrokerOperations {
             outcome: 'unknown',
             reason: 'Receipt identity did not match the dispatched action',
           };
-        } else receipt = { ...result.receipt, late };
+        } else
+          receipt = await recordGeneratedArtifact(tx, job, action, { ...result.receipt, late });
       }
       if (wasUncertain && result.outcome === 'unknown') return action;
       await this.setStatus(tx, action, result.outcome);
@@ -1338,7 +1344,9 @@ export class BrokerService implements BrokerOperations {
       const status = resolved ? (result.decision as 'succeeded' | 'failed') : 'unresolved';
       await this.setStatus(tx, current, status);
       const receipt =
-        result.decision === 'succeeded' && result.receipt ? { ...result.receipt, late } : null;
+        result.decision === 'succeeded' && result.receipt
+          ? await recordGeneratedArtifact(tx, currentJob, current, { ...result.receipt, late })
+          : null;
       await tx`update action set reconciliation = ${JSON.stringify({ ...result, question: resolved ? null : question, late })}::jsonb,
         resolved_at = ${resolved ? new Date().toISOString() : null},
         receipt = coalesce(${receipt ? JSON.stringify(receipt) : null}::jsonb, receipt) where id = ${id}`;

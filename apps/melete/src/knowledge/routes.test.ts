@@ -291,11 +291,10 @@ describe('reading a space', () => {
     expect(res.status).toBe(404);
   });
 
-  test('skills list the built-ins and the space has none of its own', async () => {
+  test('skills with required tools are hidden when no tool catalog is configured', async () => {
     const res = await app().request('/skills', { headers: headers() });
     const body = (await res.json()) as { skills: Array<{ space_id: string | null }> };
-    expect(body.skills).toHaveLength(6);
-    expect(body.skills.every((s) => s.space_id === null)).toBe(true);
+    expect(body.skills).toEqual([]);
   });
 });
 

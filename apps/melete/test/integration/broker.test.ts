@@ -3,6 +3,7 @@ import {
   type ConnectorManifest,
   canonicalizePayload,
   type DispatchResult,
+  THUMBS_UP,
 } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
 import type { EffectAuthority } from '../../src/broker/authority.ts';
@@ -317,6 +318,29 @@ describe('durable action lifecycle', () => {
     expect(job?.state).toBe('needs_reconciliation');
   });
 
+  databaseTest('the runtime can answer a message with a glyph instead of prose', async () => {
+    const s = await setup();
+    const [message] = await s.sql`insert into event (job_id, type, payload, dedup_key)
+      values (${s.claims.job_id}, 'notice',
+      ${JSON.stringify({ kind: 'user_message', text: 'thanks, got it' })}::jsonb,
+      ${`glyph:${recordId('evt')}`}) returning seq`;
+    const seq = String(message?.seq);
+    const answered = await s.broker.react(s.claims, { message_id: seq, emoji: THUMBS_UP });
+    expect(answered).toEqual({ message_id: seq, emoji: THUMBS_UP });
+    const [written] = await s.sql`select type, payload, attempt_id from event
+      where dedup_key = ${`reaction:${seq}:assistant:${THUMBS_UP}`}`;
+    expect(written?.type).toBe('reaction');
+    expect(written?.attempt_id).toBe(s.claims.attempt_id);
+    expect(written?.payload).toMatchObject({ message_id: seq, by: 'assistant' });
+
+    // Another job's message is not this responsibility's to speak about.
+    const other = await seedJob(s.sql);
+    const refusal = await rejectionOf(
+      s.broker.react(other.claims, { message_id: seq, emoji: THUMBS_UP }),
+    );
+    expect(refusal).toMatchObject({ code: 'action_not_found' });
+  });
+
   databaseTest(
     'persisted connection scopes and job space gate catalog and action access',
     async () => {
@@ -327,7 +351,11 @@ describe('durable action lifecycle', () => {
         payload: {},
       });
       await s.sql`update connection set scopes = '["test.read"]'::jsonb where id = ${s.connectionId}`;
-      expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toEqual(['test.read']);
+      // `react` is always there: it belongs to no connection and needs no scope.
+      expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toEqual([
+        'react',
+        'test.read',
+      ]);
       await expect(s.broker.get(s.claims, proposal.action_id)).rejects.toMatchObject({
         code: 'scope_denied',
       });

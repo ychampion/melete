@@ -4,6 +4,10 @@ import { client, errorMessage } from '../api.ts';
 import { Banner, JobChip, WAITING_SENTENCE, waitingDetail } from '../components.tsx';
 import { useEventStream, useLoad } from '../hooks.ts';
 
+/** The two glyphs the service reads as attention signals. Everything else is expression. */
+const THUMBS_UP = '\u{1F44D}';
+const THUMBS_DOWN = '\u{1F44E}';
+
 const EXAMPLES = [
   'Email the building manager about HT-4471 and ask for a date an engineer is booked.',
   'Write one line to the flaky test destination; I want to see an unknown outcome.',
@@ -146,6 +150,35 @@ function Transcript({
   onReset: () => void;
 }) {
   const [reply, setReply] = useState('');
+  const [reactError, setReactError] = useState<string | null>(null);
+
+  /**
+   * Reactions are drawn on the bubble they belong to, never as a row of their
+   * own. They arrive on the same stream as everything else, so a reload or a
+   * reconnect brings them back with the message.
+   */
+  const reactions = useMemo(() => {
+    const byMessage = new Map<number, string[]>();
+    for (const event of stream.events) {
+      if (event.type !== 'reaction') continue;
+      const payload = event.payload as { message_id?: unknown; emoji?: unknown };
+      if (typeof payload.message_id !== 'string' || typeof payload.emoji !== 'string') continue;
+      const on = Number(payload.message_id);
+      const drawn = byMessage.get(on) ?? [];
+      if (!drawn.includes(payload.emoji)) drawn.push(payload.emoji);
+      byMessage.set(on, drawn);
+    }
+    return byMessage;
+  }, [stream.events]);
+
+  const react = async (seq: number, emoji: string) => {
+    setReactError(null);
+    const { error: failure } = await client.api.POST('/messages/{messageId}/reactions', {
+      params: { path: { messageId: String(seq) } },
+      body: { emoji },
+    });
+    if (failure) setReactError(errorMessage(failure));
+  };
 
   // One list, in stream order, with the gaps interleaved where they happened.
   const lines = useMemo(() => {
@@ -199,6 +232,8 @@ function Transcript({
         </span>
       </div>
 
+      <Banner message={reactError} />
+
       <div className="transcript">
         {lines.length === 0 ? <p className="muted">Waiting for the first event.</p> : null}
         {lines.map((line) =>
@@ -207,14 +242,42 @@ function Transcript({
               …{line.text}
             </p>
           ) : (
-            <p
+            <div
               key={`${line.kind}-${line.seq}`}
-              className={`bubble${line.kind === 'owner' ? ' bubble-owner' : ''}${
-                line.kind === 'note' ? ' bubble-note' : ''
-              }`}
+              className={`bubble-block${line.kind === 'owner' ? ' bubble-block-owner' : ''}`}
             >
-              {line.text}
-            </p>
+              <p
+                className={`bubble${line.kind === 'owner' ? ' bubble-owner' : ''}${
+                  line.kind === 'note' ? ' bubble-note' : ''
+                }`}
+              >
+                {line.text}
+              </p>
+              <div className="reactions">
+                {(reactions.get(line.seq) ?? []).map((emoji) => (
+                  <span className="reaction" key={emoji}>
+                    {emoji}
+                  </span>
+                ))}
+                {line.kind === 'text' ? (
+                  <span className="reaction-controls">
+                    {[THUMBS_UP, THUMBS_DOWN].map((emoji) => (
+                      <button
+                        type="button"
+                        className="reaction-add"
+                        key={emoji}
+                        aria-label={
+                          emoji === THUMBS_UP ? 'This was useful' : 'This was not what I wanted'
+                        }
+                        onClick={() => void react(line.seq, emoji)}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </span>
+                ) : null}
+              </div>
+            </div>
           ),
         )}
       </div>

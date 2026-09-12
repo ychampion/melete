@@ -23,6 +23,8 @@ export const QUEUES = {
   triggerPoll: 'melete.trigger-poll',
   /** A persisted schedule occurrence, converted to a job wake after matching the wait. */
   triggerSchedule: 'job.trigger',
+  /** Continues a bounded scan through observations already delivered to a watch. */
+  triggerScan: 'melete.trigger-scan',
   /** Retries verify for actions that came back unknown. */
   reconcile: 'melete.reconcile',
   operation: 'melete.operation',

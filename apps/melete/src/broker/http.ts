@@ -8,6 +8,8 @@ import {
   executionSettlement,
   type ProposeActionRequest,
   proposeActionRequest,
+  type ReactRequest,
+  reactRequest,
   type ToolSpec,
 } from '@melete/contracts';
 import { Hono } from 'hono';
@@ -20,6 +22,11 @@ export interface BrokerOperations {
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
+  /** Answer a message with a glyph instead of prose. Changes nothing outside. */
+  react(
+    claims: CapabilityClaims,
+    request: ReactRequest,
+  ): Promise<{ message_id: string; emoji: string }>;
   decide(id: string, request: ApprovalDecisionRequest): Promise<unknown>;
   startExecution?(claims: CapabilityClaims, id: string): Promise<{ execute: boolean }>;
   settleExecution?(
@@ -64,7 +71,9 @@ export function createBrokerApp(options: {
     const runtime =
       (c.req.method === 'GET' && (path === '/tools' || /^\/actions\/[^/]+$/.test(path))) ||
       (c.req.method === 'POST' &&
-        (path === '/actions' || /^\/actions\/[^/]+\/execution\/(start|settle)$/.test(path)));
+        (path === '/actions' ||
+          path === '/reactions' ||
+          /^\/actions\/[^/]+\/execution\/(start|settle)$/.test(path)));
     if (!decision && !runtime) return c.json({ error: { code: 'not_found' } }, 404);
     if (Number(c.req.header('content-length') ?? '0') > 1_048_576) {
       return c.json({ error: { code: 'payload_invalid' } }, 413);
@@ -99,6 +108,12 @@ export function createBrokerApp(options: {
   app.post('/actions', async (c) =>
     c.json(
       await options.broker.propose(c.get('claims'), proposeActionRequest.parse(await c.req.json())),
+      201,
+    ),
+  );
+  app.post('/reactions', async (c) =>
+    c.json(
+      await options.broker.react(c.get('claims'), reactRequest.parse(await c.req.json())),
       201,
     ),
   );

@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import type { Env } from '../env.ts';
+import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
 import { createArtifactsConnector } from './artifacts.ts';
 import { CalendarConnector } from './calendar.ts';
 import { EmailConnector } from './email.ts';
@@ -9,6 +11,7 @@ import { createFilesConnector } from './files.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
+import { createCapabilityConnector } from './tts.ts';
 import { createWebConnector } from './web.ts';
 
 const endpoint = z
@@ -55,6 +58,8 @@ export async function configuredConnectors(options: {
   masterKey?: string;
   connections?: ConfiguredConnection[];
   enableTestConnector?: boolean;
+  /** Reads the same environment the gateway does, so one key configures both. */
+  env?: Record<string, string | undefined>;
 }) {
   const registry = new ConnectorRegistry();
   // Publishing by email uses the mailbox the owner already configured. The
@@ -74,7 +79,23 @@ export async function configuredConnectors(options: {
   if (options.enableTestConnector) await initializeTestLedger(options.sql);
   for (const row of connections) {
     const setting = config.get(row.id);
-    if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
+    if (row.provider === 'generation') {
+      // A capability is registered like any other connector, so a generation
+      // call takes the path approval, fencing, budget and idempotency already
+      // hold. A second path to the world would be a second place to get those
+      // right.
+      const configured = capabilitiesFromEnv(options.env ?? process.env);
+      if (!configured.speech) continue;
+      registry.register(
+        row.id,
+        createCapabilityConnector({
+          spacesRoot: options.spacesRoot,
+          adapter: configured.speech,
+          provider: configured.provider,
+          unitCostUsd: configured.unitCostUsd,
+        }),
+      );
+    } else if (row.provider === 'files') registry.register(row.id, createFilesConnector(options));
     else if (row.provider === 'exec') registry.register(row.id, createExecConnector(options));
     else if (row.provider === 'artifacts') {
       const id = row.id;
@@ -124,4 +145,23 @@ export async function configuredConnectors(options: {
   }
   for (const register of pending) register();
   return registry;
+}
+
+/** Both listeners build catalogs from the validated startup environment. */
+export async function connectorsFromEnv(sql: Sql, env: Env) {
+  return configuredConnectors({
+    sql,
+    workRoot: env.MELETE_WORK_DIR,
+    spacesRoot: env.MELETE_SPACES_DIR,
+    masterKey: env.MELETE_MASTER_KEY,
+    connections: await readConnectionConfig(env.MELETE_CONNECTIONS_FILE),
+    enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
+    env: {
+      OPENAI_API_KEY: env.OPENAI_API_KEY,
+      OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+      OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
+      MELETE_SPEECH_MODEL: env.MELETE_SPEECH_MODEL,
+      MELETE_ENABLE_FAKE_PROVIDER: String(env.MELETE_ENABLE_FAKE_PROVIDER),
+    },
+  });
 }

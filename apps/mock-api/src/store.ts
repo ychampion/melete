@@ -10,6 +10,7 @@ import {
   type Action,
   type ApiEvent,
   type Approval,
+  type Artifact,
   type Attempt,
   type Connection,
   type ConnectionView,
@@ -72,6 +73,7 @@ export class Store {
   readonly attempts = new Map<string, Attempt>();
   readonly actions = new Map<string, Action>();
   readonly approvals = new Map<string, Approval>();
+  readonly artifacts = new Map<string, { artifact: Artifact; bytes: Uint8Array }>();
   readonly knowledge = new Map<string, KnowledgeEntry>();
   readonly skills = new Map<string, SkillEntry>();
   readonly proposals = new Map<string, { path: string; diff: string }>();

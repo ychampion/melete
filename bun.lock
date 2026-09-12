@@ -73,6 +73,7 @@
       "version": "0.1.0-pre",
       "dependencies": {
         "@melete/contracts": "workspace:*",
+        "@melete/skills": "workspace:*",
         "zod": "4.6.2",
       },
       "devDependencies": {
@@ -94,6 +95,7 @@
       "name": "@melete/contracts",
       "version": "0.1.0-pre",
       "dependencies": {
+        "re2js": "2.8.6",
         "ulid": "3.0.2",
         "zod": "4.6.2",
         "zod-openapi": "6.0.2",
@@ -538,6 +540,8 @@
     "punycode.js": ["punycode.js@2.3.1", "", {}, "sha512-uxFIHU0YlHYhDQtV4R9J6a52SLx28BCjT+4ieh7IGbgwVJWO+km431c4yRlREUAsAmt/uMjQUyQHNEPf0M39CA=="],
 
     "quick-format-unescaped": ["quick-format-unescaped@4.0.4", "", {}, "sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg=="],
+
+    "re2js": ["re2js@2.8.6", "", {}, "sha512-xLgQil4kIUCrAzVk9fRSkxkFNwmygLFjVxXrLc65aE1F0+Zsb8rxumFBy4XKyvgMCTL6kilDq3EZ0piE2dP/Dg=="],
 
     "react": ["react@19.3.0", "", {}, "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog=="],
 

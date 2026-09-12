@@ -133,6 +133,10 @@ class BrokerClient:
         """Attach the result to the reserved action, including a late result."""
         return self._call("POST", f"/actions/{action_id}/execution/settle", result)
 
+    def react(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward a reaction under the same attempt token as every other tool."""
+        return self._call("POST", "/reactions", payload)
+
 
 def _error_from_body(error: "urllib.error.HTTPError") -> tuple:
     """Pull the broker's own error code out of a non-2xx body.

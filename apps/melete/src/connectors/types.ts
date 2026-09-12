@@ -1,5 +1,6 @@
 import type {
   Action,
+  CapabilityManifest,
   ConnectorHealth,
   ConnectorManifest,
   DispatchResult,
@@ -30,6 +31,12 @@ export interface Connector {
   prepare?(payload: JsonObject, ctx: ConnectorContext, tx: Query): Promise<JsonObject>;
   /** Recheck bound resources under the admission/dispatch transaction. */
   validateBinding?(action: Action, ctx: ConnectorContext, tx: Query): Promise<void>;
+  /**
+   * Present when this connector is a generative capability rather than a reach
+   * into something that already exists. It carries the cost and the mime type
+   * the call produces, both from trusted configuration.
+   */
+  capability?: CapabilityManifest;
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
   health(): Promise<ConnectorHealth>;

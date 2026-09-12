@@ -3,6 +3,7 @@ import {
   type AttemptOutcome,
   type JobScheduling,
   jobScheduling,
+  UNREAD_WEIGHT_OF_THUMBS_DOWN,
   waitSpec,
 } from '@melete/contracts';
 import { and, asc, eq } from 'drizzle-orm';
@@ -150,6 +151,41 @@ export class AttentionService {
       'new_result',
     );
   }
+  /**
+   * What a person's reaction does to the counters. A thumbs-down is a read
+   * result that was wrong for them, which is worse news than silence: the
+   * result it lands on counts as two unread ones, so the frequency reduction
+   * arrives a cycle sooner than unread alone would bring it. A thumbs-up is a
+   * read receipt and clears the streak, exactly as opening the job does.
+   *
+   * Runs inside the caller's transaction, on a row the caller already locked,
+   * because the reaction event and the counter it moves are one fact.
+   */
+  async reacted(tx: Transaction, row: JobRow, weight: 'clear' | 'double'): Promise<JobRow> {
+    if (weight === 'clear') {
+      if (row.unreadResults === 0 && row.attentionStatus === 'normal') return row;
+      return this.update(
+        tx,
+        row,
+        {
+          unreadResults: 0,
+          attentionStatus: 'normal',
+          cadenceMultiplier: 1,
+          scheduleSkipRemaining: 0,
+        },
+        'reaction_read',
+      );
+    }
+    const unreadResults = row.unreadResults + (UNREAD_WEIGHT_OF_THUMBS_DOWN - 1);
+    const state = attention({ ...row, unreadResults });
+    return this.update(
+      tx,
+      row,
+      { unreadResults, ...state, scheduleSkipRemaining: state.cadenceMultiplier - 1 },
+      'reaction_negative',
+    );
+  }
+
   async markRead(id: string) {
     return this.jobs.transaction(async (tx) => {
       const row = await this.jobs.lock(tx, id);

@@ -8,6 +8,7 @@
 export * from './api.ts';
 export * from './artifacts.ts';
 export * from './broker.ts';
+export * from './capabilities.ts';
 export * from './common.ts';
 export * from './connector.ts';
 export * from './effects.ts';
@@ -20,7 +21,10 @@ export * from './knowledge.ts';
 export * from './memory.ts';
 export { buildOpenApiDocument, OPENAPI_VERSION, openApiJson } from './openapi.ts';
 export * from './provenance.ts';
+export * from './reactions.ts';
 export * from './repair.ts';
 export * from './responsibility.ts';
 export * from './runtime.ts';
 export * from './skills.ts';
+export * from './style.ts';
+export * from './watch.ts';

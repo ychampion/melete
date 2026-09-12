@@ -93,6 +93,13 @@ def build_handler(client: BrokerClient, tool: Dict[str, Any]) -> Callable[..., D
         # the broker is ever called, and the model is told the tool is broken.
         arguments: Dict[str, Any] = dict(args or {})
         arguments.update(extra)
+        if name == "react" and connection_id is None:
+            # Reactions belong to the attempt's job, not an external connection.
+            # The broker checks that ownership before persisting the glyph.
+            try:
+                return {"status": SUCCEEDED, "reaction": client.react(arguments)}
+            except BrokerError as error:
+                return from_error(error.code, error.message)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.

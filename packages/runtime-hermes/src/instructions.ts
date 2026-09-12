@@ -11,7 +11,7 @@
  * change rarely, the knowledge changes per attempt, and the volatile inputs go
  * last, so the longest stable prefix is as long as it can be.
  */
-import { type AttemptBundle, CONTEXT_LIMITS } from '@melete/contracts';
+import { type AttemptBundle, CONTEXT_LIMITS, renderSinceLast } from '@melete/contracts';
 import { estimateTokens, loadIdentity } from '@melete/skills';
 
 /**
@@ -82,6 +82,9 @@ export function renderInput(bundle: AttemptBundle): string {
       ...bundle.job.unresolved_questions.map((question) => `- ${question}`),
     );
   }
+
+  // The durable delta must reach the run's prompt, not just its service-side bundle.
+  lines.push('', renderSinceLast(bundle.since_last));
 
   // The reason this wake exists goes last, because it is what the model should
   // act on first and recency is what it reads as urgency.

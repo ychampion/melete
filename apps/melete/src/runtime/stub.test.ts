@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   type AttemptBundle,
   type AttemptOutcome,
+  EMPTY_SINCE_LAST,
   type RuntimeEvent,
   runtimeEvent,
 } from '@melete/contracts';
@@ -33,6 +34,7 @@ function makeBundle(script: StubScript = { script: [] }, epoch = 1): AttemptBund
       trigger_events: [],
       repair_briefs: [],
     },
+    since_last: EMPTY_SINCE_LAST,
     transcript: [],
     tools: [],
     skills: [],

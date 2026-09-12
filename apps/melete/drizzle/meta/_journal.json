@@ -127,6 +127,20 @@
       "when": 1789161120201,
       "tag": "0017_artifact_content_digest",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789161120202,
+      "tag": "0018_reactions_and_style",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789161120203,
+      "tag": "0019_watch_triggers",
+      "breakpoints": true
     }
   ]
 }
