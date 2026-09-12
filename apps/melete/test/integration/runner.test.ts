@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -401,6 +401,35 @@ withDb('attempt runner against Postgres and pg-boss', () => {
         }
       } finally {
         Date.now = realNow;
+      }
+    },
+  );
+
+  test.each(['create', 'resume'] as const)(
+    'an immediate %s wake stays due with a process clock ahead of Postgres',
+    async (operation) => {
+      const { handle, jobs } = fixture();
+      const worker = runner();
+      let row: JobRow | undefined;
+      if (operation === 'resume') {
+        row = await create();
+        await handle.sql`update job set next_wake_at = now() where id = ${row.id}`;
+        const admitted = await claim(worker, row);
+        await worker.commitOutcome(admitted.claims, {
+          kind: 'waiting_for_input',
+          question: 'Continue?',
+        });
+      }
+      // Unlike replacing Date.now alone, this also skews the Date constructor used by wakes.
+      setSystemTime(new Date(Date.now() + 120_000));
+      try {
+        const due = row ? await jobs.input(row.id, 'Continue.') : await create();
+        const [saved] =
+          await handle.sql`select next_wake_at <= now() as due from job where id = ${due.id}`;
+        expect(saved?.due).toBe(true);
+        expect((await claim(worker, due)).claims.epoch).toBe(operation === 'resume' ? 2 : 1);
+      } finally {
+        setSystemTime();
       }
     },
   );
