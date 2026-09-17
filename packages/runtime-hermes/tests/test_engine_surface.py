@@ -4,12 +4,12 @@ Every test here drives real engine code — no reimplementation, no mocks of the
 behaviour under test — against a temporary ``HERMES_HOME`` and, where a request
 has to be observed, a loopback capture server. No provider is contacted.
 
-Each probe that depends on configuration is parametrized ``shipped`` versus
-``target``: ``shipped`` asserts what the configuration in
-``packages/runtime-hermes/config/config.yaml`` produces today, so the file is
-green as it stands and records the gap; ``target`` asserts the behaviour the
-engine-forward configuration needs. Citations name the engine file and line the
-probe exercises, read at the pinned release.
+Each probe that depends on configuration takes the ``shipped`` case straight
+from ``packages/runtime-hermes/config/config.yaml``, so it asserts what the
+image actually produces rather than a copy of it; the paired case is the
+spelling that does nothing, kept because a key the engine ignores looks exactly
+like one it reads. Citations name the engine file and line the probe exercises,
+read at the pinned release.
 
 The probes are skipped with a clear reason when the engine is not importable, so
 the default plugin test run (an isolated environment without it) stays green.
@@ -59,6 +59,18 @@ def write_config(home: Path, config: dict) -> Path:
     path = home / "config.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return path
+
+
+SHIPPED_CONFIG_PATH = Path(__file__).parents[1] / "config" / "config.yaml"
+
+
+def shipped_config() -> dict:
+    """The configuration the image carries, read from the file it is copied from.
+
+    Probes take their ``shipped`` case from here rather than restating it, so a
+    setting that is removed or renamed turns a probe red instead of leaving it
+    asserting something the runtime no longer does."""
+    return yaml.safe_load(SHIPPED_CONFIG_PATH.read_text(encoding="utf-8"))
 
 
 class _CaptureHandler(http.server.BaseHTTPRequestHandler):
@@ -127,8 +139,10 @@ CAPABILITY_HEADER = "x-melete-capability"
 
 def _gateway_config(base_url: str, *, header_scope: str) -> dict:
     """Engine config for one gateway provider. ``header_scope`` places the
-    capability header where the shipped boot config puts it (on the provider
-    entry) or where the target configuration puts it (on the model section)."""
+    capability header on the provider entry alone, which is where it used to go,
+    or on the model section, which is where the boot script writes it now (see
+    ``test_entrypoint.py::test_boot_config_carries_capability_in_model_headers``;
+    the boot script writes both copies, and this is the one that carries)."""
     provider: dict = {"base_url": base_url, "key_env": "MELETE_MODEL_KEY",
                       "default_model": "probe-model"}
     model: dict = {"provider": "melete-gateway", "default": "probe-model"}
@@ -141,7 +155,7 @@ def _gateway_config(base_url: str, *, header_scope: str) -> dict:
 
 @pytest.mark.parametrize(
     ("config_case", "header_scope", "expect_header"),
-    [("shipped", "provider", False), ("target", "model", True)],
+    [("provider-only", "provider", False), ("shipped", "model", True)],
 )
 def test_compression_aux_client_sends_capability_header(
     hermes_home, monkeypatch, config_case, header_scope, expect_header,
@@ -381,15 +395,16 @@ def test_execute_code_child_allowlist_removes_the_secrets_without_registration(
 @pytest.mark.parametrize(
     ("config_case", "memory_section", "expected_flags"),
     [
-        ("shipped", {"enabled": False}, (True, True)),
-        ("target", {"memory_enabled": False, "user_profile_enabled": False}, (False, False)),
+        ("inert-spelling", {"enabled": False}, (True, True)),
+        ("shipped", shipped_config().get("memory"), (False, False)),
     ],
 )
 def test_memory_flags_are_read_from_the_real_keys(
     hermes_home, config_case, memory_section, expected_flags,
 ):
-    """`memory.enabled` leaves both stores on; the two real keys turn them off."""
-    write_config(hermes_home, {"memory": memory_section, "skills": {"enabled": False}})
+    """`memory.enabled` leaves both stores on; the two real keys, which the
+    shipped configuration now sets, turn them off."""
+    write_config(hermes_home, {"memory": memory_section})
 
     from hermes_cli.config import load_config
     from tools.memory_tool import get_builtin_memory_store_flags
@@ -545,8 +560,9 @@ def test_skill_manage_writes_live_without_write_approval(
     produces and the hook events that fire around it, because a live write has
     to be observable and gateable from outside the engine.
 
-    The config here also carries `skills.enabled: false`, the shipped spelling.
-    The write still lands, so that key is not one the engine reads either."""
+    The config here also carries `skills.enabled: false`, the spelling the
+    configuration used to carry. The write still lands, so that key is not one
+    the engine reads either, which is why it is no longer shipped."""
     write_config(hermes_home, {"skills": {"enabled": False}})
 
     from tools.skill_manager_tool import skill_manage
@@ -623,14 +639,15 @@ def test_a_dispatched_skill_write_also_fires_the_tool_call_hooks(
 @pytest.mark.parametrize(
     ("config_case", "section", "expected"),
     [
-        ("shipped", {}, False),
-        ("shipped-non-interactive-flag-only",
+        ("unset", {}, False),
+        ("non-interactive-flag-only",
          {"non_interactive_hard_stop_enabled": True}, False),
-        ("target", {"hard_stop_enabled": True}, True),
+        ("shipped", shipped_config().get("tool_loop_guardrails"), True),
     ],
 )
 def test_tool_loop_hard_stop_on_api_server(config_case, section, expected):
-    """Unattended runs on this platform get no hard stop unless it is asked for."""
+    """Unattended runs on this platform get no hard stop unless it is asked for,
+    and the shipped configuration asks for it by name."""
     from agent.tool_guardrails import ToolCallGuardrailConfig
 
     resolved = ToolCallGuardrailConfig.from_mapping(section, platform="api_server")
@@ -653,14 +670,15 @@ def test_tool_loop_hard_stop_on_api_server(config_case, section, expected):
 @pytest.mark.parametrize(
     ("config_case", "agent_section", "expect_unlimited", "expected"),
     [
-        ("shipped", {}, True, None),
-        ("target", {"max_turns": 150}, False, 150),
+        ("unset", {}, True, None),
+        ("shipped", shipped_config().get("agent"), False, 150),
     ],
 )
 def test_agent_max_turns_resolution_on_the_api_server_path(
     hermes_home, monkeypatch, config_case, agent_section, expect_unlimited, expected,
 ):
-    """Unset resolves to unlimited; 150 resolves to 150."""
+    """Unset resolves to unlimited; the ceiling the shipped configuration names
+    resolves to that number."""
     write_config(hermes_home, {"agent": agent_section} if agent_section else {})
     monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
 
@@ -749,6 +767,28 @@ def test_threshold_tokens_caps_the_million_token_window():
         model="probe-model", threshold_percent=0.50, quiet_mode=True,
         config_context_length=128_000, threshold_tokens_cap=40_000)
     assert small.threshold_tokens == 40_000
+
+
+def test_the_shipped_threshold_is_the_one_the_engine_uses():
+    """The window and trigger the image carries, put through the engine's own
+    compressor: what Melete renders is what the engine will act on, and the
+    owner's cap is what decides at this window rather than the engine's half."""
+    from agent.context_compressor import ContextCompressor
+
+    config = shipped_config()
+    window = config["model"]["context_length"]
+    configured = config["compression"]["threshold_tokens"]
+
+    compressor = ContextCompressor(
+        model="probe-model", threshold_percent=0.50, quiet_mode=True,
+        config_context_length=window, threshold_tokens_cap=configured)
+
+    assert compressor.context_length == window
+    assert compressor.threshold_tokens == configured
+    assert configured < ContextCompressor._compute_threshold_tokens(
+        window, ContextCompressor._effective_threshold_percent(window, 0.50), None), (
+        "the cap is meant to bind at this window; if it no longer does, the "
+        "engine's own trigger is the one in force")
 
 
 def test_summary_budget_scales_with_the_window():
