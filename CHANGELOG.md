@@ -13,7 +13,7 @@ to named tests on the tagged tree; the README's gates table is the summary.
   images. Actions are pinned by commit and no secret is read; a test fails the
   workflow if it names a script or file that does not exist.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
-  `json-file` log at 10 MB with five files. `compose:check` (24 checks) and
+  `json-file` log at 10 MB with five files. `compose:check` (27 checks) and
   `browser:compose:check` (12) refuse a service without the bound.
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one

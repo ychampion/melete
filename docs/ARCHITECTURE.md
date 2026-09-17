@@ -37,8 +37,10 @@ joins its own `browser-control` and `browser-egress` networks and none of the
 above; see [the browser worker](browser-worker.md).
 
 The static checker `checkCompose` in `deploy/scripts/compose-check.ts` reads
-this YAML (24 checks, `passes every boundary check` and its mutation tests). It
-does not open sockets inside a container. Live behavior was established by
+this YAML (25 checks, `passes every boundary check` and its mutation tests);
+`bun run compose:check` adds two checks that each installing Dockerfile copies
+every workspace manifest, 27 in all. It does not open sockets inside a
+container. Live behavior was established by
 scenario 6 on a Linux Docker host: from a claimed cell and the warm cell, the
 internet, the host metadata address, a live host listener, Postgres (by DNS and
 by container IP), the web service and the owner control plane were unreachable,
