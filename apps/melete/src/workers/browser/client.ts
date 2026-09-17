@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { LiveDown, LiveInput, LiveOpen } from './live-protocol.ts';
 import { BrowserFault, type BrowserPolicy, type BrowserSession } from './sessions.ts';
 
 export class BrowserWorkerClient {
@@ -44,6 +45,29 @@ export class BrowserWorkerClient {
   }
   handback(sessionId: string): Promise<BrowserSession> {
     return this.request('/handback', { session_id: sessionId });
+  }
+  liveOpen(sessionId: string, controlEpoch: number): Promise<LiveOpen> {
+    return this.request('/live/open', { session_id: sessionId, control_epoch: controlEpoch });
+  }
+  livePull(liveId: string, ackThrough: number, timeoutMs: number): Promise<{ events: LiveDown[] }> {
+    return this.request('/live/pull', {
+      live_id: liveId,
+      ack_through: ackThrough,
+      timeout_ms: timeoutMs,
+    });
+  }
+  liveInput(
+    liveId: string,
+    ackThrough: number,
+    events: LiveInput[],
+  ): Promise<{ accepted: number }> {
+    return this.request('/live/input', { live_id: liveId, ack_through: ackThrough, events });
+  }
+  liveScope(liveId: string, host: string): Promise<{ site_scope: string[] }> {
+    return this.request('/live/scope', { live_id: liveId, host });
+  }
+  liveClose(liveId: string): Promise<{ closed: true }> {
+    return this.request('/live/close', { live_id: liveId });
   }
 }
 

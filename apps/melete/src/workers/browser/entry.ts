@@ -1,5 +1,6 @@
 import { BrowserController } from './controller.ts';
 import type { BrowserNetworkOptions } from './egress.ts';
+import { liveRoutes } from './live-routes.ts';
 import { startBrowserServer } from './server.ts';
 
 export async function startBrowserWorker(options: { network?: BrowserNetworkOptions } = {}) {
@@ -18,6 +19,7 @@ export async function startBrowserWorker(options: { network?: BrowserNetworkOpti
     port: Number(process.env.MELETE_BROWSER_PORT ?? 0),
     hostname: process.env.MELETE_BROWSER_HOST ?? '127.0.0.1',
     command: (input) => controller.command(input),
+    live: liveRoutes(controller.live),
   });
   process.stdout.write(`${JSON.stringify({ port: server.port })}\n`);
   const close = async () => {
