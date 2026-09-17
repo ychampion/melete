@@ -291,6 +291,28 @@ describe('Docker attempt supervision', () => {
     }
   });
 
+  test('every attempt container is told the window and trigger its model implies', async () => {
+    const f = await setup();
+    const cases = [
+      // A million-token window, so the owner's cap on the trigger decides.
+      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', '1000000', '200000'],
+      // A model the catalog does not name: the documented fallback and the
+      // engine's own trigger for it.
+      ['openai-compatible', 'llama3.1', '128000', '96000'],
+    ] as const;
+    for (const [index, [provider, model, window, threshold]] of cases.entries()) {
+      await f.runtime.start(
+        { ...bundle(index), model: { provider, model, fallback: null } },
+        f.sink,
+        new AbortController().signal,
+      );
+      const environment = f.daemon.created[index]?.Env ?? [];
+      expect(environment).toContain(`MELETE_ENGINE_CONTEXT_LENGTH=${window}`);
+      expect(environment).toContain(`MELETE_ENGINE_COMPACTION_THRESHOLD=${threshold}`);
+      expect(environment).toContain('MELETE_ENGINE_MAX_TURNS=150');
+    }
+  });
+
   test('concurrent jobs never share a network or writable Hermes home', async () => {
     const f = await setup();
     await Promise.all(

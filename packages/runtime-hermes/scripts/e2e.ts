@@ -27,6 +27,7 @@ import { fakeProvider } from '../../../apps/melete/src/gateway/index.ts';
 import { seedJob } from '../../../apps/melete/test/helpers/broker.ts';
 import { createPostgresFixture } from '../../../apps/melete/test/helpers/postgres.ts';
 import { brokerParkedActions, HermesRuntimeAdapter } from '../src/adapter.ts';
+import { renderEngineConfig } from '../src/engine-config.ts';
 
 export const ROOT = join(import.meta.dir, '..', '..', '..');
 const HERMES_SRC = join(ROOT, '.hermes-src');
@@ -89,37 +90,21 @@ export function hermesHome(
     join(home, 'config.yaml'),
     stringify(
       merge(
-        {
-          platform_toolsets: { api_server: ['melete'] },
-          plugins: { enabled: ['melete'], allow_deprecated_imports: false },
-          tools: { tool_search: { enabled: 'off' } },
-          memory: { enabled: false },
-          skills: { enabled: false },
-          curator: { enabled: false },
-          auxiliary: {
-            title_generation: { enabled: false },
-            background_review: { enabled: false },
-            compression: { provider: 'melete-gateway', model: 'scripted', fallback_chain: [] },
-          },
-          approvals: { unattended_mode: 'deny', timeout: 300 },
-          provider: 'melete-gateway',
-          // The gateway's budget adapter allows only the provider/model recorded on
-          // the attempt row, so these have to be the seeded pair, not a nice name.
-          model: { default: 'scripted', context_length: 256_000 },
-          providers: {
-            'melete-gateway': {
-              base_url: `http://127.0.0.1:${brokerPort}/providers/fake/v1`,
-              key_env: 'MELETE_MODEL_KEY',
-              default_model: 'scripted',
-              // The gateway meters per attempt, so every model request has to carry
-              // the capability as well as the surrogate. The container is one
-              // attempt, so a static header is the right shape; the image's
-              // entrypoint writes it from MELETE_ATTEMPT_TOKEN at boot.
-              extra_headers: { 'x-melete-capability': token },
-            },
-          },
-          gateway: { platforms: { api_server: { max_concurrent_runs: 1 } } },
-        },
+        // The same renderer the image and both supervisors use, so a proof here
+        // exercises the configuration production actually runs. The gateway's
+        // budget adapter allows only the provider/model recorded on the attempt
+        // row, so these have to be the seeded pair, not a nice name.
+        renderEngineConfig({
+          provider: 'fake',
+          model: 'scripted',
+          brokerUrl: `http://127.0.0.1:${brokerPort}`,
+          contextWindow: 256_000,
+          // The gateway meters per attempt, so every model request has to carry
+          // the capability as well as the surrogate. The container is one
+          // attempt, so a static header is the right shape; in the image the
+          // entrypoint writes it from MELETE_ATTEMPT_TOKEN at boot.
+          capability: token,
+        }),
         overrides,
       ),
     ),

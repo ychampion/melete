@@ -18,11 +18,12 @@ import type {
   RuntimeEvent,
   WaitSpec,
 } from '@melete/contracts';
-import { parse, stringify } from 'yaml';
+import { stringify } from 'yaml';
 import {
   brokerCatalogState,
   HermesRuntimeAdapter,
 } from '../packages/runtime-hermes/src/adapter.ts';
+import { renderEngineConfig } from '../packages/runtime-hermes/src/engine-config.ts';
 import { HERMES_PINNED_COMMIT, RUNTIME_VERSION } from '../packages/runtime-hermes/src/version.ts';
 
 export const ROOT = resolve(import.meta.dir, '..');
@@ -327,14 +328,15 @@ export class ContainerRuntime implements RuntimeAdapter {
     const home = resolve(DATA, 'homes', bundle.attempt.job_id);
     await mkdir(home, { recursive: true, mode: 0o700 });
     await chown(home, 10001, 10001);
-    const config = parse(
-      await readFile(resolve(ROOT, 'packages/runtime-hermes/config/config.yaml'), 'utf8'),
-    );
-    config.model = { provider: 'melete-gateway', default: bundle.model.model, max_tokens: 4096 };
-    config.agent = { ...(config.agent ?? {}), max_turns: 6 };
-    config.providers['melete-gateway'].base_url =
-      `${this.stack.brokerUrl}/providers/${bundle.model.provider}/v1`;
-    config.providers['melete-gateway'].default_model = bundle.model.model;
+    // The same renderer the image and the supervisors use. A suite run is short
+    // by design, so it keeps its own low turn ceiling rather than the runaway one.
+    const config = renderEngineConfig({
+      provider: bundle.model.provider,
+      model: bundle.model.model,
+      brokerUrl: this.stack.brokerUrl,
+      maxTurns: 6,
+    }) as Record<string, Record<string, unknown>>;
+    (config.model as Record<string, unknown>).max_tokens = 4096;
     const configPath = resolve(PRIVATE, `config-${bundle.attempt.id}.yaml`);
     const runtimeKey = randomBytes(32).toString('hex');
     const containerName = `${PROJECT}-${bundle.attempt.id.toLowerCase()}`;
