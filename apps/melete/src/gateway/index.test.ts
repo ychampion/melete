@@ -291,6 +291,30 @@ describe('model gateway effect boundary', () => {
     expect(pastTheWindow.status).toBe(413);
   });
 
+  test('a conversation in a script the engine charges by codepoint honours the input cap', async () => {
+    // A CJK codepoint is three UTF-8 bytes, and both the engine's own estimate
+    // and a real tokenizer charge about a whole token for it. Dividing bytes by
+    // four charges three quarters of one, so a conversation a third past the
+    // owner's input cap was forwarded and billed as though it were inside it.
+    const { post } = await start({
+      authenticate: async () => ({ ...principal, maxTokens: 8000, maxInputTokens: 120_000 }),
+      budget: { reserve: async () => ({ id: 'counted-by-codepoint' }), settle: async () => {} },
+    });
+    const insideTheCap = await post('/v1/chat/completions', {
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: '会話記録'.repeat(25_000) }],
+    });
+    expect(insideTheCap.status).toBe(200);
+    await insideTheCap.body?.cancel();
+    // 130,000 codepoints: 130,000 tokens to the engine and to the provider,
+    // and 97,756 to a byte count divided by four.
+    const pastTheCap = await post('/v1/chat/completions', {
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: '会話記録'.repeat(32_500) }],
+    });
+    expect(pastTheCap.status).toBe(413);
+  });
+
   test('a request without an output limit gets the configured default, within what the attempt may spend', async () => {
     const sent: Record<string, unknown>[] = [];
     const upstream = async (request: Request) => {

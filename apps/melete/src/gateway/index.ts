@@ -6,7 +6,7 @@ import type { Duplex } from 'node:stream';
 import type { SecureContextOptions, TLSSocket } from 'node:tls';
 import { GATEWAY_MAX_REQUEST_BYTES, inputTokenAllowance } from '@melete/contracts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
-import { object, SecretRedactor, UsageCollector } from './metering.ts';
+import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
   checkConnectTarget,
   PROVIDER_HOSTS,
@@ -226,15 +226,15 @@ export function createModelGateway(options: GatewayOptions): Server {
       } else if (protocol === 'chat/completions' && body.stream) {
         body.stream_options = { include_usage: true };
       }
-      // Four characters of request body to the token, plus framing. This is the
-      // engine's own estimate, and it has to be, because the engine decides when
-      // to compact by it: counting a token per byte instead refused a request
-      // roughly four times sooner than the engine's trigger, so a long
-      // conversation was rejected here before it could ever be compacted.
+      // The engine's own estimate of the request body, plus framing. It has to
+      // be the engine's, because the engine decides when to compact by it:
+      // counting a token per byte instead refused a request roughly four times
+      // sooner than the engine's trigger, so a long conversation was rejected
+      // here before it could ever be compacted.
       // Remote media and built-in tools cannot be metered by this text-only gateway.
       const encoded = JSON.stringify(body);
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
-      const inputTokens = Math.ceil(Buffer.byteLength(encoded, 'utf8') / 4) + 256;
+      const inputTokens = estimateInputTokens(encoded) + 256;
       if (
         inputTokens >
         (principal.maxInputTokens ??

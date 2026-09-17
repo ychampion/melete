@@ -6,6 +6,37 @@ export function object(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * Codepoints worth about a token each: Hangul Jamo, the CJK radicals and
+ * ideographs with the kana blocks between them, Hangul syllables, the
+ * compatibility ideographs, and the fullwidth and halfwidth forms.
+ */
+const TOKEN_DENSE = /[ᄀ-ᇿ⺀-鿿ꥠ-꥿가-힯豈-﫿＀-￯]/g;
+
+/** Four characters of request body to the token. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * What a serialized request is worth in input tokens.
+ *
+ * This has to be the engine's own estimate, because the engine decides when to
+ * compact by it: a stricter count here refuses a conversation before the engine
+ * ever gets the chance to shorten it, and a looser one bills an attempt for more
+ * input than its owner allowed. So it reproduces the pinned engine's
+ * `estimate_tokens_rough`: a whole token for each codepoint in the scripts a
+ * tokenizer charges by the character, and four UTF-8 bytes to the token for
+ * everything else. Counting bytes rather than characters for the remainder is
+ * what keeps Cyrillic, Greek and Arabic — two bytes to the character and about
+ * two to three characters to the token — from being counted at half their price.
+ */
+export function estimateInputTokens(serialized: string): number {
+  // Every codepoint in those blocks is one UTF-16 unit, so what the removal took
+  // out of the length is how many there were. One pass, no per-match array.
+  const rest = serialized.replace(TOKEN_DENSE, '');
+  const dense = serialized.length - rest.length;
+  return dense + Math.ceil(Buffer.byteLength(rest, 'utf8') / CHARS_PER_TOKEN);
+}
+
 function count(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
