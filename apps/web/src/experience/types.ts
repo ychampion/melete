@@ -89,6 +89,13 @@ export type AutomationCreate = Body<paths['/automations'], 'post'>;
 export type Connection = Success<
   Ok<paths['/experience/connections'], 'get'>
 >['connections'][number];
+/** A kind of connection that can be installed, with the fields its form needs. */
+export type ConnectionKind = Ok<paths['/connection-kinds'], 'get'>['kinds'][number];
+export type ConnectionField = ConnectionKind['fields'][number];
+export type ConnectionItemField = NonNullable<ConnectionField['item_fields']>[number];
+export type ConnectionCreate = Body<paths['/connections'], 'post'>;
+export type ConnectionInstalled = Ok<paths['/connections'], 'post'>;
+export type ConnectionChecked = Ok<paths['/connections/{connectionId}/health'], 'post'>;
 export type BrowserSession = Success<Ok<paths['/browser/sessions/{id}'], 'get'>>['session'];
 export type SearchResult = Success<Ok<paths['/search'], 'get'>>['results'][number];
 /**
