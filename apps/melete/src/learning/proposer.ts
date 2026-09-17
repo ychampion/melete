@@ -20,6 +20,7 @@ import { type EpisodeRow, requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash, RECORDS_FAMILY } from './procedure.ts';
 import type { ProposalGateway } from './proposal-gateway.ts';
 import { learningModelCall } from './proposal-schema.ts';
+import { objectiveIsOwnerText } from './provenance.ts';
 import { episode, procedureCandidate, procedureTransition } from './schema.ts';
 
 /** Tool names help a model phrase a step; a long catalog would only crowd out the correction. */
@@ -53,7 +54,7 @@ export class ProcedureProposer {
         .select()
         .from(procedureCandidate)
         .where(eq(procedureCandidate.episodeId, episodeId));
-      if (existing) return { existing, saved: null, objective: '' };
+      if (existing) return { existing, saved: null, objective: '', quotable: false };
       if (
         saved.judgement !== 'corrected' ||
         !saved.intervention ||
@@ -73,10 +74,20 @@ export class ProcedureProposer {
         .set({ generationState: 'generating', generationStartedAt: new Date() })
         .where(eq(episode.id, episodeId));
       const [origin] = await tx
-        .select({ objective: job.objective })
+        .select({
+          objective: job.objective,
+          kind: job.kind,
+          principalId: job.principalId,
+          planId: job.planId,
+        })
         .from(job)
         .where(eq(job.id, saved.jobId));
-      return { saved, existing: null, objective: origin?.objective ?? '' };
+      return {
+        saved,
+        existing: null,
+        objective: origin?.objective ?? '',
+        quotable: !!origin && objectiveIsOwnerText(origin, saved.actor),
+      };
     });
     if (source.existing) return source.existing;
     const saved = source.saved;
@@ -86,7 +97,12 @@ export class ProcedureProposer {
       const proposed =
         saved.scope.task_family === RECORDS_FAMILY
           ? await this.recordsDefinition(saved, saved.intervention)
-          : await this.generalDefinition(saved, saved.intervention, source.objective);
+          : await this.generalDefinition(
+              saved,
+              saved.intervention,
+              source.objective,
+              source.quotable,
+            );
       return await this.jobs.transaction(async (tx) => {
         await requireLearningSpace(tx, ownerId, spaceId);
         const [current] = await tx
@@ -161,11 +177,14 @@ export class ProcedureProposer {
    * Only the correction, the objective, the scope, tool names and the closed
    * check vocabulary cross. Receipts, artifacts, recorded outputs, memory
    * handles and identifiers stay here, where the discrimination gate reads them.
+   * An objective the owner did not write stays here too: triggers are then
+   * quoted from the correction, and still have to occur in the objective.
    */
   private async generalDefinition(
     saved: EpisodeRow,
     intervention: Intervention,
     objective: string,
+    quotable: boolean,
   ) {
     const { raw, sources } = await this.gateway.proposeGeneral(
       { episodeId: saved.id, spaceId: saved.spaceId, jobId: saved.jobId },
@@ -179,7 +198,7 @@ export class ProcedureProposer {
         signal: null,
         sources: [
           { id: 'intervention', offset: 0, text: intervention.text },
-          { id: 'objective', offset: 0, text: objective },
+          ...(quotable ? [{ id: 'objective' as const, offset: 0, text: objective }] : []),
         ],
         tools_used: [
           ...new Set(saved.versions.flatMap((version) => version.tools.map((tool) => tool.name))),

@@ -10,6 +10,7 @@ import { compileStoredProcedure, verifyStoredEvidence } from './admit.ts';
 import type { ProcedureState } from './contracts.ts';
 import { requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
+import { objectiveIsOwnerText } from './provenance.ts';
 import { episode, procedureCandidate, procedureEvaluation, procedureTransition } from './schema.ts';
 
 export type Candidate = typeof procedureCandidate.$inferSelect;
@@ -122,12 +123,19 @@ export class ProcedureService {
       );
     if (!source)
       throw new ServiceError('evidence_unavailable', 'The procedure evidence is unavailable.');
-    // The objective the spans may cite, alongside the correction itself.
+    // The objective the spans may cite, alongside the correction itself: only when the
+    // correcting owner wrote it. Otherwise no span may cite it at all.
     const [origin] = await tx
-      .select({ objective: job.objective })
+      .select({
+        objective: job.objective,
+        kind: job.kind,
+        principalId: job.principalId,
+        planId: job.planId,
+      })
       .from(job)
       .where(eq(job.id, source.jobId));
-    return { candidate, source, objective: origin?.objective ?? '' };
+    const objective = origin && objectiveIsOwnerText(origin, source.actor) ? origin.objective : '';
+    return { candidate, source, objective };
   }
 
   async list(ownerId: string, spaceId: string) {
