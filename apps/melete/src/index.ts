@@ -46,7 +46,7 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { connection, space } from './db/schema.ts';
-import { type Env, loadEnv } from './env.ts';
+import { type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
 import type { GatewayOptions } from './gateway/index.ts';
@@ -414,6 +414,7 @@ export async function bootstrap(
           startTimeoutMs: env.MELETE_RUNTIME_START_TIMEOUT_MS,
           pendingWait: (bundle) => pendingRuntimeWait(handle.sql, bundle),
           catalogState: brokerCatalogState({ brokerUrl: env.MELETE_BROKER_URL }),
+          brokerPort: parseBrokerBind(env.MELETE_BROKER_BIND)?.port,
           parkedActions: async (bundle) => {
             const rows = await handle.sql`select id from action
               where job_id = ${bundle.attempt.job_id}

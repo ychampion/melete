@@ -127,7 +127,7 @@ class Daemon implements DockerApi {
 }
 
 const fixtures: Array<{ root: string; runtime: DockerHermesRuntimeAdapter }> = [];
-async function setup(pendingWait?: () => Promise<WaitSpec | null>) {
+async function setup(pendingWait?: () => Promise<WaitSpec | null>, brokerPort?: number) {
   const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
   const daemon = new Daemon();
   const httpCalls: string[] = [];
@@ -146,6 +146,7 @@ async function setup(pendingWait?: () => Promise<WaitSpec | null>) {
     startTimeoutMs: 2000,
     parkedActions: async () => [],
     pendingWait,
+    brokerPort,
     fetch: async (url) => {
       httpCalls.push(url);
       if (mode.unavailable) throw new Error('Not listening yet');
@@ -249,6 +250,19 @@ describe('Docker attempt supervision', () => {
       'networks',
       'volumes',
     ]);
+  });
+
+  test('an attempt container reaches the broker on the port the service binds', async () => {
+    const standard = await setup();
+    await standard.runtime.start(bundle(), standard.sink, new AbortController().signal);
+    expect(standard.daemon.created[0]?.Env).toContain('MELETE_BROKER_URL=http://melete:8788');
+    const moved = await setup(undefined, 9100);
+    await moved.runtime.start(bundle(), moved.sink, new AbortController().signal);
+    const environment = moved.daemon.created[0]?.Env ?? [];
+    expect(environment).toContain('MELETE_BROKER_URL=http://melete:9100');
+    expect(environment).toContain('HTTP_PROXY=http://melete:9100');
+    expect(environment).toContain('HTTPS_PROXY=http://melete:9100');
+    expect(environment.filter((entry) => entry.includes(':8788'))).toEqual([]);
   });
 
   test('every attempt container is told the protocol its provider speaks', async () => {

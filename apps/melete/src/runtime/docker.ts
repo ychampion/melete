@@ -70,6 +70,8 @@ export type DockerRuntimeOptions = {
   parkedActions: ParkedActions;
   pendingWait?: (bundle: AttemptBundle) => Promise<import('@melete/contracts').WaitSpec | null>;
   catalogState?: CatalogState;
+  /** The port the service's broker binds. Cells reach it as `melete` on their own network. */
+  brokerPort?: number;
   startTimeoutMs?: number;
   /** Docker supplies HOSTNAME as the service container's short id. */
   selfId?: string;
@@ -265,6 +267,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     const resources: Resources = this.names(bundle.attempt.id);
     const labels = this.labels(bundle);
     const apiKey = randomBytes(32).toString('hex');
+    const broker = `http://melete:${this.options.brokerPort ?? 8788}`;
     try {
       const network = (await this.docker.request('POST', '/networks/create', {
         Name: resources.network,
@@ -309,9 +312,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             'API_SERVER_HOST=0.0.0.0',
             'API_SERVER_PORT=8790',
             `API_SERVER_KEY=${apiKey}`,
-            'MELETE_BROKER_URL=http://melete:8788',
-            'HTTP_PROXY=http://melete:8788',
-            'HTTPS_PROXY=http://melete:8788',
+            `MELETE_BROKER_URL=${broker}`,
+            `HTTP_PROXY=${broker}`,
+            `HTTPS_PROXY=${broker}`,
             'NO_PROXY=melete,localhost,127.0.0.1',
             `MELETE_ATTEMPT_TOKEN=${bundle.attempt.token}`,
             `MELETE_ATTEMPT_ID=${bundle.attempt.id}`,
