@@ -92,6 +92,8 @@ export const SIGN_IN = {
   code: '482913',
   backup_code: 'ABCD-EFGH-IJKL',
   reference: '48291377',
+  /** The verification page removes its field by itself after this long. */
+  verify_field_ms: 4000,
 } as const;
 
 /** Where a scripted person clicks: the centre of each control in the 1024x768 viewport. */
@@ -233,6 +235,11 @@ fetch(${JSON.stringify(`${otherOrigin}/beacon`)}, { method: 'POST', body: 'leak'
         return page(
           'Help',
           `<h1 style="${box(20, 600)}">Help</h1><button id="done" type="button" onclick="window.close()" style="${box(120, 160)}">Close help</button>`,
+        );
+      if (url.pathname === '/verify')
+        return page(
+          'Verify',
+          `<label id="code-label" for="code" style="${box(80)}">Verification code</label><input id="code" autocomplete="one-time-code" style="${box(120)}"><p style="${box(200, 600)}">Backup code: ${SIGN_IN.backup_code}</p><script>setTimeout(() => { document.getElementById('code').remove(); document.getElementById('code-label').remove(); }, ${SIGN_IN.verify_field_ms});</script>`,
         );
       if (url.pathname === '/chooser') return new Response(null, { status: 204 });
       return new Response('Not found', { status: 404 });

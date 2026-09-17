@@ -352,10 +352,27 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       session = await worker.handback(session.id);
       expect(await pull(0)).toContainEqual({ type: 'ended', code: 'epoch_changed' });
       expect(await reason(pull(0))).toBe('live_closed');
-      const afterRefusal = await command({ kind: 'observe' });
-      expect(afterRefusal.observation?.screenshot).toBe('');
-      expect(afterRefusal.observation?.tree).not.toContain(SIGN_IN.backup_code);
+      const afterSecondHandback = await command({ kind: 'observe' });
+      expect(afterSecondHandback.observation?.screenshot).toBe('');
+      expect(afterSecondHandback.observation?.tree).not.toContain(SIGN_IN.backup_code);
       expect((await command({ kind: 'observe' })).observation?.screenshot).not.toBe('');
+
+      // The page clears its own field with no further handback: a refused observation did not
+      // use up the withheld one.
+      const opened = Date.now();
+      expect(await reason(command({ kind: 'open', url: `${fixture.app}/verify` }))).toBe(
+        'sensitive_input_require_takeover',
+      );
+      session = await worker.takeover(session.id);
+      session = await worker.handback(session.id);
+      expect(await reason(command({ kind: 'observe' }))).toBe('sensitive_input_require_takeover');
+      expect(Date.now() - opened).toBeLessThan(SIGN_IN.verify_field_ms);
+      await Bun.sleep(opened + SIGN_IN.verify_field_ms + 500 - Date.now());
+      const cleared = await command({ kind: 'observe' });
+      expect(cleared.observation?.url).toBe(`${fixture.app}/verify`);
+      expect(cleared.observation?.screenshot).toBe('');
+      expect(cleared.observation?.tree).not.toContain(SIGN_IN.backup_code);
+      expect((await command({ kind: 'observe' })).observation?.tree).toContain(SIGN_IN.backup_code);
     }, 45_000);
 
     test('the live module writes nothing to stdout or stderr', () => {
