@@ -55,6 +55,14 @@ describe('the evaluation suite registry', () => {
 
   test('the first suite that supports a scope evaluates it, and nothing covers an unknown scope', () => {
     expect(resolveSuite(EVALUATED_SCOPE)?.id).toBe('records-fixtures/1');
-    expect(resolveSuite({ ...EVALUATED_SCOPE, task_family: 'no-such-family' })).toBeNull();
+    // Bundled fixtures win for their own scope; owner history covers every other one.
+    expect(resolveSuite({ ...EVALUATED_SCOPE, task_family: 'general', app: 'melete' })?.id).toBe(
+      'episode-derived/1',
+    );
+    const [records] = DEFAULT_SUITES;
+    if (!records) throw new Error('No suite');
+    expect(
+      resolveSuite({ ...EVALUATED_SCOPE, task_family: 'no-such-family' }, [records]),
+    ).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { ProcedureScope } from '../contracts.ts';
 import { digest } from '../episodes.ts';
+import { episodeDerivedSuite } from './episode-derived.ts';
 import { recordsFixtureSuite } from './records.ts';
 import type { EvaluationPhase, EvaluationSuite } from './types.ts';
 
@@ -23,7 +24,11 @@ export const SHARED_SUITE_MODULES = [
   'conformance/memory/provider.ts',
 ] as const;
 
-export const DEFAULT_SUITES: readonly EvaluationSuite[] = [recordsFixtureSuite];
+/** Bundled suites first; the episode-derived suite covers every scope they do not. */
+export const DEFAULT_SUITES: readonly EvaluationSuite[] = [
+  recordsFixtureSuite,
+  episodeDerivedSuite,
+];
 
 const repositoryRoot = new URL('../../../../../', import.meta.url);
 export const repositoryPath = (path: string) => fileURLToPath(new URL(path, repositoryRoot));

@@ -172,7 +172,7 @@ const verdict = (
     const passing = await storedCandidate('passes-the-gate', 'recorded');
     await rejectsWith(
       () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, passing.id),
-      'evaluation_suite_unavailable',
+      'evaluation_cases_insufficient',
     );
   }, 30000);
 
