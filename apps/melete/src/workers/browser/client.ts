@@ -49,11 +49,17 @@ export class BrowserWorkerClient {
   liveOpen(sessionId: string, controlEpoch: number): Promise<LiveOpen> {
     return this.request('/live/open', { session_id: sessionId, control_epoch: controlEpoch });
   }
-  livePull(liveId: string, ackThrough: number, timeoutMs: number): Promise<{ events: LiveDown[] }> {
+  livePull(
+    liveId: string,
+    ackThrough: number,
+    timeoutMs: number,
+    fresh = false,
+  ): Promise<{ events: LiveDown[] }> {
     return this.request('/live/pull', {
       live_id: liveId,
       ack_through: ackThrough,
       timeout_ms: timeoutMs,
+      ...(fresh ? { fresh } : {}),
     });
   }
   liveInput(

@@ -97,6 +97,8 @@ export const livePullRequest = z.strictObject({
   live_id: liveId,
   ack_through: z.number().int().nonnegative(),
   timeout_ms: z.number().int().min(0).max(LIVE_LIMITS.pull_timeout_ms),
+  /** A reconnecting viewer has no picture: repaint the current page instead of waiting for a change. */
+  fresh: z.boolean().optional(),
 });
 export const liveScopeRequest = z.strictObject({
   live_id: liveId,

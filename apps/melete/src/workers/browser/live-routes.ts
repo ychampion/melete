@@ -20,7 +20,7 @@ export function liveRoutes(live: BrowserLive) {
     }
     if (path === '/live/pull') {
       const request = livePullRequest.parse(body);
-      return live.pull(request.live_id, request.ack_through, request.timeout_ms);
+      return live.pull(request.live_id, request.ack_through, request.timeout_ms, request.fresh);
     }
     if (path === '/live/input') {
       const request = liveUp.parse(body);

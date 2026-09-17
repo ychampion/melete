@@ -28,6 +28,16 @@ export const LIVE_LIMITS = {
   network_bytes_per_takeover: 32 * MB,
 } as const;
 
+/** How the service treats a person's attention to an open live view. */
+export const LIVE_PRESENCE = {
+  /** Without the person's input for this long, the view asks whether they are still there. */
+  still_there_ms: 90_000,
+  /** Without the person's input for this long, the channel closes; control stays with them. */
+  idle_close_ms: 5 * 60_000,
+  /** A dropped frame stream may reconnect with the same live id within this window. */
+  reconnect_ms: 15_000,
+} as const;
+
 export const liveNoticeCode = z.enum([
   'off_scope',
   'redirect_refused',
@@ -36,6 +46,7 @@ export const liveNoticeCode = z.enum([
   'websocket_refused',
   'popup_limit',
   'live_budget',
+  'still_there',
 ]);
 export type LiveNoticeCode = z.infer<typeof liveNoticeCode>;
 
@@ -46,21 +57,24 @@ export const liveEndCode = z.enum([
   'slow_down',
   'live_timeout',
   'live_budget',
+  'live_idle',
 ]);
 export type LiveEndCode = z.infer<typeof liveEndCode>;
 
 export const liveId = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 
-export const liveOpen = z.strictObject({
-  live_id: liveId,
-  control_epoch: z.number().int().nonnegative(),
-  viewport: z.strictObject({
-    width: z.literal(LIVE_VIEWPORT.width),
-    height: z.literal(LIVE_VIEWPORT.height),
-  }),
-  site_scope: z.array(z.string()).max(128),
-  expires_at: z.string(),
-});
+export const liveOpen = z
+  .strictObject({
+    live_id: liveId,
+    control_epoch: z.number().int().nonnegative(),
+    viewport: z.strictObject({
+      width: z.literal(LIVE_VIEWPORT.width),
+      height: z.literal(LIVE_VIEWPORT.height),
+    }),
+    site_scope: z.array(z.string()).max(128),
+    expires_at: z.string(),
+  })
+  .meta({ id: 'LiveOpen' });
 export type LiveOpen = z.infer<typeof liveOpen>;
 
 export const liveFrame = z.strictObject({
@@ -134,7 +148,20 @@ export type LiveInput = z.infer<typeof liveInput>;
 
 export const liveUp = z.strictObject({
   live_id: liveId,
+  /** The highest frame sequence the person has painted. */
   ack_through: z.number().int().nonnegative(),
   events: z.array(liveInput).max(LIVE_LIMITS.events_per_batch),
 });
 export type LiveUp = z.infer<typeof liveUp>;
+
+export const liveInputResponse = z
+  .strictObject({ accepted: z.number().int().nonnegative() })
+  .meta({ id: 'LiveInputResponse' });
+export const liveScope = z
+  .strictObject({ live_id: liveId, host: z.string().min(1).max(255) })
+  .meta({ id: 'LiveScope' });
+export const liveScopeResponse = z
+  .strictObject({ site_scope: z.array(z.string()).max(128) })
+  .meta({ id: 'LiveScopeResponse' });
+export const liveClose = z.strictObject({ live_id: liveId }).meta({ id: 'LiveClose' });
+export const liveClosed = z.strictObject({ closed: z.literal(true) }).meta({ id: 'LiveClosed' });

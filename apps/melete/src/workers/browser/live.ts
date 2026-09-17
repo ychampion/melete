@@ -78,6 +78,13 @@ const BUTTON_NAMES = ['left', 'middle', 'right'] as const;
 const BUTTON_BITS = [1, 4, 2] as const;
 const TOUCH_TYPES = { start: 'touchStart', move: 'touchMove', end: 'touchEnd' } as const;
 const EVENT_LIMIT = 64;
+const SCREENCAST = {
+  format: 'jpeg',
+  quality: 60,
+  maxWidth: LIVE_VIEWPORT.width,
+  maxHeight: LIVE_VIEWPORT.height,
+  everyNthFrame: 1,
+} as const;
 
 /**
  * A person's live view of the leased page while they hold control: frames down, typed input up.
@@ -222,10 +229,12 @@ export class BrowserLive {
     liveId: string,
     ackThrough: number,
     timeoutMs: number,
+    fresh = false,
   ): Promise<{ events: LiveDown[] }> {
     const channel = this.find(liveId);
     const deadline = Date.now() + timeoutMs;
     this.acknowledge(channel, ackThrough);
+    if (fresh && !channel.ended) await this.repaint(channel);
     for (;;) {
       this.activity(channel);
       const events = this.drain(channel);
@@ -396,17 +405,27 @@ export class BrowserLive {
       await cdp.send('Page.enable');
       // The chooser is cancelled in the page as well as not shown: no host file can be picked.
       await cdp.send('Page.setInterceptFileChooserDialog', { enabled: true, cancel: true });
-      await cdp.send('Page.startScreencast', {
-        format: 'jpeg',
-        quality: 60,
-        maxWidth: LIVE_VIEWPORT.width,
-        maxHeight: LIVE_VIEWPORT.height,
-        everyNthFrame: 1,
-      });
+      await cdp.send('Page.startScreencast', SCREENCAST);
       this.where(channel, page);
     });
     channel.switching = next.catch(() => {});
     return next;
+  }
+
+  /**
+   * Nothing already sent is sent again. The screencast restarts, which makes Chromium paint the
+   * page once more even when nothing on it changes, and that frame is not skipped as a repeat.
+   */
+  private repaint(channel: Channel): Promise<void> {
+    const next = channel.switching.then(async () => {
+      const screen = channel.screen;
+      if (channel.ended || !screen) return;
+      channel.lastData = undefined;
+      await screen.cdp.send('Page.stopScreencast');
+      await screen.cdp.send('Page.startScreencast', SCREENCAST);
+    });
+    channel.switching = next.catch(() => {});
+    return next.catch(() => {});
   }
 
   private async detach(channel: Channel, screen: Screen): Promise<void> {
