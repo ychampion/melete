@@ -28,6 +28,17 @@ export type ProcedurePromotionScope = z.infer<typeof procedurePromotionScope>;
 export const procedurePromotion = z.object({
   scope: procedurePromotionScope.default('private'),
   principal_id: prefixedId('own').nullable().default(null),
+  /**
+   * Absent for delivery earned by evaluation. `owner_trial` is the owner approving the
+   * exact definition by its hash: private to that owner in the origin space, and never
+   * enough on its own to activate or share.
+   */
+  basis: z.enum(['evaluation', 'owner_trial']).optional(),
+  definition_hash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  approved_at: timestamp.optional(),
 });
 export type ProcedurePromotion = z.infer<typeof procedurePromotion>;
 export const jobLearningScope = z
@@ -279,6 +290,10 @@ export const learningSpaceQuery = z.object({ space_id: prefixedId('sp') });
 export const learningSpaceRequest = z.strictObject({ space_id: prefixedId('sp') });
 export const procedureActivationRequest = learningSpaceRequest.extend({
   scope: procedurePromotionScope.default('private'),
+});
+/** The owner approves the definition they were shown, by its hash, not whatever is current. */
+export const procedureTrialRequest = learningSpaceRequest.extend({
+  definition_hash: z.string().regex(/^[a-f0-9]{64}$/),
 });
 export const procedureReasonRequest = learningSpaceRequest.extend({
   reason: z.string().min(1).max(500),

@@ -63,6 +63,7 @@ import {
   procedureListResponse,
   procedureReasonRequest,
   procedureResponse,
+  procedureTrialRequest,
 } from './learning.ts';
 import {
   claimHistoryResponse,
@@ -260,6 +261,15 @@ export function buildOpenApiDocument() {
             requestParams: idParam('id', 'Procedure id'),
             requestBody: json(learningSpaceRequest),
             responses: { '200': jsonResponse('Canary procedure', procedureResponse) },
+          },
+        },
+        '/procedures/{id}/trial': {
+          post: {
+            tags: ['learning'],
+            summary: 'Try a procedure privately after approving its exact definition',
+            requestParams: idParam('id', 'Procedure id'),
+            requestBody: json(procedureTrialRequest),
+            responses: { '200': jsonResponse('Procedure on owner trial', procedureResponse) },
           },
         },
         '/procedures/{id}/activate': {

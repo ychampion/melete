@@ -6151,6 +6151,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/procedures/{id}/trial": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Try a procedure privately after approving its exact definition */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Procedure id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        definition_hash: string;
+                        space_id: components["schemas"]["__schema8"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Procedure on owner trial */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema80"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/profile": {
         parameters: {
             query?: never;
@@ -8068,6 +8114,10 @@ export interface components {
              *     }
              */
             promotion: {
+                approved_at?: components["schemas"]["__schema79"];
+                /** @enum {string} */
+                basis?: "evaluation" | "owner_trial";
+                definition_hash?: string;
                 /** @default null */
                 principal_id: string | null;
                 /**

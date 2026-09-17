@@ -138,6 +138,20 @@ export async function selectProcedureSkills(
     if (promotion.data.scope === 'space') {
       if (access.space.kind !== 'shared' || candidate.state !== 'active') continue;
     } else if ((promotion.data.principal_id ?? source.actor) !== access.principalId) continue;
+    if (promotion.data.basis === 'owner_trial') {
+      // The owner's approval of these exact bytes, for that owner, in the space it came from.
+      if (
+        candidate.state !== 'enabled_canary' ||
+        promotion.data.scope !== 'private' ||
+        promotion.data.principal_id !== access.principalId ||
+        source.actor !== access.principalId ||
+        promotion.data.definition_hash !== candidate.bodyHash ||
+        candidate.canarySpaceId !== row.spaceId ||
+        !valid(candidate, source)
+      )
+        continue;
+      return [{ name: `procedure:${candidate.id}`, body: candidate.body }];
+    }
     if (
       candidate.canarySpaceId !== row.spaceId ||
       !candidate.selectedEvaluationId ||

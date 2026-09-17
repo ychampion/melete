@@ -525,6 +525,61 @@
         }
       }
     },
+    "/procedures/{id}/trial": {
+      "post": {
+        "tags": [
+          "learning"
+        ],
+        "summary": "Try a procedure privately after approving its exact definition",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Procedure id"
+            },
+            "required": true,
+            "description": "Procedure id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "space_id": {
+                    "$ref": "#/components/schemas/__schema8"
+                  },
+                  "definition_hash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "space_id",
+                  "definition_hash"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Procedure on owner trial",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema80"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/procedures/{id}/activate": {
       "post": {
         "tags": [
@@ -12381,6 +12436,20 @@
                     "type": "null"
                   }
                 ]
+              },
+              "basis": {
+                "type": "string",
+                "enum": [
+                  "evaluation",
+                  "owner_trial"
+                ]
+              },
+              "definition_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "approved_at": {
+                "$ref": "#/components/schemas/__schema79"
               }
             },
             "required": [

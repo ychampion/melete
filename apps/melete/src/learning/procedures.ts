@@ -70,6 +70,42 @@ export function verifyEvidence(
   }
 }
 
+/** A passing sealed final, bound to the candidate's selected validation and recorded after it. */
+export async function hasSelectedFinalEvidence(tx: Transaction, candidate: Candidate) {
+  if (!candidate.selectedEvaluationId) return false;
+  const [validation] = await tx
+    .select()
+    .from(procedureEvaluation)
+    .where(
+      and(
+        eq(procedureEvaluation.id, candidate.selectedEvaluationId),
+        eq(procedureEvaluation.candidateId, candidate.id),
+        eq(procedureEvaluation.phase, 'validation'),
+        eq(procedureEvaluation.passed, true),
+        eq(procedureEvaluation.bodyHash, candidate.bodyHash),
+      ),
+    );
+  const [final] = await tx
+    .select()
+    .from(procedureEvaluation)
+    .where(
+      and(
+        eq(procedureEvaluation.candidateId, candidate.id),
+        eq(procedureEvaluation.phase, 'sealed_final'),
+        eq(procedureEvaluation.bodyHash, candidate.bodyHash),
+        eq(procedureEvaluation.passed, true),
+      ),
+    )
+    .orderBy(desc(procedureEvaluation.createdAt))
+    .limit(1);
+  return !!(
+    validation?.selectedAt &&
+    final &&
+    final.evidence.selection_evaluation_id === validation.id &&
+    final.createdAt >= validation.selectedAt
+  );
+}
+
 export async function transitionProcedure(
   tx: Transaction,
   candidate: Candidate,
@@ -217,37 +253,7 @@ export class ProcedureService {
           'promotion_denied',
           'A selected procedure with passing final evidence is required.',
         );
-      const [validation] = await tx
-        .select()
-        .from(procedureEvaluation)
-        .where(
-          and(
-            eq(procedureEvaluation.id, candidate.selectedEvaluationId),
-            eq(procedureEvaluation.candidateId, id),
-            eq(procedureEvaluation.phase, 'validation'),
-            eq(procedureEvaluation.passed, true),
-            eq(procedureEvaluation.bodyHash, candidate.bodyHash),
-          ),
-        );
-      const [final] = await tx
-        .select()
-        .from(procedureEvaluation)
-        .where(
-          and(
-            eq(procedureEvaluation.candidateId, id),
-            eq(procedureEvaluation.phase, 'sealed_final'),
-            eq(procedureEvaluation.bodyHash, candidate.bodyHash),
-            eq(procedureEvaluation.passed, true),
-          ),
-        )
-        .orderBy(desc(procedureEvaluation.createdAt))
-        .limit(1);
-      if (
-        !validation?.selectedAt ||
-        !final ||
-        final.evidence.selection_evaluation_id !== validation.id ||
-        final.createdAt < validation.selectedAt
-      )
+      if (!(await hasSelectedFinalEvidence(tx, candidate)))
         throw new ServiceError(
           'promotion_denied',
           'The sealed final evidence does not follow this selection.',
@@ -262,6 +268,56 @@ export class ProcedureService {
         'enabled_canary',
         ownerId,
         'Passing held-out validation and sealed final evidence; one origin space.',
+      );
+    });
+  }
+
+  /**
+   * The owner who made the correction approves the exact definition they were shown,
+   * by its hash, and tries it on their own work in this space. Discrimination is not
+   * required: a correction about tone may have nothing a check can read. Evaluation
+   * evidence is still required to activate or share.
+   */
+  async startTrial(ownerId: string, spaceId: string, id: string, definitionHash: string) {
+    return this.jobs.transaction(async (tx) => {
+      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
+      if (source.actor !== ownerId)
+        throw new ServiceError(
+          'trial_denied',
+          'Only the owner who made the correction may try what it taught.',
+          403,
+        );
+      verifyDefinition(candidate);
+      verifyEvidence(candidate, source, objective);
+      if (!['candidate', 'evaluated'].includes(candidate.state) || candidate.rejectionReason)
+        throw new ServiceError(
+          'invalid_procedure_state',
+          'Only a candidate that is not rejected can be tried.',
+        );
+      if (definitionHash !== candidate.bodyHash)
+        throw new ServiceError(
+          'definition_hash_mismatch',
+          'The approved definition is not the current one; review it again.',
+        );
+      await tx
+        .update(procedureCandidate)
+        .set({
+          canarySpaceId: spaceId,
+          promotion: {
+            scope: 'private',
+            principal_id: ownerId,
+            basis: 'owner_trial',
+            definition_hash: definitionHash,
+            approved_at: new Date().toISOString(),
+          },
+        })
+        .where(eq(procedureCandidate.id, id));
+      return transitionProcedure(
+        tx,
+        candidate,
+        'enabled_canary',
+        ownerId,
+        'The owner approved this exact definition for a private trial in its origin space.',
       );
     });
   }
@@ -282,6 +338,12 @@ export class ProcedureService {
       verifyEvidence(candidate, source, objective);
       if (candidate.state !== 'enabled_canary' || candidate.canarySpaceId !== spaceId)
         throw new ServiceError('invalid_procedure_state', 'Enable the one-space canary first.');
+      // An owner trial delivers to its owner; only held-out evidence can make a procedure active.
+      if (!(await hasSelectedFinalEvidence(tx, candidate)))
+        throw new ServiceError(
+          'promotion_denied',
+          'Activation needs passing sealed final evidence bound to its selection.',
+        );
       const learned = await tx.execute(sql`
         select e.id from episode e where e.space_id = ${spaceId} and e.judgement = 'completed'
           and e.intervention is null and not e.restricted and e.expires_at > now()
