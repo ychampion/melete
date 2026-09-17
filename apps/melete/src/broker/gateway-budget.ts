@@ -8,7 +8,7 @@ import {
   type GatewayReservationRequest,
   type GatewaySettlement,
 } from '../gateway/types.ts';
-import { reserveLocked } from './budget.ts';
+import { remainingOutputTokensLocked, reserveLocked } from './budget.ts';
 import { verifyCapability } from './capability.ts';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, lockJob } from './records.ts';
@@ -52,6 +52,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
           revision: claims.revision,
           maxRequests: job.budget.max_turns,
           maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
+          remainingTokens: await remainingOutputTokensLocked(tx, job, claims),
           maxInputTokens: Math.min(
             inputTokenAllowance(attempt.model, job.budget),
             inputTokenAllowance(attempt.model, claims.budget),

@@ -6,6 +6,67 @@ import { checkAttempt, type LockedJob, lockJob, type Query, recordId } from './r
 export type ReservationRequest = { kind: BudgetKind; amount: number };
 export type Reservation = { id: string; kind: BudgetKind; reserved: number };
 
+type BudgetPosition = { limit: number; attemptLimit: number; jobUsed: number; attemptUsed: number };
+
+/** One kind's limits and what the ledger already charges. Caller holds the job row lock. */
+async function positionLocked(
+  tx: Query,
+  job: LockedJob,
+  claims: CapabilityClaims,
+  kind: BudgetKind,
+  modelCall: boolean,
+): Promise<BudgetPosition> {
+  const limit =
+    kind === 'tokens'
+      ? job.budget.max_output_tokens
+      : kind === 'usd_est'
+        ? job.budget.max_usd_est
+        : modelCall
+          ? job.budget.max_turns
+          : job.budget.max_actions;
+  const attemptLimit =
+    kind === 'tokens'
+      ? Math.min(limit, claims.budget.max_output_tokens)
+      : kind === 'usd_est'
+        ? Math.min(limit, claims.budget.max_usd_est)
+        : modelCall
+          ? limit
+          : Math.min(limit, claims.budget.max_actions);
+  if (!Number.isFinite(limit) || !Number.isFinite(attemptLimit))
+    throw new BrokerFault('budget_exceeded');
+  const [sum] = await tx`select
+    coalesce(sum(coalesce(settled, reserved)), 0)::float8 as job_used,
+    coalesce(sum(case when attempt_id = ${claims.attempt_id} then coalesce(settled, reserved) else 0 end), 0)::float8 as attempt_used
+    from budget_ledger where job_id = ${job.id} and kind = ${kind}
+    and (not exists(select 1 from job j where j.id = ${job.id} and j.kind in ('chat', 'routine'))
+      or attempt_id in (select a.id from attempt a join job j on j.id = a.job_id where j.id = ${job.id} and a.turn_id = j.current_turn_id))
+    and (${kind !== 'calls'} or (action_id is null) = ${modelCall})`;
+  return {
+    limit,
+    attemptLimit,
+    jobUsed: Number(sum?.job_used),
+    attemptUsed: Number(sum?.attempt_used),
+  };
+}
+
+/**
+ * Whole output tokens a model call could still reserve. Advisory: it sizes a
+ * limit the gateway fills in, and the reservation is checked again when made.
+ */
+export async function remainingOutputTokensLocked(
+  tx: Query,
+  job: LockedJob,
+  claims: CapabilityClaims,
+): Promise<number> {
+  const position = await positionLocked(tx, job, claims, 'tokens', true);
+  return Math.max(
+    0,
+    Math.floor(
+      Math.min(position.limit - position.jobUsed, position.attemptLimit - position.attemptUsed),
+    ),
+  );
+}
+
 /** Caller holds the job row lock through policy checks, reservation, and admission. */
 export async function reserveLocked(
   tx: Query,
@@ -22,34 +83,10 @@ export async function reserveLocked(
     totals.set(request.kind, (totals.get(request.kind) ?? 0) + request.amount);
   }
   for (const [kind, amount] of totals) {
-    const limit =
-      kind === 'tokens'
-        ? job.budget.max_output_tokens
-        : kind === 'usd_est'
-          ? job.budget.max_usd_est
-          : modelCall
-            ? job.budget.max_turns
-            : job.budget.max_actions;
-    const attemptLimit =
-      kind === 'tokens'
-        ? Math.min(limit, claims.budget.max_output_tokens)
-        : kind === 'usd_est'
-          ? Math.min(limit, claims.budget.max_usd_est)
-          : modelCall
-            ? limit
-            : Math.min(limit, claims.budget.max_actions);
-    if (!Number.isFinite(limit) || !Number.isFinite(attemptLimit))
-      throw new BrokerFault('budget_exceeded');
-    const [sum] = await tx`select
-      coalesce(sum(coalesce(settled, reserved)), 0)::float8 as job_used,
-      coalesce(sum(case when attempt_id = ${claims.attempt_id} then coalesce(settled, reserved) else 0 end), 0)::float8 as attempt_used
-      from budget_ledger where job_id = ${job.id} and kind = ${kind}
-      and (not exists(select 1 from job j where j.id = ${job.id} and j.kind in ('chat', 'routine'))
-        or attempt_id in (select a.id from attempt a join job j on j.id = a.job_id where j.id = ${job.id} and a.turn_id = j.current_turn_id))
-      and (${kind !== 'calls'} or (action_id is null) = ${modelCall})`;
+    const position = await positionLocked(tx, job, claims, kind, modelCall);
     if (
-      Number(sum?.job_used) + amount > limit ||
-      Number(sum?.attempt_used) + amount > attemptLimit
+      position.jobUsed + amount > position.limit ||
+      position.attemptUsed + amount > position.attemptLimit
     ) {
       throw new BrokerFault('budget_exceeded');
     }

@@ -1,12 +1,18 @@
 /**
  * Name each missing prerequisite once, before the suite turns it into fifty
- * opaque failures. `bun run doctor` prints the same list on demand.
+ * opaque failures. `bun run doctor` prints the same list on demand, and
+ * `bun run doctor --docker` also judges the host's Docker Engine and Compose.
  *
  * The facts are gathered in one place and judged in a pure function so the
  * judgement can be tested on a machine that has everything installed.
  */
 import { accessSync, constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import {
+  type CommandOutput,
+  judgeHostDocker,
+  readHostDocker,
+} from '../../src/runtime/docker-engine.ts';
 
 export type PreflightFacts = {
   platform: NodeJS.Platform;
@@ -15,6 +21,11 @@ export type PreflightFacts = {
   tmpdirWritable: boolean;
   libpq: boolean;
   uv: boolean;
+  /**
+   * Problems with the host's Docker Engine and Compose. Unset unless the
+   * deployment scenarios were requested: nothing else in the suite uses Docker.
+   */
+  docker?: string[];
 };
 
 const LIBPQ_PATHS = [
@@ -25,7 +36,12 @@ const LIBPQ_PATHS = [
   '/usr/local/lib/libpq.so.5',
 ];
 
-export function gatherFacts(env: Record<string, string | undefined> = process.env): PreflightFacts {
+export function gatherFacts(
+  env: Record<string, string | undefined> = process.env,
+  args: readonly string[] = process.argv.slice(2),
+  runDocker?: (command: readonly string[]) => CommandOutput,
+): PreflightFacts {
+  const wantsDocker = env.MELETE_CONFORMANCE_COMPOSE === '1' || args.includes('--docker');
   let tmpdirWritable = true;
   try {
     accessSync(tmpdir(), constants.W_OK);
@@ -39,6 +55,7 @@ export function gatherFacts(env: Record<string, string | undefined> = process.en
     tmpdirWritable,
     libpq: process.platform !== 'linux' || LIBPQ_PATHS.some((path) => existsSync(path)),
     uv: Bun.which('uv') !== null,
+    ...(wantsDocker ? { docker: judgeHostDocker(readHostDocker(runDocker)) } : {}),
   };
 }
 
@@ -62,6 +79,7 @@ export function missingPrerequisites(facts: PreflightFacts): string[] {
     );
   if (!facts.uv)
     missing.push('uv is not on PATH; `bun run test:plugin` needs it (https://docs.astral.sh/uv/).');
+  missing.push(...(facts.docker ?? []));
   return missing;
 }
 

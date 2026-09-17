@@ -6,6 +6,12 @@ export interface GatewayPrincipal {
   revision: number;
   maxRequests: number;
   maxTokens: number;
+  /**
+   * Output tokens the ledger had not yet charged when this principal was
+   * issued. It only bounds the limit the gateway substitutes for a request that
+   * names none; the reservation itself is still checked under the job lock.
+   */
+  remainingTokens?: number;
   maxInputTokens?: number;
   /** Include the explicitly authorized fallback here; the proxy never chooses one. */
   allowedModels: { provider: string; model: string }[];
@@ -65,6 +71,11 @@ export interface GatewayProvider {
   baseUrl: string;
   apiKey?: string;
   protocols: GatewayProtocol[];
-  /** Only the in-process fake provider may use a non-HTTPS URL. */
+  /** The in-process fake provider never opens a connection, so its URL is not checked. */
   fake?: boolean;
+  /**
+   * Plain HTTP is accepted. Set only for the endpoint the operator names in
+   * OPENAI_COMPAT_BASE_URL, which may be a model server on their own network.
+   */
+  allowHttp?: boolean;
 }

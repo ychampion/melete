@@ -46,7 +46,7 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { connection, space } from './db/schema.ts';
-import { type Env, loadEnv } from './env.ts';
+import { type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
 import type { GatewayOptions } from './gateway/index.ts';
@@ -83,7 +83,8 @@ import { startServiceMemory } from './memory/start.ts';
 import { requestPrincipal, spaceAuthority } from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { withDeploymentContext } from './runtime/context.ts';
-import { DockerHermesRuntimeAdapter } from './runtime/docker.ts';
+import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
+import { assertDockerEngine } from './runtime/docker-engine.ts';
 import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 import {
@@ -305,6 +306,13 @@ export async function bootstrap(
     process.stderr.write(
       "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
     );
+  // An engine the supervisor cannot drive is named here, before the database is
+  // opened or migrated, instead of as a Docker 400 on the first attempt.
+  if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
+    await assertDockerEngine(
+      new DockerSocketApi(env.MELETE_DOCKER_SOCKET),
+      env.MELETE_DOCKER_SOCKET,
+    );
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;
   let jobs: JobService | undefined;
@@ -414,6 +422,7 @@ export async function bootstrap(
           startTimeoutMs: env.MELETE_RUNTIME_START_TIMEOUT_MS,
           pendingWait: (bundle) => pendingRuntimeWait(handle.sql, bundle),
           catalogState: brokerCatalogState({ brokerUrl: env.MELETE_BROKER_URL }),
+          brokerPort: parseBrokerBind(env.MELETE_BROKER_BIND)?.port,
           parkedActions: async (bundle) => {
             const rows = await handle.sql`select id from action
               where job_id = ${bundle.attempt.job_id}

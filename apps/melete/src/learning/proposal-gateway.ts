@@ -4,12 +4,8 @@ import { and, eq, gt } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Database } from '../db/client.ts';
 import { createModelGateway, type GatewayOptions } from '../gateway/index.ts';
-import {
-  type GatewayBudget,
-  GatewayError,
-  type GatewayPrincipal,
-  type GatewayProtocol,
-} from '../gateway/types.ts';
+import { modelApiMode, protocolForApiMode } from '../gateway/providers.ts';
+import { type GatewayBudget, GatewayError, type GatewayPrincipal } from '../gateway/types.ts';
 import { PROPOSAL_INSTRUCTIONS, STEP_BODIES } from './procedure.ts';
 import { learningModelCall } from './proposal-schema.ts';
 import { episode } from './schema.ts';
@@ -116,12 +112,7 @@ export async function openProposalGateway(options: {
     server.listen(0, '127.0.0.1', resolve);
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const protocol: GatewayProtocol =
-    options.provider === 'openai' || options.model === 'gpt-6-astra'
-      ? 'responses'
-      : options.provider === 'anthropic'
-        ? 'messages'
-        : 'chat/completions';
+  const protocol = protocolForApiMode(modelApiMode(options.provider, options.model));
 
   return {
     async propose(admission: Admission, signal: string) {

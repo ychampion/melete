@@ -10,9 +10,10 @@ import {
 } from '../connectors/configured.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
-import type { Env } from '../env.ts';
+import { type Env, parseBrokerBind } from '../env.ts';
 import { resolveExperienceGrant } from '../experience/rules.ts';
-import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
+import { configuredProviders } from '../gateway/configured.ts';
+import type { GatewayOptions } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
 import { createMemoryTrustResolver } from '../memory/broker-trust.ts';
@@ -46,12 +47,10 @@ export async function startEffectBoundary(
       'DATABASE_URL, MELETE_CAPABILITY_KEY and MELETE_APPROVAL_KEY are required for the effect boundary',
     );
   }
-  const binding = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(env.MELETE_BROKER_BIND);
-  if (!binding?.[1] || !binding[2] || Number(binding[2]) > 65535 || Number(binding[2]) < 1) {
-    throw new Error('MELETE_BROKER_BIND must be hostname:port');
-  }
-  const hostname = binding[1].replace(/^\[|\]$/g, '');
-  const port = Number(binding[2]);
+  const binding = parseBrokerBind(env.MELETE_BROKER_BIND);
+  if (!binding) throw new Error('MELETE_BROKER_BIND must be hostname:port');
+  const { hostname, port } = binding;
+  const providers = configuredProviders(env);
   const connections =
     dependencies.connections ?? (await readConnectionConfig(env.MELETE_CONNECTIONS_FILE));
   const browser = dependencies.browserSessions
@@ -65,17 +64,6 @@ export async function startEffectBoundary(
     }));
   let queue: Awaited<ReturnType<typeof startQueue>> | undefined;
   try {
-    const providers = [
-      ...providersFromEnv({
-        FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
-        OPENAI_API_KEY: env.OPENAI_API_KEY,
-        ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
-        GOOGLE_API_KEY: env.GOOGLE_API_KEY,
-        OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
-        OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
-      }),
-      ...(env.MELETE_ENABLE_FAKE_PROVIDER ? [fakeProvider] : []),
-    ];
     const certificates = new Map<string, Pick<SecureContextOptions, 'key' | 'cert'>>();
     if (env.MELETE_GATEWAY_TLS_DIR) {
       for (const host of new Set(
@@ -107,6 +95,7 @@ export async function startEffectBoundary(
       boss: queue.boss,
       providers,
       defaultProvider: env.MELETE_DEFAULT_PROVIDER,
+      defaultMaxTokens: env.MELETE_DEFAULT_MAX_OUTPUT_TOKENS,
       fake: env.MELETE_ENABLE_FAKE_PROVIDER ? dependencies.fakeProvider : undefined,
       connectTls: (host) => certificates.get(host),
       resolveAuthority: dependencies.resolveAuthority,

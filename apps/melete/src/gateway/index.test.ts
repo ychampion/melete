@@ -69,24 +69,25 @@ afterEach(async () => {
   );
 });
 
+const gatewayDefaults = (budget: GatewayBudget = new TestBudget()): GatewayOptions => ({
+  authenticate: async (token) => {
+    if (token !== 'attempt-capability') throw new GatewayError(401, 'invalid_capability');
+    return principal;
+  },
+  budget,
+  providers: [
+    ...providersFromEnv({
+      OPENAI_API_KEY: 'real-openai-secret',
+      ANTHROPIC_API_KEY: 'real-anthropic-secret',
+    }),
+    fakeProvider,
+  ],
+  defaultProvider: 'fake',
+});
+
 async function start(overrides: Partial<GatewayOptions> = {}) {
   const budget = new TestBudget();
-  const server = createModelGateway({
-    authenticate: async (token) => {
-      if (token !== 'attempt-capability') throw new GatewayError(401, 'invalid_capability');
-      return principal;
-    },
-    budget,
-    providers: [
-      ...providersFromEnv({
-        OPENAI_API_KEY: 'real-openai-secret',
-        ANTHROPIC_API_KEY: 'real-anthropic-secret',
-      }),
-      fakeProvider,
-    ],
-    defaultProvider: 'fake',
-    ...overrides,
-  });
+  const server = createModelGateway({ ...gatewayDefaults(budget), ...overrides });
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -263,6 +264,110 @@ describe('model gateway effect boundary', () => {
         })
       ).status,
     ).toBe(400);
+    expect(budget.reservations).toHaveLength(0);
+  });
+
+  test('a request without an output limit gets the configured default, within what the attempt may spend', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const upstream = async (request: Request) => {
+      sent.push((await request.json()) as Record<string, unknown>);
+      return Response.json({
+        model: 'fixture-chat',
+        choices: [],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      });
+    };
+    const unlimited = { model: 'fixture-chat', max_tokens: undefined };
+    const path = '/providers/openai/v1/chat/completions';
+
+    const standard = await start({ fetch: upstream });
+    expect((await standard.post(path, unlimited)).status).toBe(200);
+    expect(sent.at(-1)?.max_completion_tokens).toBe(4096);
+    expect(standard.budget.reservations[0]?.maxOutputTokens).toBe(4096);
+
+    const configured = await start({ fetch: upstream, defaultMaxTokens: 2048 });
+    expect((await configured.post(path, unlimited)).status).toBe(200);
+    expect(sent.at(-1)?.max_completion_tokens).toBe(2048);
+
+    const capped = await start({
+      fetch: upstream,
+      authenticate: async () => ({ ...principal, maxTokens: 1000 }),
+    });
+    expect((await capped.post(path, unlimited)).status).toBe(200);
+    expect(sent.at(-1)?.max_completion_tokens).toBe(1000);
+    // A limit the runtime asked for is never rewritten, only refused.
+    expect((await capped.post(path, { model: 'fixture-chat', max_tokens: 1001 })).status).toBe(429);
+
+    const nearlySpent = await start({
+      fetch: upstream,
+      authenticate: async () => ({ ...principal, remainingTokens: 300 }),
+    });
+    expect((await nearlySpent.post(path, unlimited)).status).toBe(200);
+    expect(sent.at(-1)?.max_completion_tokens).toBe(300);
+
+    const spent = await start({
+      fetch: upstream,
+      authenticate: async () => ({ ...principal, remainingTokens: 0 }),
+    });
+    expect((await spent.post(path, unlimited)).status).toBe(429);
+    expect(spent.budget.reservations).toHaveLength(0);
+
+    expect(() => createModelGateway({ ...gatewayDefaults(), defaultMaxTokens: 0 })).toThrow(
+      RangeError,
+    );
+  });
+
+  test('an operator-configured plain HTTP endpoint is forwarded to as written', async () => {
+    const seen: string[] = [];
+    const { post } = await start({
+      providers: providersFromEnv({
+        OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+        OPENAI_COMPAT_API_KEY: 'local-server-key',
+      }),
+      authenticate: async () => ({
+        ...principal,
+        allowedModels: [{ provider: 'openai-compatible', model: 'llama3.1' }],
+      }),
+      fetch: async (request) => {
+        seen.push(request.url);
+        expect(request.headers.get('authorization')).toBe('Bearer local-server-key');
+        return Response.json({
+          model: 'llama3.1',
+          choices: [],
+          usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+        });
+      },
+    });
+    const response = await post('/providers/openai-compatible/v1/chat/completions', {
+      model: 'llama3.1',
+    });
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(['http://127.0.0.1:11434/v1/chat/completions']);
+  });
+
+  test('a plain HTTP endpoint without its own key is never sent the OpenAI key', async () => {
+    const seen: string[] = [];
+    const { post, budget } = await start({
+      // Compose hands an unset OPENAI_COMPAT_API_KEY over as an empty string.
+      providers: providersFromEnv({
+        OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+        OPENAI_COMPAT_API_KEY: '',
+        OPENAI_API_KEY: 'real-openai-secret',
+      }),
+      authenticate: async () => ({
+        ...principal,
+        allowedModels: [{ provider: 'openai-compatible', model: 'llama3.1' }],
+      }),
+      fetch: async (request) => {
+        seen.push(request.headers.get('authorization') ?? '');
+        return Response.json({ model: 'llama3.1', choices: [] });
+      },
+    });
+    const response = await post('/providers/openai-compatible/v1/chat/completions', {
+      model: 'llama3.1',
+    });
+    expect(response.status).toBe(503);
+    expect(seen).toEqual([]);
     expect(budget.reservations).toHaveLength(0);
   });
 

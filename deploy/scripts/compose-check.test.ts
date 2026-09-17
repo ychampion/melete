@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { ATTEMPT_LOG_CONFIG } from '../../apps/melete/src/runtime/docker.ts';
 import {
   type ComposeFile,
+  type ComposeLogging,
   checkCompose,
   defaultComposePath,
   loadCompose,
@@ -33,6 +35,25 @@ describe('the check catches the mistakes that would matter', () => {
     if (broken.services?.melete?.environment)
       broken.services.melete.environment.MELETE_RUNTIME_ADAPTER = 'stub';
     expect(failures(broken)).toContain('the default service supervises attempts itself');
+  });
+  test('leaving the service to read its catalog from a port nothing binds', () => {
+    const name = 'the service reads its tool catalog from the broker it binds';
+    expect(compose.services?.melete?.environment?.MELETE_BROKER_URL).toBe('http://melete:8788');
+    const unset = structuredClone(compose);
+    delete unset.services?.melete?.environment?.MELETE_BROKER_URL;
+    expect(failures(unset)).toContain(name);
+    const moved = structuredClone(compose);
+    if (moved.services?.melete?.environment)
+      moved.services.melete.environment.MELETE_BROKER_BIND = '0.0.0.0:8799';
+    expect(failures(moved)).toContain(name);
+    const loopback = structuredClone(compose);
+    if (loopback.services?.melete?.environment)
+      loopback.services.melete.environment.MELETE_BROKER_BIND = '127.0.0.1:8788';
+    expect(failures(loopback)).toContain(name);
+    const split = structuredClone(compose);
+    if (split.services?.runtime?.environment)
+      split.services.runtime.environment.MELETE_BROKER_URL = 'http://melete:3112';
+    expect(failures(split)).toContain(name);
   });
   test('giving the runtime an edge network', () => {
     const broken: ComposeFile = structuredClone(compose);
@@ -184,6 +205,57 @@ describe('the check catches the mistakes that would matter', () => {
       withSigned.services.runtime.environment.MELETE_ATTEMPT_TOKEN =
         'eyJhbGciOiJIUzI1NiJ9.eyJqb2IiOiJqb2JfMSJ9.c2lnbmF0dXJl';
     expect(failures(withSigned)).toContain('the warm cell carries no attempt authority');
+  });
+
+  test('every shipped service keeps bounded json-file logs', () => {
+    const services = Object.entries(compose.services ?? {});
+    expect(services.map(([name]) => name).sort()).toEqual([
+      'melete',
+      'postgres',
+      'runtime',
+      'runtime-image',
+      'web',
+    ]);
+    for (const [, service] of services)
+      expect(service.logging).toEqual({
+        driver: 'json-file',
+        options: { 'max-size': '10m', 'max-file': '5' },
+      });
+  });
+
+  test('attempt containers get the same limits as the services', () => {
+    expect(compose.services?.runtime?.logging).toEqual({
+      driver: ATTEMPT_LOG_CONFIG.Type,
+      options: { ...ATTEMPT_LOG_CONFIG.Config },
+    });
+  });
+
+  test.each(['postgres', 'melete', 'runtime-image', 'runtime', 'web'])(
+    'leaving %s with the unbounded default log',
+    (name) => {
+      const broken = structuredClone(compose);
+      if (broken.services?.[name]) delete broken.services[name].logging;
+      const failed = checkCompose(broken).find(
+        (result) => result.name === 'every service has bounded logs',
+      );
+      expect(failed?.ok).toBe(false);
+      expect(failed?.detail).toContain(name);
+    },
+  );
+
+  test.each<ComposeLogging>([
+    { driver: 'json-file' },
+    { driver: 'json-file', options: { 'max-file': '5' } },
+    { driver: 'json-file', options: { 'max-size': '10m' } },
+    { driver: 'json-file', options: { 'max-size': '0', 'max-file': '5' } },
+    { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '0' } },
+    { driver: 'json-file', options: { 'max-size': 'unlimited', 'max-file': '5' } },
+    { driver: 'syslog', options: { 'max-size': '10m', 'max-file': '5' } },
+    { options: { 'max-size': '10m', 'max-file': '5' } },
+  ])('a log configuration without a real bound: %j', (logging) => {
+    const broken = structuredClone(compose);
+    if (broken.services?.web) broken.services.web.logging = logging;
+    expect(failures(broken)).toContain('every service has bounded logs');
   });
 
   test('removing the runtime service altogether', () => {

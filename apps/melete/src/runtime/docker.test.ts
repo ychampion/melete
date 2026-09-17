@@ -10,6 +10,7 @@ import {
 } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { type DockerApi, DockerError, DockerHermesRuntimeAdapter } from './docker.ts';
+import { attemptEnvironment } from './supervisor.ts';
 
 const imageId = `sha256:${'a'.repeat(64)}`;
 const identity = (prefix: string, index = 0) => `${prefix}_01J0000000000000000000000${index}`;
@@ -126,7 +127,7 @@ class Daemon implements DockerApi {
 }
 
 const fixtures: Array<{ root: string; runtime: DockerHermesRuntimeAdapter }> = [];
-async function setup(pendingWait?: () => Promise<WaitSpec | null>) {
+async function setup(pendingWait?: () => Promise<WaitSpec | null>, brokerPort?: number) {
   const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-test-'));
   const daemon = new Daemon();
   const httpCalls: string[] = [];
@@ -145,6 +146,7 @@ async function setup(pendingWait?: () => Promise<WaitSpec | null>) {
     startTimeoutMs: 2000,
     parkedActions: async () => [],
     pendingWait,
+    brokerPort,
     fetch: async (url) => {
       httpCalls.push(url);
       if (mode.unavailable) throw new Error('Not listening yet');
@@ -215,6 +217,8 @@ describe('Docker attempt supervision', () => {
         CapDrop: ['ALL'],
         SecurityOpt: ['no-new-privileges:true'],
         RestartPolicy: { Name: 'no' },
+        // An attempt that logs without end must not fill the host's disk.
+        LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '5' } },
       },
     });
     expect(child?.HostConfig.Mounts).toEqual([
@@ -248,6 +252,43 @@ describe('Docker attempt supervision', () => {
       'networks',
       'volumes',
     ]);
+  });
+
+  test('an attempt container reaches the broker on the port the service binds', async () => {
+    const standard = await setup();
+    await standard.runtime.start(bundle(), standard.sink, new AbortController().signal);
+    expect(standard.daemon.created[0]?.Env).toContain('MELETE_BROKER_URL=http://melete:8788');
+    const moved = await setup(undefined, 9100);
+    await moved.runtime.start(bundle(), moved.sink, new AbortController().signal);
+    const environment = moved.daemon.created[0]?.Env ?? [];
+    expect(environment).toContain('MELETE_BROKER_URL=http://melete:9100');
+    expect(environment).toContain('HTTP_PROXY=http://melete:9100');
+    expect(environment).toContain('HTTPS_PROXY=http://melete:9100');
+    expect(environment.filter((entry) => entry.includes(':8788'))).toEqual([]);
+  });
+
+  test('every attempt container is told the protocol its provider speaks', async () => {
+    const f = await setup();
+    const cases = [
+      ['anthropic', 'claude-sonnet-4-5', 'anthropic_messages'],
+      ['openai', 'gpt-6-astra', 'codex_responses'],
+      ['openai', 'gpt-4.1', 'codex_responses'],
+      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', 'chat_completions'],
+      ['google', 'gemini-2.5-flash', 'chat_completions'],
+      ['openai-compatible', 'llama3.1', 'chat_completions'],
+      ['openai-compatible', 'gpt-6-astra', 'codex_responses'],
+    ] as const;
+    for (const [index, [provider, model, mode]] of cases.entries()) {
+      const attempt = { ...bundle(index), model: { provider, model, fallback: null } };
+      await f.runtime.start(attempt, f.sink, new AbortController().signal);
+      const environment = f.daemon.created[index]?.Env ?? [];
+      expect(environment).toContain(`MELETE_MODEL_PROVIDER=${provider}`);
+      expect(environment).toContain(`MELETE_MODEL_API_MODE=${mode}`);
+      // The process supervisor hands its child the same mode for the same model.
+      expect(attemptEnvironment(attempt, 'http://melete:8788', 'key').MELETE_MODEL_API_MODE).toBe(
+        mode,
+      );
+    }
   });
 
   test('concurrent jobs never share a network or writable Hermes home', async () => {

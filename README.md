@@ -45,7 +45,7 @@ configure, and the runtime never sees provider keys or your database.
 | Gate | v0.1 status | Evidence |
 | --- | --- | --- |
 | Reliability | **Passes the tested scenarios.** | At source `1f98e1a`, Bun 1.3.13 passed **1,734 tests on Windows, 29 skipped, 0 failed, in 337 seconds**, and **1,706 on Linux with real Postgres, 62 skipped, 4 TODOs, 0 failed, in 171 seconds**. [Service conformance](conformance/README.md): **26 passed, 25 skipped**, with five scenarios enabled and three deployment scenarios deferred. [Memory conformance](conformance/memory/README.md): **ten active scenarios passed, ten checks with recall withheld, one deferred**. The Python plugin passed **76 tests**. Linux lacked Chromium and the local Hermes environment; Windows exercised those fixtures. Skipped deployment and real-provider scenarios are not passing coverage. |
-| Operations | **Partial.** | Previously measured on a clean Linux Docker host: the install procedure below completed in about 65 seconds; restart under an active job and under a parked approval recovered with one receipt; a restore into an empty database volume kept the newer removal journal and produced exactly one destination effect; egress, sibling-service and owner-control-plane isolation were asserted from inside a claimed cell and the warm cell; the runtime image reproduces its pinned engine commit, plugin hash and SBOM. Not claimed: virtual-machine isolation, execution on Windows or macOS hosts, rootless Docker, and an upgrade procedure between releases. See the [threat model](docs/THREAT-MODEL.md) and [deployment operations](docs/DEPLOYMENT.md). |
+| Operations | **Partial.** | Previously measured on a clean Linux Docker host: the install procedure below completed in about 65 seconds; restart under an active job and under a parked approval recovered with one receipt; a restore into an empty database volume kept the newer removal journal and produced exactly one destination effect; egress, sibling-service and owner-control-plane isolation were asserted from inside a claimed cell and the warm cell; the runtime image reproduces its pinned engine commit, plugin hash and SBOM. Not claimed: virtual-machine isolation, execution on Windows or macOS hosts, and rootless Docker. See the [threat model](docs/THREAT-MODEL.md), [deployment operations](docs/DEPLOYMENT.md) and [upgrading](docs/UPGRADING.md). |
 | Capability | **Implemented and tested within the stated scope.** | The real-Hermes proof passes all five stages with **85 assertions**: dynamic search/load and receipts; MCP installation after session start; bounded disconnect recovery and sealed credential refresh; session/tool lifecycle hooks; skill selection capped at three; correction → evaluation → promotion → rollback; evaluated procedure reuse by another authorized member; and revocation fencing. Browser takeover and in-cell execution have separate named tests. **Real transcript compaction and production stdio launch remain unclaimed.** The provider is scripted, so this proves integration behavior, not real-model answer quality. See the [capability matrix](docs/CAPABILITIES.md). |
 | Output quality | **Measured; does not pass its gate.** | DeepSeek V4.1 Flash on Fireworks completed **70 fixtures three times: 210 observed cells**. Deterministic checks passed **34/70, 32/70 and 38/70**; the separate language rubric passed **57/70, 51/70 and 60/70**. The fixtures recorded **zero duplicate effects and zero successful injections**, across nine accepted effects, six with lost acknowledgements. Some failed preconditions prevented later phases from running. The campaign **does not pass `--gate`**. See the [evaluation evidence and limits](docs/EVALS.md). |
 | Learning | **Scoped, not general.** | Episode → candidate → held-out evaluation gate → canary → activation, tested end to end with scripted providers for one family: ordering typed table records while preserving their shape. Nothing beyond that family is claimed. See [learning](docs/LEARNING.md). |
@@ -149,9 +149,14 @@ the same scripted test action regardless of the message; it is a deployment
 demonstration, not a general-purpose assistant.
 
 To use a real model, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and
-the matching key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
-`FIREWORKS_API_KEY`, or `OPENAI_COMPAT_BASE_URL` with `OPENAI_COMPAT_API_KEY`) in
-`deploy/.env`, set `MELETE_ENABLE_FAKE_PROVIDER=false`, and recreate the service:
+the matching key in `deploy/.env`. The provider is one of exactly `fireworks`,
+`anthropic`, `openai`, `google` or `openai-compatible`, with `FIREWORKS_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or
+`OPENAI_COMPAT_BASE_URL` with `OPENAI_COMPAT_API_KEY`. The model is the
+identifier that provider serves, written as its API expects it. The
+[provider settings](docs/DEPLOYMENT.md#providers) cover local model servers and
+the reply length limit. Set `MELETE_ENABLE_FAKE_PROVIDER=false`, and recreate
+the service:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
@@ -243,8 +248,8 @@ bun run test:plugin
 ```
 
 The generators update the OpenAPI document and client declarations; generated
-differences must be inspected. The Compose command checks YAML (23 checks), not
-live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
+differences must be inspected. The Compose command checks YAML and the
+Dockerfiles (27 checks), not live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
 The plugin command uses an isolated Python environment to avoid system-package conflicts.
 Install Chromium with `bunx playwright install chromium` to include the local
 browser fixtures. Prepare the local engine below to include the wired HTTP
@@ -308,10 +313,9 @@ the scenarios the mock plays and the rules the web app follows.
   and any operating system other than a Linux Docker host for the sealed cell.
 - Launching MCP servers over stdio from the service, interactive sign-in inside
   the browser worker, and provider OAuth stored inside the runtime.
-- An exportable tamper-evident action ledger, an upgrade procedure between
-  releases, and universal physical erasure of forgotten data (copies already
-  delivered elsewhere, old backups, and git history are outside the removal
-  journal).
+- An exportable tamper-evident action ledger, and universal physical erasure of
+  forgotten data (copies already delivered elsewhere, old backups, and git
+  history are outside the removal journal).
 
 ## How to contribute
 
@@ -331,7 +335,7 @@ test, label what is not exercised, and record decisions with evidence under
 | `packages/knowledge`, `packages/skills`, `apps/melete/src/memory` | File-view utilities, skill files, and the authoritative memory service |
 | `deploy` | `docker-compose.yml`, the browser override, `.env.example`, the configuration generator, and the checks that the sandbox is really a sandbox; verified on a Linux Docker host |
 | `conformance` | Eight scenarios (6–8 need the Compose opt-in) and [eight memory scenario families](conformance/memory/README.md) |
-| `docs` | [Architecture](docs/ARCHITECTURE.md), [capabilities](docs/CAPABILITIES.md), [memory](docs/MEMORY.md), [learning](docs/LEARNING.md), [engineering evidence](docs/ENGINEERING.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [deployment](docs/DEPLOYMENT.md) |
+| `docs` | [Architecture](docs/ARCHITECTURE.md), [capabilities](docs/CAPABILITIES.md), [memory](docs/MEMORY.md), [learning](docs/LEARNING.md), [engineering evidence](docs/ENGINEERING.md), [threat model](docs/THREAT-MODEL.md), [connectors](docs/CONNECTORS.md), [deployment](docs/DEPLOYMENT.md), [upgrading](docs/UPGRADING.md) |
 | `.agents/notes` | Engineering decisions with their evidence; retained as history, not current release claims |
 | `CHANGELOG.md` | What each version ships and what it does not claim |
 

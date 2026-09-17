@@ -160,6 +160,9 @@ server.serve_forever()
       expect(args[index + 1]).toBe(value);
     }
     expect(args.filter((arg) => arg === '--network')).toHaveLength(1);
+    expect(args.join(' ')).toContain(
+      '--log-driver json-file --log-opt max-size=10m --log-opt max-file=5',
+    );
     expect(() =>
       dockerRunArguments(
         bundle,

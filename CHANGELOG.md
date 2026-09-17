@@ -3,6 +3,31 @@
 Each entry says what the version ships and what it does not claim. Claims map
 to named tests on the tagged tree; the README's gates table is the summary.
 
+## Unreleased
+
+### Ships
+
+- **Continuous integration.** Pull requests and pushes to `main` run the
+  typecheck, lint, both Compose checks, the test suite against a Postgres 17
+  service, the runtime plugin suite and a build of the service, web and runtime
+  images. Actions are pinned by commit and no secret is read; a test fails the
+  workflow if it names a script or file that does not exist.
+- **Bounded logs.** Every Compose service and every attempt container rotates a
+  `json-file` log at 10 MB with five files. `compose:check` (27 checks) and
+  `browser:compose:check` (12) refuse a service without the bound.
+- **A Docker Engine preflight.** In Docker runtime mode the service asks the
+  engine for its version before it opens the database, and stops with one
+  message naming Docker Engine 28.0 and Docker Compose 2.33.1 when the engine is
+  older than API 1.48, has dropped it, or cannot be reached. The configuration
+  generator and the upgrade script refuse an unsupported host the same way, and
+  `bun run doctor --docker` reports it.
+- **An upgrade procedure between releases.** [docs/UPGRADING.md](docs/UPGRADING.md)
+  and `deploy/scripts/upgrade.ts`: a preflight, a consistent backup that keeps
+  the restriction journal apart, a checkout of the tag, images tagged with the
+  release version as well as `:local`, a wait for health and for every migration
+  in the journal, and the exact rollback into an empty database volume with the
+  newer journal retained. `--dry-run` prints the plan.
+
 ## v0.1.0
 
 The first release: a self-hosted assistant that carries a responsibility to

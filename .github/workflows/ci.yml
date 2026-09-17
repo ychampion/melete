@@ -1,0 +1,108 @@
+# Every check here also runs locally with the same command; see the README's
+# "Verify from the repository root". Nothing is pushed, published or deployed,
+# and no secret is read. deploy/scripts/ci-workflow.test.ts checks this file.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Typecheck, lint and Compose checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Compose boundary checks
+        run: |
+          bun run compose:check
+          bun run browser:compose:check
+
+  test:
+    name: Test suite and runtime plugin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      # The embedded Postgres binary does not start on current Linux, so the
+      # fixtures create their disposable databases on this server instead. The
+      # image's bootstrap role is a superuser; the password guards nothing but
+      # this job's own loopback port.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: melete_test
+          POSTGRES_PASSWORD: melete_test
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U melete_test -d postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgres://melete_test:melete_test@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      # The learning gate starts Node with --permission.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.6"
+          enable-cache: false
+      - name: Install the Postgres client library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpq5
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # Names a missing prerequisite once: a non-root user, a writable temporary
+      # directory, DATABASE_URL on Linux, and uv.
+      - name: Check test prerequisites
+        run: |
+          test "$(id -u)" -ne 0
+          bun run doctor
+      - name: Test suite
+        run: bun run test
+      - name: Runtime plugin suite
+        run: bun run test:plugin
+
+  images:
+    name: Build the shipped images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Report the Docker versions
+        run: |
+          docker version
+          docker compose version
+      - name: Build the service image
+        run: docker build -t melete-service:ci -f deploy/Dockerfile.melete .
+      - name: Build the web image
+        run: docker build -t melete-web:ci -f deploy/Dockerfile.web .
+      - name: Build the runtime image
+        run: docker build -t melete-runtime:ci -f packages/runtime-hermes/Dockerfile packages/runtime-hermes

@@ -5,6 +5,30 @@ The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records
 build and startup times, conformance results, and clean-host timing. Timings
 depend on the host and network; the startup timeout does not bound image builds.
 
+## Docker Engine and Compose versions
+
+Melete requires **Docker Engine 28.0 or newer** and **Docker Compose 2.33.1 or
+newer**. The supervisor speaks Engine API 1.48, which
+[Engine 28.0](https://docs.docker.com/engine/release-notes/28/) introduced
+together with the `isolated` bridge gateway mode each attempt network uses.
+[Compose 2.33.1](https://github.com/docker/compose/releases/tag/v2.33.1) added
+`gw_priority` and needs Engine 28.0; volume `subpath` mounts are older, so
+`gw_priority` sets the Compose floor.
+
+The requirement is checked in three places, each with one message naming both
+versions:
+
+- The service, when `MELETE_RUNTIME_ADAPTER=docker`, asks the engine's
+  unversioned `/version` endpoint over the mounted socket before it opens the
+  database or anything else. An older engine, an engine that has dropped API
+  1.48, or an unreachable socket stops startup; `docker compose logs melete`
+  shows the message.
+- `bun run deploy/scripts/configure.ts` and `bun run deploy/scripts/upgrade.ts`
+  run `docker version` and `docker compose version` on the host and refuse an
+  unsupported pair before writing or changing anything.
+- `bun run doctor --docker` reports the same judgement on demand, and
+  `bun run doctor` includes it whenever `MELETE_CONFORMANCE_COMPOSE=1` is set.
+
 ## Configuration and browser access
 
 Configuration lives in `deploy/.env`, generated once by
@@ -66,6 +90,51 @@ provider, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL`, and the matchi
 credential in `deploy/.env`. Disable `MELETE_ENABLE_FAKE_PROVIDER` and
 `MELETE_ENABLE_TEST_CONNECTOR` when those fixtures are no longer wanted.
 
+`MELETE_DEFAULT_PROVIDER` is one of exactly these names:
+
+| Provider | Credential | Protocol the runtime is told to speak |
+| --- | --- | --- |
+| `fireworks` | `FIREWORKS_API_KEY` | chat completions |
+| `anthropic` | `ANTHROPIC_API_KEY` | messages |
+| `openai` | `OPENAI_API_KEY` | responses |
+| `google` | `GOOGLE_API_KEY` | chat completions |
+| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY` | chat completions; responses for `gpt-6` models |
+
+Any other name stops the service at start-up with a message naming the setting,
+and so does `openai-compatible` without a usable `OPENAI_COMPAT_BASE_URL`. An
+OpenAI-compatible endpoint is always selected as `openai-compatible`, whatever
+software serves it; the name of that software is not a provider name. A selected
+provider with an empty key starts with a warning on the service log, and the
+gateway refuses each model call with `provider_key_unavailable` until the key is
+set. `configure.ts` without `--fake` prints the same warning when it writes
+`deploy/.env`, because the file it writes selects a real provider with its key
+still empty.
+
+`MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
+its API expects it. Fireworks identifiers are full account paths; the default is
+`accounts/fireworks/models/deepseek-v4p1-flash`. The gateway admits only the
+model a job was started with, so a shortened name is refused by the provider,
+not corrected.
+
+`OPENAI_COMPAT_BASE_URL` is the endpoint's version prefix, for example
+`https://models.example.net/v1`. It is the only provider address that may be
+plain `http://`, for a model server on your own machine or network; every
+built-in provider stays HTTPS. Over `http://` the key and every prompt travel
+unencrypted, so keep it to a network you trust. Inside Compose, `localhost` is
+the Melete container itself, so give an address that container can reach. The
+gateway refuses a provider whose key is empty: for a server that checks no key,
+set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, an `https://`
+endpoint falls back to `OPENAI_API_KEY`; a plain `http://` endpoint never
+receives `OPENAI_API_KEY`.
+
+`MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
+gateway gives a model request that names none. The runtime names none unless its
+own configuration sets one, so this is the usual ceiling on one reply; a few
+hundred tokens truncates ordinary answers. The limit is reserved against the
+job's output budget until the call settles at its real usage, and it is lowered
+to what the job has left rather than refused. A limit the runtime does name is
+never rewritten: it is honoured, or refused when it exceeds the job's budget.
+
 Provider secrets belong to Melete's gateway. Runtime cells receive short-lived
 capabilities and surrogate credentials. Do not copy a provider key into a
 runtime environment. Configuration fields are listed in
@@ -118,6 +187,31 @@ These checks reproduce source identity and enforce dependency locks. They do
 not promise byte-identical image digests: OS package repositories, build
 timestamps, and build tooling can change the resulting bytes. Compare the
 recorded labels and inventories when rebuilding.
+
+## Upgrading
+
+[Upgrading between releases](UPGRADING.md) is its own page:
+`bun run deploy/scripts/upgrade.ts <tag> --dry-run` prints the whole plan. The
+service migrates its database at every boot under an advisory lock, so the
+procedure is a consistent backup, a checkout, a rebuild and a wait for health;
+the backup below is its first half.
+
+## Logs
+
+Docker's default `json-file` log has no size limit. Every Compose service, and
+every attempt container the supervisor starts, instead rotates a `json-file` log
+at 10 MB and keeps five files, so one container holds at most about 50 MB of
+log on the host. Read them with Compose:
+
+```bash
+docker compose -f deploy/docker-compose.yml logs --since 1h melete
+```
+
+The limits live in the `x-logging` anchor at the top of
+`deploy/docker-compose.yml`; a changed limit applies when a container is
+recreated, not on restart. `bun run compose:check` and
+`bun run browser:compose:check` refuse a service without the bound. Logs that
+must outlive rotation belong in a collector you run; none is shipped.
 
 ## Backup and restore
 

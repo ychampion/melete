@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { missingPrerequisites, type PreflightFacts } from './preflight.ts';
+import { gatherFacts, missingPrerequisites, type PreflightFacts } from './preflight.ts';
 
 const complete: PreflightFacts = {
   platform: 'linux',
@@ -41,4 +41,28 @@ test('Windows and macOS run embedded Postgres without libpq or a DATABASE_URL', 
   expect(missingPrerequisites({ ...complete, platform: 'darwin', databaseUrl: undefined })).toEqual(
     [],
   );
+});
+
+test('the Docker host is judged only when the deployment scenarios are requested', () => {
+  const asked: string[][] = [];
+  const old = (command: readonly string[]) => {
+    asked.push([...command]);
+    return { code: 0, stdout: command.includes('compose') ? '2.30.0' : '1.47 27.5.1', stderr: '' };
+  };
+  expect(gatherFacts({}, [], old).docker).toBeUndefined();
+  expect(asked).toEqual([]);
+
+  const requested = gatherFacts({ MELETE_CONFORMANCE_COMPOSE: '1' }, [], old);
+  expect(asked.map((command) => command.slice(0, 2).join(' '))).toEqual([
+    'docker version',
+    'docker compose',
+  ]);
+  expect(requested.docker).toHaveLength(2);
+  expect(gatherFacts({}, ['--docker'], old).docker).toHaveLength(2);
+
+  const lines = missingPrerequisites({ ...complete, docker: requested.docker });
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toContain('Docker Engine 27.5.1 (API 1.47) is too old');
+  expect(lines[1]).toContain('Docker Compose 2.30.0 is too old');
+  expect(missingPrerequisites({ ...complete, docker: [] })).toEqual([]);
 });

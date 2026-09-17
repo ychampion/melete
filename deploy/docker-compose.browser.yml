@@ -25,6 +25,12 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.browser
     restart: unless-stopped
+    # The same bound as the base file's services; an anchor cannot cross files.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     init: true
     networks: [browser-control, browser-egress]
     user: "10003:10003"

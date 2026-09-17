@@ -2,12 +2,17 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { judgeHostDocker, readHostDocker } from '../../apps/melete/src/runtime/docker-engine.ts';
+import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 
 const root = resolve(import.meta.dir, '../..');
 const target = resolve(root, 'deploy/.env');
 const fake = process.argv.includes('--fake');
 const socket = await stat('/var/run/docker.sock');
 if (!socket.isSocket()) throw new Error('/var/run/docker.sock is not a Docker socket');
+// An unsupported engine or Compose is named now, not as a failed `up` later.
+const unsupported = judgeHostDocker(readHostDocker());
+if (unsupported.length > 0) throw new Error(unsupported.join(' '));
 const template = await readFile(resolve(root, 'deploy/.env.example'), 'utf8');
 const password = randomBytes(24).toString('hex');
 const values: Record<string, string> = {
@@ -41,3 +46,6 @@ try {
 process.stdout.write(
   `Created deploy/.env with private permissions${fake ? ' and the explicit fake provider' : ''}.\n`,
 );
+// A real provider is selected with its key still empty. Say so now, not at the first job.
+for (const warning of providerWarnings(parseEnvFile(content)))
+  process.stderr.write(`WARNING: ${warning}\n`);

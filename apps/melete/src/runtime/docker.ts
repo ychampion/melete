@@ -16,11 +16,18 @@ import {
   HermesRuntimeAdapter,
   type ParkedActions,
 } from '@melete/runtime-hermes';
+import { modelApiMode } from '../gateway/providers.ts';
+import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
 
 const OWNER = 'com.melete.attempt-supervisor';
 const PROJECT = 'com.melete.project';
 const ATTEMPT = 'com.melete.attempt';
 const JOB = 'com.melete.job';
+/** The Compose services' log bound; an attempt must not be the one container without it. */
+export const ATTEMPT_LOG_CONFIG = {
+  Type: 'json-file',
+  Config: { 'max-size': '10m', 'max-file': '5' },
+} as const;
 type Labels = Record<string, string>;
 type Method = 'GET' | 'POST' | 'DELETE';
 
@@ -40,11 +47,21 @@ export class DockerError extends Error {
 }
 
 /** Only this trusted service has the socket; no cell receives it or a Docker client. */
-export class DockerSocketApi implements DockerApi {
+export class DockerSocketApi implements DockerApi, DockerVersionSource {
   constructor(private readonly socket: string) {}
 
+  /** Unversioned, so an engine too old for the API below can still say which one it is. */
+  async version(): Promise<unknown> {
+    const response = await fetch('http://localhost/version', {
+      unix: this.socket,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new DockerError(response.status, 'GET', '/version');
+    return response.json();
+  }
+
   async request(method: Method, path: string, body?: unknown): Promise<unknown> {
-    const response = await fetch(`http://localhost/v1.48${path}`, {
+    const response = await fetch(`http://localhost/v${DOCKER_API_VERSION}${path}`, {
       unix: this.socket,
       method,
       ...(body === undefined
@@ -69,6 +86,8 @@ export type DockerRuntimeOptions = {
   parkedActions: ParkedActions;
   pendingWait?: (bundle: AttemptBundle) => Promise<import('@melete/contracts').WaitSpec | null>;
   catalogState?: CatalogState;
+  /** The port the service's broker binds. Cells reach it as `melete` on their own network. */
+  brokerPort?: number;
   startTimeoutMs?: number;
   /** Docker supplies HOSTNAME as the service container's short id. */
   selfId?: string;
@@ -264,6 +283,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
     const resources: Resources = this.names(bundle.attempt.id);
     const labels = this.labels(bundle);
     const apiKey = randomBytes(32).toString('hex');
+    const broker = `http://melete:${this.options.brokerPort ?? 8788}`;
     try {
       const network = (await this.docker.request('POST', '/networks/create', {
         Name: resources.network,
@@ -308,9 +328,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             'API_SERVER_HOST=0.0.0.0',
             'API_SERVER_PORT=8790',
             `API_SERVER_KEY=${apiKey}`,
-            'MELETE_BROKER_URL=http://melete:8788',
-            'HTTP_PROXY=http://melete:8788',
-            'HTTPS_PROXY=http://melete:8788',
+            `MELETE_BROKER_URL=${broker}`,
+            `HTTP_PROXY=${broker}`,
+            `HTTPS_PROXY=${broker}`,
             'NO_PROXY=melete,localhost,127.0.0.1',
             `MELETE_ATTEMPT_TOKEN=${bundle.attempt.token}`,
             `MELETE_ATTEMPT_ID=${bundle.attempt.id}`,
@@ -318,6 +338,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             `MELETE_MODEL_KEY=melete-surrogate-${bundle.attempt.id}`,
             `MELETE_MODEL_PROVIDER=${bundle.model.provider}`,
             `MELETE_MODEL_NAME=${bundle.model.model}`,
+            `MELETE_MODEL_API_MODE=${modelApiMode(bundle.model.provider, bundle.model.model)}`,
           ],
           HostConfig: {
             NetworkMode: resources.network,
@@ -328,6 +349,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             Memory: 2 * 1024 ** 3,
             Tmpfs: { '/tmp': 'size=64m,mode=1777' },
             RestartPolicy: { Name: 'no' },
+            LogConfig: ATTEMPT_LOG_CONFIG,
             Mounts: [
               {
                 Type: 'volume',

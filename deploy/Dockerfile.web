@@ -20,6 +20,7 @@ COPY packages/skills/package.json packages/skills/
 COPY apps/melete/package.json apps/melete/
 COPY apps/mock-api/package.json apps/mock-api/
 COPY conformance/package.json conformance/
+COPY evals/package.json evals/
 RUN bun install --frozen-lockfile
 
 COPY . .

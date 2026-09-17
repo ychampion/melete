@@ -1,6 +1,14 @@
 # Linux deployment. Run from the repository root using the README commands.
 name: ${COMPOSE_PROJECT_NAME:-melete}
 
+# Docker's default log has no size limit. Every service rotates a bounded
+# json-file instead; attempt containers get the same limits from the supervisor.
+x-logging: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 networks:
   edge:
     driver: bridge
@@ -30,6 +38,7 @@ services:
   postgres:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
+    logging: *bounded-logs
     networks: [database]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-melete}
@@ -49,6 +58,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.melete
     restart: unless-stopped
+    logging: *bounded-logs
     networks:
       edge:
         aliases: [melete-api]
@@ -72,6 +82,8 @@ services:
       MELETE_ARTIFACTS_DIR: /data/artifacts
       MELETE_RESTRICTIONS_DIR: /data/restrictions
       MELETE_BROKER_BIND: 0.0.0.0:8788
+      # The service reads each attempt's tool catalog from its own broker listener.
+      MELETE_BROKER_URL: http://melete:8788
       MELETE_WORK_DIR: /work
       MELETE_CONNECTIONS_FILE: /etc/melete/connections.json
       MELETE_GATEWAY_TLS_DIR: /etc/melete/gateway-tls
@@ -84,6 +96,7 @@ services:
       MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
       MELETE_DEFAULT_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fake}
       MELETE_DEFAULT_MODEL: ${MELETE_DEFAULT_MODEL:-scripted}
+      MELETE_DEFAULT_MAX_OUTPUT_TOKENS: ${MELETE_DEFAULT_MAX_OUTPUT_TOKENS:-4096}
       MELETE_ENABLE_FAKE_PROVIDER: ${MELETE_ENABLE_FAKE_PROVIDER:-false}
       MELETE_ENABLE_TEST_CONNECTOR: ${MELETE_ENABLE_TEST_CONNECTOR:-false}
       FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
@@ -121,10 +134,12 @@ services:
     entrypoint: ["/bin/true"]
     network_mode: none
     restart: "no"
+    logging: *bounded-logs
 
   runtime:
     image: melete-runtime:local
     restart: unless-stopped
+    logging: *bounded-logs
     networks: [internal]
     depends_on:
       runtime-image:
@@ -180,6 +195,7 @@ services:
       args:
         VITE_MELETE_API: /api
     restart: unless-stopped
+    logging: *bounded-logs
     networks: [edge]
     depends_on:
       melete:
