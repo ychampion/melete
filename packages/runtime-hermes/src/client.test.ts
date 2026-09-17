@@ -241,6 +241,47 @@ describe('context assembly', () => {
     expect(renderInput(resumed).length).toBeLessThan(4000);
   });
 
+  test('constraints read as short prose, and a default is never written down', () => {
+    const plain = structuredClone(bundle);
+    plain.job.constraints = {
+      deliverable: { kind: 'none' },
+      allowed_domains: [],
+      public_compartment: false,
+    };
+    const defaults = renderInput(plain);
+    expect(defaults).not.toContain('## Accepted constraints');
+    expect(defaults).not.toContain('allowed_domains');
+    expect(defaults).not.toContain('public_compartment');
+    plain.job.constraints = {
+      deliverable: { kind: 'artifact', path_glob: 'reports/*.md' },
+      allowed_domains: ['example.test', 'docs.example.test'],
+      public_compartment: false,
+      notes: 'Keep it under a page.',
+      tone: 'plain',
+    };
+    const text = renderInput(plain);
+    expect(text).toContain('## Accepted constraints');
+    expect(text).toContain('- Done means a file matching reports/*.md exists in the workspace.');
+    expect(text).toContain(
+      '- Web fetches may reach only these domains: example.test, docs.example.test.',
+    );
+    expect(text).toContain('- Keep it under a page.');
+    expect(text).toContain('- tone: plain');
+    expect(text).not.toContain('"allowed_domains"');
+    expect(text).not.toContain('public_compartment');
+    plain.job.constraints = {
+      deliverable: { kind: 'message_sent', connection_id: `conn_${SUFFIX}` },
+      allowed_domains: [],
+      public_compartment: true,
+    };
+    const open = renderInput(plain);
+    expect(open).toContain(`- Done means a message was sent through conn_${SUFFIX}.`);
+    expect(open).toContain('- Public research: no private knowledge is loaded');
+    expect(open).not.toContain('allowed_domains');
+    plain.job.constraints = { deliverable: { kind: 'answer' } };
+    expect(renderInput(plain)).toContain('- Done means the owner has an answer.');
+  });
+
   test('a wait cancelled before it fired is named, with no wait in force now', () => {
     const woken = structuredClone(bundle);
     expect(renderInput(woken)).not.toContain('## A wait was cancelled');

@@ -75,10 +75,38 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle): string =>
     'It refers the recorded intervention for evaluation; it never installs a live skill.',
   ].join('\n');
 
+/**
+ * The job's constraints as the model reads them: one short line each, and a
+ * default is not written down. An empty domain list limits web fetches in a job
+ * that carries private context and nothing else; printed as `[]` it reads as a
+ * ban on acting at all. A key this does not know is still shown.
+ */
+export function renderConstraints(constraints: AttemptBundle['job']['constraints']): string[] {
+  const { deliverable, allowed_domains, public_compartment, notes, ...rest } = constraints;
+  const lines: string[] = [];
+  const done = deliverable as { kind?: string; path_glob?: string; connection_id?: string } | null;
+  if (done?.kind === 'artifact')
+    lines.push(`- Done means a file matching ${done.path_glob} exists in the workspace.`);
+  else if (done?.kind === 'message_sent')
+    lines.push(`- Done means a message was sent through ${done.connection_id}.`);
+  else if (done?.kind === 'answer') lines.push('- Done means the owner has an answer.');
+  if (public_compartment === true)
+    lines.push(
+      '- Public research: no private knowledge is loaded, and any public site may be read.',
+    );
+  else if (Array.isArray(allowed_domains) && allowed_domains.length > 0)
+    lines.push(`- Web fetches may reach only these domains: ${allowed_domains.join(', ')}.`);
+  if (typeof notes === 'string' && notes.trim()) lines.push(`- ${notes.trim()}`);
+  for (const [key, value] of Object.entries(rest))
+    lines.push(`- ${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`);
+  return lines;
+}
+
 /** The volatile half: the job, and what changed since the last attempt. */
 export function renderInput(bundle: AttemptBundle): string {
   const lines = [`# ${bundle.job.title}`, '', bundle.job.objective];
-  lines.push('', '## Accepted constraints', '', JSON.stringify(bundle.job.constraints));
+  const constraints = renderConstraints(bundle.job.constraints);
+  if (constraints.length) lines.push('', '## Accepted constraints', '', ...constraints);
   if (bundle.job.triggers?.length)
     lines.push(
       '',

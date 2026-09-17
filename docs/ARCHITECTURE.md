@@ -159,6 +159,13 @@ parks`, `an ask that still proposes nothing settles waiting for input, never
 completed`, `a finished send, a closing offer or a plain question completes in
 one run`).
 
+The attempt input renders the job's constraints as one short line each and
+writes no default down: a declared deliverable says what done means, a domain
+list says where web fetches may go, public research says so, notes appear as
+written, and any other key is shown as `key: value`. A job whose constraints are
+all defaults has no constraints section (`constraints read as short prose, and a
+default is never written down`).
+
 The broker serves a token-budgeted core catalog (750 estimated tokens of
 schemas, `core uses a serialized token budget, never a count cap, with stable
 ordering`) plus `search_tools` and `load_tool`; the contract's 15-tool constant
