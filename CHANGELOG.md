@@ -89,6 +89,27 @@ to named tests on the tagged tree; the README's gates table is the summary.
   for leave to do the task, counts a replaced value as asserted when the reply
   stands by it, accepts a standalone number for a required fact, and never sets a
   word budget below fifteen words.
+- **Tools from the first conversation.** A new installation has files, web
+  reading and finished-work publishing without anyone installing them, plus
+  speech where a speech-capable provider is configured and code in the
+  workspace where attempts run in a container. Each is an ordinary connection
+  row in the space it belongs to, admitted by the broker exactly as any other
+  is, so a publication still waits for approval. An account provisioned later,
+  and an account whose own space is made on its first request, is furnished the
+  same way and only in its own space. An existing installation gains the
+  defaults once at the next start, a grant its owner already made is kept
+  undoubled, and a default that is removed stays removed.
+- **Mail, calendars and MCP servers installed from Settings or the API.** `GET
+  /connection-kinds` says which kinds exist and which fields each one takes,
+  and Settings draws its form from that alone: a mailbox over IMAP and SMTP, a
+  CalDAV calendar, a published calendar feed, and an MCP server over HTTP.
+  `POST /connections` seals the password, token or feed address with the master
+  key before the row is written, and no route returns it. The new connection is
+  tested once and reports a fixed code rather than a transport message; a feed
+  address must be public HTTPS and is checked again on every read; installation
+  is the work of the owner of a space whose audience is its owner. Settings
+  tests a connection again or removes it, and leaves the connections the
+  service keeps in place.
 
 ## v0.1.0
 
