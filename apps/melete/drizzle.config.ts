@@ -16,6 +16,7 @@ export default defineConfig({
     './src/learning/proposal-schema.ts',
     './src/learning/evaluation-schema.ts',
     './src/spaces/schema.ts',
+    './src/sandbox/schema.ts',
   ],
   out: './drizzle',
   strict: true,
