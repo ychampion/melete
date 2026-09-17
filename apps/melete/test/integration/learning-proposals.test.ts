@@ -31,6 +31,8 @@ let output: unknown = {
   steps: ['sort-typed-values', 'keep-header-and-rows'],
   test: 'ordering-and-shape',
 };
+/** When set, the model answers with these exact bytes instead of the serialised output. */
+let answer: string | null = null;
 const gateway = fixture
   ? await openProposalGateway({
       db: fixture.handle.db,
@@ -39,7 +41,7 @@ const gateway = fixture
       providers: [fakeProvider],
       fake: async (body, attemptId, protocol) => {
         requests.push(body);
-        return createScriptedProvider([{ text: JSON.stringify(output) }])(
+        return createScriptedProvider([{ text: answer ?? JSON.stringify(output) }])(
           body,
           attemptId,
           protocol,
@@ -530,6 +532,25 @@ async function rejectedWithoutCandidate(episodeId: string) {
     );
     await rejectedWithoutCandidate(source.id);
   }, 20000);
+
+  test('an answer in one code fence is read, and a chattier one is refused', async () => {
+    if (!fixture || !proposer) return;
+    const fenced = await generalCorrection('fenced-answer');
+    answer = `\`\`\`json\n${JSON.stringify(generalProposal(CORRECTION))}\n\`\`\``;
+    try {
+      const candidate = await proposer.generate(fixture.ownerId, fixture.spaceId, fenced.source.id);
+      expect(candidate.body).toBe(`${PROCEDURE_PREAMBLE}\n1. Use bullet points.`);
+      const chatty = await generalCorrection('chatty-answer');
+      answer = `Here is the procedure:\n\`\`\`json\n${JSON.stringify(generalProposal(CORRECTION))}\n\`\`\``;
+      await rejectsWith(
+        () => proposer.generate(fixture.ownerId, fixture.spaceId, chatty.source.id),
+        'proposal_rejected',
+      );
+      await rejectedWithoutCandidate(chatty.source.id);
+    } finally {
+      answer = null;
+    }
+  }, 30000);
 
   test('one call per episode is still enforced and a failure is recorded', async () => {
     if (!fixture || !proposer || !gateway) return;

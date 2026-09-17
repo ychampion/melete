@@ -57,6 +57,20 @@ export type GeneralProposalRequest = {
   };
 };
 
+/**
+ * Models often wrap an answer in one Markdown fence. Exactly one opening line
+ * (```json or ```) and one closing line (```) are removed; anything else, including
+ * text around the fence or a second fence, is left for the JSON parser to refuse.
+ */
+export function unfenced(text: string): string {
+  const lines = text.trim().split('\n');
+  if (lines.length < 3) return text;
+  const opening = (lines[0] ?? '').trimEnd();
+  const closing = (lines[lines.length - 1] ?? '').trimEnd();
+  if ((opening !== '```json' && opening !== '```') || closing !== '```') return text;
+  return lines.slice(1, -1).join('\n');
+}
+
 /** Cut at a code unit boundary that does not split a surrogate pair. */
 const prefix = (text: string, length: number) => {
   let end = Math.min(length, text.length);
@@ -229,7 +243,7 @@ export async function openProposalGateway(options: {
                   choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
                 })
                 .parse(result).choices[0]?.message.content ?? '');
-      return JSON.parse(text) as unknown;
+      return JSON.parse(unfenced(text)) as unknown;
     } finally {
       tokens.delete(token);
     }
