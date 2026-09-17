@@ -4,7 +4,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { SecureContextOptions, TLSSocket } from 'node:tls';
-import { inputTokenAllowance } from '@melete/contracts';
+import { GATEWAY_MAX_REQUEST_BYTES, inputTokenAllowance } from '@melete/contracts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -122,7 +122,7 @@ export function createModelGateway(options: GatewayOptions): Server {
   }
   const fake = options.fake ?? createScriptedProvider();
   const transport = options.fetch ?? ((request: Request) => fetch(request));
-  const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
+  const maxRequestBytes = options.maxRequestBytes ?? GATEWAY_MAX_REQUEST_BYTES;
   const defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
   if (!positiveInteger(defaultMaxTokens))
     throw new RangeError('The default output limit must be a positive integer');
@@ -226,11 +226,15 @@ export function createModelGateway(options: GatewayOptions): Server {
       } else if (protocol === 'chat/completions' && body.stream) {
         body.stream_options = { include_usage: true };
       }
-      // Text-only inference has a conservative one-token-per-UTF8-byte estimate plus framing.
+      // Four characters of request body to the token, plus framing. This is the
+      // engine's own estimate, and it has to be, because the engine decides when
+      // to compact by it: counting a token per byte instead refused a request
+      // roughly four times sooner than the engine's trigger, so a long
+      // conversation was rejected here before it could ever be compacted.
       // Remote media and built-in tools cannot be metered by this text-only gateway.
       const encoded = JSON.stringify(body);
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
-      const inputTokens = Buffer.byteLength(encoded, 'utf8') + 256;
+      const inputTokens = Math.ceil(Buffer.byteLength(encoded, 'utf8') / 4) + 256;
       if (
         inputTokens >
         (principal.maxInputTokens ??
