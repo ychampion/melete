@@ -147,6 +147,36 @@ export const procedureStepEvidence = z.strictObject({
   fallback: z.literal('verbatim').optional(),
 });
 export type ProcedureStepEvidence = z.infer<typeof procedureStepEvidence>;
+export const procedureStep = z.strictObject({
+  text: z.string().min(3).max(240),
+  evidence: procedureStepEvidence,
+});
+export type ProcedureStep = z.infer<typeof procedureStep>;
+export const procedureTrigger = z.strictObject({
+  phrase: z.string().min(3).max(60),
+  evidence: procedureStepEvidence,
+});
+export type ProcedureTrigger = z.infer<typeof procedureTrigger>;
+/** Digests of normalised objectives, so binding case identity leaks no owner text. */
+export const procedureCaseTemplates = z.strictObject({
+  validation: z.array(z.string()).max(20).optional(),
+  final_pool: z.array(z.string()).max(20).optional(),
+});
+export type ProcedureCaseTemplates = z.infer<typeof procedureCaseTemplates>;
+/**
+ * Whether the admitted checks tell the corrected answer from the one the owner
+ * objected to. `none` means there were no checks to run, which is the only
+ * shape an owner may still try by hand; automated evaluation needs `passed`.
+ */
+export const procedureDiscrimination = z.strictObject({
+  status: z.enum(['passed', 'failed', 'none']),
+  detail: z.string(),
+  prior_failed: z.number().int().nonnegative().nullable(),
+  corrected_failed: z.number().int().nonnegative().nullable(),
+  empty_failed: z.number().int().nonnegative(),
+  junk_failed: z.number().int().nonnegative(),
+});
+export type ProcedureDiscrimination = z.infer<typeof procedureDiscrimination>;
 
 export const episodeId = prefixedId('ep');
 export const procedureId = prefixedId('pc');
