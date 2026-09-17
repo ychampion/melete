@@ -6,9 +6,8 @@ support. `ConnectorRegistry` validates manifests and refuses duplicate entries
 (`registry refuses ambiguous tools and invalid manifests`;
 `registry rejects duplicate connections and returns a stable connection order`).
 
-This describes the tree at the head of `integration`.
-The tests use temporary files, fake destinations and local protocol servers.
-General compatibility with live mail/calendar accounts is **not claimed**.
+The tests use temporary files, fake destinations and local protocol servers, so
+they establish each connector's own behaviour against those fixtures.
 
 ## Contract and policy
 
@@ -23,14 +22,23 @@ select arbitrary code or credentials.
 | --- | --- |
 | `read` | Eligible for admission within scope and budget |
 | `write_reversible` | Eligible for admission within scope and budget; manifest approval requirements still apply |
-| `write_external` | Requires payload-bound approval in the configured default boundary |
+| `write_external` | Requires payload-bound approval, or an owner rule that covers this exact action |
 | `spend` | Requires approval and a budget reservation |
 
-The default boundary has no configured reusable send authorization; such a
-product feature is **not claimed**. Broker tests use injected policy seams and
-must not be described as shipped owner configuration.
+A `write_external` action waits for the owner unless a rule the owner made
+covers it. Choosing `always` on a permission card writes that rule with a count
+cap, an expiry and a re-consent interval, and the broker admits under it only
+when the space, connection, tool kind and resolved recipient all match, the
+recipient's origin is owner-stated or connector-verified, the rule is unrevoked
+and inside both its expiry and its re-consent window, and the cap has room;
+each use is recorded once, at admission. Rules exist for named kinds only:
+sending a message, creating, changing or removing an event, discarding a draft,
+and saving or restoring a file. A `spend` asks every time, and an action the
+owner is already reviewing keeps its own approval. [CLIENT](CLIENT.md)
+describes the cards, `GET /rules` and `DELETE /rules/{id}`.
 Evidence for the default effect gate is conformance 4, `An approval cannot be
-spent on different content`. Schema declarations alone do not prove admission.
+spent on different content`; a manifest's schema declares what a tool takes,
+and admission is what decides whether it runs.
 
 A timeout after dispatch becomes `unknown`. Verification inspects destination
 evidence without repeating the effect. If verification cannot decide, uncertainty
@@ -50,7 +58,7 @@ succeeded and the job continues`.
 | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
 | Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` |
 | Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` |
-| MCP | Operator-configured HTTP servers behind the broker with operator-chosen effect classes, scopes and audience | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
+| MCP | HTTP servers behind the broker, with the effect classes, scopes and audience the installation declares | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
 | Browser | Semantic observe, open, fill, click, select, read and an approved `browser.submit`, carried out by a worker process outside the cell with epoch-fenced takeover | `approval binds the exact browser intent and repeated proposals dispatch one effect`; `an unapproved submit has no external effects and its warning identifies the observed destination`; see [the browser worker](browser-worker.md) |
 
 The code paths are in [the connector directory](../apps/melete/src/connectors).
@@ -116,7 +124,7 @@ configuration block:
 | Mail (IMAP and SMTP) | `imap` | `mail`: account name, sender address, IMAP and SMTP host, port and TLS mode, optional folders | `credentials.password` | `email.search`, `email.read`, `email.draft`, `email.send` |
 | CalDAV | `caldav` | `caldav`: one HTTPS calendar collection address and an account name | `credentials.password` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
-| MCP over HTTP | `mcp` | `mcp`: see [Operator-installed MCP servers](#operator-installed-mcp-servers) | optional token fields | declared in the block |
+| MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in
@@ -124,6 +132,41 @@ which case the caller's own personal space is used. Installation requires the
 owner of a space whose audience is `owner`, which is the rule MCP installation
 already followed, and a connection installed this way is withheld from public
 compartments.
+
+A mailbox, with the owner's session cookie and from the API's own origin:
+
+```json
+{
+  "label": "Personal mail",
+  "provider": "imap",
+  "mail": {
+    "username": "you@example.com",
+    "from": "you@example.com",
+    "imap": { "host": "imap.example.com", "port": 993, "secure": true },
+    "smtp": { "host": "smtp.example.com", "port": 465, "secure": true }
+  },
+  "credentials": { "password": "an app password where the provider offers one" }
+}
+```
+
+`inbox` and `sent` name the folders when they are not the server's defaults.
+A CalDAV calendar takes one collection address and an account name instead:
+
+```json
+{
+  "label": "Work calendar",
+  "provider": "caldav",
+  "caldav": {
+    "calendar_url": "https://dav.example.com/calendars/you/personal/",
+    "username": "you@example.com"
+  },
+  "credentials": { "password": "…" }
+}
+```
+
+A calendar feed carries `ics: { "url": "https://calendar.example.com/feed.ics" }`
+and no `credentials`, because the address is the credential. The response is the
+new connection and the one `check` below.
 
 Passwords, MCP tokens and the whole feed address are sealed with the master key
 before the row is written. No route returns them, and the row's configuration
@@ -189,10 +232,10 @@ Traversal, absolute paths, alternate streams, device names and links are
 rejected in the tested paths:
 `file boundary rejects parent traversal, absolute paths, alternate streams and
 device names` and `file boundary rejects directory junctions and final
-symlinks without touching outside content`. These are connector checks, not
-proof of container filesystem isolation; that boundary was probed live in
-scenario 6 on a Linux Docker host, where a sibling job's canary was unreadable
-from the cell while its own workspace was writable.
+symlinks without touching outside content`. These are the connector's own
+checks; the container's filesystem boundary was probed live in scenario 6 on a
+Linux Docker host, where a sibling job's canary was unreadable from the cell
+while its own workspace stayed writable.
 
 ### Web
 
@@ -201,8 +244,10 @@ arbitrary private or metadata addresses. Private-context requests require the
 trusted exact-host allowlist. Tests include `web validates every DNS answer,
 so a mixed public/private answer never reaches transport` and `checked DNS
 answer is passed unchanged to transport and DNS is not repeated`.
-No claim of arbitrary-data exfiltration prevention follows from a domain
-allowlist; comprehensive containment is **not claimed**.
+An address allowlist decides where a fetch may go, not what it may carry: a
+permitted destination receives the request's full address, so `web.fetch` is a
+`read` whose whole query string is recorded with its action for the owner to
+read back.
 
 ### Email
 
@@ -211,10 +256,13 @@ credentials or calls SMTP`). Local IMAP/SMTP fixtures exercise the real
 libraries (`real libraries authenticate, decode MIME for hygiene, send with
 stable Message-ID and verify Sent`). Header injection and extra fields are
 rejected (`context mismatch, header injection and unapproved extra fields never
-reach SMTP`). Hygiene patterns do not detect every sensitive message.
+reach SMTP`). Hygiene withholds the tested shapes of one-time codes, password
+resets and magic links; a sensitive message in any other shape is read like any
+other message.
 
-Provider-specific OAuth onboarding and live-account acceptance are **not
-claimed**. Tests use credentials belonging to local fixtures.
+Mail signs in with an account name and a password or app password, so there is
+no provider-specific OAuth flow to complete. Tests use credentials belonging to
+local fixtures.
 
 ### Calendar
 
@@ -223,23 +271,26 @@ exposes only the read tool`). CalDAV updates preserve UID and check ETags
 (`update preserves original UID, records its new action, and fails stale
 ETags`); lost acknowledgements remain uncertain until verified
 (`a dropped acknowledgement remains unknown until exact UID and content
-verification`). Compatibility with every CalDAV implementation is **not claimed**.
+verification`). These names establish the client's behaviour against a local
+CalDAV server.
 
 ### Knowledge and memory
 
-The configured connector registry does not register a knowledge connector.
-Knowledge routes, Markdown mediation and the Postgres memory service exist as
-separate modules. A shipped broker catalog containing `knowledge.search` and
-`knowledge.propose_write` is **not claimed**. File-view tests and authoritative
-memory tests are described in [MEMORY](MEMORY.md); do not use SQLite search hits
-as authority to disclose memory.
+Knowledge is not a connector. The knowledge routes, Markdown mediation and the
+Postgres memory service are separate modules, and the broker catalog carries no
+`knowledge.search` or `knowledge.propose_write` verb: an attempt receives
+knowledge through the memory context it is given, and the owner reads and edits
+it through the authenticated routes. File-view tests and authoritative memory
+tests are described in [MEMORY](MEMORY.md); a SQLite search hit is a view, not
+authority to disclose memory.
 
 ## Credentials and verification
 
 Sealed secret storage is tested by `stores randomized sealed boxes and only
 decrypts in the owning space` and `rejects a wrong master key, changed
-ciphertext and cross-row swaps`. The service process and its master key remain
-trusted; stronger host isolation is **not claimed**.
+ciphertext and cross-row swaps`. The service process holds the master key and
+decrypts a credential in ordinary process memory when it dispatches, so a
+compromise of that process, or of the host, exposes them.
 
 Run from the repository root:
 
@@ -322,7 +373,7 @@ words match them, and they are ranked behind everything the owner granted:
 relevance is read off a tool's own description, and an MCP server writes its
 own, so echoing the job earns it only the room no granted verb wanted
 (`an MCP description cannot take the place of a granted connector verb`).
-Selection budgets serialized schemas rather than counting tools.
+Selection budgets serialised schemas rather than counting tools.
 The default core allowance is 750 estimated tokens of schemas, including
 the two discovery tools, plus at most 250 estimated tokens for a names-only
 index of every healthy tool left outside, carried on `load_tool`. The pinned
@@ -369,16 +420,16 @@ Hermes v2026.9.7 snapshots tools when an HTTP run starts. The plugin registers
 the newly loaded schema, and the adapter verifies the broker's catalog change,
 ends that run, then starts a continuation with the same attempt authority and
 shared budgets. There is one public attempt outcome; model-written
-`tools_loaded` text does not authorize a continuation.
+`tools_loaded` text does not authorise a continuation.
 
-## Operator-installed MCP servers
+## Installed MCP servers
 
-The worker in `apps/melete/src/connectors/mcp.ts` supports an
-operator-owned JSON config with a stdio command/arguments or an HTTP URL,
-allowed scopes, an `owner` audience, and an explicit list of exposed tools.
-For each tool the operator chooses a local alias, required scopes and an effect
-class. The default is `write_external`. Server annotations such as
-`readOnlyHint` never determine policy, and unconfigured server tools are ignored.
+The worker in `apps/melete/src/connectors/mcp.ts` takes a policy with a stdio
+command and arguments or an HTTP URL, allowed scopes, an `owner` audience, and
+an explicit list of exposed tools. For each tool the installation chooses a
+local alias, required scopes and an effect class. The default is
+`write_external`. Server annotations such as `readOnlyHint` never determine
+policy, and a server tool the policy does not name is ignored.
 
 The worker runs outside the runtime cell. Its stdio transport uses a filtered
 environment and its own temporary working directory. It receives neither vault
@@ -421,10 +472,11 @@ Shutdown disposes HTTP sessions. This implementation does not configure server
 authentication or resume disconnected sessions; it sends no service secrets.
 
 **Production stdio launch is refused before spawning.** A filtered environment
-does not isolate a same-account process from service-readable files or host
-networking. A dedicated OS launcher remains required. The real stdio integration
-fixture uses the same `mcp` provider and broker adapter, with process launch
-limited to tests.
+leaves a same-account process able to read service-readable files and use host
+networking, so a local server needs its own OS identity or sandbox and a
+production MCP server is an HTTP endpoint. The real stdio integration fixture
+uses the same `mcp` provider and broker adapter, with process launch limited to
+tests.
 
 ## Composing read results
 
@@ -438,6 +490,5 @@ action evidence handles, and derived output retains inferred provenance.
 The broker offers `compose` only when a `ComposeExecutor` is injected, and the
 default service entry point injects none, so the shipped catalog does not carry
 it (`HTTP composition is unavailable without the service-owned cell executor`).
-The in-process fallback is restricted to tests; `node:vm` is not a production
-security boundary and does not provide a memory limit. Connecting the in-cell
-executor to this seam and verifying its isolation remains open work.
+The in-process fallback is restricted to tests: `node:vm` is not a security
+boundary and imposes no memory limit.
