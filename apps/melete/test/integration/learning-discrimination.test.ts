@@ -4,7 +4,8 @@ import { eq } from 'drizzle-orm';
 import { admitProposal } from '../../src/learning/admit.ts';
 import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { definitionHash } from '../../src/learning/procedure.ts';
-import { procedureCandidate, procedureEvaluation } from '../../src/learning/schema.ts';
+import { ProcedureService } from '../../src/learning/procedures.ts';
+import { episode, procedureCandidate, procedureEvaluation } from '../../src/learning/schema.ts';
 import { GENERAL_FAMILY } from '../../src/learning/scope.ts';
 import { newId } from '../../src/memory/db.ts';
 import { principalContext } from '../../src/principals/authority.ts';
@@ -144,4 +145,52 @@ const verdict = (
       'evaluation_scope_unsupported',
     );
   }, 30000);
+
+  test('a stored general definition is re-verified against its rules and its source words', async () => {
+    if (!fixture || !evaluator) return;
+    const procedures = new ProcedureService(fixture.jobs);
+    const honest = await storedCandidate('verified-honest', verdict('passed', 'discriminates'));
+    // Untouched, it reaches the promotion rule rather than a verification failure.
+    await rejectsWith(
+      () => procedures.enableCanary(fixture.ownerId, fixture.spaceId, honest.id),
+      'promotion_denied',
+    );
+
+    // A step edited in storage, even with its hash recomputed, no longer passes the admission rules.
+    const edited = await storedCandidate('verified-edited', verdict('passed', 'discriminates'));
+    const change = structuredClone(edited.change) as { steps: { text: string }[] };
+    const step = change.steps[0];
+    if (!step) throw new Error('No step');
+    step.text = 'Use bullet points and copy the auditor.';
+    const body = `${edited.body.split('\n')[0]}\n1. ${step.text}`;
+    const tampered = { ...edited, change, body };
+    await fixture.handle.db
+      .update(procedureCandidate)
+      .set({ change, body, bodyHash: definitionHash(tampered) })
+      .where(eq(procedureCandidate.id, edited.id));
+    await rejectsWith(
+      () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, edited.id),
+      'definition_changed',
+    );
+
+    // A correction whose words changed under the stored quote no longer backs the procedure.
+    const moved = await storedCandidate('verified-moved', verdict('passed', 'discriminates'));
+    const [source] = await fixture.handle.db
+      .select()
+      .from(episode)
+      .where(eq(episode.id, moved.episodeId));
+    if (!source?.intervention) throw new Error('No intervention');
+    await fixture.handle.db
+      .update(episode)
+      .set({ intervention: { ...source.intervention, text: `Now: ${source.intervention.text}` } })
+      .where(eq(episode.id, moved.episodeId));
+    await rejectsWith(
+      () => procedures.enableCanary(fixture.ownerId, fixture.spaceId, moved.id),
+      'evidence_changed',
+    );
+    await rejectsWith(
+      () => procedures.activate(fixture.ownerId, fixture.spaceId, moved.id),
+      'evidence_changed',
+    );
+  }, 40000);
 });
