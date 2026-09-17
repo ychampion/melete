@@ -22,6 +22,7 @@ const context: UpgradeContext = {
   backupDir: '/srv/backups/melete-upgrade-v0.2.0',
   repositoryRoot: '/srv/melete',
   browser: false,
+  tailscale: false,
   waitTimeoutSeconds: 300,
   project: 'melete',
   fromCommit: 'a'.repeat(40),
@@ -110,6 +111,37 @@ describe('the upgrade plan', () => {
       expect(line).toContain('-f deploy/docker-compose.yml -f deploy/docker-compose.browser.yml');
     expect(indexOf(custom, 'stop melete runtime web browser')).toBeGreaterThan(0);
   });
+
+  test('the Tailscale override reaches every Compose command, and the node is stopped too', () => {
+    const overlaid = lines(upgradePlan({ ...context, tailscale: true }));
+    const compose = overlaid.filter((line) => line.startsWith('docker compose '));
+    expect(compose.length).toBeGreaterThan(5);
+    for (const line of compose)
+      expect(line).toContain('-f deploy/docker-compose.yml -f deploy/docker-compose.tailscale.yml');
+    // Stopped with the web service it proxies, so the tailnet address closes
+    // rather than answering a gateway error for the length of the upgrade.
+    expect(indexOf(overlaid, 'stop melete runtime web tailscale')).toBeGreaterThan(0);
+    // The node's key volume is never removed, here or in the rollback.
+    expect(overlaid.join('\n')).not.toMatch(/tailscale-state|volume rm/);
+    expect(rollbackSteps({ ...context, tailscale: true }).join('\n')).not.toContain(
+      'tailscale-state',
+    );
+  });
+
+  test('both overrides together, in the order the documentation gives them', () => {
+    const both = lines(upgradePlan({ ...context, browser: true, tailscale: true }));
+    for (const line of both.filter((line) => line.startsWith('docker compose ')))
+      expect(line).toContain(
+        '-f deploy/docker-compose.yml -f deploy/docker-compose.browser.yml -f deploy/docker-compose.tailscale.yml',
+      );
+    expect(indexOf(both, 'stop melete runtime web browser tailscale')).toBeGreaterThan(0);
+  });
+
+  test('the rollback repeats the overrides, so it starts the same stack', () => {
+    const steps = rollbackSteps({ ...context, tailscale: true });
+    for (const line of steps.filter((line) => line.startsWith('docker compose ')))
+      expect(line).toContain('-f deploy/docker-compose.yml -f deploy/docker-compose.tailscale.yml');
+  });
 });
 
 describe('the rollback steps', () => {
@@ -159,6 +191,7 @@ describe('arguments', () => {
       tag: 'v0.2.0',
       dryRun: true,
       browser: false,
+      tailscale: false,
       waitTimeoutSeconds: 300,
       repositoryRoot: '/srv/melete',
       backupDir: '/home/owner/melete-backups/upgrade-v0.2.0-20300102T030405Z',
@@ -174,8 +207,18 @@ describe('arguments', () => {
       tag: 'v1.2.3-rc.1',
       dryRun: false,
       browser: true,
+      tailscale: false,
       waitTimeoutSeconds: 600,
       backupDir: '/mnt/b/upgrade-v1.2.3-rc.1-20300102T030405Z',
+    });
+  });
+
+  test('each overlay the installation runs with is named on its own', () => {
+    const parse = (argv: string[]) => parseArguments(argv, now, '/home/owner', '/srv/melete');
+    expect(parse(['v0.2.0', '--tailscale'])).toMatchObject({ browser: false, tailscale: true });
+    expect(parse(['v0.2.0', '--tailscale', '--browser'])).toMatchObject({
+      browser: true,
+      tailscale: true,
     });
   });
 
@@ -342,6 +385,7 @@ const options = {
   backupDir: '/srv/backups/upgrade-v0.2.0',
   repositoryRoot: '/srv/melete',
   browser: false,
+  tailscale: false,
   waitTimeoutSeconds: 300,
 };
 const dependencies = (run: CommandRunner, output: string[]) => ({
@@ -477,6 +521,24 @@ describe('running the upgrade with an injected command runner', () => {
       },
     );
     expect(output.join('\n')).not.toContain('hunter2-secret');
+    expect(output.join('\n')).toContain('[redacted]');
+  });
+
+  test('the tailnet auth key is redacted like every other key in the file', async () => {
+    // A node that will not join names the key in its own error. The key is a
+    // credential for the whole tailnet, so it is redacted wherever it appears.
+    const authkey = 'tskey-auth-k1CNTRL-abcdef0123456789';
+    const { run } = host({ pg_dump: { code: 1, stderr: `TS_AUTHKEY=${authkey} was rejected` } });
+    const output: string[] = [];
+    await runUpgrade(
+      { ...options, dryRun: false, tailscale: true },
+      {
+        ...dependencies(run, output),
+        environment: async () => ({ COMPOSE_PROJECT_NAME: 'melete', TS_AUTHKEY: authkey }),
+      },
+    );
+    expect(output.join('\n')).not.toContain(authkey);
+    expect(output.join('\n')).not.toContain('tskey-');
     expect(output.join('\n')).toContain('[redacted]');
   });
 });
