@@ -17,16 +17,33 @@ export const LIVE_LIMITS = {
   text_bytes: 4 * KB,
   text_events_per_second: 4,
   events_per_batch: 200,
-  frame_bytes_per_second: 1.5 * MB,
-  frame_bytes_per_takeover: 120 * MB,
+  frames_per_second: 10,
+  frame_bytes_per_second: 500 * KB,
+  frame_budget_window_ms: 10_000,
   unacked_frames: 2,
   site_scope_hosts: 12,
+  redirect_hops: 20,
   popups_per_takeover: 8,
   takeover_ms: 20 * 60_000,
   pull_timeout_ms: 10_000,
   requests_per_takeover: 2000,
   network_bytes_per_takeover: 32 * MB,
 } as const;
+
+/** Limits a worker may be started with instead of the defaults; never taken from a request. */
+export type LiveLimitOverrides = Partial<
+  Record<
+    | 'takeover_ms'
+    | 'popups_per_takeover'
+    | 'requests_per_takeover'
+    | 'network_bytes_per_takeover'
+    | 'frames_per_second'
+    | 'frame_bytes_per_second'
+    | 'site_scope_hosts'
+    | 'redirect_hops',
+    number
+  >
+>;
 
 export const liveId = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 
@@ -234,26 +251,30 @@ export class LiveInputLimiter {
   }
 }
 
-/** Frame bytes for one takeover: a per-second rate that delays delivery, and a hard total. */
+/**
+ * Frame bytes averaged over a sliding window. Delivery waits above the average; nothing ends a
+ * takeover for its frame volume, whose total the takeover's time cap already bounds.
+ */
 export class LiveFrameBudget {
-  private readonly rate: TokenBucket;
-  private total = 0;
+  private readonly sent: Array<{ at: number; bytes: number }> = [];
+  private inWindow = 0;
 
-  constructor(now: () => number = Date.now) {
-    this.rate = new TokenBucket(LIVE_LIMITS.frame_bytes_per_second, now);
-  }
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly perSecond: number = LIVE_LIMITS.frame_bytes_per_second,
+    private readonly windowMs: number = LIVE_LIMITS.frame_budget_window_ms,
+  ) {}
 
-  get spent(): number {
-    return this.total;
-  }
-
-  take(bytes: number): 'ok' | 'wait' | 'exhausted' {
-    if (this.total + bytes > LIVE_LIMITS.frame_bytes_per_takeover) return 'exhausted';
-    const charge = Math.min(bytes, this.rate.capacity);
-    if (this.rate.available() < charge) return 'wait';
-    this.rate.take(charge);
-    this.total += bytes;
-    return 'ok';
+  take(bytes: number): boolean {
+    const now = this.now();
+    while (this.sent[0] && this.sent[0].at <= now - this.windowMs)
+      this.inWindow -= this.sent.shift()?.bytes ?? 0;
+    // A single frame larger than the whole window is still delivered once the window is empty.
+    if (this.sent.length && this.inWindow + bytes > (this.perSecond * this.windowMs) / 1000)
+      return false;
+    this.sent.push({ at: now, bytes });
+    this.inWindow += bytes;
+    return true;
   }
 }
 
@@ -262,13 +283,18 @@ export class LiveNetworkBudget {
   requests = 0;
   bytes = 0;
 
+  constructor(
+    private readonly maxRequests: number = LIVE_LIMITS.requests_per_takeover,
+    private readonly maxBytes: number = LIVE_LIMITS.network_bytes_per_takeover,
+  ) {}
+
   request(): boolean {
     this.requests++;
-    return this.requests <= LIVE_LIMITS.requests_per_takeover;
+    return this.requests <= this.maxRequests;
   }
 
   transfer(bytes: number): boolean {
     this.bytes += bytes;
-    return this.bytes <= LIVE_LIMITS.network_bytes_per_takeover;
+    return this.bytes <= this.maxBytes;
   }
 }

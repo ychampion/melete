@@ -8,7 +8,7 @@ import {
   BrowserRedirect,
   createBrowserEgress,
 } from './egress.ts';
-import { BrowserLive } from './live.ts';
+import { BrowserLive, type BrowserLiveOptions } from './live.ts';
 import { redactSecretText } from './redact.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
@@ -59,6 +59,20 @@ function sorted(value: unknown): unknown {
   return typeof value === 'string' ? value.trim() : value;
 }
 const hash = (value: unknown) => digest(JSON.stringify(sorted(value)));
+
+/** Scheme, host and path only: a query or fragment can carry a code the person was just sent. */
+function withoutQuery(value: string): string {
+  try {
+    const url = new URL(value);
+    url.search = '';
+    url.hash = '';
+    url.username = '';
+    url.password = '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
 
 export const browserSubmitIntent = z.strictObject({
   url: z.string().url(),
@@ -131,7 +145,12 @@ export class BrowserController {
   private humanJustLeft = false;
   readonly metrics = { observations: 0, dispatched_inputs: 0, refused_inputs: 0 };
 
-  constructor(options: BrowserSessionsOptions & { network?: BrowserNetworkOptions }) {
+  constructor(
+    options: BrowserSessionsOptions & {
+      network?: BrowserNetworkOptions;
+      live?: BrowserLiveOptions;
+    },
+  ) {
     this.sessions = new BrowserSessions({
       ...options,
       install: async (context, policy) => {
@@ -148,7 +167,7 @@ export class BrowserController {
         });
       },
     });
-    this.live = new BrowserLive(this);
+    this.live = new BrowserLive(this, options.live);
     this.sessions.onControl((change) => {
       if (change === 'handback') this.humanJustLeft = true;
       return undefined;
@@ -392,7 +411,7 @@ export class BrowserController {
       control_epoch: epoch,
       observation: {
         id: `obs_${randomUUID()}`,
-        url: page.url(),
+        url: handedBack ? withoutQuery(page.url()) : page.url(),
         schema,
         tree,
         screenshot,

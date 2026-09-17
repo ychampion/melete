@@ -10,6 +10,7 @@ import {
   LiveFrameBudget,
   type LiveInput,
   LiveInputLimiter,
+  type LiveLimitOverrides,
   LiveNetworkBudget,
   type LiveNoticeCode,
   type LiveOpen,
@@ -31,6 +32,8 @@ export type LiveHost = {
 };
 
 type HeldFrame = Extract<LiveDown, { type: 'frame' }> & { ack: number };
+
+export type BrowserLiveOptions = { now?: () => number; limits?: LiveLimitOverrides };
 type Screen = { page: Page; cdp: CDPSession; release: () => void };
 
 /** Budgets and limits that last for one takeover epoch, across the channels opened under it. */
@@ -55,9 +58,11 @@ type Channel = {
   switching: Promise<void>;
   inputs: Promise<unknown>;
   seq: number;
-  /** Received and not yet delivered, then delivered and not yet acknowledged: two at most. */
-  pending: HeldFrame[];
+  /** The newest frame not yet delivered, and delivered frames not yet acknowledged: two at most. */
+  pending?: HeldFrame;
   delivered: HeldFrame[];
+  lastData?: string;
+  lastDeliveredAt: number;
   events: LiveDown[];
   noticed: Set<string>;
   buttons: number;
@@ -81,14 +86,32 @@ const EVENT_LIMIT = 64;
 export class BrowserLive {
   private channel?: Channel;
   private takeover?: Takeover;
-  private readonly counts = { frames: 0, frame_bytes: 0, max_held_frames: 0, inputs: 0 };
+  private readonly counts = {
+    received_frames: 0,
+    frames: 0,
+    frame_bytes: 0,
+    max_held_frames: 0,
+    inputs: 0,
+  };
   private readonly now: () => number;
+  private readonly limits: Required<LiveLimitOverrides>;
 
   constructor(
     private readonly host: LiveHost,
-    options: { now?: () => number } = {},
+    options: BrowserLiveOptions = {},
   ) {
     this.now = options.now ?? Date.now;
+    this.limits = {
+      takeover_ms: LIVE_LIMITS.takeover_ms,
+      popups_per_takeover: LIVE_LIMITS.popups_per_takeover,
+      requests_per_takeover: LIVE_LIMITS.requests_per_takeover,
+      network_bytes_per_takeover: LIVE_LIMITS.network_bytes_per_takeover,
+      frames_per_second: LIVE_LIMITS.frames_per_second,
+      frame_bytes_per_second: LIVE_LIMITS.frame_bytes_per_second,
+      site_scope_hosts: LIVE_LIMITS.site_scope_hosts,
+      redirect_hops: LIVE_LIMITS.redirect_hops,
+      ...options.limits,
+    };
     host.sessions.onControl((change, session) => this.controlChanged(change, session));
   }
 
@@ -96,6 +119,7 @@ export class BrowserLive {
   usage() {
     return {
       ...this.counts,
+      popups: this.takeover?.popups ?? 0,
       requests: this.takeover?.network.requests ?? 0,
       network_bytes: this.takeover?.network.bytes ?? 0,
     };
@@ -122,11 +146,14 @@ export class BrowserLive {
         epoch,
         startedAt: this.now(),
         popups: 0,
-        frames: new LiveFrameBudget(this.now),
-        network: new LiveNetworkBudget(),
+        frames: new LiveFrameBudget(this.now, this.limits.frame_bytes_per_second),
+        network: new LiveNetworkBudget(
+          this.limits.requests_per_takeover,
+          this.limits.network_bytes_per_takeover,
+        ),
       };
     const takeover = this.takeover;
-    const remaining = takeover.startedAt + LIVE_LIMITS.takeover_ms - this.now();
+    const remaining = takeover.startedAt + this.limits.takeover_ms - this.now();
     // At the cap the channel closes and control stays with the person until they hand back.
     if (remaining <= 0) throw new BrowserFault('live_timeout');
     if (!guard.idle) throw new BrowserFault('network_busy');
@@ -139,14 +166,18 @@ export class BrowserLive {
       sessionId,
       epoch,
       takeover,
-      scope: new LiveSiteScope(sessions.policy.allowed_domains, page.url()),
+      scope: new LiveSiteScope(
+        sessions.policy.allowed_domains,
+        page.url(),
+        this.limits.site_scope_hosts,
+      ),
       limiter: new LiveInputLimiter(this.now),
       main: page,
       switching: Promise.resolve(),
       inputs: Promise.resolve(),
       seq: 0,
-      pending: [],
       delivered: [],
+      lastDeliveredAt: 0,
       events: [],
       noticed: new Set(),
       buttons: 0,
@@ -164,6 +195,7 @@ export class BrowserLive {
         {
           scope: channel.scope,
           budget: takeover.network,
+          redirectHops: this.limits.redirect_hops,
           notice: (code, host) => this.notice(channel, code, host),
         },
       )
@@ -200,8 +232,8 @@ export class BrowserLive {
       if (events.some((event) => event.type === 'ended')) channel.endDelivered = true;
       const left = deadline - Date.now();
       if (events.length || channel.ended || left <= 0) return { events };
-      // Frames held back by the per-second budget are retried as it refills.
-      await this.wait(channel, channel.pending.length ? Math.min(left, 100) : left);
+      // A frame held back by the frame rate or the byte budget is retried shortly.
+      await this.wait(channel, channel.pending ? Math.min(left, 25) : left);
     }
   }
 
@@ -260,7 +292,7 @@ export class BrowserLive {
   popup(page: Page): boolean {
     const channel = this.channel;
     if (!channel || channel.ended) return false;
-    if (channel.popup || channel.takeover.popups >= LIVE_LIMITS.popups_per_takeover) {
+    if (channel.popup || channel.takeover.popups >= this.limits.popups_per_takeover) {
       this.notice(channel, 'popup_limit');
       return false;
     }
@@ -320,12 +352,22 @@ export class BrowserLive {
         },
       };
       channel.screen = screen;
+      const ack = (sessionId: number) => {
+        void cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+      };
       cdp.on('Page.screencastFrame', (frame) => {
-        if (channel.screen !== screen) {
-          void cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+        this.counts.received_frames++;
+        // A frame identical to what the person already has, or is about to get, adds nothing.
+        if (
+          channel.screen !== screen ||
+          frame.data === (channel.pending?.data ?? channel.lastData)
+        ) {
+          ack(frame.sessionId);
           return;
         }
-        channel.pending.push({
+        // Delivery is paced, so only the newest undelivered frame is worth keeping.
+        if (channel.pending) ack(channel.pending.ack);
+        channel.pending = {
           type: 'frame',
           seq: ++channel.seq,
           data: frame.data,
@@ -338,16 +380,15 @@ export class BrowserLive {
             scroll_x: frame.metadata.scrollOffsetX,
             scroll_y: frame.metadata.scrollOffsetY,
           },
-        });
+        };
         // Chromium sends a third frame before it waits, so the oldest held frame makes room.
-        while (channel.pending.length + channel.delivered.length > LIVE_LIMITS.unacked_frames) {
-          const released = channel.delivered.shift() ?? channel.pending.shift();
-          if (released)
-            void cdp.send('Page.screencastFrameAck', { sessionId: released.ack }).catch(() => {});
+        while (channel.delivered.length + 1 > LIVE_LIMITS.unacked_frames) {
+          const released = channel.delivered.shift();
+          if (released) ack(released.ack);
         }
         this.counts.max_held_frames = Math.max(
           this.counts.max_held_frames,
-          channel.pending.length + channel.delivered.length,
+          channel.delivered.length + 1,
         );
         this.wake(channel);
       });
@@ -370,7 +411,7 @@ export class BrowserLive {
 
   private async detach(channel: Channel, screen: Screen): Promise<void> {
     screen.release();
-    channel.pending = [];
+    channel.pending = undefined;
     channel.delivered = [];
     await screen.cdp.send('Page.stopScreencast').catch(() => {});
     await screen.cdp.detach().catch(() => {});
@@ -395,17 +436,18 @@ export class BrowserLive {
 
   private drain(channel: Channel): LiveDown[] {
     const events = channel.events.splice(0);
-    while (!channel.ended && channel.pending[0]) {
-      const frame = channel.pending[0];
-      const decision = channel.takeover.frames.take(frame.data.length);
-      if (decision === 'wait') break;
-      if (decision === 'exhausted') {
-        void this.end(channel, 'live_budget');
-        events.push(...channel.events.splice(0));
-        break;
-      }
-      channel.pending.shift();
+    const frame = channel.pending;
+    // At most ten frames a second; the newest one waiting is delivered once its turn comes.
+    if (
+      !channel.ended &&
+      frame &&
+      this.now() - channel.lastDeliveredAt >= 1000 / this.limits.frames_per_second &&
+      channel.takeover.frames.take(frame.data.length)
+    ) {
+      channel.pending = undefined;
       channel.delivered.push(frame);
+      channel.lastData = frame.data;
+      channel.lastDeliveredAt = this.now();
       const { ack: _ack, ...down } = frame;
       events.push(down);
       this.counts.frames++;

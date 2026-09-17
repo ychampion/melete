@@ -1,9 +1,12 @@
 import { BrowserController } from './controller.ts';
 import type { BrowserNetworkOptions } from './egress.ts';
+import type { BrowserLiveOptions } from './live.ts';
 import { liveRoutes } from './live-routes.ts';
 import { startBrowserServer } from './server.ts';
 
-export async function startBrowserWorker(options: { network?: BrowserNetworkOptions } = {}) {
+export async function startBrowserWorker(
+  options: { network?: BrowserNetworkOptions; live?: BrowserLiveOptions } = {},
+) {
   const controller = new BrowserController({
     spaceId: process.env.MELETE_BROWSER_SPACE ?? '',
     spaceRoot: process.env.MELETE_BROWSER_ROOT ?? '',
@@ -11,6 +14,7 @@ export async function startBrowserWorker(options: { network?: BrowserNetworkOpti
     humanIdleMs: Number(process.env.MELETE_BROWSER_HUMAN_IDLE_MS ?? 900_000),
     headless: process.env.MELETE_BROWSER_HEADLESS !== 'false',
     network: options.network,
+    live: options.live,
   });
   const { sessions } = controller;
   const server = await startBrowserServer({

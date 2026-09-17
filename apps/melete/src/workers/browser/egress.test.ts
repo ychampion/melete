@@ -24,6 +24,9 @@ type RequestSpec = {
   /** A top-level navigation leaving this document; absent for subresources. */
   from?: string;
   opener?: string;
+  /** The top-level document a resource or frame belongs to. */
+  top?: string;
+  subframe?: boolean;
 };
 
 function request(spec: RequestSpec): Request {
@@ -36,11 +39,14 @@ function request(spec: RequestSpec): Request {
       spec.headers ??
       (spec.method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
     redirectedFrom: () => spec.previous ?? null,
-    isNavigationRequest: () => spec.from !== undefined,
+    isNavigationRequest: () => spec.from !== undefined || spec.subframe === true,
     frame: () => ({
       url: () => spec.from ?? 'about:blank',
-      parentFrame: () => null,
-      page: () => ({ opener: async () => (spec.opener ? { url: () => spec.opener } : null) }),
+      parentFrame: () => (spec.subframe ? {} : null),
+      page: () => ({
+        opener: async () => (spec.opener ? { url: () => spec.opener } : null),
+        mainFrame: () => ({ url: () => spec.top ?? 'about:blank' }),
+      }),
     }),
   } as unknown as Request;
 }
@@ -82,7 +88,9 @@ function browserHarness() {
       } as unknown as Route;
       if (!routeHandler) throw new Error('route is not installed');
       await routeHandler(route);
-      return { response, aborted, request: outgoing };
+      // A refused navigation of a person's is answered 204 so the page stays where it was.
+      const stayed = response?.status === 204;
+      return { response, aborted: aborted || stayed, stayed, request: outgoing };
     },
     async websocket() {
       let closed = false;
@@ -702,19 +710,22 @@ test('real Node relay pins the destination while retaining Host, query, request 
   }
 });
 
-function humanWindow(allowed: string[], page: string) {
+function humanWindow(allowed: string[], page: string, scopeLimit?: number) {
   const notices: Array<{ code: LiveNoticeCode; host?: string }> = [];
   return {
     notices,
     window: {
-      scope: new LiveSiteScope(allowed, page),
+      scope: new LiveSiteScope(allowed, page, scopeLimit),
       budget: new LiveNetworkBudget(),
+      redirectHops: 20,
       notice: (code: LiveNoticeCode, host?: string) => {
         notices.push(host === undefined ? { code } : { code, host });
       },
     },
   };
 }
+
+const PAGE = 'https://public.example/signin';
 
 const PRIVATE: BrowserNetworkPolicy = {
   public_compartment: false,
@@ -864,7 +875,11 @@ test('human mode keeps the address floor and refuses downloads, replayed mutatio
       await fixture.dispatch({ url: 'https://intranet.public.example/', from }),
       await fixture.dispatch({ url: 'https://public.example/report.pdf', from }),
       await fixture.dispatch({ url: 'https://public.example/replay', method: 'POST', from }),
-      await fixture.dispatch({ url: 'https://public.example/image-hop', resourceType: 'image' }),
+      await fixture.dispatch({
+        url: 'https://public.example/image-hop',
+        resourceType: 'image',
+        top: from,
+      }),
       await fixture.dispatch({ url: 'https://public.example/app-hop', from }),
       await fixture.websocket(),
       await fixture.dispatch({ url: 'https://public.example/still-open', from }),
@@ -921,14 +936,22 @@ test('human mode stops at the takeover budget while automation stays fenced', as
     code: 'network_busy',
   });
   window.budget.requests = 1999;
-  expect((await fixture.dispatch({ url: 'https://public.example/a' })).aborted).toBe(false);
-  expect((await fixture.dispatch({ url: 'https://public.example/b' })).aborted).toBe(true);
+  expect((await fixture.dispatch({ url: 'https://public.example/a', top: PAGE })).aborted).toBe(
+    false,
+  );
+  expect((await fixture.dispatch({ url: 'https://public.example/b', top: PAGE })).aborted).toBe(
+    true,
+  );
   window.budget.requests = 0;
   window.budget.bytes = 32 * 1024 * 1024 - OK.body.length + 1;
-  expect((await fixture.dispatch({ url: 'https://public.example/c' })).aborted).toBe(true);
+  expect((await fixture.dispatch({ url: 'https://public.example/c', top: PAGE })).aborted).toBe(
+    true,
+  );
   window.budget.bytes = 0;
   controlChanged = true;
-  expect((await fixture.dispatch({ url: 'https://public.example/d' })).aborted).toBe(true);
+  expect((await fixture.dispatch({ url: 'https://public.example/d', top: PAGE })).aborted).toBe(
+    true,
+  );
   release();
   await person;
   expect(fixture.egress.idle).toBe(true);
@@ -937,5 +960,193 @@ test('human mode stops at the takeover budget while automation stays fenced', as
     'https://public.example/a',
     'https://public.example/c',
   ]);
-  expect((await fixture.dispatch({ url: 'https://public.example/e' })).aborted).toBe(true);
+  expect((await fixture.dispatch({ url: 'https://public.example/e', top: PAGE })).aborted).toBe(
+    true,
+  );
+});
+
+test("human mode loads an in-scope page's scripts, images and frames from any public site and keeps navigation scoped", async () => {
+  const fixture = await setup({}, PRIVATE);
+  const { window, notices } = humanWindow(['public.example'], PAGE, 1);
+  const results = await fixture.egress.run(
+    'human',
+    async () => [
+      await fixture.dispatch({
+        url: 'https://static.cdn-example.net/app.js',
+        resourceType: 'script',
+        top: PAGE,
+      }),
+      await fixture.dispatch({
+        url: 'https://images.other-example.com/logo.png',
+        resourceType: 'image',
+        top: PAGE,
+      }),
+      await fixture.dispatch({
+        url: 'https://challenge.captcha-example.com/frame',
+        subframe: true,
+        top: PAGE,
+      }),
+      await fixture.dispatch({ url: 'https://elsewhere.example/', from: PAGE }),
+      await fixture.dispatch({
+        url: 'https://evil.example.org/next.js',
+        resourceType: 'script',
+        top: 'https://evil.example.org/',
+      }),
+    ],
+    undefined,
+    undefined,
+    window,
+  );
+  expect(results.map((result) => result.aborted)).toEqual([false, false, false, true, true]);
+  expect(results.map((result) => result.stayed)).toEqual([false, false, false, true, false]);
+  expect(fixture.calls.map((call) => call.url)).toEqual([
+    'https://static.cdn-example.net/app.js',
+    'https://images.other-example.com/logo.png',
+    'https://challenge.captcha-example.com/frame',
+  ]);
+  expect(notices).toEqual([
+    { code: 'off_scope', host: 'elsewhere.example' },
+    { code: 'off_scope', host: 'evil.example.org' },
+  ]);
+  expect(window.scope.list()).toEqual(['public.example']);
+});
+
+test("human mode refuses a private address even for an in-scope page's resource", async () => {
+  const fixture = await setup(
+    {
+      resolve: async (name) => [
+        { address: name === 'static.public.example' ? '192.168.1.20' : '8.8.8.8', family: 4 },
+      ],
+    },
+    PRIVATE,
+  );
+  const { window } = humanWindow(['public.example'], PAGE);
+  const [image, frame] = await fixture.egress.run(
+    'human',
+    async () => [
+      await fixture.dispatch({
+        url: 'https://static.public.example/logo.png',
+        resourceType: 'image',
+        top: PAGE,
+      }),
+      await fixture.dispatch({ url: 'http://169.254.169.254/latest', subframe: true, top: PAGE }),
+    ],
+    undefined,
+    undefined,
+    window,
+  );
+  expect([image?.aborted, frame?.aborted]).toEqual([true, true]);
+  expect(fixture.calls).toHaveLength(0);
+});
+
+test('a redirect chain in human mode stops after twenty hops', async () => {
+  let transported = 0;
+  const fixture = await setup(
+    {
+      transport: async (url) => {
+        transported++;
+        const next = Number(url.searchParams.get('n')) + 1;
+        return { status: 302, headers: { location: `/loop?n=${next}` }, body: Buffer.alloc(0) };
+      },
+    },
+    PRIVATE,
+  );
+  const { window, notices } = humanWindow(['public.example'], PAGE);
+  const served = await fixture.egress.run(
+    'human',
+    async () => {
+      let from = PAGE;
+      for (let n = 0; n < 30; n++) {
+        const url = `https://public.example/loop?n=${n}`;
+        const result = await fixture.dispatch({ url, from });
+        if (result.aborted) return n;
+        expect(String(result.response?.body)).toContain(
+          `url=https://public.example/loop?n=${n + 1}`,
+        );
+        from = url;
+      }
+      return 30;
+    },
+    undefined,
+    undefined,
+    window,
+  );
+  expect(served).toBe(20);
+  expect(transported).toBe(21);
+  expect(notices).toEqual([{ code: 'redirect_refused' }]);
+});
+
+test("the persistent profile sends no cookie on a cross-site request while the page's own requests keep theirs", async () => {
+  const cookies: Record<string, string | undefined> = {};
+  const cookieTransport = {
+    transport: async (
+      url: URL,
+      _address: unknown,
+      outgoing: { headers: Record<string, string> },
+    ) => {
+      cookies[url.href] = outgoing.headers.cookie;
+      return { status: 200, headers: { 'set-cookie': 'seen=1; Path=/' }, body: Buffer.alloc(0) };
+    },
+  } as BrowserNetworkOptions;
+  const withCookie = { cookie: 'session=signed-in' };
+  const policy = {
+    public_compartment: false,
+    allowed_domains: ['public.example', 'other.example'],
+  };
+  const persistent = await setup(cookieTransport, policy);
+  const [navigation, sameSite, crossSite] = await persistent.egress.run('navigate', async () => [
+    await persistent.dispatch({
+      url: 'https://other.example/start',
+      from: PAGE,
+      headers: withCookie,
+    }),
+    await persistent.dispatch({
+      url: 'https://public.example/avatar.png',
+      resourceType: 'image',
+      top: PAGE,
+      headers: withCookie,
+    }),
+    await persistent.dispatch({
+      url: 'https://other.example/avatar.png',
+      resourceType: 'image',
+      top: PAGE,
+      headers: withCookie,
+    }),
+  ]);
+  expect(cookies).toEqual({
+    'https://other.example/start': 'session=signed-in',
+    'https://public.example/avatar.png': 'session=signed-in',
+    'https://other.example/avatar.png': undefined,
+  });
+  expect(navigation?.response?.headers?.['set-cookie']).toBe('seen=1; Path=/');
+  expect(sameSite?.response?.headers?.['set-cookie']).toBe('seen=1; Path=/');
+  expect(crossSite?.response?.headers?.['set-cookie']).toBeUndefined();
+
+  const { window } = humanWindow(['public.example'], PAGE);
+  const person = await setup(cookieTransport, PRIVATE);
+  await person.egress.run(
+    'human',
+    () =>
+      person.dispatch({
+        url: 'https://widgets.example.net/frame',
+        subframe: true,
+        top: PAGE,
+        headers: withCookie,
+      }),
+    undefined,
+    undefined,
+    window,
+  );
+  expect(cookies['https://widgets.example.net/frame']).toBeUndefined();
+
+  const research = await setup(cookieTransport, PUBLIC);
+  await research.egress.run('navigate', () =>
+    research.dispatch({
+      url: 'https://third.example/pixel.gif',
+      resourceType: 'image',
+      top: PAGE,
+      headers: withCookie,
+    }),
+  );
+  expect(cookies['https://third.example/pixel.gif']).toBe('session=signed-in');
 });

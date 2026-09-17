@@ -5,7 +5,13 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import type { BrowserContext, Frame, Request, Route } from 'playwright';
 import { isPublicAddress, type ResolvedAddress } from '../../connectors/web.ts';
-import type { LiveNetworkBudget, LiveNotify, LiveSiteScope } from './live-protocol.ts';
+import {
+  hostOf,
+  type LiveNetworkBudget,
+  type LiveNotify,
+  type LiveSiteScope,
+  siteOf,
+} from './live-protocol.ts';
 
 export type BrowserNetworkPolicy = {
   public_compartment: boolean;
@@ -18,6 +24,8 @@ export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human';
 export type BrowserHumanWindow = {
   scope: Pick<LiveSiteScope, 'admits' | 'follow'>;
   budget: LiveNetworkBudget;
+  /** Redirect hops one navigation chain may follow before it is refused. */
+  redirectHops: number;
   notice: LiveNotify;
 };
 
@@ -83,6 +91,16 @@ export class BrowserRedirect extends BrowserNetworkError {
 }
 
 const READ_METHODS = new Set(['GET', 'HEAD']);
+/** Refusals of a person's navigation that leave them on the page they were on. */
+const STAY_ON_PAGE = new Set([
+  'off_scope',
+  'redirect_limit',
+  'redirect_mutation',
+  'download_refused',
+  'live_budget',
+  'non_public_address',
+  'url_not_allowed',
+]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const HOP_HEADERS = new Set([
   'connection',
@@ -132,24 +150,40 @@ function attribute(value: string): string {
   return value.replace(/[&"'<>]/g, (character) => `&#${character.charCodeAt(0)};`);
 }
 
-/** The document a top-level navigation leaves; undefined for every other request. */
-async function topNavigation(request: Request): Promise<{ initiator?: string } | undefined> {
-  if (!request.isNavigationRequest()) return undefined;
+/**
+ * Where a request stands: a top-level navigation and the document it leaves, or the top-level
+ * document a resource or frame belongs to. A request with no frame (a worker's) has neither.
+ */
+type RequestPlace = { navigation?: { initiator?: string }; top?: string };
+
+async function requestPlace(request: Request, referer?: string): Promise<RequestPlace> {
   let frame: Frame;
   try {
     frame = request.frame();
   } catch {
-    return undefined;
+    // A popup's first navigation is requested before its page exists. Chromium's referrer then
+    // names the document that opened it; without one, only an in-scope target is admitted.
+    return request.isNavigationRequest()
+      ? { navigation: { initiator: referer }, top: request.url() }
+      : {};
   }
-  if (frame.parentFrame()) return undefined;
+  if (!request.isNavigationRequest() || frame.parentFrame())
+    return { top: frame.page().mainFrame().url() };
   const current = frame.url();
-  if (/^https?:/i.test(current)) return { initiator: current };
+  if (/^https?:/i.test(current)) return { navigation: { initiator: current }, top: request.url() };
   // A popup's first document is started by the page that opened it.
   const opener = await frame
     .page()
     .opener()
     .catch(() => null);
-  return { initiator: opener?.url() };
+  return { navigation: { initiator: opener?.url() }, top: request.url() };
+}
+
+/** A request for another site than the top-level document's; a top-level navigation never is. */
+function thirdParty(url: URL, place: RequestPlace): boolean {
+  if (place.navigation) return false;
+  const top = place.top === undefined ? undefined : hostOf(place.top);
+  return top === undefined || siteOf(top) !== siteOf(hostname(url));
 }
 
 function fixtureOrigin(raw: string): string {
@@ -280,6 +314,8 @@ export const pinnedBrowserRequest: BrowserNetworkTransport = (url, address, opti
 type Operation = {
   mode: BrowserNetworkMode;
   human: BrowserHumanWindow | undefined;
+  /** Redirect hops already followed to reach each target, per navigation chain. */
+  hops: Map<string, number>;
   origin: string | undefined;
   commit: BrowserCommitBinding | undefined;
   guard: (() => void) | undefined;
@@ -390,7 +426,7 @@ export function createBrowserEgress(
     request: Request,
     body: Buffer | null,
     headers: Record<string, string>,
-    navigation: { initiator?: string } | undefined,
+    place: RequestPlace,
   ): void {
     const human = operation.human;
     if (human) {
@@ -399,11 +435,16 @@ export function createBrowserEgress(
         networkError('live_budget', 'the takeover has used its browser request budget');
       }
       const host = hostname(url);
-      if (
-        !human.scope.admits(host) &&
-        (!navigation ||
-          !['in_scope', 'admitted'].includes(human.scope.follow(url.href, navigation.initiator)))
-      ) {
+      const top = place.top === undefined ? undefined : hostOf(place.top);
+      // The scope keeps the person's navigation on the sites they chose. The resources and
+      // frames an in-scope page is built from may come from any public address.
+      const admitted = place.navigation
+        ? human.scope.admits(host) ||
+          ['in_scope', 'admitted'].includes(
+            human.scope.follow(url.href, place.navigation.initiator),
+          )
+        : top !== undefined && human.scope.admits(top);
+      if (!admitted) {
         human.notice('off_scope', host);
         networkError('off_scope', 'browser request is outside the takeover site scope');
       }
@@ -469,10 +510,11 @@ export function createBrowserEgress(
     target: URL,
     status: number,
     headers: Record<string, string>,
+    operation: Operation,
     human: BrowserHumanWindow,
-    navigation: { initiator?: string } | undefined,
+    place: RequestPlace,
   ): Promise<void> {
-    if (!navigation) {
+    if (!place.navigation) {
       human.notice('redirect_refused');
       networkError(
         'subresource_redirect_unsupported',
@@ -483,10 +525,18 @@ export function createBrowserEgress(
       human.notice('redirect_refused');
       networkError('redirect_mutation', 'browser redirect cannot replay a mutation');
     }
+    const hops = (operation.hops.get(source.href) ?? 0) + 1;
+    if (hops > human.redirectHops) {
+      human.notice('redirect_refused');
+      networkError('redirect_limit', 'browser redirect chain exceeds the hop limit');
+    }
     if (!['in_scope', 'admitted'].includes(human.scope.follow(target.href, source.href))) {
       human.notice('off_scope', hostname(target));
       networkError('off_scope', 'browser redirect is outside the takeover site scope');
     }
+    operation.hops.set(target.href, hops);
+    const oldest = operation.hops.keys().next().value;
+    if (operation.hops.size > 256 && oldest !== undefined) operation.hops.delete(oldest);
     await route.fulfill({
       status: 200,
       headers: {
@@ -501,6 +551,7 @@ export function createBrowserEgress(
 
   async function relay(route: Route, operation: Operation | undefined): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let place: RequestPlace = {};
     const abort = new AbortController();
     const abortOperation = () => abort.abort(operation?.abort.signal.reason);
     operation?.abort.signal.addEventListener('abort', abortOperation, { once: true });
@@ -526,11 +577,14 @@ export function createBrowserEgress(
       );
       requireOperation(operation);
       const human = operation.human;
-      const navigation = human
-        ? await untilAborted(topNavigation(request), abort.signal)
-        : undefined;
+      if (human || !publicCompartment)
+        place = await untilAborted(requestPlace(request, headers.referer), abort.signal);
       requireOperation(operation);
-      admitRequest(operation, url, request, body, headers, navigation);
+      admitRequest(operation, url, request, body, headers, place);
+      // The persistent profile sends no cookies to a site other than the page's own, so a page
+      // cannot ride the person's other signed-in sessions through cross-site requests.
+      const crossSite = !publicCompartment && thirdParty(url, place);
+      if (crossSite) delete headers.cookie;
       const address = await checkAddress(url, abort.signal, Boolean(human));
       requireOperation(operation);
       // DNS and header reads yielded after the input was planned. The controller
@@ -560,6 +614,7 @@ export function createBrowserEgress(
         networkError('live_budget', 'the takeover has used its browser byte budget');
       }
       const responseHeaders = relayHeaders(response.headers, maxHeaderBytes, false);
+      if (crossSite) delete responseHeaders['set-cookie'];
       if (human && /^\s*attachment/i.test(responseHeaders['content-disposition'] ?? '')) {
         human.notice('download_refused');
         networkError('download_refused', 'browser downloads are refused during a takeover');
@@ -581,8 +636,9 @@ export function createBrowserEgress(
             target,
             response.status,
             responseHeaders,
+            operation,
             human,
-            navigation,
+            place,
           );
           return;
         }
@@ -633,7 +689,16 @@ export function createBrowserEgress(
         operation.error =
           error instanceof Error ? error : new Error('browser network request failed');
       }
-      await route.abort('blockedbyclient').catch(() => {});
+      // A refused navigation answers 204, so Chromium stays on the current page instead of
+      // committing an error page; the person's notice says why nothing happened.
+      if (
+        operation?.mode === 'human' &&
+        place.navigation &&
+        error instanceof BrowserNetworkError &&
+        STAY_ON_PAGE.has(error.code)
+      )
+        await route.fulfill({ status: 204 }).catch(() => route.abort('blockedbyclient'));
+      else await route.abort('blockedbyclient').catch(() => {});
     } finally {
       if (timer) clearTimeout(timer);
       operation?.abort.signal.removeEventListener('abort', abortOperation);
@@ -715,6 +780,7 @@ export function createBrowserEgress(
       const current: Operation = {
         mode,
         human: mode === 'human' ? human : undefined,
+        hops: new Map(),
         origin,
         commit: binding,
         guard,

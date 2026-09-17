@@ -100,6 +100,8 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
           fixture.app,
           fixture.idp,
           fixture.other,
+          // A small scope, so that one allowed host fills it and a further site is refused.
+          'limits={"site_scope_hosts":3}',
         ],
         {
           cwd: spaceRoot,
@@ -224,11 +226,6 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       await send([{ k: 'text', text: SIGN_IN.code }]);
       await enter();
       expect(await until(() => where.startsWith(`${fixture.app}/account`))).toBe(true);
-      expect(
-        await until(() =>
-          notices.some((notice) => notice.type === 'notice' && notice.code === 'off_scope'),
-        ),
-      ).toBe(true);
       await pull(1000);
 
       const app = fixture.requests.filter((request) => request.site === 'app');
@@ -241,21 +238,45 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
         ['/otp', `code=${SIGN_IN.code}`],
       ]);
       expect(
-        fixture.requests.filter((request) => request.site === 'idp').map((r) => r.path),
-      ).toEqual(['/idp']);
+        fixture.requests.filter((request) => request.site === 'idp' && request.path === '/idp'),
+      ).toHaveLength(1);
       const account = app.find((request) => request.path === '/account');
       expect(account?.search).toStartWith('?ticket=');
       expect(account?.cookie).toContain('step=code');
-      // The account page asked for an image and a beacon on a third address: neither left Chromium.
-      expect(fixture.requests.filter((request) => request.site === 'other')).toEqual([]);
-      expect(
-        notices.filter((notice) => notice.type === 'notice' && notice.code === 'off_scope'),
-      ).toEqual([{ type: 'notice', code: 'off_scope', host: '127.0.0.3' }]);
-      expect(await worker.liveScope(open.live_id, '127.0.0.3')).toEqual({
-        site_scope: ['127.0.0.1', '127.0.0.2', '127.0.0.3'],
+      // The person allows one more host for this takeover, which fills the injected scope.
+      expect(await worker.liveScope(open.live_id, '127.0.0.5')).toEqual({
+        site_scope: ['127.0.0.1', '127.0.0.2', '127.0.0.5'],
       });
+      expect(await reason(worker.liveScope(open.live_id, '127.0.0.6'))).toBe('scope_full');
       expect(await reason(worker.liveScope(open.live_id, '127.0.0.4:8080'))).toBe('invalid_host');
+      await click(SIGN_IN_POINTS.elsewhere);
+      expect(
+        await until(() =>
+          notices.some(
+            (notice) =>
+              notice.type === 'notice' &&
+              notice.code === 'off_scope' &&
+              notice.host === '127.0.0.3',
+          ),
+        ),
+      ).toBe(true);
+      await pull(500);
+      expect(where).toStartWith(`${fixture.app}/account`);
+      expect(fixture.requests.some((request) => request.path === '/elsewhere')).toBe(false);
     }, 45_000);
+
+    test('a top-level navigation to an off-scope site is still refused', async () => {
+      await click(SIGN_IN_POINTS.away);
+      expect(await until(() => fixture.requests.some((request) => request.path === '/away'))).toBe(
+        true,
+      );
+      await pull(1000);
+      // The redirect to the other site was refused and the person stays on the page they were on.
+      expect(where).toStartWith(`${fixture.app}/account`);
+      expect(
+        fixture.requests.filter((request) => request.path === '/away').map((r) => r.site),
+      ).toEqual(['app']);
+    }, 30_000);
 
     test('a file chooser during takeover is cancelled', async () => {
       await click(SIGN_IN_POINTS.upload);
@@ -300,6 +321,18 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       expect(await pull(0)).toContainEqual({ type: 'ended', code: 'slow_down' });
     }, 30_000);
 
+    test("a person's live channel closes on request and can be opened again", async () => {
+      open = await worker.liveOpen(session.id, session.control_epoch);
+      seq = 0;
+      expect(await worker.liveClose(open.live_id)).toEqual({ closed: true });
+      expect(await pull(0)).toContainEqual({ type: 'ended', code: 'closed' });
+      expect(await reason(pull(0))).toBe('live_closed');
+      expect(await reason(worker.liveClose(open.live_id))).toBe('live_closed');
+      open = await worker.liveOpen(session.id, session.control_epoch);
+      seq = 0;
+      expect((await pull(2000)).length).toBeGreaterThan(0);
+    }, 30_000);
+
     test('takeover writes no artifact row and no artifact file', async () => {
       const files = await spaceFiles(spaceRoot);
       expect(Object.keys(files).some((path) => path.includes('artifact'))).toBe(false);
@@ -320,10 +353,19 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
         expect(record).not.toContain(secret);
     });
 
+    test('the first observation after handback carries no query string', async () => {
+      session = await worker.handback(session.id);
+      const first = await command({ kind: 'observe' });
+      expect(first.observation?.url).toBe(`${fixture.app}/account`);
+      const second = await command({ kind: 'observe' });
+      expect(second.observation?.url).toStartWith(`${fixture.app}/account?ticket=`);
+      session = await worker.takeover(session.id);
+    }, 30_000);
+
     test('the first observation after handback carries no screenshot and a redacted tree', async () => {
       session = await worker.handback(session.id);
       const first = await command({ kind: 'observe' });
-      expect(first.observation?.url).toStartWith(`${fixture.app}/account`);
+      expect(first.observation?.url).toBe(`${fixture.app}/account`);
       expect(first.observation?.screenshot).toBe('');
       expect(first.result).toEqual({ submit_intents: [] });
       const redacted = first.observation?.tree ?? '';

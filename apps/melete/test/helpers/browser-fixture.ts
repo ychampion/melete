@@ -104,6 +104,12 @@ export const SIGN_IN_POINTS = {
   activity: { x: 180, y: 360 },
   close_help: { x: 180, y: 140 },
   back_to_account: { x: 200, y: 260 },
+  socket: { x: 680, y: 140 },
+  two_popups: { x: 680, y: 220 },
+  elsewhere: { x: 680, y: 300 },
+  away: { x: 680, y: 360 },
+  loop: { x: 680, y: 420 },
+  busy_reload: { x: 180, y: 140 },
 } as const;
 
 export type SignInRequest = {
@@ -115,8 +121,9 @@ export type SignInRequest = {
   cookie: string;
 };
 
-const box = (top: number, width = 320) =>
-  `position:absolute;left:100px;top:${top}px;width:${width}px;height:40px;box-sizing:border-box`;
+const at = (left: number, top: number, width = 320) =>
+  `position:absolute;left:${left}px;top:${top}px;width:${width}px;height:40px;box-sizing:border-box`;
+const box = (top: number, width = 320) => at(100, top, width);
 
 function page(title: string, body: string, headers: Record<string, string> = {}) {
   return new Response(
@@ -128,7 +135,7 @@ function page(title: string, body: string, headers: Record<string, string> = {})
 /**
  * A sign-in that crosses two sites, on literal loopback origins: a password form, a one-time
  * code, a redirect to an identity provider on another address and back, then an account page
- * that also reaches for a third, never-allowed address. The ledger is kept at the destinations.
+ * built partly from a third address and linking to it. The ledger is kept at the destinations.
  */
 export function startSignInFixture() {
   const requests: SignInRequest[] = [];
@@ -145,21 +152,33 @@ export function startSignInFixture() {
     });
     return { url, entry: requests[requests.length - 1] as SignInRequest };
   };
+  let appOrigin = '';
   const other = Bun.serve({
     hostname: '127.0.0.3',
     port: 0,
     async fetch(request) {
-      await record('other', request);
+      const { url } = await record('other', request);
+      if (url.pathname === '/widget.js')
+        return new Response(
+          `fetch(${JSON.stringify(`${appOrigin}/widget-ran`)}).catch(() => {});`,
+          {
+            headers: { 'content-type': 'text/javascript' },
+          },
+        );
+      if (url.pathname === '/frame')
+        return new Response('<!doctype html><p>A challenge frame</p>', {
+          headers: { 'content-type': 'text/html' },
+        });
       return new Response('other', { headers: { 'content-type': 'text/plain' } });
     },
   });
   const otherOrigin = other.url.origin;
-  let appOrigin = '';
   const idp = Bun.serve({
     hostname: '127.0.0.2',
     port: 0,
     async fetch(request) {
       const { url } = await record('idp', request);
+      if (url.pathname === '/avatar.png') return new Response(null, { status: 204 });
       const back = url.searchParams.get('return') ?? '';
       if (url.pathname !== '/idp' || !back.startsWith(`${appOrigin}/`))
         return new Response('Unknown return address', { status: 400 });
@@ -167,7 +186,11 @@ export function startSignInFixture() {
       tickets.add(ticket);
       return new Response(null, {
         status: 302,
-        headers: { location: `${back}?ticket=${ticket}`, 'set-cookie': 'idp=seen; Path=/' },
+        headers: {
+          location: `${back}?ticket=${ticket}`,
+          // Sent on cross-site requests unless the browser withholds third-party cookies.
+          'set-cookie': 'idp=seen; Path=/; SameSite=None; Secure',
+        },
       });
     },
   });
@@ -215,33 +238,73 @@ export function startSignInFixture() {
         if (!signedIn) return new Response(null, { status: 303, headers: { location: '/signin' } });
         return page(
           'Your account',
-          `<h1 style="${box(20, 600)}">Your account</h1><form method="post" action="/note"><label for="note" style="${box(80)}">Note</label><input id="note" name="note" style="${box(120)}"><button type="submit" style="position:absolute;left:440px;top:120px;width:120px;height:40px">Save note</button></form><input id="upload" type="file" aria-label="Attach a file" style="${box(200)}"><button id="help" type="button" style="${box(280, 160)}">Open help</button><button id="activity" type="button" style="${box(340, 160)}">Show activity</button><p style="${box(420, 600)}">Backup code: ${SIGN_IN.backup_code}</p><p style="${box(470, 600)}">Order reference ${SIGN_IN.reference}</p><div id="bar" style="position:absolute;left:100px;top:540px;width:40px;height:20px;background:#357"></div><img alt="" src="${otherOrigin}/pixel.gif" style="${box(600, 10)}"><script>
+          `<h1 style="${box(20, 600)}">Your account</h1><form method="post" action="/note"><label for="note" style="${box(80)}">Note</label><input id="note" name="note" style="${box(120)}"><button type="submit" style="${at(440, 120, 120)}">Save note</button></form><input id="upload" type="file" aria-label="Attach a file" style="${box(200)}"><button id="help" type="button" style="${box(280, 160)}">Open help</button><button id="activity" type="button" style="${box(340, 160)}">Show activity</button><button id="socket" type="button" style="${at(600, 120, 160)}">Open socket</button><button id="two" type="button" style="${at(600, 200, 160)}">Open two help windows</button><a href="${otherOrigin}/elsewhere" style="${at(600, 280, 160)}">Elsewhere</a><a href="/away" style="${at(600, 340, 160)}">Away</a><a href="/loop?n=0" style="${at(600, 400, 160)}">Loop</a><p style="${box(420, 400)}">Backup code: ${SIGN_IN.backup_code}</p><p style="${box(470, 400)}">Order reference ${SIGN_IN.reference}</p><div id="bar" style="position:absolute;left:100px;top:540px;width:40px;height:20px;background:#357"></div><img alt="" src="${otherOrigin}/pixel.gif" style="${box(600, 10)}"><img alt="" src="${idp.url.origin}/avatar.png" style="${at(120, 600, 10)}"><iframe title="Challenge" src="${otherOrigin}/frame" style="position:absolute;left:600px;top:600px;width:200px;height:80px"></iframe><script src="${otherOrigin}/widget.js"></script><script>
 const upload = document.getElementById('upload');
 upload.addEventListener('cancel', () => fetch('/chooser?event=cancel'));
 upload.addEventListener('change', () => fetch('/chooser?event=change'));
-document.getElementById('help').addEventListener('click', () => window.open('/help', 'help'));
+let helps = 0;
+document.getElementById('help').addEventListener('click', () => window.open('/help?n=' + ++helps, 'help' + helps));
+document.getElementById('two').addEventListener('click', () => {
+  window.open('/help?two=1', 'two1');
+  window.open('/help?two=2', 'two2');
+});
+document.getElementById('socket').addEventListener('click', () => {
+  const socket = new WebSocket(${JSON.stringify(`${appOrigin.replace('http', 'ws')}/socket`)});
+  socket.addEventListener('close', (event) => fetch('/socket-closed?code=' + event.code));
+});
 document.getElementById('activity').addEventListener('click', () => {
   const bar = document.getElementById('bar');
   let x = 0;
   const step = () => { x = (x + 7) % 800; bar.style.left = (100 + x) + 'px'; requestAnimationFrame(step); };
   requestAnimationFrame(step);
 });
-fetch(${JSON.stringify(`${otherOrigin}/beacon`)}, { method: 'POST', body: 'leak' }).catch(() => {});
+document.addEventListener('touchstart', () => fetch('/event?type=touchstart'), { once: true });
+document.addEventListener('wheel', () => fetch('/event?type=wheel'), { once: true });
+fetch(${JSON.stringify(`${otherOrigin}/beacon`)}, { method: 'POST', body: 'from-the-page' }).catch(() => {});
 </script>`,
           { 'set-cookie': 'session=signed-in; Path=/; HttpOnly' },
         );
       }
+      if (url.pathname === '/away')
+        return new Response(null, { status: 302, headers: { location: `${otherOrigin}/away` } });
+      if (url.pathname === '/loop')
+        return new Response(null, {
+          status: 302,
+          headers: { location: `/loop?n=${Number(url.searchParams.get('n')) + 1}` },
+        });
       if (url.pathname === '/help')
         return page(
           'Help',
           `<h1 style="${box(20, 600)}">Help</h1><button id="done" type="button" onclick="window.close()" style="${box(120, 160)}">Close help</button>`,
+        );
+      if (url.pathname === '/busy')
+        return page(
+          'Busy',
+          `<a href="/busy?tiles=6" style="${box(120, 160)}">Reload</a>${Array.from({ length: Number(url.searchParams.get('tiles') ?? 0) }, (_, index) => `<img alt="" src="/tile.gif?i=${index}" style="${at(100 + index * 60, 300, 40)}">`).join('')}<div id="bar" style="position:absolute;left:100px;top:540px;width:40px;height:20px;background:#357"></div><script>
+let x = 0;
+const step = () => { x = (x + 7) % 800; document.getElementById('bar').style.left = (100 + x) + 'px'; requestAnimationFrame(step); };
+requestAnimationFrame(step);
+</script>`,
+        );
+      if (url.pathname === '/flicker')
+        return page(
+          'Flicker',
+          `<div id="shade" style="width:1024px;height:768px;background:rgb(200,200,200)"></div><script>
+let n = 0;
+const shade = document.getElementById('shade');
+const step = () => { shade.style.background = n++ % 2 ? 'rgb(200,200,200)' : 'rgb(200,200,201)'; requestAnimationFrame(step); };
+requestAnimationFrame(step);
+</script>`,
         );
       if (url.pathname === '/verify')
         return page(
           'Verify',
           `<label id="code-label" for="code" style="${box(80)}">Verification code</label><input id="code" autocomplete="one-time-code" style="${box(120)}"><p style="${box(200, 600)}">Backup code: ${SIGN_IN.backup_code}</p><script>setTimeout(() => { document.getElementById('code').remove(); document.getElementById('code-label').remove(); }, ${SIGN_IN.verify_field_ms});</script>`,
         );
-      if (url.pathname === '/chooser') return new Response(null, { status: 204 });
+      if (
+        ['/chooser', '/widget-ran', '/event', '/socket-closed', '/tile.gif'].includes(url.pathname)
+      )
+        return new Response(null, { status: 204 });
       return new Response('Not found', { status: 404 });
     },
   });

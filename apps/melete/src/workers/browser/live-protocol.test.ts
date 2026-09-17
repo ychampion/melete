@@ -187,27 +187,26 @@ describe('live input limits', () => {
 });
 
 describe('live frame and network budgets', () => {
-  test('frames wait above 1.5 MB per second and stop at 120 MB per takeover', () => {
+  test('frames wait above 500 KB a second averaged over ten seconds and never run out', () => {
     const time = clock();
     const budget = new LiveFrameBudget(time.now);
-    const frame = 512 * 1024;
-    expect([budget.take(frame), budget.take(frame), budget.take(frame)]).toEqual([
-      'ok',
-      'ok',
-      'ok',
-    ]);
-    expect(budget.take(frame)).toBe('wait');
-    time.advance(400);
-    expect(budget.take(frame)).toBe('ok');
-    let spent = budget.spent;
-    while (spent + frame <= LIVE_LIMITS.frame_bytes_per_takeover) {
-      time.advance(1000);
-      expect(budget.take(frame)).toBe('ok');
-      spent += frame;
-    }
+    const frame = 100 * 1024;
+    for (let index = 0; index < 50; index++) expect(budget.take(frame)).toBe(true);
+    expect(budget.take(frame)).toBe(false);
+    time.advance(9_999);
+    expect(budget.take(frame)).toBe(false);
+    time.advance(1);
+    for (let index = 0; index < 50; index++) expect(budget.take(frame)).toBe(true);
+    // Far beyond the old per-takeover total, a steady stream within the rate is never refused.
     time.advance(10_000);
-    expect(budget.take(frame)).toBe('exhausted');
-    expect(budget.spent).toBeLessThanOrEqual(LIVE_LIMITS.frame_bytes_per_takeover);
+    for (let second = 0; second < 600; second++) {
+      time.advance(1000);
+      for (let index = 0; index < 5; index++) expect(budget.take(frame)).toBe(true);
+    }
+    expect(LIVE_LIMITS.frames_per_second).toBe(10);
+    const huge = new LiveFrameBudget(time.now, 1024);
+    expect(huge.take(64 * 1024)).toBe(true);
+    expect(huge.take(1)).toBe(false);
   });
 
   test('page network stops after two thousand requests or thirty-two megabytes', () => {
