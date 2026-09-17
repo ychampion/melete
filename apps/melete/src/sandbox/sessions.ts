@@ -99,6 +99,25 @@ const uniqueViolation = (error: unknown): string | null =>
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Mark a session lost. With `from`, only while it is still in that status, so
+ * a session that changed after it was looked at is left to its new owner.
+ */
+export async function markSessionLost(
+  sql: Query,
+  id: string,
+  reason: string,
+  from?: SessionStatus,
+): Promise<boolean> {
+  const statuses = from ? [from] : ['opening', 'ready', 'paused', 'closing'];
+  const rows = await sql`update sandbox_session set status = 'lost', closed_at = now(),
+      seconds_charged = coalesce(seconds_charged, extract(epoch from now() - opened_at)),
+      last_error = ${reason}
+    where id = ${id} and status in ${sql(statuses)}
+    returning id`;
+  return rows.length > 0;
+}
+
 /** Time used by one job's sandboxes: live sessions count up to now, ended ones as charged. */
 async function usedSeconds(tx: Query, jobId: string): Promise<number> {
   const [row] = await tx`select coalesce(sum(case
@@ -269,13 +288,8 @@ export class SandboxSessions {
   }
 
   /** The provider no longer has the sandbox. Time is charged as last metered. */
-  async markLost(id: string, reason: string): Promise<boolean> {
-    const rows = await this.sql`update sandbox_session set status = 'lost', closed_at = now(),
-        seconds_charged = coalesce(seconds_charged, extract(epoch from now() - opened_at)),
-        last_error = ${reason}
-      where id = ${id} and status in ('opening', 'ready', 'paused', 'closing')
-      returning id`;
-    return rows.length > 0;
+  markLost(id: string, reason: string): Promise<boolean> {
+    return markSessionLost(this.sql, id, reason);
   }
 
   /** Destroy the sandboxes of sessions whose lease has run out. */
