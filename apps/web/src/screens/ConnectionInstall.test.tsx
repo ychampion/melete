@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ConnectionKind } from '../experience/types.ts';
-import { KindForm } from './ConnectionInstall.tsx';
+import { ConnectionActions, KindForm } from './ConnectionInstall.tsx';
 
 /** A kind this application has never heard of: the form has only the descriptor to go on. */
 const invented = {
@@ -107,4 +107,17 @@ test('the form draws exactly what a served descriptor carries', () => {
   expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled/);
   // The values a request always carries are never inputs.
   expect(html).not.toContain('imap');
+});
+
+test('a connection the service keeps in every space is tested here and not removed', () => {
+  const kept = renderToStaticMarkup(
+    <ConnectionActions id="conn_files" label="Files" removable={false} onChanged={() => {}} />,
+  );
+  expect(kept).toContain('Test');
+  expect(kept).not.toContain('Remove');
+  const installed = renderToStaticMarkup(
+    <ConnectionActions id="conn_mail" label="Mail" removable onChanged={() => {}} />,
+  );
+  expect(installed).toContain('Test');
+  expect(installed).toContain('Remove');
 });

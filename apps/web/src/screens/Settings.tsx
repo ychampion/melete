@@ -382,6 +382,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
                     <ConnectionActions
                       id={connection.id}
                       label={connection.label}
+                      removable={connection.builtin !== true}
                       onChanged={connections.reload}
                     />
                   }

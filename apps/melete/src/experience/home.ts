@@ -155,6 +155,7 @@ export class ExperienceHome {
             : row.scopes.some((scope) => scope.endsWith('.draft'))
               ? 'draft_only'
               : 'read_only',
+          ...(row.configuration.builtin === undefined ? {} : { builtin: true }),
         }),
       ),
     };

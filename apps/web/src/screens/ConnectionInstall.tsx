@@ -282,14 +282,19 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
   );
 }
 
-/** Test and remove, for one installed connection. */
+/**
+ * Test and remove, for one connection. A connection the service keeps in every
+ * space is tested here and not removed: the service does not make it again.
+ */
 export function ConnectionActions({
   id,
   label,
+  removable,
   onChanged,
 }: {
   id: string;
   label: string;
+  removable: boolean;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<'test' | 'remove' | null>(null);
@@ -339,7 +344,7 @@ export function ConnectionActions({
       >
         Test
       </Button>
-      {confirming ? (
+      {!removable ? null : confirming ? (
         <>
           <Button
             size="sm"

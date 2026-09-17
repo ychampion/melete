@@ -2293,6 +2293,7 @@ export interface paths {
                                 /** @enum {string} */
                                 access: "read_only" | "draft_only" | "asks_before_acting";
                                 app: components["schemas"]["__schema94"];
+                                builtin?: boolean;
                                 id: components["schemas"]["__schema93"];
                                 label: components["schemas"]["__schema94"];
                                 /** @enum {string} */

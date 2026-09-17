@@ -390,6 +390,8 @@ export const experienceConnection = z.strictObject({
   label: text,
   status: z.enum(['available', 'connecting', 'connected', 'error']),
   access: z.enum(['read_only', 'draft_only', 'asks_before_acting']),
+  /** True for a connection the service keeps in every space; a client offers no removal for it. */
+  builtin: z.boolean().optional(),
 });
 export const experienceConnectionList = z.strictObject({
   connections: z.array(experienceConnection),

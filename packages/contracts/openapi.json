@@ -3830,6 +3830,9 @@
                                   "draft_only",
                                   "asks_before_acting"
                                 ]
+                              },
+                              "builtin": {
+                                "type": "boolean"
                               }
                             },
                             "required": [

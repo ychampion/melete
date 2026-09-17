@@ -92,6 +92,15 @@ const existing = fresh ? await database() : null;
       ).connections;
       expect(listed.map((row) => row.provider).sort()).toEqual(['artifacts', 'files', 'web']);
       expect(listed.every((row) => row.builtin === true && row.status === 'active')).toBe(true);
+      // Settings is told which connections the service keeps, so it offers no removal for them.
+      const shown = (await (
+        await running.app.request('/experience/connections', { headers: { cookie } })
+      ).json()) as { connections: Array<{ label: string; builtin?: boolean }> };
+      expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
+        ['Files', true],
+        ['Finished work', true],
+        ['Web', true],
+      ]);
 
       const claimed = await claimIn(running, space.id);
       expect(names(claimed.bundle.tools)).toEqual(expect.arrayContaining(DEFAULT_TOOLS));
