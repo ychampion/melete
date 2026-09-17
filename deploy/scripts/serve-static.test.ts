@@ -451,6 +451,18 @@ describe('same-origin API proxy', () => {
     }
   });
 
+  test('a forwarded address is ignored when no upstream is configured', async () => {
+    const response = await fetch(`${webOrigin()}/api/login`, {
+      headers: {
+        origin: webOrigin(),
+        'x-forwarded-for': '100.100.0.5',
+        'tailscale-user-login': 'stranger@example.test',
+      },
+    });
+    const seen = (await response.json()) as { clientAddress: string | null };
+    expect(seen.clientAddress).toBe('127.0.0.1');
+  });
+
   test('uses an explicitly configured TLS origin without trusting forwarded headers', async () => {
     const tlsWeb = createStaticServer({
       root: join(base, 'dist'),
@@ -470,4 +482,198 @@ describe('same-origin API proxy', () => {
       tlsWeb.stop(true);
     }
   });
+});
+
+/**
+ * With the tailnet overlay the browser is no longer the web server's socket
+ * peer: every device arrives through the Tailscale node, so without this every
+ * phone and laptop on the tailnet would share one sign-in limiter. The node
+ * states the device's tailnet address in `X-Forwarded-For`; a browser can send
+ * the same header, so the deciding question is which socket the request came
+ * from, and nothing else.
+ */
+describe('a trusted upstream in front of the web server', () => {
+  let api: ReturnType<typeof Bun.serve>;
+  let seen: { clientAddress: string | null; identity: string | null; forwarded: string | null };
+  const apiOrigin = () => `http://127.0.0.1:${api.port}`;
+  /** Two events three seconds apart, then held open, as a job stream is. */
+  const EVENT_GAP_MS = 3000;
+
+  const serverWith = (trustedUpstream?: string) =>
+    createStaticServer({
+      root: join(base, 'dist'),
+      port: 0,
+      hostname: '127.0.0.1',
+      apiOrigin: apiOrigin(),
+      trustedUpstream,
+    });
+
+  beforeAll(() => {
+    api = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch(request) {
+        seen = {
+          clientAddress: request.headers.get('x-melete-client-address'),
+          identity: request.headers.get('tailscale-user-login'),
+          forwarded: request.headers.get('x-forwarded-for'),
+        };
+        if (new URL(request.url).pathname !== '/events') return Response.json(seen);
+        const encoder = new TextEncoder();
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode('data: {"seq":1}\n\n'));
+              setTimeout(() => {
+                controller.enqueue(encoder.encode('data: {"seq":2}\n\n'));
+                // Held open afterwards, as a quiet conversation is.
+              }, EVENT_GAP_MS);
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        );
+      },
+    });
+  });
+
+  afterAll(() => {
+    api.stop(true);
+  });
+
+  const ask = async (
+    web: ReturnType<typeof createStaticServer>,
+    headers: Record<string, string>,
+  ) => {
+    // The header handling under test does not depend on the method, and a
+    // read keeps each case to one exchange on the connection.
+    const response = await fetch(`http://127.0.0.1:${web.port}/api/login`, { headers });
+    expect(response.status).toBe(200);
+    return seen;
+  };
+
+  test('the upstream states the address the API limits, in place of its own socket', async () => {
+    const web = serverWith('127.0.0.1');
+    try {
+      // A tailnet peer is a CGNAT address; a tailnet IPv6 peer is unique-local.
+      for (const address of ['100.64.0.1', '100.100.0.5', 'fd7a:115c:a1e0::4501']) {
+        const result = await ask(web, { 'x-forwarded-for': address });
+        expect(result.clientAddress, address).toBe(address);
+      }
+    } finally {
+      web.stop(true);
+    }
+  });
+
+  test('a forged address from a peer that is not the upstream mints no fresh bucket', async () => {
+    // The upstream is named as some other machine, so this socket is not it.
+    for (const upstream of ['203.0.113.7', undefined]) {
+      const web = serverWith(upstream);
+      try {
+        const result = await ask(web, { 'x-forwarded-for': '100.100.0.5' });
+        expect(result.clientAddress, String(upstream)).toBe('127.0.0.1');
+      } finally {
+        web.stop(true);
+      }
+    }
+  });
+
+  test('only one well-formed address is believed, and never a list', async () => {
+    const web = serverWith('127.0.0.1');
+    try {
+      for (const value of [
+        '100.100.0.5, 203.0.113.9',
+        '203.0.113.9, 100.100.0.5',
+        'not-an-address',
+        '100.100.0.5:443',
+        '',
+        '  ',
+        'localhost',
+      ]) {
+        const result = await ask(web, { 'x-forwarded-for': value });
+        expect(result.clientAddress, JSON.stringify(value)).toBe('127.0.0.1');
+      }
+    } finally {
+      web.stop(true);
+    }
+  });
+
+  test('the API never receives a forwarding header, believed or not', async () => {
+    for (const upstream of ['127.0.0.1', undefined]) {
+      const web = serverWith(upstream);
+      try {
+        const result = await ask(web, {
+          'x-forwarded-for': '100.100.0.5',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'melete.example.ts.net',
+        });
+        expect(result.forwarded, String(upstream)).toBeNull();
+      } finally {
+        web.stop(true);
+      }
+    }
+  });
+
+  test('an identity header from a browser never reaches the API', async () => {
+    // No sign-in here reads these; stripping them keeps a later one honest.
+    for (const upstream of ['203.0.113.7', undefined]) {
+      const web = serverWith(upstream);
+      try {
+        const result = await ask(web, { 'tailscale-user-login': 'stranger@example.test' });
+        expect(result.identity, String(upstream)).toBeNull();
+      } finally {
+        web.stop(true);
+      }
+    }
+  });
+
+  test('an identity header from the upstream is passed on unchanged', async () => {
+    const web = serverWith('127.0.0.1');
+    try {
+      const result = await ask(web, { 'tailscale-user-login': 'owner@example.test' });
+      expect(result.identity).toBe('owner@example.test');
+    } finally {
+      web.stop(true);
+    }
+  });
+
+  test.each(['127.0.0.1', undefined])(
+    'an event stream through the upstream %s delivers events as they happen and stays open',
+    async (upstream) => {
+      const web = serverWith(upstream);
+      const abort = new AbortController();
+      try {
+        const started = Date.now();
+        const response = await fetch(`http://127.0.0.1:${web.port}/api/events`, {
+          headers: { 'x-forwarded-for': '100.100.0.5' },
+          signal: abort.signal,
+        });
+        expect(response.headers.get('content-type')).toBe('text/event-stream');
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('the stream had no body');
+        const decoder = new TextDecoder();
+
+        const first = await reader.read();
+        // Long before the second event exists: nothing is being accumulated.
+        expect(Date.now() - started).toBeLessThan(EVENT_GAP_MS - 500);
+        expect(decoder.decode(first.value)).toBe('data: {"seq":1}\n\n');
+
+        const second = await reader.read();
+        expect(Date.now() - started).toBeGreaterThanOrEqual(EVENT_GAP_MS - 500);
+        expect(decoder.decode(second.value)).toBe('data: {"seq":2}\n\n');
+        // The upstream address still reached the API on the streaming request.
+        expect(seen.clientAddress).toBe(upstream ? '100.100.0.5' : '127.0.0.1');
+
+        // Quiet, not finished: an idle stream is still a stream.
+        const idle = await Promise.race([
+          reader.read().then(() => 'closed' as const),
+          Bun.sleep(750).then(() => 'open' as const),
+        ]);
+        expect(idle).toBe('open');
+        await reader.cancel();
+      } finally {
+        abort.abort();
+        web.stop(true);
+      }
+    },
+  );
 });

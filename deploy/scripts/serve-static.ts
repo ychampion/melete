@@ -14,6 +14,11 @@
  */
 import { stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
+import {
+  plainAddress,
+  type TrustedPeer,
+  trustedPeer,
+} from '../../apps/melete/src/api/trusted-peer.ts';
 
 export type StaticServerOptions = {
   /** The directory to serve. Nothing outside it is ever readable. */
@@ -24,17 +29,55 @@ export type StaticServerOptions = {
   apiOrigin?: string;
   /** External HTTPS origin when TLS terminates before this server. */
   publicOrigin?: string;
+  /**
+   * The one upstream whose `X-Forwarded-For` states a browser's address: a
+   * literal address, or a service name on a shared network. Unset, as in the
+   * default loopback deployment, every request is attributed to its own socket
+   * peer and no forwarding header is read.
+   */
+  trustedUpstream?: string;
 };
 
 const API_ORIGIN = 'http://melete:8787';
 
 /**
  * Tells the API which browser a proxied request came from, so its login limits
- * do not treat every browser as this one server. The value is always this
- * server's own socket peer and replaces whatever the browser sent. The API
- * believes it only on a connection from the proxy it was told to trust.
+ * do not treat every browser as this one server. The value is this server's own
+ * socket peer, or the address its configured upstream stated, and it replaces
+ * whatever the browser sent. The API believes it only on a connection from the
+ * proxy it was told to trust.
  */
 export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
+
+/**
+ * Identity headers a Tailscale node writes on a request it proxies. They are
+ * not a sign-in here: password and device cookie remain the sign-in, and the
+ * API reads none of these. They are stripped from every request that did not
+ * come from the trusted upstream, so a browser cannot state one to the API.
+ */
+const IDENTITY_HEADER_PREFIX = 'tailscale-';
+
+/**
+ * The browser address an upstream states, or null.
+ *
+ * Tailscale Serve sets `X-Forwarded-For` to the tailnet peer it accepted the
+ * connection from, replacing whatever the browser sent, so the header holds
+ * exactly one address. A list means some other hop is appending, which is a
+ * deployment this server has not been told how to read: it states no address
+ * rather than guessing which entry is the browser. Tailnet addresses are in
+ * the 100.64.0.0/10 range or an IPv6 unique local prefix, and need no special
+ * case: one well-formed address is one well-formed address.
+ */
+export function forwardedAddress(header: string | null): string | null {
+  if (header === null || header.includes(',')) return null;
+  return plainAddress(header);
+}
+
+/** Whether anything upstream-shaped is present worth asking about the peer for. */
+function hasIdentityHeader(headers: Headers): boolean {
+  for (const name of headers.keys()) if (name.startsWith(IDENTITY_HEADER_PREFIX)) return true;
+  return false;
+}
 
 function parseOrigin(value: string): string {
   const url = new URL(value);
@@ -77,6 +120,7 @@ async function proxyApi(
   apiOrigin: string,
   publicOrigin: string | undefined,
   peer: string | undefined,
+  upstream: TrustedPeer,
 ) {
   const origin = request.headers.get('origin');
   if (
@@ -94,18 +138,33 @@ async function proxyApi(
   const target = new URL(apiOrigin);
   target.pathname = url.pathname.slice('/api'.length) || '/';
   target.search = url.search;
+
+  // One question about the socket, asked before the forwarding headers are
+  // dropped: is this connection from the upstream the deployment named? Only
+  // then does its X-Forwarded-For state the browser's address, and only then
+  // are its identity headers something other than a browser's invention.
+  const stated = forwardedAddress(request.headers.get('x-forwarded-for'));
+  const fromUpstream =
+    peer !== undefined && (stated !== null || hasIdentityHeader(request.headers))
+      ? await upstream(peer)
+      : false;
+  const clientAddress = fromUpstream && stated !== null ? stated : peer;
+
   const headers = endToEndHeaders(request.headers);
   for (const name of [...headers.keys()]) {
     if (name === 'host' || name === 'forwarded' || name.startsWith('x-forwarded-')) {
       headers.delete(name);
     }
+    // A browser can send these; only the trusted upstream's are its own.
+    if (!fromUpstream && name.startsWith(IDENTITY_HEADER_PREFIX)) headers.delete(name);
   }
   // The browser origin has been checked here. The API checks the internal
   // origin on the new connection and retains its own direct-request defense.
   if (origin !== null) headers.set('origin', apiOrigin);
-  // Socket metadata only: a browser cannot choose the address it is limited by.
+  // Socket metadata, or the one address the trusted upstream stated. Either
+  // way a browser cannot choose the address it is limited by.
   headers.delete(CLIENT_ADDRESS_HEADER);
-  if (peer) headers.set(CLIENT_ADDRESS_HEADER, peer);
+  if (clientAddress) headers.set(CLIENT_ADDRESS_HEADER, clientAddress);
 
   try {
     const response = await fetch(target, {
@@ -178,6 +237,7 @@ export function createStaticServer(options: StaticServerOptions) {
   const indexPath = resolve(root, 'index.html');
   const apiOrigin = parseOrigin(options.apiOrigin ?? API_ORIGIN);
   const publicOrigin = options.publicOrigin ? parseOrigin(options.publicOrigin) : undefined;
+  const upstream = trustedPeer(options.trustedUpstream);
 
   const index = () =>
     new Response(Bun.file(indexPath), {
@@ -193,7 +253,14 @@ export function createStaticServer(options: StaticServerOptions) {
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
         // A job event stream can be quiet for longer than the static timeout.
         server.timeout(request, 0);
-        return proxyApi(request, url, apiOrigin, publicOrigin, server.requestIP(request)?.address);
+        return proxyApi(
+          request,
+          url,
+          apiOrigin,
+          publicOrigin,
+          server.requestIP(request)?.address,
+          upstream,
+        );
       }
 
       // A built bundle is read only, so reading it is the whole vocabulary.
@@ -227,6 +294,7 @@ if (import.meta.main) {
   const server = createStaticServer({
     root: resolve(process.cwd(), 'dist'),
     publicOrigin: process.env.MELETE_WEB_ORIGIN || undefined,
+    trustedUpstream: process.env.MELETE_WEB_TRUSTED_UPSTREAM || undefined,
   });
   process.stdout.write(`melete web client listening on :${server.port}\n`);
 }
