@@ -37,6 +37,7 @@ COPY apps/melete/package.json apps/melete/
 COPY apps/mock-api/package.json apps/mock-api/
 COPY apps/web/package.json apps/web/
 COPY conformance/package.json conformance/
+COPY evals/package.json evals/
 RUN bun install --frozen-lockfile --production
 
 COPY tsconfig.base.json tsconfig.json ./

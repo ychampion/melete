@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
+import { checkDockerfileWorkspaces } from './dockerfile-check.ts';
 
 export type ComposeFile = {
   networks?: Record<string, { internal?: boolean; driver_opts?: Record<string, string> } | null>;
@@ -309,7 +310,11 @@ export const defaultComposePath = (): string =>
 
 if (import.meta.main) {
   const path = process.argv[2] ?? defaultComposePath();
-  const results = checkCompose(loadCompose(path));
+  const results = [
+    ...checkCompose(loadCompose(path)),
+    // The images this file builds are read from the repository, not from `path`.
+    ...checkDockerfileWorkspaces(join(dirname(fileURLToPath(import.meta.url)), '..', '..')),
+  ];
   for (const result of results) {
     process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);
     if (!result.ok) process.stdout.write(`     ${result.detail}\n`);
