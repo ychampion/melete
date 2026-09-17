@@ -83,7 +83,8 @@ import { startServiceMemory } from './memory/start.ts';
 import { requestPrincipal, spaceAuthority } from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { withDeploymentContext } from './runtime/context.ts';
-import { DockerHermesRuntimeAdapter } from './runtime/docker.ts';
+import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
+import { assertDockerEngine } from './runtime/docker-engine.ts';
 import { type AttemptTiming, SupervisedHermesRuntime } from './runtime/hermes.ts';
 import { StubRuntimeAdapter } from './runtime/stub.ts';
 import {
@@ -304,6 +305,13 @@ export async function bootstrap(
   )
     process.stderr.write(
       "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
+    );
+  // An engine the supervisor cannot drive is named here, before the database is
+  // opened or migrated, instead of as a Docker 400 on the first attempt.
+  if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')
+    await assertDockerEngine(
+      new DockerSocketApi(env.MELETE_DOCKER_SOCKET),
+      env.MELETE_DOCKER_SOCKET,
     );
   const handle = env.DATABASE_URL ? openDatabase(env.DATABASE_URL) : null;
   let queue: Awaited<ReturnType<typeof startQueue>> | null = null;

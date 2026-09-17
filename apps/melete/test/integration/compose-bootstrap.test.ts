@@ -47,6 +47,11 @@ test('Compose runtime selection boots the service and initializes its Docker sup
       throw new Error(`Unexpected daemon inspection: ${path}`);
     },
   );
+  // The engine answers the unversioned preflight before any versioned request.
+  const engine = spyOn(DockerSocketApi.prototype, 'version').mockImplementation(async () => {
+    calls.push({ method: 'GET', path: '/version' });
+    return { Version: '28.0.0', ApiVersion: '1.48', MinAPIVersion: '1.24' };
+  });
   const priorHostname = process.env.HOSTNAME;
   process.env.HOSTNAME = 'compose-bootstrap';
   let service: Awaited<ReturnType<typeof bootstrap>> | undefined;
@@ -80,13 +85,15 @@ test('Compose runtime selection boots the service and initializes its Docker sup
     expect(service.broker).toBeDefined();
     expect(service.effectBoundary?.server.listening).toBe(true);
     expect((await service.app.request('/jobs')).status).toBe(401);
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
+    expect(calls[0]).toEqual({ method: 'GET', path: '/version' });
     expect(calls.every((call) => call.method === 'GET')).toBe(true);
   } finally {
     try {
       await service?.close();
     } finally {
       daemon.mockRestore();
+      engine.mockRestore();
       if (priorHostname === undefined) delete process.env.HOSTNAME;
       else process.env.HOSTNAME = priorHostname;
       await handle.close();

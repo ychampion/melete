@@ -5,6 +5,30 @@ The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records
 build and startup times, conformance results, and clean-host timing. Timings
 depend on the host and network; the startup timeout does not bound image builds.
 
+## Docker Engine and Compose versions
+
+Melete requires **Docker Engine 28.0 or newer** and **Docker Compose 2.33.1 or
+newer**. The supervisor speaks Engine API 1.48, which
+[Engine 28.0](https://docs.docker.com/engine/release-notes/28/) introduced
+together with the `isolated` bridge gateway mode each attempt network uses.
+[Compose 2.33.1](https://github.com/docker/compose/releases/tag/v2.33.1) added
+`gw_priority` and needs Engine 28.0; volume `subpath` mounts are older, so
+`gw_priority` sets the Compose floor.
+
+The requirement is checked in three places, each with one message naming both
+versions:
+
+- The service, when `MELETE_RUNTIME_ADAPTER=docker`, asks the engine's
+  unversioned `/version` endpoint over the mounted socket before it opens the
+  database or anything else. An older engine, an engine that has dropped API
+  1.48, or an unreachable socket stops startup; `docker compose logs melete`
+  shows the message.
+- `bun run deploy/scripts/configure.ts` runs `docker version` and
+  `docker compose version` on the host and refuses an unsupported pair before
+  writing anything.
+- `bun run doctor --docker` reports the same judgement on demand, and
+  `bun run doctor` includes it whenever `MELETE_CONFORMANCE_COMPOSE=1` is set.
+
 ## Configuration and browser access
 
 Configuration lives in `deploy/.env`, generated once by

@@ -17,6 +17,7 @@ import {
   type ParkedActions,
 } from '@melete/runtime-hermes';
 import { modelApiMode } from '../gateway/providers.ts';
+import { DOCKER_API_VERSION, type DockerVersionSource } from './docker-engine.ts';
 
 const OWNER = 'com.melete.attempt-supervisor';
 const PROJECT = 'com.melete.project';
@@ -46,11 +47,21 @@ export class DockerError extends Error {
 }
 
 /** Only this trusted service has the socket; no cell receives it or a Docker client. */
-export class DockerSocketApi implements DockerApi {
+export class DockerSocketApi implements DockerApi, DockerVersionSource {
   constructor(private readonly socket: string) {}
 
+  /** Unversioned, so an engine too old for the API below can still say which one it is. */
+  async version(): Promise<unknown> {
+    const response = await fetch('http://localhost/version', {
+      unix: this.socket,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new DockerError(response.status, 'GET', '/version');
+    return response.json();
+  }
+
   async request(method: Method, path: string, body?: unknown): Promise<unknown> {
-    const response = await fetch(`http://localhost/v1.48${path}`, {
+    const response = await fetch(`http://localhost/v${DOCKER_API_VERSION}${path}`, {
       unix: this.socket,
       method,
       ...(body === undefined
