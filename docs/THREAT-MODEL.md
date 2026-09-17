@@ -226,10 +226,9 @@ own host's filesystem and network policy remain the operator's responsibility.
 Owner-only tools are hidden in public compartments and the broker checks the
 persisted audience again at dispatch, including after approval.
 
-The [isolation proposal](../.agents/notes/proposed/2026-09-12-mcp-provider.md)
-requires a separate OS identity or sandbox, no vault/database mounts or
-credentials, and a verified network policy before the service can launch local
-untrusted installations. Both the production adapter and raw stdio transport
+Launching a local untrusted installation requires a separate OS identity or
+sandbox, no vault/database mounts or credentials, and a verified network
+policy. Both the production adapter and raw stdio transport
 reject an unisolated launch; tests prove rejection before spawning. A
 container-isolated MCP launcher has not been built or tested.
 Composition likewise requires the cell executor, which the default service does

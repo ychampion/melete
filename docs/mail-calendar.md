@@ -8,11 +8,13 @@ See [CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
 
 ## Credentials and configuration
 
-`configuredConnectors` combines active connection rows with owner-controlled
-endpoint configuration. Email needs an email configuration entry and sealed
-secret reference; CalDAV needs its collection URL, username and sealed secret;
-ICS imports use local file content. The configuration file contains endpoints,
-not passwords.
+`configuredConnectors` builds a connector from each active connection row.
+`POST /connections` stores a mailbox's or a calendar's endpoints on the row and
+seals its password, and seals the whole address of a calendar feed; see
+[Installing a connection](CONNECTORS.md#installing-a-connection). The
+owner-controlled configuration file remains an optional override that wins over
+the row, and is the only way to import an ICS file from disk. It contains
+endpoints, not passwords.
 
 `SealedSecretStore` takes a secret repository and a master-key supplier.
 The key must decode to 32 bytes. The service remains trusted while decrypting

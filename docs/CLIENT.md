@@ -406,7 +406,7 @@ recent usage is recorded.
 | Tasks | `GET/POST /tasks`, `PATCH/DELETE /tasks/{id}` |
 | Routines | `GET/POST /automations`, `POST /automations/{id}/test`; sentences describe schedules and recent runs describe outcomes |
 | Morning brief | `POST /automations/morning-brief` accepts `agent_id` and `at` in the profile's time zone |
-| Connections | `GET /experience/connections` returns app names, labels, status, and readable access levels |
+| Connections | `GET /experience/connections` returns app names, labels, status, and readable access levels, without removed connections. Settings adds one from `GET /connection-kinds` and `POST /connections`, tests one with `POST /connections/{connectionId}/health`, and removes one with `POST /connections/{id}/lifecycle`; see [CONNECTORS](CONNECTORS.md#installing-a-connection) |
 | Search | `GET /search?q=` searches conversations, plans, tasks, connected apps, recent actions, and cached calendar events in the session's space |
 
 Agent milestones use the durable timer queue. Routines use the existing schedule

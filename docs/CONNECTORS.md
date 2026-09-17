@@ -54,9 +54,121 @@ succeeded and the job continues`.
 | Browser | Semantic observe, open, fill, click, select, read and an approved `browser.submit`, carried out by a worker process outside the cell with epoch-fenced takeover | `approval binds the exact browser intent and repeated proposals dispatch one effect`; `an unapproved submit has no external effects and its warning identifies the observed destination`; see [the browser worker](browser-worker.md) |
 
 The code paths are in [the connector directory](../apps/melete/src/connectors).
-`configuredConnectors` reads active connections and owner-controlled endpoint
-configuration; email/CalDAV need matching configuration and sealed credentials.
-End-to-end connection onboarding is **not claimed**.
+`configuredConnectors` builds one connector for each active connection row. A
+row carries its own configuration, so no file has to be edited by hand; the
+owner-controlled `MELETE_CONNECTIONS_FILE` remains an optional override, and an
+entry there wins over what the row stores. The browser worker and an imported
+ICS file are still configured only through that file.
+
+## Default connections
+
+A new installation has tools before anyone connects anything. Every space is
+given the connections below as ordinary `connection` rows. A connector is a
+default only when its own code needs no credential and no endpoint, when
+everything it does is contained in the job's workspace and the space's
+directory, is a guarded read, or waits for a payload-bound approval, and when it
+does not depend on isolation the running deployment lacks.
+
+| Default | Tools | Condition |
+| --- | --- | --- |
+| Files | `files.list`, `files.read`, `files.write`, `files.move` | always |
+| Web | `web.fetch` | always; the address and compartment checks below still apply |
+| Finished work | `artifact.publish` | always; every publication needs approval |
+| Speech | `audio.synthesize` | only while a speech-capable provider is configured; a `spend`, so every call needs approval and a budget reservation |
+| Code in the workspace | `exec.run`, `exec.python` | only while attempts run in a container (`MELETE_RUNTIME_ADAPTER=docker`, or the Hermes adapter with `MELETE_RUNTIME_SUPERVISOR=docker`); under the process supervisor the row offers nothing |
+
+Mail, calendars, MCP servers and the browser worker need a credential or an
+endpoint and are never defaults. The test destination is a fixture and is never
+a default. `react`, `job.wait`, `search_tools` and `load_tool` belong to the
+broker and need no connection.
+
+The rows are made when an account or a shared space is created and again at
+every start, so a database from an earlier release gains them on its first
+start. The step is idempotent. A space that already grants one of a default's
+tools through a row of its own, in any state, is left as it is, so a default the
+owner removed is not made again, and procedure-evaluation spaces never receive
+any. The broker admits a default exactly as it admits any other connection:
+scopes, approvals and budgets are unchanged. Settings lists a default with a
+test and without a removal; `POST /connections/{id}/lifecycle` removes one for
+an owner who calls it, and a removed default stays removed.
+
+Evidence: `a fresh installation offers a useful catalog without any hand-made
+connection` and `an existing installation gains the default tools once, and a
+removal stays removed` in
+[default-connections.test.ts](../apps/melete/test/integration/default-connections.test.ts);
+`only connectors that declare no credential are defaults, each granted exactly
+its own tools` in `builtin.test.ts`.
+
+## Installing a connection
+
+`GET /connection-kinds` lists the kinds that can be installed and, for each, the
+fields a form needs, where each value goes in the request, which fields are
+secret, and which grants may be chosen. The web application draws its Settings
+form from that response alone. `POST /connections` takes exactly one
+configuration block:
+
+| Kind | `provider` | Block | Credential | Grants |
+| --- | --- | --- | --- | --- |
+| Mail (IMAP and SMTP) | `imap` | `mail`: account name, sender address, IMAP and SMTP host, port and TLS mode, optional folders | `credentials.password` | `email.search`, `email.read`, `email.draft`, `email.send` |
+| CalDAV | `caldav` | `caldav`: one HTTPS calendar collection address and an account name | `credentials.password` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
+| Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
+| MCP over HTTP | `mcp` | `mcp`: see [Operator-installed MCP servers](#operator-installed-mcp-servers) | optional token fields | declared in the block |
+
+`scopes` may narrow the grants of the first three kinds; left empty it means all
+of them, and a scope outside the kind is refused. `space_id` may be left out, in
+which case the caller's own personal space is used. Installation requires the
+owner of a space whose audience is `owner`, which is the rule MCP installation
+already followed, and a connection installed this way is withheld from public
+compartments.
+
+Passwords, MCP tokens and the whole feed address are sealed with the master key
+before the row is written. No route returns them, and the row's configuration
+keeps only endpoints and account names. An endpoint the connector would refuse,
+such as mail or CalDAV without TLS, is answered with `400` before anything is
+stored. A service started without `MELETE_MASTER_KEY` answers `409
+sealing_unavailable` to any installation that has a secret to keep.
+
+The new connection is tested once. `check` in the response is a fixed code
+(`ok`, `degraded`, `unavailable`, `not_running`, `revoked`) with the sentence
+that belongs to it; it never carries a transport message, an address or a
+credential. A connection whose test failed is kept with status `error` and
+offers no tools. `POST /connections/{id}/health` runs the test again at any
+time, records the result, and brings a connection in `error` into service once
+the test passes. The connectors do not distinguish a refused password from an
+unreachable server, so both read `unavailable`.
+
+`POST /connections/{id}/lifecycle` with `kind: "revoke"` removes a connection.
+The row stays with status `revoked`, its tools leave the catalog of every new
+attempt, and running attempts are fenced as before. The `switch` lifecycle still
+expects a secret reference that no public route creates; replacing a credential
+means removing the connection and installing it again.
+
+A calendar feed is fetched again on every `calendar.list`, with redirects
+refused and the same size limit as CalDAV. A feed address must be HTTPS and
+public: the service applies the address checks of `web.fetch`, so a loopback,
+private, link-local or otherwise non-routable destination is refused, whether it
+is written as a literal address or is what the name resolves to. Installation
+answers such an address with `400` before a row or a sealed secret exists. Every
+read resolves the name again, refuses it if any answer is not public, and sends
+the request to the address it checked. CalDAV and MCP addresses are the owner's
+own servers and may be on a private network.
+
+Evidence, all in
+[connection-kinds.test.ts](../apps/melete/test/integration/connection-kinds.test.ts)
+against local protocol fixtures: `mail: validated, sealed, tested, offered to a
+new attempt, and gone after revocation`, `CalDAV: validated, sealed, tested,
+offered to a new attempt, and gone after revocation`, `calendar feed: the
+address is the secret, the feed is read through the broker, and revocation
+removes it`, `MCP over HTTP: installed, offered to a new attempt, and gone after
+revocation`, `only the owner of an owner-audience space installs, and a session
+without a space_id means its own space`, and `the owner-controlled connections
+file still works, and wins over what a row stores`. Request validation is in
+`packages/contracts/src/connections.test.ts`. `a form drawn only from the served
+descriptors installs every kind` in `apps/mock-api` runs the web form's logic
+against the contract, and `the form draws exactly what a served descriptor
+carries` renders the Settings form from a descriptor the application has never
+seen. Address checks for a calendar feed are in `ics-feed.test.ts`. Mail and
+CalDAV sign in with an account name and a password or app password.
 
 ### Files
 
@@ -263,7 +375,10 @@ replay and unbounded responses are refused. Results retain external-content
 provenance and action evidence handles. A lost acknowledgement remains unknown;
 generic MCP verification cannot prove that an effect happened.
 
-Create a connection with provider `mcp` and the exact granted tool scopes, then
+An HTTP server is installed with `POST /connections` and its `mcp` block, as
+described under [Installing a connection](#installing-a-connection); the row then
+stores the policy. The same policy can instead be pinned by the operator: create
+the connection row with provider `mcp` and the exact granted tool scopes, then
 add its transport and policy to the owner-controlled `MELETE_CONNECTIONS_FILE`:
 
 ```json
@@ -296,8 +411,7 @@ authentication or resume disconnected sessions; it sends no service secrets.
 does not isolate a same-account process from service-readable files or host
 networking. A dedicated OS launcher remains required. The real stdio integration
 fixture uses the same `mcp` provider and broker adapter, with process launch
-limited to tests. The [boundary proposal](../.agents/notes/proposed/2026-09-12-mcp-provider.md)
-records the remaining isolation work.
+limited to tests.
 
 ## Composing read results
 
