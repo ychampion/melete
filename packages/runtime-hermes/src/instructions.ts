@@ -113,6 +113,22 @@ export function renderInput(bundle: AttemptBundle): string {
 
   // The reason this wake exists goes last, because it is what the model should
   // act on first and recency is what it reads as urgency.
+  const cancelled = bundle.inputs.cancelled_wait;
+  if (cancelled?.kind === 'event' || cancelled?.kind === 'timer') {
+    const named = bundle.job.triggers?.find(
+      (entry) => cancelled.kind === 'event' && entry.id === cancelled.trigger_id,
+    );
+    const what =
+      cancelled.kind === 'timer'
+        ? `until ${cancelled.wake_at}`
+        : `for ${named?.event_name ?? 'its trigger'} (${cancelled.trigger_id})`;
+    lines.push(
+      '',
+      '## A wait was cancelled',
+      '',
+      `The wait ${what} was cancelled before it fired. No wait is in force now, whatever an earlier wait result says; if this job still needs it, call job.wait again.`,
+    );
+  }
   for (const approval of bundle.inputs.approval_results)
     lines.push('', '## A decision was made', '', renderDecision(approval));
   for (const event of bundle.inputs.trigger_events) {

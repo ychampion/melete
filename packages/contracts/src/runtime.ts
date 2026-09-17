@@ -262,6 +262,13 @@ export const attemptBundle = z.object({
     ),
     trigger_events: z.array(jsonObject),
     /**
+     * An event or timer wait that was in force when something requeued the job
+     * before it fired, such as a correction to a claim the job relied on. The
+     * attempt is told no wait is in force; if it completes without choosing
+     * another, the service restores this one while it can still fire.
+     */
+    cancelled_wait: waitSpec.optional(),
+    /**
      * What a correction broke and where. Each brief names the handle that moved,
      * the value before and after, and the outputs that cited the old revision.
      */

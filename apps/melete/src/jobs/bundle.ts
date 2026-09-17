@@ -451,6 +451,14 @@ export async function buildAttemptSkeleton(
     constraints.public_compartment,
   );
   const wait = waitSpec.parse(row.wait);
+  // A transition into queued clears the wait. A queued job that still holds an
+  // event wait, or a timer not yet due, was requeued before that wait fired: a
+  // correction to a relied-on claim does this, and a retry carries it forward.
+  const cancelledWait =
+    row.state === 'queued' &&
+    (wait.kind === 'event' || (wait.kind === 'timer' && Date.parse(wait.wake_at) > Date.now()))
+      ? wait
+      : undefined;
   const [open] = await tx
     .select()
     .from(question)
@@ -493,7 +501,7 @@ export async function buildAttemptSkeleton(
       deliverable: constraints.deliverable,
       triggers,
     },
-    inputs: history.inputs,
+    inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
     transcript: history.transcript,
     tools: [],

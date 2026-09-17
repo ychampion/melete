@@ -115,6 +115,21 @@ that means the effect happened; `parked_until_retry`, `needs_reconciliation`,
 apart (`completions and safe stops are counted apart, never summed`).
 `GET /jobs/{id}/repairs` reports the trace, counters and candidates.
 
+A correction to a claim a job relied on requeues that job even while it holds
+an event or timer wait, and that wait has not fired. The next attempt's input
+says so in one section (`a wait cancelled before it fired is named, with no
+wait in force now`), and a notice row records the cancelled wait against that
+attempt. If the attempt completes without choosing another wait, the service
+restores the cancelled one once, and only while it can still fire: the trigger
+is still enabled on this job or the timer is still ahead, and no action is
+pending. A wait the attempt chose itself stands, a retryable failure hands the
+cancelled wait to the retry, and an event delivered in between wakes the
+restored wait at once (`the next attempt is told, and completing without a new
+wait restores it`, `an event delivered between the correction and the
+completion wakes the restored wait at once`, `a replaced wait, a disabled
+trigger or a lapsed timer is not restored; a future timer is` in
+`waits.test.ts`).
+
 Host reboot recovery is **not claimed**; the restart evidence above is a
 Compose restart on one Linux host.
 

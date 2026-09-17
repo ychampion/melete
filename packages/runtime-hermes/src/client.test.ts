@@ -241,6 +241,29 @@ describe('context assembly', () => {
     expect(renderInput(resumed).length).toBeLessThan(4000);
   });
 
+  test('a wait cancelled before it fired is named, with no wait in force now', () => {
+    const woken = structuredClone(bundle);
+    expect(renderInput(woken)).not.toContain('## A wait was cancelled');
+    woken.job.triggers = [
+      {
+        id: `trg_${SUFFIX}`,
+        kind: 'event',
+        event_name: 'mail.new',
+        description: `fires on each mail.new event from conn_${SUFFIX}`,
+      },
+    ];
+    woken.inputs.cancelled_wait = { kind: 'event', trigger_id: `trg_${SUFFIX}`, deadline_at: null };
+    const text = renderInput(woken);
+    expect(text).toContain('## A wait was cancelled');
+    expect(text).toContain(`The wait for mail.new (trg_${SUFFIX}) was cancelled before it fired.`);
+    expect(text).toContain('No wait is in force now');
+    expect(text).toContain('call job.wait');
+    woken.inputs.cancelled_wait = { kind: 'timer', wake_at: '2026-09-20T08:00:00.000Z' };
+    expect(renderInput(woken)).toContain(
+      'The wait until 2026-09-20T08:00:00.000Z was cancelled before it fired.',
+    );
+  });
+
   test("the job's registered triggers are named with id, event and a plain description", () => {
     const waiting = structuredClone(bundle);
     expect(renderInput(waiting)).not.toContain('## Events this job can wait for');
