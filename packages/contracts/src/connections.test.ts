@@ -298,11 +298,13 @@ describe('connection kind descriptors', () => {
       'mail',
       'mcp',
       'mcp_stdio',
+      'sandbox',
     ]);
     const ids = parsed.kinds.map((kind) => kind.id);
     expect(new Set(ids).size).toBe(ids.length);
     // Every kind keeps an entry for a server no provider entry names.
-    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio']) expect(ids).toContain(kind);
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio', 'sandbox'])
+      expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
       const secrets = kind.fields.flatMap((field) => [
         ...(field.secret ? [field.path] : []),

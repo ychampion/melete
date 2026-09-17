@@ -267,6 +267,51 @@ const variables = z.object({
     z.coerce.number().int().positive().default(DEFAULT_COMPACTION_MAX_TOKENS),
   ),
   MELETE_MODEL_CONTEXT_WINDOW: unsetWhenBlank(z.coerce.number().int().positive().optional()),
+
+  /**
+   * Which sandboxes at a provider belong to this installation. It is the
+   * `melete.project` label, and reconciliation destroys only sandboxes that
+   * carry it, so two installations sharing one provider account never touch
+   * each other's. Pick something random once and keep it: changing it orphans
+   * whatever the old value labelled.
+   */
+  MELETE_SANDBOX_PROJECT: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]{2,40}$/)
+    .optional(),
+  /** How long a sandbox session may go unrenewed before the sweep ends it. */
+  MELETE_SANDBOX_LEASE_SECONDS: z.coerce.number().int().positive().default(900),
+  /** The most sandboxes this installation may have running at once. */
+  MELETE_SANDBOX_MAX_CONCURRENT: z.coerce.number().int().positive().default(4),
+  /** How long a suspended workspace is kept while nobody resumes it. */
+  MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(7 * 24 * 3600),
+  /**
+   * How long Modal keeps a workspace snapshot this service never deletes. It
+   * must outlast the retention period, or a workspace would be offered a
+   * snapshot the provider has already collected.
+   */
+  MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30 * 24 * 3600),
+  /** E2B's maximum continuous runtime follows the account's plan. */
+  MELETE_E2B_PLAN: z.enum(['hobby', 'pro']).default('hobby'),
+  /**
+   * Modal's SDK speaks gRPC, and its transport honours `grpc_proxy`,
+   * `https_proxy`, `http_proxy` and `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` from
+   * this process's own environment. Where one of those is set, the Modal
+   * adapter is refused unless the operator says here that the proxy and its
+   * trust anchors are theirs.
+   */
+  MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 /**
@@ -281,6 +326,12 @@ export const envSchema = variables.transform((value, context) => {
       : brokerUrlMismatch(value.MELETE_BROKER_BIND, value.MELETE_BROKER_URL);
   if (mismatch)
     context.addIssue({ code: 'custom', path: ['MELETE_BROKER_URL'], message: mismatch });
+  if (value.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS < value.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS)
+    context.addIssue({
+      code: 'custom',
+      path: ['MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS'],
+      message: `a workspace snapshot must outlast the retention period: ${value.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS}s is shorter than MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS=${value.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS}s`,
+    });
   return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
 });
 

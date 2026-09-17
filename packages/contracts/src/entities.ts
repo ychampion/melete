@@ -70,6 +70,8 @@ export const CONNECTION_PROVIDERS = [
   'generation',
   /** Operator-installed MCP servers, exposed through the broker like any other connector. */
   'mcp',
+  /** A remote sandbox the broker owns: commands run there, credentials stay here. */
+  'sandbox',
 ] as const;
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
