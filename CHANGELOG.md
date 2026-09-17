@@ -12,8 +12,14 @@ to named tests on the tagged tree; the README's gates table is the summary.
   service, the runtime plugin suite and a build of the service, web and runtime
   images. Actions are pinned by commit and no secret is read; a test fails the
   workflow if it names a script or file that does not exist.
+- **The runtime image's plugin pin is checked without Docker.** The image hashes
+  `packages/runtime-hermes/melete_plugin` while it builds and refuses a
+  `MELETE_PLUGIN_SHA` that describes anything else. `compose:check` now
+  recomputes that digest from the tracked files and names the value the pin
+  should carry, so a plugin change that leaves the pin behind fails the static
+  checks instead of the image build.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
-  `json-file` log at 10 MB with five files. `compose:check` (28 checks) and
+  `json-file` log at 10 MB with five files. `compose:check` (29 checks) and
   `browser:compose:check` (12) refuse a service without the bound.
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one
@@ -45,6 +51,44 @@ to named tests on the tagged tree; the README's gates table is the summary.
   client address the web proxy states, believed only on a connection from the
   proxy Compose names and never from a header a browser sends. `/setup` has its
   own limiter and answers 409 once an owner exists.
+- **The first tools come from what the job says.** The core catalog an attempt
+  opens with is ranked by its overlap with the job's objective, the latest owner
+  message and the registered trigger, and the lifecycle wait and the reaction are
+  pinned when the turn needs them. Nothing is hidden by the choice: what is left
+  out is still there to be loaded by name.
+- **Tool search matches any word.** `search_tools` matches on any term in the
+  query, stems it and reads the segments of an identifier, so `send mail` finds
+  `email.send`. A search that matches nothing says what `load_tool` can fetch
+  instead of returning an empty list.
+- **An approved action is carried out exactly as approved.** After a decision the
+  next attempt is told which tool the owner approved and which stored arguments
+  go with it, and carries it out by id with `resume_action`: no arguments are
+  retyped, and the broker admits and dispatches the same canonical bytes the
+  owner read, under the new attempt's authority. A restart between the approval
+  and the send changes nothing — the action leaves once, and a proposal of the
+  identical bytes still works for a runtime that makes one.
+- **An attempt that asks to act without proposing waits for the owner.** A reply
+  that asks for a go-ahead on an external effect it never proposed is answered
+  once with a note to call the tool, since the broker asks the owner before
+  anything leaves. If the attempt asks again it is recorded as waiting for the
+  owner rather than as finished work.
+- **Waits are named by event, and a correction does not lose one.** The attempt
+  input lists the job's enabled triggers with their event names and a plain
+  description, so a wait can name the event rather than an id nothing showed it.
+  When an owner's correction requeues an attempt, its input says the wait was
+  cancelled and none is in force; if that attempt then completes without choosing
+  another, the cancelled wait is restored, as long as its trigger is still
+  enabled or its timer still ahead and no action is pending.
+- **Reactions need no message id.** `react` takes the glyph alone and lands on
+  the owner's latest message on the same job. The reaction is an event on that
+  job, so the account whose job it is sees it and nobody else does.
+- **An offline regrade for recorded evaluation campaigns.**
+  `bun run evals -- --regrade <artifact>` scores a recorded campaign's cells
+  again from the evidence each one kept, with no model call and no network. The
+  deterministic grader now separates an offer made after an answer from a request
+  for leave to do the task, counts a replaced value as asserted when the reply
+  stands by it, accepts a standalone number for a required fact, and never sets a
+  word budget below fifteen words.
 
 ## v0.1.0
 

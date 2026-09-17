@@ -87,6 +87,8 @@ class FakeBroker:
             return 201, body
         if method == "POST" and path == "/actions":
             return 201, self.propose_response
+        if method == "POST" and path == f"/actions/{ACTION}/resume":
+            return 200, self.propose_response
         if method == "POST" and path == "/tools/search":
             return 200, {"tools": [{"name": "email.search", "description": "Search mail"}]}
         if method == "POST" and path == "/tools/load":
@@ -539,3 +541,51 @@ def test_invalid_schema_stops_repeated_broker_requests(client, broker):
     assert first["retryable"] is False
     assert "Do not retry" in first["instruction"]
     assert len(broker.requests) == 1
+
+
+RESUME_TOOL = {
+    "name": "resume_action",
+    "description": "Carry out an approved action.",
+    "effect_class": "write_external",
+    "connection_id": None,
+    "input_schema": {"type": "object", "properties": {"action_id": {"type": "string"}}},
+}
+
+
+def test_resume_sends_only_the_action_id_and_returns_the_receipt(client, broker):
+    result = build_handler(client, RESUME_TOOL)({"action_id": ACTION, "body": "retyped bytes"})
+
+    assert result == {
+        "status": "succeeded",
+        "action_id": ACTION,
+        "receipt": {"external_ref": "mid-1"},
+    }
+    resumed = broker.requests[0]
+    assert resumed["method"] == "POST"
+    assert resumed["path"] == f"/actions/{ACTION}/resume"
+    # Nothing the model typed can travel: the broker replays the bytes it stored.
+    assert resumed["body"] == {}
+    assert [r["path"] for r in broker.requests] == [f"/actions/{ACTION}/resume", f"/actions/{ACTION}"]
+
+
+def test_resume_reports_an_undecided_or_unconfirmed_action_as_it_stands(client, broker):
+    handler = build_handler(client, RESUME_TOOL)
+    broker.propose_response = {
+        "action_id": ACTION, "status": "needs_approval", "requires_approval": True,
+        "approval_id": APPROVAL, "payload_hash": HASH,
+    }
+    assert handler({"action_id": ACTION})["instruction"] == END_TURN_INSTRUCTION
+    broker.propose_response = {"action_id": ACTION, "status": "unknown"}
+    assert handler({"action_id": ACTION})["instruction"] == UNCERTAIN_INSTRUCTION
+
+
+def test_resume_keeps_the_brokers_refusal_and_needs_an_action_id(client, broker):
+    handler = build_handler(client, RESUME_TOOL)
+    missing = handler({})
+    assert missing["error"]["code"] == "payload_invalid"
+    assert broker.requests == []
+    broker.status_code = 403
+    broker.error_body = {"error": {"code": "revision_mismatch", "message": "The job changed"}}
+    refused = handler({"action_id": ACTION})
+    assert refused["status"] == "failed"
+    assert refused["error"]["code"] == "revision_mismatch"

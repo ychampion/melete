@@ -52,7 +52,13 @@ They prove adapter behavior for those frames, not a full real-engine deployment.
 
 Broker-tool decisions use Melete park-and-resume:
 `a parked action turns a completion into waiting_for_approval`.
-They are not routed through Hermes's plugin approval gate.
+They are not routed through Hermes's plugin approval gate. The resumed input
+names the approved tool and its stored payload, and `resume_action` forwards
+only the action id (`an approved decision names the tool, the approved payload
+and how to carry it out`; `test_resume_sends_only_the_action_id_and_returns_the_receipt`).
+A reply that asks for a go-ahead on an external effect nobody proposed gets one
+continuation and otherwise settles waiting for input (`proposal.ts`; `an ask
+that still proposes nothing settles waiting for input, never completed`).
 Unexpected shell approval notifications are denied
 (`a shell-command approval is denied, never allowed for the session`).
 
@@ -83,8 +89,10 @@ from pinned commit `2237be355906fbe6065ce1815711eee52b2d646e`. With a seven-tool
 core, it measured 7,708 system-prompt characters and 2,886 tool-schema characters:
 **2,649 estimated tokens**, using `ceil((system + schemas).length / 4)`, below
 the 4,000-token tripwire. The broker core itself was 714 estimated tokens
-against its 750-token budget. This is a scaffolding estimate, not provider usage
-or a tokenizer-specific count. User input and subsequent tool results are metered
+against its 750-token budget. That measurement predates the names-only index of
+unloaded tools, which may add at most 250 estimated tokens to `load_tool`; the
+wire request has not been measured again with it. This is a scaffolding
+estimate, not provider usage or a tokenizer-specific count. User input and subsequent tool results are metered
 separately by the gateway.
 
 The earlier prompt-assembly probe in `.agents/notes/0009-hermes-surface.md`

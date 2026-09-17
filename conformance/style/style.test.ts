@@ -119,6 +119,14 @@ describe('the identity file', () => {
     expect(flat).toContain('Refer to prior work in one clause');
   });
 
+  test('keeps a social reply short, drops disclaimers and offers, and reports only what changed', () => {
+    expect(flat).toContain('one short sentence or a reaction');
+    expect(flat).toContain('Never add that nothing is pending');
+    expect(flat).toContain('never close with an offer');
+    expect(flat).toContain('Cite a source only when asked or when a fact is disputed');
+    expect(flat).toContain('report only what changed');
+  });
+
   test('does not itself open with anything the style check bans', () => {
     expect(checkStyle(identity, { reply_class: 'deliverable' })).toEqual([]);
   });

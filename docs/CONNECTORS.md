@@ -174,14 +174,34 @@ When one does match, the job wakes with that observation as its evidence and the
 consumed-event notice carries `because: ["event:<seq>"]`, so the wake can always
 name the observation that caused it. Observations that do not match advance the
 trigger's cursor and cost nothing else: no attempt, no model call, no row.
+
+The attempt input lists the job's enabled triggers with their id, event name and
+one plain sentence built from the spec. `job.wait` accepts either the trigger id
+or the event name; the broker resolves a name under the job lock to the one
+enabled trigger of this job that carries it, refuses a name no enabled trigger
+carries, and asks for the id when two share it. An omitted deadline is no
+deadline (`resolves the event name to the enabled trigger of this job,
+broker-side`, `an unknown, disabled or ambiguous name is refused, and nothing is
+recorded`).
+
 ## Discovering tools without loading every schema
 
 The broker serves a small core plus `search_tools(query)` and `load_tool(name)`.
-The core prioritizes granted files, knowledge and react tools when those
-producers are registered, then the most-used verbs on granted connections.
-Selection budgets serialized schemas rather than counting tools. The default
-core allowance is 750 estimated tokens, including the two discovery tools.
-The pinned engine's scaffolding uses the rest of the 4,000-token tripwire.
+The core ranks candidates by lexical relevance to the job's objective and its
+latest owner message, then granted files, knowledge and react tools, then the
+most-used verbs on granted connections. `job.wait` leads when the job has an
+enabled trigger, and `react` leads when the attempt answers a person directly.
+A reversible verb is shown only together with an external-write sibling from
+the same connection and namespace. MCP tools are candidates only when the job's
+words match them, and they are ranked behind everything the owner granted:
+relevance is read off a tool's own description, and an MCP server writes its
+own, so echoing the job earns it only the room no granted verb wanted
+(`an MCP description cannot take the place of a granted connector verb`).
+Selection budgets serialized schemas rather than counting tools.
+The default core allowance is 750 estimated tokens of schemas, including
+the two discovery tools, plus at most 250 estimated tokens for a names-only
+index of every healthy tool left outside, carried on `load_tool`. The pinned
+engine's scaffolding uses the rest of the 4,000-token tripwire.
 
 `Connector.catalog` supplies trusted source metadata: `connector`, `capability`,
 `skill` or `mcp`, up to two examples per verb, and optional core priorities.
@@ -192,10 +212,18 @@ capability is left out of the catalog.
 
 `POST /tools/search` accepts `{ "query": "archived invoices" }`. Postgres ranks
 the already scoped entries with `tsvector`, weighting names above descriptions
-and examples; no model is involved. Results target a 1,000-token allowance while
+and examples; no model is involved. Any query term may match: terms are ORed
+and ranked, stemmed under the `english` configuration and also kept whole under
+`simple`, and a name is indexed by its segments, so "restarting services"
+reaches a verb named `ops.restart` (`search matches any term, stems it, and
+reads identifier segments`). Only letters and digits from the query reach the
+query text. Results target a 1,000-token allowance while
 always returning the highest-ranked match, so a long scope list cannot hide a
 capability. Results omit full schemas and tools already
-loaded in this attempt. `POST /tools/load` accepts the exact result name. Two
+loaded in this attempt. A query that matches nothing returns `tools: []`
+together with `index`, the name and eight-word gist of every healthy tool that
+can still be loaded, and a one-line `hint` (`a search with no match names what
+can be loaded instead of returning nothing`). `POST /tools/load` accepts the exact result name. Two
 accounts exposing the same verb receive stable account aliases, which the
 broker resolves back to the original verb before deriving the action's intent
 key. An alias cannot select another account.

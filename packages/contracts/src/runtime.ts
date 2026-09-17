@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
 import { sinceLastBrief } from './delta.ts';
-import { attemptUsage, waitSpec } from './entities.ts';
+import { attemptUsage, type TriggerSpec, triggerKind, waitSpec } from './entities.ts';
 import { executionMode } from './execution.ts';
 import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
@@ -185,6 +185,27 @@ export function renderSinceLast(delta: SinceLast): string {
   return lines.join('\n');
 }
 
+/** One trigger the attempt may wait on, as the model reads it. */
+export const registeredTrigger = z.object({
+  id: prefixedId(ID_PREFIXES.trigger),
+  kind: triggerKind,
+  event_name: z.string().min(1).nullable(),
+  description: z.string().min(1).max(300),
+});
+export type RegisteredTrigger = z.infer<typeof registeredTrigger>;
+
+/** A plain sentence for a trigger spec. No model reads the spec itself. */
+export function describeTrigger(spec: TriggerSpec): string {
+  switch (spec.kind) {
+    case 'schedule':
+      return `fires on the schedule "${spec.cron}" (${spec.timezone})`;
+    case 'event':
+      return `fires on each ${spec.event_name} event from ${spec.connection_id}`;
+    case 'watch':
+      return `fires when a ${spec.event_name} event from ${spec.connection_id} matches its watch condition`;
+  }
+}
+
 /**
  * Everything one attempt is given, and nothing more. The order matters for
  * prompt caching: stable prefix first, volatile inputs last.
@@ -209,6 +230,11 @@ export const attemptBundle = z.object({
     progress_summary: z.string(),
     unresolved_questions: z.array(z.string()),
     deliverable: jsonObject,
+    /**
+     * The job's enabled triggers, so a wait can name one. `event_name` is null
+     * for a schedule. Optional, so an older producer still parses.
+     */
+    triggers: z.array(registeredTrigger).max(50).optional(),
   }),
   /** What changed since the last attempt: the reason this wake exists. */
   inputs: z.object({
@@ -224,9 +250,24 @@ export const attemptBundle = z.object({
         action_id: prefixedId(ID_PREFIXES.action),
         decision: z.enum(['approved', 'denied']),
         note: z.string().nullable(),
+        /**
+         * What was decided on, read from the action row when the bundle is
+         * built: the tool, the canonical payload the owner read, and where the
+         * action stands now. Optional, so an older producer still parses.
+         */
+        kind: z.string().min(1).optional(),
+        status: z.string().min(1).optional(),
+        payload: jsonObject.optional(),
       }),
     ),
     trigger_events: z.array(jsonObject),
+    /**
+     * An event or timer wait that was in force when something requeued the job
+     * before it fired, such as a correction to a claim the job relied on. The
+     * attempt is told no wait is in force; if it completes without choosing
+     * another, the service restores this one while it can still fire.
+     */
+    cancelled_wait: waitSpec.optional(),
     /**
      * What a correction broke and where. Each brief names the handle that moved,
      * the value before and after, and the outputs that cited the old revision.
@@ -416,4 +457,8 @@ export const CONTEXT_LIMITS = {
   skill_tokens: 400,
   knowledge_tokens: 2000,
   max_tools: 15,
+  /** Serialized schemas in the first catalog, the two discovery tools included. */
+  core_catalog_tokens: 750,
+  /** The names-only listing of tools left outside that catalog. */
+  catalog_index_tokens: 250,
 } as const;

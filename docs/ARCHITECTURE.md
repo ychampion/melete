@@ -39,7 +39,9 @@ above; see [the browser worker](browser-worker.md).
 The static checker `checkCompose` in `deploy/scripts/compose-check.ts` reads
 this YAML (26 checks, `passes every boundary check` and its mutation tests);
 `bun run compose:check` adds two checks that each installing Dockerfile copies
-every workspace manifest, 28 in all. It does not open sockets inside a
+every workspace manifest, and one that the runtime Dockerfile's
+`MELETE_PLUGIN_SHA` still describes the plugin directory the image hashes at
+build time, 29 in all. It does not open sockets inside a
 container. Live behavior was established by
 scenario 6 on a Linux Docker host: from a claimed cell and the warm cell, the
 internet, the host metadata address, a live host listener, Postgres (by DNS and
@@ -115,6 +117,21 @@ that means the effect happened; `parked_until_retry`, `needs_reconciliation`,
 apart (`completions and safe stops are counted apart, never summed`).
 `GET /jobs/{id}/repairs` reports the trace, counters and candidates.
 
+A correction to a claim a job relied on requeues that job even while it holds
+an event or timer wait, and that wait has not fired. The next attempt's input
+says so in one section (`a wait cancelled before it fired is named, with no
+wait in force now`), and a notice row records the cancelled wait against that
+attempt. If the attempt completes without choosing another wait, the service
+restores the cancelled one once, and only while it can still fire: the trigger
+is still enabled on this job or the timer is still ahead, and no action is
+pending. A wait the attempt chose itself stands, a retryable failure hands the
+cancelled wait to the retry, and an event delivered in between wakes the
+restored wait at once (`the next attempt is told, and completing without a new
+wait restores it`, `an event delivered between the correction and the
+completion wakes the restored wait at once`, `a replaced wait, a disabled
+trigger or a lapsed timer is not restored; a future timer is` in
+`waits.test.ts`).
+
 Host reboot recovery is **not claimed**; the restart evidence above is a
 Compose restart on one Linux host.
 
@@ -131,10 +148,60 @@ The adapter denies unexpected shell approvals (`a shell-command approval is
 denied, never allowed for the session`). An interrupted stream is not resumed
 (`an interrupted run fails retryably and says history is missing`).
 
-The broker serves a token-budgeted core catalog (750 estimated tokens, `core
-uses a serialized token budget, never a count cap, with stable ordering`) plus
-`search_tools` and `load_tool`; the contract's 15-tool constant is not an
-enforced cap, and a universal cap is **not claimed**. A schema loaded on demand
+A run whose reply asks the owner for a go-ahead on an external effect it never
+proposed is not a completion. `runtime-hermes/src/proposal.ts` decides this
+without a model: the catalog must offer a `write_external` or `spend` tool the
+attempt did not call, and a sentence must ask permission (a small documented
+pattern) while naming that tool's verb or following a draft from the same
+namespace. Such an attempt gets exactly one continuation telling it to call the
+tool, since the broker asks the owner, or to say it cannot; if it still
+proposes nothing it settles `waiting_for_input`, and a parked action still wins
+(`a drafted reply that asks to send gets one continuation, and its proposal
+parks`, `an ask that still proposes nothing settles waiting for input, never
+completed`, `a finished send, a closing offer or a plain question completes in
+one run`).
+
+The attempt input renders the job's constraints as one short line each and
+writes no default down: a declared deliverable says what done means, a domain
+list says where web fetches may go, public research says so, notes appear as
+written, and any other key is shown as `key: value`. A job whose constraints are
+all defaults has no constraints section (`constraints read as short prose, and a
+default is never written down`).
+
+The identity file (`packages/skills/builtin/identity.md`, 250 estimated tokens
+at most) states the reply rules as text: a social message gets one short
+sentence or a reaction, no note that nothing is pending, no closing offer, a
+source cited only when asked or disputed, and a later wake reporting only what
+changed (`keeps a social reply short, drops disclaimers and offers, and reports
+only what changed` in `conformance/style`). The knowledge section shows each
+record's path and provenance and tells the model to name a path only when asked
+or disputed. These are instructions; whether a given model follows them is
+**not claimed** here.
+
+The broker serves a token-budgeted core catalog (750 estimated tokens of
+schemas, `core uses a serialized token budget, never a count cap, with stable
+ordering`) plus `search_tools` and `load_tool`; the contract's 15-tool constant
+is not an enforced cap, and a universal cap is **not claimed**. The core is
+chosen per attempt from durable rows, with no model call: candidates are ranked
+by lexical overlap between the job's objective plus its latest owner message and
+each tool's name segments, description and examples, then by the local core
+flag, usage and name (`relevance to the objective and the latest owner message
+outranks usage`). `job.wait` leads when the job has an enabled trigger and
+`react` leads when the attempt answers a person directly: a chat, a first
+attempt, or a wake carrying a new owner message (`the lifecycle wait and the
+reaction are pinned when the turn needs them`). `react` asks for the glyph
+alone: its message target is optional, because no attempt input shows an event
+seq, and without one the broker reacts to the owner's latest message on the
+attempt's own job (`a reaction with no target lands on the owner's latest
+message, and only this job's`). A reversible tool is offered
+only beside an external-write sibling from the same connection and namespace,
+or not at all (`a reversible draft is never shown without its external-write
+sibling`). An MCP tool enters the core only when the job's words match it (`an
+MCP tool enters the core by relevance and never by default`). Every healthy
+tool left outside is named on `load_tool` with a gist of at most eight words,
+inside a separate 250-token allowance (`every unloaded tool is named in a
+bounded index on load_tool`). Whether this ranking improves a real model's tool
+choice is **not claimed** here; it is measured by the evaluation campaign. A schema loaded on demand
 is persisted for the attempt (`loaded schema persists across service restart
 without leaking to another attempt`); because the pinned engine snapshots its
 toolset when a run starts, the adapter ends the run and starts a continuation
@@ -164,6 +231,18 @@ and approval, reserves budget, dispatches, and records receipts or uncertainty.
 | Reject stale/budget-exhausted calls | `stale epoch and concurrent budget exhaustion stop requests before transport` |
 | Provider-specific request handling | `Astra requires Responses and Anthropic drops sampling controls without rewriting history` |
 | A cell capability cannot approve | Scenario 8 on the Linux stack: a valid cell capability read the catalog (200) but could not approve (401); an altered owner approval hash was refused (409) |
+| An approved action is resumed by id, never retyped | `an approved action is carried out by id, with the stored bytes and the new attempt authority`, `resume refuses whatever the owner has not approved for this job and revision`, `an unknown outcome is never replayed through resume` in `resume-action.test.ts` |
+
+After an approval, the next attempt's input names the approved tool and its
+stored canonical payload, and the catalog offers `resume_action{action_id}`
+first while an unexpired approval for the current revision waits. The call
+carries no payload: the broker admits and dispatches the stored bytes through
+the same admission a byte-identical proposal reaches, under the new attempt's
+capability, so the payload-hash and revision binding, the budget reservation
+and the epoch fence are unchanged. Any other status reads back its durable
+disposition, which is why an unknown outcome is not sent again. A byte-identical
+re-proposal still dispatches (`a byte-identical proposal after approval still
+dispatches without resume`); an in-cell intent is not replayed this way.
 
 The gateway tests use fake transports/providers, including local TLS fixtures.
 Real-provider compatibility, automatic fallback correctness and an exportable

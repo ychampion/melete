@@ -33,6 +33,7 @@ import {
   isTerminalEvent,
   parseSse,
 } from './client.ts';
+import { asksWithoutProposing, UNPROPOSED_CONTINUATION } from './proposal.ts';
 import { HERMES_PINNED_TAG, RUNTIME_VERSION } from './version.ts';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -57,6 +58,8 @@ type RunResult = {
   outcome: AttemptOutcome;
   loaded?: ToolSpec[];
   outputTokens: number;
+  /** Tool names this run called, in order, including calls the broker refused. */
+  called?: string[];
 };
 
 type RunBudget = { turns: number; outputTokens: number; deadline: number };
@@ -137,6 +140,16 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     let catalog = bundle.tools;
     let runId: string | undefined;
     let final: AttemptOutcome = exhausted('The attempt reached its turn limit.');
+    // Every tool the attempt called, across continuations, and whether it has
+    // already had its one chance to propose what it asked the owner about.
+    const called: string[] = [];
+    let nudged = false;
+    // The owner refused something in this wake. Telling the attempt to call the
+    // tool now would be Melete's own idea to ask again for what was just
+    // refused: the ledger would stop the same bytes, but a variation of them is
+    // a fresh question the owner never invited. The reply is still treated as a
+    // question rather than a completion.
+    const refused = bundle.inputs.approval_results.some((entry) => entry.decision === 'denied');
     const stop = () => {
       if (runId) void this.send(this.client.stop(runId)).catch(() => undefined);
     };
@@ -182,6 +195,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           budget,
         );
         budget.outputTokens += result.outputTokens;
+        called.push(...(result.called ?? []));
         final = result.outcome;
         if (
           budget.outputTokens > bundle.budget.max_output_tokens ||
@@ -189,6 +203,25 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         ) {
           final = exhausted('The attempt reached its shared runtime budget.');
           break;
+        }
+        const unproposed =
+          !result.loaded &&
+          final.kind === 'completed' &&
+          asksWithoutProposing(final.summary, called, catalog);
+        if (unproposed && final.kind === 'completed') {
+          // A reply asking for a go-ahead is a question to the owner, never a
+          // completion. The ledger still has the last word in finish().
+          final = { kind: 'waiting_for_input', question: final.summary };
+        }
+        if (unproposed && !nudged && !refused && !signal.aborted && !controller.signal.aborted) {
+          if (
+            (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
+              .length > 0
+          )
+            break;
+          nudged = true;
+          input = UNPROPOSED_CONTINUATION;
+          continue;
         }
         if (!result.loaded || signal.aborted || controller.signal.aborted) break;
         // Approval wins even when a load and an external proposal shared a run.
@@ -340,6 +373,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
         outcome,
         ...(loaded && !budgetStopped && outcome.kind === 'completed' ? { loaded } : {}),
         outputTokens,
+        called: completedTools,
       };
     // The socket closed without a terminal frame. The engine may have finished;
     // there is no way to tell from here, and guessing would invent a result.

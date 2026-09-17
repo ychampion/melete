@@ -13,6 +13,8 @@ import { type AttemptWake, QUEUES, startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner, type ClaimedAttempt } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
+import { provisionMemorySpace } from '../../src/memory/db.ts';
+import { invalidateDependencies } from '../../src/memory/invalidate.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -254,6 +256,132 @@ withDb('durable waits, triggers and approval inputs', () => {
     expect((await jobs.get(row.id)).leaseEpoch).toBe(3);
   });
 
+  describe('a correction that cancels a wait', () => {
+    let corrections = 0;
+    /** What a memory correction does to a job that depends on the corrected claim. */
+    async function correct(row: JobRow) {
+      const { handle, jobs } = fixture();
+      await provisionMemorySpace(handle.sql, ownerId, spaceId);
+      await handle.sql.begin((tx) =>
+        invalidateDependencies(
+          tx,
+          {
+            ownerId,
+            spaceId,
+            publisher: ownerId,
+            audience: 'private',
+            role: 'owner',
+          },
+          [],
+          ++corrections,
+          true,
+        ),
+      );
+      return jobs.get(row.id);
+    }
+    const completed = (claimed: ClaimedAttempt) =>
+      runner.commitOutcome(claimed.claims, {
+        kind: 'completed',
+        summary: 'Still waiting for the event.',
+        evidence: [],
+      });
+
+    test('the next attempt is told, and completing without a new wait restores it', async () => {
+      const { jobs } = fixture();
+      const row = await create();
+      const registration = await eventTrigger(row);
+      const wait = { kind: 'event' as const, trigger_id: registration.id, deadline_at: null };
+      await waitFor(await claim(row), wait);
+      const requeued = await correct(row);
+      expect(requeued.state).toBe('queued');
+      const next = await claim(requeued);
+      expect(next.bundle.inputs.cancelled_wait).toEqual(wait);
+      const restored = await completed(next);
+      expect(restored.state).toBe('waiting_for_event_or_time');
+      expect(restored.wait).toEqual(wait);
+      // The restored wait is an ordinary wait: the event wakes it, and the attempt
+      // that wakes is told nothing was cancelled and completes normally.
+      await deliver();
+      const woken = await claim(await jobs.get(row.id));
+      expect(woken.bundle.inputs.trigger_events).toHaveLength(1);
+      expect(woken.bundle.inputs.cancelled_wait).toBeUndefined();
+      expect((await completed(woken)).state).toBe('completed');
+    });
+
+    test('an event delivered between the correction and the completion wakes the restored wait at once', async () => {
+      const { jobs, handle } = fixture();
+      const row = await create();
+      const registration = await eventTrigger(row);
+      const wait = { kind: 'event' as const, trigger_id: registration.id, deadline_at: null };
+      await waitFor(await claim(row), wait);
+      const next = await claim(await correct(row));
+      await deliver('in-between');
+      expect((await jobs.get(row.id)).state).toBe('running');
+      const woken = await completed(next);
+      expect(woken.state).toBe('queued');
+      expect(
+        await handle.sql`select seq from event where job_id = ${row.id} and payload->>'kind' = 'trigger_event'`,
+      ).toHaveLength(1);
+      const after = await claim(woken);
+      expect(after.bundle.inputs.trigger_events[0]).toMatchObject({
+        payload: { message: 'in-between' },
+      });
+    });
+
+    test('a retryable failure hands the cancelled wait to the retry, and only once it is restored does it stop', async () => {
+      const row = await create();
+      const registration = await eventTrigger(row);
+      const wait = { kind: 'event' as const, trigger_id: registration.id, deadline_at: null };
+      await waitFor(await claim(row), wait);
+      const failing = await claim(await correct(row));
+      const retried = await runner.commitOutcome(failing.claims, {
+        kind: 'failed',
+        reason: 'The provider dropped the request.',
+        retryable: true,
+      });
+      expect(retried.state).toBe('queued');
+      const again = await claim(retried);
+      expect(again.bundle.inputs.cancelled_wait).toEqual(wait);
+      expect((await completed(again)).wait).toEqual(wait);
+    });
+
+    test('a replaced wait, a disabled trigger or a lapsed timer is not restored; a future timer is', async () => {
+      const { jobs, handle } = fixture();
+      const row = await create();
+      const registration = await eventTrigger(row);
+      const wait = { kind: 'event' as const, trigger_id: registration.id, deadline_at: null };
+      await waitFor(await claim(row), wait);
+      // The attempt chose its own wait: that one stands.
+      const replacing = await claim(await correct(row));
+      const own = { kind: 'timer' as const, wake_at: new Date(Date.now() + 120_000).toISOString() };
+      const replaced = await waitFor(replacing, own);
+      expect(replaced.wait).toEqual(own);
+      // A cancelled future timer comes back when the attempt completes.
+      const timed = await claim(await correct(row));
+      expect(timed.bundle.inputs.cancelled_wait).toEqual(own);
+      expect((await completed(timed)).wait).toEqual(own);
+      expect((await jobs.get(row.id)).state).toBe('waiting_for_event_or_time');
+      // Each correction below requeues every open job in the space, this one included.
+      // A trigger disabled in the meantime is not waited on again.
+      const other = await create();
+      const gone = await eventTrigger(other);
+      await waitFor(await claim(other), { kind: 'event', trigger_id: gone.id, deadline_at: null });
+      const disabled = await claim(await correct(other));
+      await handle.db.update(trigger).set({ enabled: false }).where(eq(trigger.id, gone.id));
+      expect((await completed(disabled)).state).toBe('completed');
+      // A timer whose time has passed has nothing left to wait for.
+      const late = await create();
+      await waitFor(await claim(late), {
+        kind: 'timer',
+        wake_at: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await handle.sql`update job set wait = ${JSON.stringify({ kind: 'timer', wake_at: new Date(Date.now() - 1000).toISOString() })}::jsonb where id = ${late.id}`;
+      const lapsed = await claim(await correct(late));
+      expect(lapsed.bundle.inputs.cancelled_wait).toBeUndefined();
+      expect((await completed(lapsed)).state).toBe('completed');
+    });
+  });
+
   test('missing, foreign and disabled wait triggers fail atomically', async () => {
     const { jobs, handle } = fixture();
     const foreign = await eventTrigger(await create());
@@ -363,7 +491,14 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect(ready.stateVersion).toBe(3);
       const next = await claim(ready);
       expect(next.bundle.inputs.approval_results).toEqual([
-        { action_id: proposal.actionId, decision, note: 'Owner decision' },
+        {
+          action_id: proposal.actionId,
+          decision,
+          note: 'Owner decision',
+          kind: 'test.send',
+          status: decision,
+          payload: { to: 'reader@example.test', subject: 'Result', body: proposal.actionId },
+        },
       ]);
       expect(
         await handle.db.select().from(event).where(eq(event.type, 'approval_decided')),

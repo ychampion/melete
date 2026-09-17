@@ -7,6 +7,7 @@ import {
   CONTEXT_LIMITS,
   type ContextGenerations,
   type Deliverable,
+  describeTrigger,
   inputTokenAllowance,
   jobBudget,
   jobConstraints,
@@ -20,12 +21,14 @@ import {
   type SinceLast,
   sinceLast as sinceLastContract,
   TERMINAL_ACTION_STATUSES,
+  triggerSpec,
   waitSpec,
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
+import { databaseNow } from '../db/clock.ts';
 import {
   action,
   agent,
@@ -37,6 +40,7 @@ import {
   experienceTurn,
   knowledgeRecord,
   question,
+  trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentIdentity, agentView } from '../experience/agents.ts';
@@ -392,6 +396,52 @@ export async function buildAttemptSkeleton(
     return [entry];
   });
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
+  // A decision names an action id; the attempt needs to know what that action
+  // is. The row is this job's own, and the payload is the one the owner read.
+  const decided = history.inputs.approval_results.map((entry) => entry.action_id);
+  const decidedActions = decided.length
+    ? await tx
+        .select({
+          id: action.id,
+          kind: action.kind,
+          status: action.status,
+          payload: action.canonicalPayload,
+        })
+        .from(action)
+        .where(and(eq(action.jobId, row.id), inArray(action.id, decided)))
+    : [];
+  history.inputs.approval_results = history.inputs.approval_results.map((entry) => {
+    const stored = decidedActions.find((candidate) => candidate.id === entry.action_id);
+    const payload = jsonObject.safeParse(stored?.payload);
+    return stored
+      ? {
+          ...entry,
+          kind: stored.kind,
+          status: stored.status,
+          ...(payload.success ? { payload: payload.data } : {}),
+        }
+      : entry;
+  });
+  // What a wait can name. The attempt reads the id, the event and one plain
+  // sentence; the spec itself stays on the row.
+  const registered = await tx
+    .select({ id: trigger.id, kind: trigger.kind, spec: trigger.spec })
+    .from(trigger)
+    .where(and(eq(trigger.jobId, row.id), eq(trigger.enabled, true)))
+    .orderBy(asc(trigger.createdAt), asc(trigger.id))
+    .limit(50);
+  const triggers = registered.flatMap((entry) => {
+    const spec = triggerSpec.safeParse(entry.spec);
+    if (!spec.success) return [];
+    return [
+      {
+        id: entry.id,
+        kind: spec.data.kind,
+        event_name: spec.data.kind === 'schedule' ? null : spec.data.event_name,
+        description: describeTrigger(spec.data),
+      },
+    ];
+  });
   const constraints = jobConstraints.parse(row.constraints);
   const context = await selectedContext(
     tx,
@@ -402,6 +452,17 @@ export async function buildAttemptSkeleton(
     constraints.public_compartment,
   );
   const wait = waitSpec.parse(row.wait);
+  // A transition into queued clears the wait. A queued job that still holds an
+  // event wait, or a timer not yet due, was requeued before that wait fired: a
+  // correction to a relied-on claim does this, and a retry carries it forward.
+  // Due is asked of the database, the clock the restore is decided against, so
+  // a skewed host cannot tell an attempt about a wait nothing will bring back.
+  const now = (await databaseNow(tx)).getTime();
+  const cancelledWait =
+    row.state === 'queued' &&
+    (wait.kind === 'event' || (wait.kind === 'timer' && Date.parse(wait.wake_at) > now))
+      ? wait
+      : undefined;
   const [open] = await tx
     .select()
     .from(question)
@@ -442,8 +503,9 @@ export async function buildAttemptSkeleton(
       progress_summary: history.progressSummary,
       unresolved_questions: wait.kind === 'user_input' ? [wait.question] : [],
       deliverable: constraints.deliverable,
+      triggers,
     },
-    inputs: history.inputs,
+    inputs: { ...history.inputs, ...(cancelledWait ? { cancelled_wait: cancelledWait } : {}) },
     since_last: delta,
     transcript: history.transcript,
     tools: [],

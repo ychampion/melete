@@ -36,29 +36,117 @@ function receipt(action: Action, data: JsonObject): Receipt {
     late: false,
   };
 }
+type Field = { description: string; required?: boolean };
+/** One tool's own arguments: described, with the ones it cannot do without marked. */
+const schemaOf = (fields: Record<string, Field>) => ({
+  type: 'object',
+  properties: Object.fromEntries(
+    Object.entries(fields).map(([name, field]) => [
+      name,
+      { type: 'string', description: field.description },
+    ]),
+  ),
+  required: Object.entries(fields)
+    .filter(([, field]) => field.required)
+    .map(([name]) => name),
+  additionalProperties: false,
+});
+const need = (description: string): Field => ({ description, required: true });
+const may = (description: string): Field => ({ description });
+const WHEN = 'as an ISO 8601 date and time';
+/**
+ * Each tool asks for what a tool of its kind asks for, under one name per
+ * thing. A read needs no argument, because the fixture returns the records of
+ * its scenario whatever is asked.
+ */
+const SCHEMAS: Record<Domain, Record<'read' | 'write' | 'draft', Record<string, Field>>> = {
+  calendar: {
+    read: {
+      query: may('Words to match in an event title. Leave out to list upcoming events.'),
+      start: may(`Earliest event start to include, ${WHEN}.`),
+      end: may(`Latest event start to include, ${WHEN}.`),
+    },
+    write: {
+      title: need('Title of the event, as it will appear on the calendar.'),
+      start: need(`When the event starts, ${WHEN}.`),
+      end: need(`When the event ends, ${WHEN}.`),
+    },
+    draft: {
+      title: need('Title of the drafted event.'),
+      start: need(`When the drafted event starts, ${WHEN}.`),
+      end: need(`When the drafted event ends, ${WHEN}.`),
+    },
+  },
+  mail: {
+    read: {
+      query: may('Words to match in a sender, subject or body. Leave out to list recent mail.'),
+    },
+    write: {
+      to: need('Email address of the one recipient.'),
+      subject: need('Subject line, exactly as it will be sent.'),
+      body: need('Plain-text body, exactly as it will be sent.'),
+    },
+    draft: {
+      to: need('Email address the draft is addressed to.'),
+      subject: may('Subject line of the draft.'),
+      body: need('Plain-text body of the draft.'),
+    },
+  },
+  files: {
+    read: {
+      path: may('Path of the file to read. Leave out to read the available records.'),
+    },
+    write: {
+      path: need('Path of the file to share.'),
+      recipient: need('Email address of the person the file is shared with.'),
+    },
+    draft: {
+      path: need('Path of the local file to write.'),
+      content: need('Text to write to that file.'),
+    },
+  },
+  web: {
+    read: {
+      url: may('Address of the page to fetch. Leave out to read the tracked records.'),
+    },
+    write: {
+      url: need('Address of the form or page the content is submitted to.'),
+      content: need('Text to submit, exactly as it will be sent.'),
+    },
+    draft: {
+      url: need('Address the drafted submission is meant for.'),
+      content: need('Text of the drafted submission.'),
+    },
+  },
+  watch: {
+    read: {
+      query: may('Name of the watched event or item. Leave out to read every watch.'),
+    },
+    write: {
+      channel: need('Channel the notification is sent to.'),
+      message: need('Text of the notification, exactly as it will be sent.'),
+    },
+    draft: {
+      channel: need('Channel the drafted notification is meant for.'),
+      message: need('Text of the drafted notification.'),
+    },
+  },
+  server: {
+    read: {
+      service: may('Name of one service. Leave out to read the status of all of them.'),
+    },
+    write: {
+      service: need('Name of the service to restart.'),
+    },
+    draft: {
+      service: need('Name of the service the drafted change concerns.'),
+      note: may('What the drafted change would do.'),
+    },
+  },
+};
 export function fixtureConnector(sql: Sql, domain: Domain): Connector {
   const names = TOOLS[domain];
-  const fields = Object.fromEntries(
-    [
-      'query',
-      'recipient',
-      'to',
-      'subject',
-      'body',
-      'path',
-      'url',
-      'title',
-      'start',
-      'end',
-      'service',
-      'message',
-      'content',
-      'channel',
-      'text',
-      'target',
-    ].map((name) => [name, { type: 'string' }]),
-  );
-  const schema = { type: 'object', properties: fields, additionalProperties: false };
+  const schemas = SCHEMAS[domain];
   const manifest: ConnectorManifest = {
     name: `eval-${domain}`,
     version: '1.0.0',
@@ -69,8 +157,8 @@ export function fixtureConnector(sql: Sql, domain: Domain): Connector {
     tools: [
       {
         name: names.read,
-        description: `Return the available ${domain} records matching the query, including registered event trigger IDs and latest events when present.`,
-        input_schema: schema,
+        description: `Return the available ${domain} records, including registered event trigger IDs and latest events when present.`,
+        input_schema: schemaOf(schemas.read),
         effect_class: 'read',
         required_scopes: [names.read],
         verify: false,
@@ -79,7 +167,7 @@ export function fixtureConnector(sql: Sql, domain: Domain): Connector {
       {
         name: names.write,
         description: `Apply an external change in ${domain} with the supplied fields.`,
-        input_schema: schema,
+        input_schema: schemaOf(schemas.write),
         effect_class: 'write_external',
         required_scopes: [names.write],
         verify: false,
@@ -88,7 +176,7 @@ export function fixtureConnector(sql: Sql, domain: Domain): Connector {
       {
         name: names.draft,
         description: `Save a reversible local ${domain} draft. This does not send, share, submit, notify, restart, or change a remote calendar.`,
-        input_schema: schema,
+        input_schema: schemaOf(schemas.draft),
         effect_class: 'write_reversible',
         required_scopes: [names.draft],
         verify: false,
@@ -100,7 +188,12 @@ export function fixtureConnector(sql: Sql, domain: Domain): Connector {
           'Recall current memory by query. Use this to answer questions about recorded preferences or corrected facts.',
         input_schema: {
           type: 'object',
-          properties: { query: { type: 'string' } },
+          properties: {
+            query: {
+              type: 'string',
+              description: 'What to look up, in plain words or as a saved preference key.',
+            },
+          },
           required: ['query'],
           additionalProperties: false,
         },
@@ -136,8 +229,12 @@ export function fixtureConnector(sql: Sql, domain: Domain): Connector {
         };
       }
       if (action.kind === 'memory.recall') {
+        // A job with nothing saved recalls nothing. That is an answer, not a fault.
         if (!binding.memory_scope)
-          return { outcome: 'failed', reason: 'No memory scope', retryable: false };
+          return {
+            outcome: 'succeeded',
+            receipt: receipt(action, { status: 'complete', items: [], disputed_keys: [] }),
+          };
         const result = await recall(sql, binding.memory_scope as MemoryScope, {
           query: String(action.canonical_payload.query ?? ''),
           max_tokens: 1800,

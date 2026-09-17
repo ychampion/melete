@@ -24,6 +24,7 @@ const tools: ToolSpec[] = ['files.read', 'files.list'].map((name) => ({
   effect_class: 'read',
   connection_id: `conn_${suffix}`,
 }));
+const resumed: { attempt: string; id: string }[] = [];
 const broker: BrokerOperations = {
   async authorize(c) {
     if (c.epoch !== 2) throw new BrokerFault('stale_epoch');
@@ -38,8 +39,12 @@ const broker: BrokerOperations = {
   async get() {
     throw new BrokerFault('action_not_found');
   },
+  async resume(c, id) {
+    resumed.push({ attempt: c.attempt_id, id });
+    throw new BrokerFault('revision_mismatch');
+  },
   async react(_c, request) {
-    return { message_id: request.message_id, emoji: request.emoji };
+    return { message_id: request.message_id ?? '1', emoji: request.emoji };
   },
   async decide() {
     return { decision: 'approved' };
@@ -94,6 +99,33 @@ test('attempt credential cannot approve itself; API credential can decide', asyn
       })
     ).status,
   ).toBe(200);
+});
+test('an attempt resumes by id alone, and neither the approval credential nor a stale attempt can', async () => {
+  const path = `/actions/act_${suffix}/resume`;
+  const response = await app.request(path, {
+    method: 'POST',
+    headers: auth(),
+    body: JSON.stringify({ payload: { body: 'retyped' } }),
+  });
+  // The refusal is the broker's own; the body a caller sent is never read.
+  expect(response.status).toBe(403);
+  expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+    'revision_mismatch',
+  );
+  expect(resumed).toEqual([{ attempt: claims.attempt_id, id: `act_${suffix}` }]);
+  expect(
+    (
+      await app.request(path, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${approvalKey}` },
+      })
+    ).status,
+  ).toBe(401);
+  expect(
+    (await app.request(path, { method: 'POST', headers: auth({ ...claims, epoch: 1 }) })).status,
+  ).toBe(403);
+  expect((await app.request(path, { method: 'GET', headers: auth() })).status).toBe(404);
+  expect(resumed).toHaveLength(1);
 });
 test('unlisted paths and methods rejected including HEAD', async () => {
   for (const [path, method] of [

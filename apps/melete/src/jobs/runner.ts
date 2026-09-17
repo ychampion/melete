@@ -236,6 +236,16 @@ export class AttemptRunner {
         inputCursor: Number(latest?.seq ?? 0),
       });
       await captureAttemptVersions(tx, bundle, capabilities.version);
+      // The attempt is told its wait was cancelled; this row is what lets its
+      // outcome restore that wait, once, if it finishes without choosing another.
+      if (bundle.inputs.cancelled_wait)
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId,
+          type: 'notice',
+          payload: { kind: 'wait_cancelled', wait: bundle.inputs.cancelled_wait },
+          dedupKey: `${attemptId}:wait-cancelled`,
+        });
       // The epoch bump below fences any attempt still open on this job. Its row
       // must say so: an open row with no end timestamp would otherwise outlive
       // the recovery scan, which only closes attempts of the current epoch.
@@ -441,6 +451,54 @@ export class AttemptRunner {
     });
   }
 
+  /**
+   * The wait this attempt was told had been cancelled, if it can still fire:
+   * its trigger is still registered and enabled on this job, or its timer is
+   * still ahead, and no effect is pending that a wait would have to outrank.
+   */
+  private async restorableWait(
+    tx: Transaction,
+    row: JobRow,
+    attemptId: string,
+  ): Promise<WaitSpec | null> {
+    const [notice] = await tx
+      .select({ payload: event.payload })
+      .from(event)
+      .where(and(eq(event.dedupKey, `${attemptId}:wait-cancelled`), eq(event.jobId, row.id)))
+      .limit(1);
+    const parsed = waitSpec.safeParse((notice?.payload as JsonObject | undefined)?.wait);
+    if (!parsed.success) return null;
+    const wait = parsed.data;
+    const [pending] = await tx
+      .select({ id: action.id })
+      .from(action)
+      .where(
+        and(
+          eq(action.jobId, row.id),
+          inArray(action.status, [
+            'needs_approval',
+            'approved',
+            'admitted',
+            'dispatched',
+            'unknown',
+            'unresolved',
+          ]),
+        ),
+      )
+      .limit(1);
+    if (pending) return null;
+    if (wait.kind === 'timer')
+      return Date.parse(wait.wake_at) > (await databaseNow(tx)).getTime() ? wait : null;
+    if (wait.kind !== 'event') return null;
+    const [registration] = await tx
+      .select({ id: trigger.id })
+      .from(trigger)
+      .where(
+        and(eq(trigger.id, wait.trigger_id), eq(trigger.jobId, row.id), eq(trigger.enabled, true)),
+      );
+    return registration ? wait : null;
+  }
+
   private async finish(
     tx: Transaction,
     row: JobRow,
@@ -484,13 +542,29 @@ export class AttemptRunner {
         ),
       )
       .limit(1);
+    // A wait that was cancelled before it fired comes back when the attempt told
+    // about it completes without choosing another, and only while it can still
+    // fire. A retryable failure hands it to the retry instead.
+    const cancelled = brokerParked ? null : await this.restorableWait(tx, row, attemptId);
+    const restored: AttemptOutcome =
+      cancelled && original.kind === 'completed'
+        ? { kind: 'waiting_for_event_or_time', wait: cancelled }
+        : original;
+    if (restored !== original)
+      await appendEvent(tx, {
+        jobId: row.id,
+        attemptId,
+        type: 'notice',
+        payload: { kind: 'wait_restored', wait: cancelled },
+        dedupKey: `${attemptId}:wait-restored`,
+      });
     // A runtime's final prose cannot withdraw the broker's unanswered revocation
     // question, even on the last budgeted attempt. Only owner input resolves it.
     const outcome: AttemptOutcome = reconnect
       ? { kind: 'waiting_for_input', question: reconnect.text }
-      : remaining === 0 && original.kind.startsWith('waiting_')
+      : remaining === 0 && restored.kind.startsWith('waiting_')
         ? { kind: 'budget_exhausted', summary: 'The job has used its attempt budget.' }
-        : original;
+        : restored;
     let input: TransitionInput;
     let wait: WaitSpec = { kind: 'none' };
     let artifactFailures: string[] = [];
@@ -533,6 +607,8 @@ export class AttemptRunner {
           retryable: outcome.retryable,
           attempts_remaining: remaining,
         };
+        // The retry is told again, from the wait its queued row still carries.
+        if (cancelled && outcome.retryable && remaining > 0) wait = cancelled;
         break;
       case 'budget_exhausted':
         input = { kind: 'attempt_budget_exhausted' };

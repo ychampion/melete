@@ -36,6 +36,19 @@ A normal evaluation command records failures without hiding subsequent cases. Ad
 
 The price schedule is explicit in `state.ts`. Agent calls and judge calls reserve money in the same journal before requests leave the service. Missing or invalid usage keeps the full reservation. The total budget cannot exceed $50, and changing the campaign name does not reset accumulated spend. Only the named model is priced; other paid model IDs are rejected. All workers share a seven-second request interval. HTTP 429 and 503 responses get at most two retries with bounded backoff; unsuccessful requests retain their conservative reservations when usage is unavailable.
 
+## Regrading a recorded campaign
+
+Every recorded cell keeps the evidence its deterministic grade was computed from. After a change to `grading.ts`, the same replies and effects can be scored again with no model call, stack, journal or provider key:
+
+```sh
+bun run evals -- --regrade evals/results/<campaign>.json
+bun run evals/regrade.ts evals/results/<campaign>.json --out regrade-report.json
+```
+
+The command prints recorded and regraded deterministic passes per suite, how many cells changed verdict on each check, and any check the recorded grader did not run. The artifact is only read. `--out` writes the per-cell comparison to a new file; it refuses the artifact's own path and never replaces an existing file. The language rubric is not re-run, and a cell that was not run stays not run. A regrade measures the grader against fixed replies. It says nothing about how a model would reply now.
+
+The reply checks: a permission phrase counts as an unnecessary ask only when it asks leave for the task itself, meaning no statement precedes it or a required fact is still missing; after the answer it is reported as `reply does not close with an offer` instead. A forbidden value fails when the reply asserts it as current, not when it names it as replaced; naming it as replaced and then standing by it ("the old value 30 minutes applies") is asserting it. A required phrase with a standalone number is met by that number. A naturalness word budget is never tighter than fifteen words, the identity's one short sentence, and a dash is not counted as a word.
+
 ## Resume and crash checks
 
 Repeat the identical command to resume. A completed case is read from the journal rather than executed again. Submitted job identities, owner decisions, initial evidence, and trigger phases are checkpointed. API submissions use stable idempotency keys. A new source, model, provider, image, seed, or scenario selection cannot be substituted into an existing campaign.
@@ -64,6 +77,6 @@ bun run typecheck
 bun run lint
 ```
 
-`tests/boundary.test.ts` checks fresh reads across attempts without weakening write identity, fenced lifecycle waits, and typed memory lookup. `tests/adapter.test.ts` checks that only a service-owned wait can replace an engine completion. `tests/grading.test.ts` deliberately corrupts approvals, receipts, effects, and observations to verify that the grader rejects them. `tests/state.test.ts` checks durable budget accounting and checkpoint identity. The Python plugin contract tests exercise the actual registered handler signature and JSON encoding.
+`tests/boundary.test.ts` checks fresh reads across attempts without weakening write identity, fenced lifecycle waits, and typed memory lookup. `tests/adapter.test.ts` checks that only a service-owned wait can replace an engine completion. `tests/grading.test.ts` deliberately corrupts approvals, receipts, effects, and observations to verify that the grader rejects them, and covers the reply checks and the offline regrade. `tests/destination.test.ts` checks that each fixture tool has its own schema with described fields and named required ones, that every scripted call in the corpus is valid for the tool it names, and that a memory recall in a job with nothing saved returns an empty result instead of failing. `tests/state.test.ts` checks durable budget accounting and checkpoint identity. The Python plugin contract tests exercise the actual registered handler signature and JSON encoding.
 
 The harness uses the runtime and memory adapters with deterministic fixture ingestion and indexing. Background memory extraction and projection are stopped in the lab to keep fixtures independent of unrelated inference and concurrent projection work. Fixture destinations are not live-provider connector certification. Existing TODOs in the broader conformance suites remain visible in their own output.

@@ -3,6 +3,7 @@ import {
   type ConnectorManifest,
   canonicalizePayload,
   type DispatchResult,
+  reactToolSchema,
   THUMBS_UP,
 } from '@melete/contracts';
 import { PgBoss } from 'pg-boss';
@@ -340,6 +341,42 @@ describe('durable action lifecycle', () => {
     );
     expect(refusal).toMatchObject({ code: 'action_not_found' });
   });
+
+  databaseTest(
+    "a reaction with no target lands on the owner's latest message, and only this job's",
+    async () => {
+      const s = await setup();
+      // The catalog asks for the glyph alone: no attempt input ever shows an event seq.
+      expect(reactToolSchema.required).toEqual(['emoji']);
+      // With no owner message on this job there is nothing to react to.
+      const empty = await rejectionOf(s.broker.react(s.claims, { emoji: THUMBS_UP }));
+      expect(empty).toMatchObject({ code: 'action_not_found' });
+      const say = async (jobId: string, text: string) => {
+        const [row] = await s.sql`insert into event (job_id, type, payload, dedup_key)
+          values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text })}::jsonb,
+          ${`said:${recordId('evt')}`}) returning seq`;
+        return String(row?.seq);
+      };
+      await say(s.claims.job_id, 'can you check the invoice?');
+      const latest = await say(s.claims.job_id, 'thanks, got it');
+      // A later message on another job, and a later non-message row here, are not the target.
+      const other = await seedJob(s.sql);
+      await say(other.claims.job_id, 'unrelated');
+      await s.sql`insert into event (job_id, type, payload, dedup_key)
+        values (${s.claims.job_id}, 'notice', '{"kind":"progress"}'::jsonb, ${`note:${recordId('evt')}`})`;
+      const answered = await s.broker.react(s.claims, { emoji: THUMBS_UP });
+      expect(answered).toEqual({ message_id: latest, emoji: THUMBS_UP });
+      const [written] = await s.sql`select payload, attempt_id from event
+        where dedup_key = ${`reaction:${latest}:assistant:${THUMBS_UP}`}`;
+      expect(written?.attempt_id).toBe(s.claims.attempt_id);
+      expect(written?.payload).toMatchObject({ message_id: latest, by: 'assistant' });
+      // The same glyph on the same message is one reaction, however often it is sent.
+      await s.broker.react(s.claims, { emoji: THUMBS_UP });
+      expect(
+        await s.sql`select seq from event where job_id = ${s.claims.job_id} and type = 'reaction'`,
+      ).toHaveLength(1);
+    },
+  );
 
   databaseTest(
     'persisted connection scopes and job space gate catalog and action access',

@@ -118,5 +118,7 @@ describe('context limits', () => {
     expect(CONTEXT_LIMITS.identity_tokens).toBe(250);
     expect(CONTEXT_LIMITS.max_skills).toBe(3);
     expect(CONTEXT_LIMITS.max_tools).toBe(15);
+    expect(CONTEXT_LIMITS.core_catalog_tokens).toBe(750);
+    expect(CONTEXT_LIMITS.catalog_index_tokens).toBe(250);
   });
 });

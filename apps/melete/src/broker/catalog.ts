@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import type {
-  CapabilityClaims,
-  ConnectionHealth,
-  JsonObject,
-  Skill,
-  ToolSpec,
+import {
+  type CapabilityClaims,
+  CONTEXT_LIMITS,
+  type ConnectionHealth,
+  type JsonObject,
+  REACT_TOOL_NAME,
+  type Skill,
+  type ToolSpec,
 } from '@melete/contracts';
 import { estimateTokens } from '@melete/skills';
 import type { Sql } from 'postgres';
@@ -14,7 +16,9 @@ import { type Connector, connectorAllowsAudience } from '../connectors/types.ts'
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
+import { gist, relevance, terms, words } from './lexical.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
+import { hasResumableAction, RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
@@ -42,10 +46,19 @@ export type CatalogEntry = {
 export type CatalogItem = { entry: CatalogEntry; tool: ToolSpec; core: boolean; uses: number };
 type ScopedCatalogItem = CatalogItem & { original: string };
 export type CatalogContext = { core: ToolSpec[]; loaded: ToolSpec[] };
+export type CatalogSearch = {
+  tools: CatalogEntry[];
+  /** Present only when nothing matched: what `load_tool` can still fetch, by name. */
+  index?: { name: string; gist: string }[];
+  hint?: string;
+};
 
 // Reserve the rest of the 4,000-token tripwire for the pinned engine's scaffolding.
-export const CORE_CATALOG_TOKENS = 750;
+export const CORE_CATALOG_TOKENS: number = CONTEXT_LIMITS.core_catalog_tokens;
 export const SEARCH_RESULT_TOKENS = 1_000;
+const SEARCH_TERMS = 24;
+/** The names-only index of unloaded tools has its own fixed allowance beside the schemas. */
+export const CATALOG_INDEX_TOKENS: number = CONTEXT_LIMITS.catalog_index_tokens;
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 function stable(value: unknown): string {
@@ -130,22 +143,121 @@ export const toolTokens = (tools: readonly ToolSpec[]): number =>
     ),
   );
 
-/** Budget the serialized provider schemas, including the two always-on meta-tools. */
+/** What the broker knows about the turn before any model has spoken. */
+export type CoreSelectionContext = {
+  /** The objective and the most recent owner message, as written. */
+  text?: string;
+  /** The job has an enabled trigger, so the lifecycle wait must be on offer. */
+  waitable?: boolean;
+  /** The attempt answers a person directly, so a reaction may be the whole reply. */
+  conversational?: boolean;
+  /** An approved action is waiting to be carried out, so resuming it comes first. */
+  resumable?: boolean;
+};
+
+const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
+const writesOutside = (item: CatalogItem) =>
+  item.entry.effect_class === 'write_external' || item.entry.effect_class === 'spend';
+/** Whether the installation vouches for this entry's own words. An MCP server writes its own. */
+const granted = (item: CatalogItem) => (item.entry.source === 'mcp' ? 0 : 1);
+
+/**
+ * Budget the serialized provider schemas, including the two always-on meta-tools.
+ *
+ * Order: tools the turn cannot do without, then everything the owner granted
+ * ahead of anything a remote server described to us, then lexical relevance to
+ * the job's own words, then the local core, then usage, then name. Relevance is
+ * read off a tool's own description, and an MCP server writes its own: ranking
+ * it against granted verbs would let that server take the first catalog's room
+ * by echoing the job. It may have the room nothing granted wanted, and no more.
+ * A reversible tool is
+ * only offered beside an external-write sibling from the same connection and
+ * namespace, because a draft shown alone reads as the only way to act. Whatever
+ * stays outside is named in a bounded index on `load_tool`, so the model knows
+ * what it can fetch without paying for the schemas.
+ */
 export function selectCore(
   items: readonly CatalogItem[],
   budget = CORE_CATALOG_TOKENS,
+  context: CoreSelectionContext = {},
+  indexBudget = CATALOG_INDEX_TOKENS,
 ): ToolSpec[] {
   if (!Number.isSafeInteger(budget) || budget < toolTokens(META_TOOLS))
     throw new Error('Core catalog budget cannot hold discovery tools');
   const tools = structuredClone(META_TOOLS);
-  const ranked = [...items].sort(
-    (a, b) =>
-      Number(b.core) - Number(a.core) || b.uses - a.uses || compare(a.entry.name, b.entry.name),
+  const query = terms(context.text ?? '');
+  const scored = items
+    .filter((item) => item.entry.health !== 'failing')
+    .map((item) => ({
+      item,
+      score: relevance(query, item.entry),
+      pinned:
+        item.tool.connection_id !== null
+          ? 0
+          : context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name
+            ? 2
+            : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
+                (context.conversational === true && item.tool.name === REACT_TOOL_NAME)
+              ? 1
+              : 0,
+    }))
+    .sort(
+      (a, b) =>
+        b.pinned - a.pinned ||
+        granted(b.item) - granted(a.item) ||
+        b.score - a.score ||
+        Number(b.item.core) - Number(a.item.core) ||
+        b.item.uses - a.item.uses ||
+        compare(a.item.entry.name, b.item.entry.name),
+    );
+  // A connector verb is always a candidate; an MCP tool only when the job's own
+  // words point at it; capabilities and skills stay behind discovery.
+  const eligible = scored.filter(
+    ({ item, score }) =>
+      item.core || item.entry.source === 'connector' || (item.entry.source === 'mcp' && score > 0),
   );
-  for (const item of ranked) {
-    if (item.entry.health === 'failing' || (!item.core && item.entry.source !== 'connector'))
-      continue;
-    if (toolTokens([...tools, item.tool]) <= budget) tools.push(item.tool);
+  const chosen = new Set<CatalogItem>();
+  const add = (...group: CatalogItem[]) => {
+    const fresh = group.filter((item) => !chosen.has(item));
+    if (toolTokens([...tools, ...fresh.map((item) => item.tool)]) > budget) return false;
+    for (const item of fresh) {
+      chosen.add(item);
+      tools.push(item.tool);
+    }
+    return true;
+  };
+  for (const { item } of eligible) {
+    if (chosen.has(item)) continue;
+    const siblings =
+      item.entry.effect_class === 'write_reversible' && item.tool.connection_id !== null
+        ? eligible
+            .map((entry) => entry.item)
+            .filter(
+              (other) =>
+                writesOutside(other) &&
+                other.tool.connection_id === item.tool.connection_id &&
+                namespace(other.entry.name) !== null &&
+                namespace(other.entry.name) === namespace(item.entry.name),
+            )
+        : [];
+    if (siblings.length === 0 || siblings.some((other) => chosen.has(other))) add(item);
+    else siblings.some((other) => add(item, other));
+  }
+  const loader = tools.find((tool) => tool.name === 'load_tool');
+  const rest = scored.map((entry) => entry.item).filter((item) => !chosen.has(item));
+  if (loader && rest.length > 0 && indexBudget > 0) {
+    const listing = (shown: number) => {
+      const named = rest
+        .slice(0, shown)
+        .map((item) => `${item.entry.name} (${gist(item.entry.description)})`);
+      const more = rest.length - shown;
+      return ` Not loaded yet: ${named.join('; ')}${
+        more > 0 ? `${shown > 0 ? '; ' : ''}+${more} more through search_tools` : ''
+      }.`;
+    };
+    let shown = rest.length;
+    while (shown > 0 && estimateTokens(listing(shown)) > indexBudget) shown--;
+    if (estimateTokens(listing(shown)) <= indexBudget) loader.description += listing(shown);
   }
   return tools;
 }
@@ -326,19 +438,23 @@ export class ToolCatalog {
         uses: 0,
       });
     }
+    const resumable = await hasResumableAction(tx, job);
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
       if (tool.name === RUNTIME_WAIT_TOOL.name && !claims.scopes.includes(tool.name)) continue;
+      // Offered only while the owner's approval is waiting to be carried out.
+      if (tool.name === RESUME_ACTION_TOOL.name && !resumable) continue;
       if (
         !(await accept(tool.name, tool.connection_id, () => {
-          const lifecycleWait =
-            tool.name === RUNTIME_WAIT_TOOL.name &&
-            schemaFingerprint(tool.input_schema) ===
-              schemaFingerprint(RUNTIME_WAIT_TOOL.input_schema) &&
-            tool.effect_class === RUNTIME_WAIT_TOOL.effect_class;
-          if (tool.connection_id !== null || (tool.effect_class !== 'read' && !lifecycleWait))
+          const lifecycle = [RUNTIME_WAIT_TOOL, RESUME_ACTION_TOOL].some(
+            (typed) =>
+              tool.name === typed.name &&
+              schemaFingerprint(tool.input_schema) === schemaFingerprint(typed.input_schema) &&
+              tool.effect_class === typed.effect_class,
+          );
+          if (tool.connection_id !== null || (tool.effect_class !== 'read' && !lifecycle))
             throw new BrokerFault(
               'unknown_tool',
-              'Native catalog tools must be broker-owned reads or the typed lifecycle wait',
+              'Native catalog tools must be broker-owned reads or a typed lifecycle operation',
             );
           if (
             META_TOOLS.some((meta) => meta.name === tool.name) ||
@@ -367,15 +483,51 @@ export class ToolCatalog {
     return items.sort((a, b) => compare(a.entry.name, b.entry.name));
   }
 
+  /**
+   * What the turn is about, read from durable rows before any model speaks: the
+   * objective, the latest owner message, whether a trigger is registered, and
+   * whether this attempt answers a person directly (a chat, a first attempt, or
+   * a wake that carries a new owner message).
+   */
+  private async turn(
+    tx: Query,
+    job: LockedJob,
+    claims: CapabilityClaims,
+    access: AgentAccess,
+  ): Promise<CoreSelectionContext> {
+    const [row] = await tx`select
+      (select e.payload->>'text' from event e where e.job_id = ${job.id} and e.type = 'notice'
+        and e.payload->>'kind' = 'user_message' order by e.seq desc limit 1) as message,
+      (select max(e.seq) from event e where e.job_id = ${job.id} and e.type = 'notice'
+        and e.payload->>'kind' = 'user_message') as message_seq,
+      (select a.input_cursor from attempt a where a.job_id = ${job.id}
+        and a.id <> ${claims.attempt_id} order by a.epoch desc limit 1) as prior_cursor,
+      exists (select 1 from trigger t where t.job_id = ${job.id} and t.enabled) as waitable`;
+    const first = row?.prior_cursor === null || row?.prior_cursor === undefined;
+    return {
+      text: [job.objective, row?.message].filter(Boolean).join(' '),
+      waitable: row?.waitable === true,
+      resumable: await hasResumableAction(tx, job),
+      conversational:
+        access.chat || first || Number(row?.message_seq ?? 0) > Number(row?.prior_cursor ?? 0),
+    };
+  }
+
   private async context(
     tx: Query,
+    job: LockedJob,
     claims: CapabilityClaims,
     items: CatalogItem[],
+    access: AgentAccess,
   ): Promise<CatalogContext> {
     const [row] =
       await tx`select core, loaded from attempt_tool_context where attempt_id = ${claims.attempt_id}`;
     if (row) return { core: row.core, loaded: row.loaded };
-    const core = selectCore(items, this.options.coreTokenBudget);
+    const core = selectCore(
+      items,
+      this.options.coreTokenBudget,
+      await this.turn(tx, job, claims, access),
+    );
     await tx`insert into attempt_tool_context (attempt_id, job_id, core, loaded)
       values (${claims.attempt_id}, ${claims.job_id}, ${JSON.stringify(core)}::jsonb, '[]'::jsonb)`;
     await appendEvent(tx, claims.job_id, claims.attempt_id, 'notice', {
@@ -445,7 +597,7 @@ export class ToolCatalog {
       await checkAttempt(tx, job, claims);
       const access = await agentAccess(tx, job.id);
       const items = await this.scoped(tx, job, claims, access);
-      const context = await this.context(tx, claims, items);
+      const context = await this.context(tx, job, claims, items, access);
       return use(tx, job, this.bindNames(items, context), context, access);
     }) as Promise<T>;
   }
@@ -463,21 +615,43 @@ export class ToolCatalog {
     );
   }
 
-  search(claims: CapabilityClaims, query: string): Promise<CatalogEntry[]> {
+  async search(claims: CapabilityClaims, query: string): Promise<CatalogEntry[]> {
+    return (await this.find(claims, query)).tools;
+  }
+
+  /**
+   * Ranked discovery. Any term may match: the terms are ORed, stemmed with the
+   * `english` configuration and also kept whole under `simple`, so an identifier
+   * segment such as `restart` in `server.restart` answers "restarting services".
+   * A query that matches nothing returns the names of what can be loaded, with
+   * one line saying so, because an empty list reads as "no such tool exists".
+   */
+  find(claims: CapabilityClaims, query: string): Promise<CatalogSearch> {
     const parsed = z.string().trim().min(1).max(500).parse(query);
     return this.within(claims, async (tx, _job, items, context) => {
       const loaded = new Set(this.current(context, items).map((tool) => tool.name));
       const rest = items.filter((item) => !loaded.has(item.entry.name)).map((item) => item.entry);
+      // Only letters and digits reach the query text, so it cannot carry an operator.
+      const lexemes = words(parsed).slice(0, SEARCH_TERMS).join(' | ');
       // The input contains only already-authorized entries. Even the ranking engine
       // cannot reveal another space's names, schemas, examples or result counts.
-      const ranked = await tx`with entries as (
-        select value as entry, setweight(to_tsvector('simple', regexp_replace(value->>'name', '[._-]', ' ', 'g')), 'A') ||
-          setweight(to_tsvector('simple', value->>'description'), 'B') ||
-          setweight(to_tsvector('simple', (value->'examples')::text), 'C') as document
+      const ranked = lexemes
+        ? await tx`with entries as (
+        select value as entry, regexp_replace(value->>'name', '[._-]', ' ', 'g') as segments
         from jsonb_array_elements(${JSON.stringify(rest)}::jsonb)
-      ), query as (select plainto_tsquery('simple', ${parsed}) as terms)
-      select entry from entries, query where document @@ terms
-      order by ts_rank(document, terms) desc, entry->>'name' collate "C"`;
+      ), documents as (
+        select entry,
+          setweight(to_tsvector('english', segments), 'A') ||
+          setweight(to_tsvector('simple', segments), 'A') ||
+          setweight(to_tsvector('english', entry->>'description'), 'B') ||
+          setweight(to_tsvector('english', (entry->'examples')::text), 'C') as document
+        from entries
+      ), query as (
+        select to_tsquery('english', ${lexemes}) || to_tsquery('simple', ${lexemes}) as terms
+      )
+      select entry from documents, query where document @@ terms
+      order by ts_rank(document, terms) desc, entry->>'name' collate "C"`
+        : [];
       const result: CatalogEntry[] = [];
       for (const row of ranked) {
         // A long, valid scope list must not make the best match undiscoverable.
@@ -493,7 +667,21 @@ export class ToolCatalog {
         names: result.map((item) => item.name),
         effect_class: 'read',
       });
-      return result;
+      if (result.length > 0) return { tools: result };
+      const index: CatalogSearch['index'] = [];
+      for (const entry of rest) {
+        if (entry.health === 'failing') continue;
+        const next = { name: entry.name, gist: gist(entry.description) };
+        if (estimateTokens(JSON.stringify([...index, next])) > SEARCH_RESULT_TOKENS) break;
+        index.push(next);
+      }
+      return {
+        tools: [],
+        index,
+        hint: index.length
+          ? `No tool matched ${JSON.stringify(parsed)}. These are the tools load_tool can fetch by exact name.`
+          : `No tool matched ${JSON.stringify(parsed)}, and nothing further can be loaded in this attempt.`,
+      };
     });
   }
 

@@ -34,9 +34,9 @@ TOOLSET = "melete"
 
 #: The job this container is working on. It scopes the proposal reference, and
 #: it is the JOB and not the attempt on purpose: an action that parked for
-#: approval is dispatched when the NEXT attempt proposes the same thing again,
-#: and an attempt-scoped reference would make that a second action with the
-#: approval still sitting on the first. See _client_ref.
+#: approval is carried out by resume_action or when the NEXT attempt proposes
+#: the same thing again, and an attempt-scoped reference would make the second
+#: path a new action with the approval still sitting on the first. See _client_ref.
 JOB_ID_ENV = "MELETE_JOB_ID"
 
 #: Carried for correlation in logs and for a fallback reference when the job id
@@ -98,6 +98,21 @@ def build_handler(
             # Arguments cannot fix the operator's schema; prevent another request.
             terminal_error = result
         return result
+
+    def settle(response: Dict[str, Any]) -> Dict[str, Any]:
+        """Turn a broker disposition into what the model reads, with its receipt."""
+        if needs_approval(response):
+            return from_response(response)
+        receipt = None
+        if response.get("status") == SUCCEEDED and response.get("action_id"):
+            # The receipt is the evidence a completion has to point at. If it
+            # cannot be read back the action still succeeded, so report it
+            # without one rather than turning a success into a failure.
+            try:
+                receipt = client.action(str(response["action_id"])).get("receipt")
+            except BrokerError as error:
+                logger.warning("melete: receipt read failed for %s: %s", name, error.message)
+        return from_response(response, receipt)
 
     def handler(args: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
         if terminal_error is not None:
@@ -161,6 +176,16 @@ def build_handler(
                 return client.wait(arguments)
             except BrokerError as error:
                 return refuse(error)
+        if name == "resume_action" and connection_id is None:
+            # Only the id travels. Whatever else the model typed is dropped, so
+            # the approved bytes on the ledger are the only ones that can leave.
+            action_id = arguments.get("action_id")
+            if not isinstance(action_id, str) or not action_id:
+                return from_error("payload_invalid", "resume_action needs the approved action_id.")
+            try:
+                return settle(client.resume(action_id))
+            except BrokerError as error:
+                return refuse(error)
         if not connection_id:
             # A catalog entry with no connection cannot be dispatched anywhere.
             # It should not have been served; refuse rather than invent one.
@@ -207,19 +232,7 @@ def build_handler(
                     result["execution"] = _execution_view(display)
                 return result
 
-        if needs_approval(response):
-            return from_response(response)
-
-        receipt = None
-        if response.get("status") == SUCCEEDED and response.get("action_id"):
-            # The receipt is the evidence a completion has to point at. If it
-            # cannot be read back the action still succeeded, so report it
-            # without one rather than turning a success into a failure.
-            try:
-                receipt = client.action(str(response["action_id"])).get("receipt")
-            except BrokerError as error:
-                logger.warning("melete: receipt read failed for %s: %s", name, error.message)
-        result = from_response(response, receipt)
+        result = settle(response)
         if display is not None:
             result["execution"] = _execution_view(display)
         return result
@@ -257,8 +270,9 @@ def _client_ref(name: str, arguments: Dict[str, Any], *, read: bool = False) -> 
     it already created rather than making another.
 
     Scoped to the JOB, not the attempt. An action that parked for approval is
-    carried out when the next attempt proposes the same thing again: the broker
-    finds the approved action under this reference and dispatches it. An
+    carried out by resume_action, which sends only its id, or when the next
+    attempt proposes the same thing again: the broker finds the approved action
+    under this reference and dispatches it. An
     attempt-scoped reference makes that a brand new action instead, and the
     approval the owner gave stays attached to one nobody will ever execute.
 

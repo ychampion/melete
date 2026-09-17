@@ -77,6 +77,7 @@ import {
   recordId,
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
+import { RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import {
   collectOriginFields,
@@ -129,14 +130,14 @@ export type BrokerOptions = {
    * How the jobs module parks a responsibility: end the attempt, release the
    * worker, and put the job on a timer, all inside the broker's transaction.
    * Without one the broker performs the equivalent itself, which is correct on
-   * its own but does not know about anything W1 adds later.
+   * its own but does not know about anything the service layer adds later.
    */
   parkAttempt?: (
     tx: Query,
     input: { job_id: string; attempt_id: string; wake_at: string; reason: string },
   ) => Promise<void>;
   catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
-  /** W10a supplies the cell executor; omission keeps composition unavailable. */
+  /** The execution cell supplies this; omission keeps composition unavailable. */
   composeExecutor?: ComposeExecutor;
   /** The service runner must finalize its attempt before changing the job state. */
   deferApprovalWaitToRunner?: boolean;
@@ -221,6 +222,7 @@ export class BrokerService implements BrokerOperations {
       nativeTools: [
         REACT_TOOL,
         RUNTIME_WAIT_TOOL,
+        RESUME_ACTION_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
       ],
     });
@@ -302,25 +304,31 @@ export class BrokerService implements BrokerOperations {
    * stream, touches nothing outside the installation, and is refused for a
    * message belonging to another job: a reaction is still a statement about
    * something, and the runtime may only speak about its own responsibility.
+   * With no target it lands on the owner's latest message on this job, since no
+   * attempt input shows an event seq; a job with no owner message has none.
    */
   async react(claims: CapabilityClaims, request: ReactRequest) {
     const value = reactRequest.parse(request);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const [target] = await tx`select seq, job_id, type from event
-        where seq = ${Number(value.message_id)}`;
+      const [target] = value.message_id
+        ? await tx`select seq, job_id, type from event where seq = ${Number(value.message_id)}`
+        : await tx`select seq, job_id, type from event where job_id = ${job.id}
+            and type = 'notice' and payload->>'kind' = 'user_message'
+            order by seq desc limit 1`;
       if (!target || target.job_id !== job.id || target.type === 'reaction')
         throw new BrokerFault('action_not_found');
+      const messageId = String(target.seq);
       await appendEvent(
         tx,
         job.id,
         claims.attempt_id,
         'reaction',
-        { message_id: value.message_id, emoji: value.emoji, by: 'assistant' },
-        `reaction:${value.message_id}:assistant:${value.emoji}`,
+        { message_id: messageId, emoji: value.emoji, by: 'assistant' },
+        `reaction:${messageId}:assistant:${value.emoji}`,
       );
-      return { message_id: value.message_id, emoji: value.emoji };
+      return { message_id: messageId, emoji: value.emoji };
     });
   }
 
@@ -703,6 +711,43 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  /**
+   * Carry out an approved action by id. The caller supplies no payload: the
+   * stored canonical bytes go through the same admission and dispatch a
+   * byte-identical proposal would reach, under this attempt's authority, so the
+   * payload-hash and revision binding, the budget reservation and the fence are
+   * the ones that already exist. Any other status reads back its durable
+   * disposition, which is why an unknown outcome is never sent again.
+   */
+  async resume(claims: CapabilityClaims, id: string): Promise<EffectProposalResponse> {
+    const action = await this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, claims.job_id);
+      await checkAttempt(tx, job, claims);
+      const stored = await loadAction(tx, id);
+      if (stored.job_id !== job.id) throw new BrokerFault('action_not_found');
+      const access = await agentAccess(tx, job.id);
+      if (access.chat && directSend(stored.kind))
+        throw new BrokerFault('scope_denied', 'Review the draft and use its send control.');
+      const { tool } = await this.tool(tx, job, claims, stored.connection_id, stored.kind);
+      // An in-cell intent is executed by the runtime that proposes it, not replayed here.
+      if (tool.execution === 'in_cell' && ['approved', 'admitted'].includes(stored.status))
+        throw new BrokerFault(
+          'action_not_admissible',
+          'This approved action runs inside the runtime. Propose the same tool again with the approved arguments.',
+        );
+      return stored;
+    });
+    const key = action.intent_key ?? '';
+    if (action.status === 'approved') {
+      await this.admit(claims, action.id, action.payload_hash);
+      return this.proposalView(await this.dispatch(action.id), key, false);
+    }
+    // A crash between the two durable steps has not sent anything yet.
+    if (action.status === 'admitted')
+      return this.proposalView(await this.dispatch(action.id), key, false);
+    return this.proposalView(action, key, true);
   }
 
   proposeRead(claims: CapabilityClaims, request: ProposeActionRequest) {
@@ -1602,7 +1647,7 @@ export class BrokerService implements BrokerOperations {
     return rows.length;
   }
 
-  /** W1 may use its own cancel transaction; both serialize on the same job row. */
+  /** The service layer may use its own cancel transaction; both serialize on the same job row. */
   async cancel(jobId: string): Promise<void> {
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, jobId);

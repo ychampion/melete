@@ -19,7 +19,11 @@ ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # produces something else is visible rather than silent: a moved tag is the one
 # way a "pinned, unmodified release" stops being either.
 ARG HERMES_COMMIT=2237be355906fbe6065ce1815711eee52b2d646e
-ARG MELETE_PLUGIN_SHA=cb70d9a6c8fed67653728922835684e65f9fe028db51fd84ffbf9c3dd47acae0
+# The digest over melete_plugin/, asserted by build-metadata.py during the
+# build. `bun run compose:check` recomputes it from the tracked files and names
+# the value to paste here, so a plugin change without a new pin fails before an
+# image is built.
+ARG MELETE_PLUGIN_SHA=888ef1a04cc58bd37b62e8031935e7613c3091c3ecea210a1ca395b23b0793fd
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -137,15 +137,18 @@ describe('context assembly', () => {
       name,
       body: 'Read the record and check the receipt before making a claim. '.repeat(10),
     }));
-    representative.tools = [
-      {
-        name: 'email.send',
+    // A catalog at its whole allowance: the schema budget and the names-only index.
+    const allowance = CONTEXT_LIMITS.core_catalog_tokens + CONTEXT_LIMITS.catalog_index_tokens;
+    representative.tools = [];
+    for (let index = 0; estimateTokens(JSON.stringify(representative.tools)) < allowance; index++)
+      representative.tools.push({
+        name: `email.send_${index}`,
         description: 'Send an email after approval.',
         effect_class: 'write_external',
         connection_id: null,
         input_schema: { type: 'object', properties: { body: { type: 'string' } } },
-      },
-    ];
+      });
+    expect(estimateTokens(JSON.stringify(representative.tools))).toBeGreaterThanOrEqual(allowance);
     representative.since_last = {
       attempt_id: `att_${SUFFIX}`,
       ended_at: '2026-09-11T00:00:00Z',
@@ -201,6 +204,126 @@ describe('context assembly', () => {
     representative.job.constraints = { bloated: 'x'.repeat(16000) };
     expect(measureRenderedInput(representative).scaffolding).toBeGreaterThan(4000);
   });
+  test('an approved decision names the tool, the approved payload and how to carry it out', () => {
+    const resumed = structuredClone(bundle);
+    resumed.inputs.approval_results = [
+      {
+        action_id: `act_${SUFFIX}`,
+        decision: 'approved',
+        note: 'go ahead',
+        kind: 'email.send',
+        status: 'approved',
+        payload: { to: 'alex@example.test', body: 'I can attend Friday.' },
+      },
+    ];
+    const text = renderInput(resumed);
+    expect(text).toContain(`act_${SUFFIX} (email.send) was approved and has not been carried out.`);
+    expect(text).toContain(`Call resume_action with action_id "act_${SUFFIX}"`);
+    expect(text).toContain('{"to":"alex@example.test","body":"I can attend Friday."}');
+    expect(text).toContain('The owner said: go ahead');
+    // Once it has left, or when it was refused, there is nothing to resume.
+    const [decision] = resumed.inputs.approval_results;
+    if (!decision) throw new Error('fixture decision absent');
+    decision.status = 'succeeded';
+    expect(renderInput(resumed)).not.toContain('resume_action');
+    expect(renderInput(resumed)).toContain('was approved; it is now succeeded.');
+    decision.status = 'denied';
+    decision.decision = 'denied';
+    expect(renderInput(resumed)).toContain('(email.send) was denied. It was not carried out');
+    expect(renderInput(resumed)).not.toContain('resume_action');
+    // A very large payload is abbreviated, never silently dropped.
+    decision.status = 'approved';
+    decision.decision = 'approved';
+    decision.payload = { body: 'x'.repeat(9000) };
+    expect(renderInput(resumed)).toContain(
+      '[payload abbreviated; the stored bytes are sent whole]',
+    );
+    expect(renderInput(resumed).length).toBeLessThan(4000);
+  });
+
+  test('constraints read as short prose, and a default is never written down', () => {
+    const plain = structuredClone(bundle);
+    plain.job.constraints = {
+      deliverable: { kind: 'none' },
+      allowed_domains: [],
+      public_compartment: false,
+    };
+    const defaults = renderInput(plain);
+    expect(defaults).not.toContain('## Accepted constraints');
+    expect(defaults).not.toContain('allowed_domains');
+    expect(defaults).not.toContain('public_compartment');
+    plain.job.constraints = {
+      deliverable: { kind: 'artifact', path_glob: 'reports/*.md' },
+      allowed_domains: ['example.test', 'docs.example.test'],
+      public_compartment: false,
+      notes: 'Keep it under a page.',
+      tone: 'plain',
+    };
+    const text = renderInput(plain);
+    expect(text).toContain('## Accepted constraints');
+    expect(text).toContain('- Done means a file matching reports/*.md exists in the workspace.');
+    expect(text).toContain(
+      '- Web fetches may reach only these domains: example.test, docs.example.test.',
+    );
+    expect(text).toContain('- Keep it under a page.');
+    expect(text).toContain('- tone: plain');
+    expect(text).not.toContain('"allowed_domains"');
+    expect(text).not.toContain('public_compartment');
+    plain.job.constraints = {
+      deliverable: { kind: 'message_sent', connection_id: `conn_${SUFFIX}` },
+      allowed_domains: [],
+      public_compartment: true,
+    };
+    const open = renderInput(plain);
+    expect(open).toContain(`- Done means a message was sent through conn_${SUFFIX}.`);
+    expect(open).toContain('- Public research: no private knowledge is loaded');
+    expect(open).not.toContain('allowed_domains');
+    plain.job.constraints = { deliverable: { kind: 'answer' } };
+    expect(renderInput(plain)).toContain('- Done means the owner has an answer.');
+  });
+
+  test('a wait cancelled before it fired is named, with no wait in force now', () => {
+    const woken = structuredClone(bundle);
+    expect(renderInput(woken)).not.toContain('## A wait was cancelled');
+    woken.job.triggers = [
+      {
+        id: `trg_${SUFFIX}`,
+        kind: 'event',
+        event_name: 'mail.new',
+        description: `fires on each mail.new event from conn_${SUFFIX}`,
+      },
+    ];
+    woken.inputs.cancelled_wait = { kind: 'event', trigger_id: `trg_${SUFFIX}`, deadline_at: null };
+    const text = renderInput(woken);
+    expect(text).toContain('## A wait was cancelled');
+    expect(text).toContain(`The wait for mail.new (trg_${SUFFIX}) was cancelled before it fired.`);
+    expect(text).toContain('No wait is in force now');
+    expect(text).toContain('call job.wait');
+    woken.inputs.cancelled_wait = { kind: 'timer', wake_at: '2026-09-20T08:00:00.000Z' };
+    expect(renderInput(woken)).toContain(
+      'The wait until 2026-09-20T08:00:00.000Z was cancelled before it fired.',
+    );
+  });
+
+  test("the job's registered triggers are named with id, event and a plain description", () => {
+    const waiting = structuredClone(bundle);
+    expect(renderInput(waiting)).not.toContain('## Events this job can wait for');
+    waiting.job.triggers = [
+      {
+        id: `trg_${SUFFIX}`,
+        kind: 'event',
+        event_name: 'mail.new',
+        description: `fires on each mail.new event from conn_${SUFFIX}`,
+      },
+    ];
+    const text = renderInput(waiting);
+    expect(text).toContain('## Events this job can wait for');
+    expect(text).toContain(
+      `- trg_${SUFFIX}: mail.new, fires on each mail.new event from conn_${SUFFIX}`,
+    );
+    expect(text).toContain('job.wait takes the trigger id or the event name');
+  });
+
   test('the identity is short enough to be a prefix, not a personality', () => {
     // A rough four-characters-per-token estimate; the contract caps it at 250.
     expect(Math.ceil(IDENTITY.length / 4)).toBeLessThan(CONTEXT_LIMITS.identity_tokens);
@@ -219,6 +342,9 @@ describe('context assembly', () => {
   test('every knowledge excerpt carries where it came from', () => {
     const system = client.renderSystem(bundle);
     expect(system).toContain('knowledge/landlord-contact.md (user, 2026-09-10, active)');
+    // Provenance is shown so it can be given, not so every reply recites it.
+    expect(system).toContain('Name a path only when asked where something came from');
+    expect(system).not.toContain('Cite the path when you use one');
   });
 
   test('the model is told that a parked action has not happened', () => {

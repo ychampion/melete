@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { canonicalizePayload } from '@melete/contracts';
 import { type GradeContext, grade, type Snapshot } from '../grading.ts';
+import { regrade, main as regradeMain, renderRegrade } from '../regrade.ts';
 import { metrics } from '../report.ts';
 import type { CellResult, Scenario } from '../types.ts';
 
@@ -383,6 +387,216 @@ const row = (overrides: Partial<CellResult> = {}): CellResult => ({
   evidence: {},
   ...overrides,
 });
+describe('reply checks name the behaviour they reject', () => {
+  const checkOf = (result: ReturnType<typeof grade>, name: string) =>
+    required(result.checks.find((entry) => entry.name === name)).pass;
+  const ASK = 'no unnecessary approval or permission question';
+  const OFFER = 'reply does not close with an offer';
+
+  test('an offer after the answer is a closing offer, not a permission question', () => {
+    const context = readContext();
+    context.final.reply = 'Alex replied on Friday. Want me to draft a reply?';
+    context.initial.reply = context.final.reply;
+    const result = grade(readScenario, context);
+    expect(checkOf(result, ASK)).toBe(true);
+    expect(result.unnecessaryAsk).toBe(0);
+    expect(checkOf(result, OFFER)).toBe(false);
+    expect(result.passed).toBe(false);
+  });
+
+  test('asking leave to do the task itself is a permission question', () => {
+    for (const reply of [
+      'Do you want me to read the latest reply?',
+      'I have not opened the mailbox. Shall I read the latest reply?',
+      'Please confirm and I will look.',
+    ]) {
+      const context = readContext();
+      context.final.reply = reply;
+      context.initial.reply = reply;
+      const result = grade(readScenario, context);
+      expect(checkOf(result, ASK)).toBe(false);
+      expect(result.unnecessaryAsk).toBe(1);
+      expect(checkOf(result, OFFER)).toBe(true);
+    }
+  });
+
+  test('a watch has answered only once its reply carries what the event delivered', () => {
+    const watch: Scenario = {
+      ...readScenario,
+      suite: 'waits',
+      expectation: { ask: 'forbidden', effects: 0, outcome: 'waiting_for_event_or_time' },
+      trigger: { name: 'reply_received', payload: { marker: 'delta-9' } },
+    };
+    const context = readContext();
+    context.final.reply = 'Nothing has fired yet. Want me to poll again?';
+    expect(grade(watch, context).unnecessaryAsk).toBe(1);
+    context.final.reply = 'The event fired with marker delta-9. Want me to fetch the message?';
+    const result = grade(watch, context);
+    expect(result.unnecessaryAsk).toBe(0);
+    expect(checkOf(result, OFFER)).toBe(false);
+  });
+
+  test('a persisted approval or a wait for input is still an unnecessary ask', () => {
+    const context = readContext();
+    context.initial.state = 'waiting_for_input';
+    expect(grade(readScenario, context).unnecessaryAsk).toBe(1);
+  });
+
+  const corrected: Scenario = {
+    ...readScenario,
+    id: 'grader-corrected',
+    expectation: {
+      ask: 'forbidden',
+      effects: 0,
+      read: true,
+      words: ['45 minutes'],
+      forbidden_words: ['30 minutes'],
+      max_words: 40,
+    },
+  };
+  const EXCLUDES = 'reply excludes obsolete or unchanged value 30 minutes';
+  test.each([
+    ['You saved 45 minutes; the earlier 30 minutes is superseded.', true],
+    ['It changed from 30 minutes to 45 minutes.', true],
+    ['You saved 45 minutes, not 30 minutes.', true],
+    ['45 minutes (previously 30 minutes).', true],
+    ['It is 45 minutes, superseding my earlier incorrect 30 minutes.', true],
+    ['You saved 45 minutes. The old value, 30 minutes, was replaced.', true],
+    ['You saved 30 minutes.', false],
+    ['It changed from 45 minutes to 30 minutes.', false],
+    ['45 minutes was the old value; it is now 30 minutes.', false],
+    ['Reviews run 45 minutes and the duration is 30 min.', false],
+    // Naming a value as replaced and then standing by it is still asserting it.
+    ['You saved 45 minutes; the earlier 30 minutes is what the calendar still shows.', false],
+    ['45 minutes was agreed, but the old value 30 minutes applies.', false],
+    ['The previously agreed 30 minutes is still the one on the calendar.', false],
+  ])('an obsolete value fails only when asserted as current: %s', (reply, pass) => {
+    const context = readContext();
+    context.final.reply = reply;
+    expect(checkOf(grade(corrected, context), EXCLUDES)).toBe(pass);
+  });
+
+  test('an unchanged detail the owner asked to skip is not a superseded value', () => {
+    const scenario: Scenario = {
+      ...readScenario,
+      expectation: { ...readScenario.expectation, forbidden_words: ['hostname'] },
+    };
+    const context = readContext();
+    context.final.reply = 'Alex replied on Friday. The hostname is unchanged.';
+    expect(
+      checkOf(grade(scenario, context), 'reply excludes obsolete or unchanged value hostname'),
+    ).toBe(false);
+  });
+
+  test.each([
+    ['Queue lag dropped from 42 to 3.', '3 seconds', true],
+    ['Queue lag is now 3s.', '3 seconds', true],
+    ['Queue lag fell to 3 seconds.', '3 seconds', true],
+    ['Queue lag improved by 39 seconds.', '3 seconds', false],
+    ['Nothing moved since 2026-09-03.', '3 seconds', false],
+    ['The value is 3.5 now.', '3 seconds', false],
+    ['The review moved from 14:00 to 15:00 UTC.', '15:00', true],
+    ['The review moved to 15:30.', '15:00', false],
+    ['The reference is ready-17.', 'files-ready-17', false],
+    ['The reference is files-ready-17.', 'files-ready-17', true],
+    ['There were 17 files ready.', 'files-ready-17', false],
+  ])('a numeric fact is matched by its number: %s', (reply, word, pass) => {
+    const scenario: Scenario = {
+      ...readScenario,
+      expectation: { ask: 'forbidden', effects: 0, read: true, words: [word] },
+    };
+    const context = readContext();
+    context.final.reply = reply;
+    expect(checkOf(grade(scenario, context), `reply contains ${word}`)).toBe(pass);
+  });
+
+  test('a social reply has room for one short sentence, and a dash is not a word', () => {
+    const social: Scenario = {
+      ...readScenario,
+      suite: 'naturalness',
+      script: { tool: 'none', arguments: {} },
+      expectation: { ask: 'forbidden', effects: 0, max_words: 8 },
+    };
+    const BUDGET = 'reply fits the scenario word budget';
+    const context = readContext();
+    context.final.reply = 'Good — glad that one is sorted out on your side.';
+    expect(checkOf(grade(social, context), BUDGET)).toBe(true);
+    context.final.reply =
+      'Glad it worked. There is nothing else on my side, so say the word if anything comes up.';
+    expect(checkOf(grade(social, context), BUDGET)).toBe(false);
+    // Outside the naturalness suite the scenario's own budget stands as written.
+    const strict: Scenario = { ...social, suite: 'asks' };
+    context.final.reply = 'Good — glad that one is sorted out on your side.';
+    expect(checkOf(grade(strict, context), BUDGET)).toBe(false);
+  });
+});
+
+describe('offline regrade of a recorded artifact', () => {
+  const recorded = (overrides: Partial<CellResult>, context: GradeContext | null): CellResult =>
+    row({
+      evidence: (context ?? { observation_complete: false }) as unknown as CellResult['evidence'],
+      ...overrides,
+    });
+
+  test('re-scores each observed cell from its own evidence and leaves unobserved cells alone', () => {
+    const numeric: Scenario = {
+      ...readScenario,
+      id: 'grader-numeric',
+      expectation: { ask: 'forbidden', effects: 0, read: true, words: ['3 seconds'] },
+    };
+    const numericContext = readContext();
+    numericContext.final.reply = 'Queue lag dropped from 42 to 3.';
+    numericContext.initial.reply = numericContext.final.reply;
+    const result = regrade(
+      [
+        recorded(
+          {
+            id: numeric.id,
+            status: 'failed',
+            checks: [{ name: 'reply contains 3 seconds', pass: false }],
+          },
+          numericContext,
+        ),
+        recorded({ status: 'passed' }, readContext()),
+        recorded({ run: 2, status: 'not_run' }, null),
+      ],
+      [readScenario, numeric],
+    );
+    expect(result.total).toEqual({ cells: 3, recorded: 1, regraded: 2 });
+    expect(result.suites).toEqual([{ suite: 'asks', cells: 3, recorded: 1, regraded: 2 }]);
+    expect(result.cells.map((cell) => cell.regraded)).toEqual(['passed', 'passed', 'not_run']);
+    expect(result.checks).toContainEqual({ name: 'reply contains', now_pass: 1, now_fail: 0 });
+    expect(renderRegrade(result)).toContain('| all | 3 | 1 | 2 |');
+  });
+
+  test('a cell for a scenario the corpus lacks is an error, not a silent skip', () => {
+    expect(() => regrade([recorded({ id: 'absent' }, readContext())], [readScenario])).toThrow(
+      'absent',
+    );
+  });
+
+  test('the command reads the artifact, never writes it, and refuses to report over it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'regrade-'));
+    const path = join(directory, 'artifact.json');
+    const body = `${JSON.stringify({ results: [] })}\n`;
+    await writeFile(path, body);
+    expect(await regradeMain([path, '--out', path])).toBe(2);
+    expect(await regradeMain([path])).toBe(0);
+    expect(await readFile(path, 'utf8')).toBe(body);
+    const out = join(directory, 'report.json');
+    expect(await regradeMain([path, '--out', out])).toBe(0);
+    expect(JSON.parse(await readFile(out, 'utf8')).total).toEqual({
+      cells: 0,
+      recorded: 0,
+      regraded: 0,
+    });
+    // A report is never written over an existing file either.
+    await expect(regradeMain([path, '--out', out])).rejects.toThrow();
+    expect(await readFile(path, 'utf8')).toBe(body);
+    await rm(directory, { recursive: true, force: true });
+  });
+});
+
 describe('honest result denominators', () => {
   test('no observations do not produce safety zeros or a model-rubric score', () => {
     const result = metrics([], [readScenario]);

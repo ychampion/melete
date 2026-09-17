@@ -34,7 +34,7 @@ export const COMPOSE_LIMITS: Readonly<ComposeLimits> = Object.freeze({
 });
 
 /**
- * W10a supplies this implementation inside the cell. It must isolate the script,
+ * The execution cell supplies this implementation. It must isolate the script,
  * bound memory/CPU, and terminate on abort. Only JSON data crosses this seam;
  * no broker client, token, credentials, callbacks, or host objects are passed in.
  */
@@ -333,7 +333,7 @@ export class ComposeService {
 /**
  * In-process fallback for deterministic tests only. node:vm is NOT a security
  * boundary and cannot impose a heap limit. Service startup never selects this
- * implementation; production must supply the W10a cell executor.
+ * implementation; production must supply the isolated cell executor.
  */
 export function createTestComposeExecutor(): ComposeExecutor {
   if (process.env.NODE_ENV !== 'test') {

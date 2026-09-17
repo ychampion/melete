@@ -321,6 +321,124 @@ describe('the ledger has the last word', () => {
   });
 });
 
+describe('a go-ahead with nothing proposed', () => {
+  const CONNECTION = `conn_${SUFFIX}`;
+  const tools: AttemptBundle['tools'] = [
+    {
+      name: 'email.draft',
+      description: 'Save a draft',
+      input_schema: { type: 'object' },
+      effect_class: 'write_reversible',
+      connection_id: CONNECTION,
+    },
+    {
+      name: 'email.send',
+      description: 'Send a message',
+      input_schema: { type: 'object' },
+      effect_class: 'write_external',
+      connection_id: CONNECTION,
+    },
+  ];
+  const withTools = { ...bundle, tools };
+  const frame = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
+  const run = (output: string, called: string[] = []) =>
+    called
+      .flatMap((tool) => [
+        frame({ event: 'tool.started', tool, preview: '' }),
+        frame({ event: 'tool.completed', tool, duration: 0.1, error: false }),
+      ])
+      .join('') + frame({ event: 'run.completed', output });
+
+  /** One stream per run, and the parked ledger as it stands after each run. */
+  function script(runs: string[], parkedAfter: string[][] = []) {
+    const inputs: string[] = [];
+    let started = 0;
+    const fetch: FetchLike = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === '/v1/runs' && init?.method === 'POST') {
+        inputs.push((JSON.parse(String(init.body)) as { input: string }).input);
+        started++;
+        return Response.json({ run_id: `run_${started}`, status: 'started' }, { status: 202 });
+      }
+      if (path.endsWith('/events')) {
+        const index = Number(path.split('/')[3]?.replace('run_', '')) - 1;
+        return new Response(streamOf(runs[index] ?? ''), {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+      return Response.json({ ok: true });
+    };
+    const adapter = new HermesRuntimeAdapter({
+      baseUrl: 'http://runtime:8790',
+      parkedActions: async () => parkedAfter[started - 1] ?? [],
+      fetch,
+      streamIdleMs: 2_000,
+    });
+    return { adapter, inputs };
+  }
+
+  test('a drafted reply that asks to send gets one continuation, and its proposal parks', async () => {
+    const { adapter, inputs } = script(
+      [
+        run('I drafted the reply. Shall I send it?', ['email.draft']),
+        run('The send is waiting for your approval.', ['email.send']),
+      ],
+      [[], [ACTION]],
+    );
+    const outcome = await adapter.start(withTools, new Collector(), new AbortController().signal);
+    expect(outcome).toEqual({ kind: 'waiting_for_approval', action_ids: [ACTION] });
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]).toContain('proposed nothing');
+    expect(inputs[1]).toContain('the broker will ask the owner');
+  });
+
+  test('an ask that still proposes nothing settles waiting for input, never completed', async () => {
+    const { adapter, inputs } = script([
+      run('Would you like me to send the confirmation now?'),
+      run('Let me know if I should send it.'),
+      run('unreachable'),
+    ]);
+    const outcome = await adapter.start(withTools, new Collector(), new AbortController().signal);
+    expect(outcome).toEqual({
+      kind: 'waiting_for_input',
+      question: 'Let me know if I should send it.',
+    });
+    // Exactly one continuation: the third scripted run is never started.
+    expect(inputs).toHaveLength(2);
+  });
+
+  test('an effect the owner refused in this wake is not asked for again', async () => {
+    const refused: AttemptBundle = {
+      ...withTools,
+      inputs: {
+        ...withTools.inputs,
+        approval_results: [{ action_id: ACTION, decision: 'denied', note: null }],
+      },
+    };
+    const reply = "I won't send it. Let me know if you'd like me to send a shorter version.";
+    const { adapter, inputs } = script([run(reply), run('unreachable')]);
+    const outcome = await adapter.start(refused, new Collector(), new AbortController().signal);
+    // The reply is still a question, so the job asks it. What must not happen is
+    // answering a refusal with "call the tool now" and proposing again on our word.
+    expect(outcome).toEqual({ kind: 'waiting_for_input', question: reply });
+    expect(inputs).toHaveLength(1);
+  });
+
+  test('a finished send, a closing offer or a plain question completes in one run', async () => {
+    for (const [output, called] of [
+      ['I sent the reply.', ['email.send']],
+      ['Done. Let me know if you need anything else.', []],
+      ['Which address should I use, work or personal?', []],
+      ["I can't send mail from here, so nothing was sent.", []],
+    ] as const) {
+      const { adapter, inputs } = script([run(output, [...called])]);
+      const outcome = await adapter.start(withTools, new Collector(), new AbortController().signal);
+      expect(outcome).toEqual({ kind: 'completed', summary: output, evidence: [] });
+      expect(inputs).toHaveLength(1);
+    }
+  });
+});
+
 describe('nothing becomes a completion that was not one', () => {
   test('an interrupted run fails retryably and says history is missing', async () => {
     const sse =
