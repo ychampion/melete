@@ -43,6 +43,18 @@ export const hookObservation = z.object({
     .string()
     .regex(/^[a-f0-9]{64}$/)
     .nullable(),
+  /**
+   * Scalars a boundary keeps by name. Absent for every boundary that keeps
+   * none, which today is all of them but compaction. Bounded numbers and flags
+   * only: a field here can say how much work was done, never what it said.
+   */
+  detail: z
+    .object({
+      compression_count: z.number().int().nonnegative().max(1_000_000).optional(),
+      in_place: z.boolean().optional(),
+    })
+    .strict()
+    .optional(),
 });
 export type HookObservation = z.infer<typeof hookObservation>;
 
