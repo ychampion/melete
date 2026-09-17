@@ -34,6 +34,25 @@ describe('the check catches the mistakes that would matter', () => {
       broken.services.melete.environment.MELETE_RUNTIME_ADAPTER = 'stub';
     expect(failures(broken)).toContain('the default service supervises attempts itself');
   });
+  test('leaving the service to read its catalog from a port nothing binds', () => {
+    const name = 'the service reads its tool catalog from the broker it binds';
+    expect(compose.services?.melete?.environment?.MELETE_BROKER_URL).toBe('http://melete:8788');
+    const unset = structuredClone(compose);
+    delete unset.services?.melete?.environment?.MELETE_BROKER_URL;
+    expect(failures(unset)).toContain(name);
+    const moved = structuredClone(compose);
+    if (moved.services?.melete?.environment)
+      moved.services.melete.environment.MELETE_BROKER_BIND = '0.0.0.0:8799';
+    expect(failures(moved)).toContain(name);
+    const loopback = structuredClone(compose);
+    if (loopback.services?.melete?.environment)
+      loopback.services.melete.environment.MELETE_BROKER_BIND = '127.0.0.1:8788';
+    expect(failures(loopback)).toContain(name);
+    const split = structuredClone(compose);
+    if (split.services?.runtime?.environment)
+      split.services.runtime.environment.MELETE_BROKER_URL = 'http://melete:3112';
+    expect(failures(split)).toContain(name);
+  });
   test('giving the runtime an edge network', () => {
     const broken: ComposeFile = structuredClone(compose);
     const runtime = broken.services?.runtime;

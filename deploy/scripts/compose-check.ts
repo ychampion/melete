@@ -104,6 +104,18 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
         service.environment.MELETE_RUNTIME_SUPERVISOR === 'docker'),
     'melete must select the docker adapter, or the hermes adapter with the docker supervisor',
   );
+  // The service fetches each attempt's tool catalog from its own broker before
+  // the first model call. An address on a port nothing binds fails every attempt.
+  const bindPort = /:(\d+)$/.exec(String(service?.environment?.MELETE_BROKER_BIND ?? ''))?.[1];
+  const brokerUrl = String(service?.environment?.MELETE_BROKER_URL ?? '');
+  say(
+    'the service reads its tool catalog from the broker it binds',
+    bindPort !== undefined &&
+      /^(0\.0\.0\.0|\[::\]):\d+$/.test(String(service?.environment?.MELETE_BROKER_BIND)) &&
+      brokerUrl === `http://melete:${bindPort}` &&
+      runtime.environment?.MELETE_BROKER_URL === brokerUrl,
+    'melete needs MELETE_BROKER_URL=http://melete:<the MELETE_BROKER_BIND port>, the same address the runtime is given, and a bind the runtime network can reach',
+  );
   say(
     'the runtime is on the internal network only',
     networks.length === 1 && networks[0] === 'internal',

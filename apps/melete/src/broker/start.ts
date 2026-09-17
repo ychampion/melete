@@ -10,7 +10,7 @@ import {
 } from '../connectors/configured.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
-import type { Env } from '../env.ts';
+import { type Env, parseBrokerBind } from '../env.ts';
 import { resolveExperienceGrant } from '../experience/rules.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
@@ -46,12 +46,9 @@ export async function startEffectBoundary(
       'DATABASE_URL, MELETE_CAPABILITY_KEY and MELETE_APPROVAL_KEY are required for the effect boundary',
     );
   }
-  const binding = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(env.MELETE_BROKER_BIND);
-  if (!binding?.[1] || !binding[2] || Number(binding[2]) > 65535 || Number(binding[2]) < 1) {
-    throw new Error('MELETE_BROKER_BIND must be hostname:port');
-  }
-  const hostname = binding[1].replace(/^\[|\]$/g, '');
-  const port = Number(binding[2]);
+  const binding = parseBrokerBind(env.MELETE_BROKER_BIND);
+  if (!binding) throw new Error('MELETE_BROKER_BIND must be hostname:port');
+  const { hostname, port } = binding;
   const connections =
     dependencies.connections ?? (await readConnectionConfig(env.MELETE_CONNECTIONS_FILE));
   const browser = dependencies.browserSessions

@@ -72,6 +72,8 @@ services:
       MELETE_ARTIFACTS_DIR: /data/artifacts
       MELETE_RESTRICTIONS_DIR: /data/restrictions
       MELETE_BROKER_BIND: 0.0.0.0:8788
+      # The service reads each attempt's tool catalog from its own broker listener.
+      MELETE_BROKER_URL: http://melete:8788
       MELETE_WORK_DIR: /work
       MELETE_CONNECTIONS_FILE: /etc/melete/connections.json
       MELETE_GATEWAY_TLS_DIR: /etc/melete/gateway-tls

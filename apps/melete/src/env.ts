@@ -9,7 +9,46 @@ import { z } from 'zod';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
-export const envSchema = z.object({
+/** `host:port`, with brackets around an IPv6 host. */
+export function parseBrokerBind(bind: string): { hostname: string; port: number } | null {
+  const match = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(bind);
+  if (!match?.[1] || !match[2]) return null;
+  const port = Number(match[2]);
+  if (port < 1 || port > 65535) return null;
+  return { hostname: match[1].replace(/^\[|\]$/g, ''), port };
+}
+
+const WILDCARD_HOSTS: Record<string, string> = { '0.0.0.0': '127.0.0.1', '::': '::1' };
+const isLoopback = (hostname: string) =>
+  hostname === 'localhost' || hostname === '::1' || /^127(\.\d{1,3}){3}$/.test(hostname);
+
+/**
+ * Where this service reaches the broker it bound. A wildcard bind is not a
+ * destination, so it is reached over loopback on the same port.
+ */
+export function brokerUrlForBind(bind: string): string | null {
+  const parsed = parseBrokerBind(bind);
+  if (!parsed) return null;
+  const hostname = WILDCARD_HOSTS[parsed.hostname] ?? parsed.hostname;
+  return `http://${hostname.includes(':') ? `[${hostname}]` : hostname}:${parsed.port}`;
+}
+
+/** Why a configured broker address cannot reach the bound listener, if it cannot. */
+function brokerUrlMismatch(bind: string, url: string): string | null {
+  const bound = parseBrokerBind(bind);
+  if (!bound) return null;
+  const target = new URL(url);
+  const hostname = target.hostname.replace(/^\[|\]$/g, '');
+  const port = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+  if (port !== bound.port)
+    return `MELETE_BROKER_URL names port ${port}, but MELETE_BROKER_BIND listens on ${bound.port}`;
+  if (bound.hostname in WILDCARD_HOSTS) return null;
+  if (isLoopback(bound.hostname) !== isLoopback(hostname))
+    return `MELETE_BROKER_URL host ${hostname} cannot reach a broker bound to ${bound.hostname} (MELETE_BROKER_BIND)`;
+  return null;
+}
+
+const variables = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8787),
   /** Compose resolves an alias assigned only to edge; local development uses loopback. */
@@ -61,8 +100,15 @@ export const envSchema = z.object({
   MELETE_RESTRICTIONS_DIR: z.string().default('/data/restrictions'),
 
   /** The address the runtime container reaches the broker on, internal network only. */
-  MELETE_BROKER_BIND: z.string().default('127.0.0.1:3112'),
-  MELETE_BROKER_URL: z.string().url().default('http://127.0.0.1:3112'),
+  MELETE_BROKER_BIND: z
+    .string()
+    .default('127.0.0.1:3112')
+    .refine((bind) => parseBrokerBind(bind) !== null, 'must be hostname:port'),
+  /**
+   * Where the service reads its own tool catalog, and the address process-mode
+   * attempts are handed. Left out, it follows MELETE_BROKER_BIND.
+   */
+  MELETE_BROKER_URL: z.string().url().optional(),
   MELETE_APPROVAL_KEY: z.string().min(32).optional(),
   MELETE_WORK_DIR: z.string().default('/work'),
   MELETE_CONNECTIONS_FILE: z.string().optional(),
@@ -108,6 +154,21 @@ export const envSchema = z.object({
   MELETE_DEFAULT_PROVIDER: z.string().default('fireworks'),
   MELETE_DEFAULT_MODEL: z.string().default('deepseek-v4p1-flash'),
   MELETE_SPEECH_MODEL: z.string().optional(),
+});
+
+/**
+ * A catalog address that misses the bound broker fails every attempt before its
+ * first model call, so the pair is settled here rather than at the first job.
+ */
+export const envSchema = variables.transform((value, context) => {
+  const derived = brokerUrlForBind(value.MELETE_BROKER_BIND);
+  const mismatch =
+    value.MELETE_BROKER_URL === undefined
+      ? null
+      : brokerUrlMismatch(value.MELETE_BROKER_BIND, value.MELETE_BROKER_URL);
+  if (mismatch)
+    context.addIssue({ code: 'custom', path: ['MELETE_BROKER_URL'], message: mismatch });
+  return { ...value, MELETE_BROKER_URL: value.MELETE_BROKER_URL ?? derived ?? '' };
 });
 
 export type Env = z.infer<typeof envSchema>;
