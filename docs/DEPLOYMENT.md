@@ -23,9 +23,9 @@ versions:
   database or anything else. An older engine, an engine that has dropped API
   1.48, or an unreachable socket stops startup; `docker compose logs melete`
   shows the message.
-- `bun run deploy/scripts/configure.ts` runs `docker version` and
-  `docker compose version` on the host and refuses an unsupported pair before
-  writing anything.
+- `bun run deploy/scripts/configure.ts` and `bun run deploy/scripts/upgrade.ts`
+  run `docker version` and `docker compose version` on the host and refuse an
+  unsupported pair before writing or changing anything.
 - `bun run doctor --docker` reports the same judgement on demand, and
   `bun run doctor` includes it whenever `MELETE_CONFORMANCE_COMPOSE=1` is set.
 
@@ -187,6 +187,14 @@ These checks reproduce source identity and enforce dependency locks. They do
 not promise byte-identical image digests: OS package repositories, build
 timestamps, and build tooling can change the resulting bytes. Compare the
 recorded labels and inventories when rebuilding.
+
+## Upgrading
+
+[Upgrading between releases](UPGRADING.md) is its own page:
+`bun run deploy/scripts/upgrade.ts <tag> --dry-run` prints the whole plan. The
+service migrates its database at every boot under an advisory lock, so the
+procedure is a consistent backup, a checkout, a rebuild and a wait for health;
+the backup below is its first half.
 
 ## Logs
 

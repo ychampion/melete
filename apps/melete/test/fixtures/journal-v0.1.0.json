@@ -1,0 +1,217 @@
+{
+  "release": "v0.1.0",
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "when": 1789083019739,
+      "tag": "0000_initial_schema",
+      "sha256": "0dc436a79356957a7f7087d7d7fae61efdc19358a816b55833f359080bea8df1"
+    },
+    {
+      "idx": 1,
+      "when": 1789113557258,
+      "tag": "0001_auth",
+      "sha256": "27de13dded3da759e86b7163b392278989e77977b1e64368675017bafee12e73"
+    },
+    {
+      "idx": 2,
+      "when": 1789113823076,
+      "tag": "0002_attempt_leases",
+      "sha256": "3b6d3133bd61ec5af8bb806f4f743407216fbfd98d7d1700f8a8a9c573240981"
+    },
+    {
+      "idx": 3,
+      "when": 1789117971001,
+      "tag": "0003_submissions",
+      "sha256": "1cd803e210365b92b60cc864637c03ffbcbc83fccf1a8845d033106e7cbd9a57"
+    },
+    {
+      "idx": 4,
+      "when": 1789119305320,
+      "tag": "0004_reply_obligations",
+      "sha256": "0f5eca50045ab01cf3ec8c39b529348225718df1863a6ddb501145f5023eb65c"
+    },
+    {
+      "idx": 5,
+      "when": 1789120517270,
+      "tag": "0005_wake_dispositions",
+      "sha256": "9f79aeb39b90a5ac32eeb614a94b4a7fb9236da7f3eaa9ef5589d746307569e0"
+    },
+    {
+      "idx": 6,
+      "when": 1789120925849,
+      "tag": "0006_event_protocol",
+      "sha256": "9dbe696f17bdcbea585ec9b32e3e6c5073dac46c75ce4b01962bb1e940ac54de"
+    },
+    {
+      "idx": 7,
+      "when": 1789121611310,
+      "tag": "0007_context_generations",
+      "sha256": "32755cce5a23a5148fb151253a340e220761f2b808a3b264a01047026a1d7670"
+    },
+    {
+      "idx": 8,
+      "when": 1789122429858,
+      "tag": "0008_scheduling_attention",
+      "sha256": "1fd1e647a7080e7976a42a9265960ef52d4d90abcdda717f81db16ea01e28fd5"
+    },
+    {
+      "idx": 9,
+      "when": 1789122489858,
+      "tag": "0009_ancient_impossible_man",
+      "sha256": "654814eeba6bad6484f3e3f5615ed8d37395980bd002cb7455dfad4ae4ea1f87"
+    },
+    {
+      "idx": 10,
+      "when": 1789124141137,
+      "tag": "0010_mysterious_silverclaw",
+      "sha256": "ab04e569ac3c4bd2966abaddf2bd7e3c9fbe1af2eee0fbd8dacdf26d184c6d5c"
+    },
+    {
+      "idx": 11,
+      "when": 1789128273927,
+      "tag": "0011_attention_contract",
+      "sha256": "56511beec032abba395854681d72374dccef6bc0c276c473aa0aa3bc5a383d1a"
+    },
+    {
+      "idx": 12,
+      "when": 1789132956208,
+      "tag": "0012_effect_identity",
+      "sha256": "777d7e5f17abf0355032a31fd62b3918a593e761545c8ad1bb2960afbdd52c2e"
+    },
+    {
+      "idx": 13,
+      "when": 1789135166573,
+      "tag": "0013_memory_provenance",
+      "sha256": "2916c19ec566220b701d93be2ab0f460e8f088415771000a2a8e2bfedc0f0478"
+    },
+    {
+      "idx": 14,
+      "when": 1789138257643,
+      "tag": "0014_thankful_sharon_ventura",
+      "sha256": "28cc19c7d7c2e6a20238cfbb897ac35eddd87fad57cf95e49e48f3285a3a34e2"
+    },
+    {
+      "idx": 15,
+      "when": 1789152918161,
+      "tag": "0015_typed_repair",
+      "sha256": "0fe7aa0ee3b714f824eb0b904e32271c8d59b2b127274d00ad1d6fee3524ecbb"
+    },
+    {
+      "idx": 16,
+      "when": 1789152918162,
+      "tag": "0016_artifact_validation",
+      "sha256": "3f13ef06e08f6229f6eb287c3f48140493fe500a0811d3f61f4942097bae06cc"
+    },
+    {
+      "idx": 17,
+      "when": 1789161120201,
+      "tag": "0017_artifact_content_digest",
+      "sha256": "1cbeee472542e9363dc7afc2e31b5854a8e79988724458fbd9da8f2ca4f27963"
+    },
+    {
+      "idx": 18,
+      "when": 1789161120202,
+      "tag": "0018_reactions_and_style",
+      "sha256": "56f29bcca4320268f6f7828da0bb131eda43108a67e924b0495d5f96b61dfa5d"
+    },
+    {
+      "idx": 19,
+      "when": 1789161120203,
+      "tag": "0019_watch_triggers",
+      "sha256": "0582af6c9bc2fc2b8ee89e75d4e4e740dd5c4ae50e0b1b4abe578e3330eb9022"
+    },
+    {
+      "idx": 20,
+      "when": 1789232400000,
+      "tag": "0020_tool_catalog",
+      "sha256": "4182f649b966f79d3d80928ce0c792d6ea7ad0217744fc7c5742c9d8fc8fb9b9"
+    },
+    {
+      "idx": 21,
+      "when": 1789232400001,
+      "tag": "0021_browser_recipes",
+      "sha256": "20e9e7eb60892838e019554c9ab01b919f96adce84dc8aaace1205a02b97e62a"
+    },
+    {
+      "idx": 22,
+      "when": 1789232400002,
+      "tag": "0022_browser_sessions",
+      "sha256": "f41ab3edbb6e0c54ca998f6063c916de20e08773237ff2a1d48ff671f2ad7c4c"
+    },
+    {
+      "idx": 23,
+      "when": 1789232400003,
+      "tag": "0023_simple_reavers",
+      "sha256": "1c22f153769fe70c726281c4b9729a7c182d92881955a507db8f13c90ebb2d39"
+    },
+    {
+      "idx": 24,
+      "when": 1789232400004,
+      "tag": "0024_outgoing_redwing",
+      "sha256": "42828a0c8e0af6ea6ac45ba235ab40e9e4174ebbb91fed4be0d566caef33d09e"
+    },
+    {
+      "idx": 25,
+      "when": 1789232400005,
+      "tag": "0025_free_puma",
+      "sha256": "84d6532e09a9006052079d5ec542d5b919ce0664c6c36830cf96643ea623f437"
+    },
+    {
+      "idx": 26,
+      "when": 1789232400006,
+      "tag": "0026_calm_forgotten_one",
+      "sha256": "8f2da0ab1005d6d6d1f873ae27e85a7212c21b1d8bcea19d223ebe28f28fbe77"
+    },
+    {
+      "idx": 27,
+      "when": 1789232400007,
+      "tag": "0027_petite_demogoblin",
+      "sha256": "2619f207e4436c8ddceb393755b6c42985f5fba2923a2fa166faf2374326bf95"
+    },
+    {
+      "idx": 28,
+      "when": 1789232400008,
+      "tag": "0028_lush_magdalene",
+      "sha256": "096d1355f0a389fc074691aaeb422e84eb6b0724e0b6d1e977202b5a9ceba471"
+    },
+    {
+      "idx": 29,
+      "when": 1789232400009,
+      "tag": "0029_public_william_stryker",
+      "sha256": "b4c73c963e167c7d736174b5247fa2b1fa60c458a17bbd521864308be4c8473f"
+    },
+    {
+      "idx": 30,
+      "when": 1789232400010,
+      "tag": "0030_secret_silver_sable",
+      "sha256": "e043c6598b20bbd56210b659a5ad80626f3cf4e97299e4d0b68f65effbe3306b"
+    },
+    {
+      "idx": 31,
+      "when": 1789232400011,
+      "tag": "0031_same_stingray",
+      "sha256": "064ae7eb70f96dcc1caf23fcf113fb66d96e08c0adb8d456589fdc3bd423989e"
+    },
+    {
+      "idx": 32,
+      "when": 1789232400012,
+      "tag": "0032_organic_maria_hill",
+      "sha256": "edd2a6328b62cae6cd27598412718aa9da0c7fb935d2169b47d809a394e7e912"
+    },
+    {
+      "idx": 33,
+      "when": 1789232400013,
+      "tag": "0033_busy_whiplash",
+      "sha256": "dac10c527f186e2570aaefecf91cab3dd1db9cf125313a39a484bd3604c94c56"
+    },
+    {
+      "idx": 34,
+      "when": 1789232400014,
+      "tag": "0034_clumsy_harry_osborn",
+      "sha256": "0435a9120a527de51847c71476b2bcc5366a8d9a233e43fbc617c25f333d862e"
+    }
+  ]
+}
