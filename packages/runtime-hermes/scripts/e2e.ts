@@ -45,8 +45,37 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-/** A HERMES_HOME with the thin config and the plugin, built fresh each run. */
-export function hermesHome(brokerPort: number, apiPort: number, token: string): string {
+/** Deep-merges a config override so a caller can set one nested key and no more. */
+function merge(base: Record<string, unknown>, extra: Record<string, unknown>) {
+  for (const [key, value] of Object.entries(extra)) {
+    const current = base[key];
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      current !== null &&
+      typeof current === 'object' &&
+      !Array.isArray(current)
+    ) {
+      merge(current as Record<string, unknown>, value as Record<string, unknown>);
+    } else base[key] = value;
+  }
+  return base;
+}
+
+/**
+ * A HERMES_HOME with the thin config and the plugin, built fresh each run.
+ *
+ * `overrides` is merged over the config so a proof that needs a different
+ * engine setting states only that setting, and every other key stays the one
+ * the ordinary end-to-end runs with.
+ */
+export function hermesHome(
+  brokerPort: number,
+  apiPort: number,
+  token: string,
+  overrides: Record<string, unknown> = {},
+): string {
   const home = mkdtempSync(join(tmpdir(), 'melete-e2e-home-'));
   mkdirSync(join(home, 'plugins'), { recursive: true });
   cpSync(
@@ -58,37 +87,42 @@ export function hermesHome(brokerPort: number, apiPort: number, token: string): 
   );
   writeFileSync(
     join(home, 'config.yaml'),
-    stringify({
-      platform_toolsets: { api_server: ['melete'] },
-      plugins: { enabled: ['melete'], allow_deprecated_imports: false },
-      tools: { tool_search: { enabled: 'off' } },
-      memory: { enabled: false },
-      skills: { enabled: false },
-      curator: { enabled: false },
-      auxiliary: {
-        title_generation: { enabled: false },
-        background_review: { enabled: false },
-        compression: { provider: 'melete-gateway', model: 'scripted', fallback_chain: [] },
-      },
-      approvals: { unattended_mode: 'deny', timeout: 300 },
-      provider: 'melete-gateway',
-      // The gateway's budget adapter allows only the provider/model recorded on
-      // the attempt row, so these have to be the seeded pair, not a nice name.
-      model: { default: 'scripted', context_length: 256_000 },
-      providers: {
-        'melete-gateway': {
-          base_url: `http://127.0.0.1:${brokerPort}/providers/fake/v1`,
-          key_env: 'MELETE_MODEL_KEY',
-          default_model: 'scripted',
-          // The gateway meters per attempt, so every model request has to carry
-          // the capability as well as the surrogate. The container is one
-          // attempt, so a static header is the right shape; the image's
-          // entrypoint writes it from MELETE_ATTEMPT_TOKEN at boot.
-          extra_headers: { 'x-melete-capability': token },
+    stringify(
+      merge(
+        {
+          platform_toolsets: { api_server: ['melete'] },
+          plugins: { enabled: ['melete'], allow_deprecated_imports: false },
+          tools: { tool_search: { enabled: 'off' } },
+          memory: { enabled: false },
+          skills: { enabled: false },
+          curator: { enabled: false },
+          auxiliary: {
+            title_generation: { enabled: false },
+            background_review: { enabled: false },
+            compression: { provider: 'melete-gateway', model: 'scripted', fallback_chain: [] },
+          },
+          approvals: { unattended_mode: 'deny', timeout: 300 },
+          provider: 'melete-gateway',
+          // The gateway's budget adapter allows only the provider/model recorded on
+          // the attempt row, so these have to be the seeded pair, not a nice name.
+          model: { default: 'scripted', context_length: 256_000 },
+          providers: {
+            'melete-gateway': {
+              base_url: `http://127.0.0.1:${brokerPort}/providers/fake/v1`,
+              key_env: 'MELETE_MODEL_KEY',
+              default_model: 'scripted',
+              // The gateway meters per attempt, so every model request has to carry
+              // the capability as well as the surrogate. The container is one
+              // attempt, so a static header is the right shape; the image's
+              // entrypoint writes it from MELETE_ATTEMPT_TOKEN at boot.
+              extra_headers: { 'x-melete-capability': token },
+            },
+          },
+          gateway: { platforms: { api_server: { max_concurrent_runs: 1 } } },
         },
-      },
-      gateway: { platforms: { api_server: { max_concurrent_runs: 1 } } },
-    }),
+        overrides,
+      ),
+    ),
     'utf8',
   );
   void apiPort;

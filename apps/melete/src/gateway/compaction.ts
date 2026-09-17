@@ -26,14 +26,20 @@ export const SUMMARY_PROMPT_MARKER = 'You are a summarization agent creating a c
 export const SCRIPTED_SUMMARY = 'SCRIPTED-SUMMARY-7f3a';
 
 /**
- * What the scripted summary claims to cost. The engine asks for a summary of
- * up to min(5% of the window, 10,000) tokens and sends no limit of its own, so
- * a gateway that substitutes a smaller one truncates the answer. A real
- * provider reports that as a `length` stop and the engine treats the summary as
- * failed; this script reports it the same way rather than pretending a
- * truncated request produced a whole summary.
+ * The engine states the length it wants in the prompt it sends, so the script
+ * reads that rather than guessing: a summary of the size that was asked for is
+ * what a real model would try to write. When the gateway grants fewer output
+ * tokens than the ask, a real provider stops at `length` and the engine treats
+ * the summary as failed, so the script answers the same way instead of
+ * pretending a truncated request produced a whole summary.
  */
-export const SUMMARY_OUTPUT_TOKENS = 3200;
+const SUMMARY_TARGET = /Target ~(\d+) tokens\./;
+
+/** Used when the prompt states no target, which the pinned engine always does. */
+export const SUMMARY_OUTPUT_TOKENS = 2000;
+
+/** What the script says once every fixture is read. */
+const CLOSING_TEXT = 'Read every fixture and finished.';
 
 /** The reads the script asks for, in order. The caller writes the fixtures. */
 export const COMPACTION_FIXTURES = [
@@ -52,8 +58,12 @@ export type CompactionCall = {
   carriesSummary: boolean;
   /** The output limit the request arrived with, or null when it named none. */
   grantedOutputTokens: number | null;
+  /** The summary length the engine asked for in its prompt, when it is one. */
+  requestedSummaryTokens: number | null;
   /** How the script answered: `length` means the granted limit truncated it. */
   finish: 'stop' | 'tool_calls' | 'length';
+  /** The assistant text the script returned, when it returned text. */
+  answered: string | null;
 };
 
 export interface CompactionScript {
@@ -82,13 +92,15 @@ function text(content: unknown): string {
     .join('\n');
 }
 
-function isSummaryRequest(body: Record<string, unknown>): boolean {
+/** The summary prompt, or null when the request is an ordinary main-model call. */
+function summaryPrompt(body: Record<string, unknown>): string | null {
   const tools = body.tools;
-  if (Array.isArray(tools) ? tools.length > 0 : tools !== undefined) return false;
+  if (Array.isArray(tools) ? tools.length > 0 : tools !== undefined) return null;
   const rows = messages(body);
   const users = rows.filter((row) => row.role === 'user');
-  if (rows.length !== 1 || users.length !== 1) return false;
-  return text(users[0]?.content).includes(SUMMARY_PROMPT_MARKER);
+  if (rows.length !== 1 || users.length !== 1) return null;
+  const prompt = text(users[0]?.content);
+  return prompt.includes(SUMMARY_PROMPT_MARKER) ? prompt : null;
 }
 
 function grantedOutputTokens(body: Record<string, unknown>): number | null {
@@ -117,23 +129,29 @@ export function createCompactionScript(
       const promptTokens = Math.ceil(bytes / 4);
       const granted = grantedOutputTokens(body);
       const carriesSummary = encoded.includes(SCRIPTED_SUMMARY);
-      if (isSummaryRequest(body)) {
-        // A granted limit below what the summary needs truncates it, exactly as
-        // a real provider would, and the engine reads that as a failed summary.
-        const truncated = granted !== null && granted < SUMMARY_OUTPUT_TOKENS;
+      const prompt = summaryPrompt(body);
+      if (prompt !== null) {
+        const asked = Number(SUMMARY_TARGET.exec(prompt)?.[1] ?? SUMMARY_OUTPUT_TOKENS);
+        // A granted limit below what was asked for truncates the answer, exactly
+        // as a real provider would, and the engine reads that as a failed summary.
+        const truncated = granted !== null && granted < asked;
+        // A truncated answer stops mid-word, so the marker never survives it.
+        const written = truncated ? summaryBody().slice(0, 12) : summaryBody();
         calls.push({
           kind: 'summary',
           bytes,
           carriesSummary,
           grantedOutputTokens: granted,
+          requestedSummaryTokens: asked,
           finish: truncated ? 'length' : 'stop',
+          answered: written,
         });
         return answer(protocol, body, {
-          text: truncated ? SCRIPTED_SUMMARY.slice(0, 8) : summaryBody(),
+          text: written,
           finish: truncated ? 'length' : 'stop',
           index: calls.length - 1,
           promptTokens,
-          completionTokens: truncated ? (granted ?? 0) : SUMMARY_OUTPUT_TOKENS,
+          completionTokens: truncated ? (granted ?? 0) : asked,
         });
       }
       const index = turns.get(attemptId) ?? 0;
@@ -144,11 +162,13 @@ export function createCompactionScript(
         bytes,
         carriesSummary,
         grantedOutputTokens: granted,
+        requestedSummaryTokens: null,
         finish: fixture ? 'tool_calls' : 'stop',
+        answered: fixture ? null : CLOSING_TEXT,
       });
       if (!fixture) {
         return answer(protocol, body, {
-          text: 'Read every fixture and finished.',
+          text: CLOSING_TEXT,
           finish: 'stop',
           index,
           promptTokens,
