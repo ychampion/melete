@@ -572,7 +572,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema80"
+                  "$ref": "#/components/schemas/__schema81"
                 }
               }
             }
@@ -12449,7 +12449,7 @@
                 "pattern": "^[a-f0-9]{64}$"
               },
               "approved_at": {
-                "$ref": "#/components/schemas/__schema79"
+                "$ref": "#/components/schemas/__schema80"
               }
             },
             "required": [

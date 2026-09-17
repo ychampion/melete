@@ -3,7 +3,7 @@ import { desc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { CANARY_INTERVENTION } from '../../src/learning/canary.ts';
 import { mountProcedures } from '../../src/learning/procedure-routes.ts';
-import { procedureCandidate, procedureTransition } from '../../src/learning/schema.ts';
+import { episode, procedureCandidate, procedureTransition } from '../../src/learning/schema.ts';
 import { newId } from '../../src/memory/db.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { rejectsWith, wake } from './learning-fixtures.ts';
@@ -126,6 +126,17 @@ async function sharedSpace(withMember = false) {
       .set({ promotion: trial.promotion })
       .where(eq(procedureCandidate.id, candidate.id));
     expect(await skillsFor(spaceId, 'Draft a follow-up email to the plumber')).toContain(name);
+    // The trial is bound to its origin space as well as to the candidate's own.
+    await fixture.handle.db
+      .update(procedureCandidate)
+      .set({ canarySpaceId: elsewhere })
+      .where(eq(procedureCandidate.id, candidate.id));
+    expect(await skillsFor(spaceId, 'Draft a follow-up email to the plumber')).not.toContain(name);
+    await fixture.handle.db
+      .update(procedureCandidate)
+      .set({ canarySpaceId: spaceId })
+      .where(eq(procedureCandidate.id, candidate.id));
+    expect(await skillsFor(spaceId, 'Draft a follow-up email to the plumber')).toContain(name);
   }, 120000);
 
   test('an owner trial with a stale definition hash is refused', async () => {
@@ -168,6 +179,16 @@ async function sharedSpace(withMember = false) {
     expect(
       await skillsFor(spaceId, 'Draft a follow-up email to the plumber', memberId),
     ).not.toContain(name);
+    // Nor can the space owner try what someone else's correction taught.
+    const borrowed = await uncheckedCandidate(spaceId, 'trial-borrowed');
+    await fixture.handle.db
+      .update(episode)
+      .set({ actor: memberId })
+      .where(eq(episode.id, borrowed.episodeId));
+    await rejectsWith(
+      () => fixture.procedures.startTrial(fixture.ownerId, spaceId, borrowed.id, borrowed.bodyHash),
+      'trial_denied',
+    );
   }, 120000);
 
   test('an owner trial cannot be activated for a space without sealed final evidence', async () => {
