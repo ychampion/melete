@@ -57,7 +57,6 @@ do on each date if they say no. No account, no inbox, nothing to install.
 Melete is yours to run: your machine, your mailbox, your model provider, your
 keys. Everything below is the whole install.
 
-<!-- platforms: finalise after the host-support work lands -->
 ### Install on a Linux Docker host
 
 Use Docker Engine **28 or newer** and Docker Compose **2.33.1 or newer**, with
@@ -199,19 +198,6 @@ service, which meters every request, and each attempt gets a short-lived
 capability and a surrogate credential instead. The container the model runs in
 has one reachable peer, the broker: no internet, no host metadata address, no
 database, no web service, no owner control plane.
-
-<!-- learning: finalise after the general-learning work lands -->
-### Learns how you like things done
-
-When you correct Melete, the correction can become a proposed way of working
-rather than a one-off fix. Before it changes anything, the proposal is measured
-against held-out work — different tasks, different data, a baseline arm and a
-candidate arm — and it goes forward only if it produces better results with
-fewer corrections and regresses on nothing. It then runs once on real work
-before you switch it on. You can read the compiled procedure, see the evidence
-behind it, and roll it back with one call. A procedure changes how work is done;
-it never grants a permission, unlocks a credential, or widens what a job may
-read.
 
 ## Develop and verify
 
