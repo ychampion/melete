@@ -1,0 +1,11 @@
+{
+  "fixture": "e2b",
+  "source": "authored-from-documented-api",
+  "note": "Authored from the documented E2B API before an account was available, not recorded from E2B. Re-record with MELETE_SANDBOX_LIVE=e2b, E2B_API_KEY and MELETE_SANDBOX_RECORD=1.",
+  "api": {
+    "control": "E2B REST API, spec/openapi.yml, e2b-dev/E2B at 3e5a48b",
+    "envd": "envd process and filesystem Connect services and /files, spec/envd, e2b-dev/E2B at 3e5a48b",
+    "sdk": "e2b 2.50.0 (JavaScript SDK), read for request shapes"
+  },
+  "exchanges": []
+}

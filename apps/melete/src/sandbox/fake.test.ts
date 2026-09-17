@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { sandboxConformance } from './conformance.ts';
 import { FakeSandboxProvider, fakeEgress } from './fake.ts';
+import { runCommand } from './marker.ts';
 
 sandboxConformance('fake', async () => {
   const provider = new FakeSandboxProvider();
@@ -10,6 +11,40 @@ sandboxConformance('fake', async () => {
     loseNextAcknowledgement: (when) => provider.loseNextAcknowledgement(when),
     close: async () => {},
   };
+});
+
+test('stdin given to a marked command reaches it', async () => {
+  const provider = new FakeSandboxProvider();
+  const handle = await provider.create(
+    {
+      image: 'base',
+      egress: { kind: 'deny_all' },
+      region: null,
+      lifetimeSeconds: 60,
+      idleSeconds: null,
+      workdir: '/work',
+      labels: {},
+      env: {},
+    },
+    AbortSignal.timeout(1_000),
+  );
+  const result = await runCommand({
+    provider,
+    handle,
+    request: {
+      marker: 'act_01J0FAKESTDIN000000000000',
+      argv: ['cat'],
+      stdin: new TextEncoder().encode('piped'),
+      timeoutMs: 5_000,
+      dispatch: 'first',
+    },
+    workRoot: '.',
+    jobId: 'job_FAKESTDIN',
+    signal: AbortSignal.timeout(5_000),
+  });
+  expect(result.outcome === 'succeeded' && new TextDecoder().decode(result.record.preview)).toBe(
+    'piped',
+  );
 });
 
 test('the fake refuses an egress policy outside its declared capabilities', async () => {

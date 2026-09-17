@@ -1,0 +1,156 @@
+{
+  "fixture": "e2b",
+  "source": "authored-from-documented-api",
+  "note": "Authored from the documented E2B API before an account was available, not recorded from E2B. Re-record with MELETE_SANDBOX_LIVE=e2b, E2B_API_KEY and MELETE_SANDBOX_RECORD=1.",
+  "api": {
+    "control": "E2B REST API, spec/openapi.yml, e2b-dev/E2B at 3e5a48b",
+    "envd": "envd process and filesystem Connect services and /files, spec/envd, e2b-dev/E2B at 3e5a48b",
+    "sdk": "e2b 2.50.0 (JavaScript SDK), read for request shapes"
+  },
+  "exchanges": [
+    {
+      "request": {
+        "atMs": 2,
+        "method": "GET",
+        "url": "https://api.e2b.app/v2/sandboxes",
+        "path": "/v2/sandboxes?metadata=melete.owner%3Dv1%26melete.project%3Dinstall-a&state=running,paused&limit=100",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "W3sidGVtcGxhdGVJRCI6ImJhc2UiLCJzYW5kYm94SUQiOiJmYWtlLXNieC0wMDAxIiwiY2xpZW50SUQiOiIwMDAwMDAwMCIsInN0YXJ0ZWRBdCI6IjIwMjYtMDktMTdUMDA6MDA6MDBaIiwiZW5kQXQiOiIyMDI2LTA5LTE3VDAwOjAwOjAwWiIsImNwdUNvdW50IjoyLCJtZW1vcnlNQiI6NTEyLCJkaXNrU2l6ZU1CIjoxMDI0MCwibWV0YWRhdGEiOnsibWVsZXRlLm93bmVyIjoidjEiLCJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYSIsIm1lbGV0ZS5zcGFjZSI6InNwX0EiLCJtZWxldGUuc2Vzc2lvbiI6InNieF9PTkUifSwic3RhdGUiOiJydW5uaW5nIiwiZW52ZFZlcnNpb24iOiIwLjYuNCJ9LHsidGVtcGxhdGVJRCI6ImJhc2UiLCJzYW5kYm94SUQiOiJmYWtlLXNieC0wMDAyIiwiY2xpZW50SUQiOiIwMDAwMDAwMCIsInN0YXJ0ZWRBdCI6IjIwMjYtMDktMTdUMDA6MDA6MDBaIiwiZW5kQXQiOiIyMDI2LTA5LTE3VDAwOjAwOjAwWiIsImNwdUNvdW50IjoyLCJtZW1vcnlNQiI6NTEyLCJkaXNrU2l6ZU1CIjoxMDI0MCwibWV0YWRhdGEiOnsibWVsZXRlLm93bmVyIjoidjEiLCJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYSIsIm1lbGV0ZS5zcGFjZSI6InNwX0EiLCJtZWxldGUuc2Vzc2lvbiI6InNieF9PUlBIQU4ifSwic3RhdGUiOiJydW5uaW5nIiwiZW52ZFZlcnNpb24iOiIwLjYuNCJ9LHsidGVtcGxhdGVJRCI6ImJhc2UiLCJzYW5kYm94SUQiOiJmYWtlLXNieC0wMDAzIiwiY2xpZW50SUQiOiIwMDAwMDAwMCIsInN0YXJ0ZWRBdCI6IjIwMjYtMDktMTdUMDA6MDA6MDBaIiwiZW5kQXQiOiIyMDI2LTA5LTE3VDAwOjAwOjAwWiIsImNwdUNvdW50IjoyLCJtZW1vcnlNQiI6NTEyLCJkaXNrU2l6ZU1CIjoxMDI0MCwibWV0YWRhdGEiOnsibWVsZXRlLm93bmVyIjoidjEiLCJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYSIsIm1lbGV0ZS5zcGFjZSI6InNwX0EiLCJtZWxldGUuc2Vzc2lvbiI6InNieF9MSVZFIn0sInN0YXRlIjoicnVubmluZyIsImVudmRWZXJzaW9uIjoiMC42LjQifSx7InRlbXBsYXRlSUQiOiJiYXNlIiwic2FuZGJveElEIjoiZmFrZS1zYngtMDAwNCIsImNsaWVudElEIjoiMDAwMDAwMDAiLCJzdGFydGVkQXQiOiIyMDI2LTA5LTE3VDAwOjAwOjAwWiIsImVuZEF0IjoiMjAyNi0wOS0xN1QwMDowMDowMFoiLCJjcHVDb3VudCI6MiwibWVtb3J5TUIiOjUxMiwiZGlza1NpemVNQiI6MTAyNDAsIm1ldGFkYXRhIjp7Im1lbGV0ZS5vd25lciI6InYxIiwibWVsZXRlLnByb2plY3QiOiJpbnN0YWxsLWIiLCJtZWxldGUuc3BhY2UiOiJzcF9CIiwibWVsZXRlLnNlc3Npb24iOiJzYnhfT1RIRVIifSwic3RhdGUiOiJydW5uaW5nIiwiZW52ZFZlcnNpb24iOiIwLjYuNCJ9LHsidGVtcGxhdGVJRCI6ImJhc2UiLCJzYW5kYm94SUQiOiJmYWtlLXNieC0wMDA1IiwiY2xpZW50SUQiOiIwMDAwMDAwMCIsInN0YXJ0ZWRBdCI6IjIwMjYtMDktMTdUMDA6MDA6MDBaIiwiZW5kQXQiOiIyMDI2LTA5LTE3VDAwOjAwOjAwWiIsImNwdUNvdW50IjoyLCJtZW1vcnlNQiI6NTEyLCJkaXNrU2l6ZU1CIjoxMDI0MCwibWV0YWRhdGEiOnt9LCJzdGF0ZSI6InJ1bm5pbmciLCJlbnZkVmVyc2lvbiI6IjAuNi40In0seyJ0ZW1wbGF0ZUlEIjoiYmFzZSIsInNhbmRib3hJRCI6ImZha2Utc2J4LTAwMDYiLCJjbGllbnRJRCI6IjAwMDAwMDAwIiwic3RhcnRlZEF0IjoiMjAyNi0wOS0xN1QwMDowMDowMFoiLCJlbmRBdCI6IjIwMjYtMDktMTdUMDA6MDA6MDBaIiwiY3B1Q291bnQiOjIsIm1lbW9yeU1CIjo1MTIsImRpc2tTaXplTUIiOjEwMjQwLCJtZXRhZGF0YSI6eyJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYSIsIm1lbGV0ZS5zZXNzaW9uIjoic2J4X05PT1dORVIifSwic3RhdGUiOiJydW5uaW5nIiwiZW52ZFZlcnNpb24iOiIwLjYuNCJ9XQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 2,
+        "body": [
+          {
+            "templateID": "base",
+            "sandboxID": "fake-sbx-0001",
+            "clientID": "00000000",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "endAt": "2026-09-17T00:00:00Z",
+            "cpuCount": 2,
+            "memoryMB": 512,
+            "diskSizeMB": 10240,
+            "metadata": {
+              "melete.owner": "v1",
+              "melete.project": "install-a",
+              "melete.space": "sp_A",
+              "melete.session": "sbx_ONE"
+            },
+            "state": "running",
+            "envdVersion": "0.6.4"
+          },
+          {
+            "templateID": "base",
+            "sandboxID": "fake-sbx-0002",
+            "clientID": "00000000",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "endAt": "2026-09-17T00:00:00Z",
+            "cpuCount": 2,
+            "memoryMB": 512,
+            "diskSizeMB": 10240,
+            "metadata": {
+              "melete.owner": "v1",
+              "melete.project": "install-a",
+              "melete.space": "sp_A",
+              "melete.session": "sbx_ORPHAN"
+            },
+            "state": "running",
+            "envdVersion": "0.6.4"
+          },
+          {
+            "templateID": "base",
+            "sandboxID": "fake-sbx-0003",
+            "clientID": "00000000",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "endAt": "2026-09-17T00:00:00Z",
+            "cpuCount": 2,
+            "memoryMB": 512,
+            "diskSizeMB": 10240,
+            "metadata": {
+              "melete.owner": "v1",
+              "melete.project": "install-a",
+              "melete.space": "sp_A",
+              "melete.session": "sbx_LIVE"
+            },
+            "state": "running",
+            "envdVersion": "0.6.4"
+          },
+          {
+            "templateID": "base",
+            "sandboxID": "fake-sbx-0004",
+            "clientID": "00000000",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "endAt": "2026-09-17T00:00:00Z",
+            "cpuCount": 2,
+            "memoryMB": 512,
+            "diskSizeMB": 10240,
+            "metadata": {
+              "melete.owner": "v1",
+              "melete.project": "install-b",
+              "melete.space": "sp_B",
+              "melete.session": "sbx_OTHER"
+            },
+            "state": "running",
+            "envdVersion": "0.6.4"
+          },
+          {
+            "templateID": "base",
+            "sandboxID": "fake-sbx-0005",
+            "clientID": "00000000",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "endAt": "2026-09-17T00:00:00Z",
+            "cpuCount": 2,
+            "memoryMB": 512,
+            "diskSizeMB": 10240,
+            "metadata": {},
+            "state": "running",
+            "envdVersion": "0.6.4"
+          },
+          {
+            "templateID": "base",
+            "sandboxID": "fake-sbx-0006",
+            "clientID": "00000000",
+            "startedAt": "2026-09-17T00:00:00Z",
+            "endAt": "2026-09-17T00:00:00Z",
+            "cpuCount": 2,
+            "memoryMB": 512,
+            "diskSizeMB": 10240,
+            "metadata": {
+              "melete.project": "install-a",
+              "melete.session": "sbx_NOOWNER"
+            },
+            "state": "running",
+            "envdVersion": "0.6.4"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "atMs": 4,
+        "method": "DELETE",
+        "url": "https://api.e2b.app/sandboxes/fake-sbx-0002",
+        "path": "/sandboxes/fake-sbx-0002",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 204,
+        "headers": {},
+        "chunks": [],
+        "end": "complete",
+        "atMs": 5
+      }
+    }
+  ]
+}

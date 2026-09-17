@@ -72,7 +72,7 @@ export class FakeFs {
 
   constructor() {
     this.nodes.set('/', { kind: 'dir', mode: 0o755 });
-    for (const dir of ['/etc', '/home', '/home/user', '/tmp', '/var', '/var/tmp', '/work'])
+    for (const dir of ['/etc', '/home', '/home/user', '/tmp', '/var', '/var/tmp'])
       this.nodes.set(dir, { kind: 'dir', mode: dir.endsWith('tmp') ? 0o1777 : 0o755 });
     this.nodes.set('/etc/passwd', {
       kind: 'file',
@@ -524,7 +524,7 @@ class ExitSignal {
 export class KilledSignal extends Error {}
 
 type Sink = (bytes: Uint8Array) => void;
-type Io = { out: Sink; err: Sink; stdin: Uint8Array };
+type Io = { out: Sink; err: Sink };
 
 type Shell = {
   sandbox: FakeSandbox;
@@ -634,7 +634,7 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     }
     case 'cat': {
       if (!args.length) {
-        io.out(io.stdin);
+        io.out(await shell.process.readStdin());
         return 0;
       }
       for (const file of args) {
@@ -860,12 +860,40 @@ async function runScript(
 export class FakeProcess {
   readonly controller = new AbortController();
   finished = false;
+  private readonly input: Uint8Array[] = [];
+  private endInput: () => void = () => {};
+  private readonly inputEnded = new Promise<void>((resolve) => {
+    this.endInput = resolve;
+  });
   constructor(
     readonly pid: number,
     readonly done: Promise<{ exitCode: number | null; killed: boolean }>,
   ) {}
   kill(): void {
     this.controller.abort();
+  }
+  writeStdin(bytes: Uint8Array): void {
+    this.input.push(bytes);
+  }
+  closeStdin(): void {
+    this.endInput();
+  }
+  /** Everything written to stdin, once it is closed. */
+  async readStdin(): Promise<Uint8Array> {
+    await new Promise<void>((resolve, reject) => {
+      if (this.controller.signal.aborted) return reject(new KilledSignal());
+      this.controller.signal.addEventListener('abort', () => reject(new KilledSignal()), {
+        once: true,
+      });
+      void this.inputEnded.then(resolve);
+    });
+    const out = new Uint8Array(this.input.reduce((total, chunk) => total + chunk.byteLength, 0));
+    let offset = 0;
+    for (const chunk of this.input) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out;
   }
 }
 
@@ -933,7 +961,8 @@ export class FakeSandboxEngine {
   spawn(
     sandbox: FakeSandbox,
     argv: readonly string[],
-    options: { cwd: string; stdin?: Uint8Array; onOutput: Sink },
+    /** Bytes to deliver and close, or `open` to leave stdin for later writes. */
+    options: { cwd: string; stdin?: Uint8Array | 'open'; onOutput: Sink },
   ): FakeProcess {
     sandbox.nextPid += 1;
     const pid = sandbox.nextPid;
@@ -942,8 +971,12 @@ export class FakeSandboxEngine {
       resolveDone = resolve;
     });
     const child = new FakeProcess(pid, done);
+    if (options.stdin !== 'open') {
+      if (options.stdin) child.writeStdin(options.stdin);
+      child.closeStdin();
+    }
     sandbox.processes.set(pid, child);
-    const io: Io = { out: options.onOutput, err: options.onOutput, stdin: options.stdin ?? EMPTY };
+    const io: Io = { out: options.onOutput, err: options.onOutput };
     const shell: Shell = { sandbox, process: child, cwd: options.cwd, vars: new Map(), status: 0 };
     void (async () => {
       let result: { exitCode: number | null; killed: boolean };
