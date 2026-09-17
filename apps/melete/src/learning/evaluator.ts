@@ -3,6 +3,7 @@ import {
   attemptOutcome,
   attemptUsage,
   jsonObject,
+  type ProcedureDiscrimination,
   type RuntimeAdapter,
 } from '@melete/contracts';
 import { desc, eq, sql } from 'drizzle-orm';
@@ -15,11 +16,14 @@ import { type JobRow, JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import type { CheckReport } from './checks.ts';
 import type { ProcedureScope } from './contracts.ts';
+import { discriminate } from './discriminate.ts';
+import { discriminationInput } from './discrimination-input.ts';
 import { digest, type EpisodeRow } from './episodes.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import type { GateInput, Metric } from './gate.ts';
 import {
   type Candidate,
+  isGeneralProcedure,
   ProcedureService,
   transitionProcedure,
   verifyDefinition,
@@ -53,6 +57,19 @@ type Arm = {
   runtime: string;
   modelActual: string | null;
 };
+
+/** Field by field: a jsonb round trip may reorder keys but never changes a verdict. */
+export const sameDiscrimination = (
+  stored: ProcedureDiscrimination | null,
+  recomputed: ProcedureDiscrimination,
+) =>
+  !!stored &&
+  stored.status === recomputed.status &&
+  stored.detail === recomputed.detail &&
+  stored.prior_failed === recomputed.prior_failed &&
+  stored.corrected_failed === recomputed.corrected_failed &&
+  stored.empty_failed === recomputed.empty_failed &&
+  stored.junk_failed === recomputed.junk_failed;
 
 /** Every phase is two jobs per case; both caps are the gate's own. */
 export function assertEvaluationBudget(cases: readonly EvaluationCase[]) {
@@ -114,11 +131,23 @@ export class ProcedureEvaluator {
         if (candidate.rejectionReason)
           throw new ServiceError('candidate_rejected', 'This candidate remains rejected history.');
         // Checks that cannot tell the corrected answer from the objected one measure nothing.
-        if (candidate.discrimination && candidate.discrimination.status !== 'passed')
+        if (
+          (candidate.discrimination || isGeneralProcedure(candidate)) &&
+          candidate.discrimination?.status !== 'passed'
+        )
           throw new ServiceError(
             'checks_do_not_discriminate',
-            `checks_do_not_discriminate:${candidate.discrimination.detail}`,
+            `checks_do_not_discriminate:${candidate.discrimination?.detail ?? 'unrecorded'}`,
           );
+        // The stored verdict is a record, not an authority: it has to follow from the episode now.
+        if (isGeneralProcedure(candidate)) {
+          const recomputed = discriminate(candidate.checks, await discriminationInput(tx, source));
+          if (!sameDiscrimination(candidate.discrimination, recomputed))
+            throw new ServiceError(
+              'discrimination_changed',
+              `The recorded discrimination no longer follows from the episode: ${recomputed.detail}.`,
+            );
+        }
         const [existing] = await tx
           .select()
           .from(procedureEvaluation)

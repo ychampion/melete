@@ -3,6 +3,8 @@ import type { ProcedureDiscrimination } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { job } from '../../src/db/schema.ts';
 import { admitProposal } from '../../src/learning/admit.ts';
+import { discriminate } from '../../src/learning/discriminate.ts';
+import { discriminationInput } from '../../src/learning/discrimination-input.ts';
 import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { definitionHash } from '../../src/learning/procedure.ts';
 import { ProcedureService } from '../../src/learning/procedures.ts';
@@ -24,7 +26,14 @@ afterAll(async () => {
 const objective = 'Draft a follow-up email to the recruiter';
 const correction = 'Use bullet points, and never open with a pleasantry.';
 
-async function storedCandidate(key: string, discrimination: ProcedureDiscrimination) {
+/**
+ * A general candidate stored directly. `recorded` runs the corrective job and stores
+ * the verdict the checks actually reach on that episode; any other value is stored as given.
+ */
+async function storedCandidate(
+  key: string,
+  discrimination: ProcedureDiscrimination | 'recorded' | null,
+) {
   if (!fixture) throw new Error('No fixture');
   const row = await principalContext.run(fixture.ownerId, () =>
     fixture.jobs.create({ space_id: fixture.spaceId, title: 'Follow-up', objective }),
@@ -80,6 +89,26 @@ async function storedCandidate(key: string, discrimination: ProcedureDiscriminat
     scope: source.scope,
     compatibleModels: ['fake/scripted-learning-v1'],
   };
+  let stored = discrimination === 'recorded' ? null : discrimination;
+  if (discrimination === 'recorded') {
+    if (!source.correctiveJobId) throw new Error('No corrective job');
+    const corrective = await fixture.runner.claim(
+      wake(await fixture.jobs.get(source.correctiveJobId)),
+    );
+    if (!corrective) throw new Error('No corrective attempt');
+    await fixture.runner.commitOutcome(corrective.claims, {
+      kind: 'completed',
+      summary: '- Thank you for the interview\n- I can share references',
+      evidence: [],
+    });
+    const [corrected] = await fixture.handle.db
+      .select()
+      .from(episode)
+      .where(eq(episode.id, source.id));
+    if (!corrected) throw new Error('No episode');
+    stored = discriminate(admitted.checks, await discriminationInput(fixture.handle.db, corrected));
+    expect(stored.status).toBe('passed');
+  }
   const [saved] = await fixture.handle.db
     .insert(procedureCandidate)
     .values({
@@ -88,7 +117,7 @@ async function storedCandidate(key: string, discrimination: ProcedureDiscriminat
       episodeId: source.id,
       spaceId: fixture.spaceId,
       bodyHash: definitionHash(definition),
-      discrimination,
+      discrimination: stored,
     })
     .returning();
   if (!saved) throw new Error('No candidate');
@@ -140,17 +169,56 @@ const verdict = (
       ).toEqual([]);
     }
     // A discriminating candidate passes this gate and stops at the next one instead.
-    const passing = await storedCandidate('passes-the-gate', verdict('passed', 'discriminates'));
+    const passing = await storedCandidate('passes-the-gate', 'recorded');
     await rejectsWith(
       () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, passing.id),
       'evaluation_suite_unavailable',
     );
   }, 30000);
 
+  test('a recorded discrimination that no longer follows from the episode is refused', async () => {
+    if (!fixture || !evaluator) return;
+    // Recorded as passing, but the corrected answer was never produced.
+    const forged = await storedCandidate('forged-verdict', verdict('passed', 'discriminates'));
+    await rejectsWith(
+      () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, forged.id),
+      'discrimination_changed',
+    );
+    // A general candidate with no recorded verdict at all is not evaluable either.
+    const unrecorded = await storedCandidate('unrecorded-verdict', null);
+    let caught: unknown;
+    try {
+      await evaluator.evaluate(fixture.ownerId, fixture.spaceId, unrecorded.id);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: 'checks_do_not_discriminate',
+      message: 'checks_do_not_discriminate:unrecorded',
+    });
+    // Honestly recorded, then the stored corrected answer changes: the verdict must be earned again.
+    const honest = await storedCandidate('verdict-then-changed', 'recorded');
+    await fixture.handle.db
+      .update(episode)
+      .set({ correctedOutput: 'Thank you for the interview. I can share references.' })
+      .where(eq(episode.id, honest.episodeId));
+    await rejectsWith(
+      () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, honest.id),
+      'discrimination_changed',
+    );
+    for (const candidate of [forged, unrecorded, honest])
+      expect(
+        await fixture.handle.db
+          .select()
+          .from(procedureEvaluation)
+          .where(eq(procedureEvaluation.candidateId, candidate.id)),
+      ).toEqual([]);
+  }, 40000);
+
   test('a stored general definition is re-verified against its rules and its source words', async () => {
     if (!fixture || !evaluator) return;
     const procedures = new ProcedureService(fixture.jobs);
-    const honest = await storedCandidate('verified-honest', verdict('passed', 'discriminates'));
+    const honest = await storedCandidate('verified-honest', 'recorded');
     // Untouched, it reaches the promotion rule rather than a verification failure.
     await rejectsWith(
       () => procedures.enableCanary(fixture.ownerId, fixture.spaceId, honest.id),
