@@ -1,0 +1,16 @@
+# Optional third file, after docker-compose.yml and docker-compose.tailscale.yml:
+#
+#   docker compose -f deploy/docker-compose.yml \
+#     -f deploy/docker-compose.tailscale.yml \
+#     -f deploy/docker-compose.tailscale-kernel.yml up -d
+#
+# Kernel networking instead of userspace networking. It raises throughput and it
+# asks the host for a TUN device and one capability, so it is a deliberate
+# choice rather than the default. Nothing else about the node changes.
+services:
+  tailscale:
+    environment:
+      TS_USERSPACE: "false"
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add: [NET_ADMIN]
