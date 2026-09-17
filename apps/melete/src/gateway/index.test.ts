@@ -345,6 +345,32 @@ describe('model gateway effect boundary', () => {
     expect(seen).toEqual(['http://127.0.0.1:11434/v1/chat/completions']);
   });
 
+  test('a plain HTTP endpoint without its own key is never sent the OpenAI key', async () => {
+    const seen: string[] = [];
+    const { post, budget } = await start({
+      // Compose hands an unset OPENAI_COMPAT_API_KEY over as an empty string.
+      providers: providersFromEnv({
+        OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+        OPENAI_COMPAT_API_KEY: '',
+        OPENAI_API_KEY: 'real-openai-secret',
+      }),
+      authenticate: async () => ({
+        ...principal,
+        allowedModels: [{ provider: 'openai-compatible', model: 'llama3.1' }],
+      }),
+      fetch: async (request) => {
+        seen.push(request.headers.get('authorization') ?? '');
+        return Response.json({ model: 'llama3.1', choices: [] });
+      },
+    });
+    const response = await post('/providers/openai-compatible/v1/chat/completions', {
+      model: 'llama3.1',
+    });
+    expect(response.status).toBe(503);
+    expect(seen).toEqual([]);
+    expect(budget.reservations).toHaveLength(0);
+  });
+
   test('Astra requires Responses and Anthropic drops sampling controls without rewriting history', async () => {
     const seen: Record<string, unknown>[] = [];
     const { post } = await start({

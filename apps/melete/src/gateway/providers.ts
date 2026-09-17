@@ -81,11 +81,15 @@ export function providersFromEnv(
     },
   ];
   if (env.OPENAI_COMPAT_BASE_URL) {
+    const baseUrl = `${env.OPENAI_COMPAT_BASE_URL.replace(/\/+$/, '')}/`;
     providers.push({
       name: OPENAI_COMPATIBLE,
-      baseUrl: `${env.OPENAI_COMPAT_BASE_URL.replace(/\/+$/, '')}/`,
+      baseUrl,
       // Compose passes an unset variable as an empty string, which is not a key.
-      apiKey: env.OPENAI_COMPAT_API_KEY || env.OPENAI_API_KEY,
+      // The OpenAI key is a built-in provider's credential: it may stand in only
+      // for an endpoint reached over HTTPS, never travel in plain text.
+      apiKey:
+        env.OPENAI_COMPAT_API_KEY || (isHttpsAddress(baseUrl) ? env.OPENAI_API_KEY : undefined),
       protocols: [...PROVIDER_PROTOCOLS[OPENAI_COMPATIBLE]],
       // The operator chose this address, and it may be a model server on their
       // own network. Every built-in upstream stays HTTPS.
@@ -122,6 +126,28 @@ export const PROVIDER_KEY_VARIABLES = {
 } as const satisfies Record<keyof typeof PROVIDER_PROTOCOLS, readonly string[]>;
 
 export const PROVIDER_NAMES: readonly string[] = Object.keys(PROVIDER_PROTOCOLS);
+
+/** True only for an address that parses as an https:// URL. */
+export function isHttpsAddress(address: string | undefined): boolean {
+  try {
+    return new URL(address ?? '').protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The variables the named provider's key is read from, given the address an
+ * OpenAI-compatible endpoint is configured with: OPENAI_API_KEY is read for it
+ * only when that address is HTTPS.
+ */
+export function providerKeyVariables(name: string, compatibleAddress?: string): readonly string[] {
+  if (name === OPENAI_COMPATIBLE && !isHttpsAddress(compatibleAddress))
+    return ['OPENAI_COMPAT_API_KEY'];
+  return Object.hasOwn(PROVIDER_KEY_VARIABLES, name)
+    ? PROVIDER_KEY_VARIABLES[name as keyof typeof PROVIDER_KEY_VARIABLES]
+    : [];
+}
 
 /**
  * Why the selected provider can never serve a request, in the operator's
@@ -162,10 +188,12 @@ export function providerKeyProblem(
 ): string | null {
   const provider = providers.find((candidate) => candidate.name === selected);
   if (!provider || provider.fake || provider.apiKey) return null;
-  const variables: readonly string[] = Object.hasOwn(PROVIDER_KEY_VARIABLES, selected)
-    ? PROVIDER_KEY_VARIABLES[selected as keyof typeof PROVIDER_KEY_VARIABLES]
-    : [];
-  return `MELETE_DEFAULT_PROVIDER is "${selected}", but ${variables.join(' and ')} ${variables.length > 1 ? 'are' : 'is'} empty. Every model call is refused with provider_key_unavailable until a key is set. A model server that checks no key still needs any non-empty value.`;
+  const variables = providerKeyVariables(selected, provider.baseUrl);
+  const plainHttp =
+    selected === OPENAI_COMPATIBLE && !isHttpsAddress(provider.baseUrl)
+      ? ' OPENAI_API_KEY is never sent to a plain http:// endpoint.'
+      : '';
+  return `MELETE_DEFAULT_PROVIDER is "${selected}", but ${variables.join(' and ')} ${variables.length > 1 ? 'are' : 'is'} empty. Every model call is refused with provider_key_unavailable until a key is set. A model server that checks no key still needs any non-empty value.${plainHttp}`;
 }
 
 /** HTTP absolute-form requests may only address the exact inference endpoints. */

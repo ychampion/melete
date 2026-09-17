@@ -73,6 +73,23 @@ describe('an operator-configured OpenAI-compatible endpoint', () => {
       );
   });
 
+  test('falls back to the OpenAI key only over HTTPS', () => {
+    const key = (address: string, own = '') =>
+      providersFromEnv({
+        OPENAI_API_KEY: 'openai-secret',
+        OPENAI_COMPAT_API_KEY: own,
+        OPENAI_COMPAT_BASE_URL: address,
+      }).at(-1)?.apiKey;
+    expect(key('https://models.example.net/v1')).toBe('openai-secret');
+    for (const address of [
+      'http://192.168.1.20:11434/v1',
+      'HTTP://127.0.0.1:11434/v1',
+      ' http://127.0.0.1:11434/v1',
+    ])
+      expect(key(address)).toBeUndefined();
+    expect(key('http://192.168.1.20:11434/v1', 'local-server-key')).toBe('local-server-key');
+  });
+
   test('is the only provider that may leave HTTPS', () => {
     const downgraded: GatewayProvider = {
       name: 'openai',

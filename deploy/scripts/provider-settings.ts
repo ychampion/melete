@@ -7,6 +7,7 @@ import {
   OPENAI_COMPATIBLE,
   PROVIDER_KEY_VARIABLES,
   PROVIDER_NAMES,
+  providerKeyVariables,
 } from '../../apps/melete/src/gateway/providers.ts';
 
 /** NAME=value lines, as Compose reads them for plain and double-quoted values. */
@@ -38,10 +39,10 @@ export function providerWarnings(settings: Record<string, string | undefined>): 
     warnings.push(
       `MELETE_DEFAULT_PROVIDER=${OPENAI_COMPATIBLE} needs OPENAI_COMPAT_BASE_URL in deploy/.env, for example https://models.example.net/v1; the service will not start without it.`,
     );
-  const variables = PROVIDER_KEY_VARIABLES[provider as keyof typeof PROVIDER_KEY_VARIABLES];
+  const variables = providerKeyVariables(provider, settings.OPENAI_COMPAT_BASE_URL);
   if (!variables.some((name) => settings[name]))
     warnings.push(
-      `MELETE_DEFAULT_PROVIDER=${provider}, but ${variables.join(' and ')} ${variables.length > 1 ? 'are' : 'is'} empty in deploy/.env. Set the key before starting the stack: until then every model call is refused and no job can answer.`,
+      `MELETE_DEFAULT_PROVIDER=${provider}, but ${variables.join(' and ')} ${variables.length > 1 ? 'are' : 'is'} empty in deploy/.env. Set the key before starting the stack: until then every model call is refused and no job can answer.${provider === OPENAI_COMPATIBLE && variables.length === 1 ? ' OPENAI_API_KEY is never sent to a plain http:// endpoint.' : ''}`,
     );
   return warnings;
 }

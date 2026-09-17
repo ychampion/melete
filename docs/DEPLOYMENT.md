@@ -99,8 +99,9 @@ built-in provider stays HTTPS. Over `http://` the key and every prompt travel
 unencrypted, so keep it to a network you trust. Inside Compose, `localhost` is
 the Melete container itself, so give an address that container can reach. The
 gateway refuses a provider whose key is empty: for a server that checks no key,
-set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, it falls back
-to `OPENAI_API_KEY`.
+set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, an `https://`
+endpoint falls back to `OPENAI_API_KEY`; a plain `http://` endpoint never
+receives `OPENAI_API_KEY`.
 
 `MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
 gateway gives a model request that names none. The runtime names none unless its

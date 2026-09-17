@@ -47,10 +47,28 @@ describe('what configure.ts tells an operator about the provider it wrote', () =
     expect(
       providerWarnings({
         MELETE_DEFAULT_PROVIDER: 'openai-compatible',
-        OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+        OPENAI_COMPAT_BASE_URL: 'https://models.example.net/v1',
         OPENAI_API_KEY: 'shared',
       }),
     ).toEqual([]);
+    expect(
+      providerWarnings({
+        MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+        OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+        OPENAI_COMPAT_API_KEY: 'local',
+      }),
+    ).toEqual([]);
+  });
+
+  test('a plain HTTP endpoint is not satisfied by the OpenAI key', () => {
+    const warnings = providerWarnings({
+      MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+      OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+      OPENAI_API_KEY: 'shared',
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('OPENAI_COMPAT_API_KEY is empty');
+    expect(warnings[0]).toContain('never sent to a plain http:// endpoint');
   });
 
   test('reads an env file the way Compose does for plain values', () => {

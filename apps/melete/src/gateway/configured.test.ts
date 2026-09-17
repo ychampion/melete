@@ -51,20 +51,40 @@ describe('the providers a service starts with', () => {
     expect(configure({ FIREWORKS_API_KEY: 'key' }).warnings).toEqual([]);
   });
 
-  test('a local model server over plain HTTP is accepted with the key Compose passes', () => {
+  test('a local model server over plain HTTP is accepted with its own key', () => {
     const { providers, warnings } = configure({
       MELETE_DEFAULT_PROVIDER: 'openai-compatible',
       OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
-      // Compose hands an unset variable over as an empty string.
-      OPENAI_COMPAT_API_KEY: '',
+      OPENAI_COMPAT_API_KEY: 'local-server-key',
       OPENAI_API_KEY: 'shared-key',
     });
     expect(providers.at(-1)).toMatchObject({
       name: 'openai-compatible',
       baseUrl: 'http://127.0.0.1:11434/v1/',
-      apiKey: 'shared-key',
+      apiKey: 'local-server-key',
       allowHttp: true,
     });
     expect(warnings).toEqual([]);
+  });
+
+  test('the OpenAI key stands in for an empty endpoint key over HTTPS only', () => {
+    // Compose hands an unset variable over as an empty string.
+    const shared = { MELETE_DEFAULT_PROVIDER: 'openai-compatible', OPENAI_COMPAT_API_KEY: '' };
+    const secure = configure({
+      ...shared,
+      OPENAI_COMPAT_BASE_URL: 'https://models.example.net/v1',
+      OPENAI_API_KEY: 'shared-key',
+    });
+    expect(secure.providers.at(-1)?.apiKey).toBe('shared-key');
+    expect(secure.warnings).toEqual([]);
+    const plain = configure({
+      ...shared,
+      OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OPENAI_API_KEY: 'shared-key',
+    });
+    expect(plain.providers.at(-1)?.apiKey).toBeUndefined();
+    expect(plain.warnings).toHaveLength(1);
+    expect(plain.warnings[0]).toContain('OPENAI_COMPAT_API_KEY is empty');
+    expect(plain.warnings[0]).toContain('never sent to a plain http:// endpoint');
   });
 });
