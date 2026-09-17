@@ -52,6 +52,7 @@ export const hookObservation = z.object({
     .object({
       compression_count: z.number().int().nonnegative().max(1_000_000).optional(),
       in_place: z.boolean().optional(),
+      used_fallback: z.boolean().optional(),
     })
     .strict()
     .optional(),

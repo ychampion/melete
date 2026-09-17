@@ -32,7 +32,7 @@ _TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 # a compaction's count and mode are facts the ledger needs, and both are bounded
 # numbers, so neither can carry conversation content out of the runtime.
 _DETAIL_SCALARS: dict[str, dict[str, type]] = {
-    "on_compaction": {"compression_count": int, "in_place": bool},
+    "on_compaction": {"compression_count": int, "in_place": bool, "used_fallback": bool},
 }
 _MAX_DETAIL_COUNT = 1_000_000
 
@@ -108,6 +108,10 @@ def observation(name: str, payload: dict[str, Any]) -> dict:
         outcome = "failed"
     elif status in ("interrupted", "cancelled"):
         outcome = "interrupted"
+    elif status == "observed":
+        # A boundary that happened but claims no success of its own: a compaction
+        # that dropped its middle deterministically rather than summarizing it.
+        outcome = "observed"
     elif name.startswith("pre_") or name in ("on_session_start", "on_stream_start", "subagent_start"):
         outcome = "started"
     elif name.startswith("post_") or name in ("on_compaction", "on_session_end", "on_stream_end", "subagent_stop"):

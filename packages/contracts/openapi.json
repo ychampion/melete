@@ -10960,6 +10960,9 @@
           },
           "in_place": {
             "type": "boolean"
+          },
+          "used_fallback": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -16093,6 +16096,9 @@
             "maximum": 1000000
           },
           "in_place": {
+            "type": "boolean"
+          },
+          "used_fallback": {
             "type": "boolean"
           }
         },

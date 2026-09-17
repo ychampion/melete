@@ -2,7 +2,7 @@
 
 This matrix describes the tree at the head of `integration`. The engine pin is
 Hermes `v2026.9.7`, commit `2237be355906fbe6065ce1815711eee52b2d646e`, with the
-hash-checked observer patch (`hermes@v2026.9.7+melete-observers.2`) applied by the image and
+hash-checked observer patch (`hermes@v2026.9.7+melete-observers.3`) applied by the image and
 process supervisor. An upstream interface becomes a
 Melete capability only after it is connected to Melete's authority and tested.
 
@@ -64,7 +64,11 @@ text are never copied into hook records.
 
 Hermes has 37 hook names at the audited pin. The hash-checked observer patch
 adds a real `on_compaction` dispatch after committed compaction progress and a
-per-run HTTP queue bridge. `on_session_end` still means turn finalization. The
+per-run HTTP queue bridge. The dispatch carries the compaction count, whether
+the session id survived it and whether a fallback wrote the summary, and it
+also fires when the middle was dropped deterministically instead of summarized,
+which it reports as observed rather than as a success. `on_session_end` still
+means turn finalization. The
 source audit, MCP retry analysis and reuse, patch or replace decisions are in
 [note 0021](../.agents/notes/0021-hermes-capability-audit.md).
 

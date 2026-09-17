@@ -7502,6 +7502,7 @@ export interface components {
         __schema71: {
             compression_count?: number;
             in_place?: boolean;
+            used_fallback?: boolean;
         };
         __schema72: string;
         __schema73: {
@@ -8462,6 +8463,7 @@ export interface components {
         __schema308: {
             compression_count?: number;
             in_place?: boolean;
+            used_fallback?: boolean;
         };
         __schema309: string;
         Action: {

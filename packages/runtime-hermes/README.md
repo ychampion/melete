@@ -18,7 +18,8 @@ points model traffic at Melete's gateway. The image also applies
 `patches/observer_bridge.py`: three source hashes must match the audited pin or
 the identical reviewed patch. It adds a real compaction dispatch and binds
 plugin observations to the current HTTP run queue; updating the pin means
-reviewing those seams again.
+reviewing those seams again. A checkout carrying an earlier version of the patch
+is refused as well, so it has to be restored to the pinned commit first.
 The image was built from the pinned tag and run on a Linux Docker host on
 2026-09-12; its labels record the Hermes commit and the plugin content hash, and
 `build-metadata.py` refuses a build whose plugin bytes do not match the pin.

@@ -62,6 +62,27 @@ def test_on_compaction_scalars_survive_redaction():
     assert "ses_private_identifier" not in json.dumps(records)
 
 
+def test_a_deterministic_drop_is_observed_and_never_a_summarized_success():
+    """A feasibility skip drops the middle without a summary; it claims no success."""
+    ctx = Context()
+    register_observers(ctx)
+    records = []
+    token = bind_capture("att_skip", records.append)
+    try:
+        assert ctx.hooks["on_compaction"](
+            compression_count=1, in_place=True, used_fallback=True, status="observed",
+        ) is None
+        assert ctx.hooks["on_compaction"](
+            compression_count=2, in_place=True, used_fallback=False, status="succeeded",
+        ) is None
+    finally:
+        reset_capture(token)
+    assert records[0]["outcome"] == "observed"
+    assert records[0]["detail"] == {"compression_count": 1, "in_place": True, "used_fallback": True}
+    assert records[1]["outcome"] == "succeeded"
+    assert records[1]["detail"]["used_fallback"] is False
+
+
 def test_on_compaction_detail_refuses_anything_but_the_named_scalars():
     ctx = Context()
     register_observers(ctx)
