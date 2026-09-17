@@ -23,6 +23,7 @@ import {
   type VersionEvidence,
 } from './contracts.ts';
 import { episode, learningAttempt, learningJob } from './schema.ts';
+import { derivedScope } from './scope.ts';
 
 export const digest = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -230,16 +231,19 @@ export class EpisodeService {
       await requireLearningSpace(tx, ownerId, row.spaceId);
       await requireJobAccess(tx, row.id, ownerId);
       const [old] = await tx.select().from(learningJob).where(eq(learningJob.jobId, jobId));
-      if (old) {
-        if (
-          digest(
-            jobLearningScope.parse({
-              scope: old.scope,
-              template_id: old.templateId,
-              input_refs: old.inputRefs,
-            }),
-          ) !== digest(input)
-        )
+      const recorded =
+        old &&
+        digest(
+          jobLearningScope.parse({
+            scope: old.scope,
+            template_id: old.templateId,
+            input_refs: old.inputRefs,
+          }),
+        );
+      // The scope the service derives for every job is a default, not the owner's
+      // declaration, so a declaration still replaces it while the job is untouched.
+      if (old && recorded !== digest(derivedScope(row.objective))) {
+        if (recorded !== digest(input))
           throw new ServiceError('scope_frozen', 'The recorded task scope is immutable.');
         return old;
       }
@@ -252,6 +256,7 @@ export class EpisodeService {
         .limit(1);
       if (previous)
         throw new ServiceError('scope_frozen', 'Set task scope before the first attempt.');
+      if (old) await tx.delete(learningJob).where(eq(learningJob.jobId, jobId));
       return registerJobLearning(tx, row, input);
     });
   }

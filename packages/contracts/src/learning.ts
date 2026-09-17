@@ -12,6 +12,16 @@ export const procedureScope = z.strictObject({
   audience: z.literal('private'),
 });
 export type ProcedureScope = z.infer<typeof procedureScope>;
+/**
+ * The evaluator synthesises its own scope probes under these names, so a job
+ * may not register one: a client that could claim `procedure-scope` would forge
+ * the evidence row the promoter reads back.
+ */
+export const RESERVED_TASK_FAMILIES = [
+  'procedure-scope',
+  'source-authority',
+  'forgetting-and-access',
+] as const;
 /** Delivery authority is separate from the evaluated task applicability above. */
 export const procedurePromotionScope = z.enum(['private', 'space']);
 export type ProcedurePromotionScope = z.infer<typeof procedurePromotionScope>;
@@ -20,11 +30,16 @@ export const procedurePromotion = z.object({
   principal_id: prefixedId('own').nullable().default(null),
 });
 export type ProcedurePromotion = z.infer<typeof procedurePromotion>;
-export const jobLearningScope = z.strictObject({
-  scope: procedureScope,
-  template_id: label,
-  input_refs: z.array(memoryHandle).max(50).default([]),
-});
+export const jobLearningScope = z
+  .strictObject({
+    scope: procedureScope,
+    template_id: label,
+    input_refs: z.array(memoryHandle).max(50).default([]),
+  })
+  .refine(
+    (value) => !(RESERVED_TASK_FAMILIES as readonly string[]).includes(value.scope.task_family),
+    'reserved_task_family',
+  );
 export type JobLearningScope = z.infer<typeof jobLearningScope>;
 export const intervention = z.strictObject({
   kind: z.enum(['correction', 'demonstration', 'takeover']),

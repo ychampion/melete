@@ -23,6 +23,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { registerJobLearning } from '../learning/episodes.ts';
+import { derivedScope } from '../learning/scope.ts';
 import {
   requestPrincipal,
   requireJobAccess,
@@ -187,6 +188,9 @@ export class JobService {
       .returning();
     if (!row) throw new Error('job insert returned no row');
     if (value.learning) await registerJobLearning(tx, row, value.learning);
+    // A correction made on an ordinary request has to be able to teach something.
+    else if (row.principalId && !jobConstraints.parse(row.constraints).public_compartment)
+      await registerJobLearning(tx, row, derivedScope(row.objective));
     await appendEvent(tx, {
       jobId: row.id,
       type: 'job_created',
