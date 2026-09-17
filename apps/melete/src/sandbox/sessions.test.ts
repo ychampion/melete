@@ -285,6 +285,40 @@ withDb('sandbox sessions', () => {
     expect(resumed.egressPolicy).toEqual({ kind: 'deny_all' });
   });
 
+  test('a snapshot left behind by a failed deletion is still destroyed with its space', async () => {
+    const { scope, provider, sessions, spec, base } = await setup();
+    const workspace = { ...base, agentId: scope.agentId, persistence: 'snapshot' as const };
+    const first = await sessions.openWorkspace(
+      { ...workspace, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    const leaked = (await sessions.suspendWorkspace(first.id, provider, signal())).resumeRef ?? '';
+    const second = await sessions.openWorkspace(
+      { ...workspace, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    // The superseded snapshot's deletion fails once, so it outlives its row.
+    const deleteSnapshot = provider.deleteSnapshot.bind(provider);
+    provider.deleteSnapshot = async () => {
+      provider.deleteSnapshot = deleteSnapshot;
+      throw new Error('the provider could not delete the snapshot');
+    };
+    const again = await sessions.suspendWorkspace(second.id, provider, signal());
+    expect(again.lastError).toContain('left to expire');
+    expect(provider.engine.snapshots.has(leaked)).toBe(true);
+    const destroyed = await sessions.destroyWorkspacesForSpace(
+      scope.spaceId,
+      () => provider,
+      signal(),
+    );
+    expect(destroyed.snapshotsDeleted.sort()).toEqual([leaked, again.resumeRef ?? ''].sort());
+    expect(provider.engine.snapshots.size).toBe(0);
+  });
+
   test('a workspace whose attempt stopped renewing its lease is suspended, not destroyed', async () => {
     const { sql, scope, provider, sessions, spec, base } = await setup();
     const workspace = {
