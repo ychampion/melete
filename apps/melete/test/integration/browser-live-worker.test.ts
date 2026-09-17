@@ -319,6 +319,45 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
         expect(record).not.toContain(secret);
     });
 
+    test('the first observation after handback carries no screenshot and a redacted tree', async () => {
+      session = await worker.handback(session.id);
+      const first = await command({ kind: 'observe' });
+      expect(first.observation?.url).toStartWith(`${fixture.app}/account`);
+      expect(first.observation?.screenshot).toBe('');
+      const redacted = first.observation?.tree ?? '';
+      expect(redacted).toContain('Your account');
+      expect(redacted).toContain('[redacted]');
+      for (const secret of [SIGN_IN.backup_code, SIGN_IN.reference, 'over-the-cap'])
+        expect(redacted).not.toContain(secret);
+      const second = await command({ kind: 'observe' });
+      expect(second.observation?.screenshot.length).toBeGreaterThan(1000);
+      expect(second.observation?.tree).toContain(SIGN_IN.backup_code);
+      expect(second.observation?.tree).toContain(SIGN_IN.reference);
+
+      // Handed back with a password field showing, the observation still refuses, and the next
+      // one that completes is still the one without a picture.
+      expect(await reason(command({ kind: 'open', url: `${fixture.app}/signin` }))).toBe(
+        'sensitive_input_require_takeover',
+      );
+      session = await worker.takeover(session.id);
+      session = await worker.handback(session.id);
+      expect(await reason(command({ kind: 'observe' }))).toBe('sensitive_input_require_takeover');
+      session = await worker.takeover(session.id);
+      open = await worker.liveOpen(session.id, session.control_epoch);
+      seq = 0;
+      where = '';
+      expect(await until(() => where === `${fixture.app}/signin`)).toBe(true);
+      await click(SIGN_IN_POINTS.back_to_account);
+      expect(await until(() => where === `${fixture.app}/account`)).toBe(true);
+      session = await worker.handback(session.id);
+      expect(await pull(0)).toContainEqual({ type: 'ended', code: 'epoch_changed' });
+      expect(await reason(pull(0))).toBe('live_closed');
+      const afterRefusal = await command({ kind: 'observe' });
+      expect(afterRefusal.observation?.screenshot).toBe('');
+      expect(afterRefusal.observation?.tree).not.toContain(SIGN_IN.backup_code);
+      expect((await command({ kind: 'observe' })).observation?.screenshot).not.toBe('');
+    }, 45_000);
+
     test('the live module writes nothing to stdout or stderr', () => {
       expect(output).toEqual({ stdout: '', stderr: '' });
     });

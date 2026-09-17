@@ -9,6 +9,7 @@ import {
   createBrowserEgress,
 } from './egress.ts';
 import { BrowserLive } from './live.ts';
+import { redactSecretText } from './redact.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
@@ -106,6 +107,7 @@ export type BrowserObservation = {
   id: string;
   url: string;
   tree: string;
+  /** Empty for the first observation after a person hands back control. */
   screenshot: string;
   schema: VisibleSchema;
 };
@@ -125,6 +127,8 @@ export class BrowserController {
   private dialogRevision = 0;
   private pageId?: string;
   private replacingPage = false;
+  /** Set at handback; cleared only by an observation that completes. */
+  private humanJustLeft = false;
   readonly metrics = { observations: 0, dispatched_inputs: 0, refused_inputs: 0 };
 
   constructor(options: BrowserSessionsOptions & { network?: BrowserNetworkOptions }) {
@@ -145,6 +149,10 @@ export class BrowserController {
       },
     });
     this.live = new BrowserLive(this);
+    this.sessions.onControl((change) => {
+      if (change === 'handback') this.humanJustLeft = true;
+      return undefined;
+    });
   }
 
   guard(): BrowserEgress | undefined {
@@ -347,18 +355,26 @@ export class BrowserController {
     const session = this.sessions.requireSession(command.session_id, command.job_id);
     if (session.control !== 'automation') throw new BrowserFault('human_control');
     const epoch = session.control_epoch;
+    // What a person typed or was shown can still be on the page they hand back: the first
+    // observation afterwards carries no picture and a redacted tree, and still refuses below.
+    const handedBack = this.humanJustLeft;
     const { page, cdp } = await this.attach();
     const schema = await this.schema(page, cdp);
     // No screenshot, tree, episode, recipe or artifact is recorded while authentication fields are visible.
     if (schema.some((control) => control.sensitive))
       throw new BrowserFault('sensitive_input_require_takeover');
-    const tree = await page.locator('body').ariaSnapshot();
-    if (tree.length > 128_000) throw new BrowserFault('observation_too_large');
-    const screenshot = await cdp.send('Page.captureScreenshot', {
-      format: 'png',
-      clip: { x: 0, y: 0, width: 1024, height: 768, scale: 0.5 },
-      captureBeyondViewport: false,
-    });
+    const snapshot = await page.locator('body').ariaSnapshot();
+    if (snapshot.length > 128_000) throw new BrowserFault('observation_too_large');
+    const tree = handedBack ? redactSecretText(snapshot) : snapshot;
+    const screenshot = handedBack
+      ? ''
+      : (
+          await cdp.send('Page.captureScreenshot', {
+            format: 'png',
+            clip: { x: 0, y: 0, width: 1024, height: 768, scale: 0.5 },
+            captureBeyondViewport: false,
+          })
+        ).data;
     const intents: BrowserSubmitIntent[] = [];
     for (const control of schema.filter((control) => control.role === 'button')) {
       try {
@@ -368,6 +384,7 @@ export class BrowserController {
       }
     }
     this.sessions.observed(session.id, epoch);
+    if (handedBack) this.humanJustLeft = false;
     this.metrics.observations++;
     return {
       session_id: session.id,
@@ -377,7 +394,7 @@ export class BrowserController {
         url: page.url(),
         schema,
         tree,
-        screenshot: screenshot.data,
+        screenshot,
       },
       result: { submit_intents: intents },
     };

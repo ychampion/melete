@@ -101,6 +101,7 @@ export const SIGN_IN_POINTS = {
   help: { x: 180, y: 300 },
   activity: { x: 180, y: 360 },
   close_help: { x: 180, y: 140 },
+  back_to_account: { x: 200, y: 260 },
 } as const;
 
 export type SignInRequest = {
@@ -178,7 +179,7 @@ export function startSignInFixture() {
       if (url.pathname === '/signin' && request.method === 'GET')
         return page(
           'Sign in',
-          `<h1 style="${box(20, 600)}">Sign in to the fixture</h1><form method="post" action="/signin"><label for="password" style="${box(80)}">Password</label><input id="password" name="password" type="password" autocomplete="current-password" style="${box(120)}"><button type="submit" style="${box(180, 160)}">Continue</button></form>`,
+          `<h1 style="${box(20, 600)}">Sign in to the fixture</h1><form method="post" action="/signin"><label for="password" style="${box(80)}">Password</label><input id="password" name="password" type="password" autocomplete="current-password" style="${box(120)}"><button type="submit" style="${box(180, 160)}">Continue</button></form><a href="/account" style="${box(240, 200)}">Back to your account</a>`,
         );
       if (url.pathname === '/signin' && request.method === 'POST')
         return form.get('password') === SIGN_IN.password
