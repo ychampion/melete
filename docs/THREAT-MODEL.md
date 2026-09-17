@@ -441,3 +441,42 @@ worker's network boundary rests on that checked configuration: no conformance
 scenario builds the browser image, starts the stack with the browser override,
 or probes the worker's network from inside it. Installation and operation are
 described in [browser-worker.md](browser-worker.md).
+
+## Tailnet access boundary
+
+The optional Tailscale override puts one node in front of the web client so the
+installation can be reached from the owner's own devices without a published
+port. The node is an additional way in, and the boundary it adds is this.
+
+The node joins the `edge` network and no other, so it cannot address the
+database network, the runtime network, or the browser control network, and it
+receives no Docker socket, no database URL, no vault key and no provider key.
+Its serve configuration forwards the root of one host to `http://web:3000` and
+proxies nothing else, so a peer on the tailnet reaches the sign-in page and
+whatever a signed-in browser can reach through it, on the same routes a browser
+on `localhost:3101` reaches. `AllowFunnel` is false for that host, so the
+address answers peers on the tailnet rather than the public internet, and the
+node publishes no host port of its own. `bun run tailscale:compose:check`
+rejects a change to any of those properties, and a rejection test covers each
+one.
+
+Reaching the sign-in page is not signing in. The password, the per-address and
+per-account limits, and the device cookie apply to a tailnet peer as they apply
+to any other browser. Tailscale states the requesting user on a proxied
+request; the service reads no such header as identity, and the web server
+removes them from any request whose socket peer is not the node named in
+`MELETE_WEB_TRUSTED_UPSTREAM`. The address in `X-Forwarded-For` is believed on
+that one connection and from nowhere else, so a browser cannot choose the
+bucket its sign-in attempts are counted in.
+
+What this leaves in place: every device on the tailnet can open the address
+unless the tailnet policy file restricts the node, and a peer that reaches it is
+an unauthenticated client at the sign-in form, which is
+[attacker 6](#attacker-6-a-remote-client-at-the-sign-in-form). A device already
+holding a valid session cookie carries the session, as it would anywhere. The
+node's own key on the `tailscale-state` volume authenticates the node to the
+tailnet, and a host user who can read that volume can impersonate the node
+there. Tailscale's control plane issues the certificate for the name, so the
+tailnet's own administration is part of this boundary. The node was verified
+from its YAML and from the checks above; a joined node on a real tailnet is a
+separate step, described in [deployment](DEPLOYMENT.md#tailscale).

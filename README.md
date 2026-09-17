@@ -181,6 +181,10 @@ localhost. For a public hostname, serve HTTPS through a reverse proxy and set
 service. See [deployment operations](docs/DEPLOYMENT.md) for TLS, provider
 configuration, image provenance, and backup restoration.
 
+An optional override reaches the installation from your phone and your laptop
+over your own tailnet, with HTTPS and no published port. See
+[Tailscale](docs/DEPLOYMENT.md#tailscale).
+
 ## Run the conformance suites
 
 From the repository root, after `bun install --frozen-lockfile`:
@@ -242,14 +246,16 @@ bun run test
 bun run openapi
 bun run client:generate
 bun run compose:check
+bun run browser:compose:check
+bun run tailscale:compose:check
 bun run conformance
 bun run conformance:memory
 bun run test:plugin
 ```
 
 The generators update the OpenAPI document and client declarations; generated
-differences must be inspected. The Compose command checks YAML and the
-Dockerfiles (30 checks), not live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
+differences must be inspected. The Compose commands check YAML and the
+Dockerfiles (30, 12 and 15 checks), not live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
 The plugin command uses an isolated Python environment to avoid system-package conflicts.
 Install Chromium with `bunx playwright install chromium` to include the local
 browser fixtures. Prepare the local engine below to include the wired HTTP
