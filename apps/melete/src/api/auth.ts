@@ -20,6 +20,7 @@ import type { Env } from '../env.ts';
 import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
+import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
 
@@ -39,6 +40,7 @@ declare module 'hono' {
   interface ContextVariableMap {
     owner: SessionOwner;
     experienceSpaceId: string;
+    sessionSpace: SessionSpace;
   }
 }
 
@@ -130,7 +132,11 @@ export function mountAuth(
       );
     }
     const [active] = await db
-      .select({ owner: principal, spaceId: session.spaceId })
+      .select({
+        owner: principal,
+        spaceId: session.spaceId,
+        membershipGeneration: session.membershipGeneration,
+      })
       .from(session)
       .innerJoin(
         principal,
@@ -142,17 +148,15 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'The session has expired.' } }, 401);
     }
     c.set('owner', publicOwner(active.owner));
-    const selected =
-      active.spaceId ??
-      (
-        await db
-          .select({ id: space.id })
-          .from(space)
-          .where(eq(space.kind, 'personal'))
-          .orderBy(space.createdAt, space.id)
-          .limit(1)
-      )[0]?.id;
-    if (selected) c.set('experienceSpaceId', selected);
+    // The space follows the authenticated principal; no request or other account can supply it.
+    const resolved = await resolveSessionSpace(
+      db,
+      env.MELETE_SPACES_DIR,
+      active.owner.id,
+      active.spaceId ? { spaceId: active.spaceId, generation: active.membershipGeneration } : null,
+    );
+    c.set('sessionSpace', resolved);
+    c.set('experienceSpaceId', resolved.spaceId);
     return principalContext.run(active.owner.id, next);
   });
 

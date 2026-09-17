@@ -1,10 +1,11 @@
 import { experienceQuestion, quickOptions, unavailable } from '@melete/contracts';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { job, question } from '../db/schema.ts';
 import type { QuestionService } from '../jobs/questions.ts';
+import { ownedSpace, ownJob } from '../principals/authority.ts';
 import { explainHandles } from './evidence.ts';
 import { plainText } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -22,7 +23,15 @@ export class ExperienceQuestions {
       .leftJoin(job, eq(job.id, question.jobId))
       .where(
         and(
-          or(eq(job.spaceId, spaceId), eq(question.spaceId, spaceId)),
+          // A job's question is its owner's; one without a job belongs to the space owner.
+          or(
+            and(eq(job.spaceId, spaceId), ownJob()),
+            and(
+              isNull(question.jobId),
+              eq(question.spaceId, spaceId),
+              ownedSpace(question.spaceId),
+            ),
+          ),
           id ? eq(question.id, id) : eq(question.state, 'open'),
         ),
       )

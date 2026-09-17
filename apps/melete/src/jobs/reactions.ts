@@ -32,13 +32,14 @@ import { ServiceError } from '../api/errors.ts';
 import { event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
+import { ownJob } from '../principals/authority.ts';
 import type { AttentionService } from './attention.ts';
 import type { JobService } from './service.ts';
 
 type EventRow = typeof event.$inferSelect;
 
-/** Who is asking. In v0.1 one owner holds one personal space. */
-export type ReactionScope = { spaceId: string };
+/** Who is asking: the session's space and, when a person is signed in, their principal. */
+export type ReactionScope = { spaceId: string; principalId?: string };
 
 /** The dedup key, computed the same way by every writer. Reacting twice writes one row. */
 export const reactionDedupKey = (messageId: string, by: ReactionBy, emoji: string): string =>
@@ -88,7 +89,14 @@ export class ReactionService {
       .select({ message: event, spaceId: job.spaceId })
       .from(event)
       .innerJoin(job, eq(job.id, event.jobId))
-      .where(and(eq(event.seq, Number(parsed.data)), eq(job.spaceId, scope.spaceId)))
+      .where(
+        and(
+          eq(event.seq, Number(parsed.data)),
+          eq(job.spaceId, scope.spaceId),
+          // A message is its job's timeline, and a job stays private to its principal.
+          scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+        ),
+      )
       .limit(1);
     if (!row || row.spaceId !== scope.spaceId) throw notFound();
     if (row.message.type === 'reaction')
@@ -144,7 +152,13 @@ export class ReactionService {
     const [owner] = await this.jobs.db
       .select({ spaceId: job.spaceId })
       .from(job)
-      .where(and(eq(job.id, jobId), eq(job.spaceId, scope.spaceId)))
+      .where(
+        and(
+          eq(job.id, jobId),
+          eq(job.spaceId, scope.spaceId),
+          scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+        ),
+      )
       .limit(1);
     if (!owner || owner.spaceId !== scope.spaceId) throw notFound('job');
     const rows = await this.jobs.db

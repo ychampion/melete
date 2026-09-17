@@ -7,6 +7,7 @@ import { and, eq, isNull, or } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { Database } from '../db/client.ts';
 import { artifact, job } from '../db/schema.ts';
+import { ownJob } from '../principals/authority.ts';
 import { ServiceError } from './errors.ts';
 import type { SpaceResolver } from './reactions.ts';
 
@@ -75,7 +76,14 @@ export function mountArtifacts(
         and(
           eq(artifact.id, id.data),
           eq(artifact.spaceId, scope.spaceId),
-          or(isNull(artifact.jobId), eq(job.spaceId, scope.spaceId)),
+          // A job's files follow the job: private to its principal, also in a shared space.
+          or(
+            isNull(artifact.jobId),
+            and(
+              eq(job.spaceId, scope.spaceId),
+              scope.principalId ? ownJob(job.principalId, scope.principalId) : undefined,
+            ),
+          ),
         ),
       );
     if (!row) throw notFound();

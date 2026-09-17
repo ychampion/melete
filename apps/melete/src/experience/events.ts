@@ -3,6 +3,7 @@ import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { action, artifact, attempt, connection, event, job } from '../db/schema.ts';
 import { appendEvent } from '../events/store.ts';
+import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import {
   answerText,
   object,
@@ -31,7 +32,11 @@ export class ExperienceEvents {
     },
   ) {}
 
-  async sync(spaceId: string, jobId?: string): Promise<void> {
+  /**
+   * The principal is an argument, not ambient state: a stream keeps polling
+   * after the request that opened it has returned, and must keep its fence.
+   */
+  async sync(spaceId: string, jobId?: string, principalId = requestPrincipal()): Promise<void> {
     // Space-wide polling only revisits recent conversations; explicit requests can replay old history.
     const recentSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const ids = await this.db
@@ -42,6 +47,7 @@ export class ExperienceEvents {
           eq(job.spaceId, spaceId),
           eq(job.kind, 'chat'),
           jobId ? eq(job.id, jobId) : gt(job.updatedAt, recentSince),
+          ownJob(job.principalId, principalId),
         ),
       );
     for (const { id } of ids)
@@ -257,8 +263,14 @@ export class ExperienceEvents {
       });
   }
 
-  async page(spaceId: string, after: number, jobId?: string, limit = 100) {
-    await this.sync(spaceId, jobId);
+  async page(
+    spaceId: string,
+    after: number,
+    jobId?: string,
+    limit = 100,
+    principalId = requestPrincipal(),
+  ) {
+    await this.sync(spaceId, jobId, principalId);
     const rows = await this.db
       .select({ event })
       .from(event)
@@ -268,6 +280,7 @@ export class ExperienceEvents {
           eq(job.spaceId, spaceId),
           gt(event.seq, after),
           jobId ? eq(job.id, jobId) : undefined,
+          ownJob(job.principalId, principalId),
           sql`${event.payload}->>'kind' = 'experience'`,
         ),
       )
@@ -291,8 +304,9 @@ export class ExperienceEvents {
     after: number,
     signal: AbortSignal,
     jobId?: string,
+    principalId = requestPrincipal(),
   ): Promise<Response> {
-    const initial = await this.page(spaceId, after, jobId);
+    const initial = await this.page(spaceId, after, jobId, 100, principalId);
     let cursor = after;
     let buffered = initial.events;
     let closed = false;
@@ -329,7 +343,7 @@ export class ExperienceEvents {
             });
             wake = undefined;
             if (closed) break;
-            const page = await self.page(spaceId, cursor, jobId);
+            const page = await self.page(spaceId, cursor, jobId, 100, principalId);
             buffered = page.events;
             if (!buffered.length) {
               controller.enqueue(encoder.encode(': keepalive\n\n'));

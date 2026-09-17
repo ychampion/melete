@@ -18,8 +18,9 @@ export class ExperienceSignIn {
     if (!this.publicUrl) return unavailable('Set your public address before using email sign-in.');
     const [owner] = await this.sql`select id, email from owner order by created_at limit 1`;
     if (!owner) return unavailable('Set up your personal account before using email sign-in.');
-    const [space] = await this
-      .sql`select id from space where kind = 'personal' order by created_at, id limit 1`;
+    // The link signs the setup owner into their own personal space, never the oldest one around.
+    const [space] = await this.sql`select id from space where kind = 'personal'
+      and coalesce(owner_principal_id, ${owner.id}) = ${owner.id} order by created_at, id limit 1`;
     if (!space) return unavailable('Your personal space is not ready yet.');
     const active = await this
       .sql`select id, generation from connection where space_id = ${space.id} and status = 'active' and scopes ? 'email.send'`;

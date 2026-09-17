@@ -8,6 +8,8 @@ export const session = pgTable(
     tokenHash: text('token_hash').primaryKey(),
     principalId: text('principal_id').references(() => principal.id, { onDelete: 'cascade' }),
     spaceId: text('space_id').references(() => space.id, { onDelete: 'cascade' }),
+    /** The membership generation a shared space was selected under; a regrant never matches it. */
+    membershipGeneration: integer('membership_generation'),
     ownerId: text('owner_id')
       .notNull()
       .references(() => owner.id, { onDelete: 'cascade' }),

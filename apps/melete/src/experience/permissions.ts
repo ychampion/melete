@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import { loadAction } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
+import { ownJobClause } from '../principals/authority.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
 import { draftForReview, plainText, projectPermission, recipientText } from './projectors.ts';
@@ -20,7 +21,8 @@ export class ExperiencePermissions {
     const [row] = await this.sql`select p.*, j.experience_parent_id, c.label, c.provider,
       a.job_id, a.connection_id from approval p join action a on a.id = p.action_id
       join job j on j.id = a.job_id join connection c on c.id = a.connection_id
-      where p.id = ${id} and j.space_id = ${spaceId} and c.space_id = ${spaceId}`;
+      where p.id = ${id} and j.space_id = ${spaceId} and c.space_id = ${spaceId}
+      ${ownJobClause(this.sql, 'j')}`;
     if (!row) throw experienceMissing();
     return row;
   }
@@ -39,8 +41,9 @@ export class ExperiencePermissions {
         warnings.flatMap((warning) => (typeof warning.handle === 'string' ? [warning.handle] : [])),
       )),
     );
-    const [parent] = await this
-      .sql`select title from job where id = ${row.experience_parent_id ?? row.job_id} and space_id = ${spaceId}`;
+    const [parent] = await this.sql`select j.title from job j
+      where j.id = ${row.experience_parent_id ?? row.job_id} and j.space_id = ${spaceId}
+      ${ownJobClause(this.sql, 'j')}`;
     if (parent) reasons.push(`For ${plainText(parent.title, 'your request')}.`);
     return projectPermission({
       id,
@@ -61,8 +64,9 @@ export class ExperiencePermissions {
 
   async list(spaceId: string) {
     const rows = await this.sql`select p.id from approval p join action a on a.id = p.action_id
-      join job j on j.id = a.job_id where j.space_id = ${spaceId} and p.decision is null
-      and a.status = 'needs_approval' and (p.expires_at is null or p.expires_at > now()) order by p.requested_at limit 200`;
+      join job j on j.id = a.job_id where j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}
+      and p.decision is null and a.status = 'needs_approval'
+      and (p.expires_at is null or p.expires_at > now()) order by p.requested_at limit 200`;
     return {
       permissions: await Promise.all(rows.map((row) => this.card(spaceId, String(row.id)))),
     };

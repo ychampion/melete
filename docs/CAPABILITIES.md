@@ -71,6 +71,22 @@ Jobs and their timelines remain private to the principal who owns the job,
 including inside a shared space. Membership shares published skills and
 knowledge; it does not expose another principal's private attempt context.
 
+A session speaks for one space, and that space is derived from the authenticated
+principal on every request: the principal's own personal space, or a space the
+session stored that the principal is still a member of under the membership
+generation it was stored with. A revocation ends a stored selection and a later
+regrant does not revive it; whatever fails falls back to the principal's own
+personal space, never to another account's. An account without a personal space
+receives exactly one on first use. Conversations, plans, routines, permissions,
+drafts, receipts, undo, search, the event stream, artifacts, reactions and
+browser takeover or handback are additionally checked against the job's
+principal. The profile, tasks, saved rules, agents and connection reads belong
+to the space, so a shared space offers them to its owner only. Saved details are
+stored under the setup owner's memory catalog; another account's personal space
+reports them as not connected. No route selects a shared space for a session
+yet. [principal-scope.test.ts](../apps/melete/test/integration/principal-scope.test.ts)
+exercises each of these surfaces from a second account and from the owner.
+
 Published shared skills use `audience: space:<space-id>`; plain `space` remains
 valid within its checked container. Missing skill audiences are private. The
 bundle reads only the job's authorized space and at most three selected skills.
@@ -97,7 +113,7 @@ removes subsequent procedure delivery.
 ## Verification
 
 ```sh
-bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/shared-procedure.test.ts packages/contracts/src/principals.test.ts --max-concurrency=2
+bun test apps/melete/test/integration/principals.test.ts apps/melete/test/integration/principal-scope.test.ts apps/melete/test/integration/shared-procedure.test.ts packages/contracts/src/principals.test.ts --max-concurrency=2
 bun test apps/melete/test/integration/hooks.test.ts packages/runtime-hermes/src --max-concurrency=2
 bun test apps/melete/test/integration/catalog.test.ts apps/melete/test/integration/mcp.test.ts apps/melete/test/integration/runtime-mcp.test.ts apps/melete/test/integration/runtime-mcp-revocation.test.ts apps/melete/test/integration/mcp-repair.test.ts --max-concurrency=2
 bun test apps/melete/test/integration/learning-three-act.test.ts apps/melete/test/integration/learning-evaluation.test.ts --max-concurrency=1

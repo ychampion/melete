@@ -12,6 +12,7 @@ import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
 import { action, connection, experienceProfile, job, task } from '../db/schema.ts';
 import { newId } from '../ids.ts';
+import { ownJob } from '../principals/authority.ts';
 import type { ExperienceEffects } from './effects.ts';
 import { actionLabel, appName, object, plainText, safeUrl } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -213,7 +214,11 @@ export class ExperienceHome {
       open_task_count: counts?.count ?? 0,
     };
   }
-  async search(spaceId: string, query: string) {
+  /**
+   * Conversations, plans and actions are the caller's own jobs. Tasks and
+   * connections belong to the space, so only its owner finds them here.
+   */
+  async search(spaceId: string, query: string, spaceOwner = true) {
     const pattern = `%${query.replace(/[\\%_]/g, (value) => `\\${value}`)}%`;
     const results = [];
     const jobs = await this.db
@@ -224,6 +229,7 @@ export class ExperienceHome {
           eq(job.spaceId, spaceId),
           inArray(job.kind, ['chat', 'plan']),
           ilike(job.title, pattern),
+          ownJob(),
         ),
       )
       .orderBy(desc(job.updatedAt))
@@ -236,11 +242,13 @@ export class ExperienceHome {
         meta: row.kind === 'chat' ? 'Conversation' : 'Plan',
         conversation_id: row.kind === 'chat' ? row.id : null,
       });
-    const tasks = await this.db
-      .select()
-      .from(task)
-      .where(and(eq(task.spaceId, spaceId), ilike(task.title, pattern)))
-      .limit(50);
+    const tasks = spaceOwner
+      ? await this.db
+          .select()
+          .from(task)
+          .where(and(eq(task.spaceId, spaceId), ilike(task.title, pattern)))
+          .limit(50)
+      : [];
     for (const row of tasks)
       results.push({
         id: row.id,
@@ -249,7 +257,7 @@ export class ExperienceHome {
         meta: row.done ? 'Completed task' : 'Task',
         conversation_id: null,
       });
-    const connections = (await this.connections(spaceId)).connections;
+    const connections = spaceOwner ? (await this.connections(spaceId)).connections : [];
     const matches = (value: string) =>
       value.toLocaleLowerCase().includes(query.toLocaleLowerCase());
     for (const row of connections.filter((item) => matches(`${item.label} ${item.app}`)))
@@ -270,6 +278,7 @@ export class ExperienceHome {
           eq(job.spaceId, spaceId),
           eq(connection.spaceId, spaceId),
           eq(action.status, 'succeeded'),
+          ownJob(),
         ),
       )
       .orderBy(desc(action.createdAt))

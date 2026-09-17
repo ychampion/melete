@@ -17,6 +17,7 @@ import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
+import { ownJob } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
 import { answerText, plainText } from './projectors.ts';
 
@@ -100,7 +101,7 @@ export class ExperienceService {
         last: sql<string | null>`max(${job.updatedAt})`,
       })
       .from(job)
-      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat')))
+      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat'), ownJob()))
       .groupBy(job.agentId);
     return {
       agents: rows.map((row) => {
@@ -139,11 +140,12 @@ export class ExperienceService {
     return agentResponse.parse({ agent: agentView(row) });
   }
 
+  /** A conversation is a job: it exists only for the principal who owns it. */
   async requireConversation(spaceId: string, id: string) {
     const [row] = await this.db
       .select()
       .from(job)
-      .where(and(eq(job.id, id), eq(job.spaceId, spaceId), eq(job.kind, 'chat')));
+      .where(and(eq(job.id, id), eq(job.spaceId, spaceId), eq(job.kind, 'chat'), ownJob()));
     if (!row) throw experienceMissing();
     return row;
   }
@@ -162,7 +164,7 @@ export class ExperienceService {
     const rows = await this.db
       .select()
       .from(job)
-      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat')))
+      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat'), ownJob()))
       .orderBy(desc(job.updatedAt))
       .limit(200);
     const result: Conversation[] = [];
@@ -179,7 +181,9 @@ export class ExperienceService {
       const [plan] = await this.db
         .select()
         .from(job)
-        .where(and(eq(job.id, value.plan_id), eq(job.spaceId, spaceId), eq(job.kind, 'plan')));
+        .where(
+          and(eq(job.id, value.plan_id), eq(job.spaceId, spaceId), eq(job.kind, 'plan'), ownJob()),
+        );
       if (!plan) throw experienceMissing();
       context = `\nPlan: ${plan.title}\n${plan.objective}`;
     }

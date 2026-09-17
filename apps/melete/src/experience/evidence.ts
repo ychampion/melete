@@ -4,6 +4,7 @@ import { numericDate } from '../dates.ts';
 import { memoryScopeForSpace } from '../memory/broker-trust.ts';
 import { eligibleRevision } from '../memory/claims.ts';
 import type { MemoryTx } from '../memory/db.ts';
+import { ownJobClause } from '../principals/authority.ts';
 import { plainText } from './projectors.ts';
 
 export const memoryKeyLabel = (key: string | null) => {
@@ -58,8 +59,10 @@ export async function explainHandles(
         );
     } else if (raw.startsWith('attempt:') || raw.startsWith('job:')) {
       const [row] = raw.startsWith('attempt:')
-        ? await tx`select j.title from attempt a join job j on j.id = a.job_id where a.id = ${raw.slice(8)} and j.space_id = ${spaceId}`
-        : await tx`select title from job where id = ${raw.slice(4)} and space_id = ${spaceId}`;
+        ? await tx`select j.title from attempt a join job j on j.id = a.job_id
+            where a.id = ${raw.slice(8)} and j.space_id = ${spaceId} ${ownJobClause(tx, 'j')}`
+        : await tx`select j.title from job j where j.id = ${raw.slice(4)}
+            and j.space_id = ${spaceId} ${ownJobClause(tx, 'j')}`;
       if (row) reasons.push(`For ${plainText(row.title, 'your request')}.`);
     }
   }

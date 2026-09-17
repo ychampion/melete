@@ -127,9 +127,23 @@ export class BrowserSessionService {
     if (fenced.length) this.onPark?.(scope.job_id, fenced);
   }
 
-  async control(sessionId: string, operation: 'takeover' | 'handback') {
+  /**
+   * A person may steer only the browser of a job they own, in a space they may
+   * still use. Anything else reads as an absent session, before the worker moves.
+   */
+  async control(sessionId: string, operation: 'takeover' | 'handback', principalId?: string) {
     const binding = await this.authorize(sessionId);
     if (!binding.job_id) throw new BrowserFault('session_not_found');
+    if (principalId) {
+      const [owned] = await this.sql`select 1 from job j join space s on s.id = j.space_id
+        where j.id = ${binding.job_id} and j.space_id = ${binding.space_id}
+          and coalesce(j.principal_id, (select id from owner limit 1)) = ${principalId}
+          and ((s.kind = 'personal'
+              and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
+            or (s.kind = 'shared' and exists (select 1 from space_membership m
+              where m.space_id = s.id and m.principal_id = ${principalId} and m.revoked_at is null)))`;
+      if (!owned) throw new BrowserFault('session_not_found');
+    }
     const worker = await this.workers.get(binding.space_id);
     // The worker bumps immediately, before the database transaction can wait on any job row lock.
     const session = await worker[operation](sessionId);
@@ -158,7 +172,9 @@ export function mountBrowserSessions(app: Hono, sessions: BrowserSessionService)
     app.post(`/browser/sessions/:id/${operation}`, async (c) => {
       try {
         return c.json(
-          browserControlResponse.parse(await sessions.control(c.req.param('id'), operation)),
+          browserControlResponse.parse(
+            await sessions.control(c.req.param('id'), operation, c.get('owner').id),
+          ),
         );
       } catch (error) {
         if (error instanceof BrowserFault)
