@@ -1,9 +1,8 @@
 # Building a client
 
-The typed client, the web app and the scripted mock are separate from the
-deployed service. OpenAPI describes the contract; it is not proof every route is
-wired in the default entry point. This page describes the tree at the head of
-`integration`.
+This page describes how to build a client for Melete: the typed client, the
+contract it follows, and the rules the web app adds on top. The typed client,
+the web app and the scripted mock are separate from the deployed service.
 
 ## Typed requests and errors
 
@@ -16,8 +15,7 @@ HTTP error responses return the API error body; network exceptions are still
 possible. Use `errorMessage` to extract a message or supply a fallback.
 
 The generated declarations are checked by `is byte-identical to a fresh run of
-client:generate` and `covers every path in openapi.json`. This verifies
-generation, not endpoint availability.
+client:generate` and `covers every path in openapi.json`.
 
 ## Authentication
 
@@ -28,13 +26,11 @@ session. Evidence in [auth.test.ts](../apps/melete/test/integration/auth.test.ts
 `passwords use argon2id and only a digest of the opaque cookie is stored`;
 `login verifies the password, issues a fresh cookie, and returns the public owner`.
 
-The client defaults to `credentials: 'include'`, but that does not enable
-cross-origin browser writes. The service rejects cross-origin mutations
-(`browser mutation gates reject cross-origin setup, login, and authenticated
-writes`). Serve a browser client and API through the same origin for that
-path; a working cross-origin deployment recipe is **not claimed** here.
-Header-based owner authentication is also **not claimed**: the service reads
-the cookie even though the generic client supports caller-supplied headers.
+The client defaults to `credentials: 'include'`, and the service rejects
+cross-origin mutations (`browser mutation gates reject cross-origin setup,
+login, and authenticated writes`), so serve a browser client and the API from
+the same origin. The service authenticates the owner by the session cookie;
+headers a caller adds through the generic client carry no owner authentication.
 
 ## Events and resume
 
@@ -50,15 +46,13 @@ Evidence in [events.test.ts](../packages/client/src/events.test.ts):
 `drops events the caller already has when the server replays them`,
 and `reports a skipped sequence as a gap with both ends`.
 
-Show reconnect gaps as possible missing text. The current runner persists
-incoming text-delta events, despite the contract helper's non-durable label;
-conformance 5 checks their stored rows. Do not promise that all streamed text
-is absent from replay. The current helper also marks a sequence jump as a gap,
-but a filtered stream may skip global sequence
-numbers without losing durable history. The service test `a gap marker names
-its persisted notice and rollback holes never invent gaps` checks the server's
-more precise rule. A complete gap-aware interface across these surfaces is
-**not claimed**.
+Show reconnect gaps as possible missing text. The runner persists incoming
+text-delta events, although the contract helper labels them non-durable, and
+conformance 5 checks their stored rows, so streamed text can arrive again on
+replay. The helper marks any sequence jump as a gap, but a filtered stream may
+skip global sequence numbers without losing durable history. The service test
+`a gap marker names its persisted notice and rollback holes never invent gaps`
+checks the server's more precise rule.
 
 ## Approvals and uncertain outcomes
 
@@ -71,11 +65,11 @@ silently approve the replacement payload. Evidence: conformance 4,
 
 An `unknown` action may have happened. Keep it distinct from success and
 failure, and do not offer an automatic resend. Connector verification can resolve
-it; the manual resolution route accepts succeeded, failed or unresolved.
-It is incorrect to say only a person can resolve an unknown action.
-Conformance 3 tests `verify resolves the action to succeeded and the job
-continues` and `against a destination with no verify, the action rests at
-unresolved and the owner is asked`.
+it without a person; where it cannot, the owner is asked, and the manual
+resolution route accepts succeeded, failed or unresolved. Conformance 3 tests
+`verify resolves the action to succeeded and the job continues` and
+`against a destination with no verify, the action rests at unresolved and the
+owner is asked`.
 
 ## Questions, notifications and states
 
@@ -89,8 +83,7 @@ asks one and asks the other on the next wake`.
 Quiet-monitor and notification requirements are tested by `a quiet monitor
 with no delta writes no outbox row, and one with a delta writes one that cites
 its reason` and `the outbox refuses a notification that cites nothing`.
-These prove service behavior; full reference-UI support for all new attention
-routes is **not claimed**.
+These tests cover the service's behaviour.
 
 | State | Client guidance |
 | --- | --- |
@@ -104,9 +97,8 @@ routes is **not claimed**.
 | `cancelled` | Show cancellation without hiding uncertain prior effects |
 
 The closed states are checked by `types the job state as the closed set the
-state machine uses`; transition behavior is tested in
-`packages/contracts/src/job-state.test.ts`. This table is interface guidance,
-not a claim that every control has shipped.
+state machine uses`; transition behaviour is tested in
+`packages/contracts/src/job-state.test.ts`.
 
 ## Reproduce the examples without a deployed service
 
@@ -121,8 +113,8 @@ bun test apps/mock-api/src/app.test.ts
 These tests supply valid IDs, request bodies and fake transports. The mock has
 scripted approved-send and unknown-outcome flows, tested by `an approved send
 runs to completed with a receipt` and `an unknown outcome parks the job at
-needs_reconciliation`. The mock is not a real-model assistant; full coverage
-of every newly added OpenAPI operation is **not claimed**.
+needs_reconciliation`. The mock plays these scripted flows rather than calling
+a model.
 
 For real-service authentication, event and attention checks, use the full test
 command in [README](../README.md).
@@ -249,8 +241,10 @@ connected app and the readable source title; `connection_id` selects its logo.
 
 ### Authentication and scope
 
-v0.1 has one installation owner; additional accounts and shared spaces exist
-as API primitives without an invitation interface. Set up or sign in with the
+An installation has one owner, who can add accounts and shared spaces through
+the API (`POST /principals`, `POST /spaces/shared` and
+`POST /spaces/{id}/memberships`); the web app offers no screen for inviting
+them. Set up or sign in with the
 existing password endpoints; the client sends the `HttpOnly` session cookie with
 `credentials: 'include'`. Experience routes derive their space from the
 account that session authenticates: that account's own personal space, created
@@ -302,9 +296,10 @@ selects the agent for the following turn; a running turn keeps its original agen
 
 `POST /conversations/{id}/stop` fences the active turn, interrupts the runtime,
 and retains its partial answer. Queued work can pause and resume without a new
-turn. A running pause is offered only when the runtime supports a safe checkpoint;
-the currently pinned runtime returns `not_available` for that case. Do not turn
-pause into a new run or repeat completed actions.
+turn. A running pause needs a runtime with a safe checkpoint; the runtime
+adapters Melete ships have none, so pausing a running turn returns
+`not_available` and the turn can be stopped instead. Do not turn pause into a
+new run or repeat completed actions.
 
 ### Trail and answer streaming
 
@@ -359,7 +354,7 @@ await client.api.POST('/permissions/{id}', {
 `always` additionally requires `bounds: { count_cap, expires_at,
 reconsent_after_days }`. Offer it only when present in the card's options.
 The service resolves the exact recipient from trusted evidence. A grant for one
-recipient never authorizes another, and an untrusted destination cannot create
+recipient never authorises another, and an untrusted destination cannot create
 a rule. The current reviewed action is allowed once; the cap applies to future
 actions. A reserved use consumes the cap conservatively even if a later check
 refuses execution. List rules with `GET /rules`, revoke with `DELETE /rules/{id}`.
@@ -391,12 +386,12 @@ value, source (`onboarding`, `conversation`, or `inferred`), creation and last-u
 dates, and editability. Patch `{ value, version }` to `/memory/items/{id}`;
 delete the item to use the existing forget path. A stale edit is refused.
 `/memory/items/{id}/why` explains the evidence a recent output used. Suppressed or
-retracted evidence is not shown. Show an empty explanation honestly when no
-recent usage is recorded.
+retracted evidence is not shown. When no recent usage is recorded, show the
+explanation as empty.
 
 ### Plans, home, routines, and search
 
-| Surface | Operations and behavior |
+| Surface | Operations and behaviour |
 | --- | --- |
 | Plans | `GET/POST /plans`, `GET /plans/{id}`; progress and next step are derived from milestones |
 | Milestones | `PATCH /plans/{id}/milestones/{milestoneId}` updates a person's done state; agent steps complete from their scheduled work |
@@ -431,7 +426,7 @@ send, and produces a receipt after approval. The unknown/flaky scenario leaves
 an unconfirmed send for the person and does not send it again. Saved details are
 projected from the mock's active seeded records. Profile, agents, tasks, plans,
 rules, and routines can be exercised without connecting an external service.
-Browser tasks and sign-in delivery remain honestly unavailable in the mock.
+In the mock, browser tasks and sign-in delivery answer `not_available`.
 
 The web app in `apps/web` also uses the mock: run it on `3210` (`MOCK_PORT=3210 bun run dev:mock`) and `bun run dev:web` on `5180`. Its scenarios are chosen by what the message says:
 
@@ -512,7 +507,7 @@ settles. The job event stream supplies the original message identities: an
 explicit turn ID when present, otherwise a unique match on the conversation,
 message text and transaction timestamp shared with the accepted turn. Projected
 text also retains its source event identity. Unknown or ambiguous targets are
-omitted; event ordering never chooses a neighboring bubble. Switching chats
+omitted; event ordering never chooses a neighbouring bubble. Switching chats
 clears the reaction state. A refused reaction adds no glyph and hides that
 message's controls; nothing is drawn as a "reacted" line of its own.
 
