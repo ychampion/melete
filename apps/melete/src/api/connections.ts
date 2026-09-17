@@ -29,7 +29,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, space } from '../db/schema.ts';
-import { serviceTransaction } from '../db/transaction.ts';
+import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
@@ -223,19 +223,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       );
     const actor = c.get('owner').id;
     const spaceId = request.space_id ?? (await personalSpace(deps.db, actor));
+    // Authority is settled first, so no address in the request is resolved and
+    // no connector is opened on the word of someone who may not install here.
+    await requireInstaller(deps.db, spaceId, actor, installation.kind);
     const id = newId('conn');
     const stored = await storedShape(installation, id, spaceId, factory);
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
-      const access = await spaceAuthority(tx, spaceId, actor, true);
-      if (access.role !== 'owner' || access.space.audience !== 'owner')
-        throw new ServiceError(
-          'scope_denied',
-          installation.kind === 'mcp'
-            ? 'MCP installation requires its owner and matching audience.'
-            : 'Installing a connection requires the owner of an owner-audience space.',
-          403,
-        );
+      await requireInstaller(tx, spaceId, actor, installation.kind, true);
       if (installation.kind === 'mcp') {
         // A removed installation keeps its row for the ledger but not its short
         // name, so the same server can be installed again with a new credential.
@@ -329,6 +324,30 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       throw new ServiceError('generation_conflict', 'Connection changed during installation.');
     return c.json(connectionResponse.parse({ connection: view(row), check: outcome }), 201);
   });
+}
+
+/**
+ * Installing is the owner's own act, in a space whose audience is the owner
+ * alone. The same judgement is made before anything in the request is acted on
+ * and again under the lock that writes the row.
+ */
+async function requireInstaller(
+  reader: Database | Transaction,
+  spaceId: string,
+  actor: string,
+  kind: ConnectionInstallation['kind'],
+  lock = false,
+) {
+  const access = await spaceAuthority(reader, spaceId, actor, lock);
+  if (access.role !== 'owner' || access.space.audience !== 'owner')
+    throw new ServiceError(
+      'scope_denied',
+      kind === 'mcp'
+        ? 'MCP installation requires its owner and matching audience.'
+        : 'Installing a connection requires the owner of an owner-audience space.',
+      403,
+    );
+  return access;
 }
 
 /** The space a request means when it names none: the caller's own first personal space. */

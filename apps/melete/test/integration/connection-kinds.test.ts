@@ -646,6 +646,16 @@ withDb('installing each kind of connection through the API', () => {
     );
     const memberCookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
     expect((await h.install({ ...body, space_id: h.spaceId }, memberCookie)).status).toBe(403);
+    // Authority is settled before the address is examined, so nothing is
+    // resolved or opened on the word of someone who may not install here.
+    expect(
+      (
+        await h.install(
+          { ...body, space_id: h.spaceId, ics: { url: 'https://10.0.0.8/m.ics' } },
+          memberCookie,
+        )
+      ).status,
+    ).toBe(403);
 
     const own = await h.install(body, memberCookie);
     expect(own.status).toBe(201);
@@ -665,6 +675,10 @@ withDb('installing each kind of connection through the API', () => {
     expect(shared.status).toBe(201);
     const sharedId = ((await shared.json()) as { space: { id: string } }).space.id;
     expect((await h.install({ ...body, space_id: sharedId })).status).toBe(403);
+    expect(
+      (await h.install({ ...body, space_id: sharedId, ics: { url: 'https://10.0.0.8/m.ics' } }))
+        .status,
+    ).toBe(403);
 
     // A new account's space and a new shared space receive the defaults as they are created.
     for (const created of [installed.space_id, sharedId]) {
