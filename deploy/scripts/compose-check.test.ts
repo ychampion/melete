@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parse, stringify } from 'yaml';
 import { ATTEMPT_LOG_CONFIG } from '../../apps/melete/src/runtime/docker.ts';
 import {
   type ComposeFile,
   type ComposeLogging,
+  checkCellConfig,
   checkCompose,
   defaultComposePath,
   loadCompose,
@@ -290,5 +295,41 @@ describe('the check catches the mistakes that would matter', () => {
     const networks = broken.services?.melete?.networks;
     if (networks && !Array.isArray(networks)) networks.internal = { aliases: ['melete-api'] };
     expect(failures(broken)).toContain('the owner API binds only to its edge network address');
+  });
+});
+
+describe('the engine configuration the attempt image carries', () => {
+  const repositoryRoot = join(import.meta.dir, '..', '..');
+  const configPath = join(repositoryRoot, 'packages', 'runtime-hermes', 'config', 'config.yaml');
+
+  test('passes as it stands', () => {
+    expect(checkCellConfig(repositoryRoot).filter((result) => !result.ok)).toEqual([]);
+  });
+
+  test.each([
+    // The engine reads neither of these; a store built from either default
+    // reloads what an owner asked to forget.
+    ['memory', { enabled: false }],
+    ['memory', { memory_enabled: false, user_profile_enabled: true, provider: '' }],
+    // Unset means unlimited, which is a loop nobody stops.
+    ['agent', {}],
+    // Off, and a long conversation is refused instead of summarized.
+    ['compression', { enabled: false, in_place: true, threshold_tokens: 200000 }],
+    ['compression', { enabled: true, in_place: true }],
+    ['checkpoints', { enabled: true }],
+  ])('catches %s set to %o', (section, replacement) => {
+    const directory = mkdtempSync(join(tmpdir(), 'melete-cell-config-'));
+    const config = parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    config[section] = replacement;
+    mkdirSync(join(directory, 'packages', 'runtime-hermes', 'config'), { recursive: true });
+    writeFileSync(
+      join(directory, 'packages', 'runtime-hermes', 'config', 'config.yaml'),
+      stringify(config),
+    );
+    try {
+      expect(checkCellConfig(directory).filter((result) => !result.ok)).toHaveLength(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
