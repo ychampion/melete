@@ -665,6 +665,46 @@ withDb('installing each kind of connection through the API', () => {
     }
   }, 120_000);
 
+  test('a service without a master key installs nothing that needs sealing, and says why', async () => {
+    if (!h || !fixture || !queue) throw new Error('Postgres unavailable');
+    const keyless = createApp({
+      env: loadEnv({ NODE_ENV: 'test' }),
+      db: fixture.db,
+      sql: fixture.sql,
+      registry: new ConnectorRegistry(),
+      jobs: new JobService(fixture.db, queue.boss),
+      checkDatabase: async () => 'ok',
+    });
+    const before = await h.sql`select count(*)::int as rows from connection`;
+    const secretsBefore = await h.sql`select count(*)::int as rows from secret`;
+    for (const body of [
+      {
+        provider: 'imap',
+        label: 'Keyless mail',
+        credentials: { password: MAIL_PASSWORD },
+        mail: {
+          username: 'owner@example.test',
+          from: 'owner@example.test',
+          imap: { host: 'imap.example.test', port: 993, secure: true },
+          smtp: { host: 'smtp.example.test', port: 465, secure: true },
+        },
+      },
+      {
+        provider: 'caldav',
+        label: 'Keyless feed',
+        ics: { url: `https://93.184.216.34/team.ics?token=${FEED_TOKEN}` },
+      },
+    ]) {
+      const refused = await keyless.request('/connections', h.as(h.cookie, body));
+      const text = await refused.text();
+      expect(refused.status).toBe(409);
+      expect(JSON.parse(text).error.code).toBe('sealing_unavailable');
+      expectNoSecret(text);
+    }
+    expect(await h.sql`select count(*)::int as rows from connection`).toEqual(before);
+    expect(await h.sql`select count(*)::int as rows from secret`).toEqual(secretsBefore);
+  }, 120_000);
+
   test('the owner-controlled connections file still works, and wins over what a row stores', async () => {
     if (!h) throw new Error('Postgres unavailable');
     const stored = await h.install({

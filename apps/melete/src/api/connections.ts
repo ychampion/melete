@@ -214,6 +214,13 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
     const installation = resolved.value;
+    // Everything but an MCP server without a token has something to seal.
+    if ((installation.kind !== 'mcp' || installation.credentials) && !factory.options.masterKey)
+      throw new ServiceError(
+        'sealing_unavailable',
+        'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
+        409,
+      );
     const actor = c.get('owner').id;
     const spaceId = request.space_id ?? (await personalSpace(deps.db, actor));
     const id = newId('conn');
