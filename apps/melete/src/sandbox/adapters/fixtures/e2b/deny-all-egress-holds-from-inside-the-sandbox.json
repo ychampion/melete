@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 5,
+        "atMs": 2,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -52,7 +52,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 6,
+        "atMs": 2,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -66,7 +66,7 @@
     },
     {
       "request": {
-        "atMs": 7,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -110,7 +110,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 8,
+        "atMs": 3,
         "body": [
           {
             "event": {
@@ -135,11 +135,11 @@
     },
     {
       "request": {
-        "atMs": 8,
+        "atMs": 3,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "cc0527f3ba17eabc8a7856bf1eb661cab21038cb63b69b380a1239d9d79e4829",
+        "bodySha256": "52c1a1d79083c3e297910d493b7387b7ba549b5ef5106eb6265c515b9b32b360",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -155,7 +155,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''ip_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' ip_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\nexit \"$ec\""
+                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''v4_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' v4_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"; curl -s -g -m 5 -o /dev/null -w '\\''v6_code=%{http_code}'\\'' '\\''http://[2606:4700:4700::1111]/'\\'' 2>/dev/null; printf '\\'' v6_exit=%s\\n'\\'' \"$?\"; curl -s -k -m 5 -o /dev/null -w '\\''google_dns_code=%{http_code}'\\'' https://8.8.8.8/ 2>/dev/null; printf '\\'' google_dns_exit=%s\\n'\\'' \"$?\"' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -174,16 +174,16 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 4,
+            "atMs": 2,
             "base64": "AAAAADp7ImV2ZW50Ijp7ImVuZCI6eyJleGl0ZWQiOnRydWUsInN0YXR1cyI6ImV4aXQgc3RhdHVzIDAifX19"
           },
           {
-            "atMs": 4,
+            "atMs": 2,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
         "end": "complete",
-        "atMs": 9,
+        "atMs": 4,
         "body": [
           {
             "event": {
@@ -208,7 +208,7 @@
     },
     {
       "request": {
-        "atMs": 13,
+        "atMs": 6,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -232,11 +232,11 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJlbnRyaWVzIjpbeyJuYW1lIjoiZXhpdCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBDT05GT1JNQU5DRTAwMDAwMDAwL2V4aXQiLCJzaXplIjoiMSIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn0seyJuYW1lIjoib3V0IiwidHlwZSI6IkZJTEVfVFlQRV9GSUxFIiwicGF0aCI6Ii92YXIvdG1wLy5tZWxldGUtZXhlYy9hY3RfMDFKMENPTkZPUk1BTkNFMDAwMDAwMDAvb3V0Iiwic2l6ZSI6IjU1IiwibW9kZSI6NDIwLCJvd25lciI6InVzZXIiLCJncm91cCI6InVzZXIifV19"
+            "base64": "eyJlbnRyaWVzIjpbeyJuYW1lIjoiZXhpdCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBDT05GT1JNQU5DRTAwMDAwMDAwL2V4aXQiLCJzaXplIjoiMSIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn0seyJuYW1lIjoib3V0IiwidHlwZSI6IkZJTEVfVFlQRV9GSUxFIiwicGF0aCI6Ii92YXIvdG1wLy5tZWxldGUtZXhlYy9hY3RfMDFKMENPTkZPUk1BTkNFMDAwMDAwMDAvb3V0Iiwic2l6ZSI6IjExNyIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn1dfQ=="
           }
         ],
         "end": "complete",
-        "atMs": 13,
+        "atMs": 6,
         "body": {
           "entries": [
             {
@@ -252,7 +252,7 @@
               "name": "out",
               "type": "FILE_TYPE_FILE",
               "path": "/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000/out",
-              "size": "55",
+              "size": "117",
               "mode": 420,
               "owner": "user",
               "group": "user"
@@ -263,7 +263,7 @@
     },
     {
       "request": {
-        "atMs": 15,
+        "atMs": 6,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fout&username=user",
@@ -281,19 +281,19 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "ZG5zPTIKaXBfY29kZT0wMDAgaXBfZXhpdD0yOApuYW1lX2NvZGU9MDAwIG5hbWVfZXhpdD02Cg=="
+            "base64": "ZG5zPTIKdjRfY29kZT0wMDAgdjRfZXhpdD0yOApuYW1lX2NvZGU9MDAwIG5hbWVfZXhpdD02CnY2X2NvZGU9MDAwIHY2X2V4aXQ9MjgKZ29vZ2xlX2Ruc19jb2RlPTAwMCBnb29nbGVfZG5zX2V4aXQ9MjgK"
           }
         ],
         "end": "complete",
-        "atMs": 15,
+        "atMs": 6,
         "body": {
-          "bytes": 55
+          "bytes": 117
         }
       }
     },
     {
       "request": {
-        "atMs": 17,
+        "atMs": 8,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -335,7 +335,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 18,
+        "atMs": 8,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0002",
@@ -349,7 +349,7 @@
     },
     {
       "request": {
-        "atMs": 18,
+        "atMs": 9,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -393,7 +393,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 19,
+        "atMs": 9,
         "body": [
           {
             "event": {
@@ -418,11 +418,11 @@
     },
     {
       "request": {
-        "atMs": 19,
+        "atMs": 9,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "aabf418d96c5586d72a34f909d8a5153586b63b1cc69a87e530075d5b09376b1",
+        "bodySha256": "a97a28530b26913b21521e57ed9d691d29e988e6246334601bb854af2234edfe",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -438,7 +438,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCECONTROL0\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''ip_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' ip_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\nexit \"$ec\""
+                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCECONTROL0\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'getent hosts example.com > /dev/null 2>/dev/null; printf '\\''dns=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''v4_code=%{http_code}'\\'' http://1.1.1.1/ 2>/dev/null; printf '\\'' v4_exit=%s\\n'\\'' \"$?\"; curl -s -m 5 -o /dev/null -w '\\''name_code=%{http_code}'\\'' https://example.com/ 2>/dev/null; printf '\\'' name_exit=%s\\n'\\'' \"$?\"; curl -s -g -m 5 -o /dev/null -w '\\''v6_code=%{http_code}'\\'' '\\''http://[2606:4700:4700::1111]/'\\'' 2>/dev/null; printf '\\'' v6_exit=%s\\n'\\'' \"$?\"; curl -s -k -m 5 -o /dev/null -w '\\''google_dns_code=%{http_code}'\\'' https://8.8.8.8/ 2>/dev/null; printf '\\'' google_dns_exit=%s\\n'\\'' \"$?\"' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -466,7 +466,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 19,
+        "atMs": 9,
         "body": [
           {
             "event": {
@@ -491,7 +491,7 @@
     },
     {
       "request": {
-        "atMs": 21,
+        "atMs": 10,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -515,11 +515,11 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJlbnRyaWVzIjpbeyJuYW1lIjoiZXhpdCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBDT05GT1JNQU5DRUNPTlRST0wwL2V4aXQiLCJzaXplIjoiMSIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn0seyJuYW1lIjoib3V0IiwidHlwZSI6IkZJTEVfVFlQRV9GSUxFIiwicGF0aCI6Ii92YXIvdG1wLy5tZWxldGUtZXhlYy9hY3RfMDFKMENPTkZPUk1BTkNFQ09OVFJPTDAvb3V0Iiwic2l6ZSI6IjU0IiwibW9kZSI6NDIwLCJvd25lciI6InVzZXIiLCJncm91cCI6InVzZXIifV19"
+            "base64": "eyJlbnRyaWVzIjpbeyJuYW1lIjoiZXhpdCIsInR5cGUiOiJGSUxFX1RZUEVfRklMRSIsInBhdGgiOiIvdmFyL3RtcC8ubWVsZXRlLWV4ZWMvYWN0XzAxSjBDT05GT1JNQU5DRUNPTlRST0wwL2V4aXQiLCJzaXplIjoiMSIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn0seyJuYW1lIjoib3V0IiwidHlwZSI6IkZJTEVfVFlQRV9GSUxFIiwicGF0aCI6Ii92YXIvdG1wLy5tZWxldGUtZXhlYy9hY3RfMDFKMENPTkZPUk1BTkNFQ09OVFJPTDAvb3V0Iiwic2l6ZSI6IjExNCIsIm1vZGUiOjQyMCwib3duZXIiOiJ1c2VyIiwiZ3JvdXAiOiJ1c2VyIn1dfQ=="
           }
         ],
         "end": "complete",
-        "atMs": 21,
+        "atMs": 10,
         "body": {
           "entries": [
             {
@@ -535,7 +535,7 @@
               "name": "out",
               "type": "FILE_TYPE_FILE",
               "path": "/var/tmp/.melete-exec/act_01J0CONFORMANCECONTROL0/out",
-              "size": "54",
+              "size": "114",
               "mode": 420,
               "owner": "user",
               "group": "user"
@@ -546,7 +546,7 @@
     },
     {
       "request": {
-        "atMs": 22,
+        "atMs": 11,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCECONTROL0%2Fout&username=user",
@@ -564,19 +564,19 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "ZG5zPTAKaXBfY29kZT0yMDAgaXBfZXhpdD0wCm5hbWVfY29kZT0yMDAgbmFtZV9leGl0PTAK"
+            "base64": "ZG5zPTAKdjRfY29kZT0yMDAgdjRfZXhpdD0wCm5hbWVfY29kZT0yMDAgbmFtZV9leGl0PTAKdjZfY29kZT0yMDAgdjZfZXhpdD0wCmdvb2dsZV9kbnNfY29kZT0yMDAgZ29vZ2xlX2Ruc19leGl0PTAK"
           }
         ],
         "end": "complete",
-        "atMs": 22,
+        "atMs": 11,
         "body": {
-          "bytes": 54
+          "bytes": 114
         }
       }
     },
     {
       "request": {
-        "atMs": 23,
+        "atMs": 16,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -588,12 +588,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 23
+        "atMs": 16
       }
     },
     {
       "request": {
-        "atMs": 23,
+        "atMs": 16,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0002",
         "path": "/sandboxes/fake-sbx-0002",
@@ -605,7 +605,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 23
+        "atMs": 16
       }
     }
   ]

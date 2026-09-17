@@ -10,7 +10,7 @@
  * Commands are real POSIX shell with coreutils, curl and getent, so the text
  * that runs in a fixture's author is the text that runs in a live sandbox.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
@@ -33,8 +33,11 @@ export type ConformanceSubject = {
   image?: string;
   /** Strings that must never be visible inside a sandbox. */
   secrets: readonly string[];
-  /** The next command's acknowledgement is lost before or after its marker is written. */
-  loseNextAcknowledgement(when: 'before_marker' | 'after_marker'): void;
+  /**
+   * The next marked command's acknowledgement is lost: before any answer came
+   * back, or after the command was seen to start.
+   */
+  loseNextAcknowledgement(when: 'before_start' | 'after_start'): void;
   /** Called after every scenario, pass or fail; replayed fixtures check they were used here. */
   close(): Promise<void>;
 };
@@ -45,7 +48,9 @@ export const CONFORMANCE_TESTS = [
   'output above the cap is stored by the service and re-hashed',
   'a second dispatch of the same action reattaches instead of running again',
   'a lost acknowledgement after the marker is unknown and is never re-run',
-  'a lost acknowledgement before the marker is a retryable failure',
+  'a lost acknowledgement before the command starts is unknown and is never re-run',
+  'a command that deletes its own marker after a lost acknowledgement is unknown and is never re-run',
+  'a start the provider refused is a retryable failure',
   'the sandbox environment carries no Melete or provider credential',
   'a path outside the job workspace is refused on sync-out',
   'a symbolic link returned by the provider is refused',
@@ -71,7 +76,7 @@ type Scenario = {
   run(
     handle: SandboxHandle,
     argv: string[],
-    options?: { marker?: string; timeoutMs?: number; dispatch?: 'first' | 'again' },
+    options?: { marker?: string; timeoutMs?: number; dispatch?: 'first' | 'again'; cwd?: string },
   ): Promise<CommandResult>;
 };
 
@@ -83,11 +88,28 @@ function succeeded(result: CommandResult): Extract<CommandResult, { outcome: 'su
 
 const recordText = (record: ExecutionRecord) => text(record.preview);
 
+export type ConformanceOptions = {
+  timeoutMs?: number;
+  lifetimeSeconds?: number;
+  /**
+   * One sandbox per egress policy for the whole suite, emptied between
+   * scenarios, instead of one per scenario. For live providers that bill per
+   * sandbox.
+   */
+  reuseSandboxes?: boolean;
+  /** Where the egress probe's findings are written, for a live run's record. */
+  log?: (line: string) => void;
+};
+
+const RESET_MARKER = 'act_01J0CONFORMANCERESET000';
+
 export function sandboxConformance(
   name: string,
   open: (test: ConformanceTest) => Promise<ConformanceSubject>,
-  options: { timeoutMs?: number } = {},
+  options: ConformanceOptions = {},
 ): void {
+  const pool = new Map<string, { handle: SandboxHandle; provider: SandboxProvider }>();
+  let pooled = 0;
   const scenario = (title: ConformanceTest, body: (context: Scenario) => Promise<void>) =>
     test(
       title,
@@ -96,12 +118,13 @@ export function sandboxConformance(
         const workRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'melete-sandbox-')));
         await mkdir(path.join(workRoot, 'work'));
         const handles: SandboxHandle[] = [];
+        const emptied = new Set<string>();
         let sessions = 0;
         const spec = (egress: EgressPolicy, session: string): SandboxSpec => ({
           image: subject.image ?? 'base',
           egress,
           region: null,
-          lifetimeSeconds: 600,
+          lifetimeSeconds: options.lifetimeSeconds ?? 600,
           idleSeconds: null,
           workdir: '/work',
           labels: sandboxLabels({
@@ -119,13 +142,38 @@ export function sandboxConformance(
           workRoot,
           spec,
           async open(egress = { kind: 'deny_all' }) {
+            const key = JSON.stringify(egress);
+            const existing = options.reuseSandboxes ? pool.get(key) : undefined;
+            if (existing) {
+              if (!emptied.has(key)) {
+                // Everything an earlier scenario left behind goes, markers included.
+                const reset = await subject.provider.exec(
+                  existing.handle,
+                  {
+                    marker: RESET_MARKER,
+                    argv: ['/bin/sh', '-c', 'rm -rf /var/tmp/.melete-exec /work && mkdir -p /work'],
+                    cwd: '/',
+                    timeoutMs: 60_000,
+                    maxOutputBytes: 4096,
+                  },
+                  signal(),
+                );
+                if (reset.exitCode !== 0) throw new Error('a reused sandbox could not be emptied');
+                emptied.add(key);
+              }
+              return existing.handle;
+            }
             sessions += 1;
+            pooled += 1;
             const handle = await openSandbox(
               subject.provider,
-              spec(egress, `sbx_CONFORMANCE${sessions}`),
+              spec(egress, `sbx_CONFORMANCE${options.reuseSandboxes ? pooled : sessions}`),
               signal(),
             );
-            handles.push(handle);
+            if (options.reuseSandboxes) {
+              pool.set(key, { handle, provider: subject.provider });
+              emptied.add(key);
+            } else handles.push(handle);
             return handle;
           },
           run(handle, argv, runOptions = {}) {
@@ -137,6 +185,7 @@ export function sandboxConformance(
                 argv,
                 timeoutMs: runOptions.timeoutMs ?? 20_000,
                 dispatch: runOptions.dispatch ?? 'first',
+                ...(runOptions.cwd ? { cwd: runOptions.cwd } : {}),
               },
               workRoot: path.join(workRoot, 'work'),
               jobId: JOB,
@@ -167,6 +216,12 @@ export function sandboxConformance(
     );
 
   describe(`sandbox conformance: ${name}`, () => {
+    afterAll(async () => {
+      for (const { handle, provider } of pool.values())
+        await provider.destroy(handle, signal()).catch(() => {});
+      pool.clear();
+    }, 180_000);
+
     scenario("a command's exit code, duration and output digest are recorded", async (context) => {
       const handle = await context.open();
       const result = succeeded(
@@ -251,7 +306,7 @@ export function sandboxConformance(
       async (context) => {
         const handle = await context.open();
         const argv = ['sh', '-c', 'printf once >> /work/counter; sleep 2; printf done'];
-        context.subject.loseNextAcknowledgement('after_marker');
+        context.subject.loseNextAcknowledgement('after_start');
         const lost = await context.run(handle, argv);
         expect(lost.outcome).toBe('unknown');
         await delay(3_500);
@@ -265,16 +320,54 @@ export function sandboxConformance(
       },
     );
 
-    scenario('a lost acknowledgement before the marker is a retryable failure', async (context) => {
+    scenario(
+      'a lost acknowledgement before the command starts is unknown and is never re-run',
+      async (context) => {
+        const handle = await context.open();
+        const argv = ['sh', '-c', 'printf once >> /work/counter'];
+        context.subject.loseNextAcknowledgement('before_start');
+        // Nothing says the request did not arrive, so it is not safe to send again.
+        const lost = await context.run(handle, argv);
+        expect(lost.outcome).toBe('unknown');
+        const again = await context.run(handle, argv, { dispatch: 'again' });
+        expect(again.outcome).toBe('unknown');
+        await expect(
+          context.provider.getFile(handle, '/work/counter', 64, signal()),
+        ).rejects.toBeInstanceOf(SandboxFileNotFound);
+      },
+    );
+
+    scenario(
+      'a command that deletes its own marker after a lost acknowledgement is unknown and is never re-run',
+      async (context) => {
+        const handle = await context.open();
+        const argv = [
+          'sh',
+          '-c',
+          `rm -rf /var/tmp/.melete-exec/${MARKER}; printf once >> /work/counter; sleep 2; printf done`,
+        ];
+        context.subject.loseNextAcknowledgement('after_start');
+        const lost = await context.run(handle, argv);
+        expect(lost.outcome).toBe('unknown');
+        await delay(3_500);
+        // The marker is gone for good; still, nothing proves the command did not run.
+        expect(await context.provider.reattach(handle, MARKER, signal())).toBeNull();
+        const again = await context.run(handle, argv, { dispatch: 'again' });
+        expect(again.outcome).toBe('unknown');
+        const counter = await context.provider.getFile(handle, '/work/counter', 64, signal());
+        expect(text(counter)).toBe('once');
+      },
+    );
+
+    scenario('a start the provider refused is a retryable failure', async (context) => {
       const handle = await context.open();
       const argv = ['sh', '-c', 'printf once >> /work/counter'];
-      context.subject.loseNextAcknowledgement('before_marker');
-      const lost = await context.run(handle, argv);
-      expect(lost).toMatchObject({ outcome: 'failed', retryable: true });
+      const refused = await context.run(handle, argv, { cwd: '/work/not-a-directory' });
+      expect(refused).toMatchObject({ outcome: 'failed', retryable: true });
       await expect(
         context.provider.getFile(handle, '/work/counter', 64, signal()),
       ).rejects.toBeInstanceOf(SandboxFileNotFound);
-      // Retrying a command that provably never started runs it once.
+      // A command the provider refused to start runs once when it is sent again.
       const retried = succeeded(await context.run(handle, argv));
       expect(retried.late).toBe(false);
       const counter = await context.provider.getFile(handle, '/work/counter', 64, signal());
@@ -371,10 +464,14 @@ export function sandboxConformance(
         [
           'getent hosts example.com > /dev/null 2>/dev/null',
           'printf \'dns=%s\\n\' "$?"',
-          "curl -s -m 5 -o /dev/null -w 'ip_code=%{http_code}' http://1.1.1.1/ 2>/dev/null",
-          'printf \' ip_exit=%s\\n\' "$?"',
+          "curl -s -m 5 -o /dev/null -w 'v4_code=%{http_code}' http://1.1.1.1/ 2>/dev/null",
+          'printf \' v4_exit=%s\\n\' "$?"',
           "curl -s -m 5 -o /dev/null -w 'name_code=%{http_code}' https://example.com/ 2>/dev/null",
           'printf \' name_exit=%s\\n\' "$?"',
+          "curl -s -g -m 5 -o /dev/null -w 'v6_code=%{http_code}' 'http://[2606:4700:4700::1111]/' 2>/dev/null",
+          'printf \' v6_exit=%s\\n\' "$?"',
+          "curl -s -k -m 5 -o /dev/null -w 'google_dns_code=%{http_code}' https://8.8.8.8/ 2>/dev/null",
+          'printf \' google_dns_exit=%s\\n\' "$?"',
         ].join('; '),
       ];
       const fields = (record: ExecutionRecord) =>
@@ -385,9 +482,10 @@ export function sandboxConformance(
       const blocked = fields(
         succeeded(await context.run(denied, probe, { timeoutMs: 30_000 })).record,
       );
+      options.log?.(`deny_all probe: ${JSON.stringify(blocked)}`);
       expect(blocked.dns).not.toBe('0');
       expect(blocked.dns).not.toBe('127');
-      for (const prefix of ['ip', 'name']) {
+      for (const prefix of ['v4', 'name', 'v6', 'google_dns']) {
         expect(blocked[`${prefix}_code`]).toBe('000');
         // curl's own network failures; 127 would mean the probe itself was missing.
         expect(['6', '7', '28', '35', '52', '56']).toContain(blocked[`${prefix}_exit`] ?? '');
@@ -403,9 +501,16 @@ export function sandboxConformance(
           }),
         ).record,
       );
-      expect(reached).toMatchObject({ dns: '0', ip_exit: '0', name_exit: '0' });
-      expect(reached.ip_code).not.toBe('000');
+      options.log?.(`open control probe: ${JSON.stringify(reached)}`);
+      expect(reached).toMatchObject({
+        dns: '0',
+        v4_exit: '0',
+        name_exit: '0',
+        google_dns_exit: '0',
+      });
+      expect(reached.v4_code).not.toBe('000');
       expect(reached.name_code).not.toBe('000');
+      expect(reached.google_dns_code).not.toBe('000');
     });
   });
 }

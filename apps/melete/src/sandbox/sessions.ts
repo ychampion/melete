@@ -19,6 +19,8 @@ import type { SessionStatus } from './schema.ts';
 import type { EgressPolicy, SandboxHandle, SandboxProvider, SandboxSpec } from './types.ts';
 
 export const PENDING_SANDBOX = 'pending:';
+/** A dispatch the provider refused before anything ran. */
+export const NOT_STARTED = 'not_started';
 
 export type SessionRow = {
   id: string;
@@ -320,7 +322,9 @@ export class SandboxSessions {
 
   /**
    * Record that an action is being dispatched into a session. `again` means
-   * it was dispatched before: the caller must reattach, never run.
+   * it was dispatched before: the caller must reattach, never run. The one
+   * exception is a dispatch settled as `not_started`, which the provider
+   * refused before anything ran; that action may be sent as a first run again.
    */
   async beginCommand(
     sessionId: string,
@@ -329,7 +333,10 @@ export class SandboxSessions {
   ): Promise<'first' | 'again'> {
     const inserted = await this.sql`insert into sandbox_command (action_id, session_id, marker)
       values (${actionId}, ${sessionId}, ${marker})
-      on conflict (action_id) do nothing
+      on conflict (action_id) do update set session_id = excluded.session_id,
+        marker = excluded.marker, started_at = now(), outcome = null, exit_code = null,
+        reattached = false
+      where sandbox_command.outcome = ${NOT_STARTED}
       returning action_id`;
     if (inserted.length) return 'first';
     const [existing] = await this.sql`select session_id, marker from sandbox_command
@@ -339,6 +346,7 @@ export class SandboxSessions {
     return 'again';
   }
 
+  /** Settle a dispatch; a `failed` result with `retryable: true` is settled as `not_started`. */
   async settleCommand(
     actionId: string,
     result: { outcome: string; exitCode: number | null; reattached: boolean },

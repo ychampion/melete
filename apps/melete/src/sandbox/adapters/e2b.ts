@@ -36,6 +36,7 @@ import {
   type SandboxHandle,
   type SandboxProvider,
   type SandboxSpec,
+  SandboxStartRefused,
   SandboxTransportError,
 } from '../types.ts';
 import {
@@ -171,6 +172,33 @@ function signalName(status: string | undefined): string {
   const known: Record<string, string> = { killed: 'SIGKILL', terminated: 'SIGTERM' };
   return (named && known[named]) ?? named ?? 'unknown';
 }
+
+/**
+ * A Start the daemon answered with an error before any event. `refused` means
+ * the answer says the process was not created; anything else leaves it open.
+ */
+class StartFailure extends Error {
+  override readonly name = 'StartFailure';
+  constructor(
+    readonly code: string,
+    readonly refused: boolean,
+    message: string,
+  ) {
+    super(`${code}: ${message}`);
+  }
+}
+
+const REFUSAL_CODES = new Set([
+  'invalid_argument',
+  'failed_precondition',
+  'permission_denied',
+  'unauthenticated',
+  'not_found',
+  'already_exists',
+  'out_of_range',
+  'unimplemented',
+  'resource_exhausted',
+]);
 
 function connectFailure(error: ConnectError): Error {
   if (error.code === 'not_found') return new SandboxFileNotFound(error.message);
@@ -378,14 +406,21 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
         if (typeof parsed.code === 'string') code = parsed.code;
         if (typeof parsed.message === 'string') message = parsed.message;
       } catch {}
-      if (response.status >= 500) code = 'unavailable';
-      throw connectFailure(new ConnectError(code, scrub(message, [session.token])));
+      // A 4xx is an answer that the request was not acted on; a 5xx may come
+      // from a proxy that forwarded it and then gave up.
+      const refused = response.status >= 400 && response.status < 500 && response.status !== 408;
+      throw new StartFailure(code, refused, scrub(message, [session.token]));
     }
     try {
       for await (const message of readEnvelopes(response.body, 16 * MiB))
         yield message as ProcessEvent;
     } catch (error) {
-      if (error instanceof ConnectError) throw connectFailure(error);
+      if (error instanceof ConnectError)
+        throw new StartFailure(
+          error.code,
+          REFUSAL_CODES.has(error.code),
+          scrub(error.message, [session.token]),
+        );
       throw new SandboxTransportError(
         scrub(`the command stream was cut: ${describeError(error)}`, [session.token]),
       );
@@ -401,18 +436,24 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
   ): Promise<{ exitCode: number | null; output: string }> {
     let output = '';
     let exitCode: number | null = null;
-    for await (const event of processEvents(
-      session,
-      { cmd: '/bin/sh', args, cwd: '/', stdin: false },
-      REQUEST_TIMEOUT_MS,
-      root,
-      signal,
-    )) {
-      const data = event.event?.data;
-      const chunk = data?.stdout ?? data?.stderr;
-      if (chunk) output += Buffer.from(chunk, 'base64').toString('utf8');
-      const end = event.event?.end;
-      if (end) exitCode = end.exited ? (end.exitCode ?? 0) : null;
+    try {
+      for await (const event of processEvents(
+        session,
+        { cmd: '/bin/sh', args, cwd: '/', stdin: false },
+        REQUEST_TIMEOUT_MS,
+        root,
+        signal,
+      )) {
+        const data = event.event?.data;
+        const chunk = data?.stdout ?? data?.stderr;
+        if (chunk) output += Buffer.from(chunk, 'base64').toString('utf8');
+        const end = event.event?.end;
+        if (end) exitCode = end.exited ? (end.exitCode ?? 0) : null;
+      }
+    } catch (error) {
+      if (error instanceof StartFailure)
+        throw connectFailure(new ConnectError(error.code, error.message));
+      throw error;
     }
     return { exitCode, output };
   }
@@ -517,8 +558,8 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
         spec.timeoutMs + KILL_GRACE_MS,
       );
       let outcome: ExecOutcome | null = null;
+      let pid: number | null = null;
       try {
-        let pid: number | null = null;
         for await (const event of processEvents(
           session,
           { cmd: 'setsid', args: spec.argv, cwd: spec.cwd, stdin: spec.stdin !== undefined },
@@ -575,6 +616,7 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
             const exited = body.end.exited === true && !timedOut;
             // Kept, and the stream read on to its end-of-stream message.
             outcome = {
+              started: 'yes',
               state: exited ? 'exited' : 'killed',
               exitCode: exited ? (body.end.exitCode ?? 0) : null,
               signal: exited ? null : timedOut ? 'SIGKILL' : signalName(body.end.status),
@@ -586,8 +628,20 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
             };
           }
         }
-        if (!outcome) throw new SandboxTransportError('the command stream ended without an exit');
+        if (!outcome)
+          throw new SandboxTransportError('the command stream ended without an exit', 'yes');
         return outcome;
+      } catch (error) {
+        // What the command's fate can be decided from: whether envd said it
+        // started, and whether a failure before that was a refusal.
+        const detail = scrub(describeError(error), [session.token]);
+        if (pid !== null) {
+          if (error instanceof SandboxTransportError && error.started === 'yes') throw error;
+          throw new SandboxTransportError(`the command started, then: ${detail}`, 'yes');
+        }
+        if (error instanceof StartFailure && error.refused)
+          throw new SandboxStartRefused(`envd refused to start the command: ${detail}`);
+        throw new SandboxTransportError(`no start was reported: ${detail}`, 'unknown');
       } finally {
         clearTimeout(timer);
         clearTimeout(stall);

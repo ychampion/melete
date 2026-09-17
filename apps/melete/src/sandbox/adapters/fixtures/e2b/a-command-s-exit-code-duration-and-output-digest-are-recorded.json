@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 10,
+        "atMs": 4,
         "method": "POST",
         "url": "https://api.e2b.app/sandboxes",
         "path": "/sandboxes",
@@ -52,7 +52,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 12,
+        "atMs": 5,
         "body": {
           "templateID": "base",
           "sandboxID": "fake-sbx-0001",
@@ -66,7 +66,7 @@
     },
     {
       "request": {
-        "atMs": 19,
+        "atMs": 8,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
@@ -110,7 +110,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 25,
+        "atMs": 11,
         "body": [
           {
             "event": {
@@ -135,11 +135,11 @@
     },
     {
       "request": {
-        "atMs": 30,
+        "atMs": 13,
         "method": "POST",
         "url": "https://sandbox.e2b.app/process.Process/Start",
         "path": "/process.Process/Start",
-        "bodySha256": "75f56d059810ab61d1034cf00da2f3c9d2181473872bc98f5c95ed892f3617cb",
+        "bodySha256": "49a6df9714ae36077b92b300ea44376b720409e2f0b7de6c2169f643bdc4a4ea",
         "headers": {
           "content-type": "application/connect+json",
           "connect-protocol-version": "1",
@@ -155,7 +155,7 @@
               "args": [
                 "/bin/sh",
                 "-c",
-                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf '\\''melete-conformance'\\''; sleep 0.3; exit 3' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\nexit \"$ec\""
+                "d=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( 'sh' '-c' 'printf '\\''melete-conformance'\\''; sleep 0.3; exit 3' ) > \"$d/out\" 2>&1\nec=$?\nprintf '%s' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\""
               ],
               "cwd": "/work"
             },
@@ -174,16 +174,16 @@
             "base64": "AAAAACB7ImV2ZW50Ijp7InN0YXJ0Ijp7InBpZCI6MTAwMn19fQ=="
           },
           {
-            "atMs": 307,
+            "atMs": 303,
             "base64": "AAAAAF97ImV2ZW50Ijp7ImVuZCI6eyJleGl0Q29kZSI6MywiZXhpdGVkIjp0cnVlLCJzdGF0dXMiOiJleGl0IHN0YXR1cyAzIiwiZXJyb3IiOiJleGl0IHN0YXR1cyAzIn19fQ=="
           },
           {
-            "atMs": 307,
+            "atMs": 303,
             "base64": "AgAAAAJ7fQ=="
           }
         ],
         "end": "complete",
-        "atMs": 31,
+        "atMs": 14,
         "body": [
           {
             "event": {
@@ -210,7 +210,7 @@
     },
     {
       "request": {
-        "atMs": 339,
+        "atMs": 318,
         "method": "POST",
         "url": "https://sandbox.e2b.app/filesystem.Filesystem/ListDir",
         "path": "/filesystem.Filesystem/ListDir",
@@ -238,7 +238,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 339,
+        "atMs": 318,
         "body": {
           "entries": [
             {
@@ -265,7 +265,7 @@
     },
     {
       "request": {
-        "atMs": 341,
+        "atMs": 319,
         "method": "GET",
         "url": "https://sandbox.e2b.app/files",
         "path": "/files?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fout&username=user",
@@ -287,7 +287,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 342,
+        "atMs": 319,
         "body": {
           "bytes": 18
         }
@@ -295,7 +295,7 @@
     },
     {
       "request": {
-        "atMs": 344,
+        "atMs": 320,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0001",
         "path": "/sandboxes/fake-sbx-0001",
@@ -307,7 +307,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 345
+        "atMs": 320
       }
     }
   ]

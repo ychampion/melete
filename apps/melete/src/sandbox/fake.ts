@@ -16,7 +16,7 @@
  */
 import { isIP } from 'node:net';
 import { LABEL_SESSION, ownedLabels } from './manifest.ts';
-import { markerDirectory, reattachByMarker } from './marker.ts';
+import { reattachByMarker } from './marker.ts';
 import {
   type EgressPolicy,
   type ExecOutcome,
@@ -27,6 +27,7 @@ import {
   type SandboxHandle,
   type SandboxProvider,
   type SandboxSpec,
+  SandboxStartRefused,
   SandboxTransportError,
 } from './types.ts';
 
@@ -223,9 +224,16 @@ export class FakeFs {
     }
   }
 
-  remove(value: string): void {
+  remove(value: string, recursive = false): void {
     const target = this.resolve(value, false);
-    if (!this.nodes.delete(target)) throw new FsError('ENOENT', target);
+    const node = this.nodes.get(target);
+    if (!node) throw new FsError('ENOENT', target);
+    if (node.kind === 'dir') {
+      const children = [...this.nodes.keys()].filter((key) => key.startsWith(`${target}/`));
+      if (children.length && !recursive) throw new FsError('EISDIR', target);
+      for (const child of children) this.nodes.delete(child);
+    }
+    this.nodes.delete(target);
   }
 
   /** Every entry below a directory, without following links, relative to it. */
@@ -593,6 +601,18 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       return 0;
     case 'false':
       return 1;
+    case '[':
+    case 'test': {
+      const operands = name === '[' ? args.slice(0, -1) : args;
+      if (name === '[' && args[args.length - 1] !== ']') return fail('missing ]', 2);
+      const [left = '', operator, right = ''] = operands;
+      if (operands.length === 3 && operator === '=') return left === right ? 0 : 1;
+      if (operands.length === 3 && operator === '!=') return left !== right ? 0 : 1;
+      if (operands.length === 2 && left === '-e') return fs.lstat(path(operator ?? '')) ? 0 : 1;
+      if (operands.length === 2 && left === '-d')
+        return fs.stat(path(operator ?? ''))?.kind === 'dir' ? 0 : 1;
+      return fail('unsupported test', 2);
+    }
     case 'exit':
       throw new ExitSignal(args[0] === undefined ? shell.status : Number(args[0]) & 0xff);
     case 'echo':
@@ -670,10 +690,11 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       }
     }
     case 'rm': {
-      const force = args.includes('-f');
-      for (const file of args.filter((arg) => arg !== '-f' && arg !== '--')) {
+      const flags = args.filter((arg) => /^-[rf]+$/.test(arg)).join('');
+      const force = flags.includes('f');
+      for (const file of args.filter((arg) => !/^-[rf]+$/.test(arg) && arg !== '--')) {
         try {
-          fs.remove(path(file));
+          fs.remove(path(file), flags.includes('r'));
         } catch {
           if (!force) return fail(`cannot remove '${file}'`, 1);
         }
@@ -789,7 +810,14 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
           io.err(encode(`sh: 1: cannot create ${target}: ${(error as FsError).code}\n`));
           return 2;
         }
-        sink = (bytes) => shell.sandbox.fs.writeFile(file, bytes, { append: true });
+        sink = (bytes) => {
+          try {
+            shell.sandbox.fs.writeFile(file, bytes, { append: true });
+          } catch {
+            // Removed while open: as with a descriptor to a deleted file, the
+            // writes succeed and land nowhere anyone can read.
+          }
+        };
       }
       if (redirect.stream === 'out' || redirect.stream === 'append')
         current = { ...current, out: sink };
@@ -1024,7 +1052,10 @@ class Capture {
   }
 }
 
-export type AcknowledgementLoss = 'before_marker' | 'after_marker';
+export type AcknowledgementLoss = 'before_start' | 'after_start';
+
+/** How long after a command starts its acknowledgement is cut. */
+export const FAKE_AFTER_START_CUT_MS = 150;
 
 export class FakeSandboxProvider implements SandboxProvider {
   readonly capabilities: SandboxCapabilities;
@@ -1039,7 +1070,11 @@ export class FakeSandboxProvider implements SandboxProvider {
     this.engine = options.engine ?? new FakeSandboxEngine();
   }
 
-  /** The next command's acknowledgement is lost before or after its marker is written. */
+  /**
+   * The next command's acknowledgement is lost: before anything reached the
+   * sandbox, so the start cannot be vouched for, or once the command has
+   * started, while it keeps running.
+   */
   loseNextAcknowledgement(when: AcknowledgementLoss): void {
     this.pendingLoss = when;
   }
@@ -1078,8 +1113,12 @@ export class FakeSandboxProvider implements SandboxProvider {
     this.calls.exec += 1;
     const loss = this.pendingLoss;
     this.pendingLoss = null;
-    if (loss === 'before_marker')
-      throw new SandboxTransportError('the request was lost before it reached the sandbox');
+    // What the caller can tell of a lost request: not whether it arrived.
+    if (loss === 'before_start')
+      throw new SandboxTransportError('the connection closed before any answer', 'unknown');
+    // A process is refused before it exists, the way a daemon refuses a bad start.
+    if (sandbox.fs.stat(spec.cwd)?.kind !== 'dir')
+      throw new SandboxStartRefused(`the working directory ${spec.cwd} does not exist`);
     const started = performance.now();
     const channel = new Capture(spec.maxOutputBytes);
     const child = this.engine.spawn(sandbox, spec.argv, {
@@ -1098,19 +1137,13 @@ export class FakeSandboxProvider implements SandboxProvider {
     const cut = new Promise<'cut'>((resolve) => {
       if (signal.aborted) return resolve('cut');
       signal.addEventListener('abort', () => resolve('cut'), { once: true });
-      if (loss === 'after_marker') {
-        const poll = () => {
-          if (child.finished || sandbox.fs.lstat(markerDirectory(spec.marker)) !== undefined)
-            resolve('cut');
-          else setTimeout(poll, 2);
-        };
-        poll();
-      }
+      if (loss === 'after_start') setTimeout(() => resolve('cut'), FAKE_AFTER_START_CUT_MS);
     });
     const result = await Promise.race([child.done, cut]);
     if (result === 'cut')
-      throw new SandboxTransportError('the connection dropped before the command answered');
+      throw new SandboxTransportError('the connection dropped after the command started', 'yes');
     return {
+      started: 'yes',
       state: result.killed ? 'killed' : 'exited',
       exitCode: result.killed ? null : result.exitCode,
       signal: result.killed ? 'SIGKILL' : null,

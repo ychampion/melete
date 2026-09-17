@@ -29,14 +29,14 @@ export const AUTHORED_NOTE =
 export const RECORDED_NOTE = 'Recorded from E2B by the live conformance run.';
 
 /** How long after a command starts its acknowledgement is cut. */
-export const AFTER_MARKER_CUT_MS = 1_000;
+export const AFTER_START_CUT_MS = 1_000;
 
 /**
- * Wrap a fetch so the next marked command loses its answer: before the request
- * leaves, or once the command has started and before it ends.
+ * Wrap a fetch so the next marked command loses its answer: before anything
+ * comes back, or once the command has started and before it ends.
  */
 export function acknowledgementControl(inner: Fetch) {
-  let pending: 'before_marker' | 'after_marker' | null = null;
+  let pending: 'before_start' | 'after_start' | null = null;
   const marked = (url: URL, init: RequestInit) =>
     url.pathname === '/process.Process/Start' &&
     init.body instanceof Uint8Array &&
@@ -46,8 +46,8 @@ export function acknowledgementControl(inner: Fetch) {
     if (!pending || !marked(url, init)) return inner(input, init);
     const loss = pending;
     pending = null;
-    if (loss === 'before_marker')
-      throw new TypeError('fetch failed: the connection closed before the request was sent');
+    if (loss === 'before_start')
+      throw new TypeError('fetch failed: the connection closed before any answer');
     const response = await inner(input, init);
     if (!response.body) return response;
     const reader = response.body.getReader();
@@ -67,7 +67,7 @@ export function acknowledgementControl(inner: Fetch) {
           severed = true;
           controller.error(new TypeError('network connection lost'));
           void reader.cancel().catch(() => {});
-        }, AFTER_MARKER_CUT_MS);
+        }, AFTER_START_CUT_MS);
       },
       cancel(reason) {
         clearTimeout(cut);
@@ -78,7 +78,7 @@ export function acknowledgementControl(inner: Fetch) {
   };
   return {
     fetch: controlled,
-    lose(when: 'before_marker' | 'after_marker') {
+    lose(when: 'before_start' | 'after_start') {
       pending = when;
     },
   };

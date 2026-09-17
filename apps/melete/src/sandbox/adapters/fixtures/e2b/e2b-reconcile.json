@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 2,
+        "atMs": 1,
         "method": "GET",
         "url": "https://api.e2b.app/v2/sandboxes",
         "path": "/v2/sandboxes?metadata=melete.owner%3Dv1%26melete.project%3Dinstall-a&state=running,paused&limit=100",
@@ -29,7 +29,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 2,
+        "atMs": 1,
         "body": [
           {
             "templateID": "base",
@@ -137,7 +137,7 @@
     },
     {
       "request": {
-        "atMs": 4,
+        "atMs": 2,
         "method": "DELETE",
         "url": "https://api.e2b.app/sandboxes/fake-sbx-0002",
         "path": "/sandboxes/fake-sbx-0002",
@@ -149,7 +149,7 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 5
+        "atMs": 2
       }
     }
   ]

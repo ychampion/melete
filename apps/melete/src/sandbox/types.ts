@@ -70,12 +70,20 @@ export type ExecSpec = {
 };
 
 /**
+ * Whether the provider saw the process start. `no` is a positive report that
+ * it refused to start one; `unknown` is everything the provider cannot vouch
+ * for, including a request whose answer was lost before any event arrived.
+ */
+export type StartFact = 'yes' | 'no' | 'unknown';
+
+/**
  * What the exec channel observed. For a marker-wrapped command the command's
  * own output goes to the marker directory, so `output` here is only what the
  * wrapper itself wrote; the service reads the command's output from the file.
  * `durationMs` is 0 when the adapter did not watch the command run.
  */
 export type ExecOutcome = {
+  started: StartFact;
   state: 'exited' | 'killed' | 'lost';
   exitCode: number | null;
   signal: string | null;
@@ -118,9 +126,10 @@ export interface SandboxProvider {
   connect(handle: SandboxHandle, signal: AbortSignal): Promise<void>;
   exec(handle: SandboxHandle, spec: ExecSpec, signal: AbortSignal): Promise<ExecOutcome>;
   /**
-   * Null when the marker was never written: the command provably did not start.
-   * A marker without an exit record is `state: 'lost'`; an exit record is
-   * `state: 'exited'` with its code. Output is not included: the service reads it.
+   * Null when there is no marker. That alone does not prove the command never
+   * started: a command can remove its own marker. A marker without an exit
+   * record is `state: 'lost'`; an exit record is `state: 'exited'` with its
+   * code. Output is not included: the service reads it.
    */
   reattach(handle: SandboxHandle, marker: string, signal: AbortSignal): Promise<ExecOutcome | null>;
   putFiles(
@@ -159,6 +168,18 @@ export interface SandboxProvider {
  */
 export class SandboxTransportError extends Error {
   override readonly name = 'SandboxTransportError';
+  constructor(
+    message: string,
+    /** For a lost command: whether its start was seen before the answer was lost. */
+    readonly started: StartFact = 'unknown',
+  ) {
+    super(message);
+  }
+}
+
+/** The provider refused to start the process. Nothing ran, so a retry is safe. */
+export class SandboxStartRefused extends Error {
+  override readonly name = 'SandboxStartRefused';
 }
 
 export class SandboxFileNotFound extends Error {

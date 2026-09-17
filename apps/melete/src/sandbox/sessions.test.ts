@@ -4,7 +4,7 @@ import { FakeSandboxProvider } from './fake.ts';
 import { SandboxRefusal } from './manifest.ts';
 import { runCommand } from './marker.ts';
 import { seedSessionScope, sessionSpec } from './session-fixtures.ts';
-import { SandboxSessions, sessionHandle } from './sessions.ts';
+import { NOT_STARTED, SandboxSessions, sessionHandle } from './sessions.ts';
 
 const handle = await testDatabase();
 const withDb = handle ? describe : describe.skip;
@@ -229,5 +229,23 @@ withDb('sandbox sessions', () => {
     expect(await settled(sessions.beginCommand(session.id, actionId, 'act_OTHER'))).toContain(
       'different sandbox',
     );
+  });
+
+  test('only a dispatch the provider refused to start may be sent as a first run again', async () => {
+    const { scope, provider, sessions, spec, base } = await setup();
+    const attemptId = await scope.attempt();
+    const session = await sessions.open({ ...base, attemptId }, provider, spec, signal());
+    const actionId = await scope.action(attemptId);
+    expect(await sessions.beginCommand(session.id, actionId, actionId)).toBe('first');
+    await sessions.settleCommand(actionId, {
+      outcome: NOT_STARTED,
+      exitCode: null,
+      reattached: false,
+    });
+    expect(await sessions.beginCommand(session.id, actionId, actionId)).toBe('first');
+    for (const outcome of ['unknown', 'succeeded', 'failed']) {
+      await sessions.settleCommand(actionId, { outcome, exitCode: null, reattached: false });
+      expect(await sessions.beginCommand(session.id, actionId, actionId)).toBe('again');
+    }
   });
 });

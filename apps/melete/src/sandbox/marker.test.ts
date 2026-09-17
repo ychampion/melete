@@ -3,12 +3,18 @@ import { FakeSandboxProvider } from './fake.ts';
 import {
   checkMarker,
   MARKER_ROOT,
+  MARKER_SETUP_EXIT,
   markCommand,
   REENTERED_EXIT,
   reattachByMarker,
   runCommand,
 } from './marker.ts';
-import type { SandboxHandle } from './types.ts';
+import {
+  type SandboxHandle,
+  type SandboxProvider,
+  SandboxStartRefused,
+  SandboxTransportError,
+} from './types.ts';
 
 const MARKER = 'act_01J0MARKERTEST0000000000';
 const signal = () => AbortSignal.timeout(10_000);
@@ -108,7 +114,7 @@ test('a wrapper that ends without a marker is a retryable failure, not a record'
 
 test('an unreadable marker after a lost acknowledgement is unknown, never a retry', async () => {
   const { provider, handle } = await sandbox();
-  provider.loseNextAcknowledgement('after_marker');
+  provider.loseNextAcknowledgement('after_start');
   const broken = Object.create(provider) as FakeSandboxProvider;
   broken.reattach = async () => {
     throw new Error('the sandbox did not answer');
@@ -116,10 +122,64 @@ test('an unreadable marker after a lost acknowledgement is unknown, never a retr
   const result = await runCommand({
     provider: broken,
     handle,
-    request: { marker: MARKER, argv: ['sleep', '0.2'], timeoutMs: 5_000, dispatch: 'first' },
+    request: { marker: MARKER, argv: ['sleep', '0.4'], timeoutMs: 5_000, dispatch: 'first' },
     workRoot: '.',
     jobId: 'job_UNUSED',
     signal: signal(),
   });
   expect(result.outcome).toBe('unknown');
+});
+
+const run = (provider: SandboxProvider, handle: SandboxHandle, argv: string[]) =>
+  runCommand({
+    provider,
+    handle,
+    request: { marker: MARKER, argv, timeoutMs: 5_000, dispatch: 'first' },
+    workRoot: '.',
+    jobId: 'job_UNUSED',
+    signal: signal(),
+  });
+
+test('a start the provider refused is a retryable failure', async () => {
+  const { provider, handle } = await sandbox();
+  const refusing = Object.create(provider) as FakeSandboxProvider;
+  refusing.exec = async () => {
+    throw new SandboxStartRefused('no such image');
+  };
+  expect(await run(refusing, handle, ['true'])).toMatchObject({
+    outcome: 'failed',
+    retryable: true,
+  });
+  // A lost answer is not a refusal, whatever the transport believes about the start.
+  for (const started of ['unknown', 'yes', 'no'] as const) {
+    const losing = Object.create(provider) as FakeSandboxProvider;
+    losing.exec = async () => {
+      throw new SandboxTransportError('the connection dropped', started);
+    };
+    expect((await run(losing, handle, ['true'])).outcome).toBe('unknown');
+  }
+});
+
+test("a command that fakes the wrapper's setup failure is not a retry", async () => {
+  const { provider, handle } = await sandbox();
+  const result = await run(provider, handle, [
+    'sh',
+    '-c',
+    `rm -rf ${MARKER_ROOT}/${MARKER}; exit ${MARKER_SETUP_EXIT}`,
+  ]);
+  expect(result.outcome).toBe('unknown');
+  // Without the marker the command can only be found by what it did, and it did run.
+  expect(await provider.reattach(handle, MARKER, signal())).toBeNull();
+});
+
+test("a command's own exit 111 or 112 is recorded as its own, never as the wrapper's", async () => {
+  for (const status of [REENTERED_EXIT, MARKER_SETUP_EXIT]) {
+    const { provider, handle } = await sandbox();
+    const result = await run(provider, handle, ['sh', '-c', `printf ran; exit ${status}`]);
+    expect(result).toMatchObject({ outcome: 'succeeded', late: false, reattached: false });
+    if (result.outcome === 'succeeded') {
+      expect(result.record.exitCode).toBe(status);
+      expect(text(result.record.preview)).toBe('ran');
+    }
+  }
 });
