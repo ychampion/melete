@@ -49,6 +49,29 @@ describe('a go-ahead ask for an effect nobody proposed', () => {
       expect(asksWithoutProposing(reply, ['email.search'], catalog)).toBe(false);
   });
 
+  test("the broker's own lifecycle operation lends no verb to a sentence", () => {
+    // `resume_action` names no destination, and "action" is an ordinary word.
+    const resume: ToolSpec = {
+      name: 'resume_action',
+      description: 'Carry out an action the owner already approved.',
+      input_schema: { type: 'object' },
+      effect_class: 'write_external',
+      connection_id: null,
+    };
+    const offered = [tool('email.search', 'read'), resume];
+    expect(
+      asksWithoutProposing(
+        'No action needed on your side, but let me know if you would like me to look again.',
+        [],
+        offered,
+      ),
+    ).toBe(false);
+    // Carrying the approved action out is proposing, so nothing is asked again.
+    expect(
+      asksWithoutProposing('Sent. Shall I send a follow-up?', ['resume_action'], offered),
+    ).toBe(false);
+  });
+
   test('an attempt that called an external tool, or had none to call, is not asked again', () => {
     expect(asksWithoutProposing('Shall I send another?', ['email.send'], catalog)).toBe(false);
     expect(asksWithoutProposing('Shall I send it?', [], [tool('email.search', 'read')])).toBe(

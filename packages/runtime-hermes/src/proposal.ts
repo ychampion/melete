@@ -7,9 +7,12 @@
  * Structure first. The question matters only when the catalog offers an
  * external effect (`write_external` or `spend`) and none was called in this
  * attempt. A sentence then counts when it asks permission and either names the
- * verb of such an uncalled tool (`send` for `email.send`, `restart` for
- * `server.restart`), or the attempt called a reversible tool whose namespace
- * has that uncalled external sibling (a draft beside its send).
+ * verb of such an uncalled tool that has a destination (`send` for
+ * `email.send`, `restart` for `server.restart`), or the attempt called a
+ * reversible tool whose namespace has that uncalled external sibling (a draft
+ * beside its send). Carrying out an approved action counts as proposing, but
+ * the broker's own lifecycle operations name no destination and so lend no
+ * verb: `resume_action` must not make "action" an effect verb.
  *
  * The permission pattern is deliberately small: `shall/should/may/can/could I`,
  * `(would|do) you (like|want) me to`, `want me to`, `ok to`, `go ahead`,
@@ -49,7 +52,12 @@ export function asksWithoutProposing(
       namespace(tool.name) !== null &&
       external.some((other) => namespace(other.name) === namespace(tool.name)),
   );
-  const effectVerbs = external.flatMap((tool) => verbs(tool.name));
+  // Only a tool that names a destination lends its verb to a sentence. The
+  // broker's own lifecycle operations name none, and `resume_action` would
+  // otherwise make "action" an effect verb in ordinary English.
+  const effectVerbs = external
+    .filter((tool) => tool.connection_id !== null)
+    .flatMap((tool) => verbs(tool.name));
   return reply
     .split(/(?<=[.!?])\s+|\n+/)
     .some(
