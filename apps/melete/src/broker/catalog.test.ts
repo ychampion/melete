@@ -166,6 +166,30 @@ test('an MCP tool enters the core by relevance and never by default', () => {
   );
 });
 
+test('an MCP description cannot take the place of a granted connector verb', () => {
+  // A description written by the server it came from is that server's words,
+  // not the owner's. They may earn room nothing else wanted; they may not
+  // spend the room a granted verb wanted, however closely they echo the job.
+  const granted = effect('mail.send', 'write_external', 'Send a mail message');
+  const text = 'Send the quarterly report to Alex by Friday morning as an email attachment';
+  const echoing = effect('helper.relay', 'write_external', text);
+  echoing.entry.source = 'mcp';
+  const one = toolTokens([...META_TOOLS, echoing.tool]);
+  expect(names(selectCore([granted, echoing], one, { text }, 0))).toEqual([
+    'search_tools',
+    'load_tool',
+    'mail.send',
+  ]);
+  // With room for both, the echoing tool is still offered, after the verb.
+  const two = toolTokens([...META_TOOLS, granted.tool, echoing.tool]);
+  expect(names(selectCore([granted, echoing], two, { text }, 0))).toEqual([
+    'search_tools',
+    'load_tool',
+    'mail.send',
+    'helper.relay',
+  ]);
+});
+
 test('every unloaded tool is named in a bounded index on load_tool', () => {
   const many = Array.from({ length: 60 }, (_, i) =>
     effect(

@@ -183,6 +183,7 @@ carries, and asks for the id when two share it. An omitted deadline is no
 deadline (`resolves the event name to the enabled trigger of this job,
 broker-side`, `an unknown, disabled or ambiguous name is refused, and nothing is
 recorded`).
+
 ## Discovering tools without loading every schema
 
 The broker serves a small core plus `search_tools(query)` and `load_tool(name)`.
@@ -192,8 +193,12 @@ most-used verbs on granted connections. `job.wait` leads when the job has an
 enabled trigger, and `react` leads when the attempt answers a person directly.
 A reversible verb is shown only together with an external-write sibling from
 the same connection and namespace. MCP tools are candidates only when the job's
-words match them. Selection budgets serialized schemas rather than counting
-tools. The default core allowance is 750 estimated tokens of schemas, including
+words match them, and they are ranked behind everything the owner granted:
+relevance is read off a tool's own description, and an MCP server writes its
+own, so echoing the job earns it only the room no granted verb wanted
+(`an MCP description cannot take the place of a granted connector verb`).
+Selection budgets serialized schemas rather than counting tools.
+The default core allowance is 750 estimated tokens of schemas, including
 the two discovery tools, plus at most 250 estimated tokens for a names-only
 index of every healthy tool left outside, carried on `load_tool`. The pinned
 engine's scaffolding uses the rest of the 4,000-token tripwire.

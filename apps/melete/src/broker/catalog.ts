@@ -158,12 +158,19 @@ export type CoreSelectionContext = {
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
 const writesOutside = (item: CatalogItem) =>
   item.entry.effect_class === 'write_external' || item.entry.effect_class === 'spend';
+/** Whether the installation vouches for this entry's own words. An MCP server writes its own. */
+const granted = (item: CatalogItem) => (item.entry.source === 'mcp' ? 0 : 1);
 
 /**
  * Budget the serialized provider schemas, including the two always-on meta-tools.
  *
- * Order: tools the turn cannot do without, then lexical relevance to the job's
- * own words, then the local core, then usage, then name. A reversible tool is
+ * Order: tools the turn cannot do without, then everything the owner granted
+ * ahead of anything a remote server described to us, then lexical relevance to
+ * the job's own words, then the local core, then usage, then name. Relevance is
+ * read off a tool's own description, and an MCP server writes its own: ranking
+ * it against granted verbs would let that server take the first catalog's room
+ * by echoing the job. It may have the room nothing granted wanted, and no more.
+ * A reversible tool is
  * only offered beside an external-write sibling from the same connection and
  * namespace, because a draft shown alone reads as the only way to act. Whatever
  * stays outside is named in a bounded index on `load_tool`, so the model knows
@@ -197,6 +204,7 @@ export function selectCore(
     .sort(
       (a, b) =>
         b.pinned - a.pinned ||
+        granted(b.item) - granted(a.item) ||
         b.score - a.score ||
         Number(b.item.core) - Number(a.item.core) ||
         b.item.uses - a.item.uses ||
