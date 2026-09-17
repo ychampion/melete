@@ -45,6 +45,8 @@ import { builtinEnvironment, ensureBuiltinConnections } from './connectors/built
 import {
   type ConfiguredConnection,
   configuredBrowserSessions,
+  connectorFactoryFor,
+  connectorOptionsFromEnv,
   connectorsFromEnv,
   readConnectionConfig,
 } from './connectors/configured.ts';
@@ -113,6 +115,7 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
+import { type SandboxWiring, startSandboxesFromEnv } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -409,11 +412,13 @@ export async function bootstrap(
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let signIn: ProviderSignIn | undefined;
+  let sandboxes: SandboxWiring | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     clearInterval(episodeRetention);
+    sandboxes?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -493,6 +498,18 @@ export async function bootstrap(
         stdioLauncher,
       });
       catalog = new RuntimeCatalog(handle.db, registry);
+      // Sandboxes are the service's own: their providers come from the same
+      // factory the connectors did, so the key stays with the connection.
+      sandboxes = startSandboxesFromEnv(
+        handle.sql,
+        env,
+        connectorFactoryFor(registry, () => connectorOptionsFromEnv(handle.sql, env)),
+      );
+      // Boot reconciliation, before any attempt can open a session of its own.
+      if (sandboxes) {
+        await sandboxes.reconcile(AbortSignal.timeout(120_000));
+        sandboxes.start();
+      }
     }
     if (handle) {
       events = new EventStream(handle);
@@ -661,6 +678,13 @@ export async function bootstrap(
           return [...new Set([...granted.flatMap((entry) => entry.scopes), 'job.wait'])].sort();
         },
       });
+      // An attempt that ends leaves no sandbox running: its workspace is
+      // suspended, and an ephemeral session is closed. Off the outcome
+      // transaction, since both are provider calls.
+      if (sandboxes)
+        runner.onFinished.push(async (_tx, _row, _outcome, attemptId) => {
+          sandboxes?.afterAttempt(attemptId);
+        });
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);

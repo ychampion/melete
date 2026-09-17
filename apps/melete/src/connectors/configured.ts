@@ -11,6 +11,7 @@ import {
   storedSandboxConnection,
 } from '../sandbox/connection.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
+import type { SandboxProvider } from '../sandbox/types.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
 import { type BrowserWorkerEndpoint, BrowserWorkerPool } from '../workers/browser/client.ts';
 import { PostgresBrowserRecipeStore } from '../workers/browser/recipes.ts';
@@ -232,6 +233,8 @@ function ownerOnly<T extends Connector>(connector: T): T {
 export class ConnectorFactory {
   readonly secrets: SealedSecretStore;
   readonly mailers = new Map<string, ReturnType<EmailConnector['asMailer']>>();
+  /** Each sandbox connection's provider, so boot reconciliation and the sweep use it too. */
+  readonly sandboxProviders = new Map<string, { adapter: string; provider: SandboxProvider }>();
   private readonly overrides: Map<string, ConfiguredConnection>;
 
   constructor(readonly options: ConnectorOptions) {
@@ -312,6 +315,10 @@ export class ConnectorFactory {
         snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
         ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
       });
+      this.sandboxProviders.set(row.id, {
+        adapter: config.adapter,
+        provider: opened.provider,
+      });
       return ownerOnly(
         createSandboxExecConnector({
           sessions: sandbox.sessions,
@@ -323,6 +330,7 @@ export class ConnectorFactory {
           workRoot: options.workRoot,
           sql: options.sql,
           e2bPlan: sandbox.e2bPlan,
+          maxConcurrent: sandbox.maxConcurrent,
           close: opened.close,
         }),
       );

@@ -40,6 +40,8 @@ export async function reconcileSandboxes(options: {
   sql: Sql;
   provider: SandboxProvider;
   project: string;
+  /** Only this connection's sessions, since its key is the account they live in. */
+  connectionId?: string;
   signal: AbortSignal;
 }): Promise<ReconcileReport> {
   const { sql, provider, project, signal } = options;
@@ -55,7 +57,8 @@ export async function reconcileSandboxes(options: {
   >`select id, provider_sandbox_id, status, persistence, lease_expires_at > now() as leased
     from sandbox_session
     where adapter = ${provider.capabilities.adapter}
-      and status in ('opening', 'ready', 'paused', 'closing')`;
+      and status in ('opening', 'ready', 'paused', 'closing')
+      and (${options.connectionId ?? null}::text is null or connection_id = ${options.connectionId ?? null})`;
   const live = new Set<string>();
   const lost: string[] = [];
   for (const row of rows) {

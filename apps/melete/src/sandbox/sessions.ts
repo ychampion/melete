@@ -90,7 +90,11 @@ export type SessionOptions = {
   ids?: () => string;
 };
 
-type ProviderFor = (adapter: string) => SandboxProvider | undefined;
+/**
+ * The provider a row's sandbox belongs to. A connection holds the key, so the
+ * connection decides: two spaces may use one provider with two accounts.
+ */
+type ProviderFor = (adapter: string, connectionId: string) => SandboxProvider | undefined;
 type Query = Sql | TransactionSql;
 type Row = Record<string, unknown>;
 
@@ -679,7 +683,7 @@ export class SandboxSessions {
         order by lease_expires_at limit 100`
     ).map(toRow);
     for (const candidate of expired) {
-      const provider = providerFor(candidate.adapter);
+      const provider = providerFor(candidate.adapter, candidate.connectionId);
       const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
       if (workspace && candidate.status === 'ready') {
         // A workspace outlives its attempt: it is suspended, not destroyed.
@@ -717,7 +721,7 @@ export class SandboxSessions {
         const finished = await this.finish(
           row,
           candidate.status as SessionStatus,
-          providerFor(row.adapter),
+          providerFor(row.adapter, row.connectionId),
           signal,
         );
         if (finished.status === 'closed') swept.push(row.id);
@@ -737,7 +741,12 @@ export class SandboxSessions {
       if (!claimed) continue;
       const row = toRow(claimed);
       try {
-        const finished = await this.finish(row, 'paused', providerFor(row.adapter), signal);
+        const finished = await this.finish(
+          row,
+          'paused',
+          providerFor(row.adapter, row.connectionId),
+          signal,
+        );
         if (finished.status === 'closed') swept.push(row.id);
       } catch {
         // Recorded on the row, which is now `closing`; the next sweep retries it.
@@ -775,7 +784,7 @@ export class SandboxSessions {
         const finished = await this.finish(
           claimed.row,
           claimed.from,
-          providerFor(claimed.row.adapter),
+          providerFor(claimed.row.adapter, claimed.row.connectionId),
           signal,
         );
         if (finished.status === 'closed') closed.push(finished.id);
@@ -786,11 +795,12 @@ export class SandboxSessions {
     }
     // A snapshot can outlive its row's lease: a superseded one whose deletion
     // failed, or one left on a row that was lost.
-    const snapshots = await this.sql`select distinct adapter, resume_ref from sandbox_session
+    const snapshots = await this.sql`select distinct adapter, connection_id, resume_ref
+      from sandbox_session
       where space_id = ${spaceId} and persistence = 'snapshot' and resume_ref is not null`;
     const snapshotsDeleted: string[] = [];
     for (const snapshot of snapshots) {
-      const provider = providerFor(snapshot.adapter as string);
+      const provider = providerFor(snapshot.adapter as string, snapshot.connection_id as string);
       const ref = snapshot.resume_ref as string;
       try {
         if (!provider?.deleteSnapshot)

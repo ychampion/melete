@@ -64,6 +64,8 @@ export type SandboxExecOptions = {
   e2bPlan?: 'hobby' | 'pro';
   /** Releases whatever the provider holds when the connection is closed. */
   close?: () => Promise<void>;
+  /** The most sandboxes this installation may have running at once. */
+  maxConcurrent?: number;
 };
 
 const digest = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex');
@@ -184,6 +186,15 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         await provider.connect(sessionHandle(row), signal);
         return { row, reused: true };
       }
+    }
+    if (options.maxConcurrent !== undefined) {
+      const [live] = await sql`select count(*)::int as live from sandbox_session
+        where status in ('opening', 'ready')`;
+      if (Number(live?.live ?? 0) >= options.maxConcurrent)
+        throw new SandboxRefusal(
+          'sandbox_time_exhausted',
+          `this installation already has ${Number(live?.live ?? 0)} sandboxes running, which is its limit`,
+        );
     }
     const facts = await jobFacts(ctx.job_id);
     checkSandboxConfiguration(options.config, {
