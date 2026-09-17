@@ -188,11 +188,11 @@ afterAll(async () => {
       expect(
         (await app.request(`/connections/${body.connection.id}`, as(memberCookie))).status,
       ).toBe(403);
-      expect(
-        connectionListResponse.parse(
-          await (await app.request('/connections', as(memberCookie))).json(),
-        ).connections,
-      ).toEqual([]);
+      // The member has the defaults of their own space and nothing from the owner's.
+      const visible = connectionListResponse.parse(
+        await (await app.request('/connections', as(memberCookie))).json(),
+      ).connections;
+      expect(visible.filter((row) => row.space_id === space.id || !row.builtin)).toEqual([]);
       expect(
         await rejectionOf(
           broker.discovery.search({ ...claimed.claims, principal_id: otherId }, 'live'),

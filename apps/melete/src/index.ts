@@ -19,7 +19,7 @@ import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
 import { mountAuth } from './api/auth.ts';
-import { mountConnections } from './api/connections.ts';
+import { mountConnections, mountDefaultConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
@@ -36,6 +36,7 @@ import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
 import {
   type ConfiguredConnection,
   configuredBrowserSessions,
@@ -150,6 +151,12 @@ export function createApp(deps: AppDeps) {
       500,
     );
   });
+  const connections =
+    deps.db && deps.sql && deps.registry
+      ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
+      : undefined;
+  // Mounted first so it runs after setup answers; see mountDefaultConnections.
+  if (connections) mountDefaultConnections(app, connections);
   mountAuth(app, deps);
   // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
@@ -160,13 +167,7 @@ export function createApp(deps: AppDeps) {
     });
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
-  if (deps.db && deps.sql && deps.registry)
-    mountConnections(app, {
-      db: deps.db,
-      sql: deps.sql,
-      registry: deps.registry,
-      masterKey: deps.env.MELETE_MASTER_KEY,
-    });
+  if (connections) mountConnections(app, connections);
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -376,6 +377,8 @@ export async function bootstrap(
       episodeRetention.unref();
     }
     if (handle) {
+      // Before the registry is built, so an upgraded database gains its default connectors now.
+      await ensureBuiltinConnections(handle.sql, builtinEnvironment(env));
       connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
       browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
       // One connector registry serves the API catalog, the effect boundary and

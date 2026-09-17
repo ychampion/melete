@@ -7,7 +7,7 @@ import {
   taskInput,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, ilike, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, ne, sql } from 'drizzle-orm';
 import { describeDate } from '../dates.ts';
 import type { Database } from '../db/client.ts';
 import { action, connection, experienceProfile, job, task } from '../db/schema.ts';
@@ -133,7 +133,8 @@ export class ExperienceHome {
     const rows = await this.db
       .select()
       .from(connection)
-      .where(eq(connection.spaceId, spaceId))
+      // A removed connection stays a row for the ledger, and is no longer something to show.
+      .where(and(eq(connection.spaceId, spaceId), ne(connection.status, 'revoked')))
       .orderBy(connection.label);
     return {
       connections: rows.map((row) =>

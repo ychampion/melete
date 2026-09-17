@@ -225,7 +225,8 @@ const object = (value: unknown): Record<string, unknown> =>
 const array = (value: unknown): unknown[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value];
 
-async function boundedText(response: Response): Promise<string> {
+/** Shared with the calendar feed reader so both stop at the same size. */
+export async function boundedText(response: Response): Promise<string> {
   if (Number(response.headers.get('content-length') ?? '0') > MAX_CALENDAR_BYTES)
     throw new Error('Calendar response too large');
   const reader = response.body?.getReader();

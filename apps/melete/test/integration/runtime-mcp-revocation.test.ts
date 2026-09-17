@@ -127,7 +127,7 @@ for (const initialization of ['succeeds', 'fails'] as const) {
       );
       await initializing;
       const [connection] =
-        await fixture.sql`select id, generation, setup_state from connection where space_id = ${space.id}`;
+        await fixture.sql`select id, generation, setup_state from connection where space_id = ${space.id} and provider = 'mcp'`;
       expect(connection).toMatchObject({ generation: 0, setup_state: 'connecting' });
       if (!connection) throw new Error('Missing connecting row');
       const revoked = await app.request(
