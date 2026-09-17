@@ -313,3 +313,77 @@ const late = existing ? await database() : null;
   },
   180_000,
 );
+
+(late ? test : test.skip)(
+  'a request furnishes the one space it made and leaves every other space alone',
+  async () => {
+    const fixture = late;
+    if (!fixture) throw new Error('Postgres unavailable');
+    const running = await service(fixture.url);
+    const providers = async (spaceId: string) =>
+      (
+        await fixture.sql`select provider from connection where space_id = ${spaceId} order by provider`
+      ).map((row) => row.provider);
+    try {
+      const signIn = async (email: string) => {
+        const response = await running.app.request('/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password: 'late-space-password' }),
+        });
+        expect(response.status).toBe(200);
+        return response.headers.get('set-cookie')?.split(';')[0] ?? '';
+      };
+      const cookie = await signIn('owner@example.test');
+
+      // A space that is deliberately bare: nothing but the request that made a
+      // space of its own may reach into it.
+      const bare = newId('sp');
+      const [account] = await fixture.sql`select id from owner limit 1`;
+      if (!account) throw new Error('Missing owner');
+      await fixture.sql`insert into space (id, name, git_path, owner_principal_id, kind, audience)
+        values (${bare}, 'Kept bare', ${join(root, bare)}, ${account.id}, 'shared', 'space')`;
+
+      const shared = await running.app.request('/spaces/shared', {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Together' }),
+      });
+      expect(shared.status).toBe(201);
+      const made = ((await shared.json()) as { space: { id: string } }).space.id;
+      expect(await providers(made)).toEqual(['artifacts', 'files', 'web']);
+      expect(await providers(bare)).toEqual([]);
+
+      // A provisioned account is furnished in its own personal space, and only there.
+      const provisioned = await running.app.request('/principals', {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'third@example.test', password: 'late-space-password' }),
+      });
+      expect(provisioned.status).toBe(201);
+      const account3 = ((await provisioned.json()) as { principal: { id: string } }).principal.id;
+      const [theirs] =
+        await fixture.sql`select id from space where owner_principal_id = ${account3}`;
+      if (!theirs) throw new Error('A provisioned account has no space');
+      expect(await providers(theirs.id)).toEqual(['artifacts', 'files', 'web']);
+      expect(await providers(bare)).toEqual([]);
+
+      // What it was given is its own, and its first attempt is handed the tools.
+      const third = await signIn('third@example.test');
+      const shown = (await (
+        await running.app.request('/experience/connections', { headers: { cookie: third } })
+      ).json()) as { connections: Array<{ id: string }> };
+      expect(
+        (await fixture.sql`select id from connection where space_id = ${theirs.id} order by id`)
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(shown.connections.map((row) => row.id).sort());
+      expect(names((await claimIn(running, theirs.id)).bundle.tools)).toEqual(
+        expect.arrayContaining(DEFAULT_TOOLS),
+      );
+    } finally {
+      await running.close();
+    }
+  },
+  180_000,
+);

@@ -45,6 +45,12 @@ declare module 'hono' {
     owner: SessionOwner;
     experienceSpaceId: string;
     sessionSpace: SessionSpace;
+    /**
+     * A space this request brought into being, named by the route that made it.
+     * Whatever every space is given is then given to that one space, and to no
+     * other.
+     */
+    createdSpaceId: string;
   }
 }
 
@@ -320,6 +326,7 @@ export function mountAuth(
       );
     }
     setupThrottle.succeeded(source);
+    c.set('createdSpaceId', personalId);
     sessionCookie(c, authenticated.token, env);
     deviceCookie(c, created.email);
     return c.json({ owner: publicOwner(created) }, 201);

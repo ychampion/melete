@@ -99,15 +99,15 @@ export function mountPrincipals(
 
   app.post('/principals', async (c) => {
     const request = createPrincipalRequest.parse(await c.req.json());
-    return c.json(
-      { principal: await service.create(c.get('owner').id, request.email, request.password) },
-      201,
-    );
+    const made = await service.create(c.get('owner').id, request.email, request.password);
+    c.set('createdSpaceId', made.spaceId);
+    return c.json({ principal: made.principal }, 201);
   });
   app.post('/spaces/shared', async (c) => {
     const request = createSharedSpaceRequest.parse(await c.req.json());
     const row = await service.createShared(c.get('owner').id, request.name);
     if (!row) throw new Error('Space insert returned no row');
+    c.set('createdSpaceId', row.id);
     return c.json(
       {
         space: spaceContract.parse({

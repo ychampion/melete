@@ -128,19 +128,17 @@ export async function ensureDefaultConnections(deps: ConnectionDeps, spaceId?: s
 
 /**
  * A space an account makes by signing up, by being provisioned, or by asking
- * for a shared one is furnished once that request has answered. A space the
- * session itself had to make, for an account that had none, is furnished where
- * it is made instead, so the request that made it already reads it furnished.
+ * for a shared one is furnished once that request has answered, and only that
+ * space: the route names it, so no other space is read or written under the
+ * lock. A space the session itself had to make, for an account that had none,
+ * is furnished where it is made instead, so the request that made it already
+ * reads it furnished.
  */
 export function mountDefaultConnections(app: Hono, deps: ConnectionDeps) {
   app.use('*', async (c, next) => {
     await next();
-    if (
-      c.req.method === 'POST' &&
-      c.res.ok &&
-      ['/setup', '/principals', '/spaces/shared'].includes(c.req.path)
-    )
-      await ensureDefaultConnections(deps);
+    const made = c.get('createdSpaceId');
+    if (made) await ensureDefaultConnections(deps, made);
   });
 }
 
