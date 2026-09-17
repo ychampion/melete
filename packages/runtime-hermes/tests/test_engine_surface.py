@@ -543,8 +543,11 @@ def test_skill_manage_writes_live_without_write_approval(
 ):
     """Without the gate the write lands live. This records the layout the write
     produces and the hook events that fire around it, because a live write has
-    to be observable and gateable from outside the engine."""
-    write_config(hermes_home, {})
+    to be observable and gateable from outside the engine.
+
+    The config here also carries `skills.enabled: false`, the shipped spelling.
+    The write still lands, so that key is not one the engine reads either."""
+    write_config(hermes_home, {"skills": {"enabled": False}})
 
     from tools.skill_manager_tool import skill_manage
 
