@@ -183,12 +183,14 @@ let evaluated: { spaceId: string; candidateId: string } | null = null;
     );
     await history(spaceId, unrelated);
     await corrected(spaceId, 'other-correction', alsoCorrected, 'Keep it under 30 words.');
+    // The same request again, never corrected: the template the procedure was learned on stays out.
+    await history(spaceId, `  ${SOURCE.toUpperCase()}  `);
     const planned = await plan(spaceId, candidate.id);
     const final = await planned.sealedFinal('any-selection-id');
     const cases = [...planned.validation.cases, ...final.cases];
     const pooled = planned.candidate.caseTemplates;
     const objectives = cases.map((value) => value.objective);
-    for (const excluded of [SOURCE, unrelated, alsoCorrected])
+    for (const excluded of [SOURCE, `  ${SOURCE.toUpperCase()}  `, unrelated, alsoCorrected])
       expect(objectives).not.toContain(excluded);
     expect(cases.map((value) => value.template)).not.toContain(source.templateId);
     for (const value of cases)
