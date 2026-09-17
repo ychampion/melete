@@ -69,7 +69,9 @@ export function zoneOffsetMinutes(timeZone: string, at: Date): number {
 
 export const DEFAULT_TIME_ZONE = 'UTC';
 
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z]{2,})+/g;
+/** Shared with the learning deny scan so an address is recognised the same way twice. */
+export const EMAIL =
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z]{2,})+/g;
 const URL = /\bhttps?:\/\/[^\s<>"')\]]+/g;
 const CURRENCY_CODES = 'USD|EUR|GBP|JPY|INR|CAD|AUD|CHF';
 const NUMBER = String.raw`\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?`;

@@ -168,6 +168,33 @@ export type ProcedureCaseTemplates = z.infer<typeof procedureCaseTemplates>;
  * objected to. `none` means there were no checks to run, which is the only
  * shape an owner may still try by hand; automated evaluation needs `passed`.
  */
+/**
+ * What one proposal call may return. Strict at every level: an extra key throws
+ * rather than being ignored, and the span carries no `fallback` field, because
+ * only trusted code may decide that a step keeps the owner's words verbatim.
+ */
+const proposalSpan = z.strictObject({
+  source: z.enum(['intervention', 'objective']),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+  quote: z.string().min(3).max(240),
+});
+export const procedureProposal = z.strictObject({
+  target: z.literal('skill_body'),
+  steps: z
+    .array(z.strictObject({ text: z.string().min(3).max(240), evidence: proposalSpan }))
+    .min(1)
+    .max(6),
+  triggers: z
+    .array(z.strictObject({ phrase: z.string().min(3).max(60), evidence: proposalSpan }))
+    .min(1)
+    .max(4),
+  /** A correction about tone may have no checkable form, so none is a valid answer. */
+  checks: z.array(procedureCheck).min(0).max(6),
+  variant_objectives: z.array(z.string().min(10).max(200)).max(4).default([]),
+});
+export type ProcedureProposal = z.infer<typeof procedureProposal>;
+
 export const procedureDiscrimination = z.strictObject({
   status: z.enum(['passed', 'failed', 'none']),
   detail: z.string(),
@@ -233,6 +260,11 @@ export const procedureRecord = z.object({
   body: z.string(),
   bodyHash: z.string(),
   change: object,
+  triggers: z.array(procedureTrigger).default([]),
+  checks: z.array(procedureCheck).default([]),
+  evidence: z.array(procedureStepEvidence).default([]),
+  caseTemplates: procedureCaseTemplates.default({}),
+  discrimination: procedureDiscrimination.nullable().default(null),
   predictedBenefit: z.string(),
   knownRisk: z.string(),
   tests: z.array(z.string()),

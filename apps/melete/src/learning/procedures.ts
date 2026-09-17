@@ -1,10 +1,12 @@
 import { type ProcedurePromotionScope, procedurePromotionScope } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { spaceAuthority, visibleJob } from '../principals/authority.ts';
+import { compileStoredProcedure, verifyStoredEvidence } from './admit.ts';
 import type { ProcedureState } from './contracts.ts';
 import { requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
@@ -12,14 +14,58 @@ import { episode, procedureCandidate, procedureEvaluation, procedureTransition }
 
 export type Candidate = typeof procedureCandidate.$inferSelect;
 
-/** The stored definition, not just the body, must still match the evaluated bytes. */
+/** A general procedure is graded by its checks; the records family by its fixtures. */
+export const isGeneralProcedure = (candidate: Pick<Candidate, 'tests'>) =>
+  candidate.tests.includes('checks');
+
+/**
+ * The stored definition, not just the body, must still match the evaluated
+ * bytes. Recompiling re-runs the deny scan, the authority scan and the
+ * word-subset rule over the stored steps, so a definition survives only while
+ * the rules that admitted it would admit it again. No episode is needed, which
+ * is what makes this affordable at every delivery.
+ */
 export function verifyDefinition(candidate: Candidate) {
-  const compiled = compileProcedure(candidate.change);
-  if (compiled.body !== candidate.body || definitionHash(candidate) !== candidate.bodyHash)
+  try {
+    const compiled = isGeneralProcedure(candidate)
+      ? compileStoredProcedure(candidate.change, candidate.triggers)
+      : compileProcedure(candidate.change);
+    if (compiled.body !== candidate.body || definitionHash(candidate) !== candidate.bodyHash)
+      throw new ServiceError(
+        'definition_changed',
+        'The procedure definition no longer matches its evidence.',
+      );
+  } catch (error) {
+    if (error instanceof ServiceError) throw error;
     throw new ServiceError(
       'definition_changed',
       'The procedure definition no longer matches its evidence.',
     );
+  }
+}
+
+/**
+ * The spans as well, re-sliced out of the correction and the objective they
+ * cite. Called where the episode row is already in hand, because a body that
+ * recompiles from its stored quotes still has to be quoting something real.
+ */
+export function verifyEvidence(
+  candidate: Candidate,
+  source: { intervention: { text: string } | null },
+  objective: string,
+) {
+  if (!isGeneralProcedure(candidate)) return;
+  try {
+    verifyStoredEvidence(candidate.evidence, [
+      { id: 'intervention', offset: 0, text: source.intervention?.text ?? '' },
+      { id: 'objective', offset: 0, text: objective },
+    ]);
+  } catch {
+    throw new ServiceError(
+      'evidence_changed',
+      'The procedure no longer quotes the correction it was learned from.',
+    );
+  }
 }
 
 export async function transitionProcedure(
@@ -76,7 +122,12 @@ export class ProcedureService {
       );
     if (!source)
       throw new ServiceError('evidence_unavailable', 'The procedure evidence is unavailable.');
-    return { candidate, source };
+    // The objective the spans may cite, alongside the correction itself.
+    const [origin] = await tx
+      .select({ objective: job.objective })
+      .from(job)
+      .where(eq(job.id, source.jobId));
+    return { candidate, source, objective: origin?.objective ?? '' };
   }
 
   async list(ownerId: string, spaceId: string) {
@@ -145,8 +196,9 @@ export class ProcedureService {
 
   async enableCanary(ownerId: string, spaceId: string, id: string) {
     return this.jobs.transaction(async (tx) => {
-      const { candidate } = await this.locked(tx, ownerId, spaceId, id);
+      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
       verifyDefinition(candidate);
+      verifyEvidence(candidate, source, objective);
       if (
         candidate.state !== 'evaluated' ||
         candidate.rejectionReason ||
@@ -213,11 +265,12 @@ export class ProcedureService {
   ) {
     const scope = procedurePromotionScope.parse(delivery);
     return this.jobs.transaction(async (tx) => {
-      const { candidate } = await this.locked(tx, ownerId, spaceId, id);
+      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
       const access = await spaceAuthority(tx, spaceId, ownerId, true);
       if (scope === 'space' && access.space.kind !== 'shared')
         throw new ServiceError('scope_denied', 'Space promotion requires a shared space.', 403);
       verifyDefinition(candidate);
+      verifyEvidence(candidate, source, objective);
       if (candidate.state !== 'enabled_canary' || candidate.canarySpaceId !== spaceId)
         throw new ServiceError('invalid_procedure_state', 'Enable the one-space canary first.');
       const learned = await tx.execute(sql`
