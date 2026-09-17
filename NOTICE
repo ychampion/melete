@@ -10,11 +10,20 @@ Third-party components
 
 Hermes Agent
 https://github.com/NousResearch/hermes-agent
-Pinned release: v2026.9.7
+Release: v2026.9.7
 
-Melete's v0.1 runtime image installs Hermes from the pinned tag above at build
-time. Hermes is not vendored into this repository and is not modified; the image
-configures it. Hermes is distributed under the MIT License, reproduced below.
+Melete's runtime image installs Hermes from the release above at build time.
+Hermes is not vendored into this repository.
+
+Melete modifies the installed Hermes source at that point. The runtime image,
+and the process supervisor used for local development, apply Melete's lifecycle
+observer bridge (packages/runtime-hermes/patches/observer_bridge.py) to the
+installed tree. It adds a compaction dispatch and binds Melete's plugin
+observations to the current HTTP run queue; it changes no upstream decision, and
+it refuses to apply unless the three source sections it edits match the reviewed
+release. See packages/runtime-hermes/README.md.
+
+Hermes is distributed under the MIT License, reproduced below.
 
     MIT License
 
