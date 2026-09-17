@@ -1,18 +1,21 @@
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { testDatabase } from '../../../test/helpers/database.ts';
 import { sandboxConformance } from '../conformance.ts';
 import { openSandbox, type SandboxRefusal, sandboxLabels } from '../manifest.ts';
 import { runCommand } from '../marker.ts';
 import {
   type EgressPolicy,
   SandboxAdapterRefusal,
+  SandboxGone,
   type SandboxHandle,
   type SandboxSpec,
   SandboxStartRefused,
   SandboxTransportError,
 } from '../types.ts';
+import { workspaceConformance } from '../workspace-conformance.ts';
 import { createModalProvider, providerVariables } from './modal.ts';
 import {
   createModalSdkTransport,
@@ -24,6 +27,7 @@ import { createModalStandin, MODAL_STANDIN_EVIDENCE } from './modal-standin.ts';
 import {
   type ModalCreate,
   type ModalExec,
+  ModalNotFound,
   ModalStartRefused,
   type ModalToken,
   type ModalTransport,
@@ -43,6 +47,8 @@ const TOKEN: ModalToken = {
 const SECRETS = [TOKEN.tokenId, TOKEN.tokenSecret];
 const APP = 'melete-sandbox-conformance';
 const signal = () => AbortSignal.timeout(60_000);
+const database = await testDatabase();
+afterAll(async () => database?.close());
 
 const spec = (egress: EgressPolicy = { kind: 'deny_all' }): SandboxSpec => ({
   image: 'debian:bookworm-slim',
@@ -84,6 +90,71 @@ sandboxConformance(`modal: ${MODAL_STANDIN_EVIDENCE}`, async () => {
     loseNextAcknowledgement: control.lose,
     close: async () => {},
   };
+});
+
+workspaceConformance(`modal: ${MODAL_STANDIN_EVIDENCE}`, {
+  sql: database?.sql ?? null,
+  open: async () => {
+    const standin = createModalStandin({ injected: { MODAL_TASK_ID: 'ta-standin' } });
+    return {
+      provider: createModalProvider({ transport: standin.transport, appName: APP }),
+      persistence: 'snapshot',
+      image: 'debian:bookworm-slim',
+      failNextSuspend: () => standin.failNextSnapshot(),
+      snapshotHeld: async (ref) => standin.engine.snapshots.has(ref),
+      replayed: false,
+      close: async () => {},
+    };
+  },
+});
+
+test('a workspace snapshot has an explicit expiry and comes back as a new deny-all sandbox with its files', async () => {
+  const standin = createModalStandin();
+  const { transport, creates } = recording(standin.transport);
+  const provider = createModalProvider({
+    transport,
+    appName: APP,
+    snapshotTtlSeconds: 7 * 24 * 3600,
+  });
+  const snapshot = provider.snapshot as NonNullable<typeof provider.snapshot>;
+  const resume = provider.resume as NonNullable<typeof provider.resume>;
+  const deleteSnapshot = provider.deleteSnapshot as NonNullable<typeof provider.deleteSnapshot>;
+  const handle = await openSandbox(provider, spec(), signal());
+  await provider.putFiles(
+    handle,
+    (async function* () {
+      yield { path: '/work/kept.txt', bytes: new TextEncoder().encode('kept'), mode: 0o644 };
+    })(),
+    signal(),
+  );
+  const { snapshotRef } = await snapshot(handle, signal());
+  expect(standin.expiries.get(snapshotRef)).toBe(7 * 24 * 3600);
+  // Taking the snapshot does not stop the sandbox; the session layer does.
+  expect(await provider.inspect(handle, signal())).toBe('running');
+  await provider.destroy(handle, signal());
+  const next = {
+    ...spec(),
+    labels: sandboxLabels({ project: 'modal-test', space: 'sp_MODAL', session: 'sbx_MODALNEXT' }),
+  };
+  const resumed = await resume(snapshotRef, next, signal());
+  expect(resumed.providerSandboxId).not.toBe(handle.providerSandboxId);
+  expect(creates.at(-1)).toMatchObject({
+    image: snapshotRef,
+    imageKind: 'snapshot',
+    blockNetwork: true,
+    outboundCidrAllowlist: null,
+    tags: { melete_session: 'sbx_MODALNEXT' },
+  });
+  const kept = await provider.getFile(resumed, '/work/kept.txt', 64, signal());
+  expect(new TextDecoder().decode(kept)).toBe('kept');
+  await deleteSnapshot(snapshotRef, signal());
+  // Deleting again is not an error, and a deleted snapshot cannot be resumed.
+  await deleteSnapshot(snapshotRef, signal());
+  const gone = await resume(snapshotRef, next, signal()).catch((error: unknown) => error);
+  expect(gone).toBeInstanceOf(SandboxGone);
+  expect([...standin.engine.sandboxes.keys()]).toEqual([resumed.providerSandboxId]);
+  await provider.destroy(resumed, signal());
+  expect(() => createModalProvider({ transport, appName: APP, snapshotTtlSeconds: 0 })).toThrow();
 });
 
 test('deny-all is sent as blockNetwork, a CIDR allow-list as outboundCidrAllowlist, and nothing else is offered', async () => {
@@ -221,6 +292,7 @@ test('what the transport says about a start decides whether the command may run 
     {
       appName: APP,
       image: 'debian:bookworm-slim',
+      imageKind: 'registry',
       cpu: 0.125,
       memoryMiB: 128,
       timeoutMs: 60_000,
@@ -335,6 +407,7 @@ function sdkDouble(behaviour: {
   profile?: Partial<Record<string, unknown>>;
   exec?: (argv: string[]) => Promise<unknown>;
   create?: () => Promise<unknown>;
+  missingImage?: boolean;
 }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const bytes = (text: string) =>
@@ -344,9 +417,15 @@ function sdkDouble(behaviour: {
         controller.close();
       },
     });
+  const notFound = () =>
+    Object.assign(new Error('Could not find image with ID im-double'), { name: 'NotFoundError' });
   const sandbox = (id: string) => ({
     sandboxId: id,
     detach() {},
+    snapshotFilesystem: async (params: unknown) => {
+      calls.push({ method: 'snapshotFilesystem', args: [params] });
+      return { imageId: 'im-double' };
+    },
     exec: async (argv: string[], params: unknown) => {
       calls.push({ method: 'exec', args: [argv, params] });
       if (behaviour.exec) await behaviour.exec(argv);
@@ -374,7 +453,18 @@ function sdkDouble(behaviour: {
         return { appId: 'ap-double' };
       },
     };
-    readonly images = { fromRegistry: (tag: string) => ({ tag }) };
+    readonly images = {
+      fromRegistry: (tag: string) => ({ tag }),
+      fromId: async (imageId: string) => {
+        calls.push({ method: 'images.fromId', args: [imageId] });
+        if (behaviour.missingImage) throw notFound();
+        return { imageId };
+      },
+      delete: async (imageId: string) => {
+        calls.push({ method: 'images.delete', args: [imageId] });
+        if (behaviour.missingImage) throw notFound();
+      },
+    };
     readonly sandboxes = {
       create: async (...args: unknown[]) => {
         calls.push({ method: 'sandboxes.create', args });
@@ -408,6 +498,7 @@ test('the SDK transport asks Modal for deny-all without an identity token, and r
     {
       appName: APP,
       image: 'debian:bookworm-slim',
+      imageKind: 'registry',
       cpu: 0.125,
       memoryMiB: 128,
       timeoutMs: 300_000,
@@ -681,3 +772,44 @@ test('with no Modal environment and no config file, the SDK client takes everyth
     await rm(home, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('the SDK transport snapshots with an explicit expiry, resumes from the image, and reports a missing image as not found', async () => {
+  const double = sdkDouble({});
+  const transport = createModalSdkTransport({ credential: (use) => use(TOKEN), load: double.load });
+  expect(await transport.snapshot('sb-double', 3_600, signal())).toBe('im-double');
+  expect(await transport.snapshot('sb-double', null, signal())).toBe('im-double');
+  expect(
+    double.calls.filter((call) => call.method === 'snapshotFilesystem').map((call) => call.args[0]),
+  ).toEqual([
+    { timeoutMs: 120_000, ttlMs: 3_600_000 },
+    { timeoutMs: 120_000, ttlMs: null },
+  ]);
+  const input = {
+    appName: APP,
+    image: 'im-double',
+    imageKind: 'snapshot' as const,
+    cpu: 0.125,
+    memoryMiB: 128,
+    timeoutMs: 300_000,
+    idleTimeoutMs: null,
+    blockNetwork: true,
+    outboundCidrAllowlist: null,
+    env: {},
+    tags: {},
+  };
+  await transport.create(input, signal());
+  expect(double.calls.find((call) => call.method === 'images.fromId')?.args).toEqual(['im-double']);
+  expect(double.calls.find((call) => call.method === 'sandboxes.create')?.args[1]).toEqual({
+    imageId: 'im-double',
+  });
+  await transport.deleteImage('im-double', signal());
+  transport.close();
+  const missing = sdkDouble({ missingImage: true });
+  const gone = createModalSdkTransport({ credential: (use) => use(TOKEN), load: missing.load });
+  const created = await gone.create(input, signal()).catch((error: unknown) => error);
+  expect(created).toBeInstanceOf(ModalNotFound);
+  const deleted = await gone.deleteImage('im-double', signal()).catch((error: unknown) => error);
+  expect(deleted).toBeInstanceOf(ModalNotFound);
+  expect(missing.calls.some((call) => call.method === 'sandboxes.create')).toBe(false);
+  gone.close();
+});

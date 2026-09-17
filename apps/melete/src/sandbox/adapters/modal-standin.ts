@@ -12,6 +12,11 @@
  * answers correctly, and nothing about how Modal's servers behave. The live
  * test is the evidence for that. One simplification is named: stdout and
  * stderr arrive together on stdout.
+ *
+ * Filesystem snapshots are images: taking one leaves the sandbox running, a
+ * sandbox created from one starts with a copy of its files, and creating from
+ * a deleted one is `ModalNotFound`, which Modal's documentation says is what
+ * an expired or deleted snapshot raises.
  */
 import { FakeSandboxEngine } from '../fake.ts';
 import type { EgressPolicy } from '../types.ts';
@@ -19,9 +24,11 @@ import {
   type ModalCreate,
   type ModalExec,
   type ModalFinished,
+  ModalNotFound,
   type ModalRunning,
   ModalStartRefused,
   type ModalTransport,
+  ModalUnavailable,
 } from './modal-transport.ts';
 
 export const MODAL_STANDIN_EVIDENCE =
@@ -34,6 +41,9 @@ export function createModalStandin(
   } = {},
 ) {
   const engine = new FakeSandboxEngine();
+  /** Each snapshot image's requested expiry, in seconds; null for none. */
+  const expiries = new Map<string, number | null>();
+  let failSnapshot = false;
   const transport: ModalTransport = {
     async create(input: ModalCreate, signal: AbortSignal) {
       signal.throwIfAborted();
@@ -45,13 +55,37 @@ export function createModalStandin(
         : input.outboundCidrAllowlist
           ? { kind: 'cidr_allowlist', cidrs: [...input.outboundCidrAllowlist] }
           : { kind: 'open' };
-      return engine.create({
+      const saved = input.imageKind === 'snapshot' ? engine.snapshots.get(input.image) : null;
+      if (input.imageKind === 'snapshot' && !saved)
+        throw new ModalNotFound(`Could not find image with ID ${input.image}`);
+      const sandbox = engine.create({
         image: input.image,
         egress,
         labels: { ...input.tags },
         env: { ...options.injected, ...input.env },
         lifetimeSeconds: input.timeoutMs / 1000,
-      }).id;
+      });
+      if (saved) sandbox.fs = saved.clone();
+      return sandbox.id;
+    },
+
+    async snapshot(sandboxId: string, ttlSeconds: number | null, signal: AbortSignal) {
+      signal.throwIfAborted();
+      const sandbox = engine.get(sandboxId);
+      if (!sandbox) throw new ModalNotFound(`Sandbox ${sandboxId} not found`);
+      if (failSnapshot) {
+        failSnapshot = false;
+        throw new ModalUnavailable('UNAVAILABLE: the snapshot did not complete');
+      }
+      const imageId = engine.snapshot(sandbox);
+      expiries.set(imageId, ttlSeconds);
+      return imageId;
+    },
+
+    async deleteImage(imageId: string, signal: AbortSignal) {
+      signal.throwIfAborted();
+      if (!engine.snapshots.delete(imageId))
+        throw new ModalNotFound(`Could not find image with ID ${imageId}`);
     },
 
     async start(sandboxId: string, exec: ModalExec, signal: AbortSignal): Promise<ModalRunning> {
@@ -109,5 +143,13 @@ export function createModalStandin(
 
     close() {},
   };
-  return { transport, engine };
+  return {
+    transport,
+    engine,
+    expiries,
+    /** The next snapshot fails, and the sandbox keeps running. */
+    failNextSnapshot() {
+      failSnapshot = true;
+    },
+  };
 }

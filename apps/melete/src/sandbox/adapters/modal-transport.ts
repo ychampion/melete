@@ -17,8 +17,9 @@ export type ModalCredential = <T>(use: (token: ModalToken) => Promise<T>) => Pro
 
 export type ModalCreate = {
   appName: string;
-  /** A registry image reference, such as `debian:bookworm-slim`. */
+  /** A registry image reference, such as `debian:bookworm-slim`, or a snapshot's image id. */
   image: string;
+  imageKind: 'registry' | 'snapshot';
   cpu: number;
   memoryMiB: number;
   timeoutMs: number;
@@ -57,6 +58,13 @@ export interface ModalTransport {
   start(sandboxId: string, exec: ModalExec, signal: AbortSignal): Promise<ModalRunning>;
   terminate(sandboxId: string, signal: AbortSignal): Promise<void>;
   poll(sandboxId: string, signal: AbortSignal): Promise<'running' | 'finished' | 'gone'>;
+  /**
+   * Snapshot a sandbox's filesystem to an image that expires after
+   * `ttlSeconds`, or never when null. Returns the image id.
+   */
+  snapshot(sandboxId: string, ttlSeconds: number | null, signal: AbortSignal): Promise<string>;
+  /** Throws `ModalNotFound` when the image is already gone. */
+  deleteImage(imageId: string, signal: AbortSignal): Promise<void>;
   /** Running sandboxes in the app that carry at least these tags, with all of their tags. */
   list(
     appName: string,
@@ -95,6 +103,8 @@ export function modalAcknowledgementControl(inner: ModalTransport) {
     create: (input, signal) => inner.create(input, signal),
     terminate: (sandboxId, signal) => inner.terminate(sandboxId, signal),
     poll: (sandboxId, signal) => inner.poll(sandboxId, signal),
+    snapshot: (sandboxId, ttl, signal) => inner.snapshot(sandboxId, ttl, signal),
+    deleteImage: (imageId, signal) => inner.deleteImage(imageId, signal),
     list: (appName, tags, signal) => inner.list(appName, tags, signal),
     close: () => inner.close(),
     async start(sandboxId, exec, signal) {

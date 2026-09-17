@@ -15,6 +15,11 @@
  * version, throttle or connection settings, or OAuth settings from anywhere
  * else is refused: a redirected server would otherwise receive the token.
  *
+ * A workspace snapshot is `Sandbox.snapshotFilesystem`, which returns an image
+ * whose expiry is given explicitly; resuming creates a sandbox from
+ * `images.fromId`, and forgetting is `images.delete`. An image Modal no longer
+ * has is `ModalNotFound` from each of them.
+ *
  * The SDK retries a process start on transient errors under one exec id, so a
  * start that fails once its request has left cannot rule out an earlier
  * attempt having started the process. Only what fails before a request is sent
@@ -232,7 +237,10 @@ export function createModalSdkTransport(options: ModalSdkOptions): ModalTranspor
           createIfMissing: true,
           ...environment,
         });
-        const image = modal.images.fromRegistry(input.image);
+        const image =
+          input.imageKind === 'snapshot'
+            ? await modal.images.fromId(input.image)
+            : modal.images.fromRegistry(input.image);
         const created = await modal.sandboxes.create(app, image, {
           cpu: input.cpu,
           memoryMiB: input.memoryMiB,
@@ -249,6 +257,31 @@ export function createModalSdkTransport(options: ModalSdkOptions): ModalTranspor
         sandboxes.set(created.sandboxId, created);
         return created.sandboxId;
       } catch (error) {
+        if (notFound(error)) throw new ModalNotFound(scrub(error));
+        throw new ModalUnavailable(scrub(error));
+      }
+    },
+
+    async snapshot(sandboxId: string, ttlSeconds: number | null): Promise<string> {
+      const target = await sandbox(sandboxId);
+      try {
+        const image = await target.snapshotFilesystem({
+          timeoutMs: 120_000,
+          ttlMs: ttlSeconds === null ? null : ttlSeconds * 1000,
+        });
+        return image.imageId;
+      } catch (error) {
+        if (notFound(error)) throw new ModalNotFound(scrub(error));
+        throw new ModalUnavailable(scrub(error));
+      }
+    },
+
+    async deleteImage(imageId: string): Promise<void> {
+      const modal = await client();
+      try {
+        await modal.images.delete(imageId);
+      } catch (error) {
+        if (notFound(error)) throw new ModalNotFound(scrub(error));
         throw new ModalUnavailable(scrub(error));
       }
     },
@@ -274,6 +307,8 @@ export function createModalSdkTransport(options: ModalSdkOptions): ModalTranspor
           timeoutMs: exec.timeoutSeconds * 1000,
         });
       } catch (error) {
+        // Neither is a refusal: the start may have left before the error came back.
+        if (notFound(error)) throw new ModalNotFound(scrub(error));
         throw new ModalUnavailable(scrub(error));
       }
       return {

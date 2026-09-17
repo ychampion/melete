@@ -19,6 +19,13 @@
  * listed with `find`, read with `head -c` and written with `cat`, so recursion,
  * symbolic links and byte limits are decided here rather than by an SDK helper.
  *
+ * A workspace persists as a filesystem snapshot: an image of the sandbox's
+ * files that a new sandbox is created from on resume, with the new lease's
+ * egress, labels and lifetime. Modal keeps a filesystem snapshot for 30 days by
+ * default; this adapter asks for an explicit expiry (`snapshotTtlSeconds`) so a
+ * snapshot the service forgets still goes, and a snapshot that has expired or
+ * been deleted is `SandboxGone`. Memory is not kept: processes do not survive.
+ *
  * Modal accepts tag names like the ones in its documentation; this adapter
  * stores the `melete.*` labels with `_` for `.` and reads them back the same way.
  */
@@ -31,6 +38,7 @@ import {
   SandboxAdapterRefusal,
   type SandboxCapabilities,
   SandboxFileNotFound,
+  SandboxGone,
   type SandboxHandle,
   type SandboxProvider,
   type SandboxSpec,
@@ -60,13 +68,15 @@ const NOT_FOUND_EXIT = 3;
 const BACKSTOP_SECONDS = 30;
 const LISTING_LIMIT = 16 * MiB;
 const ENVIRONMENT_LIMIT = MiB;
+/** Modal's own default for a filesystem snapshot. */
+const SNAPSHOT_TTL_SECONDS = 30 * 24 * 3600;
 
 export function modalCapabilities(): SandboxCapabilities {
   return {
     adapter: 'modal',
     isolation: 'gvisor',
     egress: ['deny_all', 'cidr_allowlist', 'open'],
-    persistence: ['none'],
+    persistence: ['none', 'snapshot'],
     maxLifetimeSeconds: 86_400,
     maxIdleSeconds: 86_400,
     streaming: false,
@@ -86,6 +96,11 @@ export type ModalOptions = {
   /** Cores and MiB requested for each sandbox when the spec names none. */
   cpu?: number;
   memoryMiB?: number;
+  /**
+   * How long Modal keeps a workspace snapshot the service never deletes; null
+   * keeps it until it is deleted. Keep it at least as long as the retention.
+   */
+  snapshotTtlSeconds?: number | null;
 };
 
 const tagsFor = (labels: Readonly<Record<string, string>>) =>
@@ -119,6 +134,10 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
   const { transport } = options;
   if (!PLAIN.test(options.appName)) throw new Error('a Modal app name must be plain');
   const capabilities = modalCapabilities();
+  const snapshotTtl =
+    options.snapshotTtlSeconds === undefined ? SNAPSHOT_TTL_SECONDS : options.snapshotTtlSeconds;
+  if (snapshotTtl !== null && (!Number.isSafeInteger(snapshotTtl) || snapshotTtl <= 0))
+    throw new Error('a snapshot expiry is a positive whole number of seconds, or null');
   /** Per sandbox, the provider variables a command must not inherit. */
   const hidden = new Map<string, Promise<string[]>>();
 
@@ -151,6 +170,8 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
       );
     } catch (error) {
       if (error instanceof SandboxAdapterRefusal) throw error;
+      if (error instanceof ModalNotFound)
+        throw new SandboxGone(`Modal has no such sandbox or image: ${message(error)}`);
       throw new SandboxTransportError(
         `Modal did not start the command: ${message(error)}`,
         error instanceof ModalStartRefused ? 'no' : 'unknown',
@@ -182,37 +203,38 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
     return pending;
   }
 
-  const provider: ModalSandboxProvider = {
-    capabilities,
-
-    async create(spec: SandboxSpec, signal: AbortSignal): Promise<SandboxHandle> {
-      if (!capabilities.egress.includes(spec.egress.kind))
-        throw new SandboxAdapterRefusal(`the modal adapter cannot enforce ${spec.egress.kind}`);
-      if (spec.region !== null)
-        throw new SandboxAdapterRefusal('Modal placement by region is not offered');
-      if (spec.diskMb !== undefined)
-        throw new SandboxAdapterRefusal('Modal disk size is not offered');
-      if (
-        !Number.isInteger(spec.lifetimeSeconds) ||
-        spec.lifetimeSeconds <= 0 ||
-        spec.lifetimeSeconds > capabilities.maxLifetimeSeconds
-      )
-        throw new SandboxAdapterRefusal('the lifetime is outside what Modal allows');
-      if (
-        spec.idleSeconds !== null &&
-        (!Number.isInteger(spec.idleSeconds) || spec.idleSeconds <= 0)
-      )
-        throw new SandboxAdapterRefusal('the idle timeout is outside what Modal allows');
-      for (const [key, value] of Object.entries(spec.labels))
-        if (!PLAIN.test(key) || !PLAIN.test(value))
-          throw new SandboxAdapterRefusal('a label is not plain enough to tag with');
-      signal.throwIfAborted();
-      // Not raced against the signal: a create abandoned mid-flight could still
-      // leave a sandbox running that nothing knows to stop.
-      const id = await transport.create(
+  /** Create a sandbox from a registry image or a snapshot, and prepare its workspace. */
+  async function launch(
+    spec: SandboxSpec,
+    source: { image: string; imageKind: 'registry' | 'snapshot' },
+    signal: AbortSignal,
+  ): Promise<SandboxHandle> {
+    if (!capabilities.egress.includes(spec.egress.kind))
+      throw new SandboxAdapterRefusal(`the modal adapter cannot enforce ${spec.egress.kind}`);
+    if (spec.region !== null)
+      throw new SandboxAdapterRefusal('Modal placement by region is not offered');
+    if (spec.diskMb !== undefined)
+      throw new SandboxAdapterRefusal('Modal disk size is not offered');
+    if (
+      !Number.isInteger(spec.lifetimeSeconds) ||
+      spec.lifetimeSeconds <= 0 ||
+      spec.lifetimeSeconds > capabilities.maxLifetimeSeconds
+    )
+      throw new SandboxAdapterRefusal('the lifetime is outside what Modal allows');
+    if (spec.idleSeconds !== null && (!Number.isInteger(spec.idleSeconds) || spec.idleSeconds <= 0))
+      throw new SandboxAdapterRefusal('the idle timeout is outside what Modal allows');
+    for (const [key, value] of Object.entries(spec.labels))
+      if (!PLAIN.test(key) || !PLAIN.test(value))
+        throw new SandboxAdapterRefusal('a label is not plain enough to tag with');
+    signal.throwIfAborted();
+    // Not raced against the signal: a create abandoned mid-flight could still
+    // leave a sandbox running that nothing knows to stop.
+    let id: string;
+    try {
+      id = await transport.create(
         {
           appName: options.appName,
-          image: spec.image,
+          ...source,
           cpu: spec.cpu ?? options.cpu ?? 0.125,
           memoryMiB: spec.memoryMb ?? options.memoryMiB ?? 128,
           timeoutMs: spec.lifetimeSeconds * 1000,
@@ -224,20 +246,61 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
         },
         signal,
       );
-      if (!SANDBOX_ID.test(id))
-        throw new SandboxTransportError('Modal answered without a sandbox id');
-      const handle: SandboxHandle = { providerSandboxId: id, imageDigest: null, region: null };
+    } catch (error) {
+      if (source.imageKind === 'snapshot' && error instanceof ModalNotFound)
+        throw new SandboxGone(`the snapshot is gone at Modal: ${message(error)}`);
+      throw error;
+    }
+    if (!SANDBOX_ID.test(id))
+      throw new SandboxTransportError('Modal answered without a sandbox id');
+    const handle: SandboxHandle = { providerSandboxId: id, imageDigest: null, region: null };
+    try {
+      signal.throwIfAborted();
+      const prepared = await run(handle, PREPARE, [spec.workdir], ENVIRONMENT_LIMIT, signal);
+      if (prepared.exitCode !== 0)
+        throw new SandboxAdapterRefusal('the workspace could not be prepared');
+      hidden.set(id, Promise.resolve(variablesFrom(prepared)));
+      return handle;
+    } catch (error) {
+      // A sandbox this adapter will not use is not left running.
+      await transport.terminate(id, AbortSignal.timeout(60_000)).catch(() => {});
+      throw error;
+    }
+  }
+
+  const provider: ModalSandboxProvider = {
+    capabilities,
+
+    create(spec: SandboxSpec, signal: AbortSignal): Promise<SandboxHandle> {
+      return launch(spec, { image: spec.image, imageKind: 'registry' }, signal);
+    },
+
+    async snapshot(handle, signal): Promise<{ snapshotRef: string }> {
+      let imageId: string;
       try {
-        signal.throwIfAborted();
-        const prepared = await run(handle, PREPARE, [spec.workdir], ENVIRONMENT_LIMIT, signal);
-        if (prepared.exitCode !== 0)
-          throw new SandboxAdapterRefusal('the workspace could not be prepared');
-        hidden.set(id, Promise.resolve(variablesFrom(prepared)));
-        return handle;
+        imageId = await transport.snapshot(sandboxId(handle), snapshotTtl, signal);
       } catch (error) {
-        // A sandbox this adapter will not use is not left running.
-        await transport.terminate(id, AbortSignal.timeout(60_000)).catch(() => {});
-        throw error;
+        if (error instanceof SandboxAdapterRefusal) throw error;
+        if (error instanceof ModalNotFound)
+          throw new SandboxGone(`Modal has no sandbox to snapshot: ${message(error)}`);
+        throw new SandboxTransportError(`Modal did not snapshot the sandbox: ${message(error)}`);
+      }
+      if (!SANDBOX_ID.test(imageId))
+        throw new SandboxTransportError('Modal answered without a snapshot image id');
+      return { snapshotRef: imageId };
+    },
+
+    resume(resumeRef, spec, signal): Promise<SandboxHandle> {
+      if (!SANDBOX_ID.test(resumeRef)) throw new SandboxAdapterRefusal('not a Modal image id');
+      return launch(spec, { image: resumeRef, imageKind: 'snapshot' }, signal);
+    },
+
+    async deleteSnapshot(snapshotRef, signal): Promise<void> {
+      if (!SANDBOX_ID.test(snapshotRef)) throw new SandboxAdapterRefusal('not a Modal image id');
+      try {
+        await transport.deleteImage(snapshotRef, signal);
+      } catch (error) {
+        if (!(error instanceof ModalNotFound)) throw error;
       }
     },
 
