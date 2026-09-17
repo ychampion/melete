@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import type { ProcedureDiscrimination } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { job } from '../../src/db/schema.ts';
 import { admitProposal } from '../../src/learning/admit.ts';
 import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { definitionHash } from '../../src/learning/procedure.ts';
@@ -190,6 +191,22 @@ const verdict = (
     );
     await rejectsWith(
       () => procedures.activate(fixture.ownerId, fixture.spaceId, moved.id),
+      'evidence_changed',
+    );
+
+    // A trigger that quotes the objective stops verifying once that objective is not the owner's words.
+    const automated = await storedCandidate(
+      'verified-automated',
+      verdict('passed', 'discriminates'),
+    );
+    const [origin] = await fixture.handle.db
+      .select()
+      .from(episode)
+      .where(eq(episode.id, automated.episodeId));
+    if (!origin) throw new Error('No source episode');
+    await fixture.handle.db.update(job).set({ kind: 'routine' }).where(eq(job.id, origin.jobId));
+    await rejectsWith(
+      () => procedures.enableCanary(fixture.ownerId, fixture.spaceId, automated.id),
       'evidence_changed',
     );
   }, 40000);
