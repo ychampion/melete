@@ -18,6 +18,7 @@ import { type AttemptBundle, prefixedId } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { parse, stringify } from 'yaml';
 import { modelApiMode } from '../gateway/providers.ts';
+import { ATTEMPT_LOG_CONFIG } from './docker.ts';
 import { resolvePython } from './python.ts';
 
 const exec = promisify(execFile);
@@ -412,6 +413,12 @@ export function dockerRunArguments(
     '--memory',
     '2g',
     '--init',
+    '--log-driver',
+    ATTEMPT_LOG_CONFIG.Type,
+    ...Object.entries(ATTEMPT_LOG_CONFIG.Config).flatMap(([key, value]) => [
+      '--log-opt',
+      `${key}=${value}`,
+    ]),
     '--mount',
     `type=volume,src=${options.dockerWorkVolume},dst=/work,volume-subpath=${bundle.attempt.job_id}`,
     '--tmpfs',

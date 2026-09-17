@@ -22,6 +22,11 @@ const OWNER = 'com.melete.attempt-supervisor';
 const PROJECT = 'com.melete.project';
 const ATTEMPT = 'com.melete.attempt';
 const JOB = 'com.melete.job';
+/** The Compose services' log bound; an attempt must not be the one container without it. */
+export const ATTEMPT_LOG_CONFIG = {
+  Type: 'json-file',
+  Config: { 'max-size': '10m', 'max-file': '5' },
+} as const;
 type Labels = Record<string, string>;
 type Method = 'GET' | 'POST' | 'DELETE';
 
@@ -333,6 +338,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             Memory: 2 * 1024 ** 3,
             Tmpfs: { '/tmp': 'size=64m,mode=1777' },
             RestartPolicy: { Name: 'no' },
+            LogConfig: ATTEMPT_LOG_CONFIG,
             Mounts: [
               {
                 Type: 'volume',

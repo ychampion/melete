@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
-import type { CheckResult } from './compose-check.ts';
+import { boundedLogging, type CheckResult, unboundedServices } from './compose-check.ts';
 
 export type BrowserComposeFile = {
   services?: Record<string, Record<string, unknown>>;
@@ -126,6 +126,7 @@ export function checkBrowserCompose(
       'environment',
       'volumes',
       'healthcheck',
+      'logging',
     ]),
     'ports, env_file, secrets, configs, host namespaces, devices, and privilege overrides are refused',
   );
@@ -158,6 +159,18 @@ export function checkBrowserCompose(
       browser.shm_size === '256m' &&
       sameNames(names(browser.tmpfs), ['/tmp:size=256m,mode=1777']),
     'use a private /tmp and /dev/shm, an init process, and finite memory and pid limits',
+  );
+
+  // The override cannot replace a base service's logging (the broker entry above
+  // admits three keys only), so the merged stack is bounded when both files are.
+  const unbounded = [
+    ...unboundedServices(base.services ?? {}),
+    ...(boundedLogging(browser.logging) ? [] : ['browser']),
+  ];
+  say(
+    'the browser stack keeps bounded logs',
+    unbounded.length === 0,
+    `services without a json-file max-size and max-file: ${unbounded.join(', ')}`,
   );
 
   const environment = record(browser.environment);

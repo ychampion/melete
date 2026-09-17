@@ -29,6 +29,21 @@ describe('the isolated browser deployment', () => {
     expect(failures(override)).toEqual([]);
   });
 
+  test('the worker keeps the same bounded json-file logs as the base services', () => {
+    expect(override.services?.browser?.logging).toEqual(base.services?.melete?.logging);
+    const unbounded = mutation((browser) => {
+      delete browser.logging;
+    });
+    expect(failures(unbounded)).toContain('the browser stack keeps bounded logs');
+    const unlimited = mutation((browser) => {
+      browser.logging = { driver: 'json-file', options: { 'max-file': '5' } };
+    });
+    expect(failures(unlimited)).toContain('the browser stack keeps bounded logs');
+    const baseWithout = structuredClone(base);
+    delete baseWithout.services?.postgres?.logging;
+    expect(failures(override, baseWithout)).toContain('the browser stack keeps bounded logs');
+  });
+
   test('uses the pinned Node worker image and a distinct numeric uid', () => {
     const image = readFileSync(join(paths.base, '..', 'Dockerfile.browser'), 'utf8');
     const serviceImage = readFileSync(join(paths.base, '..', 'Dockerfile.melete'), 'utf8');

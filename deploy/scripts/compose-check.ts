@@ -47,6 +47,12 @@ export type ComposeService = {
   ipc?: string;
   entrypoint?: string | string[];
   depends_on?: string[] | Record<string, unknown>;
+  logging?: ComposeLogging;
+};
+
+export type ComposeLogging = {
+  driver?: string;
+  options?: Record<string, string | number>;
 };
 
 export type CheckResult = {
@@ -56,6 +62,27 @@ export type CheckResult = {
 };
 
 const RUNTIME = 'runtime';
+
+/**
+ * Docker's default json-file log has no size limit, so one talkative container
+ * fills the disk that Postgres and the volumes share. A bound is a rotated
+ * json-file with a positive size and a positive file count; anything else,
+ * including a driver whose retention this check cannot read, is refused.
+ */
+export function boundedLogging(logging: unknown): boolean {
+  if (logging === null || typeof logging !== 'object') return false;
+  const { driver, options } = logging as ComposeLogging;
+  const size = /^([1-9]\d*)([kmg])$/.exec(String(options?.['max-size'] ?? ''));
+  const files = /^[1-9]\d*$/.test(String(options?.['max-file'] ?? ''));
+  return driver === 'json-file' && size !== null && files;
+}
+
+/** Names of the services that would log without a bound. */
+export function unboundedServices(services: Record<string, { logging?: unknown }>): string[] {
+  return Object.entries(services)
+    .filter(([, service]) => !boundedLogging(service.logging))
+    .map(([name]) => name);
+}
 const networkNames = (service: ComposeService | undefined): string[] =>
   Array.isArray(service?.networks) ? service.networks : Object.keys(service?.networks ?? {});
 
@@ -75,6 +102,13 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     internal?.driver_opts?.['com.docker.network.bridge.gateway_mode_ipv4'] === 'isolated' &&
       internal?.driver_opts?.['com.docker.network.bridge.gateway_mode_ipv6'] === 'isolated',
     'internal networks also need isolated gateway mode to prevent access to host listeners',
+  );
+
+  const unbounded = unboundedServices(compose.services ?? {});
+  say(
+    'every service has bounded logs',
+    Object.keys(compose.services ?? {}).length > 0 && unbounded.length === 0,
+    `services without a json-file max-size and max-file: ${unbounded.join(', ')}`,
   );
 
   const runtime = compose.services?.[RUNTIME];

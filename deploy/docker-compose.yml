@@ -1,6 +1,14 @@
 # Linux deployment. Run from the repository root using the README commands.
 name: ${COMPOSE_PROJECT_NAME:-melete}
 
+# Docker's default log has no size limit. Every service rotates a bounded
+# json-file instead; attempt containers get the same limits from the supervisor.
+x-logging: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 networks:
   edge:
     driver: bridge
@@ -30,6 +38,7 @@ services:
   postgres:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     restart: unless-stopped
+    logging: *bounded-logs
     networks: [database]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-melete}
@@ -49,6 +58,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.melete
     restart: unless-stopped
+    logging: *bounded-logs
     networks:
       edge:
         aliases: [melete-api]
@@ -124,10 +134,12 @@ services:
     entrypoint: ["/bin/true"]
     network_mode: none
     restart: "no"
+    logging: *bounded-logs
 
   runtime:
     image: melete-runtime:local
     restart: unless-stopped
+    logging: *bounded-logs
     networks: [internal]
     depends_on:
       runtime-image:
@@ -183,6 +195,7 @@ services:
       args:
         VITE_MELETE_API: /api
     restart: unless-stopped
+    logging: *bounded-logs
     networks: [edge]
     depends_on:
       melete:

@@ -217,6 +217,8 @@ describe('Docker attempt supervision', () => {
         CapDrop: ['ALL'],
         SecurityOpt: ['no-new-privileges:true'],
         RestartPolicy: { Name: 'no' },
+        // An attempt that logs without end must not fill the host's disk.
+        LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '5' } },
       },
     });
     expect(child?.HostConfig.Mounts).toEqual([

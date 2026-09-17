@@ -248,7 +248,7 @@ bun run test:plugin
 ```
 
 The generators update the OpenAPI document and client declarations; generated
-differences must be inspected. The Compose command checks YAML (23 checks), not
+differences must be inspected. The Compose command checks YAML (24 checks), not
 live networking. `bun run test:plugin` runs the Python plugin suite with `uv`.
 The plugin command uses an isolated Python environment to avoid system-package conflicts.
 Install Chromium with `bunx playwright install chromium` to include the local

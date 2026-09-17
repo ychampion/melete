@@ -164,6 +164,23 @@ not promise byte-identical image digests: OS package repositories, build
 timestamps, and build tooling can change the resulting bytes. Compare the
 recorded labels and inventories when rebuilding.
 
+## Logs
+
+Docker's default `json-file` log has no size limit. Every Compose service, and
+every attempt container the supervisor starts, instead rotates a `json-file` log
+at 10 MB and keeps five files, so one container holds at most about 50 MB of
+log on the host. Read them with Compose:
+
+```bash
+docker compose -f deploy/docker-compose.yml logs --since 1h melete
+```
+
+The limits live in the `x-logging` anchor at the top of
+`deploy/docker-compose.yml`; a changed limit applies when a container is
+recreated, not on restart. `bun run compose:check` and
+`bun run browser:compose:check` refuse a service without the bound. Logs that
+must outlive rotation belong in a collector you run; none is shipped.
+
 ## Backup and restore
 
 Back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
