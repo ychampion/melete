@@ -124,7 +124,7 @@ export function createBrokerApp(options: {
       .strict()
       .parse(await c.req.json());
     if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
-    return c.json({ tools: await options.broker.discovery.search(c.get('claims'), body.query) });
+    return c.json(await options.broker.discovery.find(c.get('claims'), body.query));
   });
   app.post('/tools/load', async (c) => {
     const body = z

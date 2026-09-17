@@ -29,15 +29,17 @@ export function stem(word: string): string {
   return value;
 }
 
-/** Words and identifier segments: `server.restart`, `serverRestart` and `server_restart` agree. */
-export function terms(text: string): Set<string> {
-  const found = new Set<string>();
+/** Lowercased words and identifier segments, function words removed, nothing stemmed. */
+export function words(text: string): string[] {
   const spaced = text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
-  for (const raw of spaced.split(/[^a-z0-9]+/)) {
-    if (raw.length < 2 || STOPWORDS.has(raw)) continue;
-    found.add(stem(raw));
-  }
-  return found;
+  return [
+    ...new Set(spaced.split(/[^a-z0-9]+/).filter((raw) => raw.length >= 2 && !STOPWORDS.has(raw))),
+  ];
+}
+
+/** Stemmed words: `server.restart`, `serverRestart` and `server_restart` agree. */
+export function terms(text: string): Set<string> {
+  return new Set(words(text).map(stem));
 }
 
 export type LexicalDocument = { name: string; description: string; examples?: readonly string[] };

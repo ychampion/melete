@@ -667,3 +667,81 @@ dbTest(
     expect(later.map((entry) => entry.name)).toContain('test.send');
   },
 );
+
+async function discoverable(
+  verbs: Record<string, string>,
+): Promise<{ broker: BrokerService; claims: Awaited<ReturnType<typeof seedJob>>['claims'] }> {
+  if (!db) throw new Error('Postgres unavailable');
+  const scopes = Object.keys(verbs);
+  const seed = await seedJob(db.sql, { scopes });
+  const connector: Connector = {
+    manifest: {
+      name: 'test',
+      provider: 'test',
+      version: '1',
+      description: 'Discovery fixture',
+      credentials: [],
+      health: true,
+      tools: Object.entries(verbs).map(([name, description]) => ({
+        name,
+        description,
+        input_schema: { type: 'object', properties: {}, additionalProperties: false },
+        effect_class: 'read',
+        required_scopes: [name],
+        requires_approval: false,
+        verify: false,
+      })),
+    },
+    // Outside the core, so every verb is reached through discovery alone.
+    catalog: { source: 'capability' },
+    async execute() {
+      throw new Error('not dispatched here');
+    },
+    async verify() {
+      return { decision: 'unsupported', reason: 'fixture' };
+    },
+    async health() {
+      return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+    },
+  };
+  const registry = new ConnectorRegistry().register(seed.connectionId, connector);
+  return { broker: new BrokerService({ sql: db.sql, connectors: registry }), claims: seed.claims };
+}
+
+dbTest('search matches any term, stems it, and reads identifier segments', async () => {
+  const s = await discoverable({
+    'ops.restart': 'Bring a managed unit back up',
+    'ops.status': 'Report the health of managed services',
+    'notes.archive': 'Archive a note',
+    'ledger_export.run': 'Write the ledger to a file',
+  });
+  const found = async (query: string) =>
+    (await s.broker.discovery.search(s.claims, query)).map((entry) => entry.name);
+  // One missing term no longer empties the result, and the name outranks prose.
+  expect(await found('restarting the billing service')).toEqual(['ops.restart', 'ops.status']);
+  expect(await found('archived notes')).toEqual(['notes.archive']);
+  // Identifier spellings: dotted, underscored, and the identifier typed whole.
+  expect(await found('ledger export')).toEqual(['ledger_export.run']);
+  expect(await found('ops.restart')).toEqual(['ops.restart', 'ops.status']);
+  expect(await found('the')).toEqual([]);
+});
+
+dbTest('a search with no match names what can be loaded instead of returning nothing', async () => {
+  const s = await discoverable({
+    'ops.restart': 'Bring a managed unit back up. Needs approval.',
+    'notes.archive': 'Archive a note',
+  });
+  const miss = await s.broker.discovery.find(s.claims, 'quarterly invoice totals');
+  expect(miss.tools).toEqual([]);
+  expect(miss.index).toEqual([
+    { name: 'notes.archive', gist: 'Archive a note' },
+    { name: 'ops.restart', gist: 'Bring a managed unit back up' },
+  ]);
+  expect(miss.hint).toBe(
+    'No tool matched "quarterly invoice totals". These are the tools load_tool can fetch by exact name.',
+  );
+  const hit = await s.broker.discovery.find(s.claims, 'archive');
+  expect(hit.tools.map((entry) => entry.name)).toEqual(['notes.archive']);
+  expect(hit).not.toHaveProperty('index');
+  expect(hit).not.toHaveProperty('hint');
+});

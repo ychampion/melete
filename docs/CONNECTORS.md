@@ -198,10 +198,18 @@ capability is left out of the catalog.
 
 `POST /tools/search` accepts `{ "query": "archived invoices" }`. Postgres ranks
 the already scoped entries with `tsvector`, weighting names above descriptions
-and examples; no model is involved. Results target a 1,000-token allowance while
+and examples; no model is involved. Any query term may match: terms are ORed
+and ranked, stemmed under the `english` configuration and also kept whole under
+`simple`, and a name is indexed by its segments, so "restarting services"
+reaches a verb named `ops.restart` (`search matches any term, stems it, and
+reads identifier segments`). Only letters and digits from the query reach the
+query text. Results target a 1,000-token allowance while
 always returning the highest-ranked match, so a long scope list cannot hide a
 capability. Results omit full schemas and tools already
-loaded in this attempt. `POST /tools/load` accepts the exact result name. Two
+loaded in this attempt. A query that matches nothing returns `tools: []`
+together with `index`, the name and eight-word gist of every healthy tool that
+can still be loaded, and a one-line `hint` (`a search with no match names what
+can be loaded instead of returning nothing`). `POST /tools/load` accepts the exact result name. Two
 accounts exposing the same verb receive stable account aliases, which the
 broker resolves back to the original verb before deriving the action's intent
 key. An alias cannot select another account.

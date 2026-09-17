@@ -16,7 +16,7 @@ import { type Connector, connectorAllowsAudience } from '../connectors/types.ts'
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
-import { gist, relevance, terms } from './lexical.ts';
+import { gist, relevance, terms, words } from './lexical.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
 
@@ -45,10 +45,17 @@ export type CatalogEntry = {
 export type CatalogItem = { entry: CatalogEntry; tool: ToolSpec; core: boolean; uses: number };
 type ScopedCatalogItem = CatalogItem & { original: string };
 export type CatalogContext = { core: ToolSpec[]; loaded: ToolSpec[] };
+export type CatalogSearch = {
+  tools: CatalogEntry[];
+  /** Present only when nothing matched: what `load_tool` can still fetch, by name. */
+  index?: { name: string; gist: string }[];
+  hint?: string;
+};
 
 // Reserve the rest of the 4,000-token tripwire for the pinned engine's scaffolding.
 export const CORE_CATALOG_TOKENS: number = CONTEXT_LIMITS.core_catalog_tokens;
 export const SEARCH_RESULT_TOKENS = 1_000;
+const SEARCH_TERMS = 24;
 /** The names-only index of unloaded tools has its own fixed allowance beside the schemas. */
 export const CATALOG_INDEX_TOKENS: number = CONTEXT_LIMITS.catalog_index_tokens;
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -587,21 +594,43 @@ export class ToolCatalog {
     );
   }
 
-  search(claims: CapabilityClaims, query: string): Promise<CatalogEntry[]> {
+  async search(claims: CapabilityClaims, query: string): Promise<CatalogEntry[]> {
+    return (await this.find(claims, query)).tools;
+  }
+
+  /**
+   * Ranked discovery. Any term may match: the terms are ORed, stemmed with the
+   * `english` configuration and also kept whole under `simple`, so an identifier
+   * segment such as `restart` in `server.restart` answers "restarting services".
+   * A query that matches nothing returns the names of what can be loaded, with
+   * one line saying so, because an empty list reads as "no such tool exists".
+   */
+  find(claims: CapabilityClaims, query: string): Promise<CatalogSearch> {
     const parsed = z.string().trim().min(1).max(500).parse(query);
     return this.within(claims, async (tx, _job, items, context) => {
       const loaded = new Set(this.current(context, items).map((tool) => tool.name));
       const rest = items.filter((item) => !loaded.has(item.entry.name)).map((item) => item.entry);
+      // Only letters and digits reach the query text, so it cannot carry an operator.
+      const lexemes = words(parsed).slice(0, SEARCH_TERMS).join(' | ');
       // The input contains only already-authorized entries. Even the ranking engine
       // cannot reveal another space's names, schemas, examples or result counts.
-      const ranked = await tx`with entries as (
-        select value as entry, setweight(to_tsvector('simple', regexp_replace(value->>'name', '[._-]', ' ', 'g')), 'A') ||
-          setweight(to_tsvector('simple', value->>'description'), 'B') ||
-          setweight(to_tsvector('simple', (value->'examples')::text), 'C') as document
+      const ranked = lexemes
+        ? await tx`with entries as (
+        select value as entry, regexp_replace(value->>'name', '[._-]', ' ', 'g') as segments
         from jsonb_array_elements(${JSON.stringify(rest)}::jsonb)
-      ), query as (select plainto_tsquery('simple', ${parsed}) as terms)
-      select entry from entries, query where document @@ terms
-      order by ts_rank(document, terms) desc, entry->>'name' collate "C"`;
+      ), documents as (
+        select entry,
+          setweight(to_tsvector('english', segments), 'A') ||
+          setweight(to_tsvector('simple', segments), 'A') ||
+          setweight(to_tsvector('english', entry->>'description'), 'B') ||
+          setweight(to_tsvector('english', (entry->'examples')::text), 'C') as document
+        from entries
+      ), query as (
+        select to_tsquery('english', ${lexemes}) || to_tsquery('simple', ${lexemes}) as terms
+      )
+      select entry from documents, query where document @@ terms
+      order by ts_rank(document, terms) desc, entry->>'name' collate "C"`
+        : [];
       const result: CatalogEntry[] = [];
       for (const row of ranked) {
         // A long, valid scope list must not make the best match undiscoverable.
@@ -617,7 +646,21 @@ export class ToolCatalog {
         names: result.map((item) => item.name),
         effect_class: 'read',
       });
-      return result;
+      if (result.length > 0) return { tools: result };
+      const index: CatalogSearch['index'] = [];
+      for (const entry of rest) {
+        if (entry.health === 'failing') continue;
+        const next = { name: entry.name, gist: gist(entry.description) };
+        if (estimateTokens(JSON.stringify([...index, next])) > SEARCH_RESULT_TOKENS) break;
+        index.push(next);
+      }
+      return {
+        tools: [],
+        index,
+        hint: index.length
+          ? `No tool matched ${JSON.stringify(parsed)}. These are the tools load_tool can fetch by exact name.`
+          : `No tool matched ${JSON.stringify(parsed)}, and nothing further can be loaded in this attempt.`,
+      };
     });
   }
 
