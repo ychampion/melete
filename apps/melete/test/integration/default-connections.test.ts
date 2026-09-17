@@ -47,13 +47,13 @@ const service = (url: string, extra: Record<string, string> = {}) =>
     }),
   });
 
-async function claimIn(running: Awaited<ReturnType<typeof service>>, spaceId: string) {
+async function claimIn(
+  running: Awaited<ReturnType<typeof service>>,
+  spaceId: string,
+  objective = 'Use what a new installation offers',
+) {
   if (!running.jobs || !running.runner) throw new Error('Missing runtime service');
-  const row = await running.jobs.create({
-    space_id: spaceId,
-    title: 'Defaults',
-    objective: 'Use what a new installation offers',
-  });
+  const row = await running.jobs.create({ space_id: spaceId, title: 'Defaults', objective });
   const claimed = await running.runner.claim({
     job_id: row.id,
     expected_epoch: row.leaseEpoch,
@@ -141,9 +141,14 @@ const late = existing ? await database() : null;
       // a workspace write is admitted, a publication still waits for approval.
       if (!running.registry) throw new Error('Missing registry');
       const broker = new BrokerService({ sql: fixture.sql, connectors: running.registry });
-      expect(names(await broker.catalog(claimed.claims))).toEqual(
-        expect.arrayContaining(['files.read', 'files.write']),
-      );
+      // The core catalog is chosen by relevance to the job's own words under a
+      // token budget, so a default tool is reachable rather than always resident:
+      // a workspace read is in the core, and whatever stays outside it is named
+      // in the index load_tool carries and can be loaded by that exact name.
+      const core = await broker.catalog(claimed.claims);
+      const resident = names(core);
+      expect(resident).toEqual(expect.arrayContaining(['search_tools', 'load_tool', 'files.read']));
+      const index = core.find((tool) => tool.name === 'load_tool')?.description ?? '';
       expect(names(await broker.discovery.available(claimed.claims))).toEqual(
         expect.arrayContaining(DEFAULT_TOOLS),
       );
@@ -152,6 +157,16 @@ const late = existing ? await database() : null;
           expect.objectContaining({ name: 'artifact.publish', effect_class: 'write_external' }),
         ]),
       );
+      for (const tool of DEFAULT_TOOLS.filter((name) => !resident.includes(name))) {
+        expect(index).toContain(tool);
+        expect((await broker.discovery.load(claimed.claims, tool)).tool.name).toBe(tool);
+      }
+      expect(names(await broker.catalog(claimed.claims))).toEqual(
+        expect.arrayContaining(DEFAULT_TOOLS),
+      );
+      // A job whose own words name a default's verb is handed it in the core.
+      const writing = await claimIn(running, space.id, 'Write the note file in the workspace');
+      expect(names(await broker.catalog(writing.claims))).toContain('files.write');
       const files = listed.find((row) => row.provider === 'files');
       if (!files) throw new Error('Missing default files connection');
       const written = await broker.propose(claimed.claims, {
