@@ -1,85 +1,140 @@
 # Hermes configuration for the Melete runtime.
 #
+# This file is the image's copy of one rendered object. It is produced by
+# `renderEngineConfig` in packages/runtime-hermes/src/engine-config.ts, and
+# `engine-config.test.ts` fails if the two ever disagree — change the renderer
+# and bring this file with it, never one alone. The entrypoint writes the
+# per-attempt parts over it at boot: the capability header, the model the
+# attempt was granted, and the window and compaction trigger that follow from
+# that model.
+#
 # Thin behavior is configured here; the image additionally applies the checked
-# observer bridge in patches/observer_bridge.py. Configuration citations are in
-# .agents/notes/0009-hermes-surface.md and the W14 capability audit.
+# observer bridge in patches/observer_bridge.py.
 
-# The API server agent is built with exactly these toolsets
-# (gateway/platforms/api_server.py:2122 -> hermes_cli/tools_config.py:550). An
-# explicit list replaces the hermes-api-server default, so naming only the
-# plugin's toolset is what turns every built-in off. There is no separate
-# "enabled_toolsets: []" key; that was a guess in the skeleton.
+# The API server agent is built with exactly these toolsets. An explicit list
+# replaces the hermes-api-server default, so naming only the plugin's toolset is
+# what turns every built-in off. There is no separate "enabled_toolsets: []" key.
 platform_toolsets:
-  # Built-in skill creation stays disabled. The melete toolset exposes learning.propose
-  # for an existing owner intervention; publication requires Melete's held-out gate.
   api_server: [melete]
 
 plugins:
-  # An ALLOW-LIST of registry keys, not a boolean and not "allow"
-  # (hermes_cli/plugins_discovery.py:91). `plugins.enabled: true` loads nothing
-  # at all, silently. The key is the directory name under $HERMES_HOME/plugins/.
+  # An ALLOW-LIST of registry keys, not a boolean and not "allow".
+  # `plugins.enabled: true` loads nothing at all, silently. The key is the
+  # directory name under $HERMES_HOME/plugins/.
   enabled: [melete]
-  # The compatibility import paths are removed on 2026-09-14. The Melete plugin
-  # imports nothing from Hermes beyond `ctx`, so this stays false and a plugin
-  # that ever did reach past `ctx` would stop loading rather than drift.
+  # The compatibility import paths are removed. The Melete plugin imports nothing
+  # from Hermes beyond `ctx`, so this stays false and a plugin that ever did
+  # reach past `ctx` would stop loading rather than drift.
   allow_deprecated_imports: false
 
 tools:
   tool_search:
     # Plugin tools are "deferrable" and are collapsed behind a
-    # tool_search/tool_describe/tool_call bridge by default
-    # (hermes_cli/config_defaults.py:1792). Discovery is supplied by Melete's
-    # own scoped search_tools/load_tool pair, under the same broker authority.
+    # tool_search/tool_describe/tool_call bridge by default. Discovery is
+    # supplied by Melete's own scoped search_tools/load_tool pair, under the same
+    # broker authority.
     enabled: "off"
 
 memory:
   # Melete owns memory. The knowledge package decides what a job may recall, and
   # a retracted record has to disappear from retrieval at once, which an
-  # engine-side store would quietly undo. The `memory` toolset is absent from
-  # platform_toolsets above, which is the other half of this.
-  enabled: false
+  # engine-side store would quietly undo.
+  #
+  # These are the two keys the engine reads, and both default to true. A store
+  # built from either one loads MEMORY.md and USER.md out of the engine home
+  # whatever the toolset list says, so leaving the toolset out is only half the
+  # job and an inert `enabled: false` was none of it.
+  memory_enabled: false
+  user_profile_enabled: false
+  provider: ""
 
-skills:
-  # Operator-installed skills are discovered through the broker catalog.
-  enabled: false
 # Evaluated skill learning belongs to Melete. No independent runtime mutations
 # or title-generation requests may spend a job's model budget in the background.
 curator:
   enabled: false
-# Melete owns job titles and learning. These side calls do not carry the main
-# provider's per-attempt header, so they must not enter an auxiliary fallback
-# chain (hermes_cli/config_defaults.py:711,742 at the pinned release).
+
+# Conversation checkpoints are engine-side state with its own lifetime. Job
+# continuity is Melete's, recorded on the ledger and replayable from it.
+checkpoints:
+  enabled: false
+
+agent:
+  # A runaway ceiling, not a cost control. Left unset this is unlimited, which
+  # means a looping run is bounded only by wall time. What an attempt may spend
+  # is decided by the job's accounting, not here.
+  max_turns: 150
+
+tool_loop_guardrails:
+  # The engine counts this platform as attended, so its non-interactive hard stop
+  # never applies to an unattended run unless it is asked for by name. Without
+  # this, a model repeating one failing call is only ever warned.
+  hard_stop_enabled: true
+
+compression:
+  # Long conversations are compacted by the engine, in place, inside the attempt.
+  enabled: true
+  # Keeps the session id across a compaction, which continuity depends on.
+  in_place: true
+  # A summary that fails leaves a deterministic handoff and drops the middle.
+  # Losing the middle of a conversation is recoverable; losing the attempt is
+  # not, and every durable fact is on the ledger either way.
+  abort_on_summary_failure: false
+  # The trigger, in tokens. The engine would compact at half the window, raised
+  # to three quarters below 512,000 tokens and floored at 64,000; this caps that
+  # so a large window does not accumulate a fortune of context before the first
+  # summary, and keeps every request inside the body the gateway accepts.
+  threshold_tokens: 200000
+
 auxiliary:
+  # Melete owns job titles and learning. These side calls must not enter an
+  # auxiliary fallback chain, which would reach a provider the cell cannot pay
+  # for and has no route to.
   title_generation:
     enabled: false
   background_review:
     enabled: false
   compression:
+    # The summary call runs on the attempt's own model, through the gateway, and
+    # is metered like any other request. With no model named, the auxiliary
+    # client falls back to the main runtime's.
     provider: melete-gateway
     fallback_chain: []
 
 approvals:
-  # Melete does not use Hermes's approval gate: api_server is in
-  # _UNATTENDED_APPROVAL_PLATFORMS (tools/approval_context.py:134), so a
-  # plugin-escalated approval hard-denies with nobody to ask. Broker tools
-  # return a structured needs_approval result instead and the job parks on
-  # Melete's ledger. These two keys make the shell-command guard's behaviour
-  # explicit rather than inherited: deny rather than block, and if something
-  # ever does block, not for longer than five minutes.
+  # Melete does not use Hermes's approval gate: this platform is unattended, so a
+  # plugin-escalated approval hard-denies with nobody to ask. Broker tools return
+  # a structured needs_approval result instead and the job parks on Melete's
+  # ledger. These two keys make the shell-command guard's behaviour explicit
+  # rather than inherited: deny rather than block, and if something ever does
+  # block, not for longer than five minutes.
   unattended_mode: deny
   timeout: 300
+
+model:
+  provider: melete-gateway
+  # The image's default. The entrypoint replaces this with the model the attempt
+  # was granted, along with the window and trigger that follow from it.
+  default: accounts/fireworks/models/deepseek-v4p1-flash
+  # Told to the engine so its compaction arithmetic and Melete's agree. A wrong
+  # number here means compacting a conversation that still fits, or not
+  # compacting one that no longer does.
+  context_length: 1000000
 
 providers:
   # The only endpoint the runtime may reach for inference is Melete's model
   # gateway, which injects the real provider key. The surrogate this container
   # holds is worth nothing anywhere else. The address is the broker bind from
-  # deploy/docker-compose.yml (MELETE_BROKER_BIND=0.0.0.0:8788), which carries
-  # both the broker routes and the metered model paths on one listener.
-  # Compose sets MELETE_MODEL_KEY; the provider segment selects which upstream
-  # the gateway injects a key for.
+  # deploy/docker-compose.yml, which carries both the broker routes and the
+  # metered model paths on one listener. The provider segment selects which
+  # upstream the gateway injects a key for.
+  #
+  # The per-attempt capability header is added here AND under `model` at boot:
+  # the main agent reads the provider entry, while the auxiliary client that
+  # makes the compaction summary call reads only `model.extra_headers`.
   melete-gateway:
     base_url: "http://melete:8788/providers/fireworks/v1"
     key_env: MELETE_MODEL_KEY
+    default_model: accounts/fireworks/models/deepseek-v4p1-flash
 
 gateway:
   platforms:

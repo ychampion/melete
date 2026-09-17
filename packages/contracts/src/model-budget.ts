@@ -24,6 +24,14 @@ const CONTEXT_WINDOWS: Record<string, number> = {
 /** The window a model answers with, or the documented fallback. */
 export const FALLBACK_CONTEXT_WINDOW = 128_000;
 
+/**
+ * The largest model request body the gateway reads. It is a memory bound on the
+ * broker, not a statement about any model, and it is the last thing standing
+ * between a runaway history and the upstream provider — so the engine has to be
+ * told to compact well before a request reaches it.
+ */
+export const GATEWAY_MAX_REQUEST_BYTES = 1024 * 1024;
+
 export function modelContextWindow(model: string): number {
   return CONTEXT_WINDOWS[model] ?? FALLBACK_CONTEXT_WINDOW;
 }

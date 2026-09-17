@@ -6,5 +6,6 @@
  */
 export * from './adapter.ts';
 export * from './client.ts';
+export * from './engine-config.ts';
 export * from './instructions.ts';
 export * from './version.ts';
