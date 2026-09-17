@@ -344,6 +344,20 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     'MELETE_API_BIND must use the edge-only melete-api alias with edge gateway priority',
   );
 
+  // Login limits follow the address the web proxy states, so the API must
+  // believe that one service only, and that service must sit on edge alone.
+  const web = compose.services?.web;
+  const webNetworks = Array.isArray(web?.networks)
+    ? web.networks
+    : Object.keys(web?.networks ?? {});
+  say(
+    'only the web proxy may state a browser address to the owner API',
+    melete?.environment?.MELETE_TRUSTED_PROXY === 'web' &&
+      webNetworks.length === 1 &&
+      webNetworks[0] === 'edge',
+    'MELETE_TRUSTED_PROXY must name the web service, attached to the edge network only',
+  );
+
   return results;
 }
 

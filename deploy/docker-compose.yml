@@ -74,6 +74,8 @@ services:
       NODE_ENV: production
       PORT: 8787
       MELETE_API_BIND: melete-api
+      # The only peer believed about a browser's address, for login limits.
+      MELETE_TRUSTED_PROXY: web
       DATABASE_URL: ${DATABASE_URL:?run bun run deploy/scripts/configure.ts}
       MELETE_MASTER_KEY: ${MELETE_MASTER_KEY:?run bun run deploy/scripts/configure.ts}
       MELETE_CAPABILITY_KEY: ${MELETE_CAPABILITY_KEY:?run bun run deploy/scripts/configure.ts}

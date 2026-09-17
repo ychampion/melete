@@ -21,11 +21,14 @@ import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
+import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+/** Browsers that have not signed in to an account before share this many attempts on it. */
+const ACCOUNT_BURST = 10;
 const credentials = z.object({
   email: z
     .email()
@@ -84,6 +87,44 @@ function allowedMutation(c: Context): boolean {
   return !origin || origin === new URL(c.req.url).origin;
 }
 
+/**
+ * The browser a request is from: the address the trusted web proxy stated, or
+ * the socket peer. The listener decides which; a request header never does.
+ */
+function clientAddress(c: Context): string {
+  const source = c.env as RequestSource | undefined;
+  return source?.clientAddress ?? source?.remoteAddress ?? 'unknown';
+}
+
+function rateLimited(c: Context, retryAfter: number, what: 'login' | 'setup') {
+  c.header('Retry-After', String(retryAfter));
+  return c.json(
+    {
+      error: {
+        code: `${what}_rate_limited`,
+        message: `Too many ${what} attempts. Try again later.`,
+      },
+    },
+    429,
+  );
+}
+
+let placeholderHash: Promise<string> | undefined;
+/**
+ * A hash nobody knows the password of. Verifying against it makes a login for
+ * an unknown email, or an account without a password, cost what a real one
+ * costs, so response time does not say which emails have accounts.
+ */
+function unknownAccountHash(): Promise<string> {
+  placeholderHash ??= Bun.password
+    .hash(randomBytes(32).toString('base64url'), { algorithm: 'argon2id' })
+    .catch((error) => {
+      placeholderHash = undefined;
+      throw error;
+    });
+  return placeholderHash;
+}
+
 async function readCredentials(c: Context) {
   if (c.req.header('Content-Type')?.split(';')[0]?.trim() !== 'application/json') return null;
   const parsed = credentials.safeParse(await c.req.json().catch(() => null));
@@ -101,7 +142,23 @@ export function mountAuth(
   },
 ): void {
   const { db, env } = deps;
+  // Four limiters on one clock: client addresses, accounts as seen by browsers
+  // that are new to them, known devices, and setup attempts.
   const loginThrottle = deps.loginThrottle ?? new LoginThrottle();
+  const accountThrottle = new LoginThrottle(loginThrottle.clock, ACCOUNT_BURST);
+  const deviceThrottle = new LoginThrottle(loginThrottle.clock);
+  const setupThrottle = new LoginThrottle(loginThrottle.clock);
+  const devices = new DeviceCookies(env.MELETE_MASTER_KEY, loginThrottle.clock);
+  const deviceCookie = (c: Context, email: string) =>
+    setCookie(c, DEVICE_COOKIE, devices.issue(email), {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: 'Strict',
+      path: '/',
+      maxAge: DEVICE_TTL_SECONDS,
+    });
+  // Paid once, ahead of the first stranger, so the first unknown email is no slower than the rest.
+  if (db) void unknownAccountHash().catch(() => undefined);
 
   app.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
@@ -195,10 +252,22 @@ export function mountAuth(
   });
 
   app.post('/setup', async (c) => {
+    const source = clientAddress(c);
+    const retryAfter = setupThrottle.admit(source);
+    if (retryAfter > 0) return rateLimited(c, retryAfter, 'setup');
     if (!db) {
       return c.json(
         { error: { code: 'database_unavailable', message: 'Configure Postgres.' } },
         503,
+      );
+    }
+    // An installed service says so before it parses or hashes anything. The
+    // insert below still decides a race between two first setups.
+    const [installed] = await db.select({ id: owner.id }).from(owner).limit(1);
+    if (installed) {
+      return c.json(
+        { error: { code: 'already_setup', message: 'The owner is already set up.' } },
+        409,
       );
     }
     const input = await readCredentials(c);
@@ -238,24 +307,28 @@ export function mountAuth(
         409,
       );
     }
+    setupThrottle.succeeded(source);
     sessionCookie(c, authenticated.token, env);
+    deviceCookie(c, created.email);
     return c.json({ owner: publicOwner(created) }, 201);
   });
 
+  /**
+   * Three limits stand in front of the password check, and each request pays
+   * exactly one path through them before the database or the hash is touched.
+   * A browser without proof of an earlier sign-in pays by client address and
+   * then into the limiter every such browser shares for the account. A browser
+   * that carries valid proof for this very account pays only into a budget of
+   * its own, so strangers who exhaust the shared limiter, from any number of
+   * addresses, cannot keep a known browser out. Proof for another account, or
+   * proof that does not verify, earns nothing.
+   */
   app.post('/login', async (c) => {
-    const source = (c.env as RequestSource | undefined)?.remoteAddress ?? 'unknown';
-    const retryAfter = loginThrottle.admit(source);
-    if (retryAfter > 0) {
-      c.header('Retry-After', String(retryAfter));
-      return c.json(
-        {
-          error: {
-            code: 'login_rate_limited',
-            message: 'Too many login attempts. Try again later.',
-          },
-        },
-        429,
-      );
+    const source = clientAddress(c);
+    const device = devices.verify(getCookie(c, DEVICE_COOKIE));
+    if (!device) {
+      const retryAfter = loginThrottle.admit(source);
+      if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
     }
     if (!db) {
       return c.json(
@@ -270,12 +343,24 @@ export function mountAuth(
         400,
       );
     }
+    const account = devices.account(input.email);
+    const known = device?.account === account ? device : null;
+    if (device && !known) {
+      const retryAfter = loginThrottle.admit(source);
+      if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
+    }
+    const retryAfter = known ? deviceThrottle.admit(known.nonce) : accountThrottle.admit(account);
+    if (retryAfter > 0) return rateLimited(c, retryAfter, 'login');
     const [found] = await db
       .select()
       .from(principal)
       .where(eq(principal.email, input.email))
       .limit(1);
-    if (!found?.passwordHash || !(await Bun.password.verify(input.password, found.passwordHash))) {
+    const verified = await Bun.password.verify(
+      input.password,
+      found?.passwordHash ?? (await unknownAccountHash()),
+    );
+    if (!found?.passwordHash || !verified) {
       return c.json(
         { error: { code: 'invalid_credentials', message: 'Email or password is wrong.' } },
         401,
@@ -286,8 +371,16 @@ export function mountAuth(
       return c.json({ error: { code: 'unauthorized', message: 'Setup is required.' } }, 401);
     const authenticated = newSession(installation.id, found.id);
     await db.insert(session).values(authenticated.row);
-    loginThrottle.succeeded(source);
+    // Success clears only what this request paid into. The shared account
+    // limiter gets this one attempt back and keeps every failure it has seen,
+    // so it counts wrong passwords and one person signing in cannot reopen it.
+    if (known) deviceThrottle.succeeded(known.nonce);
+    else {
+      loginThrottle.succeeded(source);
+      accountThrottle.refund(account);
+    }
     sessionCookie(c, authenticated.token, env);
+    deviceCookie(c, found.email);
     return c.json({ owner: publicOwner(found) });
   });
 

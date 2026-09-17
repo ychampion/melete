@@ -23,7 +23,7 @@ import { mountConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
-import { apiFetch, resolveApiNetwork } from './api/listener.ts';
+import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
@@ -651,7 +651,7 @@ if (import.meta.main) {
   const server = Bun.serve({
     hostname: apiNetwork.hostname,
     port: env.PORT,
-    fetch: apiFetch(app, apiNetwork),
+    fetch: apiFetch(app, apiNetwork, trustedProxy(env.MELETE_TRUSTED_PROXY)),
     idleTimeout: 0,
   });
   process.stdout.write(`melete ${VERSION} listening on ${apiNetwork.hostname}:${env.PORT}\n`);

@@ -53,12 +53,9 @@ also rejects requests outside the edge interface's subnet before reaching
 403 without account state, based on the socket source rather than forwarded
 headers. The runtime network can reach the broker/model listener on port 8788.
 
-Login accepts a burst of five attempts per socket source and process, then
-requires 1, 2, 4, up to 60 seconds between attempts. A rejection returns 429 and
-`Retry-After`; success or 15 idle minutes resets the source's burst. The source
-map is bounded. Browsers behind the web proxy share that proxy's bucket;
-untrusted forwarding headers cannot create fresh buckets. Restarting Melete
-resets these in-memory limits.
+Sign-in and setup attempts are limited per client address, per account and per
+known device; [Sign-in limits](#sign-in-limits) gives the exact rules, the one
+header the API believes and from whom, and what a restart clears.
 
 Use the SSH tunnel in the README for a remote host. For a public hostname,
 terminate TLS in your reverse proxy and forward the whole site to
@@ -81,6 +78,72 @@ server rejects foreign Origins before proxying to its fixed upstream
 `http://melete:8787`; it does not use request forwarding headers to select an
 upstream or relax the origin check. Keep production cookies secure. An HTTP
 URL on a remote IP address is not the localhost installation path.
+
+## Sign-in limits
+
+Every limit below lives in the memory of the one Melete process. Restarting
+Melete clears all of them at once: waits end, bursts are full again, and nothing
+is written to Postgres. Each limiter holds at most 1024 keys; further keys share
+one overflow bucket, so new keys can neither evict a live wait nor grow memory.
+
+**Whose address counts.** The web proxy sets `X-Melete-Client-Address` on every
+request it forwards to the API. The value is the proxy's own socket peer and
+replaces anything the browser sent; the proxy still drops `Forwarded` and
+`X-Forwarded-*`. The API believes that header only when the connection itself
+comes from the peer named by `MELETE_TRUSTED_PROXY`, and only when it holds one
+well-formed address. Compose sets `MELETE_TRUSTED_PROXY=web`, the web service on
+the edge network, and `bun run compose:check` fails if it names anything else or
+if `web` joins another network. The name is resolved when needed and remembered
+for 30 seconds (5 seconds while it does not resolve, as before the web
+container has started), so a recreated web container is followed without a
+restart. From every other peer, including the direct API port 3100, the header
+is ignored and the socket source is used; no other forwarding header is read.
+Left unset, as in local development, no peer is believed. A spoofed header
+therefore cannot mint fresh buckets.
+
+With the default loopback ports, the README SSH tunnel, or a TLS reverse proxy
+on the host, the web server's socket peer is the Docker gateway, so all browsers
+still arrive as one address and the per-address limit below is shared between
+them. The known-device rule is what keeps a sign-in available in that case.
+
+**Per client address.** A burst of five attempts, then 1, 2, 4, up to 60
+seconds between attempts. A refusal is 429 `login_rate_limited` with
+`Retry-After`. For a request without a valid device cookie it is returned
+before the body is read; every refusal described here comes before the database
+is read or a password is checked. A successful sign-in, or 15 minutes after the
+last admitted attempt, restores the burst. A refused request changes nothing: it
+neither lengthens the wait nor postpones the reset.
+
+**Per account, for browsers that are new to it.** Every browser without a known
+device for the account shares one limiter per account: a burst of ten attempts,
+then the same 1 to 60 second backoff and the same 15-minute reset. A successful
+sign-in hands back the one attempt it reserved and clears nothing else, so the
+limiter counts wrong passwords: correct sign-ins never close it, and one person
+signing in does not reopen it for the rest. While it is closed, a correct
+password from a new browser also receives 429; at most one attempt per 60
+seconds is admitted at the cap.
+
+**Known devices.** A successful sign-in or setup sets `melete_device`
+(`HttpOnly`, `SameSite=Strict`, `Secure` in production, 90 days). It holds a
+keyed digest of the email, a random identifier, an expiry and an HMAC-SHA-256
+signature under a key derived from `MELETE_MASTER_KEY`. It never authenticates
+anyone. A browser presenting a valid cookie for the account it is signing in to
+skips the address and account limiters and spends its own budget of five
+attempts with the same backoff. Requests from other browsers, at the same or any
+other address and however many, cannot make that sign-in fail. A cookie for another account, an expired one, or
+one that does not verify earns nothing, and the request is limited as a new
+browser. Because the key comes from `MELETE_MASTER_KEY`, known devices survive a
+restart; changing that key, or running without one as in development where the
+key is random per process, makes every browser new again.
+
+**Setup.** `/setup` answers 409 `already_setup` before it parses or hashes
+anything once an owner exists. It has its own per-address limiter (burst of
+five, the same backoff, 429 `setup_rate_limited`) that spends no sign-in budget.
+
+**Unknown emails.** A sign-in for an email without an account, or an account
+without a password, runs the same argon2id verification against a placeholder
+hash and returns the same 401, so response time does not reveal which emails
+have accounts.
 
 ## Providers
 
