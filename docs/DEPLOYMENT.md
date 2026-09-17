@@ -1,9 +1,10 @@
 # Linux deployment operations
 
-Start with the literal [README install procedure](../README.md#install-on-a-linux-docker-host).
-The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records the tested revision, image sizes,
-build and startup times, conformance results, and clean-host timing. Timings
-depend on the host and network; the startup timeout does not bound image builds.
+Start with the [README install procedure](../README.md#install-on-a-linux-docker-host).
+[Deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records image
+sizes, build and startup times, conformance results and clean-host timing from a
+measured installation. Timings depend on the host and network; the startup
+timeout does not bound image builds.
 
 ## Docker Engine and Compose versions
 
@@ -76,8 +77,10 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate web
 `docker compose restart` does not apply changed environment values. The web
 server rejects foreign Origins before proxying to its fixed upstream
 `http://melete:8787`; it does not use request forwarding headers to select an
-upstream or relax the origin check. Keep production cookies secure. An HTTP
-URL on a remote IP address is not the localhost installation path.
+upstream or relax the origin check. Session cookies are `Secure` in production,
+which browsers honour over HTTPS and on localhost, so reach a remote
+installation through the SSH tunnel or a TLS proxy rather than over plain HTTP
+to its address.
 
 ## Sign-in limits
 
@@ -201,8 +204,7 @@ never rewritten: it is honoured, or refused when it exceeds the job's budget.
 Provider secrets belong to Melete's gateway. Runtime cells receive short-lived
 capabilities and surrogate credentials. Do not copy a provider key into a
 runtime environment. Configuration fields are listed in
-[`deploy/.env.example`](../deploy/.env.example); a configured provider is not
-evidence that a live model run passed.
+[`deploy/.env.example`](../deploy/.env.example).
 
 After changing provider settings, recreate Melete and the warm runtime:
 
@@ -247,9 +249,9 @@ accounting is keyed on.
 Deployment memory can extract structured observations without a model. If
 unstructured work has no extraction gateway, it stops at the third total claim
 with status `rejected` and error `no_extraction_gateway` in `memory_work`.
-Queue repair and duplicate deliveries do not restart that terminal work. This
-cap does not configure an extraction gateway or automatically retry rejected
-evidence when configuration changes.
+Queue repair and duplicate deliveries do not restart that terminal work, and an
+extraction gateway configured afterwards applies to new work only: evidence
+already rejected stays rejected.
 
 ## Isolation and image provenance
 
@@ -278,10 +280,10 @@ docker compose -f deploy/docker-compose.yml cp runtime:/opt/melete-runtime/sbom.
 ```
 
 The SBOM is a CycloneDX inventory of the Python and OS packages in that image.
-These checks reproduce source identity and enforce dependency locks. They do
-not promise byte-identical image digests: OS package repositories, build
-timestamps, and build tooling can change the resulting bytes. Compare the
-recorded labels and inventories when rebuilding.
+These checks reproduce source identity and enforce dependency locks. Image
+digests can differ between builds, because OS package repositories, build
+timestamps and build tooling change the resulting bytes; compare the recorded
+labels and inventories when rebuilding.
 
 ## Upgrading
 
@@ -306,7 +308,7 @@ The limits live in the `x-logging` anchor at the top of
 `deploy/docker-compose.yml`; a changed limit applies when a container is
 recreated, not on restart. `bun run compose:check` and
 `bun run browser:compose:check` refuse a service without the bound. Logs that
-must outlive rotation belong in a collector you run; none is shipped.
+must outlive rotation belong in a log collector you run beside the stack.
 
 ## Backup and restore
 
@@ -370,5 +372,5 @@ finishes with exactly one destination receipt.
 
 Each run writes a private directory under `/tmp/melete-compose-restore` containing
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
-to choose another parent directory. The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records
-the measured run and its evidence.
+to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
+records a measured run and its evidence.
