@@ -32,19 +32,14 @@ import { testDatabase } from '../helpers/database.ts';
  * Opt in after preparing the pinned Python environment; ordinary suites need no
  * Hermes install.
  *
- * Marked failing, not skipped: the behaviour is the one the engine is meant to
- * have, and it is red for a reason that is named and owned elsewhere. The
- * capability header is written only under the gateway provider entry, while the
- * engine builds the compaction summary call through a separate auxiliary client
- * that carries `model.extra_headers` and not the provider's. The summary
- * request therefore reaches the gateway with no capability and is refused
- * `401 capability_required` before it is ever authenticated, so the compaction
- * aborts before it commits, nothing is observed, and the next main request is
- * still the whole history and is refused `413 input_context_exceeded`. Writing
- * the header into `model.extra_headers` clears both; when it does, this stops
- * being a failing test and the `.failing` marker comes off.
+ * This runs against the configuration the runtime ships, rendered by the same
+ * function the image and both supervisors use. Two things it renders are what
+ * make the proof pass: the capability header in the model section, which is the
+ * only place the auxiliary client that writes the summary reads, and a
+ * compaction trigger low enough that the engine summarizes before the gateway
+ * refuses the request for size.
  */
-const realTest = process.env.MELETE_HERMES_E2E === '1' ? test.failing : test.skip;
+const realTest = process.env.MELETE_HERMES_E2E === '1' ? test : test.skip;
 
 /** Roughly 30 KB per read, so four reads pass any small compaction threshold. */
 const FIXTURE_BYTES = 30_000;
