@@ -144,6 +144,12 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     // already had its one chance to propose what it asked the owner about.
     const called: string[] = [];
     let nudged = false;
+    // The owner refused something in this wake. Telling the attempt to call the
+    // tool now would be Melete's own idea to ask again for what was just
+    // refused: the ledger would stop the same bytes, but a variation of them is
+    // a fresh question the owner never invited. The reply is still treated as a
+    // question rather than a completion.
+    const refused = bundle.inputs.approval_results.some((entry) => entry.decision === 'denied');
     const stop = () => {
       if (runId) void this.send(this.client.stop(runId)).catch(() => undefined);
     };
@@ -207,7 +213,7 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
           // completion. The ledger still has the last word in finish().
           final = { kind: 'waiting_for_input', question: final.summary };
         }
-        if (unproposed && !nudged && !signal.aborted && !controller.signal.aborted) {
+        if (unproposed && !nudged && !refused && !signal.aborted && !controller.signal.aborted) {
           if (
             (await beforeDeadline(this.options.parkedActions(bundle, controller.signal), deadline))
               .length > 0

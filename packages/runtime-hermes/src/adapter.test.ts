@@ -407,6 +407,23 @@ describe('a go-ahead with nothing proposed', () => {
     expect(inputs).toHaveLength(2);
   });
 
+  test('an effect the owner refused in this wake is not asked for again', async () => {
+    const refused: AttemptBundle = {
+      ...withTools,
+      inputs: {
+        ...withTools.inputs,
+        approval_results: [{ action_id: ACTION, decision: 'denied', note: null }],
+      },
+    };
+    const reply = "I won't send it. Let me know if you'd like me to send a shorter version.";
+    const { adapter, inputs } = script([run(reply), run('unreachable')]);
+    const outcome = await adapter.start(refused, new Collector(), new AbortController().signal);
+    // The reply is still a question, so the job asks it. What must not happen is
+    // answering a refusal with "call the tool now" and proposing again on our word.
+    expect(outcome).toEqual({ kind: 'waiting_for_input', question: reply });
+    expect(inputs).toHaveLength(1);
+  });
+
   test('a finished send, a closing offer or a plain question completes in one run', async () => {
     for (const [output, called] of [
       ['I sent the reply.', ['email.send']],
