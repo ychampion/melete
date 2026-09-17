@@ -109,8 +109,8 @@ only reachable peers; the cell runs as UID 10001 with a read-only root, zero
 effective capabilities, no-new-privileges and no Docker socket. The table under
 [Linux deployment verification](#linux-deployment-verification) records each
 boundary, its evidence and what a breach would look like. The probes establish
-the boundary on a Linux host running rootful Docker Engine; macOS, Windows and
-rootless Docker hosts are outside what they cover.
+the boundary on a Linux host running Docker Engine; macOS, Windows and rootless
+Docker hosts are outside what they cover.
 
 The Compose file declares an internal-only runtime network with isolated
 bridge gateway mode, non-root UID, read-only root, dropped capabilities,
