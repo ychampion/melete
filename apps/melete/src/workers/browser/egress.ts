@@ -3,15 +3,23 @@ import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import type { BrowserContext, Request, Route } from 'playwright';
+import type { BrowserContext, Frame, Request, Route } from 'playwright';
 import { isPublicAddress, type ResolvedAddress } from '../../connectors/web.ts';
+import type { LiveNetworkBudget, LiveNotify, LiveSiteScope } from './live-protocol.ts';
 
 export type BrowserNetworkPolicy = {
   public_compartment: boolean;
   allowed_domains: string[];
 };
 
-export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit';
+export type BrowserNetworkMode = 'navigate' | 'reversible' | 'commit' | 'human';
+
+/** A person's live channel: any method inside the takeover's site scope, nothing outside it. */
+export type BrowserHumanWindow = {
+  scope: Pick<LiveSiteScope, 'admits' | 'follow'>;
+  budget: LiveNetworkBudget;
+  notice: LiveNotify;
+};
 
 export type BrowserCommitBinding = {
   url: string;
@@ -118,6 +126,30 @@ function parseUrl(raw: string): URL {
     networkError('url_not_allowed', 'only HTTP(S) browser URLs without credentials are allowed');
   }
   return url;
+}
+
+function attribute(value: string): string {
+  return value.replace(/[&"'<>]/g, (character) => `&#${character.charCodeAt(0)};`);
+}
+
+/** The document a top-level navigation leaves; undefined for every other request. */
+async function topNavigation(request: Request): Promise<{ initiator?: string } | undefined> {
+  if (!request.isNavigationRequest()) return undefined;
+  let frame: Frame;
+  try {
+    frame = request.frame();
+  } catch {
+    return undefined;
+  }
+  if (frame.parentFrame()) return undefined;
+  const current = frame.url();
+  if (/^https?:/i.test(current)) return { initiator: current };
+  // A popup's first document is started by the page that opened it.
+  const opener = await frame
+    .page()
+    .opener()
+    .catch(() => null);
+  return { initiator: opener?.url() };
 }
 
 function fixtureOrigin(raw: string): string {
@@ -247,6 +279,7 @@ export const pinnedBrowserRequest: BrowserNetworkTransport = (url, address, opti
 
 type Operation = {
   mode: BrowserNetworkMode;
+  human: BrowserHumanWindow | undefined;
   origin: string | undefined;
   commit: BrowserCommitBinding | undefined;
   guard: (() => void) | undefined;
@@ -304,9 +337,15 @@ export function createBrowserEgress(
   let closed = false;
   let commitDispatched = false;
 
-  async function checkAddress(url: URL, signal: AbortSignal): Promise<ResolvedAddress> {
+  async function checkAddress(
+    url: URL,
+    signal: AbortSignal,
+    human = false,
+  ): Promise<ResolvedAddress> {
     const name = hostname(url);
-    if (!publicCompartment && !domains.has(name)) {
+    // A takeover's site scope starts from these domains and admits its hosts instead; the
+    // public-address, DNS and pinning checks below apply to a person exactly as to automation.
+    if (!human && !publicCompartment && !domains.has(name)) {
       networkError('domain_not_allowed', 'private-context browser cannot access this domain');
     }
     const family = isIP(name);
@@ -349,7 +388,25 @@ export function createBrowserEgress(
     request: Request,
     body: Buffer | null,
     headers: Record<string, string>,
+    navigation: { initiator?: string } | undefined,
   ): void {
+    const human = operation.human;
+    if (human) {
+      if (!human.budget.request()) {
+        human.notice('live_budget');
+        networkError('live_budget', 'the takeover has used its browser request budget');
+      }
+      const host = hostname(url);
+      if (
+        !human.scope.admits(host) &&
+        (!navigation ||
+          !['in_scope', 'admitted'].includes(human.scope.follow(url.href, navigation.initiator)))
+      ) {
+        human.notice('off_scope', host);
+        networkError('off_scope', 'browser request is outside the takeover site scope');
+      }
+      return;
+    }
     operation.requests += 1;
     if (operation.requests > maxRequests) {
       networkError('request_limit', 'browser operation exceeds the request limit');
@@ -399,6 +456,47 @@ export function createBrowserEgress(
     }
   }
 
+  /**
+   * Chromium does not route the next hop of a fulfilled redirect, so a person's checked document
+   * redirect continues as a navigation from a no-store document that carries this hop's cookies.
+   */
+  async function humanRedirect(
+    route: Route,
+    request: Request,
+    source: URL,
+    target: URL,
+    status: number,
+    headers: Record<string, string>,
+    human: BrowserHumanWindow,
+    navigation: { initiator?: string } | undefined,
+  ): Promise<void> {
+    if (!navigation) {
+      human.notice('redirect_refused');
+      networkError(
+        'subresource_redirect_unsupported',
+        'browser subresource redirects are not supported',
+      );
+    }
+    if (!READ_METHODS.has(request.method()) && [307, 308].includes(status)) {
+      human.notice('redirect_refused');
+      networkError('redirect_mutation', 'browser redirect cannot replay a mutation');
+    }
+    if (!['in_scope', 'admitted'].includes(human.scope.follow(target.href, source.href))) {
+      human.notice('off_scope', hostname(target));
+      networkError('off_scope', 'browser redirect is outside the takeover site scope');
+    }
+    await route.fulfill({
+      status: 200,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        ...(headers['set-cookie'] ? { 'set-cookie': headers['set-cookie'] } : {}),
+      },
+      body: `<!doctype html><meta http-equiv="refresh" content="0;url=${attribute(target.href)}">`,
+    });
+  }
+
   async function relay(route: Route, operation: Operation | undefined): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const abort = new AbortController();
@@ -425,8 +523,13 @@ export function createBrowserEgress(
         true,
       );
       requireOperation(operation);
-      admitRequest(operation, url, request, body, headers);
-      const address = await checkAddress(url, abort.signal);
+      const human = operation.human;
+      const navigation = human
+        ? await untilAborted(topNavigation(request), abort.signal)
+        : undefined;
+      requireOperation(operation);
+      admitRequest(operation, url, request, body, headers, navigation);
+      const address = await checkAddress(url, abort.signal, Boolean(human));
       requireOperation(operation);
       // DNS and header reads yielded after the input was planned. The controller
       // rechecks takeover here, synchronously adjacent to the actual dispatch.
@@ -450,10 +553,37 @@ export function createBrowserEgress(
       if (response.body.length > maxBytes) {
         networkError('response_too_large', 'browser response exceeds the size limit');
       }
+      if (human && !human.budget.transfer((body?.length ?? 0) + response.body.length)) {
+        human.notice('live_budget');
+        networkError('live_budget', 'the takeover has used its browser byte budget');
+      }
       const responseHeaders = relayHeaders(response.headers, maxHeaderBytes, false);
+      if (human && /^\s*attachment/i.test(responseHeaders['content-disposition'] ?? '')) {
+        human.notice('download_refused');
+        networkError('download_refused', 'browser downloads are refused during a takeover');
+      }
       if (REDIRECT_STATUSES.has(response.status) && responseHeaders.location) {
-        const target = parseUrl(new URL(responseHeaders.location, url).href);
-        await checkAddress(target, abort.signal);
+        let target: URL;
+        try {
+          target = parseUrl(new URL(responseHeaders.location, url).href);
+          await checkAddress(target, abort.signal, Boolean(human));
+        } catch (error) {
+          human?.notice('redirect_refused');
+          throw error;
+        }
+        if (human) {
+          await humanRedirect(
+            route,
+            request,
+            url,
+            target,
+            response.status,
+            responseHeaders,
+            human,
+            navigation,
+          );
+          return;
+        }
         if (operation.mode === 'commit' && target.origin !== operation.origin) {
           networkError(
             'commit_origin',
@@ -496,7 +626,8 @@ export function createBrowserEgress(
         body: response.body,
       });
     } catch (error) {
-      if (operation && !operation.error) {
+      // A person's refused request fails alone; it never ends the takeover's network window.
+      if (operation && operation.mode !== 'human' && !operation.error) {
         operation.error =
           error instanceof Error ? error : new Error('browser network request failed');
       }
@@ -510,6 +641,10 @@ export function createBrowserEgress(
   return {
     get commitDispatched(): boolean {
       return commitDispatched;
+    },
+
+    get idle(): boolean {
+      return Boolean(context) && !closed && !active;
     },
 
     async install(target: BrowserContext): Promise<void> {
@@ -533,7 +668,8 @@ export function createBrowserEgress(
         return pending;
       });
       await target.routeWebSocket('**/*', async (socket) => {
-        if (active && !active.error) {
+        if (active?.human) active.human.notice('websocket_refused');
+        else if (active && !active.error) {
           active.error = new BrowserNetworkError(
             'websocket_denied',
             'browser WebSockets are denied',
@@ -548,12 +684,16 @@ export function createBrowserEgress(
       operation: () => Promise<T>,
       commit?: BrowserCommitBinding,
       guard?: () => void,
+      human?: BrowserHumanWindow,
     ): Promise<T> {
       if (!context || closed)
         networkError('network_closed', 'browser network guard is not available');
       if (active) networkError('network_busy', 'browser network operation is already running');
-      if (!['navigate', 'reversible', 'commit'].includes(mode)) {
+      if (!['navigate', 'reversible', 'commit', 'human'].includes(mode)) {
         networkError('invalid_mode', 'browser network operation mode is invalid');
+      }
+      if ((mode === 'human') !== Boolean(human)) {
+        networkError('invalid_mode', 'a person holds the browser network only with a site scope');
       }
       if (mode === 'commit') commitDispatched = false;
       const pageUrl = context.pages()[0]?.url();
@@ -572,6 +712,7 @@ export function createBrowserEgress(
       }
       const current: Operation = {
         mode,
+        human: mode === 'human' ? human : undefined,
         origin,
         commit: binding,
         guard,

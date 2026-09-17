@@ -12,6 +12,7 @@ import {
   createBrowserEgress,
   pinnedBrowserRequest,
 } from './egress.ts';
+import { LiveNetworkBudget, type LiveNoticeCode, LiveSiteScope } from './live-protocol.ts';
 
 type RequestSpec = {
   url?: string;
@@ -20,6 +21,9 @@ type RequestSpec = {
   body?: Buffer;
   headers?: Record<string, string>;
   previous?: Request;
+  /** A top-level navigation leaving this document; absent for subresources. */
+  from?: string;
+  opener?: string;
 };
 
 function request(spec: RequestSpec): Request {
@@ -32,6 +36,12 @@ function request(spec: RequestSpec): Request {
       spec.headers ??
       (spec.method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
     redirectedFrom: () => spec.previous ?? null,
+    isNavigationRequest: () => spec.from !== undefined,
+    frame: () => ({
+      url: () => spec.from ?? 'about:blank',
+      parentFrame: () => null,
+      page: () => ({ opener: async () => (spec.opener ? { url: () => spec.opener } : null) }),
+    }),
   } as unknown as Request;
 }
 
@@ -690,4 +700,242 @@ test('real Node relay pins the destination while retaining Host, query, request 
       server.close((error) => (error ? reject(error) : resolve())),
     );
   }
+});
+
+function humanWindow(allowed: string[], page: string) {
+  const notices: Array<{ code: LiveNoticeCode; host?: string }> = [];
+  return {
+    notices,
+    window: {
+      scope: new LiveSiteScope(allowed, page),
+      budget: new LiveNetworkBudget(),
+      notice: (code: LiveNoticeCode, host?: string) => {
+        notices.push(host === undefined ? { code } : { code, host });
+      },
+    },
+  };
+}
+
+const PRIVATE: BrowserNetworkPolicy = {
+  public_compartment: false,
+  allowed_domains: ['public.example'],
+};
+
+test('human mode admits the identity-provider redirect as a checked navigation and refuses off-scope requests', async () => {
+  const seen: string[] = [];
+  const authorize =
+    'https://login.idp-example.net/authorize?return=https%3A%2F%2Fpublic.example%2Faccount&x=1';
+  const fixture = await setup(
+    {
+      transport: async (url, _address, outgoing) => {
+        seen.push(`${outgoing.method} ${url.href}`);
+        if (url.pathname === '/signin')
+          return {
+            status: 302,
+            headers: { location: authorize, 'set-cookie': ['signin=1; Path=/', 'b=2; HttpOnly'] },
+            body: Buffer.alloc(0),
+          };
+        if (url.hostname === 'login.idp-example.net')
+          return {
+            status: 303,
+            headers: { location: 'https://public.example/account' },
+            body: Buffer.alloc(0),
+          };
+        return OK;
+      },
+    },
+    PRIVATE,
+  );
+  const { window, notices } = humanWindow(['public.example'], 'https://public.example/signin');
+  const results = await fixture.egress.run(
+    'human',
+    async () => ({
+      signin: await fixture.dispatch({
+        url: 'https://public.example/signin',
+        method: 'POST',
+        body: Buffer.from('password=typed-by-the-person'),
+        from: 'https://public.example/signin',
+      }),
+      idp: await fixture.dispatch({ url: authorize, from: 'https://public.example/signin' }),
+      account: await fixture.dispatch({ url: 'https://public.example/account', from: authorize }),
+      pixel: await fixture.dispatch({
+        url: 'https://tracker.example.org/pixel.gif',
+        resourceType: 'image',
+      }),
+      beacon: await fixture.dispatch({
+        url: 'https://tracker.example.org/beacon',
+        method: 'POST',
+        resourceType: 'fetch',
+        body: Buffer.from('leak'),
+      }),
+      typed: await fixture.dispatch({
+        url: 'https://evil.example.org/',
+        from: 'chrome-error://chromewebdata/',
+      }),
+    }),
+    undefined,
+    undefined,
+    window,
+  );
+  expect(seen).toEqual([
+    'POST https://public.example/signin',
+    `GET ${authorize}`,
+    'GET https://public.example/account',
+  ]);
+  expect(results.signin.response?.status).toBe(200);
+  expect(results.signin.response?.headers).toMatchObject({
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',
+    'set-cookie': 'signin=1; Path=/\nb=2; HttpOnly',
+  });
+  expect(String(results.signin.response?.body)).toBe(
+    '<!doctype html><meta http-equiv="refresh" content="0;url=https://login.idp-example.net/authorize?return=https%3A%2F%2Fpublic.example%2Faccount&#38;x=1">',
+  );
+  expect(String(results.idp.response?.body)).toContain('url=https://public.example/account');
+  expect(results.account.response?.status).toBe(200);
+  for (const refused of [results.pixel, results.beacon, results.typed])
+    expect(refused.aborted).toBe(true);
+  expect(notices).toEqual([
+    { code: 'off_scope', host: 'tracker.example.org' },
+    { code: 'off_scope', host: 'tracker.example.org' },
+    { code: 'off_scope', host: 'evil.example.org' },
+  ]);
+  expect(window.scope.list()).toEqual(['public.example', 'idp-example.net']);
+});
+
+test('a popup started by an in-scope page may leave the site; one started elsewhere may not', async () => {
+  const fixture = await setup({}, PRIVATE);
+  const { window, notices } = humanWindow(['public.example'], 'https://public.example/signin');
+  const [popup, stray] = await fixture.egress.run(
+    'human',
+    async () => [
+      await fixture.dispatch({
+        url: 'https://accounts.provider.example/start',
+        from: 'about:blank',
+        opener: 'https://public.example/signin',
+      }),
+      await fixture.dispatch({ url: 'https://stray.example/start', from: 'about:blank' }),
+    ],
+    undefined,
+    undefined,
+    window,
+  );
+  expect(popup?.aborted).toBe(false);
+  expect(stray?.aborted).toBe(true);
+  expect(notices).toEqual([{ code: 'off_scope', host: 'stray.example' }]);
+  expect(fixture.calls.map((call) => call.url)).toEqual([
+    'https://accounts.provider.example/start',
+  ]);
+});
+
+test('human mode keeps the address floor and refuses downloads, replayed mutations and WebSockets without ending the window', async () => {
+  const fixture = await setup(
+    {
+      resolve: async (name) => [
+        { address: name === 'intranet.public.example' ? '10.0.0.5' : '8.8.8.8', family: 4 },
+      ],
+      transport: async (url) => {
+        if (url.pathname === '/report.pdf')
+          return {
+            status: 200,
+            headers: { 'content-disposition': 'attachment; filename="report.pdf"' },
+            body: Buffer.from('%PDF'),
+          };
+        if (url.pathname === '/replay')
+          return { status: 307, headers: { location: '/again' }, body: Buffer.alloc(0) };
+        if (url.pathname === '/image-hop')
+          return { status: 302, headers: { location: '/image.png' }, body: Buffer.alloc(0) };
+        if (url.pathname === '/app-hop')
+          return {
+            status: 302,
+            headers: { location: 'app-scheme://callback?code=1' },
+            body: Buffer.alloc(0),
+          };
+        return OK;
+      },
+    },
+    PRIVATE,
+  );
+  const { window, notices } = humanWindow(['public.example'], 'https://public.example/signin');
+  const from = 'https://public.example/signin';
+  const results = await fixture.egress.run(
+    'human',
+    async () => [
+      await fixture.dispatch({ url: 'https://intranet.public.example/', from }),
+      await fixture.dispatch({ url: 'https://public.example/report.pdf', from }),
+      await fixture.dispatch({ url: 'https://public.example/replay', method: 'POST', from }),
+      await fixture.dispatch({ url: 'https://public.example/image-hop', resourceType: 'image' }),
+      await fixture.dispatch({ url: 'https://public.example/app-hop', from }),
+      await fixture.websocket(),
+      await fixture.dispatch({ url: 'https://public.example/still-open', from }),
+    ],
+    undefined,
+    undefined,
+    window,
+  );
+  expect(results.slice(0, 5).map((result) => (result as { aborted: boolean }).aborted)).toEqual([
+    true,
+    true,
+    true,
+    true,
+    true,
+  ]);
+  expect(results[5]).toBe(true);
+  expect((results[6] as { aborted: boolean }).aborted).toBe(false);
+  expect(notices).toEqual([
+    { code: 'download_refused' },
+    { code: 'redirect_refused' },
+    { code: 'redirect_refused' },
+    { code: 'redirect_refused' },
+    { code: 'websocket_refused' },
+  ]);
+  expect(fixture.calls.map((call) => call.url)).not.toContain('https://intranet.public.example/');
+});
+
+test('human mode stops at the takeover budget while automation stays fenced', async () => {
+  const fixture = await setup({}, PRIVATE);
+  const { window, notices } = humanWindow(['public.example'], 'https://public.example/');
+  await expect(
+    fixture.egress.run('human', async () => {}, undefined, undefined, undefined),
+  ).rejects.toMatchObject({ code: 'invalid_mode' });
+  await expect(
+    fixture.egress.run('navigate', async () => {}, undefined, undefined, window),
+  ).rejects.toMatchObject({ code: 'invalid_mode' });
+  let controlChanged = false;
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  expect(fixture.egress.idle).toBe(true);
+  const person = fixture.egress.run(
+    'human',
+    () => held,
+    undefined,
+    () => {
+      if (controlChanged) throw new Error('epoch_changed');
+    },
+    window,
+  );
+  expect(fixture.egress.idle).toBe(false);
+  await expect(fixture.egress.run('navigate', () => fixture.dispatch())).rejects.toMatchObject({
+    code: 'network_busy',
+  });
+  window.budget.requests = 1999;
+  expect((await fixture.dispatch({ url: 'https://public.example/a' })).aborted).toBe(false);
+  expect((await fixture.dispatch({ url: 'https://public.example/b' })).aborted).toBe(true);
+  window.budget.requests = 0;
+  window.budget.bytes = 32 * 1024 * 1024 - OK.body.length + 1;
+  expect((await fixture.dispatch({ url: 'https://public.example/c' })).aborted).toBe(true);
+  window.budget.bytes = 0;
+  controlChanged = true;
+  expect((await fixture.dispatch({ url: 'https://public.example/d' })).aborted).toBe(true);
+  release();
+  await person;
+  expect(fixture.egress.idle).toBe(true);
+  expect(notices).toEqual([{ code: 'live_budget' }, { code: 'live_budget' }]);
+  expect(fixture.calls.map((call) => call.url)).toEqual([
+    'https://public.example/a',
+    'https://public.example/c',
+  ]);
+  expect((await fixture.dispatch({ url: 'https://public.example/e' })).aborted).toBe(true);
 });
