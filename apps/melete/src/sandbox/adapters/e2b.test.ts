@@ -1,12 +1,14 @@
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { testDatabase } from '../../../test/helpers/database.ts';
 import { CONFORMANCE_TESTS, sandboxConformance } from '../conformance.ts';
 import { openSandbox, type SandboxRefusal, sandboxLabels } from '../manifest.ts';
 import { runCommand } from '../marker.ts';
-import type { EgressPolicy, SandboxSpec } from '../types.ts';
-import { createE2bProvider } from './e2b.ts';
+import { type EgressPolicy, SandboxGone, type SandboxSpec } from '../types.ts';
+import { workspaceConformance } from '../workspace-conformance.ts';
+import { createE2bProvider, E2bApiError } from './e2b.ts';
 import {
   AUTHORED_NOTE,
   acknowledgementControl,
@@ -30,6 +32,9 @@ import { RecordingFetch, ReplayFetch } from './fixtures.ts';
 const AUTHOR = process.env.MELETE_SANDBOX_AUTHOR === 'e2b';
 const SECRETS = [AUTHORING_KEY, AUTHORING_ENVD_TOKEN, AUTHORING_TRAFFIC_TOKEN];
 const signal = () => AbortSignal.timeout(60_000);
+
+const database = await testDatabase();
+afterAll(async () => database?.close());
 
 async function fixtureSubject(
   name: string,
@@ -86,6 +91,24 @@ sandboxConformance('e2b on authored fixtures', async (name) => {
     loseNextAcknowledgement: subject.control.lose,
     close: subject.close,
   };
+});
+
+workspaceConformance('e2b on authored fixtures', {
+  sql: database?.sql ?? null,
+  open: async (name) => {
+    const subject = await fixtureSubject(`e2b workspace ${name}`);
+    return {
+      provider: subject.provider,
+      persistence: 'pause',
+      image: 'base',
+      // Replayed, the fixture already holds the 503.
+      failNextSuspend: () => subject.standin?.refuseNextPause(),
+      snapshotHeld: async () => false,
+      // Authored and replayed runs must send the same requests, so neither races.
+      replayed: true,
+      close: subject.close,
+    };
+  },
 });
 
 test('deny-all egress is sent on create', async () => {
@@ -285,4 +308,64 @@ test('the adapter reads no credential or setting from its own environment', asyn
   const source = await readFile(new URL('./e2b.ts', import.meta.url), 'utf8');
   expect(source).not.toContain('process.env');
   expect(source).not.toContain('Bun.env');
+});
+
+test("a pause restarts E2B's continuous runtime, so a resumed sandbox is given its whole lifetime again", async () => {
+  const standin = createE2bStandin({ maxContinuousSeconds: 2 });
+  const connects: unknown[] = [];
+  const provider = createE2bProvider({
+    credential: (use) => use(AUTHORING_KEY),
+    fetch: async (input, init) => {
+      if (new URL(String(input)).pathname.endsWith('/connect'))
+        connects.push(JSON.parse(String(init?.body)));
+      return standin.fetch(input, init);
+    },
+  });
+  const short = { ...spec(), lifetimeSeconds: 2 };
+  const handle = await openSandbox(provider, short, signal());
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  const { resumeRef } = await (provider.pause as NonNullable<typeof provider.pause>)(
+    handle,
+    signal(),
+  );
+  // Past the first window's end while paused: a paused sandbox does not expire.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const resumed = await (provider.resume as NonNullable<typeof provider.resume>)(
+    resumeRef,
+    short,
+    signal(),
+  );
+  expect(connects).toEqual([{ timeout: 2 }]);
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  // Three seconds after it was created, in a two-second plan, it still runs.
+  expect(await provider.inspect(resumed, signal())).toBe('running');
+  await provider.destroy(resumed, signal());
+});
+
+test('a second pause is not an error, a refused pause says the sandbox keeps running, and a missing sandbox is gone', async () => {
+  const standin = createE2bStandin();
+  const provider = createE2bProvider({
+    credential: (use) => use(AUTHORING_KEY),
+    fetch: standin.fetch,
+  });
+  const pause = provider.pause as NonNullable<typeof provider.pause>;
+  const resume = provider.resume as NonNullable<typeof provider.resume>;
+  const handle = await openSandbox(provider, spec(), signal());
+  standin.refuseNextPause();
+  const refused = await pause(handle, signal()).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(E2bApiError);
+  expect((refused as E2bApiError).status).toBe(503);
+  expect(String(refused)).toContain('keeps running');
+  expect(await provider.inspect(handle, signal())).toBe('running');
+  expect(await pause(handle, signal())).toEqual({ resumeRef: handle.providerSandboxId });
+  // E2B answers 409 to a sandbox that is already paused; that is what was asked.
+  expect(await pause(handle, signal())).toEqual({ resumeRef: handle.providerSandboxId });
+  expect(await provider.inspect(handle, signal())).toBe('paused');
+  await provider.destroy(handle, signal());
+  expect(await pause(handle, signal()).catch((error: unknown) => error)).toBeInstanceOf(
+    SandboxGone,
+  );
+  expect(
+    await resume(handle.providerSandboxId, spec(), signal()).catch((error: unknown) => error),
+  ).toBeInstanceOf(SandboxGone);
 });

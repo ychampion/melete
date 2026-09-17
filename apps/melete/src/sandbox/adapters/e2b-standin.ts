@@ -8,6 +8,12 @@
  * It is strict where E2B is: an API call needs `X-API-Key`, an envd call needs
  * the sandbox's access token and the Connect headers, and a stream is framed.
  *
+ * Persistence follows `docs.e2b.dev/sandbox/persistence`: a pause keeps memory
+ * and files and a paused sandbox never expires; a pause refused while an
+ * earlier snapshot finishes answers 503 and leaves the sandbox running; connect
+ * resumes a paused sandbox with 201 and restarts its continuous-runtime window,
+ * and asks for a timeout within that window.
+ *
  * Fixtures written through it are marked `authored-from-documented-api`. They
  * prove the adapter speaks the documented protocol; they are not evidence of
  * how E2B behaves. The live test is, and re-records them.
@@ -95,8 +101,26 @@ function created(sandbox: FakeSandbox) {
 const GO_MODE_DIR = 2 ** 31;
 const GO_MODE_SYMLINK = 2 ** 27;
 
-export function createE2bStandin(options: { ignoreMetadataFilter?: boolean } = {}) {
+export function createE2bStandin(
+  options: {
+    ignoreMetadataFilter?: boolean;
+    /** The plan's maximum continuous runtime; Hobby is one hour. */
+    maxContinuousSeconds?: number;
+  } = {},
+) {
   const engine = new FakeSandboxEngine();
+  const maxContinuous = options.maxContinuousSeconds ?? 3_600;
+  /** When each sandbox's continuous-runtime window began. */
+  const windows = new Map<string, number>();
+  let refusePause = false;
+
+  const expireIn = (sandbox: FakeSandbox, seconds: number | null) => {
+    if (sandbox.expiry) clearTimeout(sandbox.expiry);
+    sandbox.expiry = null;
+    if (seconds === null) return;
+    sandbox.expiry = setTimeout(() => engine.destroy(sandbox.id), seconds * 1000);
+    sandbox.expiry.unref?.();
+  };
 
   function api(method: string, url: URL, init: RequestInit): Response {
     const headers = new Headers(init.headers);
@@ -116,6 +140,8 @@ export function createE2bStandin(options: { ignoreMetadataFilter?: boolean } = {
       };
       if (typeof body.templateID !== 'string' || typeof body.timeout !== 'number')
         return json(400, { code: 400, message: 'templateID and timeout are required' });
+      if (body.timeout > maxContinuous)
+        return json(400, { code: 400, message: 'timeout exceeds the maximum continuous runtime' });
       const sandbox = engine.create({
         image: body.templateID,
         egress: egressOf(body),
@@ -123,6 +149,7 @@ export function createE2bStandin(options: { ignoreMetadataFilter?: boolean } = {
         env: body.envVars ?? {},
         lifetimeSeconds: body.timeout,
       });
+      windows.set(sandbox.id, Date.now());
       return json(201, created(sandbox));
     }
     if (method === 'GET' && url.pathname === '/v2/sandboxes') {
@@ -151,12 +178,40 @@ export function createE2bStandin(options: { ignoreMetadataFilter?: boolean } = {
       }
       if (parts[2] === 'pause' && method === 'POST') {
         if (sandbox.state === 'paused') return json(409, { code: 409, message: 'already paused' });
+        if (refusePause) {
+          refusePause = false;
+          return json(503, {
+            code: 503,
+            message: 'the sandbox is still finishing a previous snapshot; try again',
+          });
+        }
         sandbox.state = 'paused';
+        // A paused sandbox is kept until it is killed.
+        expireIn(sandbox, null);
         return json(204);
       }
       if (parts[2] === 'connect' && method === 'POST') {
+        const body = JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
+          timeout?: unknown;
+        };
+        if (typeof body.timeout !== 'number')
+          return json(400, { code: 400, message: 'timeout is required' });
         const resumed = sandbox.state === 'paused';
-        sandbox.state = 'running';
+        if (resumed) {
+          if (body.timeout > maxContinuous)
+            return json(400, {
+              code: 400,
+              message: 'timeout exceeds the maximum continuous runtime',
+            });
+          windows.set(sandbox.id, Date.now());
+          sandbox.state = 'running';
+          expireIn(sandbox, body.timeout);
+        } else {
+          // A running sandbox's timeout is only ever extended, and not past its window.
+          const begun = windows.get(sandbox.id) ?? Date.now();
+          const left = maxContinuous - (Date.now() - begun) / 1000;
+          expireIn(sandbox, Math.max(0, Math.min(body.timeout, left)));
+        }
         return json(resumed ? 201 : 200, created(sandbox));
       }
     }
@@ -328,5 +383,12 @@ export function createE2bStandin(options: { ignoreMetadataFilter?: boolean } = {
     return new Response('unknown host', { status: 404 });
   };
 
-  return { fetch: standinFetch, engine };
+  return {
+    fetch: standinFetch,
+    engine,
+    /** The next pause is refused the way E2B refuses one during an earlier snapshot. */
+    refuseNextPause() {
+      refusePause = true;
+    },
+  };
 }
