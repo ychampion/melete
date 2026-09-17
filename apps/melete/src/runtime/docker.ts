@@ -16,6 +16,7 @@ import {
   HermesRuntimeAdapter,
   type ParkedActions,
 } from '@melete/runtime-hermes';
+import { modelApiMode } from '../gateway/providers.ts';
 
 const OWNER = 'com.melete.attempt-supervisor';
 const PROJECT = 'com.melete.project';
@@ -318,6 +319,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             `MELETE_MODEL_KEY=melete-surrogate-${bundle.attempt.id}`,
             `MELETE_MODEL_PROVIDER=${bundle.model.provider}`,
             `MELETE_MODEL_NAME=${bundle.model.model}`,
+            `MELETE_MODEL_API_MODE=${modelApiMode(bundle.model.provider, bundle.model.model)}`,
           ],
           HostConfig: {
             NetworkMode: resources.network,

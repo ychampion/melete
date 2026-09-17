@@ -7,7 +7,13 @@ import type { SecureContextOptions, TLSSocket } from 'node:tls';
 import { inputTokenAllowance } from '@melete/contracts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { object, SecretRedactor, UsageCollector } from './metering.ts';
-import { checkConnectTarget, PROVIDER_HOSTS, providersFromEnv, resolveRoute } from './providers.ts';
+import {
+  checkConnectTarget,
+  PROVIDER_HOSTS,
+  providersFromEnv,
+  requiresResponsesProtocol,
+  resolveRoute,
+} from './providers.ts';
 import {
   type GatewayBudget,
   GatewayError,
@@ -170,7 +176,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       ) {
         throw new GatewayError(403, 'model_denied');
       }
-      if (model === 'gpt-6-astra' && protocol !== 'responses') {
+      if (requiresResponsesProtocol(model) && protocol !== 'responses') {
         throw new GatewayError(400, 'responses_required');
       }
       if (body.stream !== undefined && typeof body.stream !== 'boolean') {

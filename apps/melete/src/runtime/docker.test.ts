@@ -10,6 +10,7 @@ import {
 } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { type DockerApi, DockerError, DockerHermesRuntimeAdapter } from './docker.ts';
+import { attemptEnvironment } from './supervisor.ts';
 
 const imageId = `sha256:${'a'.repeat(64)}`;
 const identity = (prefix: string, index = 0) => `${prefix}_01J0000000000000000000000${index}`;
@@ -248,6 +249,30 @@ describe('Docker attempt supervision', () => {
       'networks',
       'volumes',
     ]);
+  });
+
+  test('every attempt container is told the protocol its provider speaks', async () => {
+    const f = await setup();
+    const cases = [
+      ['anthropic', 'claude-sonnet-4-5', 'anthropic_messages'],
+      ['openai', 'gpt-6-astra', 'codex_responses'],
+      ['openai', 'gpt-4.1', 'codex_responses'],
+      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', 'chat_completions'],
+      ['google', 'gemini-2.5-flash', 'chat_completions'],
+      ['openai-compatible', 'llama3.1', 'chat_completions'],
+      ['openai-compatible', 'gpt-6-astra', 'codex_responses'],
+    ] as const;
+    for (const [index, [provider, model, mode]] of cases.entries()) {
+      const attempt = { ...bundle(index), model: { provider, model, fallback: null } };
+      await f.runtime.start(attempt, f.sink, new AbortController().signal);
+      const environment = f.daemon.created[index]?.Env ?? [];
+      expect(environment).toContain(`MELETE_MODEL_PROVIDER=${provider}`);
+      expect(environment).toContain(`MELETE_MODEL_API_MODE=${mode}`);
+      // The process supervisor hands its child the same mode for the same model.
+      expect(attemptEnvironment(attempt, 'http://melete:8788', 'key').MELETE_MODEL_API_MODE).toBe(
+        mode,
+      );
+    }
   });
 
   test('concurrent jobs never share a network or writable Hermes home', async () => {

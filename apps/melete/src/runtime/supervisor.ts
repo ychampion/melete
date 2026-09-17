@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import { type AttemptBundle, prefixedId } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { parse, stringify } from 'yaml';
+import { modelApiMode } from '../gateway/providers.ts';
 import { resolvePython } from './python.ts';
 
 const exec = promisify(execFile);
@@ -80,12 +81,7 @@ export function attemptEnvironment(
     MELETE_MODEL_KEY: `melete-surrogate-${bundle.attempt.id}`,
     MELETE_MODEL_PROVIDER: bundle.model.provider,
     MELETE_MODEL_NAME: bundle.model.model,
-    MELETE_MODEL_API_MODE:
-      bundle.model.provider === 'anthropic'
-        ? 'anthropic_messages'
-        : bundle.model.provider === 'openai' || bundle.model.model.startsWith('gpt-6')
-          ? 'codex_responses'
-          : 'chat_completions',
+    MELETE_MODEL_API_MODE: modelApiMode(bundle.model.provider, bundle.model.model),
     PYTHONUNBUFFERED: '1',
     PYTHONDONTWRITEBYTECODE: '1',
   };

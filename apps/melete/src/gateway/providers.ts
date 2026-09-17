@@ -7,6 +7,50 @@ export const PROVIDER_HOSTS = [
   'generativelanguage.googleapis.com',
 ] as const;
 
+/** The name an operator-configured OpenAI-compatible endpoint is selected by. */
+export const OPENAI_COMPATIBLE = 'openai-compatible';
+
+/** The protocols each upstream is served over. Routing and runtime API modes both read this. */
+const PROVIDER_PROTOCOLS = {
+  fireworks: ['chat/completions'],
+  openai: ['chat/completions', 'responses'],
+  anthropic: ['messages'],
+  google: ['chat/completions'],
+  [OPENAI_COMPATIBLE]: ['chat/completions', 'responses'],
+} as const satisfies Record<string, readonly GatewayProtocol[]>;
+
+/** How the pinned engine is told to speak to the gateway. */
+export type ModelApiMode = 'anthropic_messages' | 'codex_responses' | 'chat_completions';
+
+const API_MODE_PROTOCOLS: Record<ModelApiMode, GatewayProtocol> = {
+  anthropic_messages: 'messages',
+  codex_responses: 'responses',
+  chat_completions: 'chat/completions',
+};
+
+export const protocolForApiMode = (mode: ModelApiMode): GatewayProtocol => API_MODE_PROTOCOLS[mode];
+
+/** Models the gateway serves over the responses protocol and no other. */
+export const requiresResponsesProtocol = (model: string): boolean => model.startsWith('gpt-6');
+
+/**
+ * The one provider-to-mode mapping. Every launcher reads it, so a runtime is
+ * never started speaking a protocol the gateway refuses for its provider.
+ */
+export function modelApiMode(provider: string, model: string): ModelApiMode {
+  const protocols: readonly GatewayProtocol[] = Object.hasOwn(PROVIDER_PROTOCOLS, provider)
+    ? PROVIDER_PROTOCOLS[provider as keyof typeof PROVIDER_PROTOCOLS]
+    : ['chat/completions'];
+  if (!protocols.includes('chat/completions') && protocols.includes('messages'))
+    return 'anthropic_messages';
+  if (
+    protocols.includes('responses') &&
+    (provider === 'openai' || requiresResponsesProtocol(model))
+  )
+    return 'codex_responses';
+  return 'chat_completions';
+}
+
 export function providersFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): GatewayProvider[] {
@@ -15,33 +59,33 @@ export function providersFromEnv(
       name: 'fireworks',
       baseUrl: 'https://api.fireworks.ai/inference/v1/',
       apiKey: env.FIREWORKS_API_KEY,
-      protocols: ['chat/completions'],
+      protocols: [...PROVIDER_PROTOCOLS.fireworks],
     },
     {
       name: 'openai',
       baseUrl: 'https://api.openai.com/v1/',
       apiKey: env.OPENAI_API_KEY,
-      protocols: ['chat/completions', 'responses'],
+      protocols: [...PROVIDER_PROTOCOLS.openai],
     },
     {
       name: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1/',
       apiKey: env.ANTHROPIC_API_KEY,
-      protocols: ['messages'],
+      protocols: [...PROVIDER_PROTOCOLS.anthropic],
     },
     {
       name: 'google',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
       apiKey: env.GOOGLE_API_KEY,
-      protocols: ['chat/completions'],
+      protocols: [...PROVIDER_PROTOCOLS.google],
     },
   ];
   if (env.OPENAI_COMPAT_BASE_URL) {
     providers.push({
-      name: 'openai-compatible',
+      name: OPENAI_COMPATIBLE,
       baseUrl: `${env.OPENAI_COMPAT_BASE_URL.replace(/\/+$/, '')}/`,
       apiKey: env.OPENAI_COMPAT_API_KEY ?? env.OPENAI_API_KEY,
-      protocols: ['chat/completions', 'responses'],
+      protocols: [...PROVIDER_PROTOCOLS[OPENAI_COMPATIBLE]],
     });
   }
   return providers;
