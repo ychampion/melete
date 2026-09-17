@@ -28,6 +28,7 @@ import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { z } from 'zod';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { artifactGate } from '../artifact/gate.ts';
+import { databaseNow } from '../db/clock.ts';
 import {
   action,
   agent,
@@ -454,9 +455,12 @@ export async function buildAttemptSkeleton(
   // A transition into queued clears the wait. A queued job that still holds an
   // event wait, or a timer not yet due, was requeued before that wait fired: a
   // correction to a relied-on claim does this, and a retry carries it forward.
+  // Due is asked of the database, the clock the restore is decided against, so
+  // a skewed host cannot tell an attempt about a wait nothing will bring back.
+  const now = (await databaseNow(tx)).getTime();
   const cancelledWait =
     row.state === 'queued' &&
-    (wait.kind === 'event' || (wait.kind === 'timer' && Date.parse(wait.wake_at) > Date.now()))
+    (wait.kind === 'event' || (wait.kind === 'timer' && Date.parse(wait.wake_at) > now))
       ? wait
       : undefined;
   const [open] = await tx
