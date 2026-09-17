@@ -33,12 +33,22 @@ export const FALLBACK_CONTEXT_WINDOW = 128_000;
 export const GATEWAY_MAX_REQUEST_BYTES = 1024 * 1024;
 
 export function modelContextWindow(model: string): number {
-  return CONTEXT_WINDOWS[model] ?? FALLBACK_CONTEXT_WINDOW;
+  const named = hasKnownContextWindow(model) ? CONTEXT_WINDOWS[model] : undefined;
+  return typeof named === 'number' ? named : FALLBACK_CONTEXT_WINDOW;
 }
 
-/** True when the catalog names this model rather than falling back. */
+/**
+ * True when the catalog names this model rather than falling back.
+ *
+ * The question is whether the catalog names the model, not whether a lookup
+ * answers: every object inherits `constructor`, `toString` and their
+ * neighbours, so a model id spelled like one of those would otherwise answer
+ * with a function. That function reaches the arithmetic below as NaN, and no
+ * comparison is greater than NaN, so the input-context refusal would stop
+ * firing rather than fail closed.
+ */
 export function hasKnownContextWindow(model: string): boolean {
-  return model in CONTEXT_WINDOWS;
+  return Object.hasOwn(CONTEXT_WINDOWS, model);
 }
 
 /** Context is a per-request allowance. Output remains a separate cumulative ceiling. */
