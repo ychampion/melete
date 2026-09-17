@@ -2,73 +2,63 @@
 
 **Say it once. It gets done.**
 
-Melete is a personal assistant you run yourself. You hand it the work; it reads
-what it needs, does the steps, and comes back to you for the one decision only
-you can make. Everything it does in the world leaves a record you can read, and
-undo.
+## Deals with every company in your life, so you don't
 
-![Delegate the work, decide the one permission it asks for, read the receipt, settle an effect whose confirmation never arrived](docs/media/approval-walk.gif)
+Connect your inbox and Melete maps every company in your life: what you pay,
+what you're owed, what renews next. Then it handles them. It chases refunds,
+disputes charges, cancels subscriptions and gets quotes, over days, asking you
+once. Open source.
 
-*Delegate, decide once, read the receipt, and settle the job whose confirmation
-never arrived.*
+**Maps.** Point Melete at a mailbox and it draws the picture: what each company
+takes from you every month, what it owes you back, what renews next, whose price
+has gone up, whose trial ends this week, who is holding your data. Every figure
+opens the sentence in the email it came from. No evidence, no entry.
 
-## What makes it different
+**Handles.** Pick one thing, or hand it the lot. Melete writes to the company
+from your own address, in your words, quoting the company's own policy back to
+it.
 
-**An action happens once, and leaves a receipt.** Every effect — a message sent,
-an event created, a file written — becomes a canonical payload with a content
-hash before it leaves, and one logical effect keeps one identity across retries,
-restarts and replacement attempts. What landed is written down: what, where,
-when, and an undo handle you can spend while it is still valid.
+**Keeps going.** It waits for the reply, follows up, escalates when a date
+passes, and stops when the matter is settled. It asks you once per company,
+before the first message goes out, and it never sends the same message twice.
 
-**One permission question, bound to exactly what is being sent.** An approval is
-attached to the hash of the thing it approves, so changing a recipient, an
-amount or a revision afterwards gets the action refused at the door rather than
-sent under your old yes. Cancel while dispatch is in flight and the cancellation
-is honoured.
+### What it takes on
 
-**An unknown outcome stays unknown until it is settled.** When a send is
-accepted but the acknowledgement is lost, Melete shows it as unresolved, asks
-the connector to verify it, and lets you settle it yourself. It is never quietly
-sent again to make the uncertainty go away.
+- **A refund you were promised.** The shop said six weeks ago that the money was
+  coming back. Melete quotes the promise to them and asks for a date.
+- **A charge that is wrong.** One order, billed twice. Melete puts both lines
+  side by side and asks for one of them back.
+- **A subscription you are done with.** It renews on the 4th. Melete cancels it
+  in writing before it charges, and keeps the confirmation.
+- **A price rise at renewal.** Your broadband goes up next cycle. Melete asks
+  for the old price, or for the terms to leave.
+- **Quotes, and the haggling after them.** Three firms for one repair. Melete
+  writes to all three, chases the slow one, and lays the answers out together.
+- **An invoice nobody has paid.** Thirty days late. Melete follows up on your
+  terms and escalates on the date you set.
 
-**Corrections win, and redo what depended on them.** A correction takes effect
-immediately and is protected from being overwritten by a later import. It marks
-stale precisely the outputs that cited the old claim, and the next attempt is
-handed a brief saying what to repair.
+<!-- DEMO SLOT: put the launch video or GIF here, directly below this comment.
+     It should show one mailbox becoming a map, one item picked, the message
+     going out after a single yes, and the reply landing days later. Until the
+     asset exists, this comment is the placeholder. -->
 
-**Forgetting survives a restore.** What you ask Melete to forget goes into a
-removal journal kept apart from the database, and the journal is replayed over
-restored data. Restore last week's backup and the forgotten fact stays forgotten.
+## Try it on one email
 
-**It has hands, and they wait for you.** Melete drives its own sandboxed
-Chromium for the things that only exist behind a form, and you can watch it and
-take over mid-task; the approval binds the exact browser intent, so an
-unapproved submit reaches nothing outside the browser. It runs code in the
-sandbox too, and the command, exit code, duration, output digest and any kill
-land on the record like every other effect.
+<!-- TRYIT_URL — REPLACE BEFORE PUBLISHING with the live try-it address. -->
+**[Try it on one email](TRYIT_URL)**
 
-**Your keys never reach the sandbox, and the sandbox has no route out.** You
-bring your own model and your own accounts; the provider key stays in the Melete
-service, which meters every request, and each attempt gets a short-lived
-capability and a surrogate credential instead. The container the model runs in
-has one reachable peer, the broker: no internet, no host metadata address, no
-database, no web service, no owner control plane.
+Paste any message from a company, or just describe the problem. You get back
+what you are entitled to and why, the sentence in the message that proves it,
+how likely it is and how long it usually takes, the message to send, and what to
+do on each date if they say no. No account, no inbox, nothing to install.
 
-<!-- learning: finalise after the general-learning work lands -->
-## Learns how you like things done
+## Run it yourself
 
-When you correct Melete, the correction can become a proposed way of working
-rather than a one-off fix. Before it changes anything, the proposal is measured
-against held-out work — different tasks, different data, a baseline arm and a
-candidate arm — and it goes forward only if it produces better results with
-fewer corrections and regresses on nothing. It then runs once on real work
-before you switch it on. You can read the compiled procedure, see the evidence
-behind it, and roll it back with one call. A procedure changes how work is done;
-it never grants a permission, unlocks a credential, or widens what a job may
-read.
+Melete is yours to run: your machine, your mailbox, your model provider, your
+keys. Everything below is the whole install.
 
 <!-- platforms: finalise after the host-support work lands -->
-## Install on a Linux Docker host
+### Install on a Linux Docker host
 
 Use Docker Engine **28 or newer** and Docker Compose **2.33.1 or newer**, with
 the local Docker socket at `/var/run/docker.sock`. Engine 28 introduced the
@@ -120,7 +110,7 @@ All four services — `postgres`, `melete`, `runtime` and `web` — come up heal
 If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
 names the reason.
 
-## First run
+### First run
 
 Open **http://localhost:3101** and create the owner account. The web server
 proxies `/api` to Melete on the same browser origin; Postgres has no host port.
@@ -157,6 +147,71 @@ allow on localhost. For a public hostname, serve HTTPS through a reverse proxy,
 set `MELETE_WEB_ORIGIN=https://your-hostname` in `deploy/.env` and recreate the
 web service. [Deployment](docs/DEPLOYMENT.md) covers TLS, provider
 configuration, image provenance and backup restoration.
+
+## Everything else it does
+
+Companies are one thing Melete takes off you. It is a personal assistant you run
+yourself: you hand it the work, it reads what it needs, does the steps, and comes
+back to you for the one decision only you can make. Everything it does in the
+world leaves a record you can read, and undo.
+
+![Delegate the work, decide the one permission it asks for, read the receipt, settle an effect whose confirmation never arrived](docs/media/approval-walk.gif)
+
+*Delegate, decide once, read the receipt, and settle the job whose confirmation
+never arrived.*
+
+**An action happens once, and leaves a receipt.** Every effect — a message sent,
+an event created, a file written — becomes a canonical payload with a content
+hash before it leaves, and one logical effect keeps one identity across retries,
+restarts and replacement attempts. What landed is written down: what, where,
+when, and an undo handle you can spend while it is still valid.
+
+**One permission question, bound to exactly what is being sent.** An approval is
+attached to the hash of the thing it approves, so changing a recipient, an
+amount or a revision afterwards gets the action refused at the door rather than
+sent under your old yes. Cancel while dispatch is in flight and the cancellation
+is honoured.
+
+**An unknown outcome stays unknown until it is settled.** When a send is
+accepted but the acknowledgement is lost, Melete shows it as unresolved, asks
+the connector to verify it, and lets you settle it yourself. It is never quietly
+sent again to make the uncertainty go away.
+
+**Corrections win, and redo what depended on them.** A correction takes effect
+immediately and is protected from being overwritten by a later import. It marks
+stale precisely the outputs that cited the old claim, and the next attempt is
+handed a brief saying what to repair.
+
+**Forgetting survives a restore.** What you ask Melete to forget goes into a
+removal journal kept apart from the database, and the journal is replayed over
+restored data. Restore last week's backup and the forgotten fact stays forgotten.
+
+**It has hands, and they wait for you.** Melete drives its own sandboxed
+Chromium for the things that only exist behind a form, and you can watch it and
+take over mid-task; the approval binds the exact browser intent, so an
+unapproved submit reaches nothing outside the browser. It runs code in the
+sandbox too, and the command, exit code, duration, output digest and any kill
+land on the record like every other effect.
+
+**Your keys never reach the sandbox, and the sandbox has no route out.** You
+bring your own model and your own accounts; the provider key stays in the Melete
+service, which meters every request, and each attempt gets a short-lived
+capability and a surrogate credential instead. The container the model runs in
+has one reachable peer, the broker: no internet, no host metadata address, no
+database, no web service, no owner control plane.
+
+<!-- learning: finalise after the general-learning work lands -->
+### Learns how you like things done
+
+When you correct Melete, the correction can become a proposed way of working
+rather than a one-off fix. Before it changes anything, the proposal is measured
+against held-out work — different tasks, different data, a baseline arm and a
+candidate arm — and it goes forward only if it produces better results with
+fewer corrections and regresses on nothing. It then runs once on real work
+before you switch it on. You can read the compiled procedure, see the evidence
+behind it, and roll it back with one call. A procedure changes how work is done;
+it never grants a permission, unlocks a credential, or widens what a job may
+read.
 
 ## Develop and verify
 
