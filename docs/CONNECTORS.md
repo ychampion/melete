@@ -82,19 +82,23 @@ endpoint and are never defaults. The test destination is a fixture and is never
 a default. `react`, `job.wait`, `search_tools` and `load_tool` belong to the
 broker and need no connection.
 
-The rows are made when an account or a shared space is created and again at
-every start, so a database from an earlier release gains them on its first
-start. The step is idempotent. A space that already grants one of a default's
-tools through a row of its own, in any state, is left as it is, so a default the
-owner removed is not made again, and procedure-evaluation spaces never receive
-any. The broker admits a default exactly as it admits any other connection:
-scopes, approvals and budgets are unchanged. Settings lists a default with a
-test and without a removal; `POST /connections/{id}/lifecycle` removes one for
-an owner who calls it, and a removed default stays removed.
+The rows are made for a space as it appears — with the account it belongs to,
+when a shared space is asked for, or when a session makes an account's own space
+on its first use — and for every space at each start, so a database from an
+earlier release gains them on its first start. A request furnishes the one space
+it made and reads no other. The step is idempotent. A space that already grants
+one of a default's tools through a row of its own, in any state, is left as it
+is, so a default the owner removed is not made again, and procedure-evaluation
+spaces never receive any. The broker admits a default exactly as it admits any
+other connection: scopes, approvals and budgets are unchanged. Settings lists a
+default with a test and without a removal; `POST /connections/{id}/lifecycle`
+removes one for an owner who calls it, and a removed default stays removed.
 
 Evidence: `a fresh installation offers a useful catalog without any hand-made
-connection` and `an existing installation gains the default tools once, and a
-removal stays removed` in
+connection`, `an existing installation gains the default tools once, and a
+removal stays removed`, `an account whose own space is made on its first request
+finds the default tools in it` and `a request furnishes the one space it made
+and leaves every other space alone` in
 [default-connections.test.ts](../apps/melete/test/integration/default-connections.test.ts);
 `only connectors that declare no credential are defaults, each granted exactly
 its own tools` in `builtin.test.ts`.
