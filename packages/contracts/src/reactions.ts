@@ -94,9 +94,13 @@ export const reactionResponse = z.object({ reaction });
 export const reactionListResponse = z.object({ reactions: z.array(reaction) });
 export type ReactionListResponse = z.infer<typeof reactionListResponse>;
 
-/** What the runtime sends the broker when it answers with a glyph instead of prose. */
+/**
+ * What the runtime sends the broker when it answers with a glyph instead of
+ * prose. No attempt input shows an event seq, so the target is optional: left
+ * out, the broker reacts to the owner's latest message on this job.
+ */
 export const reactRequest = z.object({
-  message_id: messageId,
+  message_id: messageId.optional(),
   emoji: reactionEmoji,
 });
 export type ReactRequest = z.infer<typeof reactRequest>;
@@ -110,13 +114,13 @@ export const REACT_TOOL_NAME = 'react';
 export const reactToolSchema = {
   type: 'object',
   properties: {
+    emoji: { type: 'string', description: 'One emoji.' },
     message_id: {
       type: 'string',
-      description: 'The seq of the message to react to, as a decimal string.',
+      description: "Optional. Leave it out to react to the owner's latest message.",
     },
-    emoji: { type: 'string', description: 'One emoji.' },
   },
-  required: ['message_id', 'emoji'],
+  required: ['emoji'],
   additionalProperties: false,
 } as const;
 

@@ -44,7 +44,7 @@ const broker: BrokerOperations = {
     throw new BrokerFault('revision_mismatch');
   },
   async react(_c, request) {
-    return { message_id: request.message_id, emoji: request.emoji };
+    return { message_id: request.message_id ?? '1', emoji: request.emoji };
   },
   async decide() {
     return { decision: 'approved' };

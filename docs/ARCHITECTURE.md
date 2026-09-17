@@ -177,7 +177,11 @@ flag, usage and name (`relevance to the objective and the latest owner message
 outranks usage`). `job.wait` leads when the job has an enabled trigger and
 `react` leads when the attempt answers a person directly: a chat, a first
 attempt, or a wake carrying a new owner message (`the lifecycle wait and the
-reaction are pinned when the turn needs them`). A reversible tool is offered
+reaction are pinned when the turn needs them`). `react` asks for the glyph
+alone: its message target is optional, because no attempt input shows an event
+seq, and without one the broker reacts to the owner's latest message on the
+attempt's own job (`a reaction with no target lands on the owner's latest
+message, and only this job's`). A reversible tool is offered
 only beside an external-write sibling from the same connection and namespace,
 or not at all (`a reversible draft is never shown without its external-write
 sibling`). An MCP tool enters the core only when the job's words match it (`an

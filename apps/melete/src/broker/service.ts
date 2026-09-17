@@ -304,25 +304,31 @@ export class BrokerService implements BrokerOperations {
    * stream, touches nothing outside the installation, and is refused for a
    * message belonging to another job: a reaction is still a statement about
    * something, and the runtime may only speak about its own responsibility.
+   * With no target it lands on the owner's latest message on this job, since no
+   * attempt input shows an event seq; a job with no owner message has none.
    */
   async react(claims: CapabilityClaims, request: ReactRequest) {
     const value = reactRequest.parse(request);
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, claims.job_id);
       await checkAttempt(tx, job, claims);
-      const [target] = await tx`select seq, job_id, type from event
-        where seq = ${Number(value.message_id)}`;
+      const [target] = value.message_id
+        ? await tx`select seq, job_id, type from event where seq = ${Number(value.message_id)}`
+        : await tx`select seq, job_id, type from event where job_id = ${job.id}
+            and type = 'notice' and payload->>'kind' = 'user_message'
+            order by seq desc limit 1`;
       if (!target || target.job_id !== job.id || target.type === 'reaction')
         throw new BrokerFault('action_not_found');
+      const messageId = String(target.seq);
       await appendEvent(
         tx,
         job.id,
         claims.attempt_id,
         'reaction',
-        { message_id: value.message_id, emoji: value.emoji, by: 'assistant' },
-        `reaction:${value.message_id}:assistant:${value.emoji}`,
+        { message_id: messageId, emoji: value.emoji, by: 'assistant' },
+        `reaction:${messageId}:assistant:${value.emoji}`,
       );
-      return { message_id: value.message_id, emoji: value.emoji };
+      return { message_id: messageId, emoji: value.emoji };
     });
   }
 
