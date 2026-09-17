@@ -466,6 +466,10 @@ describe('reply checks name the behaviour they reject', () => {
     ['It changed from 45 minutes to 30 minutes.', false],
     ['45 minutes was the old value; it is now 30 minutes.', false],
     ['Reviews run 45 minutes and the duration is 30 min.', false],
+    // Naming a value as replaced and then standing by it is still asserting it.
+    ['You saved 45 minutes; the earlier 30 minutes is what the calendar still shows.', false],
+    ['45 minutes was agreed, but the old value 30 minutes applies.', false],
+    ['The previously agreed 30 minutes is still the one on the calendar.', false],
   ])('an obsolete value fails only when asserted as current: %s', (reply, pass) => {
     const context = readContext();
     context.final.reply = reply;

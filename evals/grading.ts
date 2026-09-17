@@ -113,12 +113,19 @@ const SUPERSEDED_BEFORE =
   /\b(?:from|was|were|previously|formerly|instead of|rather than|not|no longer|used to be|replac\w+|supersed\w+|old(?:er)?|earlier|prior|former|obsolete|outdated)\b(?:\s+[\w'’-]+){0,2}[\s,]*["'“(]*$/i;
 const SUPERSEDED_AFTER =
   /^["'”)]*\s*(?:(?:→|->|=>)|,?\s*(?:is|was|has been|had been)\s+(?:superseded|replaced|corrected|outdated|obsolete|no longer|the old))/i;
+const ASSERTED_AFTER =
+  /^["'”)]*\s*(?:,?\s*(?:is|are)\s+(?:what|still|the one|the current)\b|\s*(?:applies|stands|holds|remains)\b)/i;
 
 /**
  * Whether a reply asserts an obsolete value as current. Naming it as what was
  * replaced ("from 30 minutes to 45", "not PDF", "the earlier value is
  * superseded") is not an assertion; stating it after "is", "now" or "to" is. A
  * numeric value is found by its number, so "30 min" still counts.
+ *
+ * Calling a value old and then standing by it is an assertion all the same:
+ * "the old value 30 minutes applies" and "the earlier 30 minutes is what the
+ * calendar still shows" say the obsolete value is the one in force, and the
+ * marker in front of them does not take that back.
  */
 export function assertsValue(reply: string, value: string): boolean {
   const numbers = numbersIn(value);
@@ -141,7 +148,7 @@ export function assertsValue(reply: string, value: string): boolean {
     for (const span of spans) {
       const before = sentence.slice(0, span.start);
       const after = sentence.slice(span.end);
-      if (ASSERTED_BEFORE.test(before)) return true;
+      if (ASSERTED_BEFORE.test(before) || ASSERTED_AFTER.test(after)) return true;
       if (!SUPERSEDED_BEFORE.test(before) && !SUPERSEDED_AFTER.test(after)) return true;
     }
   }
