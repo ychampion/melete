@@ -66,6 +66,40 @@ describe('the Tailscale deployment', () => {
     expect(Object.keys(kernel.services ?? {})).toEqual(['tailscale']);
   });
 
+  test('the merged stack keeps the base intact and stacks kernel mode on top', () => {
+    // Compose merges mappings key by key, so the merged web service is the base
+    // one plus the upstream setting; every other service is untouched.
+    const settings = (service: Record<string, unknown> | undefined) =>
+      (service?.environment ?? {}) as Record<string, string>;
+    const web = { ...settings(base.services?.web), ...settings(override.services?.web) };
+    expect(web.MELETE_WEB_TRUSTED_UPSTREAM).toBe('tailscale');
+    expect(Object.hasOwn(web, 'MELETE_WEB_ORIGIN')).toBe(true);
+    for (const name of ['postgres', 'melete', 'runtime', 'runtime-image'])
+      expect(override.services?.[name], name).toBeUndefined();
+
+    // One volume is added and the networks are not touched at all.
+    expect(Object.keys(override.volumes ?? {})).toEqual(['tailscale-state']);
+    expect(Object.keys(base.volumes ?? {})).not.toContain('tailscale-state');
+    expect(override.networks).toBeUndefined();
+
+    // The third file changes the two networking settings and leaves the rest,
+    // including the published-port answer, exactly as the second file left it.
+    const node = { ...override.services?.tailscale, ...kernel.services?.tailscale };
+    const environment = {
+      ...settings(override.services?.tailscale),
+      ...settings(kernel.services?.tailscale),
+    };
+    expect(environment.TS_USERSPACE).toBe('false');
+    expect(node.ports).toBeUndefined();
+    expect(node.read_only).toBe(true);
+    expect(node.cap_drop).toEqual(['ALL']);
+    expect(node.image).toBe(override.services?.tailscale?.image);
+    expect(node.volumes).toEqual(override.services?.tailscale?.volumes);
+    // Two keys the kernel file must not have opinions about.
+    expect(node.privileged).toBeUndefined();
+    expect(node.network_mode).toBeUndefined();
+  });
+
   test('refuses a node on the database or runtime network', () => {
     for (const network of ['database', 'internal']) {
       const broken = mutation((node) => {
