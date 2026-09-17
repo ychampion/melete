@@ -56,6 +56,9 @@ They are not routed through Hermes's plugin approval gate. The resumed input
 names the approved tool and its stored payload, and `resume_action` forwards
 only the action id (`an approved decision names the tool, the approved payload
 and how to carry it out`; `test_resume_sends_only_the_action_id_and_returns_the_receipt`).
+A reply that asks for a go-ahead on an external effect nobody proposed gets one
+continuation and otherwise settles waiting for input (`proposal.ts`; `an ask
+that still proposes nothing settles waiting for input, never completed`).
 Unexpected shell approval notifications are denied
 (`a shell-command approval is denied, never allowed for the session`).
 

@@ -131,6 +131,19 @@ The adapter denies unexpected shell approvals (`a shell-command approval is
 denied, never allowed for the session`). An interrupted stream is not resumed
 (`an interrupted run fails retryably and says history is missing`).
 
+A run whose reply asks the owner for a go-ahead on an external effect it never
+proposed is not a completion. `runtime-hermes/src/proposal.ts` decides this
+without a model: the catalog must offer a `write_external` or `spend` tool the
+attempt did not call, and a sentence must ask permission (a small documented
+pattern) while naming that tool's verb or following a draft from the same
+namespace. Such an attempt gets exactly one continuation telling it to call the
+tool, since the broker asks the owner, or to say it cannot; if it still
+proposes nothing it settles `waiting_for_input`, and a parked action still wins
+(`a drafted reply that asks to send gets one continuation, and its proposal
+parks`, `an ask that still proposes nothing settles waiting for input, never
+completed`, `a finished send, a closing offer or a plain question completes in
+one run`).
+
 The broker serves a token-budgeted core catalog (750 estimated tokens of
 schemas, `core uses a serialized token budget, never a count cap, with stable
 ordering`) plus `search_tools` and `load_tool`; the contract's 15-tool constant
