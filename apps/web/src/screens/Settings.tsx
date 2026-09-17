@@ -3,7 +3,7 @@
  * language with edit, forget and why; connections with their state and what
  * each may do; standing rules with their limits and revoke.
  */
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { logoFor } from '../chat/parts.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
@@ -13,6 +13,7 @@ import { useApp, useLoad } from '../experience/hooks.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
+import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
   onboarding: 'You told Melete during setup',
@@ -169,9 +170,12 @@ const ACCESS_LABEL: Record<Connection['access'], string> = {
 export function ConnectionCard({
   connection,
   compact = false,
+  actions,
 }: {
   connection: Connection;
   compact?: boolean;
+  /** What may be done to this connection here; absent where a card only reports. */
+  actions?: ReactNode;
 }) {
   const logo = logoFor(connection.app);
   const tail =
@@ -229,6 +233,7 @@ export function ConnectionCard({
         </div>
       </div>
       {tail}
+      {actions}
     </div>
   );
 }
@@ -370,12 +375,24 @@ export function SettingsScreen({ tab }: { tab: string }) {
             ) : null}
             <div className="col" style={{ gap: 8 }}>
               {list.map((connection) => (
-                <ConnectionCard key={connection.id} connection={connection} />
+                <ConnectionCard
+                  key={connection.id}
+                  connection={connection}
+                  actions={
+                    <ConnectionActions
+                      id={connection.id}
+                      label={connection.label}
+                      removable={connection.builtin !== true}
+                      onChanged={connections.reload}
+                    />
+                  }
+                />
               ))}
             </div>
             {connections.data && list.length === 0 ? (
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Nothing is connected yet.</span>
             ) : null}
+            <AddConnection onInstalled={connections.reload} />
           </div>
         ) : (
           <div className="col" style={{ gap: 12 }}>

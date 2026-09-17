@@ -74,7 +74,8 @@ export const CONNECTION_PROVIDERS = [
 export const connectionProvider = z.enum(CONNECTION_PROVIDERS);
 export type ConnectionProvider = z.infer<typeof connectionProvider>;
 
-export const CONNECTION_STATUSES = ['active', 'disabled', 'error'] as const;
+/** `revoked` is final: the row stays as a record and grants nothing. */
+export const CONNECTION_STATUSES = ['active', 'disabled', 'error', 'revoked'] as const;
 export const connectionStatus = z.enum(CONNECTION_STATUSES);
 export type ConnectionStatus = z.infer<typeof connectionStatus>;
 
@@ -96,6 +97,10 @@ export const connection = z.object({
   status: connectionStatus,
   health: connectionHealth,
   setup_state: z.enum(['available', 'connecting', 'connected', 'error']).optional(),
+  /** Advances on every lifecycle change; a lifecycle request names the one it read. */
+  generation: z.number().int().nonnegative().optional(),
+  /** True for a connection the service keeps in every space and that needs no credential. */
+  builtin: z.boolean().optional(),
   last_checked_at: timestamp.nullable(),
   created_at: timestamp,
 });

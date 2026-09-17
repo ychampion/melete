@@ -3830,6 +3830,9 @@
                                   "draft_only",
                                   "asks_before_acting"
                                 ]
+                              },
+                              "builtin": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -8770,7 +8773,8 @@
         "tags": [
           "connections"
         ],
-        "summary": "Install an operator-declared HTTP MCP connection without restarting",
+        "summary": "Install a mail, CalDAV, calendar feed or HTTP MCP connection without restarting",
+        "description": "The request carries exactly one configuration block. Secrets are sealed on arrival and never returned. The new connection is tested once; the result is in `check`, and a connection that failed its test stays out of every catalog until a later test passes.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -8858,10 +8862,130 @@
                       "url"
                     ],
                     "additionalProperties": false
+                  },
+                  "mail": {
+                    "type": "object",
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 320,
+                        "pattern": "^[^\\r\\n]*$"
+                      },
+                      "from": {
+                        "type": "string",
+                        "maxLength": 320,
+                        "format": "email",
+                        "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                      },
+                      "imap": {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 253,
+                            "pattern": "^[A-Za-z0-9._:-]+$"
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "secure": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "host",
+                          "port",
+                          "secure"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "smtp": {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 253,
+                            "pattern": "^[A-Za-z0-9._:-]+$"
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "secure": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "host",
+                          "port",
+                          "secure"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "inbox": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\r\\n]*$"
+                      },
+                      "sent": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "pattern": "^[^\\r\\n]*$"
+                      }
+                    },
+                    "required": [
+                      "username",
+                      "from",
+                      "imap",
+                      "smtp"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "caldav": {
+                    "type": "object",
+                    "properties": {
+                      "calendar_url": {
+                        "type": "string",
+                        "maxLength": 2048,
+                        "format": "uri"
+                      },
+                      "username": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 320,
+                        "pattern": "^[^\\r\\n]*$"
+                      }
+                    },
+                    "required": [
+                      "calendar_url",
+                      "username"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "ics": {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "maxLength": 2048,
+                        "format": "uri"
+                      }
+                    },
+                    "required": [
+                      "url"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
-                  "space_id",
                   "provider",
                   "label"
                 ]
@@ -8875,7 +8999,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema252"
+                  "$ref": "#/components/schemas/__schema254"
                 }
               }
             }
@@ -8913,6 +9037,38 @@
         }
       }
     },
+    "/connection-kinds": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "List the kinds of connection that can be installed and the fields each needs",
+        "responses": {
+          "200": {
+            "description": "Kinds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "kinds": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ConnectionKind"
+                      }
+                    }
+                  },
+                  "required": [
+                    "kinds"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/connections/{connectionId}": {
       "get": {
         "tags": [
@@ -8937,7 +9093,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema252"
+                  "$ref": "#/components/schemas/__schema254"
                 }
               }
             }
@@ -8960,7 +9116,8 @@
         "tags": [
           "connections"
         ],
-        "summary": "Check a connection now",
+        "summary": "Test a connection now",
+        "description": "Asks the connector whether its destination answers. The result is a fixed code and sentence; it never carries a transport message, an address or a credential.",
         "parameters": [
           {
             "in": "path",
@@ -8975,11 +9132,34 @@
         ],
         "responses": {
           "200": {
-            "description": "Connection",
+            "description": "Connection and check",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema252"
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "$ref": "#/components/schemas/Connection"
+                    },
+                    "check": {
+                      "$ref": "#/components/schemas/ConnectionCheck"
+                    }
+                  },
+                  "required": [
+                    "connection",
+                    "check"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Space owner required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema83"
                 }
               }
             }
@@ -9028,10 +9208,10 @@
                             "type": "string"
                           },
                           "type": {
-                            "$ref": "#/components/schemas/__schema253"
+                            "$ref": "#/components/schemas/__schema276"
                           },
                           "status": {
-                            "$ref": "#/components/schemas/__schema254"
+                            "$ref": "#/components/schemas/__schema277"
                           },
                           "tags": {
                             "type": "array",
@@ -9149,7 +9329,7 @@
                             "type": "string"
                           },
                           "status": {
-                            "$ref": "#/components/schemas/__schema254"
+                            "$ref": "#/components/schemas/__schema277"
                           },
                           "score": {
                             "type": "number"
@@ -9202,7 +9382,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema255"
+                  "$ref": "#/components/schemas/__schema278"
                 }
               }
             }
@@ -9265,7 +9445,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema255"
+                  "$ref": "#/components/schemas/__schema278"
                 }
               }
             }
@@ -9470,7 +9650,7 @@
                                 "minItems": 1,
                                 "type": "array",
                                 "items": {
-                                  "$ref": "#/components/schemas/__schema270"
+                                  "$ref": "#/components/schemas/__schema293"
                                 }
                               },
                               "tools": {
@@ -11113,8 +11293,14 @@
           "setup_state": {
             "$ref": "#/components/schemas/__schema250"
           },
-          "last_checked_at": {
+          "generation": {
             "$ref": "#/components/schemas/__schema251"
+          },
+          "builtin": {
+            "$ref": "#/components/schemas/__schema252"
+          },
+          "last_checked_at": {
+            "$ref": "#/components/schemas/__schema253"
           },
           "created_at": {
             "$ref": "#/components/schemas/__schema77"
@@ -11133,20 +11319,119 @@
         ],
         "additionalProperties": false
       },
+      "ConnectionCheck": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/__schema255"
+          },
+          "code": {
+            "$ref": "#/components/schemas/__schema256"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/__schema257"
+          },
+          "checked_at": {
+            "$ref": "#/components/schemas/__schema77"
+          }
+        },
+        "required": [
+          "status",
+          "code",
+          "detail",
+          "checked_at"
+        ],
+        "additionalProperties": false
+      },
+      "ConnectionKind": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/__schema258"
+          },
+          "title": {
+            "$ref": "#/components/schemas/__schema259"
+          },
+          "description": {
+            "$ref": "#/components/schemas/__schema260"
+          },
+          "fixed": {
+            "$ref": "#/components/schemas/__schema261"
+          },
+          "fields": {
+            "$ref": "#/components/schemas/__schema263"
+          },
+          "scopes": {
+            "$ref": "#/components/schemas/__schema275"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "description",
+          "fixed",
+          "fields",
+          "scopes"
+        ],
+        "additionalProperties": false
+      },
+      "ConnectionFormField": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/__schema264"
+          },
+          "label": {
+            "$ref": "#/components/schemas/__schema265"
+          },
+          "help": {
+            "$ref": "#/components/schemas/__schema266"
+          },
+          "required": {
+            "$ref": "#/components/schemas/__schema267"
+          },
+          "secret": {
+            "$ref": "#/components/schemas/__schema268"
+          },
+          "placeholder": {
+            "$ref": "#/components/schemas/__schema269"
+          },
+          "default": {
+            "$ref": "#/components/schemas/__schema270"
+          },
+          "options": {
+            "$ref": "#/components/schemas/__schema271"
+          },
+          "input": {
+            "$ref": "#/components/schemas/__schema272"
+          },
+          "item_fields": {
+            "$ref": "#/components/schemas/__schema274"
+          }
+        },
+        "required": [
+          "path",
+          "label",
+          "required",
+          "secret",
+          "input"
+        ],
+        "additionalProperties": false
+      },
       "BrowserControlResponse": {
         "type": "object",
         "properties": {
           "session_id": {
-            "$ref": "#/components/schemas/__schema271"
+            "$ref": "#/components/schemas/__schema294"
           },
           "control_epoch": {
-            "$ref": "#/components/schemas/__schema272"
+            "$ref": "#/components/schemas/__schema295"
           },
           "control": {
-            "$ref": "#/components/schemas/__schema273"
+            "$ref": "#/components/schemas/__schema296"
           },
           "fresh_observation_required": {
-            "$ref": "#/components/schemas/__schema274"
+            "$ref": "#/components/schemas/__schema297"
           }
         },
         "required": [
@@ -15215,7 +15500,8 @@
         "enum": [
           "active",
           "disabled",
-          "error"
+          "error",
+          "revoked"
         ]
       },
       "__schema249": {
@@ -15237,6 +15523,14 @@
         ]
       },
       "__schema251": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "__schema252": {
+        "type": "boolean"
+      },
+      "__schema253": {
         "anyOf": [
           {
             "$ref": "#/components/schemas/__schema77"
@@ -15246,11 +15540,14 @@
           }
         ]
       },
-      "__schema252": {
+      "__schema254": {
         "type": "object",
         "properties": {
           "connection": {
             "$ref": "#/components/schemas/Connection"
+          },
+          "check": {
+            "$ref": "#/components/schemas/ConnectionCheck"
           }
         },
         "required": [
@@ -15258,7 +15555,220 @@
         ],
         "additionalProperties": false
       },
-      "__schema253": {
+      "__schema255": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "degraded",
+          "failing"
+        ]
+      },
+      "__schema256": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "degraded",
+          "unavailable",
+          "not_running",
+          "revoked"
+        ]
+      },
+      "__schema257": {
+        "type": "string",
+        "maxLength": 240
+      },
+      "__schema258": {
+        "type": "string",
+        "enum": [
+          "mail",
+          "caldav",
+          "ics",
+          "mcp"
+        ]
+      },
+      "__schema259": {
+        "type": "string"
+      },
+      "__schema260": {
+        "type": "string"
+      },
+      "__schema261": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/components/schemas/__schema262"
+            }
+          },
+          "required": [
+            "path",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema262": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      },
+      "__schema263": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ConnectionFormField"
+        }
+      },
+      "__schema264": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "__schema265": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "__schema266": {
+        "type": "string",
+        "maxLength": 240
+      },
+      "__schema267": {
+        "type": "boolean"
+      },
+      "__schema268": {
+        "type": "boolean"
+      },
+      "__schema269": {
+        "type": "string",
+        "maxLength": 120
+      },
+      "__schema270": {
+        "$ref": "#/components/schemas/__schema262"
+      },
+      "__schema271": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value",
+            "label"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema272": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/__schema273"
+          },
+          {
+            "type": "string",
+            "const": "list"
+          }
+        ]
+      },
+      "__schema273": {
+        "type": "string",
+        "enum": [
+          "text",
+          "email",
+          "url",
+          "number",
+          "password",
+          "checkbox",
+          "select",
+          "string_list"
+        ]
+      },
+      "__schema274": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "$ref": "#/components/schemas/__schema264"
+            },
+            "label": {
+              "$ref": "#/components/schemas/__schema265"
+            },
+            "help": {
+              "$ref": "#/components/schemas/__schema266"
+            },
+            "required": {
+              "$ref": "#/components/schemas/__schema267"
+            },
+            "secret": {
+              "$ref": "#/components/schemas/__schema268"
+            },
+            "placeholder": {
+              "$ref": "#/components/schemas/__schema269"
+            },
+            "default": {
+              "$ref": "#/components/schemas/__schema270"
+            },
+            "options": {
+              "$ref": "#/components/schemas/__schema271"
+            },
+            "input": {
+              "$ref": "#/components/schemas/__schema273"
+            }
+          },
+          "required": [
+            "path",
+            "label",
+            "required",
+            "secret",
+            "input"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema275": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "effect_class": {
+              "$ref": "#/components/schemas/EffectClass"
+            },
+            "asks_first": {
+              "type": "boolean"
+            },
+            "default": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "scope",
+            "label",
+            "effect_class",
+            "asks_first",
+            "default"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema276": {
         "type": "string",
         "enum": [
           "fact",
@@ -15269,7 +15779,7 @@
           "event"
         ]
       },
-      "__schema254": {
+      "__schema277": {
         "type": "string",
         "enum": [
           "active",
@@ -15278,7 +15788,7 @@
           "disputed"
         ]
       },
-      "__schema255": {
+      "__schema278": {
         "type": "object",
         "properties": {
           "id": {
@@ -15303,20 +15813,20 @@
         ],
         "additionalProperties": false
       },
-      "__schema256": {
+      "__schema279": {
         "type": "string",
         "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema257": {
+      "__schema280": {
         "type": "string",
         "minLength": 1,
         "maxLength": 200
       },
-      "__schema258": {
+      "__schema281": {
         "type": "string",
         "minLength": 1
       },
-      "__schema259": {
+      "__schema282": {
         "type": "string",
         "enum": [
           "private",
@@ -15324,7 +15834,7 @@
           "public"
         ]
       },
-      "__schema260": {
+      "__schema283": {
         "type": "string",
         "enum": [
           "high",
@@ -15332,7 +15842,7 @@
           "low"
         ]
       },
-      "__schema261": {
+      "__schema284": {
         "type": "string",
         "enum": [
           "user",
@@ -15341,7 +15851,7 @@
           "tool"
         ]
       },
-      "__schema262": {
+      "__schema285": {
         "type": "object",
         "properties": {
           "kind": {
@@ -15382,101 +15892,101 @@
         ],
         "additionalProperties": false
       },
-      "__schema263": {
+      "__schema286": {
         "type": "string",
         "format": "date",
         "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
       },
-      "__schema264": {
+      "__schema287": {
         "default": null,
         "anyOf": [
           {
-            "$ref": "#/components/schemas/__schema263"
+            "$ref": "#/components/schemas/__schema286"
           },
           {
             "type": "null"
           }
         ]
       },
-      "__schema265": {
+      "__schema288": {
         "default": [],
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/__schema256"
+          "$ref": "#/components/schemas/__schema279"
         }
       },
-      "__schema266": {
+      "__schema289": {
         "default": null,
         "anyOf": [
           {
-            "$ref": "#/components/schemas/__schema256"
+            "$ref": "#/components/schemas/__schema279"
           },
           {
             "type": "null"
           }
         ]
       },
-      "__schema267": {
+      "__schema290": {
         "default": [],
         "type": "array",
         "items": {
           "type": "string"
         }
       },
-      "__schema268": {
+      "__schema291": {
         "default": [],
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/__schema256"
+          "$ref": "#/components/schemas/__schema279"
         }
       },
-      "__schema269": {
+      "__schema292": {
         "type": "number",
         "const": 1
       },
-      "__schema270": {
+      "__schema293": {
         "type": "string",
         "minLength": 1
       },
-      "__schema271": {
+      "__schema294": {
         "type": "string",
         "minLength": 1
       },
-      "__schema272": {
+      "__schema295": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema273": {
+      "__schema296": {
         "type": "string",
         "enum": [
           "automation",
           "human"
         ]
       },
-      "__schema274": {
+      "__schema297": {
         "type": "boolean",
         "const": true
       },
-      "__schema275": {
+      "__schema298": {
         "type": "string",
         "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema276": {
+      "__schema299": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema277": {
+      "__schema300": {
         "type": "string",
         "minLength": 1
       },
-      "__schema278": {
+      "__schema301": {
         "type": "string",
         "minLength": 1,
         "maxLength": 160
       },
-      "__schema279": {
+      "__schema302": {
         "type": "string",
         "enum": [
           "on_session_start",
@@ -15502,7 +16012,7 @@
           "runtime_error"
         ]
       },
-      "__schema280": {
+      "__schema303": {
         "anyOf": [
           {
             "type": "string",
@@ -15513,7 +16023,7 @@
           }
         ]
       },
-      "__schema281": {
+      "__schema304": {
         "type": "object",
         "properties": {
           "captured_at": {
@@ -15538,7 +16048,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema282": {
+      "__schema305": {
         "type": "string",
         "enum": [
           "started",
@@ -15549,7 +16059,7 @@
           "unknown"
         ]
       },
-      "__schema283": {
+      "__schema306": {
         "anyOf": [
           {
             "type": "string",
@@ -15560,7 +16070,7 @@
           }
         ]
       },
-      "__schema284": {
+      "__schema307": {
         "type": "string",
         "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
@@ -15568,61 +16078,61 @@
         "type": "object",
         "properties": {
           "id": {
-            "$ref": "#/components/schemas/__schema256"
+            "$ref": "#/components/schemas/__schema279"
           },
           "title": {
-            "$ref": "#/components/schemas/__schema257"
+            "$ref": "#/components/schemas/__schema280"
           },
           "space": {
-            "$ref": "#/components/schemas/__schema258"
+            "$ref": "#/components/schemas/__schema281"
           },
           "audience": {
-            "$ref": "#/components/schemas/__schema259"
+            "$ref": "#/components/schemas/__schema282"
           },
           "type": {
-            "$ref": "#/components/schemas/__schema253"
+            "$ref": "#/components/schemas/__schema276"
           },
           "status": {
-            "$ref": "#/components/schemas/__schema254"
+            "$ref": "#/components/schemas/__schema277"
           },
           "confidence": {
-            "$ref": "#/components/schemas/__schema260"
+            "$ref": "#/components/schemas/__schema283"
           },
           "asserted_by": {
-            "$ref": "#/components/schemas/__schema261"
+            "$ref": "#/components/schemas/__schema284"
           },
           "source": {
-            "$ref": "#/components/schemas/__schema262"
+            "$ref": "#/components/schemas/__schema285"
           },
           "observed_at": {
-            "$ref": "#/components/schemas/__schema263"
+            "$ref": "#/components/schemas/__schema286"
           },
           "valid_from": {
-            "$ref": "#/components/schemas/__schema263"
+            "$ref": "#/components/schemas/__schema286"
           },
           "valid_until": {
-            "$ref": "#/components/schemas/__schema264"
+            "$ref": "#/components/schemas/__schema287"
           },
           "supersedes": {
-            "$ref": "#/components/schemas/__schema265"
+            "$ref": "#/components/schemas/__schema288"
           },
           "superseded_by": {
-            "$ref": "#/components/schemas/__schema266"
+            "$ref": "#/components/schemas/__schema289"
           },
           "created": {
-            "$ref": "#/components/schemas/__schema263"
+            "$ref": "#/components/schemas/__schema286"
           },
           "updated": {
-            "$ref": "#/components/schemas/__schema263"
+            "$ref": "#/components/schemas/__schema286"
           },
           "tags": {
-            "$ref": "#/components/schemas/__schema267"
+            "$ref": "#/components/schemas/__schema290"
           },
           "links": {
-            "$ref": "#/components/schemas/__schema268"
+            "$ref": "#/components/schemas/__schema291"
           },
           "schema_version": {
-            "$ref": "#/components/schemas/__schema269"
+            "$ref": "#/components/schemas/__schema292"
           }
         },
         "required": [
@@ -15654,34 +16164,34 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema278"
+                "$ref": "#/components/schemas/__schema301"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema279"
+                "$ref": "#/components/schemas/__schema302"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema280"
+                "$ref": "#/components/schemas/__schema303"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema281"
+                "$ref": "#/components/schemas/__schema304"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema282"
+                "$ref": "#/components/schemas/__schema305"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema283"
+                "$ref": "#/components/schemas/__schema306"
               },
               "type": {
                 "type": "string",
@@ -15707,34 +16217,34 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema278"
+                "$ref": "#/components/schemas/__schema301"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema279"
+                "$ref": "#/components/schemas/__schema302"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema280"
+                "$ref": "#/components/schemas/__schema303"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema281"
+                "$ref": "#/components/schemas/__schema304"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema282"
+                "$ref": "#/components/schemas/__schema305"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema283"
+                "$ref": "#/components/schemas/__schema306"
               },
               "type": {
                 "type": "string",
@@ -15769,13 +16279,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -15804,13 +16314,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -15837,13 +16347,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -15878,13 +16388,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -15919,13 +16429,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -15957,13 +16467,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -16085,7 +16595,7 @@
                         "minItems": 1,
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/__schema284"
+                          "$ref": "#/components/schemas/__schema307"
                         }
                       }
                     },
@@ -16201,13 +16711,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema275"
+                "$ref": "#/components/schemas/__schema298"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema276"
+                "$ref": "#/components/schemas/__schema299"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema277"
+                "$ref": "#/components/schemas/__schema300"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema77"
@@ -16245,22 +16755,22 @@
         "type": "object",
         "properties": {
           "capture_id": {
-            "$ref": "#/components/schemas/__schema278"
+            "$ref": "#/components/schemas/__schema301"
           },
           "name": {
-            "$ref": "#/components/schemas/__schema279"
+            "$ref": "#/components/schemas/__schema302"
           },
           "tool_name": {
-            "$ref": "#/components/schemas/__schema280"
+            "$ref": "#/components/schemas/__schema303"
           },
           "timing": {
-            "$ref": "#/components/schemas/__schema281"
+            "$ref": "#/components/schemas/__schema304"
           },
           "outcome": {
-            "$ref": "#/components/schemas/__schema282"
+            "$ref": "#/components/schemas/__schema305"
           },
           "redacted_args_digest": {
-            "$ref": "#/components/schemas/__schema283"
+            "$ref": "#/components/schemas/__schema306"
           }
         },
         "required": [

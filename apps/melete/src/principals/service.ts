@@ -51,7 +51,15 @@ export class PrincipalService {
         ownerPrincipalId: created.id,
         gitPath: join(this.spacesRoot, spaceId),
       });
-      return { id: created.id, email: created.email, created_at: created.createdAt.toISOString() };
+      return {
+        principal: {
+          id: created.id,
+          email: created.email,
+          created_at: created.createdAt.toISOString(),
+        },
+        /** The account's own place, so a caller can furnish exactly it. */
+        spaceId,
+      };
     });
   }
 

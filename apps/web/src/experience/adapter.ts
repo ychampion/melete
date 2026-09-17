@@ -17,6 +17,10 @@ import type {
   Automation,
   AutomationCreate,
   BrowserSession,
+  ConnectionChecked,
+  ConnectionCreate,
+  ConnectionInstalled,
+  ConnectionKind,
   Conversation,
   ConversationCreate,
   Draft,
@@ -260,6 +264,32 @@ export const adapter = {
     guard<{ connections: import('./types.ts').Connection[] }>(() =>
       api.GET('/experience/connections'),
     ),
+  /** The kinds that can be installed, each with the fields its form needs. */
+  connectionKinds: () => guard<{ kinds: ConnectionKind[] }>(() => api.GET('/connection-kinds')),
+  /** The body is built from a kind's descriptor; the service validates it per kind. */
+  installConnection: (body: Record<string, unknown>) =>
+    guard<ConnectionInstalled>(() =>
+      api.POST('/connections', { body: body as unknown as ConnectionCreate }),
+    ),
+  testConnection: (id: string) =>
+    guard<ConnectionChecked>(() =>
+      api.POST('/connections/{connectionId}/health', {
+        params: { path: { connectionId: id } },
+      }),
+    ),
+  /** Removal names the generation it read, so a change made elsewhere is not overwritten. */
+  removeConnection: async (id: string): Promise<Result<{ status: string }>> => {
+    const current = await guard<ConnectionInstalled>(() =>
+      api.GET('/connections/{connectionId}', { params: { path: { connectionId: id } } }),
+    );
+    if (current.data === null) return current;
+    return guard<{ status: string }>(() =>
+      api.POST('/connections/{id}/lifecycle', {
+        ...path(id),
+        body: { kind: 'revoke', expected_generation: current.data.connection.generation ?? 0 },
+      }),
+    );
+  },
   browserSession: (id: string) =>
     guard<{ session: BrowserSession }>(() => api.GET('/browser/sessions/{id}', path(id))),
   browserControl: (id: string, control: 'take_control' | 'resume' | 'stop') =>

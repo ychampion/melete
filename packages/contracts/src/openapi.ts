@@ -14,9 +14,6 @@ import {
   attemptListResponse,
   attemptResponse,
   cancelJobRequest,
-  connectionListResponse,
-  connectionResponse,
-  createConnectionRequest,
   createJobRequest,
   createSpaceRequest,
   errorResponse,
@@ -39,6 +36,13 @@ import {
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse } from './browser.ts';
+import {
+  connectionCheckResponse,
+  connectionKindListResponse,
+  connectionListResponse,
+  connectionResponse,
+  createConnectionRequest,
+} from './connections.ts';
 import { space } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
 import { executionSettlement, executionStartResponse } from './execution-admission.ts';
@@ -998,7 +1002,12 @@ export function buildOpenApiDocument() {
           },
           post: {
             tags: ['connections'],
-            summary: 'Install an operator-declared HTTP MCP connection without restarting',
+            summary:
+              'Install a mail, CalDAV, calendar feed or HTTP MCP connection without restarting',
+            description:
+              'The request carries exactly one configuration block. Secrets are sealed on arrival and ' +
+              'never returned. The new connection is tested once; the result is in `check`, and a ' +
+              'connection that failed its test stays out of every catalog until a later test passes.',
             requestBody: json(createConnectionRequest),
             responses: {
               '201': jsonResponse('Created', connectionResponse),
@@ -1006,6 +1015,14 @@ export function buildOpenApiDocument() {
               '403': problem('Space owner and matching audience required'),
               '409': problem('MCP installation name already exists'),
             },
+          },
+        },
+
+        '/connection-kinds': {
+          get: {
+            tags: ['connections'],
+            summary: 'List the kinds of connection that can be installed and the fields each needs',
+            responses: { '200': jsonResponse('Kinds', connectionKindListResponse) },
           },
         },
 
@@ -1024,9 +1041,15 @@ export function buildOpenApiDocument() {
         '/connections/{connectionId}/health': {
           post: {
             tags: ['connections'],
-            summary: 'Check a connection now',
+            summary: 'Test a connection now',
+            description:
+              'Asks the connector whether its destination answers. The result is a fixed code and ' +
+              'sentence; it never carries a transport message, an address or a credential.',
             requestParams: idParam('connectionId', 'Connection id'),
-            responses: { '200': jsonResponse('Connection', connectionResponse) },
+            responses: {
+              '200': jsonResponse('Connection and check', connectionCheckResponse),
+              '403': problem('Space owner required'),
+            },
           },
         },
 

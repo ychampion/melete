@@ -1201,7 +1201,7 @@ export class ExperienceMock {
   }
   connections() {
     return [...this.deps.store.connections.values()]
-      .filter((row) => row.space_id === this.deps.spaceId)
+      .filter((row) => row.space_id === this.deps.spaceId && row.status !== 'revoked')
       .map((row) =>
         C.experienceConnection.parse({
           id: row.id,
