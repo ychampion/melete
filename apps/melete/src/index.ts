@@ -155,7 +155,8 @@ export function createApp(deps: AppDeps) {
     deps.db && deps.sql && deps.registry
       ? { db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }
       : undefined;
-  // Mounted first so it runs after setup answers; see mountDefaultConnections.
+  // Mounted before the routes it follows, so it runs once they have answered;
+  // see mountDefaultConnections.
   if (connections) mountDefaultConnections(app, connections);
   mountAuth(app, deps);
   // The authenticated session names the space and the principal; a request header never does.

@@ -105,32 +105,42 @@ async function check(connector: Connector | undefined, status: string): Promise<
 }
 
 /**
- * Every space gets its default connections when the account behind it appears,
- * and the connectors are published at once, so a first conversation already has
- * tools. The sweep is idempotent; a failure here leaves setup itself untouched
- * and the next start repeats it.
+ * Give a space, or every space, the default connections it lacks and publish
+ * their connectors at once, so a first conversation already has tools. The work
+ * is idempotent, and a failure leaves whatever asked for it untouched: the next
+ * start repeats it.
+ */
+export async function ensureDefaultConnections(deps: ConnectionDeps, spaceId?: string) {
+  try {
+    const factory = factoryFor(deps);
+    for (const created of await ensureBuiltinConnections(
+      deps.sql,
+      builtinEnvironment(deps.env),
+      spaceId,
+    )) {
+      const connector = await factory.open(created);
+      if (connector) factory.register(deps.registry, created.id, connector);
+    }
+  } catch {
+    process.stderr.write('default connections could not be ensured\n');
+  }
+}
+
+/**
+ * A space an account makes by signing up, by being provisioned, or by asking
+ * for a shared one is furnished once that request has answered. A space the
+ * session itself had to make, for an account that had none, is furnished where
+ * it is made instead, so the request that made it already reads it furnished.
  */
 export function mountDefaultConnections(app: Hono, deps: ConnectionDeps) {
   app.use('*', async (c, next) => {
     await next();
     if (
-      c.req.method !== 'POST' ||
-      !c.res.ok ||
-      !['/setup', '/principals', '/spaces/shared'].includes(c.req.path)
+      c.req.method === 'POST' &&
+      c.res.ok &&
+      ['/setup', '/principals', '/spaces/shared'].includes(c.req.path)
     )
-      return;
-    try {
-      const factory = factoryFor(deps);
-      for (const created of await ensureBuiltinConnections(
-        deps.sql,
-        builtinEnvironment(deps.env),
-      )) {
-        const connector = await factory.open(created);
-        if (connector) factory.register(deps.registry, created.id, connector);
-      }
-    } catch {
-      process.stderr.write('default connections could not be ensured\n');
-    }
+      await ensureDefaultConnections(deps);
   });
 }
 

@@ -21,6 +21,7 @@ import { ExperienceSignIn } from '../experience/signin.ts';
 import { newId } from '../ids.ts';
 import { principalContext, visibleSpace } from '../principals/authority.ts';
 import { resolveSessionSpace, type SessionSpace } from '../principals/session-space.ts';
+import { ensureDefaultConnections } from './connections.ts';
 import { DEVICE_COOKIE, DEVICE_TTL_SECONDS, DeviceCookies } from './device-cookie.ts';
 import type { RequestSource } from './listener.ts';
 import { LoginThrottle } from './login-throttle.ts';
@@ -141,7 +142,17 @@ export function mountAuth(
     registry?: ConnectorRegistry;
   },
 ): void {
-  const { db, env } = deps;
+  const { db, env, registry } = deps;
+  const handle = deps.sql;
+  /**
+   * An account can reach its first request without a space of its own, and the
+   * session makes one for it. The space is furnished where it is made, so the
+   * request that made it already finds the connections every space has.
+   */
+  const furnish =
+    db && handle && registry
+      ? (spaceId: string) => ensureDefaultConnections({ db, sql: handle, registry, env }, spaceId)
+      : undefined;
   // Four limiters on one clock: client addresses, accounts as seen by browsers
   // that are new to them, known devices, and setup attempts.
   const loginThrottle = deps.loginThrottle ?? new LoginThrottle();
@@ -212,6 +223,7 @@ export function mountAuth(
       active.owner.id,
       active.spaceId ? { spaceId: active.spaceId, generation: active.membershipGeneration } : null,
     );
+    if (resolved.created) await furnish?.(resolved.spaceId);
     c.set('sessionSpace', resolved);
     c.set('experienceSpaceId', resolved.spaceId);
     return principalContext.run(active.owner.id, next);

@@ -68,6 +68,7 @@ const names = (tools: readonly { name: string }[]) => tools.map((tool) => tool.n
 
 const fresh = await database();
 const existing = fresh ? await database() : null;
+const late = existing ? await database() : null;
 
 (fresh ? test : test.skip)(
   'a fresh installation offers a useful catalog without any hand-made connection',
@@ -83,6 +84,14 @@ const existing = fresh ? await database() : null;
         body: JSON.stringify({ email: 'fresh@example.test', password: 'fresh-install-password' }),
       });
       expect(setup.status).toBe(201);
+      // Setup is rate limited and hands back a session and a device cookie; the
+      // defaults are still made for the space that answering it created.
+      expect(
+        setup.headers
+          .getSetCookie()
+          .map((value) => value.split('=')[0])
+          .sort(),
+      ).toEqual(['melete_device', 'melete_session']);
       const cookie = setup.headers.get('set-cookie')?.split(';')[0] ?? '';
       const [space] = await fixture.sql`select id from space where kind = 'personal'`;
       if (!space) throw new Error('Missing personal space');
@@ -101,6 +110,25 @@ const existing = fresh ? await database() : null;
         ['Finished work', true],
         ['Web', true],
       ]);
+
+      // A second setup is refused before it reads a password, and refusing it
+      // makes nothing: the defaults stay the rows the first setup created.
+      const installed = (await fixture.sql`select id from connection order by id`).map(
+        (row) => row.id,
+      );
+      const repeated = await running.app.request('/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'second@example.test',
+          password: 'another-install-password',
+        }),
+      });
+      expect(repeated.status).toBe(409);
+      expect(repeated.headers.getSetCookie()).toEqual([]);
+      expect(
+        (await fixture.sql`select id from connection order by id`).map((row) => row.id),
+      ).toEqual(installed);
 
       const claimed = await claimIn(running, space.id);
       expect(names(claimed.bundle.tools)).toEqual(expect.arrayContaining(DEFAULT_TOOLS));
@@ -218,6 +246,69 @@ const existing = fresh ? await database() : null;
       expect(again.registry?.get(webId)).toBeUndefined();
     } finally {
       await again.close();
+    }
+  },
+  180_000,
+);
+
+(late ? test : test.skip)(
+  'an account whose own space is made on its first request finds the default tools in it',
+  async () => {
+    const fixture = late;
+    if (!fixture) throw new Error('Postgres unavailable');
+    // An installation whose owner has a space, and a second account that has none.
+    const ownerId = newId('own');
+    const memberId = newId('own');
+    const ownerSpace = newId('sp');
+    const hash = await Bun.password.hash('late-space-password', { algorithm: 'argon2id' });
+    await fixture.sql`insert into owner (id, email, password_hash) values (${ownerId}, 'owner@example.test', ${hash})`;
+    await fixture.sql`insert into principal (id, email, password_hash) values
+      (${ownerId}, 'owner@example.test', ${hash}),
+      (${memberId}, 'later@example.test', ${hash})`;
+    await fixture.sql`insert into space (id, name, git_path, owner_principal_id, kind, audience)
+      values (${ownerSpace}, 'Personal', ${join(root, ownerSpace)}, ${ownerId}, 'personal', 'owner')`;
+
+    const running = await service(fixture.url);
+    try {
+      const theirs = await fixture.sql`select id from space where owner_principal_id = ${memberId}`;
+      expect(theirs).toHaveLength(0);
+      const ownerConnections = (
+        await fixture.sql`select id from connection where space_id = ${ownerSpace} order by id`
+      ).map((row) => row.id);
+      expect(ownerConnections).toHaveLength(3);
+
+      const login = await running.app.request('/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'later@example.test', password: 'late-space-password' }),
+      });
+      expect(login.status).toBe(200);
+      const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      // The first request is what makes the space, and it is furnished at once.
+      const shown = (await (
+        await running.app.request('/experience/connections', { headers: { cookie } })
+      ).json()) as { connections: Array<{ id: string; label: string; builtin?: boolean }> };
+      expect(shown.connections.map((row) => [row.label, row.builtin])).toEqual([
+        ['Files', true],
+        ['Finished work', true],
+        ['Web', true],
+      ]);
+      // Settings reads the space the session speaks for, never another account's.
+      for (const row of shown.connections) expect(ownerConnections).not.toContain(row.id);
+
+      const [own] = await fixture.sql`select id from space where owner_principal_id = ${memberId}`;
+      if (!own) throw new Error('The first request made no space');
+      expect(
+        (await fixture.sql`select id from connection where space_id = ${own.id} order by id`)
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(shown.connections.map((row) => row.id).sort());
+
+      const claimed = await claimIn(running, own.id);
+      expect(names(claimed.bundle.tools)).toEqual(expect.arrayContaining(DEFAULT_TOOLS));
+    } finally {
+      await running.close();
     }
   },
   180_000,

@@ -13,6 +13,8 @@ export type SessionSpace = {
   kind: 'personal' | 'shared';
   role: 'owner' | 'member';
   generation: number;
+  /** True when this very request is what brought the space into being. */
+  created: boolean;
 };
 
 /** A space the session named earlier, with the membership generation it was chosen under. */
@@ -46,9 +48,9 @@ export async function ensurePersonalSpace(
   db: Database,
   principalId: string,
   spacesRoot: string,
-): Promise<string> {
+): Promise<{ spaceId: string; created: boolean }> {
   const existing = await ownPersonalSpace(db, principalId);
-  if (existing) return existing;
+  if (existing) return { spaceId: existing, created: false };
   return db.transaction(async (tx) => {
     const [account] = await tx
       .select({ id: principal.id })
@@ -57,7 +59,7 @@ export async function ensurePersonalSpace(
       .for('update');
     if (!account) throw new ServiceError('unauthorized', 'A session is required.', 401);
     const raced = await ownPersonalSpace(tx, principalId);
-    if (raced) return raced;
+    if (raced) return { spaceId: raced, created: false };
     const id = newId(ID_PREFIXES.space);
     await tx.insert(space).values({
       id,
@@ -67,7 +69,7 @@ export async function ensurePersonalSpace(
       ownerPrincipalId: principalId,
       gitPath: join(spacesRoot, id),
     });
-    return id;
+    return { spaceId: id, created: true };
   });
 }
 
@@ -94,15 +96,18 @@ export async function resolveSessionSpace(
           kind,
           role: access.role,
           generation: access.generation,
+          created: false,
         };
     } catch (error) {
       if (!(error instanceof ServiceError)) throw error;
     }
   }
+  const personal = await ensurePersonalSpace(db, principalId, spacesRoot);
   return {
-    spaceId: await ensurePersonalSpace(db, principalId, spacesRoot),
+    spaceId: personal.spaceId,
     kind: 'personal',
     role: 'owner',
     generation: 0,
+    created: personal.created,
   };
 }
