@@ -5,11 +5,13 @@ import { ScriptedRecordRuntime } from '../../../../conformance/learning/scripted
 import { openDatabase } from '../../src/db/client.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
 import { JobService } from '../../src/jobs/service.ts';
-import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
+import { assertEvaluationBudget, ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { ProcedureService } from '../../src/learning/procedures.ts';
 import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
 import { ProcedureProposer } from '../../src/learning/proposer.ts';
 import { procedureCandidate, procedureEvaluation } from '../../src/learning/schema.ts';
+import { recordsFixtureSuite } from '../../src/learning/suites/records.ts';
+import type { EvaluationSuite } from '../../src/learning/suites/types.ts';
 import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
 
 const runtime = new ScriptedRecordRuntime();
@@ -336,4 +338,62 @@ async function candidate(template: string, selected: string[]) {
       'definition_changed',
     );
   }, 15000);
+
+  test('an over-cap suite fails with evaluation_budget_exceeded', async () => {
+    if (!fixture) return;
+    const proposed = await candidate('evaluation-over-cap', [
+      'sort-typed-values',
+      'keep-header-and-rows',
+    ]);
+    // Five cases is ten jobs and 81,920 reserved tokens: past what a promotion decision may rest on.
+    const oversized: EvaluationSuite = {
+      ...recordsFixtureSuite,
+      async plan(input) {
+        const planned = await recordsFixtureSuite.plan(input);
+        const [first] = planned.validation.cases;
+        if (!first) throw new Error('No fixture case');
+        return {
+          ...planned,
+          validation: {
+            ...planned.validation,
+            cases: Array.from({ length: 5 }, (_, index) => ({
+              ...first,
+              template: `${first.template}-${index}`,
+            })),
+          },
+        };
+      },
+    };
+    const capped = new ProcedureEvaluator(fixture.jobs, runtime, fixture.runner.options, [
+      oversized,
+    ]);
+    const observed = runtime.observed.length;
+    await rejectsWith(
+      () => capped.evaluate(fixture.ownerId, fixture.spaceId, proposed.id),
+      'evaluation_budget_exceeded',
+    );
+    // Refused before a job ran or an evaluation row was reserved.
+    expect(runtime.observed).toHaveLength(observed);
+    expect(
+      await fixture.handle.db
+        .select()
+        .from(procedureEvaluation)
+        .where(eq(procedureEvaluation.candidateId, proposed.id)),
+    ).toEqual([]);
+    const [unchanged] = await fixture.handle.db
+      .select()
+      .from(procedureCandidate)
+      .where(eq(procedureCandidate.id, proposed.id));
+    expect(unchanged).toMatchObject({ state: 'candidate', rejectionReason: null });
+    // Four cases is exactly at the cap and is not refused for its size.
+    expect(() =>
+      assertEvaluationBudget(
+        Array.from({ length: 4 }, (_, index) => ({
+          template: `case-${index}`,
+          objective: 'o',
+          origin: 'fixture' as const,
+        })),
+      ),
+    ).not.toThrow();
+  }, 30000);
 });

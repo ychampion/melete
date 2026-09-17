@@ -1,8 +1,8 @@
 import { type Intervention, PROCEDURE_CHECK_KINDS } from '@melete/contracts';
-import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, sql } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import { ServiceError } from '../api/errors.ts';
-import { action, job } from '../db/schema.ts';
+import { job } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { visibleJob } from '../principals/authority.ts';
@@ -16,6 +16,7 @@ import {
   MAX_VARIANTS,
 } from './admit.ts';
 import { discriminate } from './discriminate.ts';
+import { discriminationInput } from './discrimination-input.ts';
 import { type EpisodeRow, requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash, RECORDS_FAMILY } from './procedure.ts';
 import type { ProposalGateway } from './proposal-gateway.ts';
@@ -215,34 +216,10 @@ export class ProcedureProposer {
     );
     const admitted = admitProposal(raw, { sources, objective });
     const compatibleModels = modelsOf(saved);
-    // Actions up to the correction belong to the objected answer; later ones to the corrected one.
-    const rows = await this.jobs.db
-      .select({
-        jobId: action.jobId,
-        kind: action.kind,
-        effectClass: action.effectClass,
-        status: action.status,
-        createdAt: action.createdAt,
-      })
-      .from(action)
-      .where(
-        inArray(action.jobId, [
-          saved.jobId,
-          ...(saved.correctiveJobId ? [saved.correctiveJobId] : []),
-        ]),
-      );
-    const discrimination = discriminate(admitted.checks, {
-      prior: saved.priorOutput,
-      corrected: saved.correctedOutput,
-      priorActions: rows.filter(
-        (row) => row.jobId === saved.jobId && row.createdAt <= saved.createdAt,
-      ),
-      correctedActions: rows.filter((row) =>
-        saved.correctiveJobId
-          ? row.jobId === saved.correctiveJobId
-          : row.jobId === saved.jobId && row.createdAt > saved.createdAt,
-      ),
-    });
+    const discrimination = discriminate(
+      admitted.checks,
+      await discriminationInput(this.jobs.db, saved),
+    );
     return {
       definition: {
         change: admitted.change as unknown as Record<string, unknown>,

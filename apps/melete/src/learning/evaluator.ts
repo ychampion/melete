@@ -6,19 +6,14 @@ import {
   type RuntimeAdapter,
 } from '@melete/contracts';
 import { desc, eq, sql } from 'drizzle-orm';
-import {
-  gradeRecords,
-  type RecordCase,
-  taskObjective,
-} from '../../../../conformance/learning/records.ts';
-import { validationCases, validationMemory } from '../../../../conformance/learning/validation.ts';
 import { openHarness } from '../../../../conformance/memory/harness.ts';
 import { scenario } from '../../../../conformance/memory/schema.ts';
 import { ServiceError } from '../api/errors.ts';
-import { attempt, space } from '../db/schema.ts';
+import { action, attempt, space } from '../db/schema.ts';
 import { AttemptRunner, type RunnerOptions } from '../jobs/runner.ts';
 import { type JobRow, JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import type { CheckReport } from './checks.ts';
 import type { ProcedureScope } from './contracts.ts';
 import { digest, type EpisodeRow } from './episodes.ts';
 import { learningTrial } from './evaluation-schema.ts';
@@ -31,17 +26,17 @@ import {
 } from './procedures.ts';
 import { openPromoterProcess } from './promoter-process.ts';
 import { learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
-import { scopeMatches, selectProcedureSkills } from './selection.ts';
+import { selectProcedureSkills } from './selection.ts';
+import { assertSuiteModules, DEFAULT_SUITES, resolveSuite, suiteHash } from './suites/index.ts';
+import type { EvaluationCase, EvaluationSuite, PhaseCases } from './suites/types.ts';
 
-export const EVALUATED_SCOPE: ProcedureScope = {
-  task_family: 'organize-records',
-  app: 'table-editor',
-  app_version: '1.0',
-  role: 'owner',
-  audience: 'private',
-};
+export { EVALUATED_SCOPE } from './suites/records.ts';
+
 const CRITICAL = ['source-authority', 'forgetting-and-access', 'procedure-scope'];
-const OUTPUT_BUDGET = 8192;
+export const OUTPUT_BUDGET = 8192;
+/** The promotion gate refuses more than this; asking first gives a reason instead of an opaque mismatch. */
+export const MAX_EVALUATION_JOBS = 40;
+export const MAX_RESERVED_TOKENS = 65536;
 const wake = (row: JobRow) => ({
   job_id: row.id,
   expected_epoch: row.leaseEpoch,
@@ -51,13 +46,26 @@ const wake = (row: JobRow) => ({
 type Evaluation = typeof procedureEvaluation.$inferSelect;
 type Arm = {
   row: JobRow;
-  score: number;
+  report: CheckReport;
   tokens: number;
   outputHash: string;
   attemptId: string;
   runtime: string;
   modelActual: string | null;
 };
+
+/** Every phase is two jobs per case; both caps are the gate's own. */
+export function assertEvaluationBudget(cases: readonly EvaluationCase[]) {
+  if (
+    !cases.length ||
+    cases.length * 2 > MAX_EVALUATION_JOBS ||
+    cases.length * 2 * OUTPUT_BUDGET > MAX_RESERVED_TOKENS
+  )
+    throw new ServiceError(
+      'evaluation_budget_exceeded',
+      'This evaluation would exceed the jobs or tokens a promotion decision may rest on.',
+    );
+}
 
 /** The trusted evaluator owns fixtures, job grants and grading; the proposer receives none of them. */
 export class ProcedureEvaluator {
@@ -67,7 +75,9 @@ export class ProcedureEvaluator {
     readonly jobs: JobService,
     readonly runtime: RuntimeAdapter,
     readonly options: RunnerOptions,
+    readonly suites: readonly EvaluationSuite[] = DEFAULT_SUITES,
   ) {
+    assertSuiteModules(suites);
     this.procedures = new ProcedureService(jobs);
   }
 
@@ -117,15 +127,18 @@ export class ProcedureEvaluator {
         if (existing) return null;
         if (candidate.state !== 'candidate')
           throw new ServiceError('invalid_procedure_state', 'A fresh candidate is required.');
-        if (!scopeMatches(candidate.scope, EVALUATED_SCOPE))
+        const suite = resolveSuite(candidate.scope, this.suites);
+        if (!suite)
           throw new ServiceError(
-            'evaluation_scope_unsupported',
-            'This fixture suite evaluates organize-records in table-editor 1.0.',
+            'evaluation_suite_unavailable',
+            'No evaluation suite covers this procedure scope.',
           );
         const model = `${this.options.provider ?? 'stub'}/${this.options.model ?? 'script'}`;
         if (!candidate.compatibleModels.includes(model))
           throw new ServiceError('evaluation_model_mismatch', 'Evaluate with a compatible model.');
-        return { candidate, source };
+        const plan = await suite.plan({ tx, ownerId, candidate, source });
+        assertEvaluationBudget(plan.validation.cases);
+        return { candidate: plan.candidate, source, suite, plan };
       });
       if (!reserved) return this.procedures.inspect(ownerId, spaceId, id);
       const runtime = await this.runtime.capabilities();
@@ -144,24 +157,25 @@ export class ProcedureEvaluator {
         ownerId,
         reserved.candidate,
         reserved.source,
+        reserved.suite,
         'validation',
-        validationCases,
-        validationMemory,
+        reserved.plan.validation,
         null,
         runner,
         promoter,
       );
       if (!validation.passed || !validation.selectedAt)
         return this.procedures.inspect(ownerId, spaceId, id);
-      // The final module is deliberately loaded only after selection committed. No adaptive final retries.
-      const final = await import('../../../../conformance/learning/sealed-final.ts');
+      // Final cases are resolved only now, after selection committed, from the selection's own id.
+      const final = await reserved.plan.sealedFinal(validation.id);
+      assertEvaluationBudget(final.cases);
       await this.runPhase(
         ownerId,
         reserved.candidate,
         reserved.source,
+        reserved.suite,
         'sealed_final',
-        final.sealedFinalCases(),
-        final.sealedFinalMemory,
+        final,
         validation,
         runner,
         promoter,
@@ -180,15 +194,16 @@ export class ProcedureEvaluator {
     ownerId: string,
     candidate: Candidate,
     source: EpisodeRow,
+    suite: EvaluationSuite,
     phase: GateInput['phase'],
-    cases: readonly RecordCase[],
-    memoryFiles: readonly string[],
+    planned: PhaseCases,
     selection: Evaluation | null,
     runner: AttemptRunner,
     promoter: Awaited<ReturnType<typeof openPromoterProcess>>,
   ) {
+    const cases = planned.cases;
     const memory = [];
-    for (const path of memoryFiles)
+    for (const path of planned.memory)
       memory.push(
         scenario.parse(
           await Bun.file(
@@ -196,15 +211,12 @@ export class ProcedureEvaluator {
           ).json(),
         ),
       );
-    const code = [];
-    for (const path of [
-      'conformance/learning/records.ts',
-      'conformance/memory/harness.ts',
-      'conformance/memory/provider.ts',
-      'apps/melete/src/learning/gate.ts',
-    ])
-      code.push(digest(await Bun.file(new URL(`../../../../${path}`, import.meta.url)).text()));
-    const suiteHash = digest({ phase, cases, memory, code });
+    const hash = await suiteHash({
+      phase,
+      suite,
+      caseTemplates: cases.map((value) => value.template),
+      memory,
+    });
     const started = performance.now();
     const baseBudget = {
       jobs: cases.length * 2,
@@ -228,7 +240,8 @@ export class ProcedureEvaluator {
           candidateId: candidate.id,
           bodyHash: candidate.bodyHash,
           phase,
-          suiteHash,
+          suiteId: suite.id,
+          suiteHash: hash,
           evidence: { status: 'running', selection_evaluation_id: selection?.id ?? null },
           budget: baseBudget,
           passed: false,
@@ -244,8 +257,24 @@ export class ProcedureEvaluator {
       let latestCandidate: JobRow | undefined;
       for (const value of cases) {
         const occurredAt = new Date().toISOString();
-        const baseline = await this.runArm(ownerId, candidate, evaluation, value, false, runner);
-        const learned = await this.runArm(ownerId, candidate, evaluation, value, true, runner);
+        const baseline = await this.runArm(
+          ownerId,
+          candidate,
+          evaluation,
+          value,
+          false,
+          runner,
+          suite,
+        );
+        const learned = await this.runArm(
+          ownerId,
+          candidate,
+          evaluation,
+          value,
+          true,
+          runner,
+          suite,
+        );
         latestCandidate = learned.row;
         actualTokens += baseline.tokens + learned.tokens;
         rows.push({
@@ -253,20 +282,23 @@ export class ProcedureEvaluator {
           template: value.template,
           space: learned.row.spaceId,
           occurredAt,
-          baseline: baseline.score,
-          candidate: learned.score,
-          baselineCorrections: 1 - baseline.score,
-          candidateCorrections: 1 - learned.score,
+          baseline: baseline.report.score,
+          candidate: learned.report.score,
+          // Failed checks, measured on each run: not a restatement of the score.
+          baselineCorrections: baseline.report.corrections,
+          candidateCorrections: learned.report.corrections,
           scopeViolations: 0,
         });
         runs.push({
           template: value.template,
+          origin: value.origin,
           baseline: {
             job: baseline.row.id,
             attempt: baseline.attemptId,
             outputHash: baseline.outputHash,
             runtime: baseline.runtime,
             modelActual: baseline.modelActual,
+            corrections: baseline.report.corrections,
           },
           candidate: {
             job: learned.row.id,
@@ -274,6 +306,7 @@ export class ProcedureEvaluator {
             outputHash: learned.outputHash,
             runtime: learned.runtime,
             modelActual: learned.modelActual,
+            corrections: learned.report.corrections,
           },
         });
       }
@@ -336,7 +369,7 @@ export class ProcedureEvaluator {
         phase,
         target: 'skill_body',
         definitionHash: candidate.bodyHash,
-        suiteHash,
+        suiteHash: hash,
         source: {
           family: source.scope.task_family,
           template: source.templateId,
@@ -451,9 +484,10 @@ export class ProcedureEvaluator {
     ownerId: string,
     candidate: Candidate,
     evaluation: Evaluation,
-    value: RecordCase,
+    value: EvaluationCase,
     useCandidate: boolean,
     runner: AttemptRunner,
+    suite: EvaluationSuite,
   ): Promise<Arm> {
     const row = await this.jobs.transaction(async (tx) => {
       const id = newId('sp');
@@ -466,7 +500,7 @@ export class ProcedureEvaluator {
       const row = await this.jobs.createInTransaction(tx, {
         space_id: id,
         title: value.template,
-        objective: taskObjective(value.task),
+        objective: value.objective,
         learning: { scope: candidate.scope, template_id: value.template, input_refs: [] },
         budget: {
           max_turns: 2,
@@ -504,9 +538,13 @@ export class ProcedureEvaluator {
     const usage = attemptUsage.parse(execution.usage);
     const parsed = attemptOutcome.safeParse(execution.outcomeDetail);
     const summary = parsed.success && 'summary' in parsed.data ? parsed.data.summary : '';
+    const actions = await this.jobs.db
+      .select({ kind: action.kind, effectClass: action.effectClass, status: action.status })
+      .from(action)
+      .where(eq(action.jobId, row.id));
     return {
       row,
-      score: current.state === 'completed' && gradeRecords(value, summary) ? 1 : 0,
+      report: suite.grade(value, { output: summary, actions, state: current.state }, candidate),
       tokens: usage.input_tokens + usage.output_tokens,
       outputHash: digest(summary),
       attemptId: execution.id,

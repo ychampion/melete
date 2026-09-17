@@ -143,7 +143,7 @@ const verdict = (
     const passing = await storedCandidate('passes-the-gate', verdict('passed', 'discriminates'));
     await rejectsWith(
       () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, passing.id),
-      'evaluation_scope_unsupported',
+      'evaluation_suite_unavailable',
     );
   }, 30000);
 
