@@ -4,10 +4,10 @@ import type { ReactionScope, ReactionService } from '../jobs/reactions.ts';
 import { ServiceError } from './errors.ts';
 
 /**
- * Which space the session is asking about. v0.1 has one owner holding one
- * personal space, so the answer is that space; the seam exists because the
- * moment a second space is reachable this is the line that has to change, and
- * a scope that is computed is easier to correct than a scope that is assumed.
+ * Which space the session is asking about, and for whom. The answer comes from
+ * the authenticated session: the principal's own personal space, or a space it
+ * selected and is still a member of. A message belongs to a job's timeline, so
+ * the scope also names the principal and another member's messages stay absent.
  */
 export type SpaceResolver = (c: Context) => Promise<ReactionScope | null>;
 

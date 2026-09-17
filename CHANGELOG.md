@@ -13,7 +13,7 @@ to named tests on the tagged tree; the README's gates table is the summary.
   images. Actions are pinned by commit and no secret is read; a test fails the
   workflow if it names a script or file that does not exist.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
-  `json-file` log at 10 MB with five files. `compose:check` (27 checks) and
+  `json-file` log at 10 MB with five files. `compose:check` (28 checks) and
   `browser:compose:check` (12) refuse a service without the bound.
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one
@@ -27,6 +27,24 @@ to named tests on the tagged tree; the README's gates table is the summary.
   release version as well as `:local`, a wait for health and for every migration
   in the journal, and the exact rollback into an empty database volume with the
   newer journal retained. `--dry-run` prints the plan.
+- **Accounts act only in their own space.** Every request derives its space from
+  the account its session authenticates: that account's own personal space, or a
+  space the session stored while the account is still a member of it under the
+  membership generation it was stored with. An account without a personal space
+  receives one on first use. Conversations, plans, routines, permissions,
+  drafts, receipts, undo, search, the event stream, artifacts, reactions,
+  browser takeover and a job's repair briefs are checked against the job's
+  principal as well, so one account never reads or steers another's work.
+  A request header still cannot name a space or an owner.
+- **Sign-in limits a stranger cannot use to lock out a browser you know.** A
+  successful sign-in or setup sets a signed `melete_device` cookie, and a
+  browser presenting one for the account it signs in to spends its own budget of
+  attempts: however many attempts arrive from other browsers or addresses, that
+  browser can still sign in. Browsers new to an account share one per-account
+  limiter that counts wrong passwords, and the per-address limit follows the
+  client address the web proxy states, believed only on a connection from the
+  proxy Compose names and never from a header a browser sends. `/setup` has its
+  own limiter and answers 409 once an owner exists.
 
 ## v0.1.0
 

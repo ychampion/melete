@@ -16,7 +16,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
-import { createStaticServer, resolveInside } from './serve-static.ts';
+import { CLIENT_ADDRESS_HEADER as API_CLIENT_ADDRESS_HEADER } from '../../apps/melete/src/api/listener.ts';
+import { CLIENT_ADDRESS_HEADER, createStaticServer, resolveInside } from './serve-static.ts';
 
 /** Appears only in files outside the bundle. Any response carrying it is a leak. */
 const SENTINEL = 'melete-outside-the-bundle-4f9c2a';
@@ -306,6 +307,7 @@ describe('same-origin API proxy', () => {
             cookie: request.headers.get('cookie'),
             forwarded: request.headers.get('forwarded'),
             forwardedHost: request.headers.get('x-forwarded-host'),
+            clientAddress: request.headers.get('x-melete-client-address'),
             body: await request.text(),
           },
           {
@@ -357,6 +359,7 @@ describe('same-origin API proxy', () => {
       cookie: 'melete_session=incoming-session',
       forwarded: null,
       forwardedHost: null,
+      clientAddress: '127.0.0.1',
       body: '{"email":"owner@example.test"}',
     });
     expect(response.headers.getSetCookie()).toEqual([
@@ -364,6 +367,25 @@ describe('same-origin API proxy', () => {
       'other=value; Path=/; HttpOnly',
     ]);
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  test('states the browser socket as the client address and discards any the browser sent', async () => {
+    for (const claimed of ['203.0.113.9', '203.0.113.9, 198.51.100.4', '']) {
+      const response = await fetch(`${webOrigin()}/api/login`, {
+        method: 'POST',
+        headers: {
+          origin: webOrigin(),
+          'content-type': 'application/json',
+          'x-melete-client-address': claimed,
+          'x-forwarded-for': '203.0.113.10',
+          'x-real-ip': '203.0.113.11',
+        },
+        body: '{}',
+      });
+      const seen = (await response.json()) as { clientAddress: string | null };
+      expect(seen.clientAddress).toBe('127.0.0.1');
+    }
+    expect(CLIENT_ADDRESS_HEADER).toBe(API_CLIENT_ADDRESS_HEADER);
   });
 
   test('rejects foreign, opaque, and cross-site browser requests before contacting the API', async () => {

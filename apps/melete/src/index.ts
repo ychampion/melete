@@ -23,7 +23,7 @@ import { mountConnections } from './api/connections.ts';
 import { ServiceError } from './api/errors.ts';
 import { mountEvents } from './api/events.ts';
 import { mountJobs } from './api/jobs.ts';
-import { apiFetch, resolveApiNetwork } from './api/listener.ts';
+import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
@@ -45,7 +45,7 @@ import {
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
-import { connection, space } from './db/schema.ts';
+import { connection } from './db/schema.ts';
 import { type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
@@ -113,8 +113,8 @@ export type AppDeps = {
   repairs?: RepairReadService;
   reactions?: ReactionService;
   /**
-   * Which space a request speaks for. Left out, it is the owner's personal
-   * space, which is the only one v0.1 creates. Supplied, it is whatever the
+   * Which space a request speaks for. Left out, it is the space the session
+   * resolved for its authenticated principal. Supplied, it is whatever the
    * trusted session resolver says; request headers never supply this authority.
    */
   resolveSpace?: SpaceResolver;
@@ -151,18 +151,12 @@ export function createApp(deps: AppDeps) {
     );
   });
   mountAuth(app, deps);
-  // One owner, one personal space: use session authority and never a request header.
+  // The authenticated session names the space and the principal; a request header never does.
   const personalSpace: SpaceResolver =
     deps.resolveSpace ??
     (async (c) => {
-      if (!deps.db || !c.get('owner')) return null;
-      const [row] = await deps.db
-        .select({ id: space.id })
-        .from(space)
-        .where(eq(space.kind, 'personal'))
-        .orderBy(space.createdAt, space.id)
-        .limit(1);
-      return row ? { spaceId: row.id } : null;
+      const spaceId = c.get('experienceSpaceId');
+      return spaceId ? { spaceId, principalId: c.get('owner')?.id } : null;
     });
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
@@ -657,7 +651,7 @@ if (import.meta.main) {
   const server = Bun.serve({
     hostname: apiNetwork.hostname,
     port: env.PORT,
-    fetch: apiFetch(app, apiNetwork),
+    fetch: apiFetch(app, apiNetwork, trustedProxy(env.MELETE_TRUSTED_PROXY)),
     idleTimeout: 0,
   });
   process.stdout.write(`melete ${VERSION} listening on ${apiNetwork.hostname}:${env.PORT}\n`);

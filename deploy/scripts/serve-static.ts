@@ -28,6 +28,14 @@ export type StaticServerOptions = {
 
 const API_ORIGIN = 'http://melete:8787';
 
+/**
+ * Tells the API which browser a proxied request came from, so its login limits
+ * do not treat every browser as this one server. The value is always this
+ * server's own socket peer and replaces whatever the browser sent. The API
+ * believes it only on a connection from the proxy it was told to trust.
+ */
+export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
+
 function parseOrigin(value: string): string {
   const url = new URL(value);
   if (
@@ -63,7 +71,13 @@ function endToEndHeaders(input: Headers): Headers {
   return headers;
 }
 
-async function proxyApi(request: Request, url: URL, apiOrigin: string, publicOrigin?: string) {
+async function proxyApi(
+  request: Request,
+  url: URL,
+  apiOrigin: string,
+  publicOrigin: string | undefined,
+  peer: string | undefined,
+) {
   const origin = request.headers.get('origin');
   if (
     request.headers.get('sec-fetch-site') === 'cross-site' ||
@@ -89,6 +103,9 @@ async function proxyApi(request: Request, url: URL, apiOrigin: string, publicOri
   // The browser origin has been checked here. The API checks the internal
   // origin on the new connection and retains its own direct-request defense.
   if (origin !== null) headers.set('origin', apiOrigin);
+  // Socket metadata only: a browser cannot choose the address it is limited by.
+  headers.delete(CLIENT_ADDRESS_HEADER);
+  if (peer) headers.set(CLIENT_ADDRESS_HEADER, peer);
 
   try {
     const response = await fetch(target, {
@@ -176,7 +193,7 @@ export function createStaticServer(options: StaticServerOptions) {
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
         // A job event stream can be quiet for longer than the static timeout.
         server.timeout(request, 0);
-        return proxyApi(request, url, apiOrigin, publicOrigin);
+        return proxyApi(request, url, apiOrigin, publicOrigin, server.requestIP(request)?.address);
       }
 
       // A built bundle is read only, so reading it is the whole vocabulary.

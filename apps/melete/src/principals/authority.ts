@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CapabilityClaims } from '@melete/contracts';
 import { and, eq, isNull, type SQL, type SQLWrapper, sql } from 'drizzle-orm';
+import type { Sql, TransactionSql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { job, owner, space, spaceMembership } from '../db/schema.ts';
@@ -26,6 +27,30 @@ export function visibleJob(jobId: SQLWrapper, principalId = requestPrincipal()):
   return sql`exists (select 1 from job authority_job where authority_job.id = ${jobId}
     and coalesce(authority_job.principal_id, (select id from owner limit 1)) = ${principalId}
     and ${visibleSpace(sql`authority_job.space_id`, principalId)})`;
+}
+
+/**
+ * A job belongs to the principal it names; an unnamed job predates principals
+ * and belongs to the setup owner. Membership of the job's space never widens
+ * this: the caller has already been authorized for the space it selects.
+ */
+export function ownJob(
+  principalColumn: SQLWrapper = job.principalId,
+  principalId = requestPrincipal(),
+): SQL | undefined {
+  if (!principalId) return undefined;
+  return sql`coalesce(${principalColumn}, (select id from owner limit 1)) = ${principalId}`;
+}
+
+/** The same ownership rule for hand-written queries that alias the job table. */
+export function ownJobClause(
+  query: Sql | TransactionSql,
+  alias: string,
+  principalId = requestPrincipal(),
+) {
+  return principalId
+    ? query`and coalesce(${query(alias)}.principal_id, (select id from owner limit 1)) = ${principalId}`
+    : query``;
 }
 
 /** Private memory questions remain an owner surface inside a shared space. */

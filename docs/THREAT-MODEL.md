@@ -182,7 +182,7 @@ The 2026-09-12 review added the missing peer-port checks:
 `a claimed attempt cannot reach the owner control plane and retains its job boundary`.
 The earlier peer-set test alone did not establish this control-plane boundary.
 An integration test verifies the transport rejection before and after owner
-creation; another verifies per-source login backoff and forged-header rejection.
+creation. Sign-in limits and their tests are under Attacker 6.
 
 ## Attacker 5: a hostile operator-installed MCP server or generated wrapper
 
@@ -230,6 +230,77 @@ reject an unisolated launch; tests prove rejection before spawning. A
 container-isolated MCP launcher has not been built or tested.
 Composition likewise requires the cell executor, which the default service does
 not inject; its test-only `node:vm` fallback is not an OS or memory boundary.
+
+## Attacker 6: a remote client at the sign-in form
+
+This attacker reaches `/login` and `/setup` like any browser, from one address
+or many, and knows or guesses the owner's email. The aims are to guess the
+password, to learn which emails have accounts, and to keep the owner from
+signing in by exhausting whatever limits the guessing.
+
+Guessing meets three in-memory limiters in front of the argon2id check: one per
+client address, one per account shared by every browser that has not signed in
+to that account before, and one per known device. The client address is the
+socket source, or the address the web proxy states in
+`X-Melete-Client-Address`. The proxy writes that header from its own socket over
+anything the browser sent, and the API believes it only on a connection from the
+peer named by `MELETE_TRUSTED_PROXY`, which Compose fixes to the edge-only `web`
+service. From any other peer the header is ignored, so inventing addresses mints
+no fresh buckets. An unknown email costs the same verification and returns the
+same 401 as a wrong password. `/setup` answers an installed service before it
+parses or hashes anything and has a limiter of its own.
+
+Lockout is the part a limiter can turn against the owner. A refused request
+changes no limiter state, so it cannot lengthen a wait or postpone a reset. A
+browser that has signed in to the account before carries a signed
+`melete_device` cookie; with it, the browser bypasses the address and account
+limiters and spends an attempt budget of its own. The cookie authenticates
+nobody, is bound to one account by a keyed digest, and is signed with a key
+derived from `MELETE_MASTER_KEY`. The tests `strangers cannot lock a known
+browser out of its account`, `browsers behind the web proxy are throttled by
+their own address`, `a forged client address from a peer that is not the proxy
+mints no fresh bucket`, `setup answers an installed service before hashing and
+is throttled` and `an unknown email costs the same password verification as a
+known one` in [auth.test.ts](../apps/melete/test/integration/auth.test.ts)
+exercise each property. Exact numbers are in
+[DEPLOYMENT](DEPLOYMENT.md#sign-in-limits).
+
+What remains: a stranger who keeps the shared account limiter closed delays a
+sign-in from a browser that is new to the account, to at most one admitted
+attempt per 60 seconds, for as long as the guessing continues. A known browser
+is unaffected. A stolen device cookie removes that protection for its holder
+and nothing else; it expires after 90 days and cannot be revoked singly. All
+limiter state is per process and is cleared by a restart. Behind the default
+loopback ports, an SSH tunnel or a host TLS proxy, every browser reaches the web
+server from the Docker gateway and therefore shares one client address. No
+second factor exists. Distributed guessing below the account limit is slowed,
+not stopped; the password remains the control.
+
+## Attacker 7: another account on the same installation
+
+The setup owner can provision further accounts. Such an account is a full
+person with a password, not a guest of the owner, and must not reach the
+owner's rows or act through the owner's connections.
+
+A session's space is derived from its authenticated principal on every request:
+that principal's own personal space, or a stored selection it is still a member
+of under the membership generation the selection was stored with. No path falls
+back to another account's space, and an account without a personal space
+receives its own on first use. Conversations, plans, routines, permissions,
+drafts, receipts, undo, search, quick answers, the event stream, artifacts,
+reactions and browser takeover or handback are also checked against the job's
+principal, so they stay private inside a shared space.
+[principal-scope.test.ts](../apps/melete/test/integration/principal-scope.test.ts)
+drives each surface from a second account against the owner's rows, and from the
+owner against the second account's, and asserts that nothing was read, decided,
+sent, undone or steered.
+
+What remains: the profile, tasks, saved rules, agents and connection reads are
+rows of a space rather than of a person, so a shared space offers them to its
+owner only. A file whose job row was deleted is scoped by its space alone.
+Accounts share one service process, one database role and one master key;
+isolation between them is an application check, not an operating-system or
+database boundary.
 
 ## Credentials, host and storage
 

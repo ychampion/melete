@@ -16,6 +16,7 @@ import { forgetMemory } from '../memory/forget.ts';
 import { invalidateDependencies, notifyInvalidated } from '../memory/invalidate.ts';
 import { writeRepairBriefs } from '../memory/outputs.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
+import { ownJobClause } from '../principals/authority.ts';
 import { explainHandles, memoryKeyLabel } from './evidence.ts';
 import { plainText } from './projectors.ts';
 import { experienceMissing } from './service.ts';
@@ -207,7 +208,7 @@ export class ExperienceMemory {
       if (!(await getHead(tx, scope, id))) throw experienceMissing();
       const [output] =
         await tx`select o.*, j.title from memory_outputs o join memory_output_uses u on u.output_row_id = o.id
-        left join job j on j.id = o.job_id and j.space_id = o.space_id
+        left join job j on j.id = o.job_id and j.space_id = o.space_id ${ownJobClause(tx, 'j', ownerId)}
         where o.space_id = ${spaceId} and u.claim_id = ${id} order by o.created_at desc limit 1`;
       if (!output) return { reasons: [], output: null, used_at: null };
       const uses =

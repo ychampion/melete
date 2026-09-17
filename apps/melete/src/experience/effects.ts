@@ -13,6 +13,7 @@ import { appendEvent, loadAction, recordId } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { DEFAULT_BUDGET } from '../jobs/service.ts';
+import { ownJobClause, requestPrincipal } from '../principals/authority.ts';
 import { type ActionRow, draftForReview, object, projectReceipt } from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
@@ -30,7 +31,11 @@ export const actionProjectionRow = (value: Action): ActionRow => ({
   resolvedAt: value.resolved_at ? new Date(value.resolved_at) : null,
 });
 
-/** Owner commands get a private durable attempt; the runtime never receives its capability. */
+/**
+ * Owner commands get a private durable attempt; the runtime never receives its
+ * capability. Every lookup is fenced twice: by the session's space and by the
+ * signed-in principal, because an action belongs to a job and a job is private.
+ */
 export class ExperienceEffects {
   constructor(
     readonly sql: Sql,
@@ -42,7 +47,7 @@ export class ExperienceEffects {
     const [row] = await this.sql`select a.id, j.id as parent_id, c.id as connection_id,
       c.label, c.provider, c.scopes from action a join job j on j.id = a.job_id
       join connection c on c.id = a.connection_id where a.id = ${id}
-      and j.space_id = ${spaceId} and c.space_id = ${spaceId}`;
+      and j.space_id = ${spaceId} and c.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}`;
     if (!row) throw experienceMissing();
     return { action: await loadAction(this.sql, id), row };
   }
@@ -66,13 +71,14 @@ export class ExperienceEffects {
     const key = `home:${spaceId}:${connectionId}:${kind}:${Math.floor(Date.now() / 60000)}`;
     // Owner reads must expire without becoming a queued runtime task after recovery.
     const budget = { ...DEFAULT_BUDGET, max_attempts: 1 };
+    const principalId = requestPrincipal() ?? null;
     const jobId = await this.sql.begin(async (tx) => {
       await tx`select id from space where id = ${spaceId} for update`;
       const [existing] = await tx`select id from job where experience_command_key = ${key}`;
       if (existing) return String(existing.id);
       const id = recordId('job');
-      await tx`insert into job (id, space_id, title, objective, kind, state, lease_epoch, experience_command_key, constraints, budget)
-        values (${id}, ${spaceId}, 'Read upcoming events', 'Read upcoming events', 'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(budget)}::jsonb)`;
+      await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch, experience_command_key, constraints, budget)
+        values (${id}, ${spaceId}, ${principalId}, 'Read upcoming events', 'Read upcoming events', 'command', 'running', 1, ${key}, '{}'::jsonb, ${JSON.stringify(budget)}::jsonb)`;
       await tx`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at)
         values (${recordId('att')}, ${id}, 1, 'experience-v1', 'owner', 'explicit-command', now() + interval '5 minutes')`;
       return id;
@@ -127,8 +133,8 @@ export class ExperienceEffects {
 
   private async command(spaceId: string, source: Action, verb: string) {
     return this.sql.begin(async (tx) => {
-      const [parent] =
-        await tx`select * from job where id = ${source.job_id} and space_id = ${spaceId} for update`;
+      const [parent] = await tx`select j.* from job j where j.id = ${source.job_id}
+        and j.space_id = ${spaceId} ${ownJobClause(tx, 'j')} for update`;
       if (!parent) throw experienceMissing();
       const key = `${source.id}:${verb}`;
       const [existing] = await tx`select id from job where experience_command_key = ${key}`;
@@ -146,9 +152,10 @@ export class ExperienceEffects {
       const [turn] =
         await tx`select t.agent_id from attempt a join experience_turn t on t.id = a.turn_id where a.id = ${source.attempt_id}`;
       const id = recordId('job');
-      await tx`insert into job (id, space_id, title, objective, kind, state, lease_epoch, agent_id,
+      // The command acts for whoever owns the job it came from, never for the space at large.
+      await tx`insert into job (id, space_id, principal_id, title, objective, kind, state, lease_epoch, agent_id,
         experience_parent_id, experience_command_key, constraints, budget)
-        values (${id}, ${spaceId}, ${verb === 'send' ? 'Send the reviewed draft' : 'Undo the selected change'},
+        values (${id}, ${spaceId}, ${parent.principal_id ?? null}, ${verb === 'send' ? 'Send the reviewed draft' : 'Undo the selected change'},
         ${verb === 'send' ? 'Send the reviewed draft' : 'Undo the selected change'}, 'command', 'running', 1,
         ${turn?.agent_id ?? parent.agent_id}, ${parent.id}, ${key}, ${JSON.stringify(parent.constraints)}::jsonb,
         ${JSON.stringify(parent.budget)}::jsonb)`;
@@ -159,12 +166,22 @@ export class ExperienceEffects {
   }
 
   async claims(jobId: string, connectionId: string): Promise<CapabilityClaims> {
-    const [row] = await this.sql`select j.*, a.id as attempt_id, c.scopes from job j
+    const [row] = await this.sql`select j.*, a.id as attempt_id, c.scopes,
+      (select m.generation from space_membership m where m.space_id = j.space_id
+        and m.principal_id = j.principal_id and m.revoked_at is null) as membership_generation
+      from job j
       join attempt a on a.job_id = j.id and a.epoch = j.lease_epoch
       join connection c on c.id = ${connectionId} and c.space_id = j.space_id
       where j.id = ${jobId} and j.kind = 'command'`;
     if (!row) throw experienceMissing();
     return {
+      // A command that names its principal is admitted only as that principal.
+      ...(row.principal_id
+        ? {
+            principal_id: String(row.principal_id),
+            membership_generation: Number(row.membership_generation ?? 0),
+          }
+        : {}),
       job_id: jobId,
       attempt_id: String(row.attempt_id),
       space_id: String(row.space_id),
@@ -239,7 +256,8 @@ export class ExperienceEffects {
   ): Promise<{ receipt: ExperienceReceipt | null } | NotAvailable> {
     const [lookup] = await this
       .sql`select u.* from experience_undo u join action a on a.id = u.action_id
-      join job j on j.id = a.job_id where (u.action_id = ${id} or u.handle = ${id}) and j.space_id = ${spaceId}`;
+      join job j on j.id = a.job_id where (u.action_id = ${id} or u.handle = ${id})
+      and j.space_id = ${spaceId} ${ownJobClause(this.sql, 'j')}`;
     const { action: source } = await this.source(spaceId, lookup ? String(lookup.action_id) : id);
     const reversal = this.reversal(source);
     if (!reversal)

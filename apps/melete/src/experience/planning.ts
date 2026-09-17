@@ -20,6 +20,7 @@ import {
 import { newId } from '../ids.ts';
 import type { JobRow } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { ownJob } from '../principals/authority.ts';
 import { object, plainText } from './projectors.ts';
 import { type ExperienceService, experienceMissing } from './service.ts';
 
@@ -71,7 +72,7 @@ export class ExperiencePlanning {
     const [row] = await this.db
       .select()
       .from(job)
-      .where(and(eq(job.id, id), eq(job.spaceId, spaceId), eq(job.kind, 'plan')));
+      .where(and(eq(job.id, id), eq(job.spaceId, spaceId), eq(job.kind, 'plan'), ownJob()));
     if (!row) throw experienceMissing();
     return row;
   }
@@ -127,7 +128,7 @@ export class ExperiencePlanning {
     const rows = await this.db
       .select()
       .from(job)
-      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'plan')))
+      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'plan'), ownJob()))
       .orderBy(desc(job.updatedAt))
       .limit(100);
     const plans = [];
@@ -265,7 +266,7 @@ export class ExperiencePlanning {
       .select({ trigger, title: job.title })
       .from(trigger)
       .innerJoin(job, eq(job.id, trigger.jobId))
-      .where(and(eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule')))
+      .where(and(eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule'), ownJob()))
       .orderBy(trigger.createdAt)
       .limit(100);
     return {
@@ -326,7 +327,9 @@ export class ExperiencePlanning {
       .select({ trigger, job })
       .from(trigger)
       .innerJoin(job, eq(job.id, trigger.jobId))
-      .where(and(eq(trigger.id, id), eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule')));
+      .where(
+        and(eq(trigger.id, id), eq(job.spaceId, spaceId), eq(trigger.kind, 'schedule'), ownJob()),
+      );
     if (!row) throw experienceMissing();
     if (!this.triggers) return unavailable('Scheduled routines are not connected yet.');
     if (!row.trigger.enabled) return unavailable('Enable this routine before testing it.');

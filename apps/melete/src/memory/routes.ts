@@ -197,15 +197,20 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
       }),
     ),
   );
-  app.get('/memory/jobs/:id/repair-briefs', async (c) =>
-    c.json({
-      repair_briefs: await pendingRepairBriefs(
-        options.sql,
-        c.get('memoryScope'),
-        prefixedId('job').parse(c.req.param('id')),
-      ),
-    }),
-  );
+  app.get('/memory/jobs/:id/repair-briefs', async (c) => {
+    const scope = c.get('memoryScope');
+    const jobId = prefixedId('job').parse(c.req.param('id'));
+    // A brief carries a job's before-and-after values. The job stays private to
+    // its principal inside a shared space, so its briefs are read by that
+    // principal alone; a job that names none belongs to the setup owner.
+    if (scope.principalId) {
+      const [owned] = await options.sql`select 1 from job where id = ${jobId}
+        and space_id = ${scope.spaceId}
+        and coalesce(principal_id, (select id from owner limit 1)) = ${scope.principalId}`;
+      if (!owned) throw new MemoryError('job_not_found');
+    }
+    return c.json({ repair_briefs: await pendingRepairBriefs(options.sql, scope, jobId) });
+  });
   app.get('/memory/claims', async (c) =>
     c.json(await listClaims(options.sql, c.get('memoryScope'))),
   );

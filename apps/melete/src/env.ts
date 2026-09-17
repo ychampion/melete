@@ -53,6 +53,11 @@ const variables = z.object({
   PORT: z.coerce.number().int().positive().default(8787),
   /** Compose resolves an alias assigned only to edge; local development uses loopback. */
   MELETE_API_BIND: z.string().min(1).default('127.0.0.1'),
+  /**
+   * The web proxy on the edge network, by service name or address. Only a
+   * connection from it may state a browser's address; unset, no peer is believed.
+   */
+  MELETE_TRUSTED_PROXY: z.string().min(1).optional(),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
   /**

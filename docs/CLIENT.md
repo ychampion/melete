@@ -252,8 +252,11 @@ connected app and the readable source title; `connection_id` selects its logo.
 v0.1 has one installation owner; additional accounts and shared spaces exist
 as API primitives without an invitation interface. Set up or sign in with the
 existing password endpoints; the client sends the `HttpOnly` session cookie with
-`credentials: 'include'`. Experience routes derive their personal space from
-that session. Requests cannot supply an owner or space id. An item from another space is unavailable.
+`credentials: 'include'`. Experience routes derive their space from the
+account that session authenticates: that account's own personal space, created
+on first use when an older installation lacks one. Requests cannot supply an
+owner or space id. An item from another space or another account is unavailable
+and reads as 404.
 Browser mutations must originate from the same origin as the API.
 
 For email sign-in, configure `MELETE_PUBLIC_URL` and connect the owner's own

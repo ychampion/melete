@@ -17,6 +17,7 @@ import type { SubmissionService } from '../jobs/submissions.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import { MemoryError } from '../memory/db.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
+import { ownJobClause } from '../principals/authority.ts';
 import { AGENT_TEMPLATES } from './agents.ts';
 import { ExperienceEffects } from './effects.ts';
 import { ExperienceEvents } from './events.ts';
@@ -40,6 +41,27 @@ export type ExperienceDeps = {
   memoryJournal?: RestrictionJournal;
   triggers?: TriggerService;
 };
+/**
+ * Rows these routes keep for the space as a whole rather than for one job: the
+ * profile, tasks, saved rules, agents and connection reads. In a personal space
+ * the caller is always the owner. In a shared space only its owner works with
+ * them; a member keeps to conversations, plans and routines of their own.
+ */
+const SPACE_OWNER_SURFACES = new Set([
+  'GET /profile',
+  'PATCH /profile',
+  'GET /home',
+  'GET /tasks',
+  'POST /tasks',
+  'PATCH /tasks/{id}',
+  'DELETE /tasks/{id}',
+  'GET /experience/connections',
+  'GET /rules',
+  'DELETE /rules/{id}',
+  'POST /agents',
+  'PATCH /agents/{id}',
+]);
+
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
@@ -62,7 +84,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
   const effects = async (spaceId: string, id: string) => {
     await service.requireConversation(spaceId, id);
     const linked = deps.sql
-      ? await deps.sql`select id from job where experience_parent_id = ${id} and space_id = ${spaceId}`
+      ? await deps.sql`select j.id from job j where j.experience_parent_id = ${id}
+          and j.space_id = ${spaceId} ${ownJobClause(deps.sql, 'j')}`
       : [];
     return deps.db
       .select({ action, connection })
@@ -89,7 +112,8 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       home.saveTask(spaceId, input, c.req.param('id') ?? ''),
     'DELETE /tasks/{id}': (spaceId, c) => home.deleteTask(spaceId, c.req.param('id') ?? ''),
     'GET /experience/connections': (spaceId) => home.connections(spaceId),
-    'GET /search': (spaceId, c) => home.search(spaceId, c.req.query('q') ?? ''),
+    'GET /search': (spaceId, c) =>
+      home.search(spaceId, c.req.query('q') ?? '', c.get('sessionSpace')?.role !== 'member'),
     'GET /plans': (spaceId) => planning.plans(spaceId),
     'POST /plans': (spaceId, _c, input) => planning.create(spaceId, input),
     'GET /plans/{id}': async (spaceId, c) => ({
@@ -244,8 +268,19 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     app.on(method, path.replace(/\{([^}]+)\}/g, ':$1'), async (c) => {
       const spaceId = c.get('experienceSpaceId');
       if (!spaceId) throw new ServiceError('not_found', 'Your personal space is not ready.', 404);
+      const member = c.get('sessionSpace')?.role === 'member';
+      const ownerOnly = () =>
+        new ServiceError('scope_denied', 'Only the owner of this space can do that.', 403);
+      if (member && SPACE_OWNER_SURFACES.has(key)) throw ownerOnly();
       const input = 'request' in operation ? operation.request.parse(await c.req.json()) : {};
       if ('query' in operation) operation.query.parse(c.req.query());
+      // A standing rule changes what the whole space permits, not one job.
+      if (
+        member &&
+        key === 'POST /permissions/{id}' &&
+        (input as { option?: string }).option === 'always'
+      )
+        throw ownerOnly();
       const handler = handlers[key];
       let body: unknown;
       try {

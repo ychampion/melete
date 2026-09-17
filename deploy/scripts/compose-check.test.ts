@@ -271,6 +271,20 @@ describe('the check catches the mistakes that would matter', () => {
     expect(failures(broken)).toContain('the owner API binds only to its edge network address');
   });
 
+  test('trusting any peer but the edge-only web proxy for browser addresses is rejected', () => {
+    const check = 'only the web proxy may state a browser address to the owner API';
+    const renamed = structuredClone(compose);
+    if (renamed.services?.melete?.environment)
+      renamed.services.melete.environment.MELETE_TRUSTED_PROXY = 'runtime';
+    expect(failures(renamed)).toContain(check);
+    const unset = structuredClone(compose);
+    delete unset.services?.melete?.environment?.MELETE_TRUSTED_PROXY;
+    expect(failures(unset)).toContain(check);
+    const widened = structuredClone(compose);
+    if (widened.services?.web) widened.services.web.networks = ['edge', 'internal'];
+    expect(failures(widened)).toContain(check);
+  });
+
   test('assigning the owner API alias to the runtime network is rejected', () => {
     const broken = structuredClone(compose);
     const networks = broken.services?.melete?.networks;
