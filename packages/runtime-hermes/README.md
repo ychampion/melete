@@ -52,7 +52,10 @@ They prove adapter behavior for those frames, not a full real-engine deployment.
 
 Broker-tool decisions use Melete park-and-resume:
 `a parked action turns a completion into waiting_for_approval`.
-They are not routed through Hermes's plugin approval gate.
+They are not routed through Hermes's plugin approval gate. The resumed input
+names the approved tool and its stored payload, and `resume_action` forwards
+only the action id (`an approved decision names the tool, the approved payload
+and how to carry it out`; `test_resume_sends_only_the_action_id_and_returns_the_receipt`).
 Unexpected shell approval notifications are denied
 (`a shell-command approval is denied, never allowed for the session`).
 

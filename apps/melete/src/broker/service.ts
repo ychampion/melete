@@ -77,6 +77,7 @@ import {
   recordId,
 } from './records.ts';
 import { type MappingProposal, type RepairPorts, type RepairRun, runRepair } from './repair.ts';
+import { RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL, requestRuntimeWait } from './runtime-wait.ts';
 import {
   collectOriginFields,
@@ -221,6 +222,7 @@ export class BrokerService implements BrokerOperations {
       nativeTools: [
         REACT_TOOL,
         RUNTIME_WAIT_TOOL,
+        RESUME_ACTION_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
       ],
     });
@@ -703,6 +705,43 @@ export class BrokerService implements BrokerOperations {
     if (action.status === 'admitted')
       return this.proposalView(await this.dispatch(action.id), key, repeated);
     return this.proposalView(action, key, repeated);
+  }
+
+  /**
+   * Carry out an approved action by id. The caller supplies no payload: the
+   * stored canonical bytes go through the same admission and dispatch a
+   * byte-identical proposal would reach, under this attempt's authority, so the
+   * payload-hash and revision binding, the budget reservation and the fence are
+   * the ones that already exist. Any other status reads back its durable
+   * disposition, which is why an unknown outcome is never sent again.
+   */
+  async resume(claims: CapabilityClaims, id: string): Promise<EffectProposalResponse> {
+    const action = await this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, claims.job_id);
+      await checkAttempt(tx, job, claims);
+      const stored = await loadAction(tx, id);
+      if (stored.job_id !== job.id) throw new BrokerFault('action_not_found');
+      const access = await agentAccess(tx, job.id);
+      if (access.chat && directSend(stored.kind))
+        throw new BrokerFault('scope_denied', 'Review the draft and use its send control.');
+      const { tool } = await this.tool(tx, job, claims, stored.connection_id, stored.kind);
+      // An in-cell intent is executed by the runtime that proposes it, not replayed here.
+      if (tool.execution === 'in_cell' && ['approved', 'admitted'].includes(stored.status))
+        throw new BrokerFault(
+          'action_not_admissible',
+          'This approved action runs inside the runtime. Propose the same tool again with the approved arguments.',
+        );
+      return stored;
+    });
+    const key = action.intent_key ?? '';
+    if (action.status === 'approved') {
+      await this.admit(claims, action.id, action.payload_hash);
+      return this.proposalView(await this.dispatch(action.id), key, false);
+    }
+    // A crash between the two durable steps has not sent anything yet.
+    if (action.status === 'admitted')
+      return this.proposalView(await this.dispatch(action.id), key, false);
+    return this.proposalView(action, key, true);
   }
 
   proposeRead(claims: CapabilityClaims, request: ProposeActionRequest) {

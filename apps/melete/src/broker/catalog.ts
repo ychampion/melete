@@ -18,6 +18,7 @@ import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
 import { gist, relevance, terms, words } from './lexical.ts';
 import { appendEvent, checkAttempt, type LockedJob, lockJob, type Query } from './records.ts';
+import { hasResumableAction, RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
@@ -150,6 +151,8 @@ export type CoreSelectionContext = {
   waitable?: boolean;
   /** The attempt answers a person directly, so a reaction may be the whole reply. */
   conversational?: boolean;
+  /** An approved action is waiting to be carried out, so resuming it comes first. */
+  resumable?: boolean;
 };
 
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
@@ -182,13 +185,18 @@ export function selectCore(
       item,
       score: relevance(query, item.entry),
       pinned:
-        item.tool.connection_id === null &&
-        ((context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
-          (context.conversational === true && item.tool.name === REACT_TOOL_NAME)),
+        item.tool.connection_id !== null
+          ? 0
+          : context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name
+            ? 2
+            : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
+                (context.conversational === true && item.tool.name === REACT_TOOL_NAME)
+              ? 1
+              : 0,
     }))
     .sort(
       (a, b) =>
-        Number(b.pinned) - Number(a.pinned) ||
+        b.pinned - a.pinned ||
         b.score - a.score ||
         Number(b.item.core) - Number(a.item.core) ||
         b.item.uses - a.item.uses ||
@@ -422,19 +430,23 @@ export class ToolCatalog {
         uses: 0,
       });
     }
+    const resumable = await hasResumableAction(tx, job);
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
       if (tool.name === RUNTIME_WAIT_TOOL.name && !claims.scopes.includes(tool.name)) continue;
+      // Offered only while the owner's approval is waiting to be carried out.
+      if (tool.name === RESUME_ACTION_TOOL.name && !resumable) continue;
       if (
         !(await accept(tool.name, tool.connection_id, () => {
-          const lifecycleWait =
-            tool.name === RUNTIME_WAIT_TOOL.name &&
-            schemaFingerprint(tool.input_schema) ===
-              schemaFingerprint(RUNTIME_WAIT_TOOL.input_schema) &&
-            tool.effect_class === RUNTIME_WAIT_TOOL.effect_class;
-          if (tool.connection_id !== null || (tool.effect_class !== 'read' && !lifecycleWait))
+          const lifecycle = [RUNTIME_WAIT_TOOL, RESUME_ACTION_TOOL].some(
+            (typed) =>
+              tool.name === typed.name &&
+              schemaFingerprint(tool.input_schema) === schemaFingerprint(typed.input_schema) &&
+              tool.effect_class === typed.effect_class,
+          );
+          if (tool.connection_id !== null || (tool.effect_class !== 'read' && !lifecycle))
             throw new BrokerFault(
               'unknown_tool',
-              'Native catalog tools must be broker-owned reads or the typed lifecycle wait',
+              'Native catalog tools must be broker-owned reads or a typed lifecycle operation',
             );
           if (
             META_TOOLS.some((meta) => meta.name === tool.name) ||
@@ -487,6 +499,7 @@ export class ToolCatalog {
     return {
       text: [job.objective, row?.message].filter(Boolean).join(' '),
       waitable: row?.waitable === true,
+      resumable: await hasResumableAction(tx, job),
       conversational:
         access.chat || first || Number(row?.message_seq ?? 0) > Number(row?.prior_cursor ?? 0),
     };

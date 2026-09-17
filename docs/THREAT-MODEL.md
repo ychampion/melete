@@ -21,7 +21,11 @@ General prompt-injection containment is **not claimed**.
 
 The broker checks canonical payloads, approval hashes and attempt authority.
 Conformance 4, `An approval cannot be spent on different content`, tests
-payload/revision binding and cancellation fencing. The memory/broker test
+payload/revision binding and cancellation fencing. `resume_action` carries only
+an action id: an attempt can carry out an action the owner approved for its own
+job and current revision, with the stored bytes, under its own live capability,
+and nothing else (`resume refuses whatever the owner has not approved for this
+job and revision`). The memory/broker test
 `an address read off a page is refused as untrusted_recipient_origin`
 checks a planted address at admission; it does not prove arbitrary prose is
 safe or that every possible destination field is recognized.

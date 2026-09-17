@@ -204,6 +204,43 @@ describe('context assembly', () => {
     representative.job.constraints = { bloated: 'x'.repeat(16000) };
     expect(measureRenderedInput(representative).scaffolding).toBeGreaterThan(4000);
   });
+  test('an approved decision names the tool, the approved payload and how to carry it out', () => {
+    const resumed = structuredClone(bundle);
+    resumed.inputs.approval_results = [
+      {
+        action_id: `act_${SUFFIX}`,
+        decision: 'approved',
+        note: 'go ahead',
+        kind: 'email.send',
+        status: 'approved',
+        payload: { to: 'alex@example.test', body: 'I can attend Friday.' },
+      },
+    ];
+    const text = renderInput(resumed);
+    expect(text).toContain(`act_${SUFFIX} (email.send) was approved and has not been carried out.`);
+    expect(text).toContain(`Call resume_action with action_id "act_${SUFFIX}"`);
+    expect(text).toContain('{"to":"alex@example.test","body":"I can attend Friday."}');
+    expect(text).toContain('The owner said: go ahead');
+    // Once it has left, or when it was refused, there is nothing to resume.
+    const [decision] = resumed.inputs.approval_results;
+    if (!decision) throw new Error('fixture decision absent');
+    decision.status = 'succeeded';
+    expect(renderInput(resumed)).not.toContain('resume_action');
+    expect(renderInput(resumed)).toContain('was approved; it is now succeeded.');
+    decision.status = 'denied';
+    decision.decision = 'denied';
+    expect(renderInput(resumed)).toContain('(email.send) was denied. It was not carried out');
+    expect(renderInput(resumed)).not.toContain('resume_action');
+    // A very large payload is abbreviated, never silently dropped.
+    decision.status = 'approved';
+    decision.decision = 'approved';
+    decision.payload = { body: 'x'.repeat(9000) };
+    expect(renderInput(resumed)).toContain(
+      '[payload abbreviated; the stored bytes are sent whole]',
+    );
+    expect(renderInput(resumed).length).toBeLessThan(4000);
+  });
+
   test('the identity is short enough to be a prefix, not a personality', () => {
     // A rough four-characters-per-token estimate; the contract caps it at 250.
     expect(Math.ceil(IDENTITY.length / 4)).toBeLessThan(CONTEXT_LIMITS.identity_tokens);

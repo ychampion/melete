@@ -363,7 +363,14 @@ withDb('durable waits, triggers and approval inputs', () => {
       expect(ready.stateVersion).toBe(3);
       const next = await claim(ready);
       expect(next.bundle.inputs.approval_results).toEqual([
-        { action_id: proposal.actionId, decision, note: 'Owner decision' },
+        {
+          action_id: proposal.actionId,
+          decision,
+          note: 'Owner decision',
+          kind: 'test.send',
+          status: decision,
+          payload: { to: 'reader@example.test', subject: 'Result', body: proposal.actionId },
+        },
       ]);
       expect(
         await handle.db.select().from(event).where(eq(event.type, 'approval_decided')),

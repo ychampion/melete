@@ -11,6 +11,15 @@ Tests include `the database itself refuses a second action for one intent key`
 and `one changed byte is a different effect that needs its own approval`.
 Semantic deduplication beyond that identity is **not claimed**.
 
+`resume` (`POST /actions/{id}/resume`, attempt capability only, no body read)
+carries out an approved action by id. It checks the attempt, the job, the chat
+send rule and the tool scope, then calls the same `admit` and `dispatch` a
+byte-identical proposal reaches, so the stored bytes, their hash and revision
+binding, the budget reservation and the fence are the existing ones. Every
+other status reads back its disposition; an unknown outcome is never replayed.
+`resume.ts` offers the `resume_action` tool only while an unexpired approval
+for the current revision waits.
+
 `startEffectBoundary` installs `createMemoryTrustResolver` by default.
 `an address read off a page is refused as untrusted_recipient_origin` exercises
 the memory/broker seam; it is no longer an unwired table-only stub.

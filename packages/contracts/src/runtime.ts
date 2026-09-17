@@ -224,6 +224,14 @@ export const attemptBundle = z.object({
         action_id: prefixedId(ID_PREFIXES.action),
         decision: z.enum(['approved', 'denied']),
         note: z.string().nullable(),
+        /**
+         * What was decided on, read from the action row when the bundle is
+         * built: the tool, the canonical payload the owner read, and where the
+         * action stands now. Optional, so an older producer still parses.
+         */
+        kind: z.string().min(1).optional(),
+        status: z.string().min(1).optional(),
+        payload: jsonObject.optional(),
       }),
     ),
     trigger_events: z.array(jsonObject),

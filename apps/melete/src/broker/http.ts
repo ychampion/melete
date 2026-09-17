@@ -27,6 +27,8 @@ export interface BrokerOperations {
   catalog(claims: CapabilityClaims): Promise<ToolSpec[]>;
   propose(claims: CapabilityClaims, request: ProposeActionRequest): Promise<EffectProposalResponse>;
   get(claims: CapabilityClaims, id: string): Promise<Action>;
+  /** Carry out an approved action by id; the caller supplies no payload. */
+  resume?(claims: CapabilityClaims, id: string): Promise<EffectProposalResponse>;
   /** Answer a message with a glyph instead of prose. Changes nothing outside. */
   react(
     claims: CapabilityClaims,
@@ -82,6 +84,7 @@ export function createBrokerApp(options: {
           path === '/reactions' ||
           path === '/say' ||
           ['/tools/search', '/tools/load', '/tools/call'].includes(path) ||
+          (/^\/actions\/[^/]+\/resume$/.test(path) && !!options.broker.resume) ||
           /^\/actions\/[^/]+\/execution\/(start|settle)$/.test(path)));
     if (!decision && !runtime) return c.json({ error: { code: 'not_found' } }, 404);
     if (Number(c.req.header('content-length') ?? '0') > 1_048_576) {
@@ -179,6 +182,10 @@ export function createBrokerApp(options: {
   app.get('/actions/:id', async (c) =>
     c.json({ action: await options.broker.get(c.get('claims'), c.req.param('id')) }),
   );
+  app.post('/actions/:id/resume', async (c) => {
+    if (!options.broker.resume) throw new BrokerFault('unknown_tool');
+    return c.json(await options.broker.resume(c.get('claims'), c.req.param('id')));
+  });
   app.post('/actions/:id/execution/start', async (c) => {
     if (!options.broker.startExecution) throw new BrokerFault('unknown_tool');
     return c.json(await options.broker.startExecution(c.get('claims'), c.req.param('id')));

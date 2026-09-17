@@ -103,15 +103,8 @@ export function renderInput(bundle: AttemptBundle): string {
 
   // The reason this wake exists goes last, because it is what the model should
   // act on first and recency is what it reads as urgency.
-  for (const approval of bundle.inputs.approval_results) {
-    const note = approval.note ? ` The owner said: ${approval.note}` : '';
-    lines.push(
-      '',
-      '## A decision was made',
-      '',
-      `${approval.action_id} was ${approval.decision}.${note}`,
-    );
-  }
+  for (const approval of bundle.inputs.approval_results)
+    lines.push('', '## A decision was made', '', renderDecision(approval));
   for (const event of bundle.inputs.trigger_events) {
     lines.push('', '## Something happened', '', JSON.stringify(event));
   }
@@ -120,6 +113,33 @@ export function renderInput(bundle: AttemptBundle): string {
   }
 
   return lines.join('\n');
+}
+
+const DECISION_PAYLOAD_CHARACTERS = 2000;
+
+/**
+ * One decision, with what it was about. An approved action that has not left
+ * yet is carried out by id: the broker sends the bytes the owner read, so the
+ * model is told to resume it and is never asked to reproduce them.
+ */
+function renderDecision(approval: AttemptBundle['inputs']['approval_results'][number]): string {
+  const what = approval.kind ? `${approval.action_id} (${approval.kind})` : approval.action_id;
+  const note = approval.note ? ` The owner said: ${approval.note}` : '';
+  if (approval.decision === 'denied')
+    return `${what} was denied. It was not carried out and it will not be.${note}`;
+  if (approval.status === undefined) return `${what} was approved.${note}`;
+  if (approval.status !== 'approved')
+    return `${what} was approved; it is now ${approval.status}.${note}`;
+  const serialized = JSON.stringify(approval.payload ?? {});
+  const payload =
+    serialized.length > DECISION_PAYLOAD_CHARACTERS
+      ? `${serialized.slice(0, DECISION_PAYLOAD_CHARACTERS)} [payload abbreviated; the stored bytes are sent whole]`
+      : serialized;
+  return [
+    `${what} was approved and has not been carried out.${note}`,
+    `Call resume_action with action_id "${approval.action_id}" to carry out exactly what was approved: ${payload}`,
+    'Do not propose the tool again with retyped arguments; different bytes are a different action and need a new approval.',
+  ].join('\n');
 }
 
 /**

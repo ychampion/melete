@@ -180,6 +180,18 @@ and approval, reserves budget, dispatches, and records receipts or uncertainty.
 | Reject stale/budget-exhausted calls | `stale epoch and concurrent budget exhaustion stop requests before transport` |
 | Provider-specific request handling | `Astra requires Responses and Anthropic drops sampling controls without rewriting history` |
 | A cell capability cannot approve | Scenario 8 on the Linux stack: a valid cell capability read the catalog (200) but could not approve (401); an altered owner approval hash was refused (409) |
+| An approved action is resumed by id, never retyped | `an approved action is carried out by id, with the stored bytes and the new attempt authority`, `resume refuses whatever the owner has not approved for this job and revision`, `an unknown outcome is never replayed through resume` in `resume-action.test.ts` |
+
+After an approval, the next attempt's input names the approved tool and its
+stored canonical payload, and the catalog offers `resume_action{action_id}`
+first while an unexpired approval for the current revision waits. The call
+carries no payload: the broker admits and dispatches the stored bytes through
+the same admission a byte-identical proposal reaches, under the new attempt's
+capability, so the payload-hash and revision binding, the budget reservation
+and the epoch fence are unchanged. Any other status reads back its durable
+disposition, which is why an unknown outcome is not sent again. A byte-identical
+re-proposal still dispatches (`a byte-identical proposal after approval still
+dispatches without resume`); an in-cell intent is not replayed this way.
 
 The gateway tests use fake transports/providers, including local TLS fixtures.
 Real-provider compatibility, automatic fallback correctness and an exportable

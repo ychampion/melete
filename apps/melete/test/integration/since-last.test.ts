@@ -200,6 +200,51 @@ withDb('the delta brief', () => {
     expect(text).toContain(approvalId);
   }, 60_000);
 
+  test('an approved decision arrives with the tool, the stored payload and where it stands', async () => {
+    const { handle } = fixture();
+    const actionId = newId('act');
+    await handle.db.insert(action).values({
+      id: actionId,
+      jobId,
+      attemptId: firstAttempt,
+      connectionId,
+      kind: 'test.send',
+      effectClass: 'write_external',
+      canonicalPayload: { body: 'Confirm Thursday.', to: 'manager@example.test' },
+      payloadHash: 'd'.repeat(64),
+      status: 'approved',
+      idempotencyKey: actionId,
+    });
+    const approvalId = newId('apr');
+    await handle.db.insert(approval).values({
+      id: approvalId,
+      actionId,
+      jobRevision: 0,
+      payloadHash: 'd'.repeat(64),
+      decision: 'approved',
+      decidedAt: new Date(),
+    });
+    await handle.sql`insert into event (job_id, attempt_id, type, payload, dedup_key)
+      values (${jobId}, ${firstAttempt}, 'approval_decided',
+        ${JSON.stringify({ approval_id: approvalId, action_id: actionId, decision: 'approved', note: null })}::jsonb,
+        ${`${approvalId}:decision`})`;
+
+    const row = await fixture().jobs.get(jobId);
+    const bundle = await serviceTransaction(handle.db, (tx) =>
+      buildAttemptSkeleton(tx, row, identity(newId('att')), model, 0),
+    );
+    expect(bundle.inputs.approval_results).toEqual([
+      {
+        action_id: actionId,
+        decision: 'approved',
+        note: null,
+        kind: 'test.send',
+        status: 'approved',
+        payload: { body: 'Confirm Thursday.', to: 'manager@example.test' },
+      },
+    ]);
+  }, 60_000);
+
   test('a first wake has no prior work to name, and says so rather than inventing some', async () => {
     const { handle, jobs } = fixture();
     const fresh = await jobs.create({

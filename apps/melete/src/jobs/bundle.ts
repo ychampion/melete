@@ -392,6 +392,32 @@ export async function buildAttemptSkeleton(
     return [entry];
   });
   const history = assembleHistory(usableEvents, attempts.filter(contextMatches), afterSeq);
+  // A decision names an action id; the attempt needs to know what that action
+  // is. The row is this job's own, and the payload is the one the owner read.
+  const decided = history.inputs.approval_results.map((entry) => entry.action_id);
+  const decidedActions = decided.length
+    ? await tx
+        .select({
+          id: action.id,
+          kind: action.kind,
+          status: action.status,
+          payload: action.canonicalPayload,
+        })
+        .from(action)
+        .where(and(eq(action.jobId, row.id), inArray(action.id, decided)))
+    : [];
+  history.inputs.approval_results = history.inputs.approval_results.map((entry) => {
+    const stored = decidedActions.find((candidate) => candidate.id === entry.action_id);
+    const payload = jsonObject.safeParse(stored?.payload);
+    return stored
+      ? {
+          ...entry,
+          kind: stored.kind,
+          status: stored.status,
+          ...(payload.success ? { payload: payload.data } : {}),
+        }
+      : entry;
+  });
   const constraints = jobConstraints.parse(row.constraints);
   const context = await selectedContext(
     tx,

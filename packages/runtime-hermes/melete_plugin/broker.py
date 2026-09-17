@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -118,6 +119,11 @@ class BrokerClient:
             "client_ref": client_ref,
         }
         return self._call("POST", "/actions", body)
+
+    def resume(self, action_id: str) -> Dict[str, Any]:
+        """Carry out an approved action by id. No payload travels: the broker
+        replays the canonical bytes the owner read, so nothing can be retyped."""
+        return self._call("POST", f"/actions/{urllib.parse.quote(action_id, safe='')}/resume", {})
 
     def search_tools(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Discovery is scoped by the same attempt credential as an action."""
