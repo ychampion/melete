@@ -257,6 +257,58 @@ withDb('sandbox sessions', () => {
       expect(await sessions.beginCommand(session.id, actionId, actionId)).toBe('again');
     }
   });
+
+  test('a workspace is not resumed under a different egress policy', async () => {
+    const { scope, provider, sessions, base } = await setup();
+    const workspace = {
+      ...base,
+      agentId: scope.agentId,
+      persistence: 'pause' as const,
+      attemptId: await scope.attempt(),
+    };
+    const denied = sessionSpec('sessions-test', scope.spaceId);
+    const opened = await sessions.openWorkspace(workspace, provider, denied, signal());
+    await sessions.suspendWorkspace(opened.id, provider, signal());
+    const open = (session: string) => ({ ...denied(session), egress: { kind: 'open' } as const });
+    const refused = await sessions
+      .openWorkspace({ ...workspace, attemptId: await scope.attempt() }, provider, open, signal())
+      .catch((error: unknown) => error);
+    expect(refusalCode(refused)).toBe('workspace_incompatible');
+    // The workspace is still there, under the policy it was created with.
+    const resumed = await sessions.openWorkspace(
+      { ...workspace, attemptId: await scope.attempt() },
+      provider,
+      denied,
+      signal(),
+    );
+    expect(resumed).toMatchObject({ status: 'ready', resumed: true });
+    expect(resumed.egressPolicy).toEqual({ kind: 'deny_all' });
+  });
+
+  test('a workspace whose attempt stopped renewing its lease is suspended, not destroyed', async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const workspace = {
+      ...base,
+      agentId: scope.agentId,
+      persistence: 'pause' as const,
+      attemptId: await scope.attempt(),
+    };
+    const opened = await sessions.openWorkspace(workspace, provider, spec, signal());
+    await sql`update sandbox_session set lease_expires_at = now() - interval '1 second'
+      where id = ${opened.id}`;
+    expect(await sessions.sweep(() => provider, signal())).toEqual([]);
+    const suspended = await sessions.get(opened.id);
+    expect(suspended?.status).toBe('paused');
+    expect(suspended?.resumeRef).toBe(opened.providerSandboxId);
+    expect(await provider.inspect(sessionHandle(opened), signal())).toBe('paused');
+    const resumed = await sessions.openWorkspace(
+      { ...workspace, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    expect(resumed.resumed).toBe(true);
+  });
 });
 
 /** The fake, suspending the way a provider does, and refusing once when told to. */

@@ -37,7 +37,9 @@ const LIFETIME_SECONDS = 300;
 /** Long enough for this run, short enough that a forgotten snapshot goes on its own. */
 const SNAPSHOT_TTL_SECONDS = 3_600;
 const signal = () => AbortSignal.timeout(120_000);
-const log = (line: string) => process.stdout.write(`modal workspace: ${line}\n`);
+const begun = Date.now();
+const log = (line: string) =>
+  process.stdout.write(`modal workspace: ${((Date.now() - begun) / 1000).toFixed(1)}s ${line}\n`);
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 const PROBE = [
@@ -163,11 +165,13 @@ if (!live) {
   };
 
   beforeAll(async () => {
+    log('building the image');
     workRoot = await mkdtemp(path.join(tmpdir(), 'melete-modal-workspace-'));
     const { client } = await openModalClient({ credential: (use) => use(token) });
     try {
       const app = await client.apps.fromName(APP, { createIfMissing: true });
       await client.images.fromRegistry(IMAGE).build(app);
+      log('image ready');
     } finally {
       client.close();
     }
@@ -193,7 +197,9 @@ if (!live) {
     const snapshot = provider.snapshot as NonNullable<typeof provider.snapshot>;
     const resume = provider.resume as NonNullable<typeof provider.resume>;
     const forget = provider.deleteSnapshot as NonNullable<typeof provider.deleteSnapshot>;
+    log('creating the first sandbox');
     const first = await provider.create(spec('sbx_LIVEWS1'), signal());
+    log(`first sandbox ${first.providerSandboxId}`);
     await ran(first, 'act_01J0LIVEWSWRITE00000001', [
       'sh',
       '-c',
@@ -204,9 +210,12 @@ if (!live) {
       await ran(first, 'act_01J0LIVEWSARGUMENTS0001', ['sh', '-c', ARGUMENTS_PROBE]),
     );
     log(`container arguments: ${JSON.stringify(arguments_)}`);
+    log('snapshotting the first sandbox');
     const { snapshotRef: firstSnapshot } = await snapshot(first, signal());
+    log(`first snapshot ${firstSnapshot}`);
     await provider.destroy(first, signal());
     const second = await resume(firstSnapshot, spec('sbx_LIVEWS2'), signal());
+    log(`second sandbox ${second.providerSandboxId}`);
     expect(second.providerSandboxId).not.toBe(first.providerSandboxId);
     expect(text(await provider.getFile(second, '/work/kept.txt', 64, signal()))).toBe('remembered');
     const blocked = fields(await ran(second, 'act_01J0LIVEWSPROBE00000001', ['sh', '-c', PROBE]));
@@ -223,11 +232,14 @@ if (!live) {
       "printf again > /work/second.txt; printf '%s' ok",
     ]);
     const { snapshotRef: secondSnapshot } = await snapshot(second, signal());
+    log(`second snapshot ${secondSnapshot}`);
     await provider.destroy(second, signal());
     // The snapshot the second sandbox came from goes before the third is created
     // from the second snapshot: a chain must not depend on what it came from.
     await forget(firstSnapshot, signal());
+    log('the first snapshot is deleted before the third sandbox is created');
     const third = await resume(secondSnapshot, spec('sbx_LIVEWS3'), signal());
+    log(`third sandbox ${third.providerSandboxId}`);
     expect(text(await provider.getFile(third, '/work/kept.txt', 64, signal()))).toBe('remembered');
     expect(text(await provider.getFile(third, '/work/second.txt', 64, signal()))).toBe('again');
     await provider.destroy(third, signal());

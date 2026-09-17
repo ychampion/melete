@@ -60,6 +60,36 @@ withDb('sandbox reconciliation', () => {
     return { sql: handle.sql, scope, provider, sessions, open, sandbox };
   };
 
+  test('a workspace suspended as a snapshot is not asked about, and is never marked lost', async () => {
+    const { sql, scope, provider, sessions } = await setup();
+    const workspace = await sessions.openWorkspace(
+      {
+        connectionId: scope.connectionId,
+        spaceId: scope.spaceId,
+        jobId: scope.jobId,
+        attemptId: await scope.attempt(),
+        agentId: scope.agentId,
+        persistence: 'snapshot',
+      },
+      provider,
+      sessionSpec('install-a', scope.spaceId),
+      signal(),
+    );
+    const suspended = await sessions.suspendWorkspace(workspace.id, provider, signal());
+    expect(suspended.status).toBe('paused');
+    // Its sandbox was stopped when it was suspended; only the snapshot remains.
+    expect(await provider.inspect(sessionHandle(workspace), signal())).toBe('gone');
+    const report = await reconcileSandboxes({
+      sql,
+      provider,
+      project: 'install-a',
+      signal: signal(),
+    });
+    expect(report).toEqual({ destroyed: [], lost: [] });
+    expect((await sessions.get(workspace.id))?.status).toBe('paused');
+    expect(provider.engine.snapshots.has(suspended.resumeRef ?? '')).toBe(true);
+  });
+
   test('a labelled orphan is destroyed and a foreign sandbox is left alone', async () => {
     const { sql, scope, provider, open, sandbox } = await setup();
     const owned = (session: string) =>
