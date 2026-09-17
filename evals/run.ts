@@ -26,8 +26,16 @@ const options = parseArgs({
     case: { type: 'string' },
     gate: { type: 'boolean', default: false },
     list: { type: 'boolean', default: false },
+    regrade: { type: 'string' },
+    out: { type: 'string' },
   },
 }).values;
+// Re-scoring a recorded artifact needs no lock, stack, journal or provider key,
+// and makes no model call: it ends here, before any of them is touched.
+if (options.regrade) {
+  const { main } = await import('./regrade.ts');
+  process.exit(await main([options.regrade, ...(options.out ? ['--out', options.out] : [])]));
+}
 const integer = (value: string, name: string, max: number) => {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1 || number > max)
