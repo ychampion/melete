@@ -675,8 +675,13 @@ withDb('installing each kind of connection through the API', () => {
       jobs: new JobService(fixture.db, queue.boss),
       checkDatabase: async () => 'ok',
     });
-    const before = await h.sql`select count(*)::int as rows from connection`;
-    const secretsBefore = await h.sql`select count(*)::int as rows from secret`;
+    const stored = async () => {
+      const [counts] = await h.sql`select
+        (select count(*)::int from connection) as connections,
+        (select count(*)::int from secret) as secrets`;
+      return { connections: Number(counts?.connections), secrets: Number(counts?.secrets) };
+    };
+    const before = await stored();
     for (const body of [
       {
         provider: 'imap',
@@ -701,8 +706,7 @@ withDb('installing each kind of connection through the API', () => {
       expect(JSON.parse(text).error.code).toBe('sealing_unavailable');
       expectNoSecret(text);
     }
-    expect(await h.sql`select count(*)::int as rows from connection`).toEqual(before);
-    expect(await h.sql`select count(*)::int as rows from secret`).toEqual(secretsBefore);
+    expect(await stored()).toEqual(before);
   }, 120_000);
 
   test('the owner-controlled connections file still works, and wins over what a row stores', async () => {
