@@ -130,14 +130,14 @@ export type BrokerOptions = {
    * How the jobs module parks a responsibility: end the attempt, release the
    * worker, and put the job on a timer, all inside the broker's transaction.
    * Without one the broker performs the equivalent itself, which is correct on
-   * its own but does not know about anything W1 adds later.
+   * its own but does not know about anything the service layer adds later.
    */
   parkAttempt?: (
     tx: Query,
     input: { job_id: string; attempt_id: string; wake_at: string; reason: string },
   ) => Promise<void>;
   catalog?: Pick<CatalogOptions, 'coreTokenBudget' | 'skills'>;
-  /** W10a supplies the cell executor; omission keeps composition unavailable. */
+  /** The execution cell supplies this; omission keeps composition unavailable. */
   composeExecutor?: ComposeExecutor;
   /** The service runner must finalize its attempt before changing the job state. */
   deferApprovalWaitToRunner?: boolean;
@@ -1647,7 +1647,7 @@ export class BrokerService implements BrokerOperations {
     return rows.length;
   }
 
-  /** W1 may use its own cancel transaction; both serialize on the same job row. */
+  /** The service layer may use its own cancel transaction; both serialize on the same job row. */
   async cancel(jobId: string): Promise<void> {
     await this.sql.begin(async (tx) => {
       const job = await lockJob(tx, jobId);
