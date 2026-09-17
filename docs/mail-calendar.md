@@ -2,8 +2,9 @@
 
 Email and calendar connectors run inside the trusted service. This page
 describes how they work and the local IMAP, SMTP and CalDAV servers their tests
-run against. The connections API creates MCP connections; a mail or calendar
-account is connected by the operator, as described below.
+run against. A mailbox, a CalDAV calendar or a calendar feed is installed
+through `POST /connections`; the fields each kind takes are under
+[Installing a connection](CONNECTORS.md#installing-a-connection).
 See [CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
 
 ## Credentials and configuration
@@ -38,6 +39,15 @@ The Message-ID is how verification finds the message: a send happens once
 because Melete never resends an unknown send, not because the mail server
 discards a duplicate.
 
+A mailbox is named by host, port and TLS mode. `secure` means TLS from the
+first byte; without it the connector demands STARTTLS on IMAP and TLS on SMTP
+before it authenticates, so a mailbox that will not upgrade is stored with
+status `error` and check `unavailable`, and its password never crosses a
+plaintext connection (`a mailbox that will not upgrade is unusable, and no
+password reaches it` in `mail-transport.test.ts`).
+`POST /connections/{id}/health` tests it again at any time and brings the
+connection into service once the test passes.
+
 Local IMAP and SMTP servers exercise the real libraries
 (`real libraries authenticate, decode MIME for hygiene, send with stable
 Message-ID and verify Sent`). `plaintext test exceptions cannot target remote
@@ -53,7 +63,15 @@ read`); a sensitive message in any other shape is read like any other message.
 
 Read-only ICS imports expose only list; direct writes are rejected
 (`ICS import unfolds and unescapes fields, preserves recurrence, and rejects
-all writes`). CalDAV creation uses action UID and a conditional write
+all writes`). A calendar feed is the same read-only list over an address rather
+than a file: the whole address is sealed, because a published feed address is a
+credential, and it must be a public HTTPS destination when it is installed and
+again on every read. Importing an ICS file from disk stays with the
+owner-controlled configuration file. A CalDAV collection address must be
+HTTPS, and an address the connector cannot be built for is answered with `400`
+before a row or a sealed secret exists.
+
+CalDAV creation uses action UID and a conditional write
 (`CalDAV create uses action UID and conditional PUT; list and verify use real
 HTTP locally`).
 
