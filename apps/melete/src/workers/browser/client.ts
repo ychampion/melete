@@ -97,6 +97,8 @@ export class BrowserWorkerPool {
     readonly options: {
       spacesRoot: string;
       idleMs?: number;
+      /** How long a person's inactive takeover keeps a development child's Chromium open. */
+      humanIdleMs?: number;
       endpoints?: BrowserWorkerEndpoint[];
       allowLocalProcess?: boolean;
       /** Tests supply their own entry that injects a fixed local fixture; never owner/model configuration. */
@@ -150,6 +152,7 @@ export class BrowserWorkerPool {
           MELETE_BROWSER_ROOT: spaceRoot,
           MELETE_BROWSER_TOKEN: token,
           MELETE_BROWSER_IDLE_MS: String(this.options.idleMs ?? 300_000),
+          MELETE_BROWSER_HUMAN_IDLE_MS: String(this.options.humanIdleMs ?? 900_000),
           MELETE_BROWSER_HEADLESS: String(this.options.headless ?? true),
         },
         stdin: 'ignore',

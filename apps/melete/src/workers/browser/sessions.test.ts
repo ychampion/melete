@@ -50,6 +50,27 @@ suite('browser session lease', () => {
       await pool.close();
     }
   }, 20_000);
+  test("a development child is given the person's idle window", async () => {
+    const pool = new BrowserWorkerPool({
+      spacesRoot: await rootPromise,
+      allowLocalProcess: true,
+      idleMs: 1000,
+      humanIdleMs: 1500,
+    });
+    try {
+      const client = await pool.get('sp_human_idle');
+      const policy = { public_compartment: false, allowed_domains: ['example.com'] };
+      const first = await client.lease('job_signing_in', policy);
+      await client.takeover(first.id);
+      // With the fifteen-minute default the idle person's takeover would still hold the lease.
+      await new Promise((resolve) => setTimeout(resolve, 3500));
+      const next = await client.lease('job_after', policy);
+      expect(next.id).not.toBe(first.id);
+    } finally {
+      await pool.close();
+    }
+  }, 20_000);
+
   test('private worker HTTP refuses missing token and arbitrary routes', async () => {
     const manager = new BrowserSessions({ spaceId: 'sp_http', spaceRoot: await rootPromise });
     sessions.push(manager);
