@@ -97,19 +97,29 @@ afterAll(async () => {
   test('a reserved task family is refused', async () => {
     if (!fixture) return;
     expect(RESERVED_TASK_FAMILIES).toContain('procedure-scope');
+    const refusal = async (operation: () => Promise<unknown>) => {
+      try {
+        await operation();
+      } catch (error) {
+        return String(error);
+      }
+      return 'accepted';
+    };
     for (const family of RESERVED_TASK_FAMILIES) {
       const row = await fixture.jobs.create({
         space_id: fixture.spaceId,
         title: 'Forge',
         objective: 'Claim a synthetic evaluation family',
       });
-      await expect(
-        fixture.episodes.setScope(fixture.ownerId, row.id, {
-          scope: { ...learningScope, task_family: family },
-          template_id: 'forged',
-        }),
-      ).rejects.toThrow();
-      await expect(
+      expect(
+        await refusal(() =>
+          fixture.episodes.setScope(fixture.ownerId, row.id, {
+            scope: { ...learningScope, task_family: family },
+            template_id: 'forged',
+          }),
+        ),
+      ).toContain('reserved_task_family');
+      const forged = await refusal(() =>
         fixture.jobs.create({
           space_id: fixture.spaceId,
           title: 'Forge at creation',
@@ -120,7 +130,8 @@ afterAll(async () => {
             input_refs: [],
           },
         }),
-      ).rejects.toThrow();
+      );
+      expect(forged).toContain('reserved_task_family');
       const registered = await fixture.handle.db
         .select()
         .from(learningJob)
