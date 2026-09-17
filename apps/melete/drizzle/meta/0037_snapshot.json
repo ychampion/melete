@@ -1,5 +1,5 @@
 {
-  "id": "82c08a3e-d6c0-4e52-b0fa-2d7ae1c16cfb",
+  "id": "cfcd36ae-a325-4134-89bc-94fd2d17f9c7",
   "prevId": "d9375a49-0f9a-4fdf-aeab-cd1889943700",
   "version": "7",
   "dialect": "postgresql",
@@ -8629,6 +8629,12 @@
         },
         "settlement": {
           "name": "settlement",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "truncation": {
+          "name": "truncation",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

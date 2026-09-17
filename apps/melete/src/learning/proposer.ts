@@ -1,13 +1,27 @@
-import { and, eq, gt, isNotNull, sql } from 'drizzle-orm';
+import { type Intervention, PROCEDURE_CHECK_KINDS } from '@melete/contracts';
+import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { action, job } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { visibleJob } from '../principals/authority.ts';
-import { requireLearningSpace } from './episodes.ts';
-import { compileProcedure, definitionHash } from './procedure.ts';
+import {
+  admitProposal,
+  MAX_CHECKS,
+  MAX_STEP_CHARS,
+  MAX_STEPS,
+  MAX_TRIGGERS,
+  MAX_VARIANTS,
+} from './admit.ts';
+import { discriminate } from './discriminate.ts';
+import { type EpisodeRow, requireLearningSpace } from './episodes.ts';
+import { compileProcedure, definitionHash, RECORDS_FAMILY } from './procedure.ts';
 import type { ProposalGateway } from './proposal-gateway.ts';
 import { learningModelCall } from './proposal-schema.ts';
 import { episode, procedureCandidate, procedureTransition } from './schema.ts';
+
+/** Tool names help a model phrase a step; a long catalog would only crowd out the correction. */
+const MAX_TOOL_NAMES = 20;
 
 /** The proposer has inference and candidate insertion; it has no evaluation or promotion capability. */
 export class ProcedureProposer {
@@ -37,7 +51,7 @@ export class ProcedureProposer {
         .select()
         .from(procedureCandidate)
         .where(eq(procedureCandidate.episodeId, episodeId));
-      if (existing) return { existing, saved: null };
+      if (existing) return { existing, saved: null, objective: '' };
       if (
         saved.judgement !== 'corrected' ||
         !saved.intervention ||
@@ -56,24 +70,21 @@ export class ProcedureProposer {
         .update(episode)
         .set({ generationState: 'generating', generationStartedAt: new Date() })
         .where(eq(episode.id, episodeId));
-      return { saved, existing: null };
+      const [origin] = await tx
+        .select({ objective: job.objective })
+        .from(job)
+        .where(eq(job.id, saved.jobId));
+      return { saved, existing: null, objective: origin?.objective ?? '' };
     });
     if (source.existing) return source.existing;
     const saved = source.saved;
     if (!saved?.intervention) throw new Error('Missing reserved intervention');
     try {
-      const raw = await this.gateway.propose(
-        { episodeId, spaceId, jobId: saved.jobId },
-        generalSignal(saved.intervention),
-      );
-      const compiled = compileProcedure(raw);
-      const compatibleModels = [
-        ...new Set(
-          saved.versions.map((version) => `${version.provider}/${version.model_requested}`),
-        ),
-      ];
-      if (!compatibleModels.length) throw new Error('proposal_versions_missing');
-      const definition = { ...compiled, scope: saved.scope, compatibleModels };
+      // The records family keeps its audited vocabulary; every other family proposes in words.
+      const proposed =
+        saved.scope.task_family === RECORDS_FAMILY
+          ? await this.recordsDefinition(saved, saved.intervention)
+          : await this.generalDefinition(saved, saved.intervention, source.objective);
       return await this.jobs.transaction(async (tx) => {
         await requireLearningSpace(tx, ownerId, spaceId);
         const [current] = await tx
@@ -96,8 +107,8 @@ export class ProcedureProposer {
             id: newId('pc'),
             episodeId,
             spaceId,
-            ...definition,
-            bodyHash: definitionHash(definition),
+            ...proposed.definition,
+            bodyHash: definitionHash(proposed.definition),
           })
           .returning();
         if (!candidate) throw new Error('Candidate insert returned no row');
@@ -107,7 +118,7 @@ export class ProcedureProposer {
           fromState: null,
           toState: 'candidate',
           actor: 'proposer',
-          reason: 'Completed owner intervention; not evaluated or enabled.',
+          reason: proposed.reason,
         });
         await tx
           .update(episode)
@@ -129,6 +140,106 @@ export class ProcedureProposer {
         'The proposal failed its bounded generation checks.',
       );
     }
+  }
+
+  private async recordsDefinition(saved: EpisodeRow, intervention: Intervention) {
+    const raw = await this.gateway.propose(
+      { episodeId: saved.id, spaceId: saved.spaceId, jobId: saved.jobId },
+      generalSignal(intervention),
+    );
+    const compiled = compileProcedure(raw);
+    const compatibleModels = modelsOf(saved);
+    return {
+      definition: { ...compiled, scope: saved.scope, compatibleModels },
+      reason: 'Completed owner intervention; not evaluated or enabled.',
+    };
+  }
+
+  /**
+   * Only the correction, the objective, the scope, tool names and the closed
+   * check vocabulary cross. Receipts, artifacts, recorded outputs, memory
+   * handles and identifiers stay here, where the discrimination gate reads them.
+   */
+  private async generalDefinition(
+    saved: EpisodeRow,
+    intervention: Intervention,
+    objective: string,
+  ) {
+    const { raw, sources } = await this.gateway.proposeGeneral(
+      { episodeId: saved.id, spaceId: saved.spaceId, jobId: saved.jobId },
+      {
+        task: 'propose_procedure',
+        scope: {
+          task_family: saved.scope.task_family,
+          app: saved.scope.app,
+          app_version: saved.scope.app_version,
+        },
+        signal: null,
+        sources: [
+          { id: 'intervention', offset: 0, text: intervention.text },
+          { id: 'objective', offset: 0, text: objective },
+        ],
+        tools_used: [
+          ...new Set(saved.versions.flatMap((version) => version.tools.map((tool) => tool.name))),
+        ].slice(0, MAX_TOOL_NAMES),
+        check_kinds: PROCEDURE_CHECK_KINDS.filter((kind) => kind !== 'records_expected_order'),
+        limits: {
+          max_steps: MAX_STEPS,
+          max_step_chars: MAX_STEP_CHARS,
+          max_triggers: MAX_TRIGGERS,
+          max_checks: MAX_CHECKS,
+          max_variants: MAX_VARIANTS,
+        },
+      },
+    );
+    const admitted = admitProposal(raw, { sources, objective });
+    const compatibleModels = modelsOf(saved);
+    // Actions up to the correction belong to the objected answer; later ones to the corrected one.
+    const rows = await this.jobs.db
+      .select({
+        jobId: action.jobId,
+        kind: action.kind,
+        effectClass: action.effectClass,
+        status: action.status,
+        createdAt: action.createdAt,
+      })
+      .from(action)
+      .where(
+        inArray(action.jobId, [
+          saved.jobId,
+          ...(saved.correctiveJobId ? [saved.correctiveJobId] : []),
+        ]),
+      );
+    const discrimination = discriminate(admitted.checks, {
+      prior: saved.priorOutput,
+      corrected: saved.correctedOutput,
+      priorActions: rows.filter(
+        (row) => row.jobId === saved.jobId && row.createdAt <= saved.createdAt,
+      ),
+      correctedActions: rows.filter((row) =>
+        saved.correctiveJobId
+          ? row.jobId === saved.correctiveJobId
+          : row.jobId === saved.jobId && row.createdAt > saved.createdAt,
+      ),
+    });
+    return {
+      definition: {
+        change: admitted.change as unknown as Record<string, unknown>,
+        body: admitted.body,
+        tests: admitted.tests,
+        predictedBenefit: admitted.predictedBenefit,
+        knownRisk: admitted.knownRisk,
+        triggers: admitted.triggers,
+        checks: admitted.checks,
+        evidence: admitted.evidence,
+        discrimination,
+        scope: saved.scope,
+        compatibleModels,
+      },
+      // A candidate whose checks do not discriminate is kept, not rejected: a later
+      // corrected output can still make it evaluable, and the call is already spent.
+      reason: `Completed owner intervention; not evaluated or enabled. Checks: ${discrimination.detail}.`,
+    };
   }
 
   async drain() {
@@ -158,6 +269,14 @@ export class ProcedureProposer {
       }
     }
   }
+}
+
+function modelsOf(saved: EpisodeRow) {
+  const compatibleModels = [
+    ...new Set(saved.versions.map((version) => `${version.provider}/${version.model_requested}`)),
+  ];
+  if (!compatibleModels.length) throw new Error('proposal_versions_missing');
+  return compatibleModels;
 }
 
 function generalSignal(change: { signal: string; text: string }) {
