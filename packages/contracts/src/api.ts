@@ -7,16 +7,7 @@ import { z } from 'zod';
 import { actionStatus, approvalRequestView, effectClass, payloadHash } from './broker.ts';
 import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
 import { originWarnings } from './effects.ts';
-import {
-  action,
-  attempt,
-  connectionProvider,
-  connectionView,
-  job,
-  jobBudget,
-  jobConstraints,
-  space,
-} from './entities.ts';
+import { action, attempt, job, jobBudget, jobConstraints, space } from './entities.ts';
 import {
   knowledgeFrontmatter,
   knowledgeRecordStatus,
@@ -24,7 +15,6 @@ import {
   proposedWrite,
 } from './knowledge.ts';
 import { jobLearningScope } from './learning.ts';
-import { mcpConnectionConfig } from './mcp.ts';
 import { skillFrontmatter } from './skills.ts';
 
 export const healthResponse = z.object({
@@ -132,26 +122,6 @@ export const approvalDecisionResponse = z.object({
   payload_hash: payloadHash,
   decided_at: timestamp,
 });
-
-// --------------------------------------------------------------------------
-// connections
-// --------------------------------------------------------------------------
-
-export const createConnectionRequest = z.object({
-  space_id: prefixedId(ID_PREFIXES.space),
-  provider: connectionProvider,
-  label: z.string().min(1).max(120),
-  scopes: z.array(z.string()).default([]),
-  /**
-   * Sealed with the master key on arrival and never returned. Field names are
-   * connector-specific; the manifest declares what is required.
-   */
-  credentials: z.record(z.string(), z.string()).optional(),
-  mcp: mcpConnectionConfig.optional(),
-});
-
-export const connectionListResponse = z.object({ connections: z.array(connectionView) });
-export const connectionResponse = z.object({ connection: connectionView });
 
 // --------------------------------------------------------------------------
 // knowledge

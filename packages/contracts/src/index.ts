@@ -11,6 +11,7 @@ export * from './broker.ts';
 export * from './browser.ts';
 export * from './capabilities.ts';
 export * from './common.ts';
+export * from './connections.ts';
 export * from './connector.ts';
 export * from './delta.ts';
 export * from './effects.ts';

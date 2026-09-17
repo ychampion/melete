@@ -19,7 +19,14 @@ import {
   approvalListResponse,
   attemptListResponse,
   attemptResponse,
+  CONNECTION_CHECK_DETAIL,
+  CONNECTION_KIND_DESCRIPTORS,
   cancelJobRequest,
+  connectionCheckResponse,
+  connectionGeneration,
+  connectionInstallation,
+  connectionKindListResponse,
+  connectionLifecycle,
   connectionListResponse,
   connectionResponse,
   createConnectionRequest,
@@ -694,28 +701,65 @@ export function createMockApp(deps: AppDeps) {
     send(connectionListResponse, { connections: store.listConnections() }),
   );
 
+  const checked = (code: 'ok' | 'revoked') => ({
+    status: code === 'ok' ? ('ok' as const) : ('failing' as const),
+    code,
+    detail: CONNECTION_CHECK_DETAIL[code],
+    checked_at: store.now().toISOString(),
+  });
+
+  app.get('/connection-kinds', () =>
+    send(connectionKindListResponse, { kinds: CONNECTION_KIND_DESCRIPTORS }),
+  );
+
   app.post('/connections', async (c) => {
     const parsed = await parseBody(c.req.raw, createConnectionRequest);
     if (!parsed.ok) return parsed.response;
+    const installation = connectionInstallation(parsed.value);
+    if (!installation.ok) return reject(400, fail('invalid_request', installation.error));
+    const spaceId = parsed.value.space_id ?? [...store.spaces.keys()][0];
+    if (!spaceId) return reject(400, fail('invalid_request', 'name the space to install into'));
     const now = store.now().toISOString();
     const id = newId(ID_PREFIXES.connection);
+    const kind = installation.value;
     store.connections.set(id, {
       id,
-      space_id: parsed.value.space_id,
-      provider: parsed.value.provider,
+      space_id: spaceId,
+      provider: kind.provider,
       label: parsed.value.label,
       // Sealed on arrival and never returned. The mock keeps only the pointer,
       // which is the same thing the API is allowed to know.
-      secret_ref: parsed.value.credentials ? newId(ID_PREFIXES.secret) : null,
-      scopes: parsed.value.scopes,
+      secret_ref:
+        kind.kind === 'ics' || parsed.value.credentials ? newId(ID_PREFIXES.secret) : null,
+      scopes: kind.kind === 'mcp' ? kind.config.allowed_scopes : kind.scopes,
       status: 'active',
-      health: 'unknown',
-      last_checked_at: null,
+      health: 'ok',
+      setup_state: 'connected',
+      generation: 0,
+      last_checked_at: now,
       created_at: now,
     });
     const created = store.connections.get(id);
     if (!created) return reject(400, fail('invalid_request', 'the connection was not stored'));
-    return send(connectionResponse, { connection: store.view(created) }, 201);
+    return send(connectionResponse, { connection: store.view(created), check: checked('ok') }, 201);
+  });
+
+  app.post('/connections/:connectionId/lifecycle', async (c) => {
+    const connection = store.connections.get(c.req.param('connectionId'));
+    if (!connection) return reject(404, fail('not_found', 'no such connection'));
+    const parsed = await parseBody(c.req.raw, connectionLifecycle);
+    if (!parsed.ok) return parsed.response;
+    const generation = connection.generation ?? 0;
+    if (parsed.value.expected_generation !== generation)
+      return reject(409, fail('generation_conflict', 'the connection generation changed'));
+    const status = parsed.value.kind === 'revoke' ? ('revoked' as const) : ('active' as const);
+    store.connections.set(connection.id, { ...connection, status, generation: generation + 1 });
+    return send(connectionGeneration, {
+      connection_id: connection.id,
+      generation: generation + 1,
+      policy_generation: generation + 1,
+      status,
+    });
   });
 
   app.get('/connections/:connectionId', (c) => {
@@ -727,13 +771,14 @@ export function createMockApp(deps: AppDeps) {
   app.post('/connections/:connectionId/health', (c) => {
     const connection = store.connections.get(c.req.param('connectionId'));
     if (!connection) return reject(404, fail('not_found', 'no such connection'));
-    const checked = {
+    const check = checked(connection.status === 'revoked' ? 'revoked' : 'ok');
+    const next = {
       ...connection,
-      health: 'ok' as const,
-      last_checked_at: store.now().toISOString(),
+      health: connection.status === 'revoked' ? connection.health : ('ok' as const),
+      last_checked_at: check.checked_at,
     };
-    store.connections.set(connection.id, checked);
-    return send(connectionResponse, { connection: store.view(checked) });
+    store.connections.set(connection.id, next);
+    return send(connectionCheckResponse, { connection: store.view(next), check });
   });
 
   // ------------------------------------------------------------------

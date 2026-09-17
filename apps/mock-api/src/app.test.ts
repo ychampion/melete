@@ -12,6 +12,8 @@ import {
   approvalListResponse,
   attemptListResponse,
   attemptResponse,
+  connectionCheckResponse,
+  connectionKindListResponse,
   connectionListResponse,
   connectionResponse,
   errorResponse,
@@ -217,19 +219,43 @@ describe('every route answers with a body the contract describes', () => {
     expect(connections).toHaveLength(3);
     expect(connections.every((c) => !('secret_ref' in c))).toBe(true);
 
-    const created = await call(mock.app, 'POST', '/connections', {
+    const kinds = await call(mock.app, 'GET', '/connection-kinds');
+    expect(connectionKindListResponse.parse(kinds.json).kinds.map((kind) => kind.kind)).toContain(
+      'caldav',
+    );
+
+    const unconfigured = await call(mock.app, 'POST', '/connections', {
       space_id: mock.spaceId,
       provider: 'caldav',
       label: 'calendar',
-      scopes: ['calendar.read'],
-      credentials: { url: 'https://dav.example.com', password: 'hunter2' },
+    });
+    expect(unconfigured.status).toBe(400);
+
+    const created = await call(mock.app, 'POST', '/connections', {
+      provider: 'caldav',
+      label: 'calendar',
+      scopes: ['calendar.list'],
+      credentials: { password: 'hunter2' },
+      caldav: { calendar_url: 'https://dav.example.com/calendars/me/', username: 'me' },
     });
     expect(created.status).toBe(201);
     const connection = connectionResponse.parse(created.json).connection;
-    expect(JSON.stringify(connection)).not.toContain('hunter2');
+    expect(connection.space_id).toBe(mock.spaceId);
+    expect(connection.scopes).toEqual(['calendar.list']);
+    expect(JSON.stringify(created.json)).not.toContain('hunter2');
 
     const checked = await call(mock.app, 'POST', `/connections/${connection.id}/health`);
-    expect(connectionResponse.parse(checked.json).connection.health).toBe('ok');
+    const result = connectionCheckResponse.parse(checked.json);
+    expect(result.connection.health).toBe('ok');
+    expect(result.check.code).toBe('ok');
+
+    const removed = await call(mock.app, 'POST', `/connections/${connection.id}/lifecycle`, {
+      kind: 'revoke',
+      expected_generation: connection.generation,
+    });
+    expect(removed.status).toBe(200);
+    const after = await call(mock.app, 'POST', `/connections/${connection.id}/health`);
+    expect(connectionCheckResponse.parse(after.json).check.code).toBe('revoked');
 
     const one = await call(mock.app, 'GET', `/connections/${connection.id}`);
     expect(connectionResponse.parse(one.json).connection.id).toBe(connection.id);
