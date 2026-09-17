@@ -62,7 +62,7 @@ export const WORDS: Record<Exclude<Outcome, 'ok'>, string> = {
   too_long: 'That is longer than one email. Paste the part that matters and try again.',
   rate_limited: 'That is all the case files for today on this connection. Come back tomorrow.',
   busy: 'A lot of people are trying this right now. Give it an hour and come back.',
-  timeout: 'This one took longer than it should have. Try again, or try a shorter paste.',
+  timeout: 'This one took longer than it should have.',
   upstream: 'The model is not answering right now. Try again in a minute.',
   refused: 'It would not take this one on. Try a different email.',
   malformed: 'That came back in a shape it could not use. Try again.',

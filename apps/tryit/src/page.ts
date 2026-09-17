@@ -197,6 +197,7 @@ textarea::placeholder { color: var(--muted); }
   padding: 18px 20px; border-bottom: 1px solid var(--line);
 }
 .who { flex: 1 1 220px; min-width: 0; }
+.who .h { margin-bottom: 5px; }
 .company { font-family: var(--font-head); font-size: 17px; font-weight: 700; color: var(--heading); }
 .issue { font-size: 14px; color: var(--muted); margin-top: 3px; text-wrap: pretty; }
 .pill {
@@ -232,7 +233,10 @@ blockquote {
   margin: 0; padding: 10px 0 10px 14px; border-left: 3px solid var(--blue-line);
   background: var(--blue-soft); border-radius: 0 10px 10px 0; padding-right: 12px;
 }
-blockquote q { font-size: 14.5px; line-height: 23px; color: var(--blue-ink); quotes: '"' '"'; }
+blockquote q {
+  font-size: 14.5px; line-height: 23px; color: var(--blue-ink);
+  quotes: "\\201C" "\\201D" "\\2018" "\\2019";
+}
 blockquote .why { display: block; margin-top: 5px; font-size: 12px; color: var(--muted); }
 
 .msg { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
@@ -255,7 +259,13 @@ blockquote .why { display: block; margin-top: 5px; font-size: 12px; color: var(-
 .rung .day { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
 .rung .what { font-size: 14.5px; line-height: 22px; margin-top: 1px; text-wrap: pretty; }
 
-.next { padding: 16px 20px; background: var(--soft); font-size: 14px; line-height: 22px; color: var(--muted); }
+.next {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  padding: 14px 20px; background: var(--soft); border-top: 1px solid var(--line);
+  font-size: 14px; line-height: 22px; color: var(--muted);
+}
+.next span { flex: 1 1 320px; text-wrap: pretty; }
+.acts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 
 .cta {
   margin: 24px 0 8px; padding: 22px 20px; border-radius: 18px;
@@ -464,10 +474,25 @@ const SCRIPT = String.raw`
     else showProblem(body || {});
   }
 
+  /* Every ending says what happened and what to do next. Out of turns is not
+     an error, so it gets the thing a person would want instead. */
+  var RETRY = { timeout: 1, upstream: 1, malformed: 1, bad_request: 1, refused: 1 };
+
   function showProblem(body) {
+    var code = body.code || 'upstream';
+    var spent = code === 'rate_limited' || code === 'busy';
     problem.className = 'panel panel-pad';
-    problem.innerHTML = '<div class="notice"><span>' +
+    var h = '<div class="notice"><span>' +
       esc(body.message || 'Something went wrong. Try again.') + '</span></div>';
+    if (RETRY[code]) {
+      h += '<div class="acts"><button type="button" class="ghost" id="again">Try again</button>';
+      if (code === 'timeout') h += '<span class="count">A shorter paste finishes sooner.</span>';
+      h += '</div>';
+    }
+    problem.innerHTML = h;
+    if (spent) document.getElementById('cta').className = '';
+    var again = document.getElementById('again');
+    if (again) again.addEventListener('click', function () { reset(); run(); });
     problem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
@@ -499,6 +524,14 @@ const SCRIPT = String.raw`
     try { return new URL(url).hostname.replace(/^www\./, ''); } catch (e) { return url; }
   }
 
+  function stamp() {
+    try {
+      return new Date().toLocaleDateString(undefined, {
+        day: 'numeric', month: 'long', year: 'numeric'
+      });
+    } catch (e) { return new Date().toDateString(); }
+  }
+
   /* The server has already checked all of this, and every value below still
      goes through esc() or a whitelist before it reaches the document: the one
      place model text could ever become markup is here, so it is closed here. */
@@ -510,6 +543,7 @@ const SCRIPT = String.raw`
 
     h += '<div class="case-top">';
     h += '<div class="who">';
+    h += '<div class="h">Case file · ' + esc(stamp()) + '</div>';
     h += '<div class="company">' + esc(file.company) + '</div>';
     h += '<div class="issue">' + esc(file.issue) + '</div>';
     h += '</div>';
@@ -575,7 +609,8 @@ const SCRIPT = String.raw`
     }
     h += '</div></section>';
 
-    h += '<div class="next">' + esc(file.meleteNext) + '</div>';
+    h += '<div class="next"><span>' + esc(file.meleteNext) + '</span>' +
+      '<button type="button" class="ghost" id="restart">Start again</button></div>';
 
     out.className = 'panel case';
     out.innerHTML = h;
@@ -588,6 +623,14 @@ const SCRIPT = String.raw`
       try {
         navigator.clipboard.writeText(body).then(done, function () { legacy(body, done); });
       } catch (err) { legacy(body, done); }
+    });
+
+    document.getElementById('restart').addEventListener('click', function () {
+      reset();
+      box.value = '';
+      tally();
+      box.focus();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 
     document.getElementById('cta').className = '';
