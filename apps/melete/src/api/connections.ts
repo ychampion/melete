@@ -22,7 +22,7 @@ import {
   connectorFactoryFor,
   connectorOptionsFromEnv,
 } from '../connectors/configured.ts';
-import { icsFeedAddressUsable } from '../connectors/ics-feed.ts';
+import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { mcpServerConfig } from '../connectors/mcp.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
@@ -387,15 +387,23 @@ async function storedShape(
             configuration: { kind: 'caldav', caldav: installation.config },
           }
         : { secret: installation.config.url, configuration: { kind: 'ics' } };
+  // A feed's address is sealed before the connector ever sees it, so it is checked here. A name
+  // that does not resolve right now is left to the first test, which keeps the row in error.
+  if (installation.kind === 'ics') {
+    const target = await icsFeedTarget(
+      installation.config.url,
+      factory.options.insecureLocalFixtures === true,
+    );
+    if (!target.usable && target.reason === 'refused')
+      throw new ServiceError(
+        'invalid_request',
+        'A calendar feed must be a public HTTPS address.',
+        400,
+      );
+  }
   // Construct once before anything is written, so an endpoint the connector
   // would refuse is a plain 400 and never a stored row or a sealed secret.
   try {
-    // A feed's address is sealed before the connector ever sees it, so it is checked here.
-    if (
-      installation.kind === 'ics' &&
-      !icsFeedAddressUsable(installation.config.url, factory.options.insecureLocalFixtures === true)
-    )
-      throw new Error('Feed address refused');
     const probe = await factory.open({
       id,
       spaceId,

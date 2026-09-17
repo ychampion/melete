@@ -45,7 +45,7 @@ export type CalendarConnection = {
     }
 );
 
-const MAX_CALENDAR_BYTES = 2 * 1024 * 1024;
+export const MAX_CALENDAR_BYTES = 2 * 1024 * 1024;
 const listPayload = z.object({ limit: z.number().int().min(1).max(100).default(50) }).strict();
 const fields = {
   summary: z.string().min(1).max(1000),

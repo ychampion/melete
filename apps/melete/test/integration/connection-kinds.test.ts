@@ -447,6 +447,7 @@ withDb('installing each kind of connection through the API', () => {
       { ...body, scopes: ['calendar.create'] },
       { ...body, ics: { url: 'http://feeds.example.test/team.ics' } },
       { ...body, ics: { url: 'https://owner:pw@feeds.example.test/team.ics' } },
+      { ...body, ics: { url: `https://10.0.0.8/team.ics?token=${FEED_TOKEN}` } },
       { ...body, provider: 'mcp' },
     ]) {
       const refused = await h.install(invalid);
@@ -461,6 +462,21 @@ withDb('installing each kind of connection through the API', () => {
     const plainText = await plain.text();
     expect(plain.status).toBe(400);
     expectNoSecret(plainText);
+    // Nor does TLS make a private or loopback destination a feed the service will read.
+    for (const inside of [
+      'https://127.0.0.1:8443/team.ics',
+      'https://10.0.0.8/team.ics',
+      'https://169.254.169.254/team.ics',
+      'https://[::1]/team.ics',
+      'https://localhost/team.ics',
+    ]) {
+      const refused = await h.deployed.request(
+        '/connections',
+        h.as(h.cookie, { ...body, ics: { url: `${inside}?token=${FEED_TOKEN}` } }),
+      );
+      expect([inside, refused.status]).toEqual([inside, 400]);
+      expectNoSecret(await refused.text());
+    }
     expect(await rowIds()).toEqual(rowsBefore);
 
     const created = await h.install(body);

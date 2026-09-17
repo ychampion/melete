@@ -10,7 +10,7 @@ export type WebResponse = { status: number; headers: Record<string, string>; bod
 export type WebTransport = (
   url: URL,
   address: ResolvedAddress,
-  options: { signal?: AbortSignal; maxBytes: number; timeoutMs: number },
+  options: { signal?: AbortSignal; maxBytes: number; timeoutMs: number; accept?: string },
 ) => Promise<WebResponse>;
 
 function ipv6Number(address: string): bigint | undefined {
@@ -77,6 +77,25 @@ export function isPublicAddress(address: string): boolean {
   );
 }
 
+/** Every answer a name gives, so one private answer among public ones is still seen. */
+export const resolveHost = async (hostname: string): Promise<ResolvedAddress[]> =>
+  (await lookup(hostname, { all: true, verbatim: true })) as ResolvedAddress[];
+
+/**
+ * The address a request is sent to: the first answer, and only when every
+ * answer is globally routable. Shared by everything that reads an address a
+ * person or a model supplied.
+ */
+export function publicPin(addresses: readonly ResolvedAddress[]): ResolvedAddress | undefined {
+  if (
+    addresses.some(
+      (address) => !isPublicAddress(address.address) || isIP(address.address) !== address.family,
+    )
+  )
+    return undefined;
+  return addresses[0];
+}
+
 /** The transport never resolves again: Host/SNI use the URL while lookup returns the checked IP. */
 export const pinnedWebRequest: WebTransport = (url, address, options) =>
   new Promise((resolve, reject) => {
@@ -92,7 +111,10 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
           lookupOptions.all
             ? callback(null, [address])
             : callback(null, address.address, address.family),
-        headers: { accept: 'text/plain, text/html, application/json', 'user-agent': 'Melete/0.1' },
+        headers: {
+          accept: options.accept ?? 'text/plain, text/html, application/json',
+          'user-agent': 'Melete/0.1',
+        },
       },
       (response) => {
         const chunks: Buffer[] = [];
@@ -163,10 +185,7 @@ export function createWebConnector(
     timeoutMs?: number;
   } = {},
 ): Connector {
-  const resolve =
-    options.resolve ??
-    (async (hostname) =>
-      (await lookup(hostname, { all: true, verbatim: true })) as ResolvedAddress[]);
+  const resolve = options.resolve ?? resolveHost;
   const transport = options.transport ?? pinnedWebRequest;
   return {
     manifest: webManifest,
@@ -203,17 +222,8 @@ export function createWebConnector(
         const addresses: ResolvedAddress[] = family
           ? [{ address: hostname, family: family as 4 | 6 }]
           : await resolve(hostname);
-        if (
-          !addresses.length ||
-          addresses.some(
-            (address) =>
-              !isPublicAddress(address.address) || isIP(address.address) !== address.family,
-          )
-        ) {
-          throw new Error('URL resolves to a non-public address');
-        }
-        const pinned = addresses[0];
-        if (!pinned) throw new Error('URL did not resolve');
+        const pinned = publicPin(addresses);
+        if (!pinned) throw new Error('URL resolves to a non-public address');
         visited.push(url.href);
         const response = await transport(url, pinned, {
           signal: ctx.signal,
