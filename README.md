@@ -147,6 +147,27 @@ set `MELETE_WEB_ORIGIN=https://your-hostname` in `deploy/.env` and recreate the
 web service. [Deployment](docs/DEPLOYMENT.md) covers TLS, provider
 configuration, image provenance and backup restoration.
 
+### Remove it completely
+
+Everything Melete keeps lives in Docker volumes and one configuration file, so
+taking it off the machine is one command, a sweep and one deletion. The first
+command stops the stack and removes its containers, images and named volumes —
+the database, your spaces, artifacts, the work directory and the removal
+journal. The sweep catches the per-attempt containers, networks and volumes the
+service creates while it runs: those carry Melete's own labels rather than
+Compose's, so they are matched by label. Delete `deploy/.env` last, because it
+holds the master key that unseals anything you backed up. What is left
+afterwards is the source directory you cloned, and nothing else.
+
+```bash
+docker compose -f deploy/docker-compose.yml down -v --rmi all --remove-orphans
+# Using the browser worker? Add -f deploy/docker-compose.browser.yml to that line.
+docker ps -aq --filter label=com.melete.attempt-supervisor=v1 | xargs -r docker rm -f
+docker network ls -q --filter label=com.melete.attempt-supervisor=v1 | xargs -r docker network rm
+docker volume ls -q --filter label=com.melete.attempt-supervisor=v1 | xargs -r docker volume rm
+rm -f deploy/.env
+```
+
 ## Everything else it does
 
 Companies are one thing Melete takes off you. It is a personal assistant you run
