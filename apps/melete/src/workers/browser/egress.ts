@@ -307,6 +307,8 @@ async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promis
   }
 }
 
+export type BrowserEgress = ReturnType<typeof createBrowserEgress>;
+
 /**
  * One controller operation owns the network window. Late page scripts cannot inherit
  * an approval, and a second simultaneous POST cannot race the mutation counter.

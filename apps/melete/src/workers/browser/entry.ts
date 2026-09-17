@@ -7,6 +7,7 @@ export async function startBrowserWorker(options: { network?: BrowserNetworkOpti
     spaceId: process.env.MELETE_BROWSER_SPACE ?? '',
     spaceRoot: process.env.MELETE_BROWSER_ROOT ?? '',
     idleMs: Number(process.env.MELETE_BROWSER_IDLE_MS ?? 300_000),
+    humanIdleMs: Number(process.env.MELETE_BROWSER_HUMAN_IDLE_MS ?? 900_000),
     headless: process.env.MELETE_BROWSER_HEADLESS !== 'false',
     network: options.network,
   });

@@ -48,11 +48,19 @@ export type BrowserSessionsOptions = {
   spaceId: string;
   spaceRoot: string;
   idleMs?: number;
+  /** During a takeover, a person's live activity within this window keeps Chromium open. */
+  humanIdleMs?: number;
   headless?: boolean;
   now?: () => number;
   install?: (context: BrowserContext, policy: BrowserPolicy) => Promise<void>;
   launch?: (profile: string, policy: BrowserPolicy) => Promise<BrowserContext>;
 };
+
+export type BrowserControlChange = 'takeover' | 'handback' | 'closed';
+type ControlListener = (
+  change: BrowserControlChange,
+  session: BrowserSession,
+) => Promise<void> | undefined;
 
 /** One controller owns one space and a single warm lease. No caller supplies a profile path. */
 export class BrowserSessions {
@@ -63,6 +71,9 @@ export class BrowserSessions {
   private observedEpoch: number | null = null;
   private readonly now: () => number;
   private readonly idleMs: number;
+  private readonly humanIdleMs: number;
+  private humanActiveAt = 0;
+  private readonly listeners = new Set<ControlListener>();
   private queue: Promise<unknown> = Promise.resolve();
   private timer?: ReturnType<typeof setInterval>;
   private recordPath?: string;
@@ -72,13 +83,14 @@ export class BrowserSessions {
     if (!/^sp_[A-Za-z0-9_-]+$/.test(options.spaceId)) throw new BrowserFault('invalid_space');
     this.now = options.now ?? Date.now;
     this.idleMs = options.idleMs ?? 5 * 60_000;
-    if (!Number.isSafeInteger(this.idleMs) || this.idleMs < 1)
-      throw new BrowserFault('invalid_idle_timeout');
+    this.humanIdleMs = options.humanIdleMs ?? 15 * 60_000;
+    for (const value of [this.idleMs, this.humanIdleMs])
+      if (!Number.isSafeInteger(value) || value < 1) throw new BrowserFault('invalid_idle_timeout');
   }
 
   async lease(jobId: string, policy: BrowserPolicy): Promise<BrowserSession> {
     return this.exclusive(async () => {
-      if (this.session && this.session.warm_until <= this.now()) await this.closeContext();
+      if (this.idle()) await this.closeContext();
       if (this.session) {
         if (this.session.job_id !== jobId) throw new BrowserFault('session_busy');
         if (JSON.stringify(this.policy) !== JSON.stringify(policy))
@@ -137,8 +149,10 @@ export class BrowserSessions {
         await this.persist();
         this.timer = setInterval(
           () => {
-            if (this.session && this.session.warm_until <= this.now())
-              void this.exclusive(() => this.closeContext()).catch(() => {});
+            if (this.idle())
+              void this.exclusive(async () => {
+                if (this.idle()) await this.closeContext();
+              }).catch(() => {});
           },
           Math.min(this.idleMs, 10_000),
         );
@@ -172,6 +186,29 @@ export class BrowserSessions {
     if (this.observedEpoch !== epoch) throw new BrowserFault('fresh_observation_required');
   }
 
+  checkHumanControl(id: string, epoch: number): void {
+    const session = this.requireSession(id);
+    if (epoch !== session.control_epoch) throw new BrowserFault('epoch_changed');
+    if (session.control !== 'human') throw new BrowserFault('not_human_control');
+  }
+
+  /** A person's live input is checked here, immediately before each dispatch, like automation's. */
+  dispatchHumanInput<T>(id: string, epoch: number, operation: () => Promise<T>): Promise<T> {
+    this.checkHumanControl(id, epoch);
+    this.humanActiveAt = this.now();
+    return operation();
+  }
+
+  humanActivity(id: string, epoch: number): void {
+    this.checkHumanControl(id, epoch);
+    this.humanActiveAt = this.now();
+  }
+
+  /** Listeners run after the epoch has already moved; takeover and handback wait for them. */
+  onControl(listener: ControlListener): void {
+    this.listeners.add(listener);
+  }
+
   observed(id: string, epoch: number): void {
     const session = this.requireSession(id);
     if (session.control_epoch !== epoch || session.control !== 'automation')
@@ -186,8 +223,11 @@ export class BrowserSessions {
     session.control_epoch++;
     session.control = 'human';
     this.observedEpoch = null;
+    this.humanActiveAt = this.now();
     this.touch();
+    const notified = this.notify('takeover', session);
     await this.persist();
+    await notified;
     return { ...session };
   }
 
@@ -197,7 +237,9 @@ export class BrowserSessions {
     session.control = 'automation';
     this.observedEpoch = null;
     this.touch();
+    const notified = this.notify('handback', session);
     await this.persist();
+    await notified;
     return { ...session };
   }
 
@@ -209,6 +251,21 @@ export class BrowserSessions {
 
   private touch() {
     if (this.session) this.session.warm_until = this.now() + this.idleMs;
+  }
+
+  /** A person who has taken control keeps Chromium open while their live channel is in use. */
+  private idle(): boolean {
+    const session = this.session;
+    if (!session || session.warm_until > this.now()) return false;
+    return !(session.control === 'human' && this.now() - this.humanActiveAt < this.humanIdleMs);
+  }
+
+  private async notify(change: BrowserControlChange, session: BrowserSession) {
+    // Every listener is called before the first await, so each sees the change synchronously.
+    const snapshot = { ...session };
+    await Promise.allSettled(
+      [...this.listeners].map(async (listener) => listener(change, snapshot)),
+    );
   }
 
   private persist() {
@@ -242,7 +299,9 @@ export class BrowserSessions {
     if (this.session) {
       this.session.control_epoch++;
       this.session.job_id = null;
+      const notified = this.notify('closed', this.session);
       await this.persist();
+      await notified;
     }
     this.session = undefined;
     await context?.close();

@@ -2,11 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { CDPSession, ElementHandle, Locator, Page } from 'playwright';
 import { z } from 'zod';
 import {
+  type BrowserEgress,
   BrowserNetworkError,
   type BrowserNetworkOptions,
   BrowserRedirect,
   createBrowserEgress,
 } from './egress.ts';
+import { BrowserLive } from './live.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
@@ -117,7 +119,8 @@ export type BrowserCommandResult = {
 /** All browser input is dispatched here, below the broker and independent of a model's cooperation. */
 export class BrowserController {
   readonly sessions: BrowserSessions;
-  private network?: ReturnType<typeof createBrowserEgress>;
+  readonly live: BrowserLive;
+  private network?: BrowserEgress;
   private cdp?: CDPSession;
   private dialogRevision = 0;
   private pageId?: string;
@@ -133,13 +136,25 @@ export class BrowserController {
         await this.network.install(context);
         this.cdp = undefined;
         this.pageId = undefined;
-        // Additional windows cannot become an unobserved channel outside the single-page lease.
+        // Additional windows cannot become an unobserved channel outside the single-page lease,
+        // except one popup at a time that a person in control opens and sees in their live view.
         context.on('page', (page) => {
-          if (!this.replacingPage && this.sessions.page && page !== this.sessions.page)
-            void page.close();
+          if (this.replacingPage || !this.sessions.page || page === this.sessions.page) return;
+          if (!this.live.popup(page)) void page.close();
         });
       },
     });
+    this.live = new BrowserLive(this);
+  }
+
+  guard(): BrowserEgress | undefined {
+    return this.network;
+  }
+
+  adoptPage(page: Page): void {
+    this.sessions.page = page;
+    page.setDefaultTimeout(2500);
+    this.cdp = undefined;
   }
 
   private async attach(): Promise<{ page: Page; cdp: CDPSession }> {
