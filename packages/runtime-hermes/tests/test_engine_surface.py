@@ -428,3 +428,404 @@ def test_the_store_loads_home_files_exactly_when_a_flag_is_on(hermes_home):
     assert any("a fact from a previous attempt" in e for e in off.memory_entries), (
         "the store reads the files regardless of its own flags — only the "
         "construction gate keeps them out of the prompt")
+
+
+# --- Probe 5: bundled skills sync against a directory that does not exist ----
+# hermes_constants.py:265 `get_bundled_skills_dir` resolves HERMES_BUNDLED_SKILLS
+# ahead of the repository-relative default, and tools/skills_sync.py:371 returns
+# an empty result before creating or touching the engine home's skills
+# directory. That is what neutralises the sync the gateway runs on every start
+# (gateway/run.py:4848).
+
+
+def test_bundled_skill_sync_is_a_noop_without_a_bundled_directory(
+    hermes_home, tmp_path, monkeypatch,
+):
+    """With the override pointing nowhere, the sync copies nothing and does not
+    even create the skills directory."""
+    write_config(hermes_home, {})
+    missing = tmp_path / "no-bundled-skills"
+    monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(missing))
+
+    from hermes_constants import get_bundled_skills_dir
+    from tools.skills_sync import sync_skills
+
+    assert get_bundled_skills_dir() == missing
+    assert not missing.exists()
+
+    result = sync_skills(quiet=True)
+
+    assert result["copied"] == [] and result["updated"] == []
+    assert result["total_bundled"] == 0
+    assert not (hermes_home / "skills").exists(), (
+        "the sync created a skills directory it had nothing to fill")
+
+
+def test_bundled_skill_sync_copies_when_the_directory_exists(
+    hermes_home, tmp_path, monkeypatch,
+):
+    """The same call with a populated override does copy, so the no-op above is
+    the override's doing and not an unrelated failure."""
+    write_config(hermes_home, {})
+    bundled = tmp_path / "bundled"
+    (bundled / "probe-bundled").mkdir(parents=True)
+    (bundled / "probe-bundled" / "SKILL.md").write_text(
+        "---\nname: probe-bundled\ndescription: A bundled probe skill.\n---\n\nBody.\n",
+        encoding="utf-8")
+    monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled))
+
+    from tools.skills_sync import sync_skills
+
+    result = sync_skills(quiet=True)
+
+    assert result["total_bundled"] == 1
+    assert (hermes_home / "skills" / "probe-bundled" / "SKILL.md").exists()
+
+
+# --- Probe 6: skill_manage under and without the write-approval gate ---------
+# tools/skill_manager_tool.py:600 `_apply_skill_write_gate` runs before any
+# handler; tools/write_approval.py:170 `evaluate_gate` stages every skills write
+# when `skills.write_approval` is on, and tools/write_approval.py:73
+# `stage_write` persists it at HERMES_HOME/pending/skills/<id>.json.
+# Without the gate the handler at tools/skill_manager_tool.py:392 writes a live
+# skill package, and tools/skill_manager_tool.py:695 `_record_success` runs the
+# audit ledger and the lifecycle hook.
+
+PROBE_SKILL = (
+    "---\n"
+    "name: probe-skill\n"
+    "description: A probe skill written by the engine surface probes.\n"
+    "---\n\n"
+    "# Probe skill\n\nBody text.\n"
+)
+
+
+@pytest.fixture
+def lifecycle_hook_recorder(monkeypatch):
+    """Records every lifecycle hook name the engine invokes."""
+    from hermes_cli import lifecycle
+
+    fired: list = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+
+    def _record(name, **kwargs):
+        fired.append((name, kwargs))
+        return []
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", _record)
+    return fired
+
+
+def test_skill_manage_stages_under_write_approval(hermes_home):
+    """With the gate on, the call writes a pending record and no skill."""
+    write_config(hermes_home, {"skills": {"write_approval": True}})
+
+    from tools.skill_manager_tool import skill_manage
+
+    result = json.loads(skill_manage(action="create", name="probe-skill",
+                                     content=PROBE_SKILL))
+
+    assert result["staged"] is True
+    pending_dir = hermes_home / "pending" / "skills"
+    records = sorted(pending_dir.glob("*.json"))
+    assert [p.name for p in records] == [f"{result['pending_id']}.json"]
+    staged = json.loads(records[0].read_text(encoding="utf-8"))
+    assert staged["subsystem"] == "skills"
+    assert staged["payload"]["action"] == "create"
+    assert staged["payload"]["name"] == "probe-skill"
+    assert staged["payload"]["content"] == PROBE_SKILL
+    assert not (hermes_home / "skills" / "probe-skill").exists(), (
+        "a staged write must not leave a live skill")
+
+
+def test_skill_manage_writes_live_without_write_approval(
+    hermes_home, lifecycle_hook_recorder,
+):
+    """Without the gate the write lands live. This records the layout the write
+    produces and the hook events that fire around it, because a live write has
+    to be observable and gateable from outside the engine."""
+    write_config(hermes_home, {})
+
+    from tools.skill_manager_tool import skill_manage
+
+    result = json.loads(skill_manage(action="create", name="probe-skill",
+                                     content=PROBE_SKILL, session_id="probe-session"))
+    assert result["success"] is True
+
+    skills_dir = hermes_home / "skills"
+    skill_md = skills_dir / "probe-skill" / "SKILL.md"
+    assert skill_md.exists(), "the live write did not land under the engine home"
+    assert skill_md.read_text(encoding="utf-8") == PROBE_SKILL
+    assert result["skill_md"] == str(skill_md)
+    assert result["path"] == "probe-skill"
+    assert not (hermes_home / "pending" / "skills").exists()
+
+    # The write leaves a further artefact beside the package itself: an
+    # append-only audit ledger in the same skills directory.
+    written = sorted(
+        str(p.relative_to(hermes_home)).replace(os.sep, "/")
+        for p in skills_dir.rglob("*") if p.is_file())
+    assert "skills/probe-skill/SKILL.md" in written
+    assert "skills/.curator_ledger.jsonl" in written, f"ledger missing from {written}"
+    ledger_entry = json.loads(
+        (skills_dir / ".curator_ledger.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert ledger_entry["action"] == "create"
+    assert ledger_entry["skill"] == "probe-skill"
+
+    # A supporting file lands inside the same package directory.
+    json.loads(skill_manage(action="write_file", name="probe-skill",
+                            file_path="references/note.md", file_content="note\n"))
+    assert (skills_dir / "probe-skill" / "references" / "note.md").exists()
+
+    # One lifecycle hook fires per successful mutation, carrying the skill name.
+    lifecycle = [kw for name, kw in lifecycle_hook_recorder
+                 if name == "on_skill_lifecycle"]
+    assert len(lifecycle) == 2, [name for name, _ in lifecycle_hook_recorder]
+    created = next(kw for kw in lifecycle if kw.get("action") == "created")
+    assert created["skill_name"] == "probe-skill"
+    assert created["session_id"] == "probe-session"
+    assert {kw.get("action") for kw in lifecycle} == {"created", "edited"}
+
+
+def test_a_dispatched_skill_write_also_fires_the_tool_call_hooks(
+    hermes_home, lifecycle_hook_recorder,
+):
+    """Dispatched as a tool, the same write is bracketed by the generic tool
+    hooks, which is the pair an observer would gate on."""
+    write_config(hermes_home, {})
+
+    import model_tools
+
+    result = json.loads(model_tools.handle_function_call(
+        "skill_manage",
+        {"action": "create", "name": "probe-skill", "content": PROBE_SKILL},
+        session_id="probe-session",
+    ))
+    assert result["success"] is True
+
+    names = [name for name, _ in lifecycle_hook_recorder]
+    assert "pre_tool_call" in names and "post_tool_call" in names, names
+    assert names.index("pre_tool_call") < names.index("on_skill_lifecycle")
+    assert names.index("on_skill_lifecycle") < names.index("post_tool_call")
+    post = next(kw for name, kw in lifecycle_hook_recorder if name == "post_tool_call")
+    assert post["tool_name"] == "skill_manage"
+
+
+# --- Probe 7: the tool-loop hard stop on the api_server platform -------------
+# Finding 8. agent/tool_guardrails.py:75 counts api_server as attended, so the
+# non-interactive hard stop at agent/tool_guardrails.py:134 never turns it on
+# there. Only an explicit `tool_loop_guardrails.hard_stop_enabled` does.
+
+
+@pytest.mark.parametrize(
+    ("config_case", "section", "expected"),
+    [
+        ("shipped", {}, False),
+        ("shipped-non-interactive-flag-only",
+         {"non_interactive_hard_stop_enabled": True}, False),
+        ("target", {"hard_stop_enabled": True}, True),
+    ],
+)
+def test_tool_loop_hard_stop_on_api_server(config_case, section, expected):
+    """Unattended runs on this platform get no hard stop unless it is asked for."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    resolved = ToolCallGuardrailConfig.from_mapping(section, platform="api_server")
+    assert resolved.hard_stop_enabled is expected, config_case
+    # The same section on a platform the engine treats as unattended turns it on
+    # by itself, which is why the api_server classification is load-bearing.
+    assert ToolCallGuardrailConfig.from_mapping(
+        section, platform="cron").hard_stop_enabled is True
+    assert resolved.warnings_enabled is True
+
+
+# --- Probe 8: how agent.max_turns resolves on the API server path ------------
+# Finding 5. gateway/run.py:1546 re-bridges `agent.max_turns` from config on
+# every turn through gateway/run.py:1824, and gateway/run.py:1559
+# `_current_max_iterations` — the value gateway/platforms/api_server.py:2123
+# hands the agent — is hermes_cli/config.py:1843 `resolve_turn_limit` over that
+# bridge. Absent means the unlimited sentinel, not a default ceiling.
+
+
+@pytest.mark.parametrize(
+    ("config_case", "agent_section", "expect_unlimited", "expected"),
+    [
+        ("shipped", {}, True, None),
+        ("target", {"max_turns": 150}, False, 150),
+    ],
+)
+def test_agent_max_turns_resolution_on_the_api_server_path(
+    hermes_home, monkeypatch, config_case, agent_section, expect_unlimited, expected,
+):
+    """Unset resolves to unlimited; 150 resolves to 150."""
+    write_config(hermes_home, {"agent": agent_section} if agent_section else {})
+    monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
+
+    import gateway.run as gateway_run
+    from hermes_cli.config import TURN_LIMIT_UNLIMITED
+
+    # The module caches its home at import; point it at this probe's home.
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr(gateway_run, "load_hermes_dotenv", lambda **kwargs: None)
+
+    resolved = gateway_run._current_max_iterations()
+
+    if expect_unlimited:
+        assert resolved == TURN_LIMIT_UNLIMITED, (
+            f"{config_case} config produced a ceiling where none is configured")
+        assert TURN_LIMIT_UNLIMITED == sys.maxsize
+    else:
+        assert resolved == expected, config_case
+
+
+# --- Probe 9: the compaction trigger arithmetic ------------------------------
+# agent/context_compressor.py:2216 floors the threshold to 0.75 below a 512K
+# window; :2223 derives the trigger from the window minus max_tokens times the
+# threshold, floored at the 64K minimum from agent/model_metadata.py:316 and
+# capped at 85% of the budget when that floor binds; :2208 then clamps the
+# result to `compression.threshold_tokens`. The numbers below are executed.
+
+WINDOWS = (64_000, 128_000, 1_000_000)
+
+
+@pytest.mark.parametrize("context_length", WINDOWS)
+def test_effective_threshold_percent_floor(context_length):
+    """The configured 0.50 is raised to 0.75 only below 512K."""
+    from agent.context_compressor import ContextCompressor
+
+    effective = ContextCompressor._effective_threshold_percent(context_length, 0.50)
+    assert effective == (0.75 if context_length < 512_000 else 0.50)
+
+
+@pytest.mark.parametrize(
+    ("context_length", "expected_percent", "expected_trigger"),
+    [
+        # 64K: 0.75 of the window is 48,000, below the 64K minimum floor, so the
+        # floor binds and is capped at 85% of the window — 54,400, not 48,000.
+        (64_000, 0.75, 54_400),
+        (128_000, 0.75, 96_000),
+        (1_000_000, 0.50, 500_000),
+    ],
+)
+def test_compression_trigger_without_a_cap(
+    context_length, expected_percent, expected_trigger,
+):
+    """The trigger the engine computes for each window at the default 0.50."""
+    from agent.context_compressor import ContextCompressor
+
+    percent = ContextCompressor._effective_threshold_percent(context_length, 0.50)
+    assert percent == expected_percent
+    assert ContextCompressor._compute_threshold_tokens(
+        context_length, percent, None) == expected_trigger
+
+    compressor = ContextCompressor(
+        model="probe-model", threshold_percent=0.50, quiet_mode=True,
+        config_context_length=context_length)
+    assert compressor.context_length == context_length
+    assert compressor.threshold_tokens == expected_trigger
+    assert compressor.threshold_percent == expected_percent
+
+
+def test_threshold_tokens_caps_the_million_token_window():
+    """A `threshold_tokens` cap lowers the trigger and never raises it."""
+    from agent.context_compressor import ContextCompressor
+
+    capped = ContextCompressor(
+        model="probe-model", threshold_percent=0.50, quiet_mode=True,
+        config_context_length=1_000_000, threshold_tokens_cap=200_000)
+    assert capped.threshold_tokens == 200_000
+
+    # A cap above the computed trigger leaves the trigger alone.
+    ignored = ContextCompressor(
+        model="probe-model", threshold_percent=0.50, quiet_mode=True,
+        config_context_length=1_000_000, threshold_tokens_cap=900_000)
+    assert ignored.threshold_tokens == 500_000
+
+    # On a small window the cap still binds, below the floored 75% trigger.
+    small = ContextCompressor(
+        model="probe-model", threshold_percent=0.50, quiet_mode=True,
+        config_context_length=128_000, threshold_tokens_cap=40_000)
+    assert small.threshold_tokens == 40_000
+
+
+def test_summary_budget_scales_with_the_window():
+    """The summary output target is 5% of the window, ceilinged, and the lean
+    tail 2.5% clamped. Both bound what one compaction costs."""
+    from agent.context_compressor import ContextCompressor
+
+    budgets = {}
+    for window in WINDOWS:
+        compressor = ContextCompressor(
+            model="probe-model", quiet_mode=True, config_context_length=window)
+        budgets[window] = (compressor.max_summary_tokens, compressor.tail_token_budget)
+
+    assert budgets[64_000] == (3_200, 10_000)
+    assert budgets[128_000] == (6_400, 10_000)
+    assert budgets[1_000_000] == (10_000, 25_000)
+
+
+# --- Probe 10: rehydration by session id versus a request-body history -------
+# Finding 10. gateway/platforms/api_server_runs.py:420 loads a session's history
+# when the body carries a session id and no history of its own, through
+# gateway/platforms/api_server.py:2714 and hermes_state_messages.py:740
+# `get_messages_as_conversation`, which returns tool calls intact. The
+# `conversation_history` body field is coerced at
+# gateway/platforms/api_server_runs.py:266 to role and content only.
+
+
+def _seed_session_with_a_tool_call(db, session_id: str) -> None:
+    db.create_session(session_id, source="api_server")
+    db.append_message(session_id, "user", content="do the thing")
+    db.append_message(
+        session_id, "assistant", content="",
+        tool_calls=[{
+            "id": "call_probe_1",
+            "type": "function",
+            "function": {"name": "probe_tool", "arguments": '{"value": "x"}'},
+        }])
+    db.append_message(session_id, "tool", content='{"ok": true}',
+                      tool_call_id="call_probe_1", tool_name="probe_tool")
+    db.append_message(session_id, "assistant", content="done")
+
+
+def test_session_rehydration_preserves_tool_calls(hermes_home, tmp_path):
+    """Loading by session id returns the tool call and its result."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_session_with_a_tool_call(db, "job-probe")
+    history = db.get_messages_as_conversation("job-probe")
+
+    roles = [m["role"] for m in history]
+    assert roles == ["user", "assistant", "tool", "assistant"]
+    assistant = history[1]
+    assert assistant["tool_calls"][0]["id"] == "call_probe_1"
+    assert assistant["tool_calls"][0]["function"]["name"] == "probe_tool"
+    assert history[2]["tool_call_id"] == "call_probe_1"
+    assert history[2]["tool_name"] == "probe_tool"
+
+
+def test_conversation_history_in_the_request_body_strips_tool_calls():
+    """The body field keeps role and content and nothing else."""
+    from gateway.platforms import api_server_runs
+
+    class _Server:
+        _response_store: dict = {}
+
+    body = {"conversation_history": [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "call_probe_1", "type": "function",
+            "function": {"name": "probe_tool", "arguments": '{"value": "x"}'}}]},
+        {"role": "tool", "content": '{"ok": true}', "tool_call_id": "call_probe_1",
+         "tool_name": "probe_tool"},
+    ]}
+
+    history, _instructions, _stored, error = (
+        api_server_runs._resolve_conversation_history(
+            _Server(), body, None, _openai_error=lambda *a, **k: {"error": True}))
+
+    assert error is None
+    assert [sorted(m) for m in history] == [["content", "role"]] * 3
+    assert all("tool_calls" not in m and "tool_call_id" not in m for m in history)
+    assert history[1]["content"] == ""
