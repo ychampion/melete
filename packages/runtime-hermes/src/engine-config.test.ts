@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { GATEWAY_MAX_REQUEST_BYTES } from '@melete/contracts';
 import { parse } from 'yaml';
 import {
@@ -214,4 +214,43 @@ test('the configuration in the image is what the renderer produces', () => {
     readFileSync(join(import.meta.dir, '..', 'config', 'config.yaml'), 'utf8'),
   );
   expect(committed).toEqual(renderEngineConfig(IMAGE_ENGINE_OPTIONS));
+});
+
+/**
+ * Files that may name a provider entry without rendering one: the renderer
+ * itself, the copy the image carries, and the tests and fixtures that assert
+ * against what those two produce. Nothing here starts an engine.
+ */
+const SPELLED_BY_HAND = [
+  'apps/melete/src/runtime/supervisor.test.ts',
+  'packages/runtime-hermes/config/config.yaml',
+  'packages/runtime-hermes/src/engine-config.test.ts',
+  'packages/runtime-hermes/src/engine-config.ts',
+  'packages/runtime-hermes/tests/test_engine_surface.py',
+  'packages/runtime-hermes/tests/test_entrypoint.py',
+];
+
+test('nothing that starts an engine spells its configuration by hand', () => {
+  // The claim this module makes is that every surface renders from it. A second
+  // spelling is that claim quietly becoming false, and the one this first caught
+  // had been starting an engine with both of its built-in memory stores on,
+  // because `memory.enabled` is not a key the engine reads.
+  const root = join(import.meta.dir, '..', '..', '..');
+  const spelled: string[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules' && !entry.name.startsWith('.')) walk(path);
+      } else if (/\.(ts|py|sh|ya?ml)$/.test(entry.name)) {
+        // `key_env` names the environment variable a provider entry takes its
+        // key from, and appears nowhere but in an engine configuration.
+        if (readFileSync(path, 'utf8').includes('key_env'))
+          spelled.push(relative(root, path).replaceAll('\\', '/'));
+      }
+    }
+  };
+  for (const directory of ['apps', 'conformance', 'deploy', 'evals', 'packages'])
+    walk(join(root, directory));
+  expect(spelled.sort()).toEqual(SPELLED_BY_HAND);
 });

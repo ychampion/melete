@@ -16,11 +16,10 @@
  *   bun run packages/runtime-hermes/scripts/e2e-exec.ts
  */
 import { spawn } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST, type RuntimeEvent } from '@melete/contracts';
-import { stringify } from 'yaml';
 import { createArtifactRecorder } from '../../../apps/melete/src/artifact/record.ts';
 import { signCapability } from '../../../apps/melete/src/broker/capability.ts';
 import { createInternalServer } from '../../../apps/melete/src/broker/internal-server.ts';
@@ -30,6 +29,7 @@ import { createScriptedProvider, fakeProvider } from '../../../apps/melete/src/g
 import { seedJob } from '../../../apps/melete/test/helpers/broker.ts';
 import { createPostgresFixture } from '../../../apps/melete/test/helpers/postgres.ts';
 import { brokerParkedActions, HermesRuntimeAdapter } from '../src/adapter.ts';
+import { hermesHome } from './e2e.ts';
 
 const ROOT = join(import.meta.dir, '..', '..', '..');
 const HERMES_SRC = process.env.MELETE_HERMES_SRC ?? join(ROOT, '.hermes-src');
@@ -60,41 +60,6 @@ async function freePort(): Promise<number> {
   if (port === 0) throw new Error('no port was allocated');
   server.stop(true);
   return port;
-}
-
-function hermesHome(brokerPort: number, token: string): string {
-  const home = mkdtempSync(join(tmpdir(), 'melete-e2e-exec-home-'));
-  mkdirSync(join(home, 'plugins'), { recursive: true });
-  cpSync(
-    join(ROOT, 'packages', 'runtime-hermes', 'melete_plugin'),
-    join(home, 'plugins', 'melete'),
-    {
-      recursive: true,
-    },
-  );
-  writeFileSync(
-    join(home, 'config.yaml'),
-    stringify({
-      platform_toolsets: { api_server: ['melete'] },
-      plugins: { enabled: ['melete'], allow_deprecated_imports: false },
-      tools: { tool_search: { enabled: 'off' } },
-      memory: { enabled: false },
-      approvals: { unattended_mode: 'deny', timeout: 300 },
-      provider: 'melete-gateway',
-      model: 'scripted',
-      providers: {
-        'melete-gateway': {
-          base_url: `http://127.0.0.1:${brokerPort}/providers/fake/v1`,
-          key_env: 'MELETE_MODEL_KEY',
-          default_model: 'scripted',
-          extra_headers: { 'x-melete-capability': token },
-        },
-      },
-      gateway: { platforms: { api_server: { max_concurrent_runs: 1 } } },
-    }),
-    'utf8',
-  );
-  return home;
 }
 
 function startRuntime(
@@ -161,12 +126,14 @@ async function main() {
   const brokerPort = Number(process.env.MELETE_E2E_BROKER_PORT) || (await freePort());
   const apiPort = Number(process.env.MELETE_E2E_RUNTIME_PORT) || (await freePort());
   const scopes = ['exec.run', 'exec.python', 'files.read', 'files.write', 'files.list'];
-  // The gateway's estimator counts one token per UTF-8 byte of the request, so
-  // the cap has to clear the whole assembled body, not just the reply.
+  // What a reply may cost. It is also what decides how much room is left for
+  // the request: the input allowance is the model's window less this, so a cap
+  // larger than the window leaves nothing for the conversation and every turn
+  // is refused for size before it is ever sent.
   const { claims } = await seedJob(db.sql, {
     scopes,
     provider: 'files',
-    budget: { max_output_tokens: 200_000 },
+    budget: { max_output_tokens: 20_000 },
   });
   const execConnection = recordId('conn');
   await db.sql`insert into connection (id, space_id, provider, label, scopes)
@@ -243,7 +210,10 @@ async function main() {
     }),
   });
 
-  const home = hermesHome(brokerPort, token);
+  // The same rendered engine home the other end-to-end scripts build. This one
+  // used to spell its own, which is how it came to be starting an engine with
+  // both built-in memory stores on.
+  const home = hermesHome(brokerPort, apiPort, token);
   const runtime = startRuntime(home, apiPort, token, claims.attempt_id, claims.job_id, workspace);
   try {
     log(`cold start: ${await waitForApi(apiPort)} ms`);
