@@ -111,9 +111,9 @@ describe('whether checks discriminate', () => {
       {
         prior: 'Deleted 40 old files.',
         corrected: 'Moved 40 old files to the archive folder.',
-        priorActions: [{ kind: 'files.delete', effectClass: 'destructive', status: 'completed' }],
+        priorActions: [{ kind: 'files.delete', effectClass: 'destructive', status: 'succeeded' }],
         correctedActions: [
-          { kind: 'files.move', effectClass: 'write_reversible', status: 'completed' },
+          { kind: 'files.move', effectClass: 'write_reversible', status: 'succeeded' },
         ],
       },
     );

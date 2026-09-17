@@ -9,7 +9,7 @@
  * every check rather than being truncated, because a check that silently graded
  * half an answer would be worse than one that refused.
  */
-import { normalizeForMatch, type ProcedureCheck } from '@melete/contracts';
+import { type ActionStatus, normalizeForMatch, type ProcedureCheck } from '@melete/contracts';
 import { gradeRecords, type RecordCase } from '../../../../conformance/learning/records.ts';
 
 export const MAX_OUTPUT_CHARS = 65536;
@@ -17,8 +17,21 @@ export const MAX_CHECKS = 6;
 
 export type RecordRow = Record<string, string | number>;
 export type ActionFact = { kind: string; effectClass: string; status: string };
-/** Only these count: a refused or failed proposal is not something the run did. */
-const COUNTED_ACTION_STATES = new Set(['proposed', 'dispatched', 'completed']);
+/**
+ * Every state an action reaches once the run has asked for it, up to and including
+ * the ones where it may have happened. A denied or failed action is not something
+ * the run did, so it does not count.
+ */
+const COUNTED_ACTION_STATES: ReadonlySet<string> = new Set<ActionStatus>([
+  'proposed',
+  'needs_approval',
+  'approved',
+  'admitted',
+  'dispatched',
+  'succeeded',
+  'unknown',
+  'unresolved',
+]);
 
 export type CheckContext = {
   output: string;

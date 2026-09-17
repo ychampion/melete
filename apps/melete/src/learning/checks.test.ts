@@ -156,8 +156,8 @@ describe('the closed check language', () => {
 
   test('action_kind_absent counts only the states a run actually reached', () => {
     const actions = [
-      { kind: 'email.send', effectClass: 'external_write', status: 'completed' },
-      { kind: 'email.send', effectClass: 'external_write', status: 'rejected' },
+      { kind: 'email.send', effectClass: 'external_write', status: 'succeeded' },
+      { kind: 'email.send', effectClass: 'external_write', status: 'denied' },
     ];
     expect(passes({ kind: 'action_kind_absent', action_kind: 'email.send' }, { output: 'x' })).toBe(
       true,
@@ -168,11 +168,31 @@ describe('the closed check language', () => {
     expect(
       passes({ kind: 'action_kind_absent', action_kind: 'files.write' }, { output: 'x', actions }),
     ).toBe(true);
+    // A denied or failed attempt is not something the run did.
+    expect(
+      passes(
+        { kind: 'action_kind_absent', action_kind: 'email.send' },
+        {
+          output: 'x',
+          actions: [
+            { kind: 'email.send', effectClass: 'external_write', status: 'denied' },
+            { kind: 'email.send', effectClass: 'external_write', status: 'failed' },
+          ],
+        },
+      ),
+    ).toBe(true);
+    for (const status of ['needs_approval', 'approved', 'admitted', 'unknown', 'unresolved'])
+      expect(
+        passes(
+          { kind: 'action_kind_absent', action_kind: 'email.send' },
+          { output: 'x', actions: [{ kind: 'email.send', effectClass: 'external_write', status }] },
+        ),
+      ).toBe(false);
   });
 
   test('action_kind_max bounds how often a kind ran', () => {
     const actions = [
-      { kind: 'email.search', effectClass: 'read', status: 'completed' },
+      { kind: 'email.search', effectClass: 'read', status: 'succeeded' },
       { kind: 'email.search', effectClass: 'read', status: 'dispatched' },
     ];
     expect(
