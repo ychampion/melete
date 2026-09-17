@@ -7,6 +7,7 @@ import type {
 } from '@melete/contracts';
 import { dedupKey, reaction as reactionContract, THUMBS_DOWN, THUMBS_UP } from '@melete/contracts';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { BrokerService } from '../../src/broker/service.ts';
 import { event, job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { EventStream } from '../../src/events/stream.ts';
@@ -20,6 +21,7 @@ import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { defaultBudget, rejectionOf } from '../helpers/broker.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -379,4 +381,56 @@ withDb('reactions', () => {
     expect(parsed.by).toBe('person');
     expect((await fixture().jobs.get(row.id)).unreadResults).toBe(2);
   }, 90_000);
+
+  test("a reaction the assistant leaves belongs to the job's principal alone", async () => {
+    const { handle } = fixture();
+    const mine = newId('own');
+    const theirs = newId('own');
+    await handle.sql`insert into principal (id, email) values
+      (${mine}, 'mine@example.test'), (${theirs}, 'theirs@example.test')`;
+    await handle.sql`update space set owner_principal_id = ${mine} where id = ${spaceId}`;
+    const jobId = newId('job');
+    const attemptId = newId('att');
+    await handle.sql`insert into job
+      (id, space_id, principal_id, title, objective, state, lease_epoch, budget, constraints)
+      values (${jobId}, ${spaceId}, ${mine}, 'Invoice', 'Watch the invoice thread.', 'running', 1,
+        ${JSON.stringify(defaultBudget)}::jsonb,
+        ${JSON.stringify({ public_compartment: false, allowed_domains: [] })}::jsonb)`;
+    await handle.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${attemptId}, ${jobId}, 1, 'fake', 'fake', 'scripted')`;
+    const [said] = await handle.sql`insert into event (job_id, type, payload, dedup_key)
+      values (${jobId}, 'notice',
+        ${JSON.stringify({ kind: 'user_message', text: 'that one, please' })}::jsonb,
+        ${`said:${jobId}`}) returning seq`;
+    const message = String(said?.seq);
+
+    // The glyph alone, the way an attempt sends it: the broker finds the target.
+    const broker = new BrokerService({ sql: handle.sql, connectors: { get: () => undefined } });
+    const answered = await broker.react(
+      {
+        job_id: jobId,
+        attempt_id: attemptId,
+        space_id: spaceId,
+        principal_id: mine,
+        epoch: 1,
+        revision: 0,
+        scopes: [],
+        budget: { max_actions: 20, max_output_tokens: 10_000, max_usd_est: 2 },
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
+      { emoji: THUMBS_UP },
+    );
+    expect(answered).toEqual({ message_id: message, emoji: THUMBS_UP });
+
+    // It is written on the job, so the job's owner reads it and nobody else does.
+    expect(await reactions.list({ spaceId, principalId: mine }, message)).toMatchObject([
+      { message_id: message, emoji: THUMBS_UP, by: 'assistant', job_id: jobId },
+    ]);
+    expect(await reactions.listForJob({ spaceId, principalId: mine }, jobId)).toHaveLength(1);
+    // Another account holding the same space id still reads absence, not a refusal.
+    const byMessage = await rejectionOf(reactions.list({ spaceId, principalId: theirs }, message));
+    expect(byMessage).toMatchObject({ code: 'not_found', status: 404 });
+    const byJob = await rejectionOf(reactions.listForJob({ spaceId, principalId: theirs }, jobId));
+    expect(byJob).toMatchObject({ code: 'not_found', status: 404 });
+  }, 60_000);
 });

@@ -224,3 +224,31 @@ dbTest('resume_action is offered first, and only while an approved action waits'
   });
   expect(lapsed.sent).toHaveLength(0);
 });
+
+dbTest("resume acts for the job's principal, and for no other", async () => {
+  const s = await setup();
+  const mine = recordId('own');
+  const theirs = recordId('own');
+  await s.sql`insert into principal (id, email) values
+    (${mine}, ${`${mine}@example.test`}), (${theirs}, ${`${theirs}@example.test`})`;
+  await s.sql`update space set owner_principal_id = ${mine} where id = ${s.claims.space_id}`;
+  await s.sql`update job set principal_id = ${mine} where id = ${s.claims.job_id}`;
+  const proposal = await s.approved({ to: 'alex@example.test', body: 'Friday works.' });
+  const next = await s.nextAttempt(s.claims);
+
+  // A capability naming somebody else is refused before admission, and sends nothing.
+  const refusal = await rejectionOf(
+    s.broker.resume({ ...next, principal_id: theirs }, proposal.action_id),
+  );
+  expect(refusal).toMatchObject({ code: 'scope_denied', message: 'principal_binding' });
+  expect(s.sent).toHaveLength(0);
+  expect(
+    await s.sql`select id from budget_ledger where action_id = ${proposal.action_id}`,
+  ).toHaveLength(0);
+  expect((await loadAction(s.sql, proposal.action_id)).status).toBe('approved');
+
+  // The principal the job names carries the same approval out, once.
+  const resumed = await s.broker.resume({ ...next, principal_id: mine }, proposal.action_id);
+  expect(resumed).toMatchObject({ action_id: proposal.action_id, status: 'succeeded' });
+  expect(s.sent).toEqual([{ body: 'Friday works.', to: 'alex@example.test' }]);
+});
