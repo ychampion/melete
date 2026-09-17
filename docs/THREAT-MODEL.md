@@ -40,6 +40,8 @@ The web connector rejects private/metadata addresses and rechecks redirects:
 addresses` and `redirects repeat compartment and DNS checks, with no request to
 the denied destination`. Private-context allowlists use exact hosts
 (`private compartment allowlist is trusted context and exact-host only`).
+A calendar feed is fetched under the same public-address rules, resolved again
+on every read, with redirects refused (`ics-feed.test.ts`).
 Public-compartment context assembly is tested by `approved shared context and
 public compartments are assembled before delivery`: a public-compartment job
 receives no private memory.
@@ -142,7 +144,10 @@ credentials, non-root, read-only root filesystem, all capabilities dropped,
 `no-new-privileges`, process and memory limits, and `/work`, the attempt's
 Hermes home and a small `/tmp` as the only writable paths. An attacker who can
 make the model run a command gains nothing beyond what code execution in the
-container already gives.
+container already gives. The tools that run code are among the default
+connections a space is given, and only where attempts run in a container; under
+the process supervisor that row offers nothing
+([CONNECTORS](CONNECTORS.md#default-connections)).
 
 What running code does add is a record. Every execution is a
 `write_reversible` action with the command, the working directory, the exit
