@@ -158,6 +158,34 @@ test('files arrive with mode 0o644 or 0o755 and nothing else', async () => {
   }
 });
 
+test('sync-in refuses a workspace above the file count, per-file size and total size caps', async () => {
+  const job = path.join(root, 'work', JOB);
+  await mkdir(job);
+  for (const name of ['a.txt', 'b.txt', 'c.txt'])
+    await writeFile(path.join(job, name), 'x'.repeat(8));
+  let uploads = 0;
+  const provider = {
+    async putFiles() {
+      uploads += 1;
+    },
+  } as unknown as SandboxProvider;
+  const refusal = async (limits: Record<string, number>) =>
+    (
+      (await syncIn({
+        provider,
+        handle: HANDLE,
+        workRoot: path.join(root, 'work'),
+        jobId: JOB,
+        signal: AbortSignal.timeout(5_000),
+        limits,
+      }).catch((error: unknown) => error)) as SyncRefusal
+    ).code;
+  expect(await refusal({ maxFiles: 2 })).toBe('too_many_files');
+  expect(await refusal({ maxFileBytes: 4 })).toBe('file_too_large');
+  expect(await refusal({ maxTotalBytes: 20 })).toBe('too_large');
+  expect(uploads).toBe(0);
+});
+
 test('sync-in copies the job workspace and refuses a link in it', async () => {
   const provider = new FakeSandboxProvider();
   const handle = await provider.create(
