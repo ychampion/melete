@@ -177,7 +177,7 @@ After a rollback, check health, then look at any job that was waiting for an
 approval before deciding it. Work done by the new release after the backup is
 not in the restored database.
 
-## What is verified, and what is not
+## How the procedure is tested
 
 - The plan's order, the preflight judgement, the rollback text, the behaviour on
   failure before and after the checkout, the bounded migration wait and the
@@ -191,6 +191,6 @@ not in the restored database.
   (`apps/melete/test/integration/migration-upgrade.test.ts`).
 - The restore boundary itself, an old database with the newer journal, is the
   [restore proof](DEPLOYMENT.md#backup-and-restore).
-- **Not verified:** a run of this script against a live Docker host. The
-  commands are the ones the deployment guide documents, but the script as a
-  whole has only run against the injected runner.
+- The script as a whole has run against the injected runner, not against a
+  live Docker host. Its commands are the ones the deployment guide documents,
+  so run it with `--dry-run` first and read the plan it prints.

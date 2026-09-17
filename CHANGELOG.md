@@ -9,9 +9,9 @@ to named tests on the tagged tree; the README's gates table is the summary.
 
 - **Continuous integration.** Pull requests and pushes to `main` run the
   typecheck, lint, both Compose checks, the test suite against a Postgres 17
-  service, the runtime plugin suite and a build of the three shipped images.
-  Actions are pinned by commit and no secret is read; a test fails the workflow
-  if it names a script or file that does not exist.
+  service, the runtime plugin suite and a build of the service, web and runtime
+  images. Actions are pinned by commit and no secret is read; a test fails the
+  workflow if it names a script or file that does not exist.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
   `json-file` log at 10 MB with five files. `compose:check` (24 checks) and
   `browser:compose:check` (12) refuse a service without the bound.
@@ -26,17 +26,7 @@ to named tests on the tagged tree; the README's gates table is the summary.
   the restriction journal apart, a checkout of the tag, images tagged with the
   release version as well as `:local`, a wait for health and for every migration
   in the journal, and the exact rollback into an empty database volume with the
-  newer journal retained. `--dry-run` prints the plan. This replaces the
-  v0.1.0 entry's "an upgrade procedure between releases" under *Not claimed*,
-  to the extent stated next.
-
-### Not claimed
-
-- A run of the upgrade script against a live Docker host. Its plan, preflight,
-  failure handling and rollback text are tested with an injected command runner,
-  and the migration path from the `v0.1.0` journal is tested on Postgres; the
-  script as a whole has not upgraded a real installation.
-- Log shipping or retention beyond rotation.
+  newer journal retained. `--dry-run` prints the plan.
 
 ## v0.1.0
 
