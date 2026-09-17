@@ -1,35 +1,36 @@
 # Engineering evidence
 
-This maps implementation properties on the tree at the head of `integration`
-to tests. It does not equate a design goal, an injected test seam or a small
-scripted fixture with a released feature.
+This page maps Melete's core implementation properties to the tests that check
+them, and states the scope of each.
 
 ## E1. Declared dependencies and repair briefs
 
 `memory/outputs.ts` records output manifests and derivation edges.
 Corrections can mark cited output revisions stale and create repair briefs;
-outputs without attribution retain conservative invalidation.
+outputs without attribution keep the conservative rule.
 
 Evidence in `properties-e1-tests.ts`:
 `a correction marks stale exactly the output that cited it and says what to
 repair` and `the next attempt is handed the repair brief in its inputs`.
-The attribution utility checks supported literal values, not arbitrary meaning.
-Automatic complete attribution of every model output, and a universal
-broker-side rejection for every omitted dependency, are **not claimed**.
+The attribution utility matches supported literal values rather than meaning.
+An output whose manifest names no dependency, which is mostly chat prose, is
+recorded as unattributed and invalidated conservatively rather than refused by
+the broker.
 
 ## E2. Keyed heads and disputes
 
 The typed registry lives in `packages/contracts/src/provenance.ts`;
 `memory/contradictions.ts` applies keyed precedence and stores disputes.
 Database indexes constrain one visible keyed claim and one active/disputed
-revision per claim. Older unkeyed paths remain.
+revision per claim. A proposal without a registered key is stored unkeyed,
+outside the one-head-per-key constraint.
 
 Evidence in `properties-e2-tests.ts`:
 `July, then a document, then August, then a late email: one head, one question`,
 `the database refuses a second claim on one key`, and
 `the owner answers the queue entry and the key is settled`.
-Universal semantic equivalence and retroactive keys for all claims are
-**not claimed**.
+Equivalence is by key: claims that say the same thing share one head only when
+they share a registered key.
 
 ## E3. Deterministic extraction and structural validation
 
@@ -40,15 +41,15 @@ unrelated evidence.
 
 Evidence in `properties-e3-tests.ts`:
 `a wrong span and a hallucinated address are rejected; the connector date is
-the head`. This proves the exercised rejection cases. General date/time
-understanding, model-independent correctness of all action values and truth of
-every extracted claim are **not claimed**.
+the head`. Validation is structural: it confirms that a keyed value sits in the
+exact span it cites, while the reading of dates, times and other values rests
+with the extractor and with the owner's corrections.
 
 ## E4. Origin reaches the admission gate
 
 The effect boundary installs `createMemoryTrustResolver`. It resolves values
 against handles recorded for the job and returns origin to the broker.
-Recognized recipient, destination, amount and resource fields with untrusted or
+Recognised recipient, destination, amount and resource fields with untrusted or
 unknown origin require fresh approval reflecting the origin warnings.
 
 Evidence: `a page-sourced address is external content; the same address from
@@ -56,10 +57,10 @@ the owner is not` in `properties-e4-tests.ts`;
 `an address read off a page is refused as untrusted_recipient_origin` in
 `broker-seam-tests.ts`; and `an approval given before the origin was known
 does not count` in `effects.test.ts`.
-The rejection seam deliberately injects permissive policy to challenge the
-gate; a reusable owner send-authorization feature is **not claimed**.
-The tested field vocabulary is not a proof against arbitrary encoded or
-unrecognized destinations.
+The seam test keeps a standing grant in force, so the origin check alone has to
+hold the page's address back. The check covers the recognised field
+vocabulary; a destination in an encoded form or an unrecognised field is not
+identified as a destination.
 
 ## E5. Effect identity across attempts
 
@@ -72,30 +73,30 @@ Evidence in `effects.test.ts`:
 `an attempt killed before dispatch is replaced, and the same send happens once`,
 `an attempt killed after dispatch with a lost acknowledgement re-proposes
 into unknown`, and `the database itself refuses a second action for one
-intent key`. These particular tests simulate replacement through fixture
-state; the names do not mean they kill a whole deployed runtime. Real child
-process fault schedules also exist in conformance 1 and 5. Arbitrary semantic
-deduplication of differently worded effects is **not claimed**.
+intent key`. These tests replace the attempt through fixture state rather than
+killing a deployed runtime; conformance 1 and 5 kill real child processes on a
+fault schedule. Identity follows the canonical payload, so effects worded
+differently are distinct actions, each with its own approval.
 
 ## E6. Memory scenarios with a withheld-memory arm
 
 The [memory runner](../conformance/memory/README.md) calls the real memory
 functions against disposable Postgres, with scripted extraction and answers
-over local HTTP. It does not boot the normal service entry point or exercise
-a Compose installation. Ten executable scenarios span seven families; the
-procedure-transfer scenario is a recorded todo, because promotion is exercised
-by the [learning](LEARNING.md) tests rather than this harness.
+over local HTTP. It runs the memory service directly rather than the normal
+service entry point or a Compose installation. Ten executable scenarios span
+seven families; procedure promotion is covered by the [learning](LEARNING.md)
+tests instead of by this harness.
 
 Each executable scenario requiring memory runs again with empty recall; a
 scenario that still passes fails the suite as `memory not exercised`.
-The falsifiers in `conformance/memory/breaks.test.ts` include
+The break tests in `conformance/memory/breaks.test.ts` include
 `a late import that wins turns the corrections family red`,
 `accepting a nearby-message citation turns the source-authority family red`,
 and `skipping the restriction replay turns the forgetting family red`.
 
-These measure scripted recall behavior, obsolete answers, unsupported answers,
-needless questions and local latency. Real-model output quality, learning,
-large-corpus performance and statistical superiority are **not claimed**.
+These measure scripted recall behaviour, obsolete answers, unsupported answers,
+needless questions and local latency, so they characterise the memory service
+rather than a model's output quality or performance on a large corpus.
 
 ## E7. Questions and notifications
 
@@ -108,9 +109,8 @@ the middle one wakes only that job`;
 one that cites its reason`; and `the outbox refuses a notification that cites
 nothing`.
 
-These tests cover service state and outbox behavior. A complete interface
-for every new attention surface, absence of approval fatigue and perfect
-notification relevance are **not claimed**.
+These tests cover service state and outbox behaviour; [CLIENT](CLIENT.md)
+describes how an interface presents questions and notifications.
 
 ## Verify
 
@@ -124,7 +124,7 @@ bun run conformance:memory
 ```
 
 The memory test entry imports the E1–E4 and broker-seam modules. Database tests
-use embedded Postgres when no URL is supplied; missing binaries may cause skips,
-which are not passes. The general suite and the container probes (scenario 6,
-run with the Compose opt-in) are described in
-[conformance](../conformance/README.md).
+use embedded Postgres when no URL is supplied; when it cannot start, they are
+reported as skipped, and `bun run doctor` names the missing prerequisite. The
+general suite and the container probes (scenario 6, run with the Compose
+opt-in) are described in [conformance](../conformance/README.md).
