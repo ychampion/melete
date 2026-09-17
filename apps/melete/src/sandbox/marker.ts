@@ -20,7 +20,7 @@
  * | What the service observed                               | Outcome                  |
  * |---------------------------------------------------------|--------------------------|
  * | the provider refused to start the process               | failed, retryable        |
- * | the wrapper exited 112 (no marker root) and no marker   | failed, retryable        |
+ * | exit 112 (setup failed before the command) and no marker | failed, retryable        |
  * | no marker, and the start was seen or cannot be ruled out | unknown, never run again |
  * | marker, no exit record                                  | unknown, never run again |
  * | exit record present                                     | succeeded, late          |
@@ -49,7 +49,10 @@ import { readWorkspaceFile, SANDBOX_WORKDIR, writeWorkspaceFile } from './worksp
 export const MARKER_ROOT = '/var/tmp/.melete-exec';
 export const REENTERED_EXIT = 111;
 export const REENTERED_MESSAGE = 'melete_exec_reentered';
-/** The marker root could not be created, so the command was not started. */
+/**
+ * The marker root could not be created, or an adapter's launcher could not
+ * enter the working directory, so the command was not started.
+ */
 export const MARKER_SETUP_EXIT = 112;
 /** What the channel shows when the command itself exited 111 or 112. */
 export const RESERVED_STATUS_EXIT = 113;

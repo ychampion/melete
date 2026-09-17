@@ -540,6 +540,10 @@ type Shell = {
   cwd: string;
   vars: Map<string, string>;
   status: number;
+  /** `$0`, then `$1` onwards, as `sh -c script name args...` sets them. */
+  positional: string[];
+  /** What this process inherited: the sandbox's environment, less anything `env -u` took out. */
+  environment: Readonly<Record<string, string>>;
 };
 
 function expand(word: Word, shell: Shell): string {
@@ -548,15 +552,25 @@ function expand(word: Word, shell: Shell): string {
       part.quoted === 'single'
         ? part.text
         : part.text.replace(
-            /\$(\?|\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g,
+            /\$(\?|#|@|[0-9]|\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g,
             (_, name: string) => {
               if (name === '?') return String(shell.status);
+              if (name === '#') return String(Math.max(0, shell.positional.length - 1));
+              if (name === '@') return shell.positional.slice(1).join(' ');
+              if (/^[0-9]$/.test(name)) return shell.positional[Number(name)] ?? '';
               const key = name.startsWith('{') ? name.slice(1, -1) : name;
-              return shell.vars.get(key) ?? shell.sandbox.env[key] ?? '';
+              return shell.vars.get(key) ?? shell.environment[key] ?? '';
             },
           ),
     )
     .join('');
+}
+
+/** A word is one argument, except a lone `"$@"`, which is each positional argument. */
+function expandWords(word: Word, shell: Shell): string[] {
+  if (word.length === 1 && word[0]?.quoted === 'double' && word[0].text === '$@')
+    return shell.positional.slice(1);
+  return [expand(word, shell)];
 }
 
 const sleep = (ms: number, signal: AbortSignal) =>
@@ -611,6 +625,8 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
       if (operands.length === 2 && left === '-e') return fs.lstat(path(operator ?? '')) ? 0 : 1;
       if (operands.length === 2 && left === '-d')
         return fs.stat(path(operator ?? ''))?.kind === 'dir' ? 0 : 1;
+      if (operands.length === 2 && left === '-f')
+        return fs.stat(path(operator ?? ''))?.kind === 'file' ? 0 : 1;
       return fail('unsupported test', 2);
     }
     case 'exit':
@@ -624,24 +640,93 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     case 'sleep':
       await sleep(Number(args[0] ?? '0') * 1000, shell.process.controller.signal);
       return 0;
-    case 'env':
+    case 'env': {
+      const rest = [...args];
+      const environment = { ...shell.environment };
+      while (rest[0] === '-u') {
+        delete environment[rest[1] ?? ''];
+        rest.splice(0, 2);
+      }
+      if (rest.length) return program(rest, { ...shell, environment }, io);
       io.out(
         encode(
-          Object.entries(shell.sandbox.env)
+          Object.entries(environment)
             .map(([key, value]) => `${key}=${value}\n`)
             .join(''),
         ),
       );
       return 0;
+    }
     case 'sh':
       if (args[0] !== '-c' || args[1] === undefined) return fail('only -c is supported', 2);
-      return runScript(args[1], shell.sandbox, shell.process, shell.cwd, io);
+      return runScript(args[1], shell, io, args.slice(2));
+    case 'cd': {
+      const target = args.filter((arg) => arg !== '--')[0] ?? shell.environment.HOME ?? '/';
+      const resolved = path(target);
+      if (fs.stat(resolved)?.kind !== 'dir') return fail(`can't cd to ${target}`, 2);
+      shell.cwd = resolved;
+      return 0;
+    }
+    case 'shift':
+      shell.positional = [shell.positional[0] ?? 'sh', ...shell.positional.slice(2)];
+      return 0;
+    case 'exec':
+      // The shell is replaced: whatever the program returns is the shell's end.
+      throw new ExitSignal(await program(args, shell, io));
+    case 'dirname': {
+      const operand = args.filter((arg) => arg !== '--')[0] ?? '.';
+      const trimmed = operand.replace(/\/+$/, '');
+      const at = trimmed.lastIndexOf('/');
+      io.out(encode(`${at < 0 ? '.' : at === 0 ? '/' : trimmed.slice(0, at)}\n`));
+      return 0;
+    }
+    case 'timeout': {
+      const rest = [...args];
+      if (rest[0] === '-s') rest.splice(0, 2);
+      const seconds = Number(rest.shift());
+      if (!Number.isFinite(seconds) || !rest.length) return fail('invalid duration', 125);
+      // The whole process group goes, the way `timeout -s KILL` sends it.
+      const timer = setTimeout(() => shell.process.kill(), seconds * 1000);
+      try {
+        return await program(rest, shell, io);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    case 'find': {
+      const root = args[0] ?? '.';
+      const format = args[args.indexOf('-printf') + 1] ?? '%P\\n';
+      if (!args.includes('-mindepth') || !args.includes('-printf'))
+        return fail('only find PATH -mindepth 1 -printf FORMAT is supported', 1);
+      let entries: FileEntry[];
+      try {
+        entries = fs.list(path(root));
+      } catch {
+        return fail(`'${root}': No such file or directory`, 1);
+      }
+      const rendered = entries
+        .map((entry) =>
+          format
+            .replace(/%y/g, entry.symlink ? 'l' : entry.directory ? 'd' : 'f')
+            .replace(/%s/g, String(entry.symlink ? 0 : entry.size))
+            .replace(/%m/g, entry.mode.toString(8))
+            .replace(/%P/g, entry.path)
+            .replace(/\\0/g, '\0')
+            .replace(/\\n/g, '\n'),
+        )
+        .join('');
+      io.out(encode(rendered));
+      return 0;
+    }
     case 'setsid':
       return program(args, shell, io);
     case 'head': {
-      if (args[0] !== '-c' || args[2] === undefined) return fail('only -c N FILE is supported', 2);
-      const count = Number(args[1]);
-      if (args[2] === '/dev/zero') {
+      const operands = args.filter((arg) => arg !== '--');
+      if (operands[0] !== '-c' || operands[2] === undefined)
+        return fail('only -c N FILE is supported', 2);
+      const count = Number(operands[1]);
+      const file = operands[2];
+      if (file === '/dev/zero') {
         const chunk = 65_536;
         for (let written = 0; written < count; written += chunk) {
           shell.process.controller.signal.throwIfAborted();
@@ -649,7 +734,11 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
         }
         return 0;
       }
-      io.out(fs.readFile(path(args[2])).slice(0, count));
+      try {
+        io.out(fs.readFile(path(file)).slice(0, count));
+      } catch {
+        return fail(`cannot open '${file}' for reading`, 1);
+      }
       return 0;
     }
     case 'cat': {
@@ -834,7 +923,7 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
     }
   }
   if (command.kind === 'group') return runList(command.body, shell, current);
-  const words = command.words.map((word) => expand(word, shell));
+  const words = command.words.flatMap((word) => expandWords(word, shell));
   let first = 0;
   while (first < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[first] as string)) {
     const assignment = words[first] as string;
@@ -861,10 +950,9 @@ async function runList(list: List, shell: Shell, io: Io): Promise<number> {
 
 async function runScript(
   script: string,
-  sandbox: FakeSandbox,
-  owner: FakeProcess,
-  cwd: string,
+  parent: Shell,
   io: Io,
+  positional: string[] = [],
 ): Promise<number> {
   let list: List;
   try {
@@ -873,7 +961,15 @@ async function runScript(
     io.err(encode(`sh: 1: Syntax error: ${(error as Error).message}\n`));
     return 2;
   }
-  const shell: Shell = { sandbox, process: owner, cwd, vars: new Map(), status: 0 };
+  const shell: Shell = {
+    sandbox: parent.sandbox,
+    process: parent.process,
+    cwd: parent.cwd,
+    vars: new Map(),
+    status: 0,
+    positional: positional.length ? positional : ['sh'],
+    environment: parent.environment,
+  };
   try {
     return await runList(list, shell, io);
   } catch (error) {
@@ -1005,7 +1101,15 @@ export class FakeSandboxEngine {
     }
     sandbox.processes.set(pid, child);
     const io: Io = { out: options.onOutput, err: options.onOutput };
-    const shell: Shell = { sandbox, process: child, cwd: options.cwd, vars: new Map(), status: 0 };
+    const shell: Shell = {
+      sandbox,
+      process: child,
+      cwd: options.cwd,
+      vars: new Map(),
+      status: 0,
+      positional: ['sh'],
+      environment: { ...sandbox.env },
+    };
     void (async () => {
       let result: { exitCode: number | null; killed: boolean };
       try {
