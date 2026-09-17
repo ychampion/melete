@@ -75,7 +75,9 @@ test('the terminal manifest parses, is brokered, and registers', () => {
 });
 
 withDb('a command in a remote sandbox', () => {
-  const setup = async (over: { persistence?: SandboxConnectionConfig['persistence'] } = {}) => {
+  const setup = async (
+    over: { persistence?: SandboxConnectionConfig['persistence']; maxConcurrent?: number } = {},
+  ) => {
     if (!handle) throw new Error('Postgres is unavailable');
     const scope = await seedSessionScope(handle.sql);
     const provider = new FakeSandboxProvider();
@@ -86,12 +88,13 @@ withDb('a command in a remote sandbox', () => {
     const connector = createSandboxExecConnector({
       sessions,
       provider,
-      config: { ...config, ...over },
+      config: { ...config, ...(over.persistence ? { persistence: over.persistence } : {}) },
       connectionId: scope.connectionId,
       spaceId: scope.spaceId,
       project: PROJECT,
       workRoot,
       sql: handle.sql,
+      ...(over.maxConcurrent === undefined ? {} : { maxConcurrent: over.maxConcurrent }),
     });
     const attemptId = await scope.attempt();
     await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
@@ -313,5 +316,18 @@ withDb('a command in a remote sandbox', () => {
     expect(outcome.receipt.detail.session_id).not.toBe(sessionId);
     expect(provider.calls.create).toBe(1);
     expect(provider.calls.resume).toBe(1);
+  }, 60_000);
+
+  test('a sandbox beyond the concurrency limit is refused, and nothing is dispatched', async () => {
+    const { provider, run, scope, action, context, connector } = await setup({ maxConcurrent: 1 });
+    const first = await run({ command: 'printf first' });
+    expect(first.result.outcome).toBe('succeeded');
+    // The limit counts what this installation has running, whatever job it serves.
+    const second = await action({ command: 'printf second' }, await scope.attempt());
+    const refused = await connector.execute(second, context(second));
+    if (refused.outcome !== 'failed') throw new Error(JSON.stringify(refused));
+    expect(refused.reason).toContain('which is its limit');
+    expect(refused.retryable).toBe(true);
+    expect(provider.calls.create).toBe(1);
   }, 60_000);
 });
