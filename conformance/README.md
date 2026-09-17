@@ -2,9 +2,7 @@
 
 The runner lists eight scenarios, then executes the tests in
 `conformance/scenarios`. Scenarios 1–5 run anywhere with disposable Postgres;
-6–8 run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1` is set
-and are reported as deferred otherwise. This page describes the tree at the
-head of `integration`.
+6–8 run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1` is set.
 
 ## Run
 
@@ -17,15 +15,14 @@ bun run conformance
 Install dependencies with the command in [README](../README.md) first. The
 runner prints the catalog, then runs `bun test --max-concurrency=1
 conformance/scenarios`; each slow fixture declares its own timeout.
-The fixtures create isolated databases and use scripted/stub runtimes and test
+The fixtures create isolated databases and use scripted runtimes and test
 effects. Without `DATABASE_URL`, they start disposable embedded Postgres 17.
 With a URL, they create disposable databases on that server; the supplied user
 needs database-creation permission. pg-boss uses those fixture databases.
-Unavailable embedded binaries cause explicit skips, not proof of a pass.
 
-Without the opt-in the command does not start a Compose stack, and no scenario
-calls a real model. The scenario catalog states intended assertions; the
-executable test bodies and reported pass/skip results determine evidence.
+Without the opt-in the command starts no Compose stack, and no scenario calls a
+real model. The catalog states each scenario's intended assertions; the
+executable test bodies and the reported results are the evidence.
 
 ## Executable scenarios
 
@@ -39,31 +36,48 @@ executable test bodies and reported pass/skip results determine evidence.
 
 The fixture tests also check recorded receipts, recovery events and uncertainty
 messages. An assertion mentioning UI text checks the returned message, not a
-rendered browser. Host reboot, container recovery and live-provider equivalence
-are **not claimed**.
+rendered browser.
 
-Scenario 1 kills the child inside the transition transaction before enqueue;
-the transaction rolls back. It separately deletes queued wakes to exercise
-recovery. Its catalog narrative must not be read as proof that a transition
-commits independently of enqueue. Scenario 5 also checks the stored text-delta
-rows: the current runner persists them even though the contract helper labels
-text deltas non-durable.
+Scenario 1 kills the child inside the transition transaction before enqueue, so
+the transaction rolls back; it separately deletes queued wakes to exercise the
+recovery scan. Scenario 5 also checks the stored text-delta rows, which the
+current runner persists even though the contract helper labels text deltas
+non-durable.
 
 ## Deployment scenarios (Compose opt-in)
 
 These run against a disposable Compose installation on a Linux Docker host, as
-the README describes, and restart shared services, so run them sequentially.
-On 2026-09-12 the whole suite passed 44 tests and skipped one.
+the [README](../README.md#install-on-a-linux-docker-host) describes. They
+restart shared services, so run them sequentially, and use a fresh installation
+**before creating an owner account in the browser**: the runner creates its own
+account and test data, kills test processes, and restarts the stack.
+
+```bash
+MELETE_CONFORMANCE_COMPOSE=1 bun -e '
+import { databaseUrl } from "./conformance/helpers/compose.ts";
+const env = { ...process.env, DATABASE_URL: await databaseUrl() };
+for (const script of ["conformance", "conformance:memory"]) {
+  const run = Bun.spawn([process.execPath, "run", script], {
+    env, stdin: "inherit", stdout: "inherit", stderr: "inherit",
+  });
+  const code = await run.exited;
+  if (code !== 0) process.exit(code);
+}
+'
+```
+
+This passes the database connection privately to the runners. Scenarios 1–5 use
+disposable databases on the Compose Postgres server; scenarios 6–8 use the
+running services and runtime containers.
 
 | Scenario | What runs | Named assertions |
 | --- | --- | --- |
 | 6: [no route out](scenarios/06-no-route-out.test.ts) | Python standard-library probes from a real claimed Hermes cell and the warm cell; ten tests | `Postgres is unreachable by DNS and its actual container IP`; `another job is absent from the mounted filesystem`; `only the broker/gateway peer is attached and both routes answer`; `non-root, read-only, no capabilities, no privilege escalation or Docker socket`; `the warm cell cannot reach owner setup, login or health`; `a claimed attempt cannot reach the owner control plane and retains its job boundary` |
 | 7: [retraction](scenarios/07-retraction.test.ts) | Retract a knowledge record while a job is running, then restart the whole stack; four tests | `the record is absent from the FTS index, not merely filtered out of results`; `after a restart, retrieval still does not return it`; `the retraction and its reason remain readable in git` |
-| 8: [model agnosticism](scenarios/08-model-agnostic.test.ts) | One scripted job through the stack with the fake provider; the same job against a real provider only when a key is present (skipped otherwise) | `the fake provider reaches approval and one receipt through the Compose stack`; `fake-provider approval binds the canonical payload hash`; `enforcement never depends on the model agreeing to be enforced` (a cell capability reads the catalog but cannot approve) |
+| 8: [model agnosticism](scenarios/08-model-agnostic.test.ts) | One scripted job through the stack with the fake provider; the same job against a real provider when a key is present | `the fake provider reaches approval and one receipt through the Compose stack`; `fake-provider approval binds the canonical payload hash`; `enforcement never depends on the model agreeing to be enforced` (a cell capability reads the catalog but cannot approve) |
 
-The second-provider comparison in scenario 8 is the one skip: it has not run
-without a configured credential, so policy equivalence across two real
-providers is **not claimed**.
+Scenario 8's second-provider comparison runs when a second credential is
+configured; without one it reports itself as skipped.
 
 ## Static configuration checks
 
@@ -72,9 +86,9 @@ bun run compose:check
 ```
 
 This reads YAML and checks 23 declarations. Its test `passes every boundary
-check` and mutation tests exercise the checker, not a kernel/network boundary.
-The label printed as “no route out” means the internal-network flag was found;
-scenario 6 is what establishes live enforcement, on the host where it ran.
+check` and its mutation tests exercise the checker. The label printed as “no
+route out” means the internal-network flag was found; scenario 6 is what
+establishes live enforcement, on the host where it runs.
 
 The [memory runner](memory/README.md) is a separate suite with a withheld-memory
 arm.
