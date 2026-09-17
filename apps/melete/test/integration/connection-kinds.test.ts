@@ -614,6 +614,15 @@ withDb('installing each kind of connection through the API', () => {
     const after = await h.offered();
     expect(after.bundle).not.toContain('mcp_kinds.lookup');
     expect(after.brokered).not.toContain('mcp_kinds.lookup');
+
+    // A removed installation no longer holds its short name, so the same server
+    // can be installed again with a new token.
+    const again = await h.install(body);
+    expect(again.status).toBe(201);
+    const replacement = connectionResponse.parse(again.json).connection.id;
+    expect(replacement).not.toBe(id);
+    expect((await h.offered()).bundle).toContain('mcp_kinds.lookup');
+    expect((await h.revoke(replacement)).status).toBe(200);
   }, 120_000);
 
   test('only the owner of an owner-audience space installs, and a session without a space_id means its own space', async () => {

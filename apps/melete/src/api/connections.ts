@@ -12,7 +12,7 @@ import {
   connectionView,
   createConnectionRequest,
 } from '@melete/contracts';
-import { and, asc, eq, not, sql as query } from 'drizzle-orm';
+import { and, asc, eq, ne, not, sql as query } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { builtinEnvironment, ensureBuiltinConnections } from '../connectors/builtin.ts';
@@ -237,10 +237,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           403,
         );
       if (installation.kind === 'mcp') {
+        // A removed installation keeps its row for the ledger but not its short
+        // name, so the same server can be installed again with a new credential.
         const existing = await tx
           .select({ config: connection.configuration })
           .from(connection)
-          .where(eq(connection.spaceId, spaceId));
+          .where(and(eq(connection.spaceId, spaceId), ne(connection.status, 'revoked')));
         if (
           existing.some(
             (row) =>
