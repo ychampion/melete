@@ -225,6 +225,26 @@ export function checkBrowserCompose(
   return results;
 }
 
+/** The worker image installs its runtime packages at exactly the versions the service pins. */
+export function checkBrowserImage(
+  dockerfile: string,
+  servicePackage: { dependencies?: Record<string, string> },
+): CheckResult {
+  const expected = ['playwright', 'tldts', 'zod'].map(
+    (name) => `${name}@${servicePackage.dependencies?.[name]}`,
+  );
+  const installed =
+    /npm install --omit=dev --ignore-scripts --save-exact ([^\\\n]+)/
+      .exec(dockerfile)?.[1]
+      ?.trim()
+      .split(/\s+/) ?? [];
+  return {
+    name: 'the browser image installs exactly its pinned runtime packages',
+    ok: sameNames(installed, expected),
+    detail: `expected ${expected.join(' ')}; the image installs ${installed.join(' ') || 'nothing'}`,
+  };
+}
+
 export function loadBrowserCompose(path: string): BrowserComposeFile {
   return parse(readFileSync(path, 'utf8')) as BrowserComposeFile;
 }
@@ -242,6 +262,14 @@ if (import.meta.main) {
   const results = checkBrowserCompose(
     loadBrowserCompose(process.argv[2] ?? paths.base),
     loadBrowserCompose(process.argv[3] ?? paths.override),
+  );
+  results.push(
+    checkBrowserImage(
+      readFileSync(join(dirname(paths.base), 'Dockerfile.browser'), 'utf8'),
+      JSON.parse(
+        readFileSync(join(dirname(paths.base), '..', 'apps', 'melete', 'package.json'), 'utf8'),
+      ),
+    ),
   );
   for (const result of results) {
     process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);

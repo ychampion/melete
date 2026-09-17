@@ -5,6 +5,7 @@ import {
   type BrowserComposeFile,
   browserComposePaths,
   checkBrowserCompose,
+  checkBrowserImage,
   loadBrowserCompose,
 } from './browser-compose-check.ts';
 
@@ -42,6 +43,23 @@ describe('the isolated browser deployment', () => {
     const baseWithout = structuredClone(base);
     delete baseWithout.services?.postgres?.logging;
     expect(failures(override, baseWithout)).toContain('the browser stack keeps bounded logs');
+  });
+
+  test('the image installs exactly the runtime packages the service pins', () => {
+    const image = readFileSync(join(paths.base, '..', 'Dockerfile.browser'), 'utf8');
+    const servicePackage = JSON.parse(
+      readFileSync(join(paths.base, '../..', 'apps/melete/package.json'), 'utf8'),
+    );
+    expect(checkBrowserImage(image, servicePackage)).toMatchObject({ ok: true });
+    const tldts = `tldts@${servicePackage.dependencies.tldts}`;
+    for (const broken of [
+      image.replace(` ${tldts}`, ''),
+      image.replace(tldts, 'tldts@0.0.1'),
+      image.replace(tldts, `${tldts} left-pad@1.3.0`),
+      image.replace(`zod@${servicePackage.dependencies.zod}`, 'zod@3.0.0'),
+      image.replace('--save-exact', '--save'),
+    ])
+      expect(checkBrowserImage(broken, servicePackage).ok).toBe(false);
   });
 
   test('uses the pinned Node worker image and a distinct numeric uid', () => {

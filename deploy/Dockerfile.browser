@@ -10,7 +10,7 @@ WORKDIR /app
 
 RUN npm init --yes \
     && npm pkg set type=module \
-    && npm install --omit=dev --ignore-scripts --save-exact playwright@1.63.0 zod@4.6.2 \
+    && npm install --omit=dev --ignore-scripts --save-exact playwright@1.63.0 zod@4.6.2 tldts@7.4.13 \
     && npx --no-install playwright install --with-deps chromium \
     && npm cache clean --force \
     && groupadd --gid 10003 browser \
