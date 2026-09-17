@@ -313,6 +313,31 @@ describe('Docker attempt supervision', () => {
     }
   });
 
+  test('a window the operator states reaches the container it was stated for', async () => {
+    // Without this a model whose real window is smaller than the fallback is
+    // told to compact at a figure it can never reach, and every request past its
+    // own window is refused by the provider instead of being summarized.
+    const previous = process.env.MELETE_MODEL_CONTEXT_WINDOW;
+    process.env.MELETE_MODEL_CONTEXT_WINDOW = '32000';
+    try {
+      const f = await setup();
+      await f.runtime.start(
+        {
+          ...bundle(0),
+          model: { provider: 'openai-compatible', model: 'llama3.1', fallback: null },
+        },
+        f.sink,
+        new AbortController().signal,
+      );
+      const environment = f.daemon.created[0]?.Env ?? [];
+      expect(environment).toContain('MELETE_ENGINE_CONTEXT_LENGTH=32000');
+      expect(environment).toContain('MELETE_ENGINE_COMPACTION_THRESHOLD=27200');
+    } finally {
+      if (previous === undefined) delete process.env.MELETE_MODEL_CONTEXT_WINDOW;
+      else process.env.MELETE_MODEL_CONTEXT_WINDOW = previous;
+    }
+  });
+
   test('concurrent jobs never share a network or writable Hermes home', async () => {
     const f = await setup();
     await Promise.all(

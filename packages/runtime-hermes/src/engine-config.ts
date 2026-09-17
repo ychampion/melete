@@ -13,7 +13,11 @@
  * rendered object at start-up, and callers that already hold it (a supervisor on
  * the host, a test harness) may pass it here instead.
  */
-import { GATEWAY_MAX_REQUEST_BYTES, modelContextWindow } from '@melete/contracts';
+import {
+  GATEWAY_MAX_REQUEST_BYTES,
+  hasKnownContextWindow,
+  modelContextWindow,
+} from '@melete/contracts';
 
 /** Where in-cell commands run, once the native terminal toolset is turned on. */
 export type TerminalBackend = 'local' | 'melete_sandbox';
@@ -45,6 +49,8 @@ export type EngineConfigOptions = {
   modelApiMode?: string;
   /** Overrides the catalog window; a proof that needs a small window states it here. */
   contextWindow?: number;
+  /** The window an operator stated for this deployment's models. */
+  contextWindowLimit?: number;
   /** The largest body the model gateway will accept. */
   gatewayMaxRequestBytes?: number;
   /** The owner's ceiling on the compaction trigger. */
@@ -123,6 +129,24 @@ export function engineCompactionTrigger(contextWindow: number): number {
 }
 
 /**
+ * The window to tell the engine about.
+ *
+ * The catalog names the models Melete knows, and anything else falls back to
+ * 128,000 tokens — a guess, and one that is too generous for a smaller model: it
+ * would be told to compact at 96,000 tokens, never reach that, and have every
+ * request past its own window refused by the provider with nothing summarized.
+ * So an operator may state the window their deployment's models really have. For
+ * a model the catalog names their number may lower the window and never raise
+ * it, because the catalog is what the gateway's own accounting is keyed on; for
+ * one it does not name, their number is the only real one there is.
+ */
+export function engineContextWindow(model: string, stated?: number): number {
+  const catalog = modelContextWindow(model);
+  if (stated === undefined) return catalog;
+  return hasKnownContextWindow(model) ? Math.min(catalog, stated) : stated;
+}
+
+/**
  * The trigger Melete configures: the engine's own trigger, lowered by the
  * owner's cap, and lowered again to stay inside the body the gateway accepts.
  * The last term is what keeps proactive compaction ahead of the gateway's
@@ -149,7 +173,8 @@ export type EngineConfig = Record<string, unknown>;
 /** The engine configuration these options describe, secrets included only if given. */
 export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
   const features = { ...DEFAULT_FEATURES, ...options.features };
-  const contextWindow = options.contextWindow ?? modelContextWindow(options.model);
+  const contextWindow =
+    options.contextWindow ?? engineContextWindow(options.model, options.contextWindowLimit);
   const thresholdTokens = compactionThresholdTokens({
     contextWindow,
     compactionMaxTokens: options.compactionMaxTokens,
@@ -222,7 +247,8 @@ export const IMAGE_ENGINE_OPTIONS: EngineConfigOptions = {
  * image cannot know.
  */
 export function engineConfigEnvironment(options: EngineConfigOptions): Record<string, string> {
-  const contextWindow = options.contextWindow ?? modelContextWindow(options.model);
+  const contextWindow =
+    options.contextWindow ?? engineContextWindow(options.model, options.contextWindowLimit);
   return {
     MELETE_ENGINE_MAX_TURNS: String(options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS),
     MELETE_ENGINE_CONTEXT_LENGTH: String(contextWindow),
@@ -244,10 +270,10 @@ const positive = (value: string | undefined, name: string): number | undefined =
   return parsed;
 };
 
-/** The two settings an operator may state, read once and validated once. */
+/** The settings an operator may state, read once and validated once. */
 export function engineSettingsFromEnvironment(
   environment: Record<string, string | undefined> = process.env,
-): { maxTurns: number; compactionMaxTokens: number } {
+): { maxTurns: number; compactionMaxTokens: number; contextWindowLimit: number | undefined } {
   return {
     maxTurns:
       positive(environment.MELETE_ENGINE_MAX_TURNS, 'MELETE_ENGINE_MAX_TURNS') ??
@@ -255,5 +281,9 @@ export function engineSettingsFromEnvironment(
     compactionMaxTokens:
       positive(environment.MELETE_COMPACTION_MAX_TOKENS, 'MELETE_COMPACTION_MAX_TOKENS') ??
       DEFAULT_COMPACTION_MAX_TOKENS,
+    contextWindowLimit: positive(
+      environment.MELETE_MODEL_CONTEXT_WINDOW,
+      'MELETE_MODEL_CONTEXT_WINDOW',
+    ),
   };
 }

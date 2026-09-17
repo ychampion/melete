@@ -212,9 +212,9 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete
 
 ## Engine limits
 
-Two settings bound what one attempt's engine may do. Both have working defaults;
-change them only for a reason you can name, and both take effect on the next
-attempt started.
+Three settings bound what one attempt's engine may do. All have working
+defaults; change them only for a reason you can name, and all take effect on the
+next attempt started.
 
 `MELETE_ENGINE_MAX_TURNS` (default `150`) is how many iterations one run may
 take before the engine stops it. It is a runaway stop, not a cost control: what
@@ -232,6 +232,15 @@ what keeps a request inside the body the gateway accepts — so a number larger
 than the model allows changes nothing. Each compaction costs one extra model
 call, and a summary is lossy by nature: every durable fact stays on the job's
 ledger, not in the conversation.
+
+`MELETE_MODEL_CONTEXT_WINDOW` (no default) is the context window, in tokens, of
+the models this deployment serves. Set it when a model is smaller than the
+128,000-token figure Melete assumes for a model it does not know: a model with a
+32,000-token window would otherwise be told to compact at 96,000, never get
+there, and have every request past its own window refused by the provider with
+nothing summarized. For a model Melete does know, this may lower the window and
+not raise it, because the same catalog figure is what the model gateway's
+accounting is keyed on.
 
 ## Memory extraction
 

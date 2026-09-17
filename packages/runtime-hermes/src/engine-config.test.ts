@@ -9,6 +9,7 @@ import {
   DEFAULT_ENGINE_MAX_TURNS,
   engineCompactionTrigger,
   engineConfigEnvironment,
+  engineContextWindow,
   engineSettingsFromEnvironment,
   IMAGE_ENGINE_OPTIONS,
   renderEngineConfig,
@@ -155,19 +156,55 @@ test('the numbers handed to a container are the numbers the renderer computed', 
   });
 });
 
+test('a window an operator states decides for a model the catalog cannot', () => {
+  // The 128,000-token fallback is a guess, and on a model whose real window is
+  // 32,000 it is four times too generous: the engine is told to compact at
+  // 96,000, never reaches it, and every request past the model's own window
+  // comes back refused by the provider with nothing summarized.
+  const small = renderEngineConfig({
+    ...base,
+    model: 'a-model-nobody-listed',
+    contextWindowLimit: 32_000,
+  }) as Record<string, Record<string, unknown>>;
+  expect(small.model?.context_length).toBe(32_000);
+  expect(small.compression?.threshold_tokens).toBe(27_200);
+  expect(engineContextWindow('a-model-nobody-listed', 32_000)).toBe(32_000);
+  // For a model the catalog does name, a stated window may lower it and never
+  // raise it: the catalog is what the gateway's own accounting is keyed on.
+  expect(engineContextWindow(base.model, 250_000)).toBe(250_000);
+  expect(engineContextWindow(base.model, 2_000_000)).toBe(1_000_000);
+  expect(engineContextWindow(base.model)).toBe(1_000_000);
+  expect(
+    engineConfigEnvironment({
+      ...base,
+      model: 'a-model-nobody-listed',
+      contextWindowLimit: 32_000,
+    }),
+  ).toEqual({
+    MELETE_ENGINE_MAX_TURNS: '150',
+    MELETE_ENGINE_CONTEXT_LENGTH: '32000',
+    MELETE_ENGINE_COMPACTION_THRESHOLD: '27200',
+  });
+});
+
 test('operator settings are read once and refused when they are not numbers', () => {
   expect(engineSettingsFromEnvironment({})).toEqual({
     maxTurns: DEFAULT_ENGINE_MAX_TURNS,
     compactionMaxTokens: DEFAULT_COMPACTION_MAX_TOKENS,
+    contextWindowLimit: undefined,
   });
   expect(
     engineSettingsFromEnvironment({
       MELETE_ENGINE_MAX_TURNS: '40',
       MELETE_COMPACTION_MAX_TOKENS: '60000',
+      MELETE_MODEL_CONTEXT_WINDOW: '32000',
     }),
-  ).toEqual({ maxTurns: 40, compactionMaxTokens: 60_000 });
+  ).toEqual({ maxTurns: 40, compactionMaxTokens: 60_000, contextWindowLimit: 32_000 });
   expect(() => engineSettingsFromEnvironment({ MELETE_ENGINE_MAX_TURNS: '0' })).toThrow(RangeError);
   expect(() => engineSettingsFromEnvironment({ MELETE_COMPACTION_MAX_TOKENS: 'lots' })).toThrow(
+    RangeError,
+  );
+  expect(() => engineSettingsFromEnvironment({ MELETE_MODEL_CONTEXT_WINDOW: '-1' })).toThrow(
     RangeError,
   );
 });
