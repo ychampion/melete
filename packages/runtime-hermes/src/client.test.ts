@@ -342,6 +342,9 @@ describe('context assembly', () => {
   test('every knowledge excerpt carries where it came from', () => {
     const system = client.renderSystem(bundle);
     expect(system).toContain('knowledge/landlord-contact.md (user, 2026-09-10, active)');
+    // Provenance is shown so it can be given, not so every reply recites it.
+    expect(system).toContain('Name a path only when asked where something came from');
+    expect(system).not.toContain('Cite the path when you use one');
   });
 
   test('the model is told that a parked action has not happened', () => {

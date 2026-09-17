@@ -166,6 +166,16 @@ written, and any other key is shown as `key: value`. A job whose constraints are
 all defaults has no constraints section (`constraints read as short prose, and a
 default is never written down`).
 
+The identity file (`packages/skills/builtin/identity.md`, 250 estimated tokens
+at most) states the reply rules as text: a social message gets one short
+sentence or a reaction, no note that nothing is pending, no closing offer, a
+source cited only when asked or disputed, and a later wake reporting only what
+changed (`keeps a social reply short, drops disclaimers and offers, and reports
+only what changed` in `conformance/style`). The knowledge section shows each
+record's path and provenance and tells the model to name a path only when asked
+or disputed. These are instructions; whether a given model follows them is
+**not claimed** here.
+
 The broker serves a token-budgeted core catalog (750 estimated tokens of
 schemas, `core uses a serialized token budget, never a count cap, with stable
 ordering`) plus `search_tools` and `load_tool`; the contract's 15-tool constant

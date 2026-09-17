@@ -45,7 +45,7 @@ export function renderInstructions(bundle: AttemptBundle): string {
     // fact came from cannot tell the owner, and an unattributed fact in a
     // summary is indistinguishable from one the model made up.
     parts.push(
-      `# What Melete already knows\n\nEach line is a record, not a belief. Cite the path when you use one.\n\n${bundle.knowledge
+      `# What Melete already knows\n\nEach line is a record, not a belief. Name a path only when asked where something came from or when it is disputed.\n\n${bundle.knowledge
         .map(
           (entry) =>
             `- ${entry.handle ? `[${entry.handle}] ` : ''}${entry.path} (${entry.provenance.asserted_by}, ${entry.provenance.observed_at}, ${entry.provenance.status}): ${entry.excerpt}`,
