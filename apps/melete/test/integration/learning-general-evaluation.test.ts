@@ -214,11 +214,15 @@ let evaluated: { spaceId: string; candidateId: string } | null = null;
     if (!fixture) return;
     const spaceId = await fixture.createSpace();
     const evaluator = new ProcedureEvaluator(fixture.jobs, runtime, fixture.runner.options);
+    // Two history jobs and one variant: each phase would have a case or two, never three.
     const { candidate } = await messageCandidate(
       spaceId,
       'too-few',
-      ['Draft a follow-up email to the landlord about the heater'],
-      [],
+      [
+        'Draft a follow-up email to the landlord about the heater',
+        'Draft a follow-up email to the dentist about the invoice',
+      ],
+      VARIANTS.slice(0, 1),
     );
     const observed = runtime.observed.length;
     await rejectsWith(
