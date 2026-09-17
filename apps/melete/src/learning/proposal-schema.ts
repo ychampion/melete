@@ -21,5 +21,7 @@ export const learningModelCall = pgTable('learning_model_call', {
   settlement: jsonb('settlement').$type<GatewaySettlement>(),
   truncation: jsonb('truncation').$type<ProposalTruncation>(),
   errorCode: text('error_code'),
+  /** Why the call's answer was refused, as a reason code: never the refused text. */
+  errorDetail: text('error_detail'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });

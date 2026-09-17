@@ -1,11 +1,13 @@
 import { type Intervention, PROCEDURE_CHECK_KINDS } from '@melete/contracts';
 import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
+import { ZodError } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import { action, job } from '../db/schema.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { visibleJob } from '../principals/authority.ts';
 import {
+  AdmissionError,
   admitProposal,
   MAX_CHECKS,
   MAX_STEP_CHARS,
@@ -126,14 +128,14 @@ export class ProcedureProposer {
           .where(eq(episode.id, episodeId));
         return candidate;
       });
-    } catch {
+    } catch (error) {
       await this.jobs.db
         .update(episode)
         .set({ generationState: 'rejected' })
         .where(and(eq(episode.id, episodeId), eq(episode.restricted, false)));
       await this.jobs.db
         .update(learningModelCall)
-        .set({ errorCode: 'proposal_rejected' })
+        .set({ errorCode: 'proposal_rejected', errorDetail: refusalCode(error) })
         .where(eq(learningModelCall.episodeId, episodeId));
       throw new ServiceError(
         'proposal_rejected',
@@ -269,6 +271,18 @@ export class ProcedureProposer {
       }
     }
   }
+}
+
+/**
+ * A reason code for the ledger, never the refused text. Admission reasons name a
+ * rule and, at most, a term from a fixed list; anything that is not a bare
+ * snake_case code is recorded as a generic failure rather than risk copying content.
+ */
+export function refusalCode(error: unknown): string {
+  if (error instanceof AdmissionError) return error.reason;
+  if (error instanceof ZodError) return 'proposal_schema_invalid';
+  if (error instanceof Error && /^[a-z][a-z_]{2,60}$/.test(error.message)) return error.message;
+  return 'proposal_failed';
 }
 
 function modelsOf(saved: EpisodeRow) {

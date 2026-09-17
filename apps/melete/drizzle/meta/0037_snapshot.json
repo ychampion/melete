@@ -1,5 +1,5 @@
 {
-  "id": "cfcd36ae-a325-4134-89bc-94fd2d17f9c7",
+  "id": "c012c690-14de-4835-9c44-bb79635c97da",
   "prevId": "d9375a49-0f9a-4fdf-aeab-cd1889943700",
   "version": "7",
   "dialect": "postgresql",
@@ -8641,6 +8641,12 @@
         },
         "error_code": {
           "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_detail": {
+          "name": "error_detail",
           "type": "text",
           "primaryKey": false,
           "notNull": false

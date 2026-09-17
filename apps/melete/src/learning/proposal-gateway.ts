@@ -213,7 +213,7 @@ export async function openProposalGateway(options: {
       });
       if (!response.ok) throw new Error('proposal_gateway_failed');
       const result = await response.json();
-      const text =
+      const read = () =>
         protocol === 'responses'
           ? z
               .object({
@@ -243,7 +243,17 @@ export async function openProposalGateway(options: {
                   choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
                 })
                 .parse(result).choices[0]?.message.content ?? '');
-      return JSON.parse(unfenced(text)) as unknown;
+      let text: string;
+      try {
+        text = read();
+      } catch {
+        throw new Error('answer_envelope_invalid');
+      }
+      try {
+        return JSON.parse(unfenced(text)) as unknown;
+      } catch {
+        throw new Error('answer_not_json');
+      }
     } finally {
       tokens.delete(token);
     }

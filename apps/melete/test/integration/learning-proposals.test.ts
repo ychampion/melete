@@ -367,7 +367,7 @@ async function generalCorrection(key: string, text = CORRECTION) {
   return { source, jobId: row.id };
 }
 
-async function rejectedWithoutCandidate(episodeId: string) {
+async function rejectedWithoutCandidate(episodeId: string, detail: string) {
   if (!fixture) return;
   expect(
     await fixture.handle.db
@@ -383,6 +383,9 @@ async function rejectedWithoutCandidate(episodeId: string) {
     .where(eq(learningModelCall.episodeId, episodeId));
   expect(calls).toHaveLength(1);
   expect(calls[0]?.errorCode).toBe('proposal_rejected');
+  // The reason is a code from a closed set, never the text that was refused.
+  expect(calls[0]?.errorDetail).toBe(detail);
+  expect(calls[0]?.errorDetail).toMatch(/^[a-z_]+(:[a-z' -]+)?$/);
 }
 
 (fixture ? describe : describe.skip)('general procedure proposals', () => {
@@ -508,7 +511,7 @@ async function rejectedWithoutCandidate(episodeId: string) {
         () => proposer.generate(fixture.ownerId, fixture.spaceId, source.id),
         'proposal_rejected',
       );
-      await rejectedWithoutCandidate(source.id);
+      await rejectedWithoutCandidate(source.id, 'span_not_verbatim');
     }
   }, 30000);
 
@@ -530,7 +533,7 @@ async function rejectedWithoutCandidate(episodeId: string) {
       () => proposer.generate(fixture.ownerId, fixture.spaceId, source.id),
       'proposal_rejected',
     );
-    await rejectedWithoutCandidate(source.id);
+    await rejectedWithoutCandidate(source.id, 'authority_language:approve');
   }, 20000);
 
   test('an answer in one code fence is read, and a chattier one is refused', async () => {
@@ -546,7 +549,7 @@ async function rejectedWithoutCandidate(episodeId: string) {
         () => proposer.generate(fixture.ownerId, fixture.spaceId, chatty.source.id),
         'proposal_rejected',
       );
-      await rejectedWithoutCandidate(chatty.source.id);
+      await rejectedWithoutCandidate(chatty.source.id, 'answer_not_json');
     } finally {
       answer = null;
     }
@@ -562,7 +565,7 @@ async function rejectedWithoutCandidate(episodeId: string) {
       'proposal_rejected',
     );
     expect(requests).toHaveLength(before + 1);
-    await rejectedWithoutCandidate(source.id);
+    await rejectedWithoutCandidate(source.id, 'proposal_schema_invalid');
     const [call] = await fixture.handle.db
       .select()
       .from(learningModelCall)
