@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { checkDockerfileWorkspaces } from './dockerfile-check.ts';
+import { checkRuntimePluginPin } from './plugin-pin-check.ts';
 
 export type ComposeFile = {
   networks?: Record<string, { internal?: boolean; driver_opts?: Record<string, string> } | null>;
@@ -374,6 +375,7 @@ if (import.meta.main) {
     ...checkCompose(loadCompose(path)),
     // The images this file builds are read from the repository, not from `path`.
     ...checkDockerfileWorkspaces(join(dirname(fileURLToPath(import.meta.url)), '..', '..')),
+    ...checkRuntimePluginPin(join(dirname(fileURLToPath(import.meta.url)), '..', '..')),
   ];
   for (const result of results) {
     process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);

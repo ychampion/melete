@@ -12,8 +12,14 @@ to named tests on the tagged tree; the README's gates table is the summary.
   service, the runtime plugin suite and a build of the service, web and runtime
   images. Actions are pinned by commit and no secret is read; a test fails the
   workflow if it names a script or file that does not exist.
+- **The runtime image's plugin pin is checked without Docker.** The image hashes
+  `packages/runtime-hermes/melete_plugin` while it builds and refuses a
+  `MELETE_PLUGIN_SHA` that describes anything else. `compose:check` now
+  recomputes that digest from the tracked files and names the value the pin
+  should carry, so a plugin change that leaves the pin behind fails the static
+  checks instead of the image build.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
-  `json-file` log at 10 MB with five files. `compose:check` (28 checks) and
+  `json-file` log at 10 MB with five files. `compose:check` (29 checks) and
   `browser:compose:check` (12) refuse a service without the bound.
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one
