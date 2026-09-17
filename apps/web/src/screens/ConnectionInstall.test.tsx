@@ -35,6 +35,14 @@ const invented = {
       secret: false,
       default: true,
     },
+    {
+      path: 'loft.beacon',
+      label: 'Beacon address',
+      input: 'url',
+      required: true,
+      secret: true,
+      placeholder: 'https://beacon.example.test/loft',
+    },
     { path: 'loft.notes', label: 'Notes', input: 'text', required: false, secret: false },
     {
       path: 'loft.birds',
@@ -85,6 +93,7 @@ test('the form draws exactly what a served descriptor carries', () => {
     'Perches',
     'Whistle',
     'Kept sealed.',
+    'Beacon address',
     'Covered loft',
     'Notes (optional)',
     'Birds',
@@ -99,6 +108,12 @@ test('the form draws exactly what a served descriptor carries', () => {
     expect(html).toContain(text);
   // A secret is a password input the browser is told not to remember.
   expect(html).toMatch(/<input[^>]*type="password"[^>]*autoComplete="new-password"/i);
+  // What the service seals is masked whatever kind of value it holds: a feed
+  // address kept like a password is not shown in the clear.
+  expect(html).toMatch(
+    /<input[^>]*type="password"[^>]*placeholder="https:\/\/beacon\.example\.test\/loft"/i,
+  );
+  expect(html).not.toContain('type="url"');
   expect(html).toMatch(/<input[^>]*type="number"[^>]*value="12"/);
   // Only the grant that waits for approval says so, and it says so once.
   expect(html.split('Asks you first')).toHaveLength(2);

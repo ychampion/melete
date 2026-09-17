@@ -67,7 +67,9 @@ function Control({
       }
     >
       <Input
-        type={INPUT_TYPE[field.input] ?? 'text'}
+        // What the service seals is masked whatever kind of value it holds, so
+        // a feed address kept like a password is typed like one.
+        type={field.secret ? 'password' : (INPUT_TYPE[field.input] ?? 'text')}
         value={String(value)}
         placeholder={field.placeholder}
         // A secret is never offered back by the browser's own form memory.
