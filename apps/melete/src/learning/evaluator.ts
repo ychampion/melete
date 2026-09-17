@@ -592,6 +592,10 @@ export class ProcedureEvaluator {
     const runtime = await runner.runtime.capabilities();
     return this.jobs.transaction(async (tx) => {
       let violations = 0;
+      // Every probe below expects nothing, which proves nothing unless the unchanged job
+      // receives the candidate. A control that delivers nothing counts against the scope.
+      const control = await selectProcedureSkills(tx, row, model, runtime.version);
+      if (control.length !== 1 || control[0]?.name !== `procedure:${candidate.id}`) violations += 1;
       violations += (
         await selectProcedureSkills(
           tx,
@@ -617,12 +621,12 @@ export class ProcedureEvaluator {
         await tx.update(learningJob).set({ scope: changed }).where(eq(learningJob.jobId, row.id));
         violations += (await selectProcedureSkills(tx, row, model, runtime.version)).length;
       }
-      // Work the triggers do not name receives nothing, whatever its scope.
+      await tx.update(learningJob).set({ scope }).where(eq(learningJob.jobId, row.id));
+      // With the scope restored, work the triggers do not name still receives nothing.
       if (candidate.triggers.length)
         violations += (
           await selectProcedureSkills(tx, { ...row, objective: '.' }, model, runtime.version, '')
         ).length;
-      await tx.update(learningJob).set({ scope }).where(eq(learningJob.jobId, row.id));
       return violations;
     });
   }
