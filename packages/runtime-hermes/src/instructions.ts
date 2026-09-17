@@ -79,6 +79,16 @@ const WORKSPACE_NOTE = (bundle: AttemptBundle): string =>
 export function renderInput(bundle: AttemptBundle): string {
   const lines = [`# ${bundle.job.title}`, '', bundle.job.objective];
   lines.push('', '## Accepted constraints', '', JSON.stringify(bundle.job.constraints));
+  if (bundle.job.triggers?.length)
+    lines.push(
+      '',
+      '## Events this job can wait for',
+      '',
+      ...bundle.job.triggers.map(
+        (entry) => `- ${entry.id}: ${entry.event_name ?? entry.kind}, ${entry.description}`,
+      ),
+      'job.wait takes the trigger id or the event name.',
+    );
   // Disposable engines have no session history. The service's bounded ledger
   // is the source of prior messages and completed tool-call identities.
   if (bundle.transcript.length)

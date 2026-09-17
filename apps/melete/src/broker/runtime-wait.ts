@@ -2,11 +2,14 @@ import {
   type AttemptBundle,
   type CapabilityClaims,
   canonicalizePayload,
+  ID_PREFIXES,
+  prefixedId,
   type ToolSpec,
   type WaitSpec,
   waitSpec,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { z } from 'zod';
 import { BrokerFault } from './errors.ts';
 import { appendEvent, checkAttempt, lockJob } from './records.ts';
 
@@ -14,7 +17,7 @@ import { appendEvent, checkAttempt, lockJob } from './records.ts';
 export const RUNTIME_WAIT_TOOL: ToolSpec = {
   name: 'job.wait',
   description:
-    'Persist a wait for a registered event or a future timer, then end this turn. Use an event trigger ID from the current job. This does not send anything or approve an action.',
+    "Persist a wait for a registered event or a future timer, then end this turn. Name one of this job's triggers by id or event name. This does not send anything or approve an action.",
   effect_class: 'write_reversible',
   connection_id: null,
   input_schema: {
@@ -30,12 +33,15 @@ export const RUNTIME_WAIT_TOOL: ToolSpec = {
       },
       trigger_id: {
         type: 'string',
-        description:
-          'Required for event waits: the enabled trigger ID registered for this job, not its event name.',
+        description: 'For event waits: a trigger id listed under the events this job can wait for.',
+      },
+      event_name: {
+        type: 'string',
+        description: 'For event waits, instead of trigger_id: that trigger event name.',
       },
       deadline_at: {
         type: ['string', 'null'],
-        description: 'Required for event waits: a UTC timestamp, or null for no deadline.',
+        description: 'For event waits: a UTC timestamp, or null or omitted for no deadline.',
       },
     },
     required: ['kind'],
@@ -43,16 +49,52 @@ export const RUNTIME_WAIT_TOOL: ToolSpec = {
   },
 };
 
+/** An event wait as a model may write it: a trigger id or its event name, deadline optional. */
+const eventWaitInput = z.object({
+  kind: z.literal('event'),
+  trigger_id: z.string().min(1).max(300).optional(),
+  event_name: z.string().min(1).max(300).optional(),
+  deadline_at: z.string().nullable().optional(),
+});
+const triggerId = prefixedId(ID_PREFIXES.trigger);
+
 export async function requestRuntimeWait(sql: Sql, claims: CapabilityClaims, input: unknown) {
-  const wait = waitSpec.parse(input);
+  const event = eventWaitInput.safeParse(input);
+  // A value that is not a trigger id is read as an event name and resolved
+  // under the job lock; an omitted deadline is no deadline.
+  const name =
+    event.success && !triggerId.safeParse(event.data.trigger_id).success
+      ? (event.data.event_name ?? event.data.trigger_id)
+      : undefined;
+  const deadline = event.success ? (event.data.deadline_at ?? null) : null;
+  if (event.success && name === undefined && event.data.trigger_id === undefined)
+    throw new BrokerFault('payload_invalid', 'An event wait needs a trigger_id or an event_name.');
+  let wait = event.success
+    ? name === undefined
+      ? waitSpec.parse({ kind: 'event', trigger_id: event.data.trigger_id, deadline_at: deadline })
+      : null
+    : waitSpec.parse(input);
   if (!claims.scopes.includes(RUNTIME_WAIT_TOOL.name)) throw new BrokerFault('scope_denied');
-  if (wait.kind !== 'timer' && wait.kind !== 'event')
+  if (wait && wait.kind !== 'timer' && wait.kind !== 'event')
     throw new BrokerFault('payload_invalid', 'Only event and timer waits are allowed.');
-  if (wait.kind === 'timer' && Date.parse(wait.wake_at) <= Date.now())
+  if (wait?.kind === 'timer' && Date.parse(wait.wake_at) <= Date.now())
     throw new BrokerFault('payload_invalid', 'The timer must be in the future.');
   return sql.begin(async (tx) => {
     const job = await lockJob(tx, claims.job_id);
     await checkAttempt(tx, job, claims);
+    if (name !== undefined) {
+      const matches = await tx`SELECT id FROM trigger WHERE job_id=${job.id} AND enabled=true
+        AND spec->>'event_name'=${name} ORDER BY id LIMIT 2`;
+      if (matches.length === 0)
+        throw new BrokerFault('scope_denied', 'No active trigger in this job has that event name.');
+      if (matches.length > 1)
+        throw new BrokerFault(
+          'payload_invalid',
+          'Several triggers in this job share that event name; pass its trigger_id.',
+        );
+      wait = waitSpec.parse({ kind: 'event', trigger_id: matches[0]?.id, deadline_at: deadline });
+    }
+    if (!wait) throw new BrokerFault('payload_invalid');
     if (wait.kind === 'event') {
       const [registration] =
         await tx`SELECT id FROM trigger WHERE id=${wait.trigger_id} AND job_id=${job.id} AND enabled=true`;

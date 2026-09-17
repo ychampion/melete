@@ -241,6 +241,25 @@ describe('context assembly', () => {
     expect(renderInput(resumed).length).toBeLessThan(4000);
   });
 
+  test("the job's registered triggers are named with id, event and a plain description", () => {
+    const waiting = structuredClone(bundle);
+    expect(renderInput(waiting)).not.toContain('## Events this job can wait for');
+    waiting.job.triggers = [
+      {
+        id: `trg_${SUFFIX}`,
+        kind: 'event',
+        event_name: 'mail.new',
+        description: `fires on each mail.new event from conn_${SUFFIX}`,
+      },
+    ];
+    const text = renderInput(waiting);
+    expect(text).toContain('## Events this job can wait for');
+    expect(text).toContain(
+      `- trg_${SUFFIX}: mail.new, fires on each mail.new event from conn_${SUFFIX}`,
+    );
+    expect(text).toContain('job.wait takes the trigger id or the event name');
+  });
+
   test('the identity is short enough to be a prefix, not a personality', () => {
     // A rough four-characters-per-token estimate; the contract caps it at 250.
     expect(Math.ceil(IDENTITY.length / 4)).toBeLessThan(CONTEXT_LIMITS.identity_tokens);

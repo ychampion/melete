@@ -174,6 +174,15 @@ When one does match, the job wakes with that observation as its evidence and the
 consumed-event notice carries `because: ["event:<seq>"]`, so the wake can always
 name the observation that caused it. Observations that do not match advance the
 trigger's cursor and cost nothing else: no attempt, no model call, no row.
+
+The attempt input lists the job's enabled triggers with their id, event name and
+one plain sentence built from the spec. `job.wait` accepts either the trigger id
+or the event name; the broker resolves a name under the job lock to the one
+enabled trigger of this job that carries it, refuses a name no enabled trigger
+carries, and asks for the id when two share it. An omitted deadline is no
+deadline (`resolves the event name to the enabled trigger of this job,
+broker-side`, `an unknown, disabled or ambiguous name is refused, and nothing is
+recorded`).
 ## Discovering tools without loading every schema
 
 The broker serves a small core plus `search_tools(query)` and `load_tool(name)`.

@@ -7,6 +7,7 @@ import {
   CONTEXT_LIMITS,
   type ContextGenerations,
   type Deliverable,
+  describeTrigger,
   inputTokenAllowance,
   jobBudget,
   jobConstraints,
@@ -20,6 +21,7 @@ import {
   type SinceLast,
   sinceLast as sinceLastContract,
   TERMINAL_ACTION_STATUSES,
+  triggerSpec,
   waitSpec,
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from 'drizzle-orm';
@@ -37,6 +39,7 @@ import {
   experienceTurn,
   knowledgeRecord,
   question,
+  trigger,
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentIdentity, agentView } from '../experience/agents.ts';
@@ -418,6 +421,26 @@ export async function buildAttemptSkeleton(
         }
       : entry;
   });
+  // What a wait can name. The attempt reads the id, the event and one plain
+  // sentence; the spec itself stays on the row.
+  const registered = await tx
+    .select({ id: trigger.id, kind: trigger.kind, spec: trigger.spec })
+    .from(trigger)
+    .where(and(eq(trigger.jobId, row.id), eq(trigger.enabled, true)))
+    .orderBy(asc(trigger.createdAt), asc(trigger.id))
+    .limit(50);
+  const triggers = registered.flatMap((entry) => {
+    const spec = triggerSpec.safeParse(entry.spec);
+    if (!spec.success) return [];
+    return [
+      {
+        id: entry.id,
+        kind: spec.data.kind,
+        event_name: spec.data.kind === 'schedule' ? null : spec.data.event_name,
+        description: describeTrigger(spec.data),
+      },
+    ];
+  });
   const constraints = jobConstraints.parse(row.constraints);
   const context = await selectedContext(
     tx,
@@ -468,6 +491,7 @@ export async function buildAttemptSkeleton(
       progress_summary: history.progressSummary,
       unresolved_questions: wait.kind === 'user_input' ? [wait.question] : [],
       deliverable: constraints.deliverable,
+      triggers,
     },
     inputs: history.inputs,
     since_last: delta,

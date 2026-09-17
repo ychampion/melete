@@ -15,6 +15,7 @@ import {
   job,
   question,
   space,
+  trigger,
 } from '../../src/db/schema.ts';
 import { serviceTransaction } from '../../src/db/transaction.ts';
 import { newId } from '../../src/ids.ts';
@@ -243,6 +244,63 @@ withDb('the delta brief', () => {
         payload: { body: 'Confirm Thursday.', to: 'manager@example.test' },
       },
     ]);
+  }, 60_000);
+
+  test("the job's enabled triggers arrive with their event name and a plain description", async () => {
+    const { handle } = fixture();
+    const [mail, schedule, disabled] = [newId('trg'), newId('trg'), newId('trg')];
+    await handle.db.insert(trigger).values([
+      {
+        id: mail,
+        jobId,
+        kind: 'event',
+        spec: {
+          kind: 'event',
+          connection_id: connectionId,
+          event_name: 'mail.new',
+          poll_seconds: 300,
+        },
+      },
+      {
+        id: schedule,
+        jobId,
+        kind: 'schedule',
+        spec: { kind: 'schedule', cron: '0 8 * * 1', timezone: 'Europe/London' },
+      },
+      {
+        id: disabled,
+        jobId,
+        kind: 'event',
+        enabled: false,
+        spec: {
+          kind: 'event',
+          connection_id: connectionId,
+          event_name: 'mail.old',
+          poll_seconds: 300,
+        },
+      },
+    ]);
+    const row = await fixture().jobs.get(jobId);
+    const bundle = await serviceTransaction(handle.db, (tx) =>
+      buildAttemptSkeleton(tx, row, identity(newId('att')), model, 0),
+    );
+    expect(bundle.job.triggers).toEqual(
+      expect.arrayContaining([
+        {
+          id: mail,
+          kind: 'event',
+          event_name: 'mail.new',
+          description: `fires on each mail.new event from ${connectionId}`,
+        },
+        {
+          id: schedule,
+          kind: 'schedule',
+          event_name: null,
+          description: 'fires on the schedule "0 8 * * 1" (Europe/London)',
+        },
+      ]),
+    );
+    expect(bundle.job.triggers).toHaveLength(2);
   }, 60_000);
 
   test('a first wake has no prior work to name, and says so rather than inventing some', async () => {

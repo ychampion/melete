@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { ID_PREFIXES, jsonObject, jsonSchema, prefixedId, timestamp } from './common.ts';
 import { sinceLastBrief } from './delta.ts';
-import { attemptUsage, waitSpec } from './entities.ts';
+import { attemptUsage, type TriggerSpec, triggerKind, waitSpec } from './entities.ts';
 import { executionMode } from './execution.ts';
 import { hookCaptureErrorCode, hookObservation } from './hooks.ts';
 import { claimHandle, memoryKey, originTrust } from './memory.ts';
@@ -185,6 +185,27 @@ export function renderSinceLast(delta: SinceLast): string {
   return lines.join('\n');
 }
 
+/** One trigger the attempt may wait on, as the model reads it. */
+export const registeredTrigger = z.object({
+  id: prefixedId(ID_PREFIXES.trigger),
+  kind: triggerKind,
+  event_name: z.string().min(1).nullable(),
+  description: z.string().min(1).max(300),
+});
+export type RegisteredTrigger = z.infer<typeof registeredTrigger>;
+
+/** A plain sentence for a trigger spec. No model reads the spec itself. */
+export function describeTrigger(spec: TriggerSpec): string {
+  switch (spec.kind) {
+    case 'schedule':
+      return `fires on the schedule "${spec.cron}" (${spec.timezone})`;
+    case 'event':
+      return `fires on each ${spec.event_name} event from ${spec.connection_id}`;
+    case 'watch':
+      return `fires when a ${spec.event_name} event from ${spec.connection_id} matches its watch condition`;
+  }
+}
+
 /**
  * Everything one attempt is given, and nothing more. The order matters for
  * prompt caching: stable prefix first, volatile inputs last.
@@ -209,6 +230,11 @@ export const attemptBundle = z.object({
     progress_summary: z.string(),
     unresolved_questions: z.array(z.string()),
     deliverable: jsonObject,
+    /**
+     * The job's enabled triggers, so a wait can name one. `event_name` is null
+     * for a schedule. Optional, so an older producer still parses.
+     */
+    triggers: z.array(registeredTrigger).max(50).optional(),
   }),
   /** What changed since the last attempt: the reason this wake exists. */
   inputs: z.object({
