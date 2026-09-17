@@ -52,6 +52,102 @@ export type Intervention = z.infer<typeof intervention>;
 export const interventionRequest = intervention.extend({
   idempotency_key: z.string().min(1).max(120),
 });
+/**
+ * A check is a typed assertion, never a pattern and never code. A model-authored
+ * regular expression would be a program whose cost and meaning a reviewer cannot
+ * bound by reading it, so the definition hash would bind its bytes without
+ * binding what it does. Literal phrases and a closed format vocabulary cover the
+ * corrections people actually make; widening this union is a reviewed commit.
+ */
+const phrase = z.string().min(2).max(60);
+const bounded = <T extends z.ZodObject>(shape: T) =>
+  shape.refine(
+    (value: { min?: number; max?: number }) =>
+      (value.min !== undefined || value.max !== undefined) &&
+      (value.min === undefined || value.max === undefined || value.min <= value.max),
+    'a count check needs at least one bound, and min may not exceed max',
+  );
+export const procedureCheck = z.discriminatedUnion('kind', [
+  bounded(
+    z.strictObject({
+      kind: z.literal('word_count'),
+      min: z.number().int().min(0).max(10000).optional(),
+      max: z.number().int().min(1).max(10000).optional(),
+    }),
+  ),
+  bounded(
+    z.strictObject({
+      kind: z.literal('char_count'),
+      min: z.number().int().min(0).max(65536).optional(),
+      max: z.number().int().min(1).max(65536).optional(),
+    }),
+  ),
+  bounded(
+    z.strictObject({
+      kind: z.literal('line_count'),
+      min: z.number().int().min(0).max(1000).optional(),
+      max: z.number().int().min(1).max(1000).optional(),
+    }),
+  ),
+  z.strictObject({ kind: z.literal('required_phrase'), phrase }),
+  z.strictObject({ kind: z.literal('forbidden_phrase'), phrase }),
+  z.strictObject({
+    kind: z.literal('output_format'),
+    form: z.enum(['bullets', 'numbered', 'paragraphs', 'table', 'json']),
+  }),
+  z.strictObject({
+    kind: z.literal('required_sections'),
+    headings: z.array(phrase).min(1).max(5),
+    ordered: z.boolean().default(true),
+  }),
+  z.strictObject({
+    kind: z.literal('records_sorted'),
+    key: phrase,
+    type: z.enum(['number', 'text', 'date']),
+    direction: z.enum(['ascending', 'descending']),
+    preserve_rows: z.boolean().default(true),
+  }),
+  /** Parameterless: only a bundled fixture suite can supply the expected identities. */
+  z.strictObject({ kind: z.literal('records_expected_order') }),
+  z.strictObject({ kind: z.literal('action_kind_absent'), action_kind: phrase }),
+  z.strictObject({
+    kind: z.literal('action_kind_max'),
+    action_kind: phrase,
+    max: z.number().int().min(0).max(20),
+  }),
+  z.strictObject({
+    kind: z.literal('action_kind_present'),
+    action_kind: phrase,
+    min: z.number().int().min(1).max(20).default(1),
+  }),
+]);
+export type ProcedureCheck = z.infer<typeof procedureCheck>;
+export const PROCEDURE_CHECK_KINDS = [
+  'word_count',
+  'char_count',
+  'line_count',
+  'required_phrase',
+  'forbidden_phrase',
+  'output_format',
+  'required_sections',
+  'records_sorted',
+  'records_expected_order',
+  'action_kind_absent',
+  'action_kind_max',
+  'action_kind_present',
+] as const;
+
+/** A span of the owner's own words, with exact UTF-16 offsets into the whole source. */
+export const procedureStepEvidence = z.strictObject({
+  source: z.enum(['intervention', 'objective']),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+  quote: z.string().min(3).max(240),
+  /** Set when the step text is the quote itself because a paraphrase was not supported. */
+  fallback: z.literal('verbatim').optional(),
+});
+export type ProcedureStepEvidence = z.infer<typeof procedureStepEvidence>;
+
 export const episodeId = prefixedId('ep');
 export const procedureId = prefixedId('pc');
 export const procedureState = z.enum([
