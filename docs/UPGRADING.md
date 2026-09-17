@@ -70,6 +70,8 @@ Nothing is stopped or written until every check passes:
 - **Disk space**: at least 8 GiB free on Docker's data filesystem for the
   rebuild, and room in the backup directory for the measured size of the
   database, `/data` and `/work` plus a fifth. The archives are not compressed.
+  The sizes are read from the running `postgres` and `melete` services; if
+  either cannot be measured, the upgrade does not start.
 
 ## What the script does
 

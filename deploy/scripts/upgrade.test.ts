@@ -288,6 +288,17 @@ describe('the preflight', () => {
       'could not be measured',
     );
   });
+
+  test('a backup whose size could not be measured is refused, not sized at the floor', () => {
+    // Plenty of free space proves nothing when the data it must hold is unknown.
+    const problems = judgePreflight({
+      ...ready,
+      backupEstimateBytes: null,
+      backupFreeBytes: 500 * GIB,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('size of the backup could not be measured');
+  });
 });
 
 /** Answers the read-only queries of a healthy installation; records every command. */
@@ -367,6 +378,17 @@ describe('running the upgrade with an injected command runner', () => {
     expect(commands.filter((line) => mutating.test(line))).toEqual([]);
     expect(output.join('\n')).toContain('README.md');
     expect(output.join('\n')).toContain('checkout --detach refs/tags/v0.2.0');
+  });
+
+  test('volumes that cannot be measured stop the upgrade before the backup', async () => {
+    const { run, commands } = host({
+      'du -sk /data /work': { code: 1, stderr: 'du: cannot read directory: Permission denied' },
+    });
+    const output: string[] = [];
+    const result = await runUpgrade({ ...options, dryRun: false }, dependencies(run, output));
+    expect(result.status).toBe('refused');
+    expect(commands.filter((line) => mutating.test(line))).toEqual([]);
+    expect(output.join('\n')).toContain('size of the backup could not be measured');
   });
 
   test('a failed preflight stops before anything is touched', async () => {

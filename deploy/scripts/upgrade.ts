@@ -365,6 +365,11 @@ export function judgePreflight(facts: PreflightFacts): string[] {
     problems.push(
       'The free space for the backup directory could not be measured; its parent must exist.',
     );
+  else if (facts.backupEstimateBytes === null)
+    // Sizing an unknown backup at the floor could fill the filesystem Postgres writes to.
+    problems.push(
+      'The size of the backup could not be measured: the database size query or `du -sk /data /work` inside the running melete service failed. Start the stack and check that the service can read its volumes.',
+    );
   else if (facts.backupFreeBytes < needed)
     problems.push(
       `The backup directory's filesystem has ${gib(facts.backupFreeBytes)} free; this backup needs about ${gib(needed)}.`,
@@ -443,7 +448,7 @@ export async function gatherPreflight(
   const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(options.backupDir)]));
   const postgresRunning = Boolean(await text([...compose, 'ps', '-q', 'postgres']));
   const serviceContainer = Boolean(await text([...compose, 'ps', '-a', '-q', 'melete']));
-  // Sizes are an estimate for the disk check; an unmeasurable stack is caught above.
+  // Sizes are an estimate for the disk check; one that cannot be measured refuses the upgrade.
   const volumes = await text([...compose, 'exec', '-T', 'melete', 'du', '-sk', '/data', '/work']);
   const database = await text([
     ...compose,
