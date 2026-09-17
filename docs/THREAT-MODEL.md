@@ -197,11 +197,13 @@ Two scenario 6 tests cover the owner control plane from inside the cells:
 An integration test verifies the transport rejection before and after owner
 creation. Sign-in limits and their tests are under Attacker 6.
 
-## Attacker 5: a hostile operator-installed MCP server or generated wrapper
+## Attacker 5: a hostile installed MCP server or generated wrapper
 
 MCP workers belong outside the runtime cell. A server can lie in its description,
-annotations or results, including calling a write read-only. The operator's
-config supplies the exposed tools, effect classes, scopes and audience. The
+annotations or results, including calling a write read-only. The exposed tools,
+effect classes, scopes and audience come from the installation, either the row
+an owner installs through `POST /connections` or an entry in the operator's
+connections file, and a server cannot change them. The
 default effect is `write_external`; `readOnlyHint` cannot remove an approval.
 The broker still checks every action's scope, intent identity, approval hash and
 trust origin. A server result cannot install a tool, load a schema or approve
@@ -241,8 +243,9 @@ or sandbox, with no vault or database mounts or credentials, and behind a
 verified network policy. Both the production adapter and the raw stdio
 transport refuse a launch without that isolation, and
 `production stdio cannot launch under the service OS identity` shows the
-refusal happens before anything is spawned, so production MCP servers are
-operator-configured HTTP endpoints. Composition likewise needs a cell executor
+refusal happens before anything is spawned, so a production MCP server is an
+HTTP endpoint, installed by the owner or pinned in the operator's connections
+file. Composition likewise needs a cell executor
 to run its script; the default service supplies none, so it does not offer the
 composition tool. The `node:vm` executor exists for deterministic tests, refuses
 to start outside them, and is not an OS or memory boundary.
