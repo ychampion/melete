@@ -103,6 +103,12 @@ export class ProcedureEvaluator {
         verifyDefinition(candidate);
         if (candidate.rejectionReason)
           throw new ServiceError('candidate_rejected', 'This candidate remains rejected history.');
+        // Checks that cannot tell the corrected answer from the objected one measure nothing.
+        if (candidate.discrimination && candidate.discrimination.status !== 'passed')
+          throw new ServiceError(
+            'checks_do_not_discriminate',
+            `checks_do_not_discriminate:${candidate.discrimination.detail}`,
+          );
         const [existing] = await tx
           .select()
           .from(procedureEvaluation)
