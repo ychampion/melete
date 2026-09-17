@@ -66,6 +66,50 @@ provider, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL`, and the matchi
 credential in `deploy/.env`. Disable `MELETE_ENABLE_FAKE_PROVIDER` and
 `MELETE_ENABLE_TEST_CONNECTOR` when those fixtures are no longer wanted.
 
+`MELETE_DEFAULT_PROVIDER` is one of exactly these names:
+
+| Provider | Credential | Protocol the runtime is told to speak |
+| --- | --- | --- |
+| `fireworks` | `FIREWORKS_API_KEY` | chat completions |
+| `anthropic` | `ANTHROPIC_API_KEY` | messages |
+| `openai` | `OPENAI_API_KEY` | responses |
+| `google` | `GOOGLE_API_KEY` | chat completions |
+| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY` | chat completions; responses for `gpt-6` models |
+
+Any other name stops the service at start-up with a message naming the setting,
+and so does `openai-compatible` without a usable `OPENAI_COMPAT_BASE_URL`. An
+OpenAI-compatible endpoint is always selected as `openai-compatible`, whatever
+software serves it; the name of that software is not a provider name. A selected
+provider with an empty key starts with a warning on the service log, and the
+gateway refuses each model call with `provider_key_unavailable` until the key is
+set. `configure.ts` without `--fake` prints the same warning when it writes
+`deploy/.env`, because the file it writes selects a real provider with its key
+still empty.
+
+`MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
+its API expects it. Fireworks identifiers are full account paths; the default is
+`accounts/fireworks/models/deepseek-v4p1-flash`. The gateway admits only the
+model a job was started with, so a shortened name is refused by the provider,
+not corrected.
+
+`OPENAI_COMPAT_BASE_URL` is the endpoint's version prefix, for example
+`https://models.example.net/v1`. It is the only provider address that may be
+plain `http://`, for a model server on your own machine or network; every
+built-in provider stays HTTPS. Over `http://` the key and every prompt travel
+unencrypted, so keep it to a network you trust. Inside Compose, `localhost` is
+the Melete container itself, so give an address that container can reach. The
+gateway refuses a provider whose key is empty: for a server that checks no key,
+set `OPENAI_COMPAT_API_KEY` to any non-empty value. Left empty, it falls back
+to `OPENAI_API_KEY`.
+
+`MELETE_DEFAULT_MAX_OUTPUT_TOKENS` (default `4096`) is the output limit the
+gateway gives a model request that names none. The runtime names none unless its
+own configuration sets one, so this is the usual ceiling on one reply; a few
+hundred tokens truncates ordinary answers. The limit is reserved against the
+job's output budget until the call settles at its real usage, and it is lowered
+to what the job has left rather than refused. A limit the runtime does name is
+never rewritten: it is honoured, or refused when it exceeds the job's budget.
+
 Provider secrets belong to Melete's gateway. Runtime cells receive short-lived
 capabilities and surrogate credentials. Do not copy a provider key into a
 runtime environment. Configuration fields are listed in

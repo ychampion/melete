@@ -149,9 +149,14 @@ the same scripted test action regardless of the message; it is a deployment
 demonstration, not a general-purpose assistant.
 
 To use a real model, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and
-the matching key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
-`FIREWORKS_API_KEY`, or `OPENAI_COMPAT_BASE_URL` with `OPENAI_COMPAT_API_KEY`) in
-`deploy/.env`, set `MELETE_ENABLE_FAKE_PROVIDER=false`, and recreate the service:
+the matching key in `deploy/.env`. The provider is one of exactly `fireworks`,
+`anthropic`, `openai`, `google` or `openai-compatible`, with `FIREWORKS_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or
+`OPENAI_COMPAT_BASE_URL` with `OPENAI_COMPAT_API_KEY`. The model is the
+identifier that provider serves, written as its API expects it. The
+[provider settings](docs/DEPLOYMENT.md#providers) cover local model servers and
+the reply length limit. Set `MELETE_ENABLE_FAKE_PROVIDER=false`, and recreate
+the service:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime

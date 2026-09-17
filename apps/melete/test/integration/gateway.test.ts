@@ -24,11 +24,14 @@ afterAll(async () => {
 const capabilityKey = 'gateway-integration-signing-key-0000000000';
 const approvalKey = 'gateway-integration-approval-key-000000000';
 
-async function setup(maxTurns = 10) {
+async function setup(maxTurns = 10, maxOutputTokens?: number) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   const seed = await seedJob(fixture.sql, {
     scopes: ['test.send'],
-    budget: { max_turns: maxTurns },
+    budget: {
+      max_turns: maxTurns,
+      ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
+    },
   });
   const connector = createTestConnector(fixture.sql);
   const internal = createInternalServer({
@@ -181,6 +184,42 @@ databaseTest('HTTP gateway request cap admits exactly one concurrent call', asyn
 });
 
 databaseTest(
+  'a request that names no output limit reserves only what the job has left',
+  async () => {
+    const s = await setup(10, 1000);
+    try {
+      const unlimited = () =>
+        s.post(
+          '/providers/fake/v1/chat/completions',
+          { model: 'scripted', stream: false, messages: [] },
+          { authorization: 'Bearer melete-surrogate-fixture', 'x-melete-capability': s.token },
+        );
+      const reserved = async () =>
+        (
+          await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id}
+            and payload->>'phase' = 'model_request' order by seq`
+        ).map((row) => Number(row.payload.max_output_tokens));
+      const first = await unlimited();
+      expect(first.status).toBe(200);
+      await first.arrayBuffer();
+      // The default of 4,096 is above this job's whole output budget.
+      expect(await reserved()).toEqual([1000]);
+      const [ledger] = await s.sql`select coalesce(sum(coalesce(settled, reserved)), 0)::int as used
+        from budget_ledger where job_id = ${s.claims.job_id} and kind = 'tokens'`;
+      const used = Number(ledger?.used);
+      expect(used).toBeGreaterThan(0);
+      expect(used).toBeLessThan(1000);
+      const second = await unlimited();
+      expect(second.status).toBe(200);
+      await second.arrayBuffer();
+      expect(await reserved()).toEqual([1000, 1000 - used]);
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+databaseTest(
   'cancellation fences both broker and provider HTTP routes without a request record',
   async () => {
     const s = await setup();
@@ -234,13 +273,36 @@ Use the scoped receipt procedure.
       MELETE_ENABLE_TEST_CONNECTOR: 'true',
       MELETE_ENABLE_FAKE_PROVIDER: 'true',
       MELETE_DEFAULT_PROVIDER: 'fake',
+      MELETE_DEFAULT_MAX_OUTPUT_TOKENS: '777',
       MELETE_SPACES_DIR: spacesRoot,
     });
+    // A provider name the gateway does not have stops start-up before anything listens.
+    await expect(
+      startEffectBoundary(fixture, { ...env, MELETE_DEFAULT_PROVIDER: 'openai-compat' }),
+    ).rejects.toThrow('"openai-compatible"');
     const internal = await startEffectBoundary(fixture, env);
     try {
       const token = signCapability(seed.claims, capabilityKey);
       const address = internal.server.address();
       if (!address || typeof address === 'string') throw new Error('Missing broker address');
+      const inference = await fetch(
+        `http://127.0.0.1:${address.port}/providers/fake/v1/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer melete-surrogate-fixture',
+            'x-melete-capability': token,
+          },
+          body: JSON.stringify({ model: 'scripted', stream: false, messages: [] }),
+        },
+      );
+      expect(inference.status).toBe(200);
+      await inference.arrayBuffer();
+      const [reserved] = await fixture.sql`select payload from event
+        where attempt_id = ${seed.claims.attempt_id} and payload->>'phase' = 'model_request'`;
+      // The configured output limit reaches the gateway this listener serves.
+      expect(reserved?.payload.max_output_tokens).toBe(777);
       const response = await fetch(`http://127.0.0.1:${address.port}/tools`, {
         headers: { authorization: `Bearer ${token}` },
       });

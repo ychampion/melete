@@ -152,7 +152,13 @@ const variables = z.object({
   OPENAI_COMPAT_API_KEY: z.string().optional(),
 
   MELETE_DEFAULT_PROVIDER: z.string().default('fireworks'),
-  MELETE_DEFAULT_MODEL: z.string().default('deepseek-v4p1-flash'),
+  /** The identifier the provider serves, which for Fireworks is the full account path. */
+  MELETE_DEFAULT_MODEL: z.string().default('accounts/fireworks/models/deepseek-v4p1-flash'),
+  /**
+   * The output limit the gateway gives a model request that names none. The
+   * engine names none by default, so this is the usual ceiling on one reply.
+   */
+  MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MELETE_SPEECH_MODEL: z.string().optional(),
 });
 

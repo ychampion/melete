@@ -31,7 +31,7 @@ import os, sys, yaml
 config = yaml.safe_load(open("/opt/melete-runtime/config.yaml", encoding="utf-8"))
 provider = config.setdefault("providers", {}).setdefault("melete-gateway", {})
 name = os.environ.get("MELETE_MODEL_PROVIDER", "fireworks")
-model = os.environ.get("MELETE_MODEL_NAME", "deepseek-v4p1-flash")
+model = os.environ.get("MELETE_MODEL_NAME", "accounts/fireworks/models/deepseek-v4p1-flash")
 if not name or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in name):
     raise SystemExit("Invalid model provider name")
 # The pinned resolver reads model.provider, not a top-level provider field.

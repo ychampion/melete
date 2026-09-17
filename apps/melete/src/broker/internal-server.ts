@@ -21,6 +21,7 @@ export function createInternalServer(options: {
   boss?: PgBoss;
   providers?: GatewayProvider[];
   defaultProvider?: string;
+  defaultMaxTokens?: GatewayOptions['defaultMaxTokens'];
   dispatchTimeoutMs?: number;
   resolveAuthority?: BrokerOptions['resolveAuthority'];
   resolveTrust?: BrokerOptions['resolveTrust'];
@@ -91,6 +92,7 @@ export function createInternalServer(options: {
     budget,
     providers: options.providers,
     defaultProvider: options.defaultProvider,
+    defaultMaxTokens: options.defaultMaxTokens,
     fake: options.fake,
     connectTls: options.connectTls,
     fetch: options.gatewayFetch,

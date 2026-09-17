@@ -61,6 +61,38 @@ function composeServiceEnvironment(): Record<string, string> {
   );
 }
 
+describe('the model defaults', () => {
+  test('the default model is the identifier its provider serves', () => {
+    const env = loadEnv({});
+    expect(env.MELETE_DEFAULT_PROVIDER).toBe('fireworks');
+    expect(env.MELETE_DEFAULT_MODEL).toBe('accounts/fireworks/models/deepseek-v4p1-flash');
+  });
+
+  test('the example configuration selects the same model as the service default', () => {
+    const example = readFileSync(
+      join(import.meta.dir, '../../../deploy/.env.example'),
+      'utf8',
+    ).split(/\r?\n/);
+    expect(example).toContain(`MELETE_DEFAULT_MODEL=${loadEnv({}).MELETE_DEFAULT_MODEL}`);
+    expect(example).toContain(
+      `MELETE_DEFAULT_MAX_OUTPUT_TOKENS=${loadEnv({}).MELETE_DEFAULT_MAX_OUTPUT_TOKENS}`,
+    );
+  });
+
+  test('the output limit for a request that names none is 4,096 and can be changed', () => {
+    expect(loadEnv({}).MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe(4096);
+    expect(
+      loadEnv({ MELETE_DEFAULT_MAX_OUTPUT_TOKENS: '2048' }).MELETE_DEFAULT_MAX_OUTPUT_TOKENS,
+    ).toBe(2048);
+    for (const value of ['0', '-1', '1.5', 'many'])
+      expect(readEnv({ MELETE_DEFAULT_MAX_OUTPUT_TOKENS: value }).ok).toBe(false);
+  });
+
+  test('Compose passes the output limit through to the service', () => {
+    expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
+  });
+});
+
 describe('the address the service reads its own tool catalog from', () => {
   test('follows the bound broker when only the bind is configured', () => {
     expect(loadEnv({}).MELETE_BROKER_URL).toBe('http://127.0.0.1:3112');

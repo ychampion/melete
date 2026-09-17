@@ -2,6 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 
 const root = resolve(import.meta.dir, '../..');
 const target = resolve(root, 'deploy/.env');
@@ -41,3 +42,6 @@ try {
 process.stdout.write(
   `Created deploy/.env with private permissions${fake ? ' and the explicit fake provider' : ''}.\n`,
 );
+// A real provider is selected with its key still empty. Say so now, not at the first job.
+for (const warning of providerWarnings(parseEnvFile(content)))
+  process.stderr.write(`WARNING: ${warning}\n`);

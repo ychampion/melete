@@ -38,6 +38,12 @@ export interface GatewayOptions {
   timeoutMs?: number;
   maxRequestBytes?: number;
   maxResponseBytes?: number;
+  /**
+   * The output limit given to a request that names none. The pinned engine
+   * sends none unless its configuration sets one, so this is the usual ceiling
+   * on a reply. It never exceeds what the attempt may still spend.
+   */
+  defaultMaxTokens?: number;
   /** Cert must cover this host and be trusted by the runtime's internal CA store. */
   connectTls?: (host: string) => Pick<SecureContextOptions, 'key' | 'cert' | 'ca'> | undefined;
   /** Ledger failures must reach service monitoring; no response may claim a persisted success. */
@@ -101,6 +107,9 @@ async function readBody(
   throw new GatewayError(400, 'invalid_json');
 }
 
+/** The output limit for a request that names none. A few hundred tokens truncates ordinary replies. */
+export const DEFAULT_MAX_TOKENS = 4096;
+
 function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
@@ -114,6 +123,9 @@ export function createModelGateway(options: GatewayOptions): Server {
   const fake = options.fake ?? createScriptedProvider();
   const transport = options.fetch ?? ((request: Request) => fetch(request));
   const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
+  const defaultMaxTokens = options.defaultMaxTokens ?? DEFAULT_MAX_TOKENS;
+  if (!positiveInteger(defaultMaxTokens))
+    throw new RangeError('The default output limit must be a positive integer');
   const secrets = providers
     .map((provider) => provider.apiKey)
     .filter((key): key is string => !!key);
@@ -186,8 +198,18 @@ export function createModelGateway(options: GatewayOptions): Server {
       if (body.n !== undefined && body.n !== 1)
         throw new GatewayError(400, 'multiple_outputs_denied');
       const limitKey = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
+      // A limit the runtime names is honoured or refused, never rewritten. One
+      // it leaves out is filled in, bounded by what the attempt may still spend,
+      // so the substitute cannot itself be the reason a call is refused.
       const requested =
-        body.max_output_tokens ?? body.max_completion_tokens ?? body.max_tokens ?? 512;
+        body.max_output_tokens ??
+        body.max_completion_tokens ??
+        body.max_tokens ??
+        Math.min(
+          defaultMaxTokens,
+          principal.maxTokens,
+          principal.remainingTokens ?? principal.maxTokens,
+        );
       if (!positiveInteger(requested) || requested > principal.maxTokens) {
         throw new GatewayError(429, 'token_cap_exceeded');
       }
