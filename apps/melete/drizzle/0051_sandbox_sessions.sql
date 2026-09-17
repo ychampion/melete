@@ -41,7 +41,7 @@ ALTER TABLE "sandbox_session" ADD CONSTRAINT "sandbox_session_space_id_space_id_
 ALTER TABLE "sandbox_session" ADD CONSTRAINT "sandbox_session_job_id_job_id_fk" FOREIGN KEY ("job_id") REFERENCES "public"."job"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sandbox_session" ADD CONSTRAINT "sandbox_session_attempt_id_attempt_id_fk" FOREIGN KEY ("attempt_id") REFERENCES "public"."attempt"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sandbox_session" ADD CONSTRAINT "sandbox_session_agent_id_agent_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agent"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "sandbox_session_provider_idx" ON "sandbox_session" USING btree ("adapter","provider_sandbox_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "sandbox_session_attempt_idx" ON "sandbox_session" USING btree ("attempt_id") WHERE "sandbox_session"."attempt_id" is not null and "sandbox_session"."status" <> 'closed';--> statement-breakpoint
+CREATE UNIQUE INDEX "sandbox_session_provider_idx" ON "sandbox_session" USING btree ("adapter","provider_sandbox_id") WHERE "sandbox_session"."status" not in ('closed', 'lost');--> statement-breakpoint
+CREATE UNIQUE INDEX "sandbox_session_attempt_idx" ON "sandbox_session" USING btree ("attempt_id") WHERE "sandbox_session"."attempt_id" is not null and "sandbox_session"."status" not in ('closed', 'lost');--> statement-breakpoint
 CREATE UNIQUE INDEX "sandbox_workspace_idx" ON "sandbox_session" USING btree ("space_id","agent_id") WHERE "sandbox_session"."agent_id" is not null and "sandbox_session"."status" in ('ready', 'paused');--> statement-breakpoint
 CREATE INDEX "sandbox_session_lease_idx" ON "sandbox_session" USING btree ("lease_expires_at") WHERE "sandbox_session"."status" <> 'closed';

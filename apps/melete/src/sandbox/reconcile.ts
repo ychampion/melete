@@ -13,7 +13,9 @@
  *
  * A session still being opened owns its sandbox by session label until its
  * lease runs out, so reconciling while a sandbox is being created does not
- * destroy it.
+ * destroy it. A workspace suspended as a snapshot owns no sandbox at all: its
+ * sandbox was stopped when it was suspended, so it is not asked about, and a
+ * sandbox still carrying its label is an orphan.
  */
 import type { Sql } from 'postgres';
 import { markSessionLost, PENDING_SANDBOX } from './sessions.ts';
@@ -43,8 +45,14 @@ export async function reconcileSandboxes(options: {
   const { sql, provider, project, signal } = options;
   const snapshot = Date.now();
   const rows = await sql<
-    { id: string; provider_sandbox_id: string; status: string; leased: boolean }[]
-  >`select id, provider_sandbox_id, status, lease_expires_at > now() as leased
+    {
+      id: string;
+      provider_sandbox_id: string;
+      status: string;
+      persistence: string;
+      leased: boolean;
+    }[]
+  >`select id, provider_sandbox_id, status, persistence, lease_expires_at > now() as leased
     from sandbox_session
     where adapter = ${provider.capabilities.adapter}
       and status in ('opening', 'ready', 'paused', 'closing')`;
@@ -60,6 +68,7 @@ export async function reconcileSandboxes(options: {
       continue;
     }
     if (row.status === 'closing' || pending) continue;
+    if (row.status === 'paused' && row.persistence === 'snapshot') continue;
     let state: 'running' | 'paused' | 'gone';
     try {
       state = await provider.inspect(

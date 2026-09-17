@@ -33,7 +33,10 @@ withDb('sandbox reconciliation', () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const scope = await seedSessionScope(handle.sql);
     const provider = new FakeSandboxProvider();
-    const sessions = new SandboxSessions(handle.sql, { leaseSeconds: 300 });
+    const sessions = new SandboxSessions(handle.sql, {
+      leaseSeconds: 300,
+      workspaceRetentionSeconds: 86_400,
+    });
     const open = async (project = 'install-a') =>
       sessions.open(
         {

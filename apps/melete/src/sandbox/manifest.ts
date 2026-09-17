@@ -30,6 +30,11 @@ export type RefusalCode =
   | 'image_invalid'
   | 'session_exists'
   | 'workspace_exists'
+  | 'workspace_busy'
+  | 'workspace_incompatible'
+  | 'workspace_lost'
+  | 'workspace_not_live'
+  | 'suspend_failed'
   | 'sandbox_time_exhausted';
 
 export class SandboxRefusal extends Error {

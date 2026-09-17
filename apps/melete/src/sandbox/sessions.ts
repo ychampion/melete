@@ -1,11 +1,21 @@
 /**
- * The lease on a remote sandbox.
+ * The lease on a remote sandbox, and the persistent workspace an agent keeps.
  *
  * A session is written before its sandbox is created, so the database decides
  * whether this attempt may have a sandbox at all, and a crash between the two
  * leaves a row the sweeper and the reconciler can finish. The sandbox is
  * labelled with the session id, so a sandbox whose row never became `ready`
  * is recognisable as this installation's orphan.
+ *
+ * A workspace belongs to one agent in one space and outlives the attempt that
+ * used it. At the end of an attempt it is suspended — paused, or snapshotted
+ * and stopped — and the next attempt for that agent resumes it on a new row.
+ * One attempt holds a workspace at a time: a second attempt for the same agent
+ * is refused with `workspace_busy`, never handed the live sandbox and never
+ * left waiting. Waiting would hold a broker request open for as long as the
+ * first attempt runs, which can be hours, and a refusal leaves the retry to
+ * the scheduler that already owns retries. A workspace nobody resumes within
+ * the retention period is destroyed by the sweep, snapshot included.
  *
  * Sandbox time is always metered onto the row. A cap is optional and belongs
  * to the job: when one is given and the job has used it, opening another
@@ -16,7 +26,13 @@ import type { Sql, TransactionSql } from 'postgres';
 import { recordId } from '../broker/records.ts';
 import { checkSpec, LABEL_SESSION, SandboxRefusal, type SessionPersistence } from './manifest.ts';
 import type { SessionStatus } from './schema.ts';
-import type { EgressPolicy, SandboxHandle, SandboxProvider, SandboxSpec } from './types.ts';
+import {
+  type EgressPolicy,
+  SandboxGone,
+  type SandboxHandle,
+  type SandboxProvider,
+  type SandboxSpec,
+} from './types.ts';
 
 export const PENDING_SANDBOX = 'pending:';
 /** A dispatch the provider refused before anything ran. */
@@ -57,6 +73,24 @@ export type OpenSession = {
   maxSandboxSeconds?: number | null;
 };
 
+export type WorkspacePersistence = Exclude<SessionPersistence, 'ephemeral'>;
+
+export type OpenWorkspace = Omit<OpenSession, 'agentId' | 'persistence'> & {
+  agentId: string;
+  persistence: WorkspacePersistence;
+};
+
+export type WorkspaceSession = SessionRow & { resumed: boolean };
+
+export type SessionOptions = {
+  leaseSeconds: number;
+  /** How long a suspended workspace is kept without being resumed. */
+  workspaceRetentionSeconds: number;
+  /** Where session ids come from; replaced only by tests that replay recorded traffic. */
+  ids?: () => string;
+};
+
+type ProviderFor = (adapter: string) => SandboxProvider | undefined;
 type Query = Sql | TransactionSql;
 type Row = Record<string, unknown>;
 
@@ -94,12 +128,31 @@ export const sessionHandle = (row: SessionRow): SandboxHandle => ({
   region: row.region,
 });
 
+const handleOf = (providerSandboxId: string): SandboxHandle => ({
+  providerSandboxId,
+  imageDigest: null,
+  region: null,
+});
+
 const uniqueViolation = (error: unknown): string | null =>
   error && typeof error === 'object' && 'code' in error && error.code === '23505'
     ? String((error as { constraint_name?: string }).constraint_name ?? '')
     : null;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const egressKey = (policy: EgressPolicy) =>
+  JSON.stringify([
+    policy.kind,
+    policy.kind === 'cidr_allowlist'
+      ? [...policy.cidrs]
+      : policy.kind === 'domain_allowlist'
+        ? [...policy.domains]
+        : [],
+  ]);
+
+const BUSY =
+  'another attempt is using this agent’s workspace; it is not shared, and this attempt is refused rather than kept waiting';
 
 /**
  * Mark a session lost. With `from`, only while it is still in that status, so
@@ -131,12 +184,20 @@ async function usedSeconds(tx: Query, jobId: string): Promise<number> {
 }
 
 export class SandboxSessions {
+  private readonly ids: () => string;
+
   constructor(
     private readonly sql: Sql,
-    private readonly options: { leaseSeconds: number },
+    private readonly options: SessionOptions,
   ) {
     if (!Number.isSafeInteger(options.leaseSeconds) || options.leaseSeconds <= 0)
       throw new Error('a sandbox lease needs a positive whole number of seconds');
+    if (
+      !Number.isSafeInteger(options.workspaceRetentionSeconds) ||
+      options.workspaceRetentionSeconds <= 0
+    )
+      throw new Error('workspace retention needs a positive whole number of seconds');
+    this.ids = options.ids ?? (() => recordId('sbx'));
   }
 
   async get(id: string): Promise<SessionRow | null> {
@@ -146,6 +207,55 @@ export class SandboxSessions {
 
   async usedSeconds(jobId: string): Promise<number> {
     return usedSeconds(this.sql, jobId);
+  }
+
+  /** Validate a request and mint the session id its sandbox will be labelled with. */
+  private prepare(
+    input: OpenSession,
+    provider: SandboxProvider,
+    specFor: (sessionId: string) => SandboxSpec,
+    persistence: SessionPersistence,
+  ) {
+    const id = this.ids();
+    const spec = specFor(id);
+    checkSpec(provider.capabilities, spec, persistence);
+    if (spec.labels[LABEL_SESSION] !== id)
+      throw new Error('the sandbox labels must name the session that owns it');
+    const cap = input.maxSandboxSeconds ?? null;
+    if (cap !== null && (!Number.isFinite(cap) || cap < 0))
+      throw new Error('a sandbox-time cap is a non-negative number of seconds');
+    return { id, spec, cap };
+  }
+
+  private async checkCap(tx: TransactionSql, input: OpenSession, cap: number | null) {
+    if (cap === null) return;
+    if (!input.jobId) throw new Error('a sandbox-time cap is a job budget and needs a job');
+    await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-job:${input.jobId}`}))`;
+    const used = await usedSeconds(tx, input.jobId);
+    if (used >= cap)
+      throw new SandboxRefusal(
+        'sandbox_time_exhausted',
+        `this job has used ${Math.floor(used)}s of its ${cap}s of sandbox time`,
+      );
+  }
+
+  private insertOpening(
+    tx: TransactionSql,
+    id: string,
+    input: OpenSession,
+    provider: SandboxProvider,
+    spec: SandboxSpec,
+    persistence: SessionPersistence,
+    resumeRef: string | null,
+  ) {
+    return tx`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id,
+        agent_id, adapter, provider_sandbox_id, image_ref, region, egress_policy, persistence,
+        resume_ref, status, lease_expires_at)
+      values (${id}, ${input.connectionId}, ${input.spaceId}, ${input.jobId}, ${input.attemptId},
+        ${input.agentId}, ${provider.capabilities.adapter}, ${`${PENDING_SANDBOX}${id}`},
+        ${spec.image}, ${spec.region}, ${JSON.stringify(spec.egress)}::jsonb,
+        ${persistence}, ${resumeRef}, 'opening',
+        now() + make_interval(secs => ${this.options.leaseSeconds}))`;
   }
 
   /**
@@ -158,27 +268,11 @@ export class SandboxSessions {
     specFor: (sessionId: string) => SandboxSpec,
     signal: AbortSignal,
   ): Promise<SessionRow> {
-    const id = recordId('sbx');
-    const spec = specFor(id);
     const persistence = input.persistence ?? 'ephemeral';
-    checkSpec(provider.capabilities, spec, persistence);
-    if (spec.labels[LABEL_SESSION] !== id)
-      throw new Error('the sandbox labels must name the session that owns it');
-    const cap = input.maxSandboxSeconds ?? null;
-    if (cap !== null && (!Number.isFinite(cap) || cap < 0))
-      throw new Error('a sandbox-time cap is a non-negative number of seconds');
+    const { id, spec, cap } = this.prepare(input, provider, specFor, persistence);
     try {
       await this.sql.begin(async (tx) => {
-        if (cap !== null) {
-          if (!input.jobId) throw new Error('a sandbox-time cap is a job budget and needs a job');
-          await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-job:${input.jobId}`}))`;
-          const used = await usedSeconds(tx, input.jobId);
-          if (used >= cap)
-            throw new SandboxRefusal(
-              'sandbox_time_exhausted',
-              `this job has used ${Math.floor(used)}s of its ${cap}s of sandbox time`,
-            );
-        }
+        await this.checkCap(tx, input, cap);
         if (input.agentId) {
           await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
           const [existing] = await tx`select id from sandbox_session
@@ -191,21 +285,28 @@ export class SandboxSessions {
               'this agent already has a live workspace in this space',
             );
         }
-        await tx`insert into sandbox_session (id, connection_id, space_id, job_id, attempt_id,
-            agent_id, adapter, provider_sandbox_id, image_ref, region, egress_policy, persistence,
-            status, lease_expires_at)
-          values (${id}, ${input.connectionId}, ${input.spaceId}, ${input.jobId}, ${input.attemptId},
-            ${input.agentId}, ${provider.capabilities.adapter}, ${`${PENDING_SANDBOX}${id}`},
-            ${spec.image}, ${spec.region}, ${JSON.stringify(spec.egress)}::jsonb,
-            ${persistence}, 'opening',
-            now() + make_interval(secs => ${this.options.leaseSeconds}))`;
+        await this.insertOpening(tx, id, input, provider, spec, persistence, null);
       });
     } catch (error) {
-      const constraint = uniqueViolation(error);
-      if (constraint === 'sandbox_session_attempt_idx')
-        throw new SandboxRefusal('session_exists', 'this attempt already has a live sandbox');
-      throw error;
+      throw this.refusalFor(error);
     }
+    return this.create(id, provider, spec, signal);
+  }
+
+  private refusalFor(error: unknown): unknown {
+    const constraint = uniqueViolation(error);
+    if (constraint === 'sandbox_session_attempt_idx')
+      return new SandboxRefusal('session_exists', 'this attempt already has a live sandbox');
+    if (constraint === 'sandbox_workspace_idx') return new SandboxRefusal('workspace_busy', BUSY);
+    return error;
+  }
+
+  private async create(
+    id: string,
+    provider: SandboxProvider,
+    spec: SandboxSpec,
+    signal: AbortSignal,
+  ): Promise<SessionRow> {
     let handle: SandboxHandle;
     try {
       handle = await provider.create(spec, signal);
@@ -240,6 +341,243 @@ export class SandboxSessions {
     }
   }
 
+  /**
+   * Resume this agent's suspended workspace, or create one when it has none.
+   * The suspended row is closed and its `resume_ref` carried onto this
+   * attempt's row in one transaction, so exactly one row is ever live.
+   */
+  async openWorkspace(
+    input: OpenWorkspace,
+    provider: SandboxProvider,
+    specFor: (sessionId: string) => SandboxSpec,
+    signal: AbortSignal,
+  ): Promise<WorkspaceSession> {
+    const { id, spec, cap } = this.prepare(input, provider, specFor, input.persistence);
+    let suspended: SessionRow | null = null;
+    try {
+      await this.sql.begin(async (tx) => {
+        await this.checkCap(tx, input, cap);
+        await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
+        const live = (
+          await tx`select * from sandbox_session
+            where space_id = ${input.spaceId} and agent_id = ${input.agentId}
+              and status in ('opening', 'ready', 'paused')`
+        ).map(toRow);
+        if (live.some((row) => row.status !== 'paused'))
+          throw new SandboxRefusal('workspace_busy', BUSY);
+        const paused = live[0] ?? null;
+        if (paused) {
+          if (
+            paused.adapter !== provider.capabilities.adapter ||
+            paused.persistence !== input.persistence ||
+            !paused.resumeRef
+          )
+            throw new SandboxRefusal(
+              'workspace_incompatible',
+              `this agent's workspace is a ${paused.persistence} workspace on ${paused.adapter}; destroy it to open another kind`,
+            );
+          if (egressKey(paused.egressPolicy) !== egressKey(spec.egress))
+            throw new SandboxRefusal(
+              'workspace_incompatible',
+              "this agent's workspace was created under a different egress policy; destroy it to change the policy",
+            );
+          // Closed first: the attempt that suspended it may be the one resuming it.
+          await tx`update sandbox_session set status = 'closed', closed_at = now()
+            where id = ${paused.id} and status = 'paused'`;
+          suspended = paused;
+        }
+        await this.insertOpening(
+          tx,
+          id,
+          input,
+          provider,
+          spec,
+          input.persistence,
+          paused?.resumeRef ?? null,
+        );
+      });
+    } catch (error) {
+      throw this.refusalFor(error);
+    }
+    const from = suspended as SessionRow | null;
+    if (!from) return { ...(await this.create(id, provider, spec, signal)), resumed: false };
+    return { ...(await this.resume(id, from, provider, spec, signal)), resumed: true };
+  }
+
+  private async resume(
+    id: string,
+    from: SessionRow,
+    provider: SandboxProvider,
+    spec: SandboxSpec,
+    signal: AbortSignal,
+  ): Promise<SessionRow> {
+    const resumeRef = from.resumeRef as string;
+    let handle: SandboxHandle;
+    try {
+      if (!provider.resume)
+        throw new Error(`the ${provider.capabilities.adapter} adapter cannot resume a workspace`);
+      handle = await provider.resume(resumeRef, spec, signal);
+    } catch (error) {
+      if (error instanceof SandboxGone) {
+        await this.sql`update sandbox_session set status = 'lost', closed_at = now(),
+            seconds_charged = 0,
+            last_error = ${`the suspended workspace no longer exists: ${message(error)}`}
+          where id = ${id} and status = 'opening'`;
+        throw new SandboxRefusal(
+          'workspace_lost',
+          `this agent's suspended workspace no longer exists at ${provider.capabilities.adapter}; opening again creates a new one`,
+        );
+      }
+      await this.keepSuspended(
+        id,
+        { ...from, suspendedAt: from.leaseExpiresAt },
+        provider,
+        `the workspace could not be resumed: ${message(error)}`,
+      );
+      throw error;
+    }
+    let row: Row | undefined;
+    try {
+      [row] = await this.sql`update sandbox_session
+        set provider_sandbox_id = ${handle.providerSandboxId}, image_digest = ${handle.imageDigest},
+          region = ${handle.region}, status = 'ready', last_error = null
+        where id = ${id} and status = 'opening'
+        returning *`;
+    } catch (error) {
+      await this.abandon(handle, from.persistence, provider);
+      await this.keepSuspended(
+        id,
+        { ...from, suspendedAt: from.leaseExpiresAt },
+        provider,
+        `the resumed workspace could not be recorded: ${message(error)}`,
+      );
+      throw error;
+    }
+    if (!row) {
+      const current = await this.get(id);
+      if (current?.status === 'paused')
+        // The sweep gave up on this resume and put the workspace back: so is what came back.
+        await this.abandon(handle, from.persistence, provider);
+      // Otherwise the row is being destroyed, and what was resumed goes with it.
+      else await provider.destroy(handle, AbortSignal.timeout(30_000)).catch(() => {});
+      throw new Error('the session ended while its workspace was being resumed');
+    }
+    return toRow(row);
+  }
+
+  /** Put a resumed sandbox back the way a suspended workspace keeps it, as far as possible. */
+  private async abandon(
+    handle: SandboxHandle,
+    persistence: SessionPersistence,
+    provider: SandboxProvider,
+  ) {
+    const signal = AbortSignal.timeout(60_000);
+    if (persistence === 'snapshot') await provider.destroy(handle, signal).catch(() => {});
+    else await provider.pause?.(handle, signal).catch(() => {});
+  }
+
+  /**
+   * A resume that did not settle leaves the workspace suspended on this row,
+   * with its sandbox, reference and retention clock. A paused sandbox that did
+   * come back is paused again, so it is not left running unrecorded.
+   */
+  private async keepSuspended(
+    id: string,
+    from: Pick<SessionRow, 'providerSandboxId' | 'resumeRef' | 'persistence'> & {
+      suspendedAt: Date;
+    },
+    provider: SandboxProvider | undefined,
+    reason: string,
+  ) {
+    await this.sql`update sandbox_session set status = 'paused',
+        provider_sandbox_id = ${from.providerSandboxId}, resume_ref = ${from.resumeRef},
+        lease_expires_at = ${from.suspendedAt}, seconds_charged = 0, last_error = ${reason}
+      where id = ${id} and status = 'opening'`;
+    if (from.persistence !== 'pause' || !provider) return;
+    const signal = AbortSignal.timeout(60_000);
+    const handle = handleOf(from.providerSandboxId);
+    const state = await provider.inspect(handle, signal).catch(() => null);
+    if (state === 'running') await provider.pause?.(handle, signal).catch(() => {});
+  }
+
+  /**
+   * Suspend a ready workspace: pause it, or snapshot it and stop the sandbox.
+   * A suspension that fails leaves the row `ready`, the sandbox running and
+   * the reason on the row, and throws `suspend_failed`.
+   */
+  async suspendWorkspace(
+    id: string,
+    provider: SandboxProvider,
+    signal: AbortSignal,
+  ): Promise<SessionRow> {
+    // The lease is renewed first, so the sweep does not take the row meanwhile.
+    const [claimed] = await this.sql`update sandbox_session
+      set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds})
+      where id = ${id} and status = 'ready' and agent_id is not null
+        and persistence in ('pause', 'snapshot')
+      returning *`;
+    if (!claimed)
+      throw new SandboxRefusal('workspace_not_live', 'only a ready workspace can be suspended');
+    const row = toRow(claimed);
+    const handle = sessionHandle(row);
+    const failed = async (error: unknown) => {
+      const reason = `the workspace could not be suspended and is still running: ${message(error)}`;
+      await this.sql`update sandbox_session set last_error = ${reason} where id = ${id}`;
+      return new SandboxRefusal('suspend_failed', reason);
+    };
+    if (row.persistence === 'pause') {
+      let resumeRef: string;
+      try {
+        if (!provider.pause) throw new Error(`the ${row.adapter} adapter cannot pause`);
+        ({ resumeRef } = await provider.pause(handle, signal));
+      } catch (error) {
+        throw await failed(error);
+      }
+      return this.markSuspended(id, resumeRef, null);
+    }
+    let snapshotRef: string;
+    try {
+      if (!provider.snapshot) throw new Error(`the ${row.adapter} adapter cannot snapshot`);
+      ({ snapshotRef } = await provider.snapshot(handle, signal));
+    } catch (error) {
+      throw await failed(error);
+    }
+    // Recorded before the sandbox stops, so nothing after this can lose the snapshot.
+    await this.sql`update sandbox_session set resume_ref = ${snapshotRef} where id = ${id}`;
+    let note: string | null = null;
+    try {
+      await provider.destroy(handle, signal);
+    } catch (error) {
+      note = `the sandbox could not be stopped after its snapshot and is left to reconciliation: ${message(error)}`;
+    }
+    const suspended = await this.markSuspended(id, snapshotRef, note);
+    const superseded = row.resumeRef;
+    if (!superseded || superseded === snapshotRef) return suspended;
+    try {
+      await provider.deleteSnapshot?.(superseded, signal);
+      return suspended;
+    } catch (error) {
+      const reason = `the superseded snapshot could not be deleted and is left to expire: ${message(error)}`;
+      const [noted] = await this.sql`update sandbox_session set last_error = ${reason}
+        where id = ${id} returning *`;
+      return noted ? toRow(noted) : suspended;
+    }
+  }
+
+  private async markSuspended(id: string, resumeRef: string, note: string | null) {
+    const [row] = await this.sql`update sandbox_session set status = 'paused',
+        resume_ref = ${resumeRef}, seconds_charged = extract(epoch from now() - opened_at),
+        lease_expires_at = now(), last_error = ${note}
+      where id = ${id} and status = 'ready'
+      returning *`;
+    if (row) return toRow(row);
+    // The row was taken while the provider suspended the sandbox; say so on it.
+    await this.sql`update sandbox_session
+      set last_error = ${`suspended as ${resumeRef} after the session had already moved on`}
+      where id = ${id}`;
+    throw new Error('the workspace session ended while it was being suspended');
+  }
+
   /** Extend the lease and meter the time so far. Time used never refuses a renewal. */
   async renew(id: string): Promise<SessionRow | null> {
     const [row] = await this.sql`update sandbox_session
@@ -250,40 +588,73 @@ export class SandboxSessions {
     return row ? toRow(row) : null;
   }
 
+  /** Take a row for destruction, remembering the status it was taken from. */
+  private async claim(
+    id: string,
+    statuses: readonly SessionStatus[],
+  ): Promise<{ row: SessionRow; from: SessionStatus } | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await this.get(id);
+      if (!current || !statuses.includes(current.status)) return null;
+      const [claimed] = await this.sql`update sandbox_session set status = 'closing'
+        where id = ${id} and status = ${current.status}
+        returning *`;
+      if (claimed) return { row: toRow(claimed), from: current.status };
+    }
+    return null;
+  }
+
   async close(id: string, provider: SandboxProvider, signal: AbortSignal): Promise<SessionRow> {
-    const [claimed] = await this.sql`update sandbox_session set status = 'closing'
-      where id = ${id} and status in ('opening', 'ready', 'paused', 'closing')
-      returning *`;
+    const claimed = await this.claim(id, ['opening', 'ready', 'paused', 'closing']);
     if (!claimed) {
       const current = await this.get(id);
       if (!current) throw new Error('no such sandbox session');
       return current;
     }
-    return this.finish(toRow(claimed), provider, signal);
+    return this.finish(claimed.row, claimed.from, provider, signal);
+  }
+
+  /** Destroy a workspace for good: its sandbox, and its snapshot if it has one. */
+  destroyWorkspace(
+    id: string,
+    provider: SandboxProvider,
+    signal: AbortSignal,
+  ): Promise<SessionRow> {
+    return this.close(id, provider, signal);
   }
 
   private async finish(
     row: SessionRow,
+    from: SessionStatus,
     provider: SandboxProvider | undefined,
     signal: AbortSignal,
   ): Promise<SessionRow> {
-    if (!row.providerSandboxId.startsWith(PENDING_SANDBOX)) {
-      if (!provider) {
-        await this
-          .sql`update sandbox_session set last_error = ${`no ${row.adapter} adapter is configured`}
-          where id = ${row.id}`;
-        return { ...row, lastError: `no ${row.adapter} adapter is configured` };
-      }
-      try {
+    if (!provider) {
+      const reason = `no ${row.adapter} adapter is configured`;
+      await this.sql`update sandbox_session set last_error = ${reason} where id = ${row.id}`;
+      return { ...row, lastError: reason };
+    }
+    try {
+      // A snapshotted workspace's sandbox was stopped when it was suspended.
+      const stopped = from === 'paused' && row.persistence === 'snapshot';
+      if (!row.providerSandboxId.startsWith(PENDING_SANDBOX) && !stopped)
         await provider.destroy(sessionHandle(row), signal);
-      } catch (error) {
-        await this
-          .sql`update sandbox_session set last_error = ${message(error)} where id = ${row.id}`;
-        throw error;
+      if (row.resumeRef && row.persistence === 'pause' && row.resumeRef !== row.providerSandboxId)
+        // A paused sandbox that a resume in flight had not yet claimed.
+        await provider.destroy(handleOf(row.resumeRef), signal);
+      if (row.resumeRef && row.persistence === 'snapshot') {
+        if (!provider.deleteSnapshot)
+          throw new Error(`the ${row.adapter} adapter cannot delete a snapshot`);
+        await provider.deleteSnapshot(row.resumeRef, signal);
       }
+    } catch (error) {
+      await this
+        .sql`update sandbox_session set last_error = ${message(error)} where id = ${row.id}`;
+      throw error;
     }
     const [closed] = await this.sql`update sandbox_session set status = 'closed', closed_at = now(),
-        seconds_charged = extract(epoch from now() - opened_at)
+        seconds_charged = case when ${from} = 'paused' then seconds_charged
+          else extract(epoch from now() - opened_at) end
       where id = ${row.id} and status = 'closing'
       returning *`;
     return closed ? toRow(closed) : row;
@@ -294,16 +665,48 @@ export class SandboxSessions {
     return markSessionLost(this.sql, id, reason);
   }
 
-  /** Destroy the sandboxes of sessions whose lease has run out. */
-  async sweep(
-    providerFor: (adapter: string) => SandboxProvider | undefined,
-    signal: AbortSignal,
-  ): Promise<string[]> {
-    const expired = await this.sql`select id, status from sandbox_session
-      where status in ('opening', 'ready', 'closing') and lease_expires_at < now()
-      order by lease_expires_at limit 100`;
+  /**
+   * Destroy the sandboxes of sessions whose lease has run out, suspend
+   * workspaces whose attempt stopped renewing them, and destroy workspaces
+   * suspended for longer than the retention period. Returns the sessions it
+   * closed.
+   */
+  async sweep(providerFor: ProviderFor, signal: AbortSignal): Promise<string[]> {
     const swept: string[] = [];
+    const expired = (
+      await this.sql`select * from sandbox_session
+        where status in ('opening', 'ready', 'closing') and lease_expires_at < now()
+        order by lease_expires_at limit 100`
+    ).map(toRow);
     for (const candidate of expired) {
+      const provider = providerFor(candidate.adapter);
+      const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
+      if (workspace && candidate.status === 'ready') {
+        // A workspace outlives its attempt: it is suspended, not destroyed.
+        if (provider)
+          await this.suspendWorkspace(candidate.id, provider, signal).catch(() => {
+            // Recorded on the row, which keeps running; the next sweep tries again.
+          });
+        continue;
+      }
+      if (workspace && candidate.status === 'opening' && candidate.resumeRef) {
+        // A resume that never finished: the workspace goes back to suspended.
+        await this.keepSuspended(
+          candidate.id,
+          {
+            providerSandboxId:
+              candidate.persistence === 'pause'
+                ? candidate.resumeRef
+                : `${PENDING_SANDBOX}${candidate.id}`,
+            resumeRef: candidate.resumeRef,
+            persistence: candidate.persistence,
+            suspendedAt: candidate.openedAt,
+          },
+          provider,
+          'the resume did not finish within its lease',
+        );
+        continue;
+      }
       const [claimed] = await this.sql`update sandbox_session set status = 'closing'
         where id = ${candidate.id as string} and status = ${candidate.status as string}
           and lease_expires_at < now()
@@ -311,13 +714,96 @@ export class SandboxSessions {
       if (!claimed) continue;
       const row = toRow(claimed);
       try {
-        const finished = await this.finish(row, providerFor(row.adapter), signal);
+        const finished = await this.finish(
+          row,
+          candidate.status as SessionStatus,
+          providerFor(row.adapter),
+          signal,
+        );
         if (finished.status === 'closed') swept.push(row.id);
       } catch {
         // Recorded on the row; the next sweep tries again.
       }
     }
+    const stale = await this.sql`select id from sandbox_session
+      where status = 'paused'
+        and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
+      order by lease_expires_at limit 100`;
+    for (const candidate of stale) {
+      const [claimed] = await this.sql`update sandbox_session set status = 'closing'
+        where id = ${candidate.id as string} and status = 'paused'
+          and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
+        returning *`;
+      if (!claimed) continue;
+      const row = toRow(claimed);
+      try {
+        const finished = await this.finish(row, 'paused', providerFor(row.adapter), signal);
+        if (finished.status === 'closed') swept.push(row.id);
+      } catch {
+        // Recorded on the row, which is now `closing`; the next sweep retries it.
+      }
+    }
     return swept;
+  }
+
+  /**
+   * Destroy everything a space holds at its providers — every live sandbox,
+   * every suspended workspace and every snapshot any of its sessions recorded
+   * — before the space itself is deleted, since deleting the space deletes
+   * these rows and with them the only record of what to destroy. Throws after
+   * trying everything if anything could not be destroyed, so the caller does
+   * not delete the space over a sandbox that is still there.
+   */
+  async destroyWorkspacesForSpace(
+    spaceId: string,
+    providerFor: ProviderFor,
+    signal: AbortSignal,
+  ): Promise<{ closed: string[]; snapshotsDeleted: string[] }> {
+    const failures: string[] = [];
+    const closed: string[] = [];
+    const live = await this.sql`select id from sandbox_session
+      where space_id = ${spaceId} and status in ('opening', 'ready', 'paused', 'closing')`;
+    for (const candidate of live) {
+      const claimed = await this.claim(candidate.id as string, [
+        'opening',
+        'ready',
+        'paused',
+        'closing',
+      ]);
+      if (!claimed) continue;
+      try {
+        const finished = await this.finish(
+          claimed.row,
+          claimed.from,
+          providerFor(claimed.row.adapter),
+          signal,
+        );
+        if (finished.status === 'closed') closed.push(finished.id);
+        else failures.push(`${finished.id}: ${finished.lastError ?? 'not closed'}`);
+      } catch (error) {
+        failures.push(`${claimed.row.id}: ${message(error)}`);
+      }
+    }
+    // A snapshot can outlive its row's lease: a superseded one whose deletion
+    // failed, or one left on a row that was lost.
+    const snapshots = await this.sql`select distinct adapter, resume_ref from sandbox_session
+      where space_id = ${spaceId} and persistence = 'snapshot' and resume_ref is not null`;
+    const snapshotsDeleted: string[] = [];
+    for (const snapshot of snapshots) {
+      const provider = providerFor(snapshot.adapter as string);
+      const ref = snapshot.resume_ref as string;
+      try {
+        if (!provider?.deleteSnapshot)
+          throw new Error(`no ${snapshot.adapter as string} adapter can delete snapshots`);
+        await provider.deleteSnapshot(ref, signal);
+        snapshotsDeleted.push(ref);
+      } catch (error) {
+        failures.push(`snapshot ${ref}: ${message(error)}`);
+      }
+    }
+    if (failures.length)
+      throw new Error(`the space's sandboxes were not all destroyed: ${failures.join('; ')}`);
+    return { closed, snapshotsDeleted };
   }
 
   /**

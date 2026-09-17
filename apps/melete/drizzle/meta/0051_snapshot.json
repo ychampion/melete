@@ -1,5 +1,5 @@
 {
-  "id": "f0e2a38c-7332-46f5-b888-f437403f60b9",
+  "id": "a5cd8e7e-8387-4b1d-85d9-5000e67f2385",
   "prevId": "bb99299b-6f2e-4334-8390-2f0212de6722",
   "version": "7",
   "dialect": "postgresql",
@@ -10309,6 +10309,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"sandbox_session\".\"status\" not in ('closed', 'lost')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -10324,7 +10325,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"sandbox_session\".\"attempt_id\" is not null and \"sandbox_session\".\"status\" <> 'closed'",
+          "where": "\"sandbox_session\".\"attempt_id\" is not null and \"sandbox_session\".\"status\" not in ('closed', 'lost')",
           "concurrently": false,
           "method": "btree",
           "with": {}

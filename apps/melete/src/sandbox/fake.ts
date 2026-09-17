@@ -24,6 +24,7 @@ import {
   type FileEntry,
   type SandboxCapabilities,
   SandboxFileNotFound,
+  SandboxGone,
   type SandboxHandle,
   type SandboxProvider,
   type SandboxSpec,
@@ -39,7 +40,7 @@ export const FAKE_CAPABILITIES: SandboxCapabilities = {
   adapter: 'fake',
   isolation: 'unknown',
   egress: ['deny_all', 'domain_allowlist', 'cidr_allowlist', 'open'],
-  persistence: ['none', 'pause'],
+  persistence: ['none', 'pause', 'snapshot'],
   maxLifetimeSeconds: 3_600,
   maxIdleSeconds: null,
   streaming: false,
@@ -80,6 +81,18 @@ export class FakeFs {
       bytes: encode('root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000::/home/user:/bin/sh\n'),
       mode: 0o644,
     });
+  }
+
+  /** An independent copy: what a filesystem snapshot holds. */
+  clone(): FakeFs {
+    const copy = new FakeFs();
+    copy.nodes.clear();
+    for (const [key, node] of this.nodes)
+      copy.nodes.set(
+        key,
+        node.kind === 'file' ? { ...node, bytes: node.bytes.slice() } : { ...node },
+      );
+    return copy;
   }
 
   static normalize(value: string): string {
@@ -1036,7 +1049,17 @@ export type FakeSandbox = {
 
 export class FakeSandboxEngine {
   readonly sandboxes = new Map<string, FakeSandbox>();
+  /** Filesystem snapshots by reference. */
+  readonly snapshots = new Map<string, FakeFs>();
   private counter = 0;
+  private snapshotCounter = 0;
+
+  snapshot(sandbox: FakeSandbox): string {
+    this.snapshotCounter += 1;
+    const ref = `fake-snap-${String(this.snapshotCounter).padStart(4, '0')}`;
+    this.snapshots.set(ref, sandbox.fs.clone());
+    return ref;
+  }
 
   create(
     spec: Pick<SandboxSpec, 'image' | 'egress' | 'labels' | 'env' | 'lifetimeSeconds'>,
@@ -1164,7 +1187,7 @@ export const FAKE_AFTER_START_CUT_MS = 150;
 export class FakeSandboxProvider implements SandboxProvider {
   readonly capabilities: SandboxCapabilities;
   readonly engine: FakeSandboxEngine;
-  readonly calls = { create: 0, exec: 0, destroy: 0 };
+  readonly calls = { create: 0, exec: 0, destroy: 0, pause: 0, resume: 0, snapshot: 0 };
   private pendingLoss: AcknowledgementLoss | null = null;
 
   constructor(
@@ -1310,18 +1333,39 @@ export class FakeSandboxProvider implements SandboxProvider {
 
   async pause(handle: SandboxHandle, signal: AbortSignal): Promise<{ resumeRef: string }> {
     signal.throwIfAborted();
+    this.calls.pause += 1;
     const sandbox = this.engine.get(handle.providerSandboxId);
-    if (!sandbox) throw new Error('the sandbox is gone');
+    if (!sandbox) throw new SandboxGone('the sandbox is gone');
     sandbox.state = 'paused';
     return { resumeRef: sandbox.id };
   }
 
-  async resume(resumeRef: string, signal: AbortSignal): Promise<SandboxHandle> {
+  async resume(resumeRef: string, spec: SandboxSpec, signal: AbortSignal): Promise<SandboxHandle> {
     signal.throwIfAborted();
+    this.calls.resume += 1;
+    const saved = this.engine.snapshots.get(resumeRef);
+    if (saved) {
+      // A snapshot comes back as a new sandbox under the new lease's spec.
+      const sandbox = this.engine.create(spec);
+      sandbox.fs = saved.clone();
+      sandbox.fs.mkdir(spec.workdir, true);
+      return { providerSandboxId: sandbox.id, imageDigest: null, region: null };
+    }
     const sandbox = this.engine.get(resumeRef);
-    if (!sandbox) throw new Error('the sandbox is gone');
+    if (!sandbox) throw new SandboxGone('the paused sandbox is gone');
     sandbox.state = 'running';
     return { providerSandboxId: sandbox.id, imageDigest: null, region: null };
+  }
+
+  async snapshot(handle: SandboxHandle, signal: AbortSignal): Promise<{ snapshotRef: string }> {
+    signal.throwIfAborted();
+    this.calls.snapshot += 1;
+    return { snapshotRef: this.engine.snapshot(this.running(handle)) };
+  }
+
+  async deleteSnapshot(snapshotRef: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    this.engine.snapshots.delete(snapshotRef);
   }
 
   async destroy(handle: SandboxHandle, signal: AbortSignal): Promise<void> {

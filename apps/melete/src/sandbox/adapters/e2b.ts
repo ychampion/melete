@@ -33,6 +33,7 @@ import {
   SandboxAdapterRefusal,
   type SandboxCapabilities,
   SandboxFileNotFound,
+  SandboxGone,
   type SandboxHandle,
   type SandboxProvider,
   type SandboxSpec,
@@ -63,8 +64,6 @@ export type E2bOptions = {
   domain?: string;
   /** The sandbox user commands and files run as. */
   user?: string;
-  /** How long a resumed sandbox may run before E2B stops it. */
-  resumeTimeoutSeconds?: number;
 };
 
 const MiB = 1024 * 1024;
@@ -754,21 +753,50 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
 
     async pause(handle, signal): Promise<{ resumeRef: string }> {
       const id = sandboxId(handle);
-      await rest('POST', `/sandboxes/${id}/pause`, { memory: true }, [204, 409], signal);
+      try {
+        // Memory and files both. A 409 means it is already paused, which is what was asked.
+        await rest('POST', `/sandboxes/${id}/pause`, { memory: true }, [204, 409], signal);
+      } catch (error) {
+        if (error instanceof E2bApiError && error.status === 404)
+          throw new SandboxGone(`E2B has no sandbox ${id} to pause`);
+        if (error instanceof E2bApiError && error.status === 503)
+          // Documented: the node is still finishing an earlier snapshot of this
+          // sandbox, nothing was paused, and the sandbox keeps running.
+          throw new E2bApiError(
+            503,
+            `E2B refused the pause while an earlier snapshot finishes; the sandbox keeps running: ${error.message}`,
+          );
+        throw error;
+      }
       sessions.delete(id);
       return { resumeRef: id };
     },
 
-    async resume(resumeRef, signal): Promise<SandboxHandle> {
+    async resume(resumeRef, spec, signal): Promise<SandboxHandle> {
       const id = sandboxId(resumeRef);
-      const { json } = await rest(
-        'POST',
-        `/sandboxes/${id}/connect`,
-        { timeout: options.resumeTimeoutSeconds ?? 900 },
-        [200, 201],
-        signal,
-      );
-      remember(json as Record<string, unknown>);
+      if (
+        !Number.isInteger(spec.lifetimeSeconds) ||
+        spec.lifetimeSeconds <= 0 ||
+        spec.lifetimeSeconds > capabilities.maxLifetimeSeconds
+      )
+        throw new SandboxAdapterRefusal('the lifetime is outside what E2B allows');
+      let answer: { json: unknown };
+      try {
+        // A pause restarts E2B's continuous-runtime window, so the resumed
+        // sandbox is given the whole lifetime again, not what was left of it.
+        answer = await rest(
+          'POST',
+          `/sandboxes/${id}/connect`,
+          { timeout: spec.lifetimeSeconds },
+          [200, 201],
+          signal,
+        );
+      } catch (error) {
+        if (error instanceof E2bApiError && error.status === 404)
+          throw new SandboxGone(`E2B has no sandbox ${id} to resume`);
+        throw error;
+      }
+      remember(answer.json as Record<string, unknown>);
       return { providerSandboxId: id, imageDigest: null, region: null };
     },
 

@@ -70,7 +70,9 @@ test('lifetime, idle, persistence, region, workdir, labels and environment are e
   expect(refusal(FAKE_CAPABILITIES, spec({ lifetimeSeconds: 3_601 }))).toBe('lifetime_exceeded');
   expect(refusal(FAKE_CAPABILITIES, spec({ lifetimeSeconds: 0 }))).toBe('lifetime_exceeded');
   expect(refusal(FAKE_CAPABILITIES, spec({ idleSeconds: 60 }))).toBe('idle_unsupported');
-  expect(refusal(FAKE_CAPABILITIES, spec(), 'snapshot')).toBe('persistence_unsupported');
+  expect(
+    refusal({ ...FAKE_CAPABILITIES, persistence: ['none', 'pause'] }, spec(), 'snapshot'),
+  ).toBe('persistence_unsupported');
   expect(refusal(FAKE_CAPABILITIES, spec({ region: 'eu' }))).toBe('region_unsupported');
   expect(refusal(FAKE_CAPABILITIES, spec({ workdir: '/home/user' }))).toBe('workdir_invalid');
   expect(refusal(FAKE_CAPABILITIES, spec({ labels: { 'melete.owner': 'v1' } }))).toBe(

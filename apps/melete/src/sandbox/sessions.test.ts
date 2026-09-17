@@ -4,7 +4,13 @@ import { FakeSandboxProvider } from './fake.ts';
 import { SandboxRefusal } from './manifest.ts';
 import { runCommand } from './marker.ts';
 import { seedSessionScope, sessionSpec } from './session-fixtures.ts';
-import { NOT_STARTED, SandboxSessions, sessionHandle } from './sessions.ts';
+import {
+  NOT_STARTED,
+  SandboxSessions,
+  sessionHandle,
+  type WorkspacePersistence,
+} from './sessions.ts';
+import { type WorkspaceSubject, workspaceConformance } from './workspace-conformance.ts';
 
 const handle = await testDatabase();
 const withDb = handle ? describe : describe.skip;
@@ -20,7 +26,10 @@ withDb('sandbox sessions', () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const scope = await seedSessionScope(handle.sql);
     const provider = new FakeSandboxProvider();
-    const sessions = new SandboxSessions(handle.sql, { leaseSeconds: 300 });
+    const sessions = new SandboxSessions(handle.sql, {
+      leaseSeconds: 300,
+      workspaceRetentionSeconds: 86_400,
+    });
     const spec = sessionSpec('sessions-test', scope.spaceId);
     const base = {
       connectionId: scope.connectionId,
@@ -248,4 +257,42 @@ withDb('sandbox sessions', () => {
       expect(await sessions.beginCommand(session.id, actionId, actionId)).toBe('again');
     }
   });
+});
+
+/** The fake, suspending the way a provider does, and refusing once when told to. */
+const fakeWorkspace =
+  (persistence: WorkspacePersistence) => async (): Promise<WorkspaceSubject> => {
+    const provider = new FakeSandboxProvider();
+    let failNext = false;
+    const refuseOnce = () => {
+      if (!failNext) return;
+      failNext = false;
+      throw new Error('the provider is busy and did not suspend; the sandbox keeps running');
+    };
+    const pause = provider.pause.bind(provider);
+    const snapshot = provider.snapshot.bind(provider);
+    provider.pause = async (target, s) => {
+      refuseOnce();
+      return pause(target, s);
+    };
+    provider.snapshot = async (target, s) => {
+      refuseOnce();
+      return snapshot(target, s);
+    };
+    return {
+      provider,
+      persistence,
+      failNextSuspend: () => {
+        failNext = true;
+      },
+      snapshotHeld: async (ref) => provider.engine.snapshots.has(ref),
+      replayed: false,
+      close: async () => {},
+    };
+  };
+
+workspaceConformance('fake, paused', { sql: handle?.sql ?? null, open: fakeWorkspace('pause') });
+workspaceConformance('fake, snapshotted', {
+  sql: handle?.sql ?? null,
+  open: fakeWorkspace('snapshot'),
 });

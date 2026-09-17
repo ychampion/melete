@@ -7,6 +7,13 @@
  * created. `sandbox_command` is keyed by the action, so the same action can be
  * dispatched into a sandbox only once; a second dispatch finds the row and
  * reattaches instead.
+ *
+ * A persistent workspace is a chain of rows for one space and agent, one row
+ * per lease. Suspending ends a row as `paused` with its `resume_ref`; the next
+ * attempt's row takes that reference over and the paused row is closed, so a
+ * paused sandbox can appear on a closed row and on the live row after it. For
+ * a `paused` row, `lease_expires_at` is when it was suspended: its lease ended
+ * then, and retention counts from it.
  */
 import { sql } from 'drizzle-orm';
 import {
@@ -57,10 +64,12 @@ export const sandboxSession = pgTable(
     lastError: text('last_error'),
   },
   (t) => [
-    uniqueIndex('sandbox_session_provider_idx').on(t.adapter, t.providerSandboxId),
+    uniqueIndex('sandbox_session_provider_idx')
+      .on(t.adapter, t.providerSandboxId)
+      .where(sql`${t.status} not in ('closed', 'lost')`),
     uniqueIndex('sandbox_session_attempt_idx')
       .on(t.attemptId)
-      .where(sql`${t.attemptId} is not null and ${t.status} <> 'closed'`),
+      .where(sql`${t.attemptId} is not null and ${t.status} not in ('closed', 'lost')`),
     uniqueIndex('sandbox_workspace_idx')
       .on(t.spaceId, t.agentId)
       .where(sql`${t.agentId} is not null and ${t.status} in ('ready', 'paused')`),

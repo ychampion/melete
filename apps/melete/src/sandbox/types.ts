@@ -145,9 +145,22 @@ export interface SandboxProvider {
     maxBytes: number,
     signal: AbortSignal,
   ): Promise<Uint8Array>;
+  /**
+   * Suspend the sandbox itself, memory and files, until `resume`. A pause
+   * that throws leaves the sandbox running as far as the adapter can tell.
+   */
   pause?(h: SandboxHandle, s: AbortSignal): Promise<{ resumeRef: string }>;
-  resume?(resumeRef: string, s: AbortSignal): Promise<SandboxHandle>;
+  /**
+   * Run a suspended workspace again under `spec`'s lease: a paused sandbox
+   * comes back as itself, a snapshot as a new sandbox created from it. Throws
+   * `SandboxGone` when the provider says the paused sandbox or the snapshot no
+   * longer exists.
+   */
+  resume?(resumeRef: string, spec: SandboxSpec, s: AbortSignal): Promise<SandboxHandle>;
+  /** Capture the filesystem. The sandbox keeps running; the caller destroys it. */
   snapshot?(h: SandboxHandle, s: AbortSignal): Promise<{ snapshotRef: string }>;
+  /** Idempotent: a snapshot that is already gone is deleted. */
+  deleteSnapshot?(snapshotRef: string, s: AbortSignal): Promise<void>;
   /** Idempotent: a sandbox that is already gone is destroyed. */
   destroy(handle: SandboxHandle, signal: AbortSignal): Promise<void>;
   /** Asks the provider; `gone` is an authoritative answer, never a guess from a failed call. */
@@ -180,6 +193,11 @@ export class SandboxTransportError extends Error {
 /** The provider refused to start the process. Nothing ran, so a retry is safe. */
 export class SandboxStartRefused extends Error {
   override readonly name = 'SandboxStartRefused';
+}
+
+/** The provider positively says a sandbox or snapshot no longer exists. */
+export class SandboxGone extends Error {
+  override readonly name = 'SandboxGone';
 }
 
 export class SandboxFileNotFound extends Error {
