@@ -12,6 +12,7 @@ import { requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
 import { objectiveIsOwnerText } from './provenance.ts';
 import { episode, procedureCandidate, procedureEvaluation, procedureTransition } from './schema.ts';
+import { unshareableContent } from './share.ts';
 
 export type Candidate = typeof procedureCandidate.$inferSelect;
 
@@ -292,6 +293,12 @@ export class ProcedureService {
           'canary_evidence_required',
           'A completed canary job without an intervention is required.',
         );
+      // Sharing reaches other people; a body carrying the owner's private material stays private.
+      if (scope === 'space') {
+        const unshareable = await unshareableContent(tx, spaceId, candidate.body);
+        if (unshareable)
+          throw new ServiceError('shareable_check_failed', `shareable_check_failed:${unshareable}`);
+      }
       const previous = await tx
         .select()
         .from(procedureCandidate)

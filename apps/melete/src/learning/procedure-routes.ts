@@ -49,20 +49,16 @@ export function mountProcedures(
   for (const action of ['canary', 'activate'] as const)
     app.post(`/procedures/:id/${action}`, async (c) => {
       const raw = await c.req.json();
-      const input =
-        action === 'activate'
-          ? procedureActivationRequest.parse(raw)
-          : learningSpaceRequest.parse(raw);
-      const args = [
-        c.get('owner').id,
-        input.space_id,
-        procedureId.parse(c.req.param('id')),
-      ] as const;
+      const id = procedureId.parse(c.req.param('id'));
+      if (action === 'activate') {
+        const input = procedureActivationRequest.parse(raw);
+        return c.json({
+          candidate: await service.activate(c.get('owner').id, input.space_id, id, input.scope),
+        });
+      }
+      const input = learningSpaceRequest.parse(raw);
       return c.json({
-        candidate:
-          action === 'canary'
-            ? await service.enableCanary(...args)
-            : await service.activate(...args, procedureActivationRequest.parse(raw).scope),
+        candidate: await service.enableCanary(c.get('owner').id, input.space_id, id),
       });
     });
   for (const action of ['reject', 'rollback'] as const)

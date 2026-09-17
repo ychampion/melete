@@ -16,7 +16,6 @@
  * Which final templates run is decided only from the selection's own id, after
  * selection commits.
  */
-import { countMatches, normalizeForMatch } from '@melete/contracts';
 import { and, asc, eq, gt, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { validationMemory } from '../../../../../conformance/learning/validation.ts';
 import { ServiceError } from '../../api/errors.ts';
@@ -29,6 +28,7 @@ import type { Candidate } from '../procedures.ts';
 import { episode, learningJob, procedureCandidate } from '../schema.ts';
 import { objectiveTemplate } from '../scope.ts';
 import { scopeMatches } from '../selection.ts';
+import { triggersMatch } from '../triggers.ts';
 import { type EvaluationCase, type EvaluationSuite, gradeFinished } from './types.ts';
 
 export const MAX_HISTORY_CASES = 6;
@@ -51,11 +51,6 @@ function assertPhase(cases: readonly EvaluationCase[], phase: string) {
     throw insufficient(`${phase} needs a held-out history case`);
 }
 
-export const triggersMatch = (triggers: readonly { phrase: string }[], text: string) => {
-  const haystack = normalizeForMatch(text);
-  return triggers.some((trigger) => countMatches(haystack, normalizeForMatch(trigger.phrase)) > 0);
-};
-
 /**
  * A deterministic, disjoint split that neither the candidate nor the order of
  * history can choose: each group is ordered by a digest of the partition key and
@@ -77,6 +72,7 @@ export const episodeDerivedSuite: EvaluationSuite = {
   modules: [
     'apps/melete/src/learning/suites/episode-derived.ts',
     'apps/melete/src/learning/scope.ts',
+    'apps/melete/src/learning/triggers.ts',
     'conformance/learning/validation.ts',
     'conformance/learning/sealed-final.ts',
   ],

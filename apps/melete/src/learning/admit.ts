@@ -476,6 +476,9 @@ function supportedStep(text: string, evidence: ProcedureStepEvidence): Procedure
 function supportedTrigger(phrase: string, evidence: ProcedureStepEvidence): ProcedureTrigger {
   if (phrase.length > MAX_TRIGGER_CHARS)
     refuse('trigger_too_long', 'A trigger phrase is at most 60 characters.');
+  // Punctuation normalises away, and a trigger with no words would name every request.
+  if (!normalizeForMatch(phrase))
+    refuse('trigger_without_words', 'A trigger phrase needs words to match.');
   scan(phrase, 'A trigger');
   scan(evidence.quote, 'A trigger quote');
   if (unsupportedWord(phrase, evidence.quote))

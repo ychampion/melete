@@ -1,12 +1,14 @@
 import { type AttemptBundle, jsonObject, procedurePromotion } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { event } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import type { ProcedureScope } from './contracts.ts';
 import { learningTrial } from './evaluation-schema.ts';
-import { verifyDefinition } from './procedures.ts';
+import { isGeneralProcedure, verifyDefinition } from './procedures.ts';
 import { episode, learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
+import { triggersMatch } from './triggers.ts';
 
 export const scopeMatches = (left: ProcedureScope, right: ProcedureScope) =>
   left.task_family === right.task_family &&
@@ -15,12 +17,35 @@ export const scopeMatches = (left: ProcedureScope, right: ProcedureScope) =>
   left.role === right.role &&
   left.audience === right.audience;
 
-/** Exact applicability, live evidence, and a held-out gate precede every delivery. */
+/** The person's most recent message on this job, which a trigger may match as well as the objective. */
+async function latestUserMessage(tx: Transaction, jobId: string) {
+  const [latest] = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        eq(event.type, 'notice'),
+        sql`${event.payload}->>'kind' = 'user_message'`,
+      ),
+    )
+    .orderBy(desc(event.seq))
+    .limit(1);
+  const text = (latest?.payload as { text?: unknown } | undefined)?.text;
+  return typeof text === 'string' ? text : '';
+}
+
+/**
+ * Exact applicability, a trigger match, live evidence, and a held-out gate precede
+ * every delivery. `latestMessage` is optional: a caller that has already read the
+ * person's latest message may pass it; otherwise it is read here.
+ */
 export async function selectProcedureSkills(
   tx: Transaction,
   row: JobRow,
   model: AttemptBundle['model'],
   runtimeVersion?: string,
+  latestMessage?: string,
 ): Promise<AttemptBundle['skills']> {
   if (jsonObject.parse(row.constraints).public_compartment || !runtimeVersion) return [];
   const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
@@ -32,12 +57,18 @@ export async function selectProcedureSkills(
   );
   if (state[0] && (state[0].revoked || !state[0].restore_ready)) return [];
   const modelKey = `${model.provider}/${model.model}`;
+  const message = latestMessage ?? (await latestUserMessage(tx, row.id));
   const valid = (
     candidate: typeof procedureCandidate.$inferSelect,
     source: typeof episode.$inferSelect,
   ) => {
+    // Records rows written before triggers existed have none and apply by scope alone.
+    const applies = candidate.triggers.length
+      ? triggersMatch(candidate.triggers, row.objective, message)
+      : !isGeneralProcedure(candidate);
     if (
       !scopeMatches(candidate.scope, registration.scope) ||
+      !applies ||
       !candidate.compatibleModels.includes(modelKey) ||
       !source.versions.some(
         (version) =>

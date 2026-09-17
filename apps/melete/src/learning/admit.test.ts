@@ -351,6 +351,22 @@ describe('procedure admission', () => {
     expect(reasonOf(() => compileBody7())).toBe('too_many_steps');
   });
 
+  test('a trigger with no words to match is refused', () => {
+    // "..." is contained in every normalised objective, so it would apply to every request.
+    const punctuated = 'Summarise the weekly project status report...';
+    expect(
+      reasonOf(() =>
+        admitProposal(
+          {
+            ...base(),
+            triggers: [{ phrase: '...', evidence: span('objective', punctuated, '...') }],
+          },
+          { sources: sourcesOf(intervention, punctuated), objective: punctuated },
+        ),
+      ),
+    ).toBe('trigger_without_words');
+  });
+
   test('triggers must occur in the objective', () => {
     expect(
       reasonOf(() =>

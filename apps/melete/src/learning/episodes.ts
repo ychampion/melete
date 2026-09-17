@@ -14,6 +14,7 @@ import { appendEvent } from '../events/store.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { requireJobAccess, spaceAuthority, visibleJob } from '../principals/authority.ts';
+import { revertDeliveredCanaries } from './canary.ts';
 import {
   type Intervention,
   interventionRequest,
@@ -313,6 +314,8 @@ export class EpisodeService {
       const registration = await liveJobEvidence(tx, row);
       const saved = await createEpisode(tx, row, `intervention:${key}`, ownerId, change, 'pending');
       if (!saved) throw new Error('Episode insert returned no row');
+      // A correction on a job that received a canary procedure ends that canary here.
+      await revertDeliveredCanaries(tx, row, saved.id);
       if (['completed', 'failed', 'cancelled'].includes(row.state)) {
         // Terminal jobs are immutable. A linked correction cannot replay their effects.
         const corrective = await this.jobs.createInTransaction(tx, {

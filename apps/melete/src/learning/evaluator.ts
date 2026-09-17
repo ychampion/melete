@@ -340,7 +340,7 @@ export class ProcedureEvaluator {
         });
       }
       if (!latestCandidate) throw new Error('evaluation_cases_empty');
-      const violations = await this.scopeChecks(latestCandidate, candidate.scope, runner);
+      const violations = await this.scopeChecks(latestCandidate, candidate, runner);
       rows.push({
         family: 'procedure-scope',
         template: `${phase}-scope-boundaries`,
@@ -582,7 +582,8 @@ export class ProcedureEvaluator {
     };
   }
 
-  private async scopeChecks(row: JobRow, scope: ProcedureScope, runner: AttemptRunner) {
+  private async scopeChecks(row: JobRow, candidate: Candidate, runner: AttemptRunner) {
+    const scope: ProcedureScope = candidate.scope;
     const model: AttemptBundle['model'] = {
       provider: this.options.provider ?? 'stub',
       model: this.options.model ?? 'script',
@@ -611,14 +612,16 @@ export class ProcedureEvaluator {
         )
       ).length;
       violations += (await selectProcedureSkills(tx, row, model, 'incompatible-runtime')).length;
-      for (const changed of [
-        { ...scope, task_family: 'another-family' },
-        { ...scope, app: 'another-app' },
-        { ...scope, app_version: '99.0' },
-      ]) {
+      for (const key of ['task_family', 'app', 'app_version'] as const) {
+        const changed = { ...scope, [key]: `another-${scope[key]}` };
         await tx.update(learningJob).set({ scope: changed }).where(eq(learningJob.jobId, row.id));
         violations += (await selectProcedureSkills(tx, row, model, runtime.version)).length;
       }
+      // Work the triggers do not name receives nothing, whatever its scope.
+      if (candidate.triggers.length)
+        violations += (
+          await selectProcedureSkills(tx, { ...row, objective: '.' }, model, runtime.version, '')
+        ).length;
       await tx.update(learningJob).set({ scope }).where(eq(learningJob.jobId, row.id));
       return violations;
     });
