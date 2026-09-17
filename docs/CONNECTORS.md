@@ -145,11 +145,12 @@ A mailbox, with the owner's session cookie and from the API's own origin:
     "imap": { "host": "imap.example.com", "port": 993, "secure": true },
     "smtp": { "host": "smtp.example.com", "port": 465, "secure": true }
   },
-  "credentials": { "password": "an app password where the provider offers one" }
+  "credentials": { "password": "…" }
 }
 ```
 
-`inbox` and `sent` name the folders when they are not the server's defaults.
+Use an app password where the provider offers one. `inbox` and `sent` name the
+folders when they are not the server's defaults.
 A CalDAV calendar takes one collection address and an account name instead:
 
 ```json
@@ -165,8 +166,8 @@ A CalDAV calendar takes one collection address and an account name instead:
 ```
 
 A calendar feed carries `ics: { "url": "https://calendar.example.com/feed.ics" }`
-and no `credentials`, because the address is the credential. The response is the
-new connection and the one `check` below.
+and no `credentials`, because the address is the credential. Each call answers
+with the new connection and the result of its one test, described below.
 
 Passwords, MCP tokens and the whole feed address are sealed with the master key
 before the row is written. No route returns them, and the row's configuration
