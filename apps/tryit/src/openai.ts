@@ -23,13 +23,20 @@ import type { SearchSource } from './validate.ts';
 export const MODEL = 'gpt-6-astra';
 const ENDPOINT = 'https://api.openai.com/v1/responses';
 
+/**
+ * Only what this file asks of `fetch`. Narrower than the global on purpose:
+ * the tests hand in a plain function, and a seam should be the shape of the
+ * thing that passes through it.
+ */
+export type Transport = (url: string, init: RequestInit) => Promise<Response>;
+
 export type OpenAiOptions = {
   apiKey: string;
   model?: string;
   endpoint?: string;
   /** Passed straight through, so a slow day can be traded for a cheaper one. */
   effort?: 'low' | 'medium' | 'high';
-  fetch?: typeof fetch;
+  fetch?: Transport;
 };
 
 type Unknowns = Record<string, unknown>;
@@ -114,7 +121,10 @@ export function openAiProvider(options: OpenAiOptions): CaseFileProvider {
           },
         },
         reasoning: { effort: options.effort ?? 'medium' },
-        max_output_tokens: 6000,
+        // Reasoning is spent out of this budget too, so it is set well above
+        // what the case file itself needs: a reply that stops early is a
+        // wasted call and a person left waiting for nothing.
+        max_output_tokens: 16_000,
         store: false,
       };
 
