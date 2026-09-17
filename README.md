@@ -105,17 +105,16 @@ git clone https://github.com/ychampion/melete.git
 cd melete
 bun install --frozen-lockfile
 bun run deploy/scripts/configure.ts --fake
-chmod 600 deploy/.env
 bun run compose:check
 docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180
 docker compose -f deploy/docker-compose.yml ps
 ```
 
-`configure.ts --fake` writes `deploy/.env` from `deploy/.env.example`, generates
-independent local secrets, records the Docker socket group, and turns on the
-scripted provider and test connector; it refuses to replace an existing `.env`.
-Compose reads `deploy/.env`, not a file beside this README. Keep it private and
-retain it with your backups.
+`configure.ts --fake` writes `deploy/.env` from `deploy/.env.example` with
+private permissions, generates independent local secrets, records the Docker
+socket group, and turns on the scripted provider and test connector; it refuses
+to replace an existing `.env`. Compose reads `deploy/.env`, not a file beside
+this README. Keep it and retain it with your backups.
 
 All four services — `postgres`, `melete`, `runtime` and `web` — come up healthy.
 If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
@@ -241,6 +240,7 @@ checks and how to run the deployment scenarios against a Compose stack.
 - [Mail and calendars](docs/mail-calendar.md) — accounts, sending and scheduling
 - [Browser worker](docs/browser-worker.md) — the sandboxed browser, recipes and takeover
 - [Deployment](docs/DEPLOYMENT.md) — TLS, provider configuration, provenance and backups
+- [Upgrading](docs/UPGRADING.md) — moving a running installation to a later release
 - [Threat model](docs/THREAT-MODEL.md) — the boundary and what rests on it
 - [Building a client](docs/CLIENT.md) — the API surface and the rules a client follows
 - [Evaluation](docs/EVALS.md) — how answer quality is measured

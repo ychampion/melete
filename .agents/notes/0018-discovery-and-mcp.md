@@ -85,8 +85,8 @@ records the current command and measurement.
 ## MCP registration and the remaining launch boundary
 
 Owner steering permits additive contracts. The `mcp` provider value and regenerated
-OpenAPI/client types are documented in the
-[contract additions note](proposed/2026-09-12-w10c-contract-additions.md).
+OpenAPI/client types are carried by `packages/contracts` and the generated client
+declarations.
 Configured HTTP servers register against a persisted MCP connection and space.
 Existing provider values and connection data remain unchanged.
 
