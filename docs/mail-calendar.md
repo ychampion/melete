@@ -1,9 +1,9 @@
 # Mail and calendars
 
 Email and calendar connectors run inside the trusted service. This page
-describes the implementations tested with local protocols on the tree at the
-head of `integration`. Live-account onboarding and
-compatibility with every mail/CalDAV server are **not claimed**.
+describes how they work and the local IMAP, SMTP and CalDAV servers their tests
+run against. The connections API creates MCP connections; a mail or calendar
+account is connected by the operator, as described below.
 See [CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
 
 ## Credentials and configuration
@@ -17,9 +17,9 @@ the row, and is the only way to import an ICS file from disk. It contains
 endpoints, not passwords.
 
 `SealedSecretStore` takes a secret repository and a master-key supplier.
-The key must decode to 32 bytes. The service remains trusted while decrypting
-credentials; JavaScript string erasure and host-compromise containment are
-**not claimed**. Evidence in `secrets.test.ts`:
+The key must decode to 32 bytes. The service holds the master key and decrypts
+credentials in ordinary process memory, so a compromise of the service process,
+or of the host, exposes them. Evidence in `secrets.test.ts`:
 `stores randomized sealed boxes and only decrypts in the owning space`,
 `rejects a wrong master key, changed ciphertext and cross-row swaps`, and
 `fails closed without a valid 32-byte master key`.
@@ -28,12 +28,15 @@ credentials; JavaScript string erasure and host-compromise containment are
 
 The manifest exposes search, read, draft and send. Drafting creates local
 receipt output without SMTP (`a draft is durable local output and never loads
-credentials or calls SMTP`). It does not promise a remote Drafts folder.
+credentials or calls SMTP`). The draft lives in Melete's action record; nothing
+is written to the mailbox's Drafts folder.
 
 Sending uses a stable action-derived Message-ID; verification looks for it in
 Sent without another send. `accepted send with lost acknowledgement is unknown,
-then verified without resending` covers the connector behavior.
-Message-ID is a verification handle; SMTP-level deduplication is **not claimed**.
+then verified without resending` covers the connector behaviour.
+The Message-ID is how verification finds the message: a send happens once
+because Melete never resends an unknown send, not because the mail server
+discards a duplicate.
 
 Local IMAP and SMTP servers exercise the real libraries
 (`real libraries authenticate, decode MIME for hygiene, send with stable
@@ -42,9 +45,9 @@ servers` verifies that the test transport exception stays local.
 `context mismatch, header injection and unapproved extra fields never reach
 SMTP` checks rejection before sending.
 
-Hygiene withholds tested OTP/reset/magic-link forms
-(`withholds OTP, password resets and magic links from search and direct read`).
-Complete detection of sensitive messages is **not claimed**.
+Hygiene matches the known shapes of one-time codes, password resets and magic
+links (`withholds OTP, password resets and magic links from search and direct
+read`); a sensitive message in any other shape is read like any other message.
 
 ## Calendar
 
@@ -62,8 +65,8 @@ verification` checks uncertainty handling.
 
 Redirects are rejected before credentials leave the configured collection
 (`redirects cannot forward credentials outside the configured calendar`).
-General server compatibility and occurrence expansion for recurring series
-are **not claimed**.
+Listing returns each event series with its recurrence rule; individual
+occurrences are not expanded.
 
 ## Verify
 
