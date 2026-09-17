@@ -123,10 +123,15 @@ compartments.
 
 Passwords, MCP tokens and the whole feed address are sealed with the master key
 before the row is written. No route returns them, and the row's configuration
-keeps only endpoints and account names. An endpoint the connector would refuse,
-such as mail or CalDAV without TLS, is answered with `400` before anything is
-stored. A service started without `MELETE_MASTER_KEY` answers `409
-sealing_unavailable` to any installation that has a secret to keep.
+keeps only endpoints and account names. A CalDAV or feed address that is not
+HTTPS, and any endpoint the connector cannot be built for, is answered with
+`400` before anything is stored. A mailbox is named by host, port and a TLS
+mode: `secure` means TLS from the first byte, and without it the connector
+demands STARTTLS on IMAP and TLS on SMTP before it authenticates. A mailbox that
+will not upgrade is therefore stored rather than refused, with status `error`
+and check `unavailable`, and its password never crosses a plaintext connection.
+A service started without `MELETE_MASTER_KEY` answers `409 sealing_unavailable`
+to any installation that has a secret to keep.
 
 The new connection is tested once. `check` in the response is a fixed code
 (`ok`, `degraded`, `unavailable`, `not_running`, `revoked`) with the sentence
@@ -161,8 +166,12 @@ offered to a new attempt, and gone after revocation`, `calendar feed: the
 address is the secret, the feed is read through the broker, and revocation
 removes it`, `MCP over HTTP: installed, offered to a new attempt, and gone after
 revocation`, `only the owner of an owner-audience space installs, and a session
-without a space_id means its own space`, and `the owner-controlled connections
-file still works, and wins over what a row stores`. Request validation is in
+without a space_id means its own space`, `a mailbox that will not start TLS is
+stored in error; a calendar address without TLS is refused`, and `the
+owner-controlled connections file still works, and wins over what a row stores`.
+That a password never reaches a destination which refuses to upgrade is `a
+mailbox that will not upgrade is unusable, and no password reaches it` in
+`mail-transport.test.ts`. Request validation is in
 `packages/contracts/src/connections.test.ts`. `a form drawn only from the served
 descriptors installs every kind` in `apps/mock-api` runs the web form's logic
 against the contract, and `the form draws exactly what a served descriptor

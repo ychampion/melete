@@ -119,6 +119,18 @@ describe('connection installation requests', () => {
     expect(parse({ ...mail, mail: { ...mail.mail, from: 'not-an-address' } })).toBe(false);
     expect(parse({ ...mail, mail: { ...mail.mail, username: 'owner\r\nBcc: x' } })).toBe(false);
     expect(parse({ ...mail, mail: { ...mail.mail, extra: true } })).toBe(false);
+    // A mailbox that starts in the clear and upgrades is a request the service
+    // takes; whether it upgrades is settled by the test, not by validation.
+    expect(
+      parse({
+        ...mail,
+        mail: {
+          ...mail.mail,
+          imap: { host: 'imap.example.test', port: 143, secure: false },
+          smtp: { host: 'smtp.example.test', port: 587, secure: false },
+        },
+      }),
+    ).toBe(true);
     for (const calendar_url of [
       'http://dav.example.test/calendars/owner/',
       'https://owner:secret@dav.example.test/calendars/owner/',

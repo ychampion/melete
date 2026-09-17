@@ -205,4 +205,38 @@ describe('IMAP and SMTP wire adapters', () => {
     };
     expect(() => new ImapSmtpTransport(config, 'private')).toThrow('loopback');
   });
+
+  test('a mailbox that will not upgrade is unusable, and no password reaches it', async () => {
+    const destination = await mailServers();
+    try {
+      // The same plaintext endpoints without the fixture exception: STARTTLS is
+      // demanded of IMAP and TLS of SMTP, and neither destination offers it.
+      const transport = new ImapSmtpTransport(
+        { ...destination.config, allowInsecureLocalForTests: false },
+        'app-password-never-sent',
+      );
+      const outcome = async (work: Promise<unknown>) =>
+        work.then(
+          () => 'reached',
+          () => 'refused',
+        );
+      expect(await outcome(transport.health())).toBe('refused');
+      expect(
+        await outcome(
+          transport.send({
+            to: ['friend@example.test'],
+            cc: [],
+            bcc: [],
+            subject: 'Hello',
+            body: 'See you soon.',
+            messageId: '<act_plain@melete.local>',
+          }),
+        ),
+      ).toBe('refused');
+      expect(destination.auth).toEqual([]);
+      expect(destination.sent).toEqual([]);
+    } finally {
+      await destination.close();
+    }
+  }, 60_000);
 });

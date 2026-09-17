@@ -780,4 +780,47 @@ withDb('installing each kind of connection through the API', () => {
       await h.sql`update connection set status = 'revoked' where id in (${pinned}, ${bare})`;
     }
   }, 120_000);
+  test('a mailbox that will not start TLS is stored in error; a calendar address without TLS is refused', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    // Through the application whose connectors are built from the environment
+    // alone, so no fixture exception permits plaintext.
+    const installed = await h.deployed.request(
+      '/connections',
+      h.as(h.cookie, {
+        provider: 'imap',
+        label: 'Upgrading mailbox',
+        credentials: { password: MAIL_PASSWORD },
+        mail: {
+          username: 'owner@example.test',
+          from: 'owner@example.test',
+          imap: { host: 'imap.invalid', port: 143, secure: false },
+          smtp: { host: 'smtp.invalid', port: 587, secure: false },
+        },
+      }),
+    );
+    const text = await installed.text();
+    expect(installed.status).toBe(201);
+    expectNoSecret(text);
+    const stored = connectionResponse.parse(JSON.parse(text));
+    expect(stored.connection).toMatchObject({ status: 'error', setup_state: 'error' });
+    expect(stored.check).toMatchObject({ status: 'failing', code: 'unavailable' });
+    expect((await h.offered()).bundle).not.toContain('email.search');
+
+    // A calendar address that is not HTTPS never becomes a row at all.
+    const rows = async () => (await h.sql`select id from connection`).length;
+    const before = await rows();
+    const refused = await h.deployed.request(
+      '/connections',
+      h.as(h.cookie, {
+        provider: 'caldav',
+        label: 'Plain calendar',
+        credentials: { password: DAV_PASSWORD },
+        caldav: { calendar_url: 'http://dav.example.test/calendars/owner/', username: 'owner' },
+      }),
+    );
+    expect(refused.status).toBe(400);
+    expectNoSecret(await refused.text());
+    expect(await rows()).toBe(before);
+    await h.sql`update connection set status = 'revoked' where id = ${stored.connection.id}`;
+  }, 120_000);
 });
