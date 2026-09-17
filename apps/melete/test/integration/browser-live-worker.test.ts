@@ -275,6 +275,7 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     test('input above the rate cap is refused and the channel closes', async () => {
       await click(SIGN_IN_POINTS.first_field);
       const typed = (text: string): LiveInput => ({ k: 'text', text });
+      expect(await send([typed('kept-note')])).toEqual({ accepted: 1 });
       expect(
         await reason(
           send([typed('over'), typed('-the'), typed('-cap'), typed('-by'), typed('-one')]),
@@ -324,12 +325,14 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       const first = await command({ kind: 'observe' });
       expect(first.observation?.url).toStartWith(`${fixture.app}/account`);
       expect(first.observation?.screenshot).toBe('');
+      expect(first.result).toEqual({ submit_intents: [] });
       const redacted = first.observation?.tree ?? '';
       expect(redacted).toContain('Your account');
       expect(redacted).toContain('[redacted]');
       for (const secret of [SIGN_IN.backup_code, SIGN_IN.reference, 'over-the-cap'])
         expect(redacted).not.toContain(secret);
       const second = await command({ kind: 'observe' });
+      expect(second.result?.submit_intents).toMatchObject([{ fields: { note: 'kept-note' } }]);
       expect(second.observation?.screenshot.length).toBeGreaterThan(1000);
       expect(second.observation?.tree).toContain(SIGN_IN.backup_code);
       expect(second.observation?.tree).toContain(SIGN_IN.reference);

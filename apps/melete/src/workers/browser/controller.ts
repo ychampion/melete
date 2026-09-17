@@ -356,7 +356,8 @@ export class BrowserController {
     if (session.control !== 'automation') throw new BrowserFault('human_control');
     const epoch = session.control_epoch;
     // What a person typed or was shown can still be on the page they hand back: the first
-    // observation afterwards carries no picture and a redacted tree, and still refuses below.
+    // observation afterwards carries no picture, no form values and a redacted tree, and it
+    // still refuses below.
     const handedBack = this.humanJustLeft;
     const { page, cdp } = await this.attach();
     const schema = await this.schema(page, cdp);
@@ -376,7 +377,7 @@ export class BrowserController {
           })
         ).data;
     const intents: BrowserSubmitIntent[] = [];
-    for (const control of schema.filter((control) => control.role === 'button')) {
+    for (const control of handedBack ? [] : schema.filter((control) => control.role === 'button')) {
       try {
         intents.push(await this.formIntent(page, control.label));
       } catch (error) {
