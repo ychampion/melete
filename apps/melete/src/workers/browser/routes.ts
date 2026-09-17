@@ -7,6 +7,7 @@ import type { ConnectorContext } from '../../connectors/types.ts';
 import type { BrowserWorkerClient } from './client.ts';
 import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
 import { BrowserFault, type BrowserSession } from './sessions.ts';
+import { BrowserSiteService } from './sites.ts';
 
 export type BrowserWorkers = { get(spaceId: string): Promise<BrowserWorkerClient> };
 type Binding = Pick<BrowserSession, 'id' | 'space_id' | 'job_id' | 'control_epoch' | 'control'>;
@@ -22,12 +23,15 @@ export class BrowserSessionService {
   onPark?: (jobId: string, attemptIds: string[]) => void;
   /** The live views of these sessions, in memory for as long as the process runs. */
   readonly live: BrowserLiveService;
+  /** The sites these sessions have signed in to, recorded over the space's one profile. */
+  readonly sites: BrowserSiteService;
   constructor(
     readonly sql: Sql,
     readonly workers: BrowserWorkers,
     options: { live?: BrowserLiveServiceOptions } = {},
   ) {
     this.live = new BrowserLiveService(this, options.live);
+    this.sites = new BrowserSiteService(sql, workers);
   }
 
   async record(session: BrowserSession, scope: { space_id: string; job_id: string }) {
@@ -182,24 +186,29 @@ export class BrowserSessionService {
     const worker = await this.workers.get(binding.space_id);
     const held = operation === 'takeover' ? await this.hold(sessionId) : undefined;
     // The worker bumps immediately, before the database transaction can wait on any job row lock.
-    const session = await worker[operation](sessionId).catch(async (error: unknown) => {
-      // A refusal leaves control where it was. An unfinished call may have taken control, so
-      // that binding stays with the person until a lease records what the worker really holds.
-      if (held && error instanceof BrowserFault) await this.release(held);
-      throw error;
-    });
+    const session: BrowserSession & { site?: string } = await worker[operation](sessionId).catch(
+      async (error: unknown) => {
+        // A refusal leaves control where it was. An unfinished call may have taken control, so
+        // that binding stays with the person until a lease records what the worker really holds.
+        if (held && error instanceof BrowserFault) await this.release(held);
+        throw error;
+      },
+    );
     const scope = { space_id: binding.space_id, job_id: binding.job_id };
     await this.record(session, scope);
     // Any live view of this session belongs to the epoch that has just ended.
     this.live.ended(sessionId);
     if (operation === 'takeover') await this.park(scope, sessionId, 'human_control');
-    else
+    else {
       await appendEvent(this.sql, scope.job_id, null, 'notice', {
         kind: 'browser_handback',
         session_id: sessionId,
         control_epoch: session.control_epoch,
         fresh_observation_required: true,
       });
+      // The takeover ended on a site whose cookies the profile now holds: the space is signed in.
+      if (session.site) await this.sites.record(binding.space_id, session.site);
+    }
     return {
       session_id: session.id,
       control_epoch: session.control_epoch,

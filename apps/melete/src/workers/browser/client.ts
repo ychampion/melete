@@ -43,8 +43,12 @@ export class BrowserWorkerClient {
   takeover(sessionId: string): Promise<BrowserSession> {
     return this.request('/takeover', { session_id: sessionId });
   }
-  handback(sessionId: string): Promise<BrowserSession> {
+  /** A handback also reports the site the person ended on, when the profile holds its cookies. */
+  handback(sessionId: string): Promise<BrowserSession & { site?: string }> {
     return this.request('/handback', { session_id: sessionId });
+  }
+  forgetSite(domain: string): Promise<{ domain: string; cookies: number; origins: string[] }> {
+    return this.request('/profile/forget', { domain });
   }
   liveOpen(sessionId: string, controlEpoch: number): Promise<LiveOpen> {
     return this.request('/live/open', { session_id: sessionId, control_epoch: controlEpoch });

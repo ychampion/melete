@@ -267,6 +267,13 @@
       "when": 1789232400017,
       "tag": "0037_general_learning",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789232400018,
+      "tag": "0038_browser_site_profile",
+      "breakpoints": true
     }
   ]
 }

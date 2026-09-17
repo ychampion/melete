@@ -77,6 +77,24 @@ export const spaceMembership = pgTable(
   ],
 );
 
+/** The sites a space's browser is signed in to: a name and a time, never a cookie. */
+export const browserSiteProfile = pgTable(
+  'browser_site_profile',
+  {
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    domain: text('domain').notNull(),
+    label: text('label').notNull(),
+    firstSeen: timestamp('first_seen', { withTimezone: true }).notNull().defaultNow(),
+    lastUsed: timestamp('last_used', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.spaceId, t.domain] }),
+    check('browser_site_domain_lower', sql`${t.domain} = lower(${t.domain})`),
+  ],
+);
+
 /**
  * Sealed with MELETE_MASTER_KEY. Nothing outside the connectors module reads
  * this table, and no API response carries a row from it.

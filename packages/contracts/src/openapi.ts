@@ -39,8 +39,7 @@ import {
   triggerResponse,
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
-import { browserControlResponse } from './browser.ts';
-import { company, companyMap, ledgerItem } from './companies.ts';
+import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
 import {
   liveClose,
   liveClosed,
@@ -51,6 +50,7 @@ import {
   liveScopeResponse,
   liveUp,
 } from './browser-live.ts';
+import { company, companyMap, ledgerItem } from './companies.ts';
 import {
   connectionCheckResponse,
   connectionKindListResponse,
@@ -1339,6 +1339,38 @@ export function buildOpenApiDocument() {
               '403': problem('Request origin refused'),
               '404': problem('No such browser session'),
               '409': problem('Browser control could not change'),
+            },
+          },
+        },
+        '/browser/sites': {
+          get: {
+            tags: ['browser'],
+            summary: "List the sites this space's browser is signed in to",
+            description:
+              "One record per registrable domain whose cookies the space's browser profile " +
+              'holds, with when it was last used. The owner of the space alone may read this.',
+            responses: {
+              '200': jsonResponse('Signed-in sites', browserSiteList),
+              '401': problem('Owner authentication required'),
+              '404': problem('Not the owner of this space'),
+            },
+          },
+        },
+        '/browser/sites/{domain}': {
+          delete: {
+            tags: ['browser'],
+            summary: 'Sign out of one site',
+            description:
+              "The worker closes the browser, removes that domain's cookies and its origins' " +
+              'storage from the profile, and the record goes with them. The owner of the space ' +
+              'alone may do this.',
+            requestParams: idParam('domain', 'Registrable domain as listed'),
+            responses: {
+              '200': jsonResponse('The site is forgotten', browserSiteForgotten),
+              '400': problem('Not a registrable domain'),
+              '401': problem('Owner authentication required'),
+              '404': problem('Not the owner of this space'),
+              '409': problem('The browser could not be cleared'),
             },
           },
         },

@@ -11,6 +11,7 @@ const leaseRequest = z.strictObject({
   }),
 });
 const sessionRequest = z.strictObject({ session_id: z.string().min(1) });
+const forgetRequest = z.strictObject({ domain: z.string().min(1).max(255) });
 
 /** This listener is only a broker transport; the owner's authenticated routes live in the service. */
 export async function startBrowserServer(options: {
@@ -49,6 +50,8 @@ export async function startBrowserServer(options: {
         return Response.json(
           await options.sessions.handback(sessionRequest.parse(body).session_id),
         );
+      if (path === '/profile/forget')
+        return Response.json(await options.sessions.forgetSite(forgetRequest.parse(body).domain));
       if (path === '/release') {
         await options.sessions.close();
         return Response.json({ released: true });

@@ -258,13 +258,26 @@ document.getElementById('activity').addEventListener('click', () => {
   const step = () => { x = (x + 7) % 800; bar.style.left = (100 + x) + 'px'; requestAnimationFrame(step); };
   requestAnimationFrame(step);
 });
+try { localStorage.setItem('melete-fixture', 'remembered'); } catch (error) {}
 document.addEventListener('touchstart', () => fetch('/event?type=touchstart'), { once: true });
 document.addEventListener('wheel', () => fetch('/event?type=wheel'), { once: true });
 fetch(${JSON.stringify(`${otherOrigin}/beacon`)}, { method: 'POST', body: 'from-the-page' }).catch(() => {});
 </script>`,
-          { 'set-cookie': 'session=signed-in; Path=/; HttpOnly' },
+          // Kept for a day, as a real sign-in is: the profile holds it after Chromium closes.
+          { 'set-cookie': 'session=signed-in; Path=/; HttpOnly; Max-Age=86400' },
         );
       }
+      // Plain, quiet and nothing to sign in to: it only says what this browser still carries,
+      // from its cookie and from the mark the account page left in local storage.
+      if (url.pathname === '/whoami')
+        return page(
+          'Who this is',
+          `<p style="${box(20, 600)}">This browser is ${cookie.includes('session=signed-in') ? 'signed in' : 'signed out'}.</p><p id="stored" style="${box(80, 600)}">.</p><script>
+document.getElementById('stored').textContent = localStorage.getItem('melete-fixture')
+  ? 'This browser is remembered.'
+  : 'This browser is not remembered.';
+</script>`,
+        );
       if (url.pathname === '/away')
         return new Response(null, { status: 302, headers: { location: `${otherOrigin}/away` } });
       if (url.pathname === '/loop')
