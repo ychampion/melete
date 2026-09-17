@@ -7,6 +7,25 @@ to named tests on the tagged tree; the README's gates table is the summary.
 
 ### Ships
 
+- **Long conversations are compacted as they run.** When an attempt's
+  conversation grows past its trigger, the engine summarizes the middle and
+  carries on inside the same attempt, without the job stopping or a request
+  being refused for size. The summary is written by the attempt's own model
+  through the model gateway, so it is authorized, metered and recorded like any
+  other call, and every compaction becomes a durable observation on the job's
+  timeline carrying its count. A summary is lossy by nature; every durable fact
+  stays on the ledger, not in the conversation. `MELETE_COMPACTION_MAX_TOKENS`
+  sets how large a conversation may grow first and `MELETE_ENGINE_MAX_TURNS` the
+  ceiling on one run's iterations, both documented in
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- **One place decides what the runtime engine does.** The settings an engine is
+  started with are rendered from a single description, for the image, the boot
+  script, both supervisors, the evaluation stack and the local harness alike,
+  and a test fails if the file the image carries drifts from it. Turning off the
+  engine's own memory now uses the keys it actually reads, so nothing an owner
+  asked to forget can return through it, and `compose:check` refuses a
+  configuration that leaves the memory keys, the turn ceiling or compaction
+  unpinned.
 - **Continuous integration.** Pull requests and pushes to `main` run the
   typecheck, lint, both Compose checks, the test suite against a Postgres 17
   service, the runtime plugin suite and a build of the service, web and runtime
@@ -19,7 +38,7 @@ to named tests on the tagged tree; the README's gates table is the summary.
   should carry, so a plugin change that leaves the pin behind fails the static
   checks instead of the image build.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
-  `json-file` log at 10 MB with five files. `compose:check` (29 checks) and
+  `json-file` log at 10 MB with five files. `compose:check` (30 checks) and
   `browser:compose:check` (12) refuse a service without the bound.
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one

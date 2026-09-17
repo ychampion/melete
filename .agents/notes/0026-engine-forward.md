@@ -1,6 +1,7 @@
 # 0026 - Engine surface probes: what the pinned engine actually does
 
-Status: recorded (executed probes; the engine configuration is unchanged)
+Status: recorded (executed probes; the configuration has since moved to what
+they measured — see the addendum at the end)
 
 ## Problem
 
@@ -279,6 +280,25 @@ finding.
 4. **`skills.enabled` deserves the same note as the memory keys.** The direction
    names the two memory keys as the switches that are not read; the skills key is
    inert in exactly the same way and is still in the shipped config.
+
+## Addendum: the configuration moved to what the probes measured
+
+Recorded when the engine configuration was rendered from one description.
+
+Items 3 and 4 above are settled. The renderer computes the engine's own trigger
+including the 85% case at the 64K minimum, and `skills.enabled` is gone rather
+than kept as an inert key; `memory.memory_enabled` and `memory.user_profile_enabled`
+replaced `memory.enabled`. The turn ceiling, the guardrail hard stop, checkpoints
+and the capability's place in `model.extra_headers` all moved with them.
+
+The probes no longer compare `shipped` against `target`. The `shipped` case now
+reads the committed configuration file itself, so a probe asserts what the image
+produces rather than a copy of it, and the paired case is the spelling that does
+nothing — kept, because a key the engine ignores looks exactly like one it reads.
+One probe was added: the window and trigger the image carries, put through the
+engine's own compressor.
+
+Items 1 and 2 are unchanged and still bind the work that turns on native tools.
 
 ## How to run
 

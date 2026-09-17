@@ -210,6 +210,29 @@ After changing provider settings, recreate Melete and the warm runtime:
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
 ```
 
+## Engine limits
+
+Two settings bound what one attempt's engine may do. Both have working defaults;
+change them only for a reason you can name, and both take effect on the next
+attempt started.
+
+`MELETE_ENGINE_MAX_TURNS` (default `150`) is how many iterations one run may
+take before the engine stops it. It is a runaway stop, not a cost control: what
+an attempt may spend is decided by the job's budget, and a run that has taken
+150 turns is looping. Lower it and long legitimate work is cut off in the
+middle; raise it and a loop runs longer before anything notices.
+
+`MELETE_COMPACTION_MAX_TOKENS` (default `200000`) is the largest conversation,
+in tokens, that may build up before the engine summarizes it and carries on with
+the summary. The engine would otherwise wait for half the model's context
+window, which on a million-token model means every request carries half a
+million tokens before the first summary is written. The trigger actually used is
+the lowest of this number, the engine's own trigger for that model's window, and
+what keeps a request inside the body the gateway accepts — so a number larger
+than the model allows changes nothing. Each compaction costs one extra model
+call, and a summary is lossy by nature: every durable fact stays on the job's
+ledger, not in the conversation.
+
 ## Memory extraction
 
 Deployment memory can extract structured observations without a model. If
