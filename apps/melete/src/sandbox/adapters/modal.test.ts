@@ -571,10 +571,27 @@ test('a Modal error never carries the token', async () => {
     for (const secret of [...SECRETS, 'ak-someOtherTokenId123', 'as-someOtherSecret456'])
       expect(text).not.toContain(secret);
   }
-  expect(scrubModalError(new Error(`x ${TOKEN.tokenSecret} y`), SECRETS)).toBe(
+  // The token itself is removed whatever its shape, not only by the pattern.
+  expect(scrubModalError(new Error('x plain-secret-value y'), ['plain-secret-value'])).toBe(
     'Error: x [redacted] y',
   );
   transport.close();
+});
+
+test('a sandbox the adapter cannot prepare is terminated, not left running', async () => {
+  const standin = createModalStandin();
+  const provider = createModalProvider({
+    appName: APP,
+    transport: {
+      ...standin.transport,
+      start: async () => {
+        throw new ModalUnavailable('UNAVAILABLE: the command router did not answer');
+      },
+    },
+  });
+  const failed = await provider.create(spec(), signal()).catch((error: unknown) => error);
+  expect(failed).toBeInstanceOf(SandboxTransportError);
+  expect(standin.engine.sandboxes.size).toBe(0);
 });
 
 test('the adapter and its transports read no credential or setting from the environment or a config file', async () => {

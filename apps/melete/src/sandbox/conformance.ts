@@ -382,7 +382,9 @@ export function sandboxConformance(
         const environment = recordText(result.record);
         expect(environment).toContain('PATH=');
         expect(environment).not.toMatch(/^(MELETE_|E2B_|DAYTONA_|MODAL_)/m);
-        for (const secret of context.subject.secrets) expect(environment).not.toContain(secret);
+        // Checked as a boolean, so a failure never prints the secret it found.
+        for (const secret of context.subject.secrets)
+          expect(environment.includes(secret)).toBe(false);
       },
     );
 

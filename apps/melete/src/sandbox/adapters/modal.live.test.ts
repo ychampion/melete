@@ -121,6 +121,12 @@ if (!live) {
     for (const [id, entry] of counting.sandboxes)
       if (entry.terminated === null)
         await counting.transport.terminate(id, signal()).catch(() => {});
+    // Including one a killed process created but never reported: the app holds only these tests.
+    const left = await counting.transport
+      .list(APP, { melete_owner: 'v1' }, signal())
+      .catch(() => []);
+    for (const sandbox of left)
+      await counting.transport.terminate(sandbox.sandboxId, signal()).catch(() => {});
     provider.close();
   }, 180_000);
 
@@ -222,8 +228,8 @@ if (!live) {
         child.exited,
       ]);
       for (const secret of secrets) {
-        expect(out).not.toContain(secret);
-        expect(err).not.toContain(secret);
+        expect(out.includes(secret)).toBe(false);
+        expect(err.includes(secret)).toBe(false);
       }
       lines = out
         .split('\n')
@@ -280,13 +286,20 @@ if (!live) {
     transport.close();
     expect(failure).toBeInstanceOf(ModalUnavailable);
     const text = `${String(failure)} ${(failure as Error).stack ?? ''}`;
-    for (const secret of [...secrets, rejected.tokenSecret]) expect(text).not.toContain(secret);
+    for (const secret of [...secrets, rejected.tokenSecret])
+      expect(text.includes(secret)).toBe(false);
     log(`rejected token: ${String(failure).split('\n')[0]}`);
   }, 120_000);
 
   test('no sandbox from this run is left running, and no error carried the token', async () => {
     // The conformance suite's own clean-up runs when its block ends, before this.
-    const running = await counting.transport.list(APP, { melete_owner: 'v1' }, signal());
+    const list = () => counting.transport.list(APP, { melete_owner: 'v1' }, signal());
+    let running = await list();
+    // A termination can take a few seconds to reach the listing.
+    for (let attempt = 0; running.length > 0 && attempt < 6; attempt += 1) {
+      await Bun.sleep(5_000);
+      running = await list();
+    }
     const states: Record<string, string> = {};
     for (const id of counting.sandboxes.keys())
       states[id] = await counting.transport.poll(id, signal());
@@ -302,6 +315,6 @@ if (!live) {
     for (const state of Object.values(states)) expect(state).not.toBe('running');
     expect(counting.sandboxes.size).toBeLessThanOrEqual(3);
     for (const error of counting.errors)
-      for (const secret of secrets) expect(error).not.toContain(secret);
+      for (const secret of secrets) expect(error.includes(secret)).toBe(false);
   }, 120_000);
 }
