@@ -331,9 +331,9 @@ let evaluated: { spaceId: string; candidateId: string } | null = null;
       .from(procedureEvaluation)
       .where(eq(procedureEvaluation.candidateId, candidate.id));
     const templates = (phase: string) =>
-      (rows.find((row) => row.phase === phase)?.evidence.runs as { template?: string }[]).flatMap(
-        (run) => (run.template ? [run.template] : []),
-      );
+      (
+        (rows.find((row) => row.phase === phase)?.evidence.runs ?? []) as { template?: string }[]
+      ).flatMap((run) => (run.template ? [run.template] : []));
     const pool = result.candidate.caseTemplates;
     for (const template of templates('sealed_final')) expect(pool.final_pool).toContain(template);
     for (const template of templates('validation')) expect(pool.validation).toContain(template);
@@ -353,7 +353,7 @@ let evaluated: { spaceId: string; candidateId: string } | null = null;
         ),
       );
     const rows = (
-      validation?.evidence.rows as {
+      (validation?.evidence.rows ?? []) as {
         family: string;
         baseline: number;
         candidate: number;
@@ -515,7 +515,7 @@ let evaluated: { spaceId: string; candidateId: string } | null = null;
       .from(procedureEvaluation)
       .where(eq(procedureEvaluation.candidateId, candidate.id));
     const rows = (
-      validation?.evidence.rows as { family: string; baseline: number; candidate: number }[]
+      (validation?.evidence.rows ?? []) as { family: string; baseline: number; candidate: number }[]
     ).filter((row) => row.family === 'general');
     expect(rows.length).toBeGreaterThanOrEqual(3);
     // Every case already reads the invoice back, so the procedure changes nothing.
