@@ -131,10 +131,26 @@ The adapter denies unexpected shell approvals (`a shell-command approval is
 denied, never allowed for the session`). An interrupted stream is not resumed
 (`an interrupted run fails retryably and says history is missing`).
 
-The broker serves a token-budgeted core catalog (750 estimated tokens, `core
-uses a serialized token budget, never a count cap, with stable ordering`) plus
-`search_tools` and `load_tool`; the contract's 15-tool constant is not an
-enforced cap, and a universal cap is **not claimed**. A schema loaded on demand
+The broker serves a token-budgeted core catalog (750 estimated tokens of
+schemas, `core uses a serialized token budget, never a count cap, with stable
+ordering`) plus `search_tools` and `load_tool`; the contract's 15-tool constant
+is not an enforced cap, and a universal cap is **not claimed**. The core is
+chosen per attempt from durable rows, with no model call: candidates are ranked
+by lexical overlap between the job's objective plus its latest owner message and
+each tool's name segments, description and examples, then by the local core
+flag, usage and name (`relevance to the objective and the latest owner message
+outranks usage`). `job.wait` leads when the job has an enabled trigger and
+`react` leads when the attempt answers a person directly: a chat, a first
+attempt, or a wake carrying a new owner message (`the lifecycle wait and the
+reaction are pinned when the turn needs them`). A reversible tool is offered
+only beside an external-write sibling from the same connection and namespace,
+or not at all (`a reversible draft is never shown without its external-write
+sibling`). An MCP tool enters the core only when the job's words match it (`an
+MCP tool enters the core by relevance and never by default`). Every healthy
+tool left outside is named on `load_tool` with a gist of at most eight words,
+inside a separate 250-token allowance (`every unloaded tool is named in a
+bounded index on load_tool`). Whether this ranking improves a real model's tool
+choice is **not claimed** here; it is measured by the evaluation campaign. A schema loaded on demand
 is persisted for the attempt (`loaded schema persists across service restart
 without leaking to another attempt`); because the pinned engine snapshots its
 toolset when a run starts, the adapter ends the run and starts a continuation

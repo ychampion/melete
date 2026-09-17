@@ -137,15 +137,18 @@ describe('context assembly', () => {
       name,
       body: 'Read the record and check the receipt before making a claim. '.repeat(10),
     }));
-    representative.tools = [
-      {
-        name: 'email.send',
+    // A catalog at its whole allowance: the schema budget and the names-only index.
+    const allowance = CONTEXT_LIMITS.core_catalog_tokens + CONTEXT_LIMITS.catalog_index_tokens;
+    representative.tools = [];
+    for (let index = 0; estimateTokens(JSON.stringify(representative.tools)) < allowance; index++)
+      representative.tools.push({
+        name: `email.send_${index}`,
         description: 'Send an email after approval.',
         effect_class: 'write_external',
         connection_id: null,
         input_schema: { type: 'object', properties: { body: { type: 'string' } } },
-      },
-    ];
+      });
+    expect(estimateTokens(JSON.stringify(representative.tools))).toBeGreaterThanOrEqual(allowance);
     representative.since_last = {
       attempt_id: `att_${SUFFIX}`,
       ended_at: '2026-09-11T00:00:00Z',

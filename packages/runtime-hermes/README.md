@@ -83,8 +83,10 @@ from pinned commit `2237be355906fbe6065ce1815711eee52b2d646e`. With a seven-tool
 core, it measured 7,708 system-prompt characters and 2,886 tool-schema characters:
 **2,649 estimated tokens**, using `ceil((system + schemas).length / 4)`, below
 the 4,000-token tripwire. The broker core itself was 714 estimated tokens
-against its 750-token budget. This is a scaffolding estimate, not provider usage
-or a tokenizer-specific count. User input and subsequent tool results are metered
+against its 750-token budget. That measurement predates the names-only index of
+unloaded tools, which may add at most 250 estimated tokens to `load_tool`; the
+wire request has not been measured again with it. This is a scaffolding
+estimate, not provider usage or a tokenizer-specific count. User input and subsequent tool results are metered
 separately by the gateway.
 
 The earlier prompt-assembly probe in `.agents/notes/0009-hermes-surface.md`

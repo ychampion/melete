@@ -15,6 +15,8 @@ export type LockedJob = {
   principal_id?: string | null;
   id: string;
   space_id: string;
+  /** Present on every stored row; optional so a hand-built fixture stays valid. */
+  objective?: string;
   state: string;
   revision: number;
   lease_epoch: number;

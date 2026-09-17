@@ -177,11 +177,17 @@ trigger's cursor and cost nothing else: no attempt, no model call, no row.
 ## Discovering tools without loading every schema
 
 The broker serves a small core plus `search_tools(query)` and `load_tool(name)`.
-The core prioritizes granted files, knowledge and react tools when those
-producers are registered, then the most-used verbs on granted connections.
-Selection budgets serialized schemas rather than counting tools. The default
-core allowance is 750 estimated tokens, including the two discovery tools.
-The pinned engine's scaffolding uses the rest of the 4,000-token tripwire.
+The core ranks candidates by lexical relevance to the job's objective and its
+latest owner message, then granted files, knowledge and react tools, then the
+most-used verbs on granted connections. `job.wait` leads when the job has an
+enabled trigger, and `react` leads when the attempt answers a person directly.
+A reversible verb is shown only together with an external-write sibling from
+the same connection and namespace. MCP tools are candidates only when the job's
+words match them. Selection budgets serialized schemas rather than counting
+tools. The default core allowance is 750 estimated tokens of schemas, including
+the two discovery tools, plus at most 250 estimated tokens for a names-only
+index of every healthy tool left outside, carried on `load_tool`. The pinned
+engine's scaffolding uses the rest of the 4,000-token tripwire.
 
 `Connector.catalog` supplies trusted source metadata: `connector`, `capability`,
 `skill` or `mcp`, up to two examples per verb, and optional core priorities.

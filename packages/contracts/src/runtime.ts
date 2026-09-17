@@ -416,4 +416,8 @@ export const CONTEXT_LIMITS = {
   skill_tokens: 400,
   knowledge_tokens: 2000,
   max_tools: 15,
+  /** Serialized schemas in the first catalog, the two discovery tools included. */
+  core_catalog_tokens: 750,
+  /** The names-only listing of tools left outside that catalog. */
+  catalog_index_tokens: 250,
 } as const;

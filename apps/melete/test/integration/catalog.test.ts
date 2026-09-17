@@ -1,10 +1,11 @@
 import { afterAll, expect, test } from 'bun:test';
-import type { Skill } from '@melete/contracts';
+import type { Skill, ToolSpec } from '@melete/contracts';
 import { signCapability } from '../../src/broker/capability.ts';
 import { accountToolName, META_TOOLS, ToolCatalog, toolTokens } from '../../src/broker/catalog.ts';
 import { COMPOSE_TOOL, createTestComposeExecutor } from '../../src/broker/compose.ts';
 import { createBrokerApp } from '../../src/broker/http.ts';
 import { recordId } from '../../src/broker/records.ts';
+import { RUNTIME_WAIT_TOOL } from '../../src/broker/runtime-wait.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { REACT_TOOL } from '../../src/connectors/catalog.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
@@ -34,6 +35,9 @@ dbTest(
     expect(await s.broker.discovery.search(s.claims, 'INVOICE')).toEqual(byName);
   },
 );
+
+const withoutIndex = (tools: readonly ToolSpec[]): ToolSpec[] =>
+  tools.map((tool) => META_TOOLS.find((meta) => meta.name === tool.name) ?? tool);
 
 async function setup(options: { skills?: Skill[]; compose?: boolean } = {}) {
   if (!db) throw new Error('Postgres unavailable');
@@ -126,7 +130,11 @@ dbTest(
     const s = await setup();
     const initial = await s.broker.catalog(s.claims);
     // Discovery leads the core; `react` is the one broker-owned tool always beside it.
-    expect(initial).toEqual([...META_TOOLS, REACT_TOOL]);
+    // Everything left outside is named, without a schema, on `load_tool`.
+    expect(withoutIndex(initial)).toEqual([...META_TOOLS, REACT_TOOL]);
+    expect(initial.find((tool) => tool.name === 'load_tool')?.description).toContain(
+      'Not loaded yet: test.invoice (Find archived invoices by vendor); test.read (Perform read); test.send (Perform send).',
+    );
     const found = await s.broker.discovery.search(s.claims, 'archived invoices');
     expect(found.map((tool) => tool.name)).toEqual(['test.invoice']);
     expect(found[0]).toMatchObject({
@@ -177,10 +185,9 @@ dbTest(
     const newId = recordId('att');
     await s.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model) values (${newId}, ${s.claims.job_id}, 2, 'fake', 'fake', 'scripted')`;
     await s.sql`update job set lease_epoch = 2 where id = ${s.claims.job_id}`;
-    expect(await restarted.catalog({ ...s.claims, attempt_id: newId, epoch: 2 })).toEqual([
-      ...META_TOOLS,
-      REACT_TOOL,
-    ]);
+    expect(
+      withoutIndex(await restarted.catalog({ ...s.claims, attempt_id: newId, epoch: 2 })),
+    ).toEqual([...META_TOOLS, REACT_TOOL]);
     expect(await rejectionOf(restarted.discovery.load(s.claims, 'test.read'))).toMatchObject({
       code: 'stale_epoch',
     });
@@ -570,3 +577,93 @@ dbTest('duplicate skills are dropped without disabling other tools', async () =>
   expect(notes).toHaveLength(1);
   expect(notes[0]?.payload).toMatchObject({ code: 'unknown_tool', name: 'skills.receipts' });
 });
+
+dbTest(
+  'the core is chosen from the objective, the latest owner message and the registered trigger',
+  async () => {
+    if (!db) throw new Error('Postgres unavailable');
+    const scopes = ['test.alpha', 'test.beta', 'test.send', 'job.wait'];
+    const seed = await seedJob(db.sql, { scopes });
+    const tool = (verb: string, effect: 'read' | 'write_external') => ({
+      name: `test.${verb}`,
+      description: `Perform ${verb}`,
+      input_schema: { type: 'object' as const, properties: {}, additionalProperties: false },
+      effect_class: effect,
+      required_scopes: [`test.${verb}`],
+      requires_approval: false,
+      verify: false,
+    });
+    const connector: Connector = {
+      manifest: {
+        name: 'test',
+        provider: 'test',
+        version: '1',
+        description: 'Ranking fixture',
+        credentials: [],
+        health: true,
+        tools: [tool('alpha', 'read'), tool('beta', 'read'), tool('send', 'write_external')],
+      },
+      async execute() {
+        throw new Error('not dispatched here');
+      },
+      async verify() {
+        return { decision: 'unsupported', reason: 'fixture' };
+      },
+      async health() {
+        return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+      },
+    };
+    const registry = new ConnectorRegistry().register(seed.connectionId, connector);
+    const manifest = connector.manifest.tools.map((entry) => ({
+      name: entry.name,
+      description: entry.description,
+      input_schema: entry.input_schema,
+      effect_class: entry.effect_class,
+      connection_id: seed.connectionId,
+    }));
+    const [send, beta] = [manifest[2], manifest[1]];
+    if (!send || !beta) throw new Error('fixture tool absent');
+    await db.sql`update job set objective = 'Send the note to Alex' where id = ${seed.claims.job_id}`;
+    await db.sql`insert into event (job_id, type, payload, dedup_key)
+      values (${seed.claims.job_id}, 'notice',
+        ${JSON.stringify({ kind: 'user_message', text: 'Run beta first.' })}::jsonb,
+        ${`${seed.claims.job_id}:message`})`;
+    await db.sql`insert into trigger (id, job_id, kind, spec) values (${recordId('trg')},
+      ${seed.claims.job_id}, 'event',
+      ${JSON.stringify({ kind: 'event', connection_id: seed.connectionId, event_name: 'reply_received' })}::jsonb)`;
+    // Room for the pinned lifecycle wait, the reaction and two connector verbs: the
+    // alphabetical first verb is the one left out, because nothing asked for it.
+    const budget = toolTokens([...META_TOOLS, RUNTIME_WAIT_TOOL, REACT_TOOL, send, beta]);
+    const broker = new BrokerService({
+      sql: db.sql,
+      connectors: registry,
+      catalog: { coreTokenBudget: budget },
+    });
+    const core = await broker.catalog(seed.claims);
+    expect(core.map((entry) => entry.name)).toEqual([
+      'search_tools',
+      'load_tool',
+      'job.wait',
+      'react',
+      'test.beta',
+      'test.send',
+    ]);
+    expect(core.find((entry) => entry.name === 'load_tool')?.description).toContain(
+      'test.alpha (Perform alpha)',
+    );
+    // A later wake that carries no new owner message is not a conversational turn.
+    const next = recordId('att');
+    await db.sql`update attempt set outcome = 'completed', ended_at = now(),
+      input_cursor = (select max(seq) from event) where id = ${seed.claims.attempt_id}`;
+    await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model)
+      values (${next}, ${seed.claims.job_id}, 2, 'fake', 'fake', 'scripted')`;
+    await db.sql`update job set lease_epoch = 2 where id = ${seed.claims.job_id}`;
+    const later = await broker.catalog({ ...seed.claims, attempt_id: next, epoch: 2 });
+    expect(later.map((entry) => entry.name).slice(0, 3)).toEqual([
+      'search_tools',
+      'load_tool',
+      'job.wait',
+    ]);
+    expect(later.map((entry) => entry.name)).toContain('test.send');
+  },
+);
