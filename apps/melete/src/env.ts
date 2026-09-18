@@ -281,8 +281,15 @@ const variables = z.object({
     .optional(),
   /** How long a sandbox session may go unrenewed before the sweep ends it. */
   MELETE_SANDBOX_LEASE_SECONDS: z.coerce.number().int().positive().default(900),
-  /** The most sandboxes this installation may have running at once. */
+  /** The most sandboxes this installation may have running at once, over every connection. */
   MELETE_SANDBOX_MAX_CONCURRENT: z.coerce.number().int().positive().default(4),
+  /**
+   * The most any one connection may have running. A provider quota belongs to
+   * an account, and a connection is an account here, so this keeps one busy
+   * space from spending another's. Left unset it is the ceiling above, and it
+   * is never allowed past it.
+   */
+  MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION: z.coerce.number().int().positive().optional(),
   /** How long a suspended workspace is kept while nobody resumes it. */
   MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS: z.coerce
     .number()

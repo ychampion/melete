@@ -35,6 +35,7 @@ export type RefusalCode =
   | 'workspace_lost'
   | 'workspace_not_live'
   | 'suspend_failed'
+  | 'concurrency_exhausted'
   | 'sandbox_time_exhausted';
 
 export class SandboxRefusal extends Error {

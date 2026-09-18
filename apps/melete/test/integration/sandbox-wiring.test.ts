@@ -96,6 +96,7 @@ test('a proxy or root-certificate setting refuses the Modal adapter unless the o
         e2bPlan: 'hobby',
         snapshotTtlSeconds: 2_592_000,
         maxConcurrent: 4,
+        maxPerConnection: 4,
         modalRefusal,
       },
     });

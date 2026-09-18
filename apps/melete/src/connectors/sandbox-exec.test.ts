@@ -10,7 +10,7 @@ import path from 'node:path';
 import type { SandboxConnectionConfig } from '@melete/contracts';
 import { type Action, canonicalizePayload, connectorManifest } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
-import { FakeSandboxProvider } from '../sandbox/fake.ts';
+import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import { ConnectorRegistry } from './registry.ts';
@@ -76,11 +76,17 @@ test('the terminal manifest parses, is brokered, and registers', () => {
 
 withDb('a command in a remote sandbox', () => {
   const setup = async (
-    over: { persistence?: SandboxConnectionConfig['persistence']; maxConcurrent?: number } = {},
+    over: {
+      persistence?: SandboxConnectionConfig['persistence'];
+      maxConcurrent?: number;
+      maxPerConnection?: number;
+      /** Shared where two connections run side by side, so their sandbox ids differ. */
+      engine?: FakeSandboxEngine;
+    } = {},
   ) => {
     if (!handle) throw new Error('Postgres is unavailable');
     const scope = await seedSessionScope(handle.sql);
-    const provider = new FakeSandboxProvider();
+    const provider = new FakeSandboxProvider(over.engine ? { engine: over.engine } : {});
     const sessions = new SandboxSessions(handle.sql, {
       leaseSeconds: 300,
       workspaceRetentionSeconds: 3_600,
@@ -95,6 +101,7 @@ withDb('a command in a remote sandbox', () => {
       workRoot,
       sql: handle.sql,
       ...(over.maxConcurrent === undefined ? {} : { maxConcurrent: over.maxConcurrent }),
+      ...(over.maxPerConnection === undefined ? {} : { maxPerConnection: over.maxPerConnection }),
     });
     const attemptId = await scope.attempt();
     await mkdir(path.join(workRoot, scope.jobId), { recursive: true });
@@ -329,5 +336,43 @@ withDb('a command in a remote sandbox', () => {
     expect(refused.reason).toContain('which is its limit');
     expect(refused.retryable).toBe(true);
     expect(provider.calls.create).toBe(1);
+  }, 60_000);
+
+  test('two connections each have their own allowance', async () => {
+    // Room in the service for three, and one apiece: a provider quota belongs
+    // to an account, and an account is a connection here.
+    const engine = new FakeSandboxEngine();
+    const first = await setup({ maxConcurrent: 3, maxPerConnection: 1, engine });
+    const second = await setup({ maxConcurrent: 3, maxPerConnection: 1, engine });
+    expect((await first.run({ command: 'printf one' })).result.outcome).toBe('succeeded');
+
+    // The first connection has spent what is its own.
+    const again = await first.action({ command: 'printf two' }, await first.scope.attempt());
+    const refused = await first.connector.execute(again, first.context(again));
+    if (refused.outcome !== 'failed') throw new Error(JSON.stringify(refused));
+    expect(refused.reason).toContain('this connection already has');
+    expect(refused.retryable).toBe(true);
+
+    // The second's allowance is untouched by the first being full.
+    expect((await second.run({ command: 'printf three' })).result.outcome).toBe('succeeded');
+    expect(first.provider.calls.create).toBe(1);
+    expect(second.provider.calls.create).toBe(1);
+  }, 60_000);
+
+  test('the installation ceiling refuses a sandbox a connection still had room for', async () => {
+    // Two apiece, but only two in the whole service.
+    const engine = new FakeSandboxEngine();
+    const first = await setup({ maxConcurrent: 2, maxPerConnection: 2, engine });
+    const second = await setup({ maxConcurrent: 2, maxPerConnection: 2, engine });
+    expect((await first.run({ command: 'printf one' })).result.outcome).toBe('succeeded');
+    expect((await second.run({ command: 'printf two' })).result.outcome).toBe('succeeded');
+
+    // The first connection has one of its two, so only the ceiling can refuse it.
+    const again = await first.action({ command: 'printf three' }, await first.scope.attempt());
+    const refused = await first.connector.execute(again, first.context(again));
+    if (refused.outcome !== 'failed') throw new Error(JSON.stringify(refused));
+    expect(refused.reason).toContain('this installation already has');
+    expect(refused.retryable).toBe(true);
+    expect(first.provider.calls.create).toBe(1);
   }, 60_000);
 });

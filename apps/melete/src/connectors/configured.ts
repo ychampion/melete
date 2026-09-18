@@ -190,7 +190,10 @@ export type SandboxRuntimeOptions = {
   project: string;
   e2bPlan: 'hobby' | 'pro';
   snapshotTtlSeconds: number;
+  /** The whole installation's ceiling, over every connection. */
   maxConcurrent: number;
+  /** One connection's own allowance, which defaults to that ceiling. */
+  maxPerConnection: number;
   /** Set when this environment could redirect Modal's traffic; then Modal is refused. */
   modalRefusal: string | null;
   /** Replaces E2B's HTTP transport. Only a test fixture passes one. */
@@ -331,6 +334,7 @@ export class ConnectorFactory {
           sql: options.sql,
           e2bPlan: sandbox.e2bPlan,
           maxConcurrent: sandbox.maxConcurrent,
+          maxPerConnection: sandbox.maxPerConnection,
           close: opened.close,
         }),
       );
@@ -558,6 +562,8 @@ export function connectorOptionsFromEnv(
             e2bPlan: env.MELETE_E2B_PLAN,
             snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
             maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
+            maxPerConnection:
+              env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
             modalRefusal: modalEnvironmentRefusal(
               process.env,
               env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,

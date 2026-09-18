@@ -64,8 +64,15 @@ export type SandboxExecOptions = {
   e2bPlan?: 'hobby' | 'pro';
   /** Releases whatever the provider holds when the connection is closed. */
   close?: () => Promise<void>;
-  /** The most sandboxes this installation may have running at once. */
+  /** The most sandboxes this installation may have running at once, over every connection. */
   maxConcurrent?: number;
+  /**
+   * The most this one connection may have running. A provider quota belongs to
+   * an account, and an account is a connection here, so a busy space cannot
+   * spend another space's allowance. Defaults to the installation ceiling, and
+   * is held under it: no connection is ever allowed more than the whole service.
+   */
+  maxPerConnection?: number;
 };
 
 const digest = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex');
@@ -187,13 +194,26 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         return { row, reused: true };
       }
     }
-    if (options.maxConcurrent !== undefined) {
-      const [live] = await sql`select count(*)::int as live from sandbox_session
-        where status in ('opening', 'ready')`;
-      if (Number(live?.live ?? 0) >= options.maxConcurrent)
+    // Two allowances, counted once. The connection's own comes first, because it
+    // names the account that is full; the installation's ceiling holds over all
+    // of them, so one connection can never take more than the service has.
+    const ceiling = options.maxConcurrent ?? Number.POSITIVE_INFINITY;
+    const own = Math.min(options.maxPerConnection ?? ceiling, ceiling);
+    if (Number.isFinite(own) || Number.isFinite(ceiling)) {
+      const [counted] = await sql`select count(*)::int as live,
+          count(*) filter (where connection_id = ${options.connectionId})::int as own
+        from sandbox_session where status in ('opening', 'ready')`;
+      const live = Number(counted?.live ?? 0);
+      const mine = Number(counted?.own ?? 0);
+      if (mine >= own)
         throw new SandboxRefusal(
-          'sandbox_time_exhausted',
-          `this installation already has ${Number(live?.live ?? 0)} sandboxes running, which is its limit`,
+          'concurrency_exhausted',
+          `this connection already has ${mine} running, which is its limit`,
+        );
+      if (live >= ceiling)
+        throw new SandboxRefusal(
+          'concurrency_exhausted',
+          `this installation already has ${live} running, which is its limit`,
         );
     }
     const facts = await jobFacts(ctx.job_id);
