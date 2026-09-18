@@ -241,6 +241,39 @@ withDb('the company map over HTTP', () => {
     expect(handled.length).toBe(asked + 1);
   }, 60_000);
 
+  test('an abandoned scan stops blocking once its lease has expired', async () => {
+    // A process that dies mid-scan never closes the row. Without a lease that
+    // row is handed to every later request for good, and the person cannot
+    // unstick it. Proved here against Postgres, where the retirement is an
+    // UPDATE rather than a loop.
+    if (!handle) throw new Error('Postgres unavailable');
+    const store = new PostgresCompanyStore(handle.db);
+    const map = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const principalId = map.items[0]?.principal_id ?? '';
+    const owner = { spaceId: firstSpace, principalId };
+    const opened = await store.openScan(owner);
+    expect((await store.runningScan(owner))?.id).toBe(opened.id);
+
+    // Backdate it past the lease, the way a crash would leave it.
+    await handle.sql`update company_scan
+      set started_at = now() - interval '1 hour' where id = ${opened.id}`;
+    expect(await store.runningScan(owner)).toBe(null);
+
+    const record = await store.scan(owner, opened.id);
+    expect([record?.status, record?.error]).toEqual(['failed', 'scan_abandoned']);
+    // And the slot the unique index was holding is free again.
+    const next = await store.openScan(owner);
+    expect(next.id).not.toBe(opened.id);
+    await store.closeScan(owner, next.id, {
+      status: 'done',
+      messagesSeen: 0,
+      itemsFound: 0,
+      counts: {},
+    });
+  }, 60_000);
+
   test('two scans racing open one running scan, not two', async () => {
     // The route checks for a running scan before opening one, but two requests
     // can both pass that check before either writes. The partial unique index

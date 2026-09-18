@@ -4,7 +4,7 @@ import type { CompanyExtractor } from './extract.ts';
 import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
 import { messageText } from './messages.ts';
-import { MemoryCompanyStore, type Owner } from './repository.ts';
+import { MemoryCompanyStore, type Owner, SCAN_LEASE_MS } from './repository.ts';
 import { runScan } from './scan.ts';
 import { scriptedExtractor } from './scripted.ts';
 
@@ -262,6 +262,52 @@ describe('two messages arriving under one Message-ID', () => {
     const first = await subjectRead();
     expect(first).not.toBe(null);
     expect(await subjectRead()).toBe(first);
+  });
+});
+
+describe('a scan that never finished', () => {
+  // The default schedule runs the work in this process. If the process dies
+  // mid-scan nothing ever calls closeScan, the row stays `running`, and every
+  // later request is handed that row instead of starting a scan — for good.
+  // A person cannot unstick that themselves, so a running scan has a lease.
+  const staleOwner: Owner = {
+    spaceId: 'sp_01J0000000000000000000000A',
+    principalId: 'own_01J000000000000000000ST1',
+  };
+
+  test('stops being the running scan once its lease has expired', async () => {
+    const store = new MemoryCompanyStore();
+    const opened = await store.openScan(staleOwner);
+    expect((await store.runningScan(staleOwner))?.id).toBe(opened.id);
+
+    // Just inside the lease it is still the running scan.
+    const nearly = new Date(Date.parse(opened.startedAt) + SCAN_LEASE_MS - 1000);
+    expect((await store.runningScan(staleOwner, nearly))?.id).toBe(opened.id);
+
+    // Past it, nothing is running and a new scan may start.
+    const after = new Date(Date.parse(opened.startedAt) + SCAN_LEASE_MS + 1000);
+    expect(await store.runningScan(staleOwner, after)).toBe(null);
+  });
+
+  test('the abandoned row is still readable, and says it was abandoned', async () => {
+    const store = new MemoryCompanyStore();
+    const opened = await store.openScan(staleOwner);
+    const after = new Date(Date.parse(opened.startedAt) + SCAN_LEASE_MS + 1000);
+    await store.runningScan(staleOwner, after);
+    const record = await store.scan(staleOwner, opened.id);
+    // A person who kept the scan id is told what became of it rather than
+    // watching `running` forever.
+    expect(record?.status).toBe('failed');
+    expect(record?.error).toBe('scan_abandoned');
+  });
+
+  test('and a fresh scan can then be opened', async () => {
+    const store = new MemoryCompanyStore();
+    const first = await store.openScan(staleOwner);
+    const after = new Date(Date.parse(first.startedAt) + SCAN_LEASE_MS + 1000);
+    await store.runningScan(staleOwner, after);
+    const second = await store.openScan(staleOwner);
+    expect(second.id).not.toBe(first.id);
   });
 });
 

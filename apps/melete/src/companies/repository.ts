@@ -10,7 +10,7 @@
  */
 
 import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -46,9 +46,27 @@ export type LedgerDetail = {
   message: { id: string; subject: string; from: string; received_at: string; text: string } | null;
 };
 
+/**
+ * How long a scan may claim to be running without finishing.
+ *
+ * The work happens in the process that started it, so a process that dies
+ * mid-scan never closes the row. Without a bound the row stays `running` and
+ * every later request is handed it instead of starting a scan — permanently,
+ * for that person, with nothing they can do about it. A scan reads at most
+ * fifty messages and one model call each, so fifteen minutes is far past any
+ * honest run and far short of a person's patience.
+ */
+export const SCAN_LEASE_MS = 15 * 60 * 1000;
+
 export interface CompanyStore {
-  /** The scan already running for this person, if there is one. */
-  runningScan(owner: Owner): Promise<ScanRecord | null>;
+  /**
+   * The scan already running for this person, if there is one.
+   *
+   * A scan whose lease has expired is not running, whatever its row says: it is
+   * marked failed as a side effect of asking, so the row stops blocking and the
+   * person who kept its id is told what became of it.
+   */
+  runningScan(owner: Owner, now?: Date): Promise<ScanRecord | null>;
   openScan(owner: Owner): Promise<ScanRecord>;
   closeScan(
     owner: Owner,
@@ -183,7 +201,20 @@ const itemView = (row: ItemRow): LedgerItem => ({
 export class PostgresCompanyStore implements CompanyStore {
   constructor(private readonly db: Database) {}
 
-  async runningScan(owner: Owner): Promise<ScanRecord | null> {
+  async runningScan(owner: Owner, now: Date = new Date()): Promise<ScanRecord | null> {
+    // Retire the abandoned ones first, in one statement, so the read below sees
+    // a truthful table and the partial unique index stops holding a slot open
+    // for work nobody is doing.
+    await this.db
+      .update(companyScan)
+      .set({ status: 'failed', error: 'scan_abandoned', finishedAt: now })
+      .where(
+        and(
+          ownedScan(owner),
+          eq(companyScan.status, 'running'),
+          lt(companyScan.startedAt, new Date(now.getTime() - SCAN_LEASE_MS)),
+        ),
+      );
     const [row] = await this.db
       .select()
       .from(companyScan)
@@ -458,9 +489,20 @@ export class MemoryCompanyStore implements CompanyStore {
     return row.spaceId === owner.spaceId && row.principalId === owner.principalId;
   }
 
-  async runningScan(owner: Owner): Promise<ScanRecord | null> {
-    for (const row of this.scans.values())
-      if (this.mine(owner, row) && row.status === 'running') return row;
+  async runningScan(owner: Owner, now: Date = new Date()): Promise<ScanRecord | null> {
+    const stale = now.getTime() - SCAN_LEASE_MS;
+    for (const row of this.scans.values()) {
+      if (!this.mine(owner, row) || row.status !== 'running') continue;
+      // The same lease the Postgres store applies, so a test against this store
+      // is a test of the rule rather than of this store.
+      if (Date.parse(row.startedAt) < stale) {
+        row.status = 'failed';
+        row.error = 'scan_abandoned';
+        row.finishedAt = now.toISOString();
+        continue;
+      }
+      return row;
+    }
     return null;
   }
   async openScan(owner: Owner): Promise<ScanRecord> {
