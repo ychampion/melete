@@ -189,8 +189,13 @@ withDb('the company map over HTTP', () => {
     // These are contract fields now, not a shape carried beside the contract.
     expect(map.totals.promises_in_force).toBeGreaterThan(0);
     expect(typeof map.totals.promises_lapsed).toBe('number');
-    const promises = map.items.filter((item) => item.kind === 'promise');
-    expect(map.totals.promises_in_force + map.totals.promises_lapsed).toBe(promises.length);
+    // The invariant, stated so it survives a reordering: the two counts add up
+    // to the promises still in play. A settled promise stays on the map and is
+    // counted in neither, so filtering by status is part of the claim.
+    const open = map.items.filter(
+      (item) => item.kind === 'promise' && !['settled', 'dropped'].includes(item.status),
+    );
+    expect(map.totals.promises_in_force + map.totals.promises_lapsed).toBe(open.length);
   }, 60_000);
 
   test('a dropped item leaves the map, a settled one stays on it', async () => {
@@ -268,8 +273,15 @@ withDb('the company map over HTTP', () => {
     const before = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
     );
+    // It has to be an item the totals are still counting. A settled one stays
+    // on the map but contributes nothing, so dropping it would move no figure
+    // and the arithmetic below would be measuring the wrong thing.
     const owed = before.items.find(
-      (item) => item.direction === 'owed_to_you' && item.currency === 'GBP' && item.amount_minor,
+      (item) =>
+        item.direction === 'owed_to_you' &&
+        item.currency === 'GBP' &&
+        item.amount_minor &&
+        item.status === 'found',
     );
     expect(owed).toBeDefined();
     if (!owed) return;
