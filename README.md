@@ -248,7 +248,10 @@ bun run test:plugin
 disposable Postgres 17: embedded when `DATABASE_URL` is unset, otherwise
 disposable databases created on the server you supply, which needs
 database-creation permission. On current Linux distributions, set
-`DATABASE_URL`. Tests use scripted providers. `bun run lint` is Biome over the
+`DATABASE_URL`. On Windows, clone to a short path such as `C:\m`: the embedded
+server's `initdb` stops once its data directory passes 260 characters, and says
+`pg_ident.conf.sample` is missing when the file is there. Tests use scripted
+providers. `bun run lint` is Biome over the
 whole tree followed by `bun run scrub:check`, which fails the build when a local
 path or a working note leaks into the repository. The generators rewrite the
 OpenAPI document and the client declarations; inspect the diff. Install Chromium

@@ -126,6 +126,9 @@ bun run conformance:memory
 
 The memory test entry imports the E1–E4 and broker-seam modules. Database tests
 use embedded Postgres when no URL is supplied; when it cannot start, they are
-reported as skipped, and `bun run doctor` names the missing prerequisite. The
+reported as skipped, and `bun run doctor` names the missing prerequisite. On
+Windows, clone to a short path such as `C:\m`: the embedded server's `initdb`
+stops once its data directory passes 260 characters, and says
+`pg_ident.conf.sample` is missing when the file is there. The
 general suite and the container probes (scenario 6, run with the Compose
 opt-in) are described in [conformance](../conformance/README.md).
