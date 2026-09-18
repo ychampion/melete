@@ -162,11 +162,42 @@ export type SandboxConnectionConfig = z.infer<typeof sandboxConnectionConfig>;
 export const sandboxCredentials = z.object({ api_key: z.string().min(1).max(2048) }).strict();
 export type SandboxCredentials = z.infer<typeof sandboxCredentials>;
 
-/** Modal's half of that field: `<token id>:<token secret>`. */
+/**
+ * Modal's half of that field: `<token id>:<token secret>`. Exactly one colon,
+ * with something on each side. A second colon means the value is not a Modal
+ * token, and splitting it at the first one would quietly keep half of somebody
+ * else's key, so it is refused rather than divided.
+ */
 export function modalTokenParts(key: string): { token_id: string; token_secret: string } | null {
   const at = key.indexOf(':');
-  if (at <= 0 || at === key.length - 1) return null;
+  if (at <= 0 || at === key.length - 1 || key.lastIndexOf(':') !== at) return null;
   return { token_id: key.slice(0, at), token_secret: key.slice(at + 1) };
+}
+
+/** What to paste in the one credential field, in the words the form shows. */
+export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
+  e2b: 'the API key on its own, which has no colon in it',
+  modal: 'the token id and the token secret as one value, `token_id:token_secret`',
+};
+
+/** The one code a credential of the wrong shape is refused with. */
+export const SANDBOX_CREDENTIAL_CODE = 'credential_invalid';
+
+/**
+ * Why this key cannot be the named adapter's, or null. One field serves both
+ * adapters, so a value meant for the other one is caught here, while it is
+ * still only a request: before it is sealed, split or sent to a provider.
+ */
+export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): string | null {
+  const wrong =
+    adapter === 'modal'
+      ? !modalTokenParts(key)
+      : // An E2B key carries no colon. One here is a Modal token in the wrong
+        // connection, and E2B would be handed the whole thing as a key.
+        key.includes(':');
+  return wrong
+    ? `${SANDBOX_CREDENTIAL_CODE}: a ${adapter} key is ${SANDBOX_CREDENTIAL_FORMAT[adapter]}.`
+    : null;
 }
 
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
@@ -282,8 +313,8 @@ export function connectionInstallation(
       rest.egress === 'cidr_allowlist' ? { ...rest, cidrs: cidrs ?? [] } : rest;
     const credentials = sandboxCredentials.safeParse(request.credentials);
     if (!credentials.success) return err('A sandbox needs credentials.api_key only.');
-    if (config.adapter === 'modal' && !modalTokenParts(credentials.data.api_key))
-      return err('A Modal key is the token id and the token secret, separated by a colon.');
+    const malformed = sandboxCredentialRefusal(config.adapter, credentials.data.api_key);
+    if (malformed) return err(malformed);
     return ok({ kind, provider: 'sandbox', config, credentials: credentials.data, scopes });
   }
   if (kind === 'ics') {
@@ -750,7 +781,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       text('credentials.api_key', 'Provider key', {
         input: 'password',
         secret: true,
-        help: 'E2B: the API key. Modal: the token id and the token secret, separated by a colon.',
+        help: `E2B: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}.`,
       }),
       text('sandbox.egress', 'What the sandbox may reach', {
         input: 'select',

@@ -75,7 +75,7 @@ async function harness() {
     }),
   );
   const jobs = new JobService(fixture.db, queue.boss);
-  const catalog = new RuntimeCatalog(fixture.db, registry, 'unused');
+  const catalog = new RuntimeCatalog(fixture.db, registry);
   const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
     key: 'sandbox-connection-capability-key-32-bytes',
     liveConnectionScopes: true,
