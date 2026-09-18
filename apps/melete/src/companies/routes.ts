@@ -48,16 +48,26 @@ export type CompaniesDeps = {
   now?: () => Date;
 };
 
-/** The space in the path, checked against the session. Anything else is not found. */
+/**
+ * The space in the path, resolved to the principal who may speak for it.
+ *
+ * In the assembled service this rarely decides anything: `mountPrincipals`
+ * installs one guard over every `/spaces/:id/...` path, and it has already
+ * refused a space the caller cannot see with `scope_denied` and 403 before any
+ * route here runs. That is the answer the whole API gives for a space, so the
+ * map gives it too rather than inventing a second convention for one surface.
+ *
+ * This stays because a route should not depend for its authority on middleware
+ * mounted somewhere else, and `createApp` can be assembled without that guard.
+ *
+ * A ledger item is deliberately different. It is addressed by its own id,
+ * outside `/spaces`, so the guard never sees it and `findItem` answers 404: an
+ * id that is not yours must not be distinguishable from one that never existed.
+ */
 async function ownerFor(db: Database, spaceId: string): Promise<Owner> {
-  try {
-    const access = await spaceAuthority(db, spaceId, requestPrincipal());
-    if (!access.principalId) throw new ServiceError('not_found', 'No such space.', 404);
-    return { spaceId, principalId: access.principalId };
-  } catch {
-    // A space somebody cannot see is a space that is not there, as far as they know.
-    throw new ServiceError('not_found', 'No such space.', 404);
-  }
+  const access = await spaceAuthority(db, spaceId, requestPrincipal());
+  if (!access.principalId) throw new ServiceError('not_found', 'No such space.', 404);
+  return { spaceId, principalId: access.principalId };
 }
 
 /** The spaces a principal may speak for: personal ones they own, shared ones they joined. */

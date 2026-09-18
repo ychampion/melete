@@ -7275,8 +7275,8 @@ export interface paths {
                         };
                     };
                 };
-                /** @description No such space */
-                404: {
+                /** @description This space is not accessible to the signed-in account */
+                403: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -7345,8 +7345,8 @@ export interface paths {
                         };
                     };
                 };
-                /** @description No such space */
-                404: {
+                /** @description This space is not accessible to the signed-in account */
+                403: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -7408,7 +7408,16 @@ export interface paths {
                         };
                     };
                 };
-                /** @description No such scan */
+                /** @description This space is not accessible to the signed-in account */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema73"];
+                    };
+                };
+                /** @description No such scan in this space */
                 404: {
                     headers: {
                         [name: string]: unknown;

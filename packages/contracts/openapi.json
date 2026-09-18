@@ -135,8 +135,8 @@
               }
             }
           },
-          "404": {
-            "description": "No such space",
+          "403": {
+            "description": "This space is not accessible to the signed-in account",
             "content": {
               "application/json": {
                 "schema": {
@@ -226,8 +226,18 @@
               }
             }
           },
+          "403": {
+            "description": "This space is not accessible to the signed-in account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema73"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "No such scan",
+            "description": "No such scan in this space",
             "content": {
               "application/json": {
                 "schema": {
@@ -332,8 +342,8 @@
               }
             }
           },
-          "404": {
-            "description": "No such space",
+          "403": {
+            "description": "This space is not accessible to the signed-in account",
             "content": {
               "application/json": {
                 "schema": {
