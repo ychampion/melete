@@ -94,8 +94,9 @@ capability can read the catalog but not approve, and an altered approval hash is
 refused. Its comparison against a second, real provider runs when the stack has
 that provider's credential and `MELETE_CONFORMANCE_REAL_PROVIDER` and
 `MELETE_CONFORMANCE_REAL_MODEL` select it; no recorded run has. API keys stay
-in the gateway, which forwards them. Configuring provider OAuth inside Hermes would place those
-credentials in the runtime's auth store, outside this boundary: a runtime
+in the gateway, which forwards them. Configuring provider OAuth inside Hermes
+would place those credentials in the runtime's auth store, outside this
+boundary: a runtime
 compromise exposes an OAuth token stored there, and it does not expose a
 provider API key kept in Melete's gateway. The runtime image and Compose volumes
 carry no OAuth configuration.
