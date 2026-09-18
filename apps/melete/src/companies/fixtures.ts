@@ -20,6 +20,7 @@
  * loaded today or in six months and still sit inside a ninety-day window.
  */
 
+import type { MailMessage } from '../connectors/mail-transport.ts';
 import type { ScanMessage } from './messages.ts';
 
 export const FIXTURE_REFERENCE = '2026-09-18T09:00:00.000Z';
@@ -333,6 +334,25 @@ export function fixtureMessages(reference: string = FIXTURE_REFERENCE): ScanMess
     text: draft.text,
     receivedAt: at(reference, draft.ago),
     ...(draft.unsubscribe ? { unsubscribe: true } : {}),
+  }));
+}
+
+/**
+ * The same mailbox in the connector's own shape, so it can be served by a
+ * transport double behind a real `EmailConnector`. That lets the live mail seam
+ * be demonstrated end to end — connector, hygiene, action context and all —
+ * without an IMAP server or anybody's real password.
+ */
+export function fixtureMailMessages(reference: string = FIXTURE_REFERENCE): MailMessage[] {
+  return fixtureMessages(reference).map((message, index) => ({
+    uid: index + 1,
+    message_id: message.messageId,
+    from: message.from,
+    to: message.to,
+    subject: message.subject,
+    text: message.text,
+    html: '',
+    date: message.receivedAt,
   }));
 }
 

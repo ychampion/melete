@@ -22,8 +22,12 @@ import type {
 } from '../connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
-import { connectorMailbox } from './mailbox.ts';
+import { FIXTURE_MESSAGE_COUNT, fixtureMailMessages, fixtureMessages } from './fixtures.ts';
+import { connectorMailbox, fixtureMailbox } from './mailbox.ts';
 import { prefilter } from './prefilter.ts';
+import { MemoryCompanyStore } from './repository.ts';
+import { runScan } from './scan.ts';
+import { scriptedExtractor } from './scripted.ts';
 
 const SPACE = 'spc_test';
 const CONNECTION = 'con_test';
@@ -194,6 +198,93 @@ describe('reading a mailbox through the installed connector', () => {
       undatedAt: UNDATED,
     });
     expect(await reader.recent(50)).toEqual([]);
+  });
+
+  test('the whole demonstration mailbox survives the round trip through a real connector', async () => {
+    // The strongest statement this file can make without an IMAP server: the
+    // forty fixture messages go in as the connector's own shape, come back
+    // through EmailConnector.execute, and are still the messages the scan
+    // expects — minus exactly the three hygiene withholds.
+    const transport = new MailDouble();
+    transport.messages = fixtureMailMessages();
+    const registry = new ConnectorRegistry();
+    registry.register(CONNECTION, new EmailConnector(config, secret, () => transport));
+    const reader = connectorMailbox({
+      registry,
+      connectionId: CONNECTION,
+      spaceId: SPACE,
+      undatedAt: UNDATED,
+    });
+    const read = await reader.recent(50);
+    expect(read).toHaveLength(FIXTURE_MESSAGE_COUNT - 3);
+    expect(read.some((entry) => /OTP|magic link|reset your password/i.test(entry.text))).toBe(
+      false,
+    );
+    // And every message kept its own date, so the window means something.
+    const direct = new Map(fixtureMessages().map((entry) => [entry.messageId, entry]));
+    for (const entry of read) {
+      const original = direct.get(entry.messageId);
+      expect(original).toBeDefined();
+      if (!original) continue;
+      expect(entry.receivedAt).toBe(original.receivedAt);
+      expect(entry.text).toBe(original.text);
+    }
+  });
+
+  test('a scan driven through the connector agrees with one driven from the fixture', async () => {
+    // The live path and the test path must not be two different products. Read
+    // the same mailbox both ways — once through EmailConnector.execute, once
+    // straight from the fixture — and the maps must be the same map.
+    const transport = new MailDouble();
+    transport.messages = fixtureMailMessages();
+    const registry = new ConnectorRegistry();
+    registry.register(CONNECTION, new EmailConnector(config, secret, () => transport));
+    const owner = { spaceId: SPACE, principalId: 'own_01J0000000000000000000000B' };
+    const now = new Date(UNDATED);
+    const shape = async (mailbox: Parameters<typeof runScan>[0]['mailbox']) => {
+      const store = new MemoryCompanyStore();
+      const outcome = await runScan({
+        store,
+        mailbox,
+        extractor: scriptedExtractor(),
+        owner,
+        now,
+      });
+      const map = await store.map(owner, now);
+      return {
+        status: outcome.status,
+        messagesSeen: outcome.messagesSeen,
+        totals: map.totals,
+        companies: map.companies.map((entry) => entry.domain).sort(),
+        items: map.items
+          .map((item) => `${item.kind}|${item.direction}|${item.amount_minor}|${item.currency}`)
+          .sort(),
+      };
+    };
+    const throughConnector = await shape(
+      connectorMailbox({
+        registry,
+        connectionId: CONNECTION,
+        spaceId: SPACE,
+        undatedAt: UNDATED,
+      }),
+    );
+    const fromFixture = await shape(fixtureMailbox(fixtureMessages()));
+    expect(throughConnector.status).toBe('done');
+    expect(throughConnector.items.length).toBeGreaterThan(20);
+
+    // The map is the same map: same companies, same items, same totals.
+    const { messagesSeen: throughSeen, ...throughRest } = throughConnector;
+    const { messagesSeen: fixtureSeen, ...fixtureRest } = fromFixture;
+    expect(throughRest).toEqual(fixtureRest);
+
+    // `messages_seen` is the one figure that differs, and it should. Through the
+    // connector, hygiene withholds three messages before the scan is handed
+    // anything, so the scan never sees them to count. Read straight from the
+    // fixture, the scan is handed all forty and withholds the three itself.
+    // The figure means "messages this scan was given" on both paths.
+    expect(fixtureSeen).toBe(FIXTURE_MESSAGE_COUNT);
+    expect(throughSeen).toBe(FIXTURE_MESSAGE_COUNT - 3);
   });
 
   test('a connector that is not a mailbox is not read', async () => {
