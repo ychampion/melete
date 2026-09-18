@@ -52,6 +52,17 @@ async function harness() {
     MELETE_MASTER_KEY: MASTER_KEY,
     MELETE_SANDBOX_PROJECT: PROJECT,
   });
+  /**
+   * Offered every call the provider receives, until it says it has run. An
+   * installation talks to the provider both before its row exists and again
+   * after, so a test that needs one of those two moments says which by
+   * answering false until it sees what it is waiting for.
+   */
+  let duringHandshake: (() => Promise<boolean>) | null = null;
+  const sandboxFetch: SandboxRuntimeOptions['fetch'] = async (input, init) => {
+    if (duringHandshake && (await duringHandshake())) duringHandshake = null;
+    return standin.fetch(input, init);
+  };
   const sandbox: SandboxRuntimeOptions = {
     sessions: new SandboxSessions(fixture.sql, {
       leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
@@ -61,8 +72,9 @@ async function harness() {
     e2bPlan: 'hobby',
     snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
     maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
+    maxPerConnection: env.MELETE_SANDBOX_MAX_CONCURRENT,
     modalRefusal: null,
-    fetch: standin.fetch,
+    fetch: sandboxFetch,
   };
   useConnectorFactory(
     registry,
@@ -176,6 +188,9 @@ async function harness() {
     counts,
     offered,
     broker,
+    onHandshake: (hook: () => Promise<boolean>) => {
+      duringHandshake = hook;
+    },
   };
 }
 
@@ -369,4 +384,62 @@ withDb('the sandbox connection kind', () => {
     expect(after.bundle).not.toContain('terminal.run');
     expect(after.brokered).not.toContain('terminal.run');
   }, 180_000);
+
+  test('a key of the wrong shape for its adapter is refused before anything is sealed', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const before = await h.counts();
+    for (const [adapter, key, expected] of [
+      // One field serves both adapters, so each says what it expects.
+      ['modal', 'ak-only-the-token-id', 'token_id:token_secret'],
+      // Two colons are not a token id and a secret. Splitting at the first one
+      // would keep half of whatever this really is, so it is refused instead.
+      ['modal', 'ak-token-id:as-token-secret:and-more', 'token_id:token_secret'],
+      ['modal', ':as-token-secret', 'token_id:token_secret'],
+      ['e2b', 'e2b_1234:5678', 'has no colon in it'],
+    ] as const) {
+      const refused = await h.install({
+        ...body({ adapter }),
+        credentials: { api_key: key },
+      });
+      expect([key, refused.status]).toEqual([key, 400]);
+      // A closed code, and words naming what to paste.
+      expect(refused.text).toContain('credential_invalid');
+      expect(refused.text).toContain(expected);
+      // The value itself is never echoed back.
+      expect(refused.text).not.toContain(key);
+    }
+    // Nothing was stored, and no Modal token ever reached a provider.
+    expect(await h.counts()).toEqual(before);
+  }, 120_000);
+
+  test('the audience checked at the door is checked again before the row is activated', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    // The request passes the door, and its row is written, as the owner of an
+    // owner-audience space. The space stops being the owner's alone while the
+    // installation is still talking to the provider, which is after the locked
+    // check at insertion and before the one that publishes the row.
+    h.onHandshake(async () => {
+      const [pending] = await h.sql`select id from connection
+        where provider = 'sandbox' and setup_state = 'connecting'`;
+      if (!pending) return false;
+      await h.sql`update space set audience = 'space' where id = ${h.spaceId}`;
+      return true;
+    });
+    const created = await h.install(body());
+    const installed = connectionResponse.parse(created.json).connection;
+    try {
+      // The handshake itself succeeded, so only the check under the activation
+      // lock can have stopped this row from going active.
+      expect(installed.status).toBe('error');
+      expect(connectionResponse.parse(created.json).check?.code).toBe('not_running');
+      const [row] = await h.sql`select status, setup_state from connection
+        where id = ${installed.id}`;
+      expect(row).toMatchObject({ status: 'error', setup_state: 'error' });
+    } finally {
+      await h.sql`update space set audience = 'owner' where id = ${h.spaceId}`;
+      await h.sql`delete from secret where id in
+        (select secret_ref from connection where id = ${installed.id})`;
+      await h.sql`delete from connection where id = ${installed.id}`;
+    }
+  }, 120_000);
 });
