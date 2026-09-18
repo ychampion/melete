@@ -7,8 +7,8 @@ is exercised by `Markdown round trips support, preserves local edits, and owner
 edits become protected revisions` in
 [`markdown-tests.ts`](../apps/melete/test/integration/markdown-tests.ts).
 
-The service entry point is more than health: it wires authenticated jobs,
-approvals, events and other service modules. Every Postgres-backed `bootstrap`
+The service entry point wires authenticated jobs, approvals, events and the
+other service modules. Every Postgres-backed `bootstrap`
 starts the memory core and worker behind the restriction-journal restore gate,
 mounts the authenticated memory routes, and wraps each attempt's runtime with
 context recording and invalidation; the `docker` adapter starts the deployment
@@ -16,8 +16,7 @@ memory the same way. An injected runtime receives context recording only when
 the caller supplies the `memory` dependency. The broker origin resolver is wired
 in `broker/start.ts` and tested by `an address read off a page is refused as
 untrusted_recipient_origin`. The scripted HTTP proof `wired-assistant.test.ts`
-corrects a claim over these routes through a real local engine. These
-statements describe the tree at the head of `integration`.
+corrects a claim over these routes through a real local engine.
 
 ## Evidence, claims and correction
 
@@ -48,7 +47,7 @@ cookie and clears that cookie; saved memory remains, and another live session
 can still read it. The [sign-out test](../apps/melete/test/integration/signout.test.ts)
 checks the old cookie is refused while the other session continues to work.
 
-| Behavior | Named test in the integration suite |
+| Behaviour | Named test in the integration suite |
 | --- | --- |
 | Durable ingest and replay identity | `persist before acknowledgment, dedup, immutable versions, separate streams` |
 | Stream and scope checks | `concurrent inputs commit contiguous stream sequences and reject cross-space metadata` |
@@ -59,8 +58,10 @@ checks the old cookie is refused while the other session continues to work.
 | End-to-end scripted trip | `July to August survives sessions, an old import, correction races, process kills, scope, forget, and restore` |
 
 These tests are in [memory.test.ts](../apps/melete/test/integration/memory.test.ts)
-and its imported test modules. They use Postgres, pg-boss and scripted extraction;
-general truthfulness of model-produced interpretations is **not claimed**.
+and its imported test modules. They use Postgres, pg-boss and scripted extraction:
+they check how interpretations are stored, validated, corrected and served,
+while the truth of a model's interpretation rests with the model and with the
+owner's corrections.
 
 ## Storage and retrieval
 
@@ -82,7 +83,8 @@ Recall uses native Postgres lexical search and optionally an injected embedding
 provider. Candidates still cross authoritative revision, source, suppression
 and audience checks (`lexical and dense candidates are independent and
 incompatible embeddings fail closed`). The comparison fixture uses scripted
-three-dimensional embeddings; production dense-retrieval quality is **not claimed**.
+three-dimensional embeddings, so it checks the independence and fail-closed
+rules rather than retrieval quality.
 
 Recall reports `complete`, `degraded` or `unavailable`, with a coverage reason.
 A successful empty search is distinct from timeout (`database timeout is
@@ -90,7 +92,8 @@ unavailable and a successful empty search is complete`). Complete refers to
 the bounded search recipe, not exhaustive source coverage. The integration test
 `recall supplements a lagging lexical index and dates historical revisions`
 also checks the recall budget; the timeout test above checks the deadline.
-Production latency or scale service levels are **not claimed**.
+The budget and deadline bound each recall; its latency at scale depends on the
+host and the size of the corpus.
 
 ## Inspect and edit through authenticated routes
 
@@ -126,21 +129,22 @@ Recall handles identify claim revisions and source versions. Recorded output
 `uses` manifests support selective invalidation and repair briefs
 (`a correction marks stale exactly the output that cited it and says what to
 repair`; `the next attempt is handed the repair brief in its inputs`).
-Unattributed output retains conservative invalidation. Complete attribution of
-arbitrary model prose is **not claimed**.
+An output with an empty `uses` manifest, which is mostly chat prose, keeps the
+conservative rule and is recorded as unattributed on its context record.
 
 The typed key registry and uniqueness indexes prevent duplicate heads on keyed
 claims (`the database refuses a second claim on one key`). Precedence and
 disputes are tested by `July, then a document, then August, then a late email:
-one head, one question`. Older unkeyed paths remain; universal retroactive key
-coverage is **not claimed**.
+one head, one question`. A proposal without a registered key is stored unkeyed
+and sits outside that constraint.
 
 Tier 0 parses supported structured observations before model extraction.
 Tier 1 validates keys and exact spans (`a wrong span and a hallucinated address
-are rejected; the connector date is the head`). This does not prove every date,
-address or instruction can be interpreted correctly.
+are rejected; the connector date is the head`). Validation confirms that a
+keyed value sits in the span it cites; a value read the wrong way from a correct
+span is put right by a correction.
 
-Origin follows evidence, and the broker consults it for recognized external
+Origin follows evidence, and the broker consults it for recognised external
 payload fields (`a page-sourced address is external content; the same address
 from the owner is not`; `an address read off a page is refused as
 untrusted_recipient_origin`). Origin is not permission, and memory correction
@@ -155,19 +159,23 @@ survives an old database snapshot`, `source and space revocation invalidate
 delivered context and block stale serving`, and `deletion hides synchronously,
 cleanup failures retry, and startup refuses a missing journal`.
 
-The retained restriction journal is for memory removal replay. It is not an
-exportable action-audit ledger; that product capability is **not claimed**.
-`restoreMemory` gates spaces before replay, then opens eligible spaces.
-The falsifier `skipping the restriction replay turns the forgetting family red`
-demonstrates why the journal must be retained independently of database rollback.
+The retained restriction journal records memory removals for replay; actions
+are recorded in Postgres, not in this journal. `restoreMemory` gates spaces
+before replay, then opens eligible spaces. The break test
+`skipping the restriction replay turns the forgetting family red` shows why the
+journal must be retained independently of database rollback.
 
-Cleanup does not erase old Git commits, backups, external source accounts or
-copies already delivered elsewhere. Universal physical erasure and recovery
-after rolling both database and journal back together are **not claimed**.
+Cleanup deletes the forgotten content and its index entries from Melete's
+database. Old Git commits, backups, the external source account and copies
+already delivered elsewhere keep what they hold, and Postgres's data files and
+write-ahead log keep deleted rows until that space is reused. Rolling the
+database and the journal back together also rolls back the removals made since,
+so retain the newest journal as [DEPLOYMENT](DEPLOYMENT.md#backup-and-restore)
+describes.
 
 ## Startup and active attempts
 
-The default bootstrap provisions authenticated memory scope, initializes a new
+The default bootstrap provisions authenticated memory scope, initialises a new
 journal only for new storage, calls `startMemoryService` before serving memory
 traffic, mounts `createMemoryRouter`, and applies the `withMemoryRuntime`
 wrapper to the attempt runtime. An application that embeds the modules
@@ -179,9 +187,10 @@ correction`.
 Extraction and view publication use durable work and fenced leases
 (`continuation cursors and queue repair survive lost delivery and an obsolete
 lease holder`). pg-boss runs on the fixture database (`pg-boss uses the embedded
-database`). Automatic prepared-context reuse is **not claimed**. Procedure
-promotion is a separate, scoped loop with its own tests ([LEARNING](LEARNING.md));
-the memory runner's procedure-transfer scenario stays a recorded todo.
+database`). Each attempt assembles and records its own context at start rather
+than reusing one prepared earlier. Procedure promotion is a separate, scoped
+loop with its own tests ([LEARNING](LEARNING.md)); the memory runner records its
+procedure-transfer scenario as a todo rather than executing it.
 
 ## Verify
 
@@ -193,8 +202,10 @@ bun run conformance:memory
 ```
 
 The integration fixture uses disposable Postgres and scripted HTTP extraction.
-The standalone runner uses ten scenarios across seven executed families and a
-withheld-memory arm; its procedure-transfer scenario is a recorded todo. See the
-[memory conformance README](../conformance/memory/README.md) for exact scope.
-Neither establishes model reasoning quality, statistical superiority or
-production scale.
+The standalone runner covers seven families with ten scenarios and a
+withheld-memory arm. Its eighth family, procedure transfer, holds one scenario
+recorded as a todo and so has no executed case; the learning tests cover
+promotion. See the [memory conformance README](../conformance/memory/README.md)
+for exact scope.
+Both use scripted extraction and answers, so they measure the memory service's
+behaviour rather than a model's reasoning.
