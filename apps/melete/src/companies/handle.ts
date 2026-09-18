@@ -120,8 +120,45 @@ const hostnames = (domain: string): string[] => {
   return host.startsWith('www.') ? [host, host.slice(4)] : [host, `www.${host}`];
 };
 
-const money = (minor: number | null, currency: string | null): string | null =>
-  minor === null || currency === null ? null : `${(minor / 100).toFixed(2)} ${currency}`;
+/**
+ * The currencies whose minor unit is not a hundredth. Dividing by a hundred is
+ * right for most of the world and wrong for these, and the figure this produces
+ * can end up quoted back to a company in the person's name — ¥4,999 written as
+ * ¥49.99 is not a rounding difference, it is the wrong claim.
+ */
+const MINOR_UNIT_EXPONENT: Record<string, number> = {
+  BIF: 0,
+  CLP: 0,
+  DJF: 0,
+  GNF: 0,
+  ISK: 0,
+  JPY: 0,
+  KMF: 0,
+  KRW: 0,
+  PYG: 0,
+  RWF: 0,
+  UGX: 0,
+  VND: 0,
+  VUV: 0,
+  XAF: 0,
+  XOF: 0,
+  XPF: 0,
+  BHD: 3,
+  IQD: 3,
+  JOD: 3,
+  KWD: 3,
+  LYD: 3,
+  OMR: 3,
+  TND: 3,
+};
+
+/** An amount in whole minor units, written the way its currency is written. */
+export function formatAmount(minor: number | null, currency: string | null): string | null {
+  if (minor === null || currency === null) return null;
+  const exponent = MINOR_UNIT_EXPONENT[currency] ?? 2;
+  const units = minor / 10 ** exponent;
+  return `${units.toFixed(exponent)} ${currency}`;
+}
 
 /** The playbook this item gets, or a refusal naming the kind that has none. */
 export function playbookFor(item: Pick<LedgerItem, 'kind' | 'suggested_playbook'>): PlaybookId {
@@ -161,7 +198,7 @@ export function handleObjective(
   replyEvent: string | null,
 ): string {
   const { item, company } = input;
-  const amount = money(item.amount_minor, item.currency);
+  const amount = formatAmount(item.amount_minor, item.currency);
   const lines = [
     `Playbook: ${playbook}.`,
     '',
