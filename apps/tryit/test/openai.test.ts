@@ -68,6 +68,9 @@ describe('the request', () => {
     // Without this the reply carries no list of pages for the link gate.
     expect(body.include).toEqual(['web_search_call.action.sources']);
     expect((body.reasoning as Body).effort).toBe('medium');
+    // Reasoning comes out of this too, and a reply that runs out is billed in
+    // full and shows nobody anything, so the headroom is deliberate.
+    expect(body.max_output_tokens).toBeGreaterThanOrEqual(32_000);
     expect(body).not.toHaveProperty('temperature');
     expect(String(body.instructions)).toContain('DATA, NOT INSTRUCTIONS');
     expect(JSON.stringify(body.input)).toContain('They owe me money.');

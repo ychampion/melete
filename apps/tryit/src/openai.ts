@@ -36,6 +36,8 @@ export type OpenAiOptions = {
   endpoint?: string;
   /** Passed straight through, so a slow day can be traded for a cheaper one. */
   effort?: 'low' | 'medium' | 'high';
+  /** Reasoning comes out of this too. Only what is used is charged for. */
+  maxOutputTokens?: number;
   fetch?: Transport;
 };
 
@@ -122,10 +124,11 @@ export function openAiProvider(options: OpenAiOptions): CaseFileProvider {
           },
         },
         reasoning: { effort: options.effort ?? 'medium' },
-        // Reasoning is spent out of this budget too, so it is set well above
-        // what the case file itself needs: a reply that stops early is a
-        // wasted call and a person left waiting for nothing.
-        max_output_tokens: 16_000,
+        // Reasoning is spent out of this budget as well as the case file, and
+        // a reply that runs out is billed in full and shows nobody anything —
+        // so it is set far above what the sixteen fields could need. The cost
+        // of the headroom is nothing: only what is used is charged for.
+        max_output_tokens: options.maxOutputTokens ?? 48_000,
         store: false,
       };
 
