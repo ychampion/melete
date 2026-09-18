@@ -1,9 +1,10 @@
 # Linux deployment operations
 
-Start with the literal [README install procedure](../README.md#install-on-a-linux-docker-host).
-The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records the tested revision, image sizes,
-build and startup times, conformance results, and clean-host timing. Timings
-depend on the host and network; the startup timeout does not bound image builds.
+Start with the [README install procedure](../README.md#install-on-a-linux-docker-host).
+[Deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records image
+sizes, build and startup times, conformance results and clean-host timing from a
+measured installation. Timings depend on the host and network; the startup
+timeout does not bound image builds.
 
 ## Docker Engine and Compose versions
 
@@ -76,8 +77,246 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate web
 `docker compose restart` does not apply changed environment values. The web
 server rejects foreign Origins before proxying to its fixed upstream
 `http://melete:8787`; it does not use request forwarding headers to select an
-upstream or relax the origin check. Keep production cookies secure. An HTTP
-URL on a remote IP address is not the localhost installation path.
+upstream or relax the origin check. Session cookies are `Secure` in production,
+which browsers honour over HTTPS and on localhost, so reach a remote
+installation through the SSH tunnel or a TLS proxy rather than over plain HTTP
+to its address.
+
+## Tailscale
+
+Reach your installation from your own devices over your tailnet, with no
+published port. An optional override runs one Tailscale node beside the stack.
+The node joins your tailnet, answers HTTPS at its own tailnet address, and
+forwards to the web client on the internal network. It publishes nothing on a
+host interface, and Funnel stays off, so the address answers the devices on your
+tailnet and nothing else.
+
+The base Compose file is unchanged and the loopback ports stay published. The
+tailnet address does replace the one you sign in at, though: a browser is
+accepted at the address `MELETE_WEB_ORIGIN` names and at no other, so once that
+holds the tailnet address, `http://localhost:3101` and the README's SSH tunnel
+answer the sign-in page but refuse the requests behind it with 403
+`origin_rejected`. One address at a time, and the step below chooses it. To go
+back to the tunnel, empty `MELETE_WEB_ORIGIN` and recreate the web service with
+the command below.
+
+### Prerequisites
+
+- **MagicDNS**, enabled for the tailnet. It publishes the node under a name, and
+  that name is the address you open.
+- **HTTPS certificates**, enabled for the tailnet. The node terminates TLS
+  itself with a certificate issued for that name; without this the node joins
+  but has no address to answer HTTPS on.
+- **An auth key**, to join the node the first time.
+- **A decision about who may reach the node**, if anyone else is on the tailnet:
+  the default policy lets every member reach every device, so settle
+  [restricting the node to yourself](#restricting-the-node-to-yourself) before it
+  joins.
+
+The first two settings are per tailnet and are turned on once, in the Tailscale
+admin console under DNS.
+
+### Create an auth key
+
+In the Tailscale admin console, under Settings, generate an auth key. A reusable
+key is not needed: the node stores its own key afterwards and rejoins with that.
+Make the key **not ephemeral**, so the node keeps its name and its certificate
+across restarts.
+
+Paste it into `TS_AUTHKEY` in `deploy/.env`. It is a credential for joining your
+tailnet, not for this installation, so treat it as you treat the other values in
+that file: keep the file private, and do not paste the key into a shell where it
+would be kept in history. Nothing in Melete logs or echoes it, and
+`deploy/scripts/upgrade.ts` redacts it from command output like the other keys
+in the file.
+
+An OAuth client secret works in place of an auth key. It requires a tag, which
+is given through `TS_EXTRA_ARGS`, for example
+`TS_EXTRA_ARGS=--advertise-tags=tag:melete`.
+
+### Configure and start
+
+```bash
+bun run deploy/scripts/configure.ts --tailscale
+```
+
+That writes `TS_HOSTNAME=melete` and leaves `TS_AUTHKEY` empty for you to fill
+in. Pass `--tailscale-hostname` to choose another name; it becomes the node's
+name and so the host part of the address. On an installation that already has a
+`deploy/.env`, set `TS_HOSTNAME` and `TS_AUTHKEY` in that file by hand instead —
+`configure.ts` never replaces an existing one.
+
+Then start the stack with the override beside the base file:
+
+```bash
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.tailscale.yml up -d --wait
+```
+
+Once the node reports healthy, record the address it answers on:
+
+```bash
+bun run deploy/scripts/tailscale-origin.ts
+```
+
+That asks the node for its certificate domain, writes
+`MELETE_WEB_ORIGIN=https://<node>.<tailnet>.ts.net` into `deploy/.env`, and
+prints the one command that gives the running web service the new value:
+
+```bash
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.tailscale.yml up -d --no-deps --force-recreate web
+```
+
+This step is not optional. The web client accepts a browser whose `Origin` is
+the address the installation is reached at and refuses any other, so until
+`MELETE_WEB_ORIGIN` holds the tailnet address, signing in from that address is
+refused — and once it does, signing in from `http://localhost:3101` is refused
+instead. `docker compose restart` does not apply a changed environment value.
+
+Name both files on every later Compose command for this installation, including
+`deploy/scripts/upgrade.ts --tailscale`.
+
+### From a phone or a laptop
+
+Install Tailscale on the device and sign in to the same tailnet. Then open
+`https://<node>.<tailnet>.ts.net` and sign in to Melete as usual. There is no
+port to forward, no tunnel to keep open, and nothing to expose: the device
+reaches the node over the tailnet, and the node reaches only the web service.
+
+Sign-in is unchanged — a password, and a device cookie afterwards. Tailscale
+identity is not a sign-in here; see [sign-in](#sign-in-limits) for what the
+limits count, and [identity](#tailnet-identity) for why the tailnet name on a
+request is not treated as one.
+
+With the override in place each device on the tailnet is counted separately by
+the per-address sign-in limits, rather than sharing one bucket as browsers
+behind the SSH tunnel do. The node states the device's tailnet address, and the
+web server believes it only on a connection from the node itself, which the
+override names in `MELETE_WEB_TRUSTED_UPSTREAM`. A browser that sends the same
+header from anywhere else is attributed to its own socket, as before.
+
+### Restricting the node to yourself
+
+A tailnet's default policy lets every member reach every device. If other people
+are on the tailnet, restrict this node in the tailnet policy file. Tag the node
+with `TS_EXTRA_ARGS=--advertise-tags=tag:melete`, then allow only yourself to
+reach its HTTPS port:
+
+```json
+{
+  "tagOwners": {
+    "tag:melete": ["autogroup:owner"]
+  },
+  "grants": [
+    {
+      "src": ["autogroup:owner"],
+      "dst": ["tag:melete"],
+      "ip": ["tcp:443"]
+    }
+  ]
+}
+```
+
+A tagged node is owned by the tag rather than by the person who joined it, so
+the auth key or OAuth client that adds it must be allowed to use the tag.
+
+### Kernel networking
+
+The node runs userspace networking by default. It needs no `/dev/net/tun` and no
+added capability, its root filesystem is read only, and it drops every
+capability. Throughput is lower than kernel networking, which matters for large
+transfers rather than for the client.
+
+Kernel networking is a deliberate opt-in, added as a third file:
+
+```bash
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.tailscale.yml \
+  -f deploy/docker-compose.tailscale-kernel.yml up -d --wait
+```
+
+That file sets `TS_USERSPACE=false`, maps `/dev/net/tun` and adds `NET_ADMIN`.
+It changes nothing else, and `bun run tailscale:compose:check` fails if it ever
+grants more than those.
+
+### What the node can reach
+
+The node joins the `edge` network only. It cannot reach the database network or
+the runtime network, and it has no Docker socket. The serve configuration in
+`deploy/config/tailscale-serve.json` forwards the root of one host to
+`http://web:3000` and proxies nothing else, so a device on the tailnet reaches
+the sign-in page and whatever a signed-in browser can reach through it. The
+[threat model](THREAT-MODEL.md) states this boundary.
+
+`bun run tailscale:compose:check` asserts each of those properties from the
+YAML: one added service, the `edge` network only, no published port, no
+privilege or device outside the kernel-mode file, a pinned image, bounded logs,
+sized temporary filesystems, the health endpoint on the container's own
+loopback, the node key on a named volume, the auth key from the environment,
+and Funnel off. It runs in the same continuous-integration job as the other
+Compose checks.
+
+### Streaming and idle connections
+
+A transcript and a live browser view are long-lived event streams through
+`/api`. Both hops keep them open: the node terminates HTTPS without a read,
+write or idle timeout of its own and forwards an event-stream response as it
+arrives rather than buffering it, and the web server disables its own timeout
+for `/api` and passes the response through unchanged. A conversation left open
+and quiet stays connected.
+
+### Tailnet identity
+
+Tailscale states the requesting user on a proxied request. Melete does not read
+it: the sign-in is a password and a device cookie, and nothing about the tailnet
+grants an account. The web server removes every `Tailscale-` header from every
+request before it reaches the API, whichever socket it arrived on. Serve
+rewrites the fixed set of names it owns and passes any other `Tailscale-`
+header on as the browser sent it, so arriving through the node is not evidence
+that the node wrote one.
+
+Treating a tailnet identity as a sign-in is a possible later option. It would
+mean deciding which tailnet user maps to which account, and what happens when a
+device is shared, so it is a separate decision rather than a setting.
+
+### Troubleshooting
+
+**The node is healthy but there is no address.**
+`bun run deploy/scripts/tailscale-origin.ts` reports no certificate domain while
+the control plane has not issued one. Check that HTTPS certificates are enabled
+for the tailnet, then wait for the node to finish joining and run it again. The
+node's own view is:
+
+```bash
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.tailscale.yml exec tailscale tailscale status
+```
+
+**Signing in is refused with `origin_rejected` and status 403.**
+`MELETE_WEB_ORIGIN` does not match the address in the browser's address bar.
+Run `tailscale-origin.ts` and recreate the web service with the command it
+prints. A trailing slash, `http://` instead of `https://`, or a short name
+instead of the full tailnet name are all mismatches. On `http://localhost:3101`
+this is the expected answer once `MELETE_WEB_ORIGIN` holds the tailnet address:
+the setting names one address, and that one is now the tailnet's.
+
+**The address resolves but nothing answers.** The node forwards to the `web`
+service by name, which needs Docker's resolver, so the override sets
+`TS_ACCEPT_DNS=false`. Check that both files were named on the `up` command and
+that `web` is healthy.
+
+**The node asks to authenticate again after a restart.** Its state volume is
+missing. `tailscale-state` holds the node key; recreating the installation
+without it means joining again with a fresh auth key. The
+[upgrade](UPGRADING.md) notes that keeping it is optional.
+
+**Funnel.** Confirm it is off with:
+
+```bash
+docker compose -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.tailscale.yml exec tailscale tailscale funnel status
+```
 
 ## Sign-in limits
 
@@ -201,8 +440,7 @@ never rewritten: it is honoured, or refused when it exceeds the job's budget.
 Provider secrets belong to Melete's gateway. Runtime cells receive short-lived
 capabilities and surrogate credentials. Do not copy a provider key into a
 runtime environment. Configuration fields are listed in
-[`deploy/.env.example`](../deploy/.env.example); a configured provider is not
-evidence that a live model run passed.
+[`deploy/.env.example`](../deploy/.env.example).
 
 After changing provider settings, recreate Melete and the warm runtime:
 
@@ -223,7 +461,7 @@ an attempt may spend is decided by the job's budget, and a run that has taken
 middle; raise it and a loop runs longer before anything notices.
 
 `MELETE_COMPACTION_MAX_TOKENS` (default `200000`) is the largest conversation,
-in tokens, that may build up before the engine summarizes it and carries on with
+in tokens, that may build up before the engine summarises it and carries on with
 the summary. The engine would otherwise wait for half the model's context
 window, which on a million-token model means every request carries half a
 million tokens before the first summary is written. The trigger actually used is
@@ -238,7 +476,7 @@ the models this deployment serves. Set it when a model is smaller than the
 128,000-token figure Melete assumes for a model it does not know: a model with a
 32,000-token window would otherwise be told to compact at 96,000, never get
 there, and have every request past its own window refused by the provider with
-nothing summarized. For a model Melete does know, this may lower the window and
+nothing summarised. For a model Melete does know, this may lower the window and
 not raise it, because the same catalog figure is what the model gateway's
 accounting is keyed on.
 
@@ -247,9 +485,9 @@ accounting is keyed on.
 Deployment memory can extract structured observations without a model. If
 unstructured work has no extraction gateway, it stops at the third total claim
 with status `rejected` and error `no_extraction_gateway` in `memory_work`.
-Queue repair and duplicate deliveries do not restart that terminal work. This
-cap does not configure an extraction gateway or automatically retry rejected
-evidence when configuration changes.
+Queue repair and duplicate deliveries do not restart that terminal work, and an
+extraction gateway configured afterwards applies to new work only: evidence
+already rejected stays rejected.
 
 ## Isolation and image provenance
 
@@ -264,7 +502,10 @@ and model proxy, and retains Hermes state on a named volume. The warm `runtime`
 service uses the `_probe` subdirectory and has no valid job capability.
 Linux's isolated bridge mode removes the bridge's host address; live probes,
 not the Compose configuration checker alone, establish the network result.
-See the [threat model](THREAT-MODEL.md) for the verified boundary and limits.
+Those probes cover a Linux Docker host, which is the host this page describes;
+macOS, Windows and rootless Docker hosts are outside them, as is a kernel
+exploit. See the [threat model](THREAT-MODEL.md) for the boundary and what
+rests on it.
 
 The runtime build asserts that Hermes tag `v2026.9.7` resolves to commit
 `2237be355906fbe6065ce1815711eee52b2d646e`. It also asserts the plugin content
@@ -278,10 +519,10 @@ docker compose -f deploy/docker-compose.yml cp runtime:/opt/melete-runtime/sbom.
 ```
 
 The SBOM is a CycloneDX inventory of the Python and OS packages in that image.
-These checks reproduce source identity and enforce dependency locks. They do
-not promise byte-identical image digests: OS package repositories, build
-timestamps, and build tooling can change the resulting bytes. Compare the
-recorded labels and inventories when rebuilding.
+These checks reproduce source identity and enforce dependency locks. Image
+digests can differ between builds, because OS package repositories, build
+timestamps and build tooling change the resulting bytes; compare the recorded
+labels and inventories when rebuilding.
 
 ## Upgrading
 
@@ -306,7 +547,7 @@ The limits live in the `x-logging` anchor at the top of
 `deploy/docker-compose.yml`; a changed limit applies when a container is
 recreated, not on restart. `bun run compose:check` and
 `bun run browser:compose:check` refuse a service without the bound. Logs that
-must outlive rotation belong in a collector you run; none is shipped.
+must outlive rotation belong in a log collector you run beside the stack.
 
 ## Backup and restore
 
@@ -370,5 +611,5 @@ finishes with exactly one destination receipt.
 
 Each run writes a private directory under `/tmp/melete-compose-restore` containing
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
-to choose another parent directory. The [deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records
-the measured run and its evidence.
+to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
+records a measured run and its evidence.

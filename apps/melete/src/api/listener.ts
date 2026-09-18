@@ -3,6 +3,7 @@ import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import type { Hono } from 'hono';
 import type { Env } from '../env.ts';
+import { plainAddress, type TrustedPeer, trustedPeer } from './trusted-peer.ts';
 
 export type ApiNetwork = {
   hostname: string;
@@ -22,53 +23,14 @@ type SocketSource = { requestIP: (request: Request) => { address: string } | nul
 export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
 
 /** Whether a socket peer is the deployment's web proxy. */
-export type TrustedProxy = (peer: string) => boolean | Promise<boolean>;
-
-const PROXY_FOUND_MS = 30_000;
-const PROXY_MISSING_MS = 5_000;
-
-function plainAddress(value: string | null | undefined): string | null {
-  const address = value?.trim().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '') ?? '';
-  return isIP(address) ? address.toLowerCase() : null;
-}
+export type TrustedProxy = TrustedPeer;
 
 /**
- * The one peer whose client address header is believed. Nothing is trusted
- * unless the deployment names it: a literal address, or the proxy's service
- * name on the edge network. A name is resolved when needed and remembered
- * briefly, because the proxy starts after the API and gets a new address when
- * it is recreated; while it does not resolve, nobody is trusted.
+ * The one peer whose client address header is believed: the web proxy named by
+ * `MELETE_TRUSTED_PROXY`. The rule is shared with the web server, which asks
+ * the same question about its own upstream.
  */
-export function trustedProxy(
-  name: string | undefined,
-  resolve: (name: string) => Promise<string[]> = async (host) =>
-    (await lookup(host, { family: 4, all: true })).map((entry) => entry.address),
-  now: () => number = Date.now,
-): TrustedProxy {
-  if (!name) return () => false;
-  const literal = plainAddress(name);
-  if (literal) return (peer) => plainAddress(peer) === literal;
-  let known: { addresses: Set<string>; until: number } | undefined;
-  let pending: Promise<Set<string>> | undefined;
-  return async (peer) => {
-    if (!known || now() >= known.until) {
-      pending ??= resolve(name)
-        .then((found) => new Set(found.flatMap((entry) => plainAddress(entry) ?? [])))
-        .catch(() => new Set<string>())
-        .then((addresses) => {
-          known = {
-            addresses,
-            until: now() + (addresses.size ? PROXY_FOUND_MS : PROXY_MISSING_MS),
-          };
-          pending = undefined;
-          return addresses;
-        });
-      await pending;
-    }
-    const address = plainAddress(peer);
-    return address !== null && known?.addresses.has(address) === true;
-  };
-}
+export const trustedProxy = trustedPeer;
 
 function ipv4(address: string | undefined): number | null {
   const value = address?.replace(/^::ffff:/i, '');

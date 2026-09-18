@@ -35,6 +35,7 @@ jobs:
         run: |
           bun run compose:check
           bun run browser:compose:check
+          bun run tailscale:compose:check
 
   test:
     name: Test suite and runtime plugin

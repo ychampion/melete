@@ -147,6 +147,10 @@ set `MELETE_WEB_ORIGIN=https://your-hostname` in `deploy/.env` and recreate the
 web service. [Deployment](docs/DEPLOYMENT.md) covers TLS, provider
 configuration, image provenance and backup restoration.
 
+An optional override reaches the installation from your phone and your laptop
+over your own tailnet, with HTTPS and no published port. See
+[Tailscale](docs/DEPLOYMENT.md#tailscale).
+
 ### Remove it completely
 
 Everything Melete keeps lives in Docker volumes and one configuration file, so
@@ -233,6 +237,8 @@ bun run test
 bun run openapi
 bun run client:generate
 bun run compose:check
+bun run browser:compose:check
+bun run tailscale:compose:check
 bun run conformance
 bun run conformance:memory
 bun run test:plugin

@@ -63,7 +63,7 @@ to named tests on the tagged tree; the README's gates table is the summary.
   configuration that leaves the memory keys, the turn ceiling or compaction
   unpinned.
 - **Continuous integration.** Pull requests and pushes to `main` run the
-  typecheck, lint, both Compose checks, the test suite against a Postgres 17
+  typecheck, lint, every Compose check, the test suite against a Postgres 17
   service, the runtime plugin suite and a build of the service, web and runtime
   images. Actions are pinned by commit and no secret is read; a test fails the
   workflow if it names a script or file that does not exist.
@@ -74,8 +74,22 @@ to named tests on the tagged tree; the README's gates table is the summary.
   should carry, so a plugin change that leaves the pin behind fails the static
   checks instead of the image build.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
-  `json-file` log at 10 MB with five files. `compose:check` (30 checks) and
-  `browser:compose:check` (12) refuse a service without the bound.
+  `json-file` log at 10 MB with five files. `compose:check` (30 checks),
+  `browser:compose:check` (12) and `tailscale:compose:check` (15) refuse a
+  service without the bound.
+- **Reach your installation from your own devices over your tailnet.** An
+  optional Compose override runs one Tailscale node beside the stack: it joins
+  your tailnet, answers HTTPS at the node's own address and forwards to the web
+  client, with no host port published and Funnel off. `configure.ts --tailscale`
+  settles the node name, `deploy/scripts/tailscale-origin.ts` reads the address
+  back off the joined node and writes it as the web origin, and
+  `upgrade.ts --tailscale` carries the override across a release. The node runs
+  userspace networking on the edge network only, with every capability dropped
+  and a read-only root; kernel networking is a separate opt-in file. Each device
+  on the tailnet is counted separately by the sign-in limits, because the web
+  server takes a forwarded address only on a connection from the one upstream
+  the deployment names. Sign-in is unchanged: a password and a device cookie.
+  [Tailscale](docs/DEPLOYMENT.md#tailscale).
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one
   message naming Docker Engine 28.0 and Docker Compose 2.33.1 when the engine is

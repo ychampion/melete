@@ -1,8 +1,10 @@
 # Threat model
 
-This document describes the tree at the head of `integration`. It
-distinguishes rejection tests from deployment claims. A fixture pass proves the exercised gate under its
-inputs, not that every attack is contained.
+This document names each attacker Melete is built to withstand, the boundary in
+the way, the tests that check that boundary, and what lies beyond it. Two kinds
+of evidence appear throughout: fixture tests, which check a gate against the
+inputs they supply, and the live probes of conformance scenario 6, which check
+the deployed container boundary on a Linux Docker host.
 
 The service container mounts the host Docker socket to supervise attempt
 containers. Socket access is **host-root equivalent**: the service can ask the
@@ -16,8 +18,10 @@ argument tests check the restrictions applied to each runtime.
 
 ## Attacker 1: hostile content in email or on a web page
 
-Hostile text can influence a model's proposed actions and summaries.
-General prompt-injection containment is **not claimed**.
+Hostile text can influence a model's proposed actions and summaries. Melete does
+not rely on the model resisting injected instructions: the defence sits at the
+effect boundary, where text the model has read cannot widen what an attempt may
+do or change what an approval covers.
 
 The broker checks canonical payloads, approval hashes and attempt authority.
 Conformance 4, `An approval cannot be spent on different content`, tests
@@ -25,24 +29,29 @@ payload/revision binding and cancellation fencing. `resume_action` carries only
 an action id: an attempt can carry out an action the owner approved for its own
 job and current revision, with the stored bytes, under its own live capability,
 and nothing else (`resume refuses whatever the owner has not approved for this
-job and revision`). The memory/broker test
-`an address read off a page is refused as untrusted_recipient_origin`
-checks a planted address at admission; it does not prove arbitrary prose is
-safe or that every possible destination field is recognized.
+job and revision`). The memory/broker test `an address read off a page is
+refused as untrusted_recipient_origin` checks a planted address at admission.
+Origin is checked on the recognised
+recipient, destination, amount and resource fields; free prose, and a
+destination carried in any other field, have no origin check.
 
 The web connector rejects private/metadata addresses and rechecks redirects:
 `web SSRF guard denies private, metadata, multicast and mapped private
 addresses` and `redirects repeat compartment and DNS checks, with no request to
 the denied destination`. Private-context allowlists use exact hosts
 (`private compartment allowlist is trusted context and exact-host only`).
-Public-compartment context assembly is tested separately by `approved shared
-context and public compartments are assembled before delivery`; universal
-deployment integration is **not claimed**.
+A calendar feed is fetched under the same public-address rules, resolved again
+on every read, with redirects refused (`ics-feed.test.ts`).
+Public-compartment context assembly is tested by `approved shared context and
+public compartments are assembled before delivery`: a public-compartment job
+receives no private memory.
 
-Email hygiene is a heuristic, tested by `withholds OTP, password resets and
-magic links from search and direct read`. Complete detection is **not claimed**.
-Approval fatigue, misleading summaries, harmful permitted reads and social
-engineering of the owner remain outside these proofs.
+Email hygiene matches the known shapes of one-time codes, password resets and
+magic links, tested by `withholds OTP, password resets and magic links from
+search and direct read`; a sensitive message in any other shape is read like
+any other message. Approval fatigue, misleading summaries, harmful reads within
+granted scope and social engineering of the owner rest on the owner's judgement
+rather than on these checks.
 
 ## Attacker 2: a malicious skill file
 
@@ -56,16 +65,17 @@ compartment, so a requested skill never supplies its own authority. Schema
 length limits are tested by `refuses a skill that is longer than the contract
 allows`.
 
-These tests do not establish that short skills are harmless. A skill may
-influence permitted reads, draft contents and the owner's decisions. Skill
-signing, a verified installation/review workflow and malicious-skill containment
-are **not claimed**. Inspect installed skill text as trusted prompt input.
+A skill that passes these checks can still influence permitted reads, draft
+contents and the owner's decisions. A skill file in a space loads once it passes
+schema and length validation, and skills carry no signature, so treat installed
+skill text as trusted prompt input and read it before installing it.
 
 ## Attacker 3: a compromised model provider
 
-A provider receives the prompt sent to it and can return misleading text.
-Confidentiality from that provider and truthfulness of its responses are
-**not claimed**.
+A provider sees the content of every request sent to it and can return
+misleading text. What it returns is model output with no authority of its own,
+subject to the same broker checks as any other proposal. Choose a provider you
+trust with the content of your jobs.
 
 The gateway tests enforce the configured forwarding boundary:
 `rejects missing capability, missing surrogate, wrong model, arbitrary paths
@@ -73,64 +83,72 @@ and methods`; `reserves before injecting credentials and strips capability
 and caller headers`; and `stale epoch and concurrent budget exhaustion stop
 requests before transport`. The fake-provider test `streams the fake tool
 conversation end to end and records actual model and usage` checks recording
-of the response's reported model. It cannot verify the provider's internal
-model identity.
+of the response's reported model; the recorded model is the one the provider
+reports.
 
 `Astra requires Responses and Anthropic drops sampling controls without
-rewriting history` tests request handling against fake transport. Every-provider
-compatibility is **not claimed**. Conformance 8 ran against the Linux stack with
-the scripted provider (a cell capability could read the catalog but not approve,
-and an altered approval hash was refused); its comparison against a second, real
-provider was skipped because no credential was configured. API-key forwarding through the gateway is
-the verified path. Configuring provider OAuth inside Hermes would place those
-credentials in the runtime's auth store, outside this boundary: a runtime
+rewriting history` tests request handling against a fake transport; the
+supported providers are listed in [DEPLOYMENT](DEPLOYMENT.md#providers).
+Conformance 8 runs against the Linux stack with the scripted provider: a cell
+capability can read the catalog but not approve, and an altered approval hash is
+refused. Its comparison against a second, real provider runs when the stack has
+that provider's credential and `MELETE_CONFORMANCE_REAL_PROVIDER` and
+`MELETE_CONFORMANCE_REAL_MODEL` select it; no recorded run has. API keys stay
+in the gateway, which forwards them. Configuring provider OAuth inside Hermes
+would place those credentials in the runtime's auth store, outside this
+boundary: a runtime
 compromise exposes an OAuth token stored there, and it does not expose a
-provider API key kept in Melete's gateway. The tested images and volumes
-contain no such OAuth configuration.
+provider API key kept in Melete's gateway. The runtime image and Compose volumes
+carry no OAuth configuration.
 
 ## Attacker 4: a compromised runtime container
 
-Live container containment was probed on a Linux Docker host (Engine 29.1.3,
-2026-09-11 and 2026-09-12) from a real claimed Hermes container and the warm
-probe container: the internet, the host metadata address, a live host listener,
-Postgres (by DNS and by container IP), the web service and the owner control
-plane (`/setup`, `/login`, `/health` on port 8787) were unreachable; the broker
-and model gateway on port 8788 were the only reachable peers; the cell ran as
-UID 10001 with a read-only root, zero effective capabilities, no-new-privileges
-and no Docker socket. The table below records that evidence and what would
-falsify it. These checks establish the tested Linux configuration, not macOS,
-Windows, rootless Docker, or protection from kernel exploits.
+Conformance scenario 6 probes containment live, from a real claimed Hermes
+container and the warm probe container on a Linux Docker host: the internet, the
+host metadata address, a live host listener, Postgres (by DNS and by container
+IP), the web service and the owner control plane (`/setup`, `/login`, `/health`
+on port 8787) are unreachable; the broker and model gateway on port 8788 are the
+only reachable peers; the cell runs as UID 10001 with a read-only root, zero
+effective capabilities, no-new-privileges and no Docker socket. The table under
+[Linux deployment verification](#linux-deployment-verification) records each
+boundary, its evidence and what a breach would look like. The probes establish
+the boundary on a Linux host running Docker Engine; macOS, Windows and rootless
+Docker hosts are outside what they cover.
 
 The Compose file declares an internal-only runtime network with isolated
 bridge gateway mode, non-root UID, read-only root, dropped capabilities,
 no-new-privileges and process/memory limits. The static test `passes every
 boundary check` reads that configuration; the live probes above are what
-establish runtime behavior.
+establish runtime behaviour.
 
 Writable paths are the current job's `/work` subpath (`work/<job>`, mounted
 with a volume subpath so sibling jobs' directories are hidden by the OS mount),
 the attempt's named `/var/lib/hermes` volume, and a size-limited `/tmp` tmpfs.
 The declared Hermes home is checked by `taking away the runtime writable
-Hermes home`. A shared kernel, the runtime volume's own contents and the
-reachable broker remain attack surfaces. Virtual-machine isolation and
-host-compromise containment are **not claimed**.
+Hermes home`. Inside the boundary, the shared kernel, the runtime volume's own
+contents and the reachable broker remain attack surface. The isolation boundary
+is the attempt container on the host's shared kernel; a kernel exploit or a
+compromised host is outside it.
 
 The capability gate has independent fixture evidence: conformance 2,
 `A stalled attempt cannot act after its lease expires`, verifies stale
-authority rejection and truthful late receipts. This does not limit arbitrary
-code execution in the runtime to the model's usual plugin behavior.
+authority rejection and truthful late receipts. The gate governs what an attempt
+may ask the broker to do; code running inside the cell is bounded by the
+container, as the next section describes.
 
 ### The runtime runs code on purpose
 
-Since 0.1 the cell can run shell commands and Python snippets, and no approval
-stands in front of it. That is not a weakening of this section, it is a
-statement about where the boundary is. The container is what contains a command,
-and it contains one exactly as well as it contains the agent loop that started
-it: no route out, no credentials, non-root, read-only root filesystem, all
-capabilities dropped, `no-new-privileges`, process and memory limits, `/work` as
-the only writable mount. An attacker who can make the model run a command has
-gained nothing an attacker who already had code execution in the container did
-not have.
+The cell runs shell commands and Python snippets, with no approval in front of
+them, because the container is the boundary for code. It contains a command
+exactly as well as it contains the agent loop that started it: no route out, no
+credentials, non-root, read-only root filesystem, all capabilities dropped,
+`no-new-privileges`, process and memory limits, and `/work`, the attempt's
+Hermes home and a small `/tmp` as the only writable paths. An attacker who can
+make the model run a command gains nothing beyond what code execution in the
+container already gives. The tools that run code are among the default
+connections a space is given, and only where attempts run in a container; under
+the process supervisor that row offers nothing
+([CONNECTORS](CONNECTORS.md#default-connections)).
 
 What running code does add is a record. Every execution is a
 `write_reversible` action with the command, the working directory, the exit
@@ -141,29 +159,28 @@ before starting anything, the broker refuses the same thing again when the
 record arrives, and a stored output is re-hashed on the service side before the
 receipt says it verified.
 
-What that does **not** contain: the command's effects on the filesystem. That is
-the container's job and only the container's job. Two consequences worth naming:
+A command's effects on the filesystem are bounded by the container alone. Two
+consequences follow:
 
-- **A command can write anywhere the container can write.** Today that is
-  `/work`, the Hermes home, and a small `/tmp`. There is no second sandbox
-  inside the cell and the code says so.
+- **A command can write anywhere the container can write.** That is `/work`,
+  the Hermes home and a small `/tmp`; the cell has no second sandbox inside it.
 - **`/work` is the job's own subpath.** Each per-attempt container mounts
   `work/<job>` with a volume subpath, so a sibling job's directory is not
-  present in the cell at all. Scenario 6 planted a canary in a sibling
-  directory and read it through three cell paths; all three returned ENOENT
-  while the job's own workspace stayed writable. Two jobs' workspaces are
+  present in the cell at all. Scenario 6 plants a canary in a sibling
+  directory and reads it through three cell paths; all three return ENOENT
+  while the job's own workspace stays writable. Two jobs' workspaces are
   separated by the OS mount, and the tool-level refusal is a second check
   rather than the boundary.
 
 ## Linux deployment verification
 
-On 2026-09-11, scenario 6 ran Python standard-library probes from a real claimed
-Hermes container and the warm probe container under Docker Engine 29.1.3. The
-claimed cell mounted only `work/<job>` and its private runtime home. These checks
-establish the tested Linux configuration, not macOS, Windows, rootless Docker,
-or protection from kernel exploits.
+Scenario 6 runs Python standard-library probes from a real claimed Hermes
+container and the warm probe container; the recorded run used Docker Engine
+29.1.3 on Linux. The claimed cell mounts only `work/<job>` and its private
+runtime home. What the table records holds for a Linux Docker host; macOS,
+Windows and rootless Docker hosts are outside it, as is a kernel exploit.
 
-| Boundary | Observed evidence | What would falsify it |
+| Boundary | Observed evidence | What a breach would look like |
 | --- | --- | --- |
 | External network | No default route; public IP, metadata IP and a live host listener were unreachable | A successful TCP connection to any blocked target |
 | Sibling services | Postgres failed by DNS and actual container IP; web DNS was unreachable | A reachable database or web listener from the cell |
@@ -173,26 +190,27 @@ or protection from kernel exploits.
 | Owner control plane | Scenario 6 probes setup, login and health on port 8787 from both cells; the API binds only to edge and its transport guard denies other source subnets | Either cell receiving account state or any response other than connection refusal or the fixed 403 |
 | Process hardening | UID 10001, read-only root, zero effective capabilities, no-new-privileges, no Docker socket | Any failed assertion in the live hardening probe |
 
-The restore proof replaced only the stack's Postgres volume while retaining a
+The restore proof replaces only the stack's Postgres volume while retaining a
 newer independent restriction journal. Before normal startup, verification
-rejected the stale snapshot. Startup replayed the restriction before opening
-memory and job workers; afterward the forgotten fact was absent, an unrelated
-fact remained available, and the restored waiting job completed with one receipt.
-Serving the forgotten fact or duplicating the destination effect would falsify
-those restore claims. Commands and measured results are in [deployment note 0020](../.agents/notes/0020-deployment-evidence.md).
+rejects the stale snapshot. Startup replays the restriction before opening
+memory and job workers; afterwards the forgotten fact is absent, an unrelated
+fact remains available, and the restored waiting job completes with one receipt.
+Serving the forgotten fact, or a second destination receipt, would mean the
+restore boundary had failed. Commands and measured results are in [deployment note 0020](../.agents/notes/0020-deployment-evidence.md).
 
-The 2026-09-12 review added the missing peer-port checks:
+Two scenario 6 tests cover the owner control plane from inside the cells:
 `the warm cell cannot reach owner setup, login or health` and
 `a claimed attempt cannot reach the owner control plane and retains its job boundary`.
-The earlier peer-set test alone did not establish this control-plane boundary.
 An integration test verifies the transport rejection before and after owner
 creation. Sign-in limits and their tests are under Attacker 6.
 
-## Attacker 5: a hostile operator-installed MCP server or generated wrapper
+## Attacker 5: a hostile installed MCP server or generated wrapper
 
 MCP workers belong outside the runtime cell. A server can lie in its description,
-annotations or results, including calling a write read-only. The operator's
-config supplies the exposed tools, effect classes, scopes and audience. The
+annotations or results, including calling a write read-only. The exposed tools,
+effect classes, scopes and audience come from the installation, either the row
+an owner installs through `POST /connections` or an entry in the operator's
+connections file, and a server cannot change them. The
 default effect is `write_external`; `readOnlyHint` cannot remove an approval.
 The broker still checks every action's scope, intent identity, approval hash and
 trust origin. A server result cannot install a tool, load a schema or approve
@@ -214,10 +232,11 @@ the enclosing inferred provenance or the original evidence handles.
 **Production stdio is refused at the launch boundary.** The test MCP launcher filters
 environment variables, redirects profile paths to its temporary directory and
 grants no client roots or sampling capability. That prevents automatic credential
-inheritance; it does not stop a same-identity process reading service-accessible
-files, inspecting other processes where the OS permits it, or using the host's
-network routes. An HTTP MCP endpoint can reach whatever its remote host permits.
-Neither worker is inside the cell's `internal: true` network boundary.
+inheritance; a process under the service's own OS identity could still read
+service-accessible files, inspect other processes where the OS permits it, and
+use the host's network routes. An HTTP MCP endpoint can reach whatever its
+remote host permits. Neither worker is inside the cell's `internal: true`
+network boundary.
 
 Configured HTTP installations register with the `mcp` provider. They receive
 only protocol messages and admitted tool arguments, with no service credentials,
@@ -226,13 +245,17 @@ own host's filesystem and network policy remain the operator's responsibility.
 Owner-only tools are hidden in public compartments and the broker checks the
 persisted audience again at dispatch, including after approval.
 
-Launching a local untrusted installation requires a separate OS identity or
-sandbox, no vault/database mounts or credentials, and a verified network
-policy. Both the production adapter and raw stdio transport
-reject an unisolated launch; tests prove rejection before spawning. A
-container-isolated MCP launcher has not been built or tested.
-Composition likewise requires the cell executor, which the default service does
-not inject; its test-only `node:vm` fallback is not an OS or memory boundary.
+A local, untrusted MCP server can run safely only under a separate OS identity
+or sandbox, with no vault or database mounts or credentials, and behind a
+verified network policy. Both the production adapter and the raw stdio
+transport refuse a launch without that isolation, and
+`production stdio cannot launch under the service OS identity` shows the
+refusal happens before anything is spawned, so a production MCP server is an
+HTTP endpoint, installed by the owner or pinned in the operator's connections
+file. Composition likewise needs a cell executor
+to run its script; the default service supplies none, so it does not offer the
+composition tool. The `node:vm` executor exists for deterministic tests, refuses
+to start outside them, and is not an OS or memory boundary.
 
 ## Attacker 6: a remote client at the sign-in form
 
@@ -275,8 +298,8 @@ is unaffected. A stolen device cookie removes that protection for its holder
 and nothing else; it expires after 90 days and cannot be revoked singly. All
 limiter state is per process and is cleared by a restart. Behind the default
 loopback ports, an SSH tunnel or a host TLS proxy, every browser reaches the web
-server from the Docker gateway and therefore shares one client address. No
-second factor exists. Distributed guessing below the account limit is slowed,
+server from the Docker gateway and therefore shares one client address. Sign-in
+is by password alone. Distributed guessing below the account limit is slowed,
 not stopped; the password remains the control.
 
 ## Attacker 7: another account on the same installation
@@ -310,15 +333,16 @@ database boundary.
 Connector secrets have tested sealing and scope checks: `stores randomized
 sealed boxes and only decrypts in the owning space` and `rejects a wrong
 master key, changed ciphertext and cross-row swaps`.
-The process holding the master key and plaintext at dispatch remains trusted.
-The broker, API and connectors share a service process. Process-level separation,
-confidential compute and protection against a compromised host are **not claimed**.
+The broker, API and connectors share one trusted service process. It holds the
+master key and decrypts credentials in ordinary process memory at dispatch, so a
+compromise of that process, or of the host, exposes them.
 
 Memory restrictions are checked in Postgres before recall, not merely in a
 filesystem search index. `source and space revocation invalidate delivered
 context and block stale serving` tests that boundary. The restriction journal
-supports memory restore gating; a shipped exportable tamper-evident action
-ledger is **not claimed**. See [MEMORY](MEMORY.md) for retained-copy limits.
+exists to gate memory restore: it records removals, not actions. The action
+ledger is ordinary Postgres state, with no tamper-evident export. See
+[MEMORY](MEMORY.md) for what forgetting reaches.
 
 ## Verification
 
@@ -332,9 +356,10 @@ bun test apps/melete/src/connectors
 The first command checks YAML only; the second uses temporary files, fake
 transports and local protocol fixtures. The container probes run as scenario 6
 when `MELETE_CONFORMANCE_COMPOSE=1` is set against a running Linux stack (see
-the README). The Linux deployment and restoration checks use a scripted model
-and a test destination; they do not establish live provider behavior or the
-safety of an arbitrary external account.
+[service conformance](../conformance/README.md)). The Linux deployment and
+restoration checks use a scripted model and a test destination, so they
+exercise Melete's side of each boundary rather than a live provider or an
+external account.
 
 ## Browser worker boundary
 
@@ -347,28 +372,31 @@ broker, and container boundary have separate jobs:
   `control_epoch`. Takeover increments the epoch immediately, including while
   another action is waiting for a locator; the next input is refused by the
   controller. Handback increments it again and requires a fresh observation.
-  The service parks the job as `waiting_for_input`. This claim is falsified by a
-  second fill reaching the page after takeover. The local fixture tests inject
-  exactly that interleaving and require zero submissions.
+  The service parks the job as `waiting_for_input`. The local fixture test
+  `controller refuses the second fill after takeover, and handback requires
+  fresh observation` races a second fill against takeover and requires that it
+  is refused with nothing submitted; `takeover during DNS is checked
+  immediately before transport and refuses the queued POST` covers the network
+  path.
 - **Consequential effects.** Form commits use `browser.submit` through the broker's
   approval, intent-key, and trust-origin gates. The controller binds the observed
   form and outgoing request to that approved intent. Reversible inputs have no
-  network budget; an approved submit has one matching mutation. An unapproved
-  request reaching the fixture ledger would falsify the gate. Unknown commit
+  network budget; an approved submit has one matching mutation, and the fixture
+  ledger must record no request the owner did not approve. Unknown commit
   outcomes are not replayed.
 - **Page networking.** Chromium's direct networking is pointed at a fail-closed
   proxy, and trusted worker code relays checked requests. Public-address checks,
   pinned DNS transport, redirect checks, and the private-context domain allow-list
   apply there. WebSockets and service workers are denied. The public-web
-  compartment does not reuse a signed-in private profile. Private-address traffic
-  reaching a fixture transport would falsify these checks.
+  compartment does not reuse a signed-in private profile. The fixture transports
+  must see no private-address traffic.
 - **Space and process isolation.** The browser override mounts only
   `spaces/<space id>` at `/space`, runs uid 10003, and supplies no database URL,
   vault key, provider key, runtime capability, all-spaces mount, global artifacts
   root, or runtime work volume. It does not share the runtime or Postgres networks.
   The YAML tests deliberately add each forbidden mount, credential, network, or
-  privilege and require the configuration check to reject it. A host operator
-  still has to create and permission the intended volume subdirectory.
+  privilege and require the configuration check to reject it. The host operator
+  creates and permissions the intended volume subdirectory.
 - **Narrow worker listener.** The control network is shared only with the broker,
   no control port is published, and a separate worker token is required. The
   listener accepts bounded JSON requests for health, leases, semantic commands,
@@ -376,20 +404,22 @@ broker, and container boundary have separate jobs:
   Browser-originated requests are rejected. The owner-facing control routes use
   the service's existing authentication and same-origin protection.
 
-The worker can reach the internet by design, for the person's authorized sites.
+The worker can reach the internet by design, for the person's authorised sites.
 The relay policy constrains an intact worker; a compromised Node process can
 use its own outbound sockets and can steal or alter its mounted browser profile.
 It can read whatever the configured uid may read within that one mounted space.
-It has no direct mount of the vault, runtime cell, or another space. The container
-shares the host kernel; a kernel compromise removes those boundaries. A separate
-virtual machine and a Chromium renderer-sandbox proof are **not claimed**.
+It has no direct mount of the vault, runtime cell, or another space. The worker
+is a container on the host kernel rather than a virtual machine, and
+Playwright's `chromiumSandbox` default is off, so Chromium runs without its
+renderer sandbox and a compromised renderer has the worker's access; a kernel
+compromise removes the remaining boundaries.
 
 Docker bridge membership is not directional. A compromised worker can reach the
 Melete service ports on `browser-control`, even though it cannot directly join the
 runtime or database network. The worker token grants no authority to those ports;
 owner authentication and broker capability checks must continue to reject it.
-Melete still holds credentials in the same process as the API, so an exploitable
-service bug remains a route to them. The topology does not claim otherwise.
+Melete holds credentials in the same process as the API, so an exploitable
+service bug remains a route to them.
 
 Development on Windows uses a same-user child process with a restricted
 environment, not an OS isolation boundary. Production requires an explicitly
@@ -397,15 +427,58 @@ configured isolated endpoint and never silently starts that development child.
 The endpoint address is trusted operator configuration, not an attestation of
 the remote deployment. Takeover supplies fencing and owner control routes. A
 person may enter credentials on an operator-owned worker display using
-`MELETE_BROWSER_HEADLESS=false`; a remote desktop transport or login UI is not
-provided here. The network guard remains closed to unbrokered requests during
-takeover; interactive sign-in remains unsupported. Recipes and episodes exclude
-authentication factors, while Chromium's private profile may retain the cookies
-needed for a warm signed-in session.
+`MELETE_BROWSER_HEADLESS=false`; Melete includes no remote desktop transport or
+login interface for reaching that display. The network guard stays closed to
+unbrokered requests during takeover, so a site sign-in cannot be completed
+interactively through takeover. Recipes and episodes exclude authentication
+factors, while Chromium's private profile may retain the cookies needed for a
+warm signed-in session.
 
 `bun run deploy/scripts/browser-compose-check.ts` checks deployment configuration;
-the browser and integration tests check live controller behavior on local
-fixtures. The browser image build, the combined Compose startup with the browser
-override, and Linux packet-level isolation of the worker have not been run;
-static YAML checks do not substitute for them. Installation and operation are
+the browser and integration tests check live controller behaviour on local
+fixtures. Unlike the runtime cell, which scenario 6 probes from inside, the
+worker's network boundary rests on that checked configuration: no conformance
+scenario builds the browser image, starts the stack with the browser override,
+or probes the worker's network from inside it. Installation and operation are
 described in [browser-worker.md](browser-worker.md).
+
+## Tailnet access boundary
+
+The optional Tailscale override puts one node in front of the web client so the
+installation can be reached from the owner's own devices without a published
+port. The node is an additional way in, and the boundary it adds is this.
+
+The node joins the `edge` network and no other, so it cannot address the
+database network, the runtime network, or the browser control network, and it
+receives no Docker socket, no database URL, no vault key and no provider key.
+Its serve configuration forwards the root of one host to `http://web:3000` and
+proxies nothing else, so a peer on the tailnet reaches the sign-in page and
+whatever a signed-in browser can reach through it, on the same routes a browser
+on `localhost:3101` reaches. `AllowFunnel` is false for that host, so the
+address answers peers on the tailnet rather than the public internet, and the
+node publishes no host port of its own. `bun run tailscale:compose:check`
+rejects a change to any of those properties, and a rejection test covers each
+one.
+
+Reaching the sign-in page is not signing in. The password, the per-address and
+per-account limits, and the device cookie apply to a tailnet peer as they apply
+to any other browser. Tailscale states the requesting user on a proxied
+request; the service reads no such header as identity, and the web server
+removes every `Tailscale-` header from every request before the API sees it,
+whichever socket it arrived on, because Serve rewrites only the names it owns
+and forwards the rest as the browser sent them. The address in
+`X-Forwarded-For` is believed on a connection from the node named in
+`MELETE_WEB_TRUSTED_UPSTREAM` and from nowhere else, so a browser cannot choose
+the bucket its sign-in attempts are counted in.
+
+What this leaves in place: every device on the tailnet can open the address
+unless the tailnet policy file restricts the node, and a peer that reaches it is
+an unauthenticated client at the sign-in form, which is
+[attacker 6](#attacker-6-a-remote-client-at-the-sign-in-form). A device already
+holding a valid session cookie carries the session, as it would anywhere. The
+node's own key on the `tailscale-state` volume authenticates the node to the
+tailnet, and a host user who can read that volume can impersonate the node
+there. Tailscale's control plane issues the certificate for the name, so the
+tailnet's own administration is part of this boundary. The node was verified
+from its YAML and from the checks above; a joined node on a real tailnet is a
+separate step, described in [deployment](DEPLOYMENT.md#tailscale).
