@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { fileURLToPath } from 'node:url';
-import { report, scanText, scrub, violation } from './scrub-check.ts';
+import { pathViolation, report, scanText, scrub, violation } from './scrub-check.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 /** Any tracked path that is neither this file nor the check itself. */
@@ -38,9 +38,55 @@ describe('the check refuses an internal work code', () => {
     expect(violation(source, "email: 'w6@example.test',")).toBe('work code');
   });
 
-  test('the retained engineering history keeps its codes', () => {
-    expect(violation('.agents/notes/reports/w1-service.md', '# W1 service delivery')).toBeNull();
+  test('a numbered decision note keeps the codes in its prose', () => {
+    const note = '.agents/notes/0021-hermes-capability-audit.md';
+    expect(violation(note, 'After W14 the observer patch additionally reports')).toBeNull();
+    expect(violation('.agents/notes/README.md', 'W1 landed first')).toBeNull();
     expect(violation(source, '# W1 service delivery')).toBe('work code');
+  });
+
+  test('a working transcript filed under the notes does not', () => {
+    // `proposed/` and `reports/` are gone from the tree; the rule still reaches
+    // them, so restoring one would fail the build rather than slip back in.
+    expect(violation('.agents/notes/reports/w1-service.md', '# W1 service delivery')).toBe(
+      'work code',
+    );
+    expect(
+      violation('.agents/notes/proposed/2026-09-12-w11-contract-additions.md', 'W11 adds this'),
+    ).toBe('work code');
+  });
+});
+
+describe('the check refuses a name, not only a line', () => {
+  test('a file whose every line is clean but whose name is not', () => {
+    const named = '.agents/notes/proposed/2026-09-12-w10a-fix-contract-additions.md';
+    expect(pathViolation(named)).toBe('work code');
+    expect(scanText(named, 'This file says nothing that must be scrubbed.\n')).toEqual([]);
+  });
+
+  test('a name is checked wherever it sits, including a binary one', () => {
+    expect(pathViolation('.agents/reports/w2-broker.md')).toBe('work code');
+    expect(pathViolation('docs/media/w10b-timings.png')).toBe('work code');
+    expect(pathViolation('apps/melete/test/fixtures/melete-oss-scratch.json')).toBe(
+      'session trace',
+    );
+  });
+
+  test('a numbered note gets no exemption for its own name', () => {
+    // The prose is a record; the name is a choice made when the file is created.
+    expect(pathViolation('.agents/notes/0027-w14-capabilities.md')).toBe('work code');
+    expect(pathViolation('.agents/notes/0021-hermes-capability-audit.md')).toBeNull();
+  });
+
+  test('ordinary paths are left alone', () => {
+    for (const path of [
+      'apps/melete/src/broker/authority.ts',
+      'apps/web/docs/screens/approval-walk.png',
+      'packages/runtime-hermes/config/config.yaml',
+      'deploy/scripts/tailscale-compose-check.ts',
+      'scripts/scrub-check.ts',
+    ])
+      expect(pathViolation(path)).toBeNull();
   });
 });
 
@@ -81,5 +127,15 @@ describe('the failure tells a contributor what to do', () => {
       1,
     );
     expect(text).not.toContain('belongs to one machine');
+  });
+
+  test('a name is reported without a line number, and says so', () => {
+    const named = '.agents/notes/reports/w7-memory.md';
+    const text = report([
+      { file: named, line: null, text: 'the file name itself', rule: 'work code' },
+    ]);
+    expect(text).toContain(`${named}: the file name itself`);
+    expect(text).not.toContain(`${named}:null`);
+    expect(text).toContain('found 1 problem(s)');
   });
 });

@@ -4,6 +4,10 @@
  * repository: a local path, a working-note phrase, or an internal work code. It
  * runs as part of `bun run lint`.
  *
+ * Both what a file is named and what it holds are checked. A name leaks as
+ * readily as a line — more readily, because it is read before the file is
+ * opened — and a name is checked even when the bytes are binary.
+ *
  * The patterns are deliberately literal. This file and its test are the two
  * tracked files that have to spell them out, so they are exempt.
  */
@@ -14,6 +18,14 @@ import { fileURLToPath } from 'node:url';
  * and two phrases that only ever described the mechanics of a working session.
  */
 const SESSION_TRACE = /C:\/Users|\/root\/|melete-oss-|fix cycle|shared lock/;
+
+/**
+ * The part of the above a tracked path can actually carry. A worktree name can
+ * become a directory, so it is refused; the rest describe file contents — an
+ * absolute Windows path, a Linux home, two English phrases — and `/root/` would
+ * fire on an ordinary `deploy/root/` that means nothing of the kind.
+ */
+const PATH_TRACE = /melete-oss-/;
 
 /**
  * An internal work code: `W` and one or two digits, with an optional trailing
@@ -49,22 +61,38 @@ const ALLOWED: Record<string, RegExp> = {
 const SPELLS_THE_PATTERNS = new Set(['scripts/scrub-check.ts', 'scripts/scrub-check.test.ts']);
 
 /**
- * Work codes stay legal under `.agents/notes`, which README describes as the
- * retained engineering history. Each note records a decision and the evidence
- * behind it, and several are filed under the code of the work that produced
- * them, so scrubbing them would rewrite the record rather than tidy it. Nothing
- * the repository ships reads from here.
+ * Work codes stay legal inside a numbered decision note. README describes
+ * `.agents/notes` as the retained engineering history: each numbered note
+ * records a decision and the evidence behind it in the vocabulary of the day,
+ * so rewriting them would rewrite the record rather than tidy it.
+ *
+ * Only the numbered notes and their README. A file in a subdirectory of
+ * `.agents/notes` is not a decision — `proposed/` and `reports/` held working
+ * transcripts, named and written by the piece of work that produced them — so
+ * the rule reaches into them, by name and by content, if they ever come back.
  */
-const RETAINED_HISTORY = '.agents/notes/';
+const DECISION_NOTE = /^\.agents\/notes\/(?:README\.md|\d{4}-[a-z0-9-]+\.md)$/;
 
-export type Finding = { file: string; line: number; text: string; rule: string };
+export type Finding = { file: string; line: number | null; text: string; rule: string };
 
 /** The rule a line breaks, or null when it carries nothing that must be scrubbed. */
 export function violation(file: string, line: string): string | null {
   if (SPELLS_THE_PATTERNS.has(file)) return null;
   if (ALLOWED[file]?.test(line)) return null;
   if (SESSION_TRACE.test(line)) return 'session trace';
-  if (!file.startsWith(RETAINED_HISTORY) && WORK_CODE.test(line)) return 'work code';
+  if (!DECISION_NOTE.test(file) && WORK_CODE.test(line)) return 'work code';
+  return null;
+}
+
+/**
+ * The rule a tracked path breaks, or null when the name itself is clean. A
+ * decision note gets no exemption here: a name is not a record of anything, it
+ * is chosen when the file is created, so a new note is named for its subject.
+ */
+export function pathViolation(file: string): string | null {
+  if (SPELLS_THE_PATTERNS.has(file)) return null;
+  if (PATH_TRACE.test(file)) return 'session trace';
+  if (WORK_CODE.test(file)) return 'work code';
   return null;
 }
 
@@ -82,9 +110,11 @@ export function scanText(file: string, text: string): Finding[] {
 
 /** The failure a contributor reads, with one line of guidance per rule that fired. */
 export function report(findings: Finding[]): string {
-  const lines = [`scrub:check found ${findings.length} line(s) that must not be committed:`];
-  for (const finding of findings)
-    lines.push(`  ${finding.rule}  ${finding.file}:${finding.line}: ${finding.text}`);
+  const lines = [`scrub:check found ${findings.length} problem(s) that must not be committed:`];
+  for (const finding of findings) {
+    const where = finding.line === null ? finding.file : `${finding.file}:${finding.line}`;
+    lines.push(`  ${finding.rule}  ${where}: ${finding.text}`);
+  }
   for (const rule of new Set(findings.map((finding) => finding.rule)))
     lines.push(GUIDANCE[rule] ?? '');
   return `${lines.join('\n')}\n`;
@@ -98,14 +128,18 @@ export function trackedFiles(root: string): string[] {
 }
 
 /**
- * Every tracked file scanned. A NUL byte in the leading bytes means the file is
- * binary and is skipped; that is what keeps the screenshots under
- * `apps/web/docs/screens` and `docs/media` out, whose bytes match by accident.
+ * Every tracked file scanned, by name and then by content. A NUL byte in the
+ * leading bytes means the file is binary and its contents are skipped; that is
+ * what keeps the screenshots under `apps/web/docs/screens` and `docs/media`
+ * out, whose bytes match by accident. Its name is still checked, because a
+ * screenshot can be named after a piece of work as easily as a note can.
  */
 export async function scrub(root: string): Promise<{ files: string[]; findings: Finding[] }> {
   const files = trackedFiles(root);
   const findings: Finding[] = [];
   for (const file of files) {
+    const named = pathViolation(file);
+    if (named) findings.push({ file, line: null, text: 'the file name itself', rule: named });
     const bytes = await Bun.file(`${root}${file}`).arrayBuffer();
     if (new Uint8Array(bytes.slice(0, 8192)).includes(0)) continue;
     findings.push(...scanText(file, new TextDecoder().decode(bytes)));
