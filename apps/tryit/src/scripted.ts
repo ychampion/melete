@@ -220,9 +220,12 @@ function read(kind: Kind, name: string, found: Amount[]): Case {
     const yearly = rise && first ? { minor: rise * 12, currency: first.currency } : null;
     return {
       issue: `${name} is putting your price up at renewal.`,
+      // Put as a question, not a position. With no key this is matched on
+      // words alone, so it would otherwise be telling every visitor what they
+      // are entitled to on the strength of a phrase.
       summary: yearly
-        ? `That is ${money(yearly)} a year more. You can hold your current price or leave before the renewal date, and you do not have to accept the new one quietly.`
-        : `You can hold your current price or leave before the renewal date, and you do not have to accept the new one quietly.`,
+        ? `That is ${money(yearly)} a year more. Worth asking whether they will hold your current price, and what their terms say about leaving before the renewal date.`
+        : `Worth asking whether they will hold your current price, and what their terms say about leaving before the renewal date.`,
       amount: yearly,
       level: 'medium',
       why: 'A price rise letter is the moment a company is most willing to make an offer to keep you.',
@@ -238,7 +241,7 @@ function read(kind: Kind, name: string, found: Amount[]): Case {
     return {
       issue: `${name} ran late and offered you a voucher.`,
       summary:
-        'A voucher is not the same thing as compensation. Ask them to confirm what cash payment applies to this delay and to pay it to the card you booked with.',
+        'They have offered a voucher. Worth asking what cash payment applies to a delay of this length, and whether it can go to the card you booked with instead.',
       amount: null,
       level: 'medium',
       why: 'The delay and its cause are in their own message, which is the part that usually has to be proved.',
@@ -304,10 +307,12 @@ export function draftFrom(run: ProviderRun): DraftCaseFile {
       // one there is nothing to stand on, and saying otherwise would put the
       // person's own account in the company's mouth.
       basis: said.slice(0, 2).map((line, at) => ({
+        // True of any company message, whatever it says. "...and it has not"
+        // was an assertion about the world with nothing behind it.
         claim:
           at === 0
             ? `${name} put this in writing, unprompted.`
-            : `${name} set out what would happen next, and it has not.`,
+            : `${name} set out its own account of what happened.`,
         source_kind: 'quote' as const,
         quote: line,
         url: null,

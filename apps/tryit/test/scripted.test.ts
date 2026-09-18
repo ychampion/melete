@@ -148,8 +148,39 @@ describe('what it reads out of each sample', () => {
   test('a delay does not mistake the voucher for what is owed', () => {
     const draft = draftFrom(run(sample('flight')));
     expect(draft.entitlement.amount_minor).toBeNull();
-    expect(draft.entitlement.summary).toContain('voucher is not');
+    expect(draft.entitlement.summary).toContain('voucher');
     expect(draft.message.subject).toContain('not a voucher');
+  });
+});
+
+/**
+ * With no key this provider matches on words alone, so whatever it says is
+ * said about every paste of that shape. That is fine for "worth asking"; it is
+ * not fine for telling someone what they are entitled to, which it has no
+ * evidence for and no business deciding.
+ */
+describe('what it states, and what it only asks', () => {
+  const summaries = () =>
+    SAMPLES.map((entry) => draftFrom(run(entry.text)).entitlement.summary).join('\n');
+
+  test('it does not tell anyone what they may do', () => {
+    const said = summaries();
+    expect(said).not.toContain('you do not have to');
+    expect(said).not.toContain('You can hold your current price or leave');
+    expect(said).not.toContain('is not the same thing as compensation');
+  });
+
+  test('a price rise is put as a question for the company', () => {
+    const draft = draftFrom(run(sample('price-rise')));
+    expect(draft.entitlement.summary.toLowerCase()).toContain('worth asking');
+    // The figure is still there: it is the one thing the letter itself proves.
+    expect(draft.entitlement.amount_minor).toBe(7200);
+  });
+
+  test('a delay is put as a question too', () => {
+    const draft = draftFrom(run(sample('flight')));
+    expect(draft.entitlement.summary.toLowerCase()).toContain('worth asking');
+    expect(draft.entitlement.amount_minor).toBeNull();
   });
 });
 

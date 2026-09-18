@@ -45,6 +45,18 @@ describe('the page', () => {
     );
   });
 
+  test('the line saying what this is rides on the card, not only the footer', async () => {
+    const html = await (await call(new Request('https://tryit.example/'))).text();
+    // Once inside the case file it draws, once at the foot of the page. The
+    // card is the part that gets screenshotted and sent to someone else.
+    expect(html.split('not legal advice').length - 1).toBe(2);
+  });
+
+  test('no heading tells a visitor that a company owes them anything', async () => {
+    const html = await (await call(new Request('https://tryit.example/'))).text();
+    expect(html).not.toContain('Why you are owed it');
+  });
+
   test('carries the headline, the three samples and the two links', async () => {
     const html = await (await call(new Request('https://tryit.example/'))).text();
     expect(html).toContain('Deals with every company in your life');

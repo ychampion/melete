@@ -216,6 +216,10 @@ textarea::placeholder { color: var(--muted); }
 .amount .figure.words { font-size: 22px; line-height: 30px; letter-spacing: -.01em; text-wrap: pretty; }
 .amount .summary { margin-top: 8px; font-size: 15px; line-height: 23px; color: var(--text); text-wrap: pretty; }
 .amount .odds-why { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.amount .caveat {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 12px; line-height: 18px; color: var(--muted);
+}
 
 section.block { padding: 18px 20px; border-bottom: 1px solid var(--line); }
 section.block:last-child { border-bottom: 0; }
@@ -558,10 +562,17 @@ const SCRIPT = String.raw`
       h += '<div class="figure words">' + esc(file.entitlement.summary) + '</div>';
     }
     h += '<div class="odds-why">' + esc(file.odds.why) + '</div>';
+    /* The card is what gets screenshotted and passed around, so the line that
+       says what this is travels with it instead of sitting in a page footer
+       below the fold, where the figure and the odds pill go without it. */
+    h += '<div class="caveat">Melete writes the message. You read it and send it yourself. ' +
+      'This is not legal advice.</div>';
     h += '</div>';
 
     if (file.entitlement.basis.length) {
-      h += '<section class="block"><div class="h">Why you are owed it</div><div class="list">';
+      /* Not "why you are owed it": nothing here has adjudicated anything, and
+         after a refusal that heading would be plainly untrue. */
+      h += '<section class="block"><div class="h">What this rests on</div><div class="list">';
       for (var b = 0; b < file.entitlement.basis.length; b++) {
         var item = file.entitlement.basis[b];
         h += '<div class="basis"><div class="claim">' + esc(item.claim) + '</div>';
