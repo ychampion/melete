@@ -24,7 +24,7 @@ import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
-import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handle.ts';
+import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
 import type { ScanMailbox } from './mailbox.ts';
 import { type CompanyStore, contractMap, type LedgerDetail, type Owner } from './repository.ts';
 import { runScan } from './scan.ts';
@@ -37,8 +37,13 @@ export type CompaniesDeps = {
   /** The mailbox for a space, or nothing when that space has no mail connected. */
   mailbox: (owner: Owner) => Promise<ScanMailbox | null> | ScanMailbox | null;
   extractor: CompanyExtractor;
-  /** The playbooks lane's implementation. The stub refuses until it is wired. */
+  /** How an item is handled. The stub refuses when no job service was built. */
   handler?: LedgerItemHandler;
+  /**
+   * The mail connection a message for this space would go out on, when one is
+   * connected. Absent, the job still runs and still drafts, but nothing leaves.
+   */
+  sendConnection?: (owner: Owner) => Promise<string | null> | string | null;
   /**
    * How the scan runs once the route has answered. The default detaches it, so
    * the person gets a scan id straight away; a test passes one that runs the
@@ -174,12 +179,18 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   app.post('/ledger/:id/handle', async (c) => {
     const found = await findItem(deps, c.req.param('id'), c.req.query('space_id'));
+    // Which mailbox the message would leave from is the installation's to decide,
+    // not the caller's: it is looked up from the space the item was found in.
+    const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
     let result: Awaited<ReturnType<LedgerItemHandler['handleLedgerItem']>>;
     try {
       result = await handler.handleLedgerItem({
         item: found.item,
         company: found.company,
         messageText: found.message?.text ?? null,
+        principalId: found.owner.principalId,
+        spaceId: found.owner.spaceId,
+        ...(connectionId ? { connectionId } : {}),
       });
     } catch (error) {
       if (error instanceof HandlerUnavailable)

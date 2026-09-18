@@ -14,8 +14,11 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders } from '../gateway/configured.ts';
+import type { JobService } from '../jobs/service.ts';
+import type { TriggerService } from '../jobs/triggers.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
+import { playbookHandler } from './handler.ts';
 import { connectorMailbox, type ScanMailbox } from './mailbox.ts';
 import { type Owner, PostgresCompanyStore } from './repository.ts';
 import type { CompaniesDeps } from './routes.ts';
@@ -85,13 +88,32 @@ export function spaceMailbox(options: { sql: Sql; registry: ConnectorRegistry })
   };
 }
 
+/**
+ * The mail connection a space sends from, if it has one: its own active
+ * connection holding the `email.send` scope, chosen the way sign-in already
+ * chooses one. A space with nothing to send from still gets a job and a draft;
+ * the job simply has no deliverable, and the person is not told otherwise.
+ */
+export function spaceSendConnection(options: { sql: Sql }) {
+  return async (owner: Owner): Promise<string | null> => {
+    const rows = await options.sql`select id from connection
+      where space_id = ${owner.spaceId} and status = 'active' and scopes ? 'email.send'
+      order by id limit 1`;
+    const id = rows[0]?.id;
+    return id ? String(id) : null;
+  };
+}
+
 /** Everything the routes need, from what the service already built. */
 export function companiesDeps(options: {
   db: Database;
   sql?: Sql;
   registry?: ConnectorRegistry;
   env: Env;
+  jobs?: JobService;
+  triggers?: TriggerService;
 }): CompaniesDeps {
+  const { jobs, triggers } = options;
   return {
     db: options.db,
     store: new PostgresCompanyStore(options.db),
@@ -100,5 +122,17 @@ export function companiesDeps(options: {
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
     extractor: configuredExtractor(options.env),
+    // Without a job service there is nothing to create a job on, and the route's
+    // stub refuses. The route records `job_id` and `handling` itself once this
+    // returns an id, so the handler is given no `onStatusChange` of its own.
+    ...(jobs
+      ? {
+          handler: playbookHandler({
+            createJob: (input) => jobs.create(input),
+            ...(triggers ? { createTrigger: (id, spec) => triggers.create(id, spec) } : {}),
+          }),
+        }
+      : {}),
+    ...(options.sql ? { sendConnection: spaceSendConnection({ sql: options.sql }) } : {}),
   };
 }

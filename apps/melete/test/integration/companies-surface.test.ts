@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { companyMap, ledgerItem as ledgerItemContract } from '@melete/contracts';
 import { fixtureMessages } from '../../src/companies/fixtures.ts';
-import type { HandleRequest } from '../../src/companies/handle.ts';
+import type { HandleRequest } from '../../src/companies/handler.ts';
 import { fixtureMailbox } from '../../src/companies/mailbox.ts';
 import { PostgresCompanyStore } from '../../src/companies/repository.ts';
 import { scriptedExtractor } from '../../src/companies/scripted.ts';

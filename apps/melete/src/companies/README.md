@@ -81,10 +81,14 @@ days of mail.
 
 ## Handing an item on
 
-`handle.ts` is the whole seam to the playbooks that write to a company. It is an
-interface and a stub that refuses; the route answers 503 until something
-implements it. Nothing in this module sends, and any send belongs on the
-existing broker path with its approval and exactly-once behaviour.
+`handler.ts` is the whole seam to the playbooks that write to a company: an
+interface, a stub that refuses, and the adapter onto `handle.ts`, which turns an
+item into a job carrying its playbook and the sentences that item can still
+quote. The route asks through that interface and then records `job_id` and
+`handling` on the row itself, so the transition is written once, in the module
+that owns the row. Nothing here sends: a send belongs on the existing broker
+path with its approval and exactly-once behaviour, and that is where the job's
+first message goes.
 
 ## Scoping
 

@@ -211,7 +211,14 @@ export function createApp(deps: AppDeps) {
     });
   if (deps.db)
     mountCompanies(app, {
-      ...companiesDeps({ db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }),
+      ...companiesDeps({
+        db: deps.db,
+        sql: deps.sql,
+        registry: deps.registry,
+        env: deps.env,
+        jobs: deps.jobs,
+        triggers: deps.triggers,
+      }),
       ...deps.companies,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);

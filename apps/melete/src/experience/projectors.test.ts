@@ -7,7 +7,9 @@ import {
   plainText,
   projectActionGroup,
   projectCards,
+  projectPermission,
   safeUrl,
+  senderAddress,
 } from './projectors.ts';
 
 const base: ActionRow = {
@@ -77,4 +79,57 @@ test('agent identity includes personalization and stays within the existing 250-
     expect(text).toContain(template.agent.standing_instruction);
     expect(estimateTokens(text)).toBeLessThanOrEqual(250);
   }
+});
+
+test('the mailbox a message would leave from is read off the connection, or left out', () => {
+  expect(senderAddress({ kind: 'mail', mail: { from: 'jo@example.test' } })).toBe(
+    'jo@example.test',
+  );
+  expect(senderAddress({ from: ' jo@example.test ' })).toBe('jo@example.test');
+  // An operator-configured mailbox keeps its address in the environment.
+  for (const unknown of [{}, null, undefined, { kind: 'mail', mail: {} }, { from: '   ' }])
+    expect(senderAddress(unknown)).toBeNull();
+  // Anything that would not survive being shown verbatim is left out instead.
+  expect(senderAddress({ from: 'Bearer sk-abcdefghijkl' })).toBeNull();
+  expect(senderAddress({ from: { address: 'jo@example.test' } })).toBeNull();
+});
+
+test('a permission to send shows the mailbox it leaves from above the recipient', () => {
+  const send: ActionRow = {
+    ...base,
+    kind: 'email.send',
+    effectClass: 'write_external',
+    connectionId: 'mail-connection',
+    canonicalPayload: { to: 'support@acme.test', subject: 'Refund', body: 'Please refund me.' },
+    receipt: null,
+    status: 'needs_approval',
+  };
+  const mailbox = { id: 'mail-connection', label: 'Mail', provider: 'imap' };
+  const shown = projectPermission({
+    id: 'apr_one',
+    version: 'v1',
+    action: send,
+    connection: { ...mailbox, sender: 'jo@example.test' },
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: true,
+  });
+  expect(shown.preview?.facts.slice(0, 2)).toEqual([
+    { label: 'From', value: 'jo@example.test' },
+    { label: 'To', value: 'support@acme.test' },
+  ]);
+  // Without a known mailbox the card is exactly what it was before.
+  const withoutSender = projectPermission({
+    id: 'apr_one',
+    version: 'v1',
+    action: send,
+    connection: mailbox,
+    reasons: ['This change needs your permission before it happens.'],
+    canAlways: true,
+  });
+  expect(withoutSender.preview?.facts.map((fact) => fact.label)).toEqual([
+    'To',
+    'Subject',
+    'Message',
+  ]);
+  expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
 });
