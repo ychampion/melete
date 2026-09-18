@@ -172,6 +172,63 @@ describe('the ways it ends badly', () => {
     expect((await caseFileRoute(request, use)).status).toBe(413);
   });
 
+  /**
+   * The declared length is the cheap check, and it is the one an attacker
+   * simply omits: a streamed body sends no `content-length` at all, and a
+   * garbage one parses to `NaN`. Either way the guard was skipped and the
+   * whole body was read and parsed before the character cap saw it. The cap
+   * has to hold on what actually arrives.
+   */
+  /** A body that reports how much of itself was actually asked for. */
+  const streamed = (text: string, headers: Record<string, string> = {}) => {
+    const body = new TextEncoder().encode(JSON.stringify({ text }));
+    const size = 64 * 1024;
+    const sent = { bytes: 0 };
+    let at = 0;
+    const request = new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (at >= body.byteLength) {
+            controller.close();
+            return;
+          }
+          const chunk = body.slice(at, at + size);
+          at += chunk.byteLength;
+          sent.bytes += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      }),
+      duplex: 'half',
+    });
+    return { request, sent, total: body.byteLength };
+  };
+
+  test('a huge body with no declared length is dropped part-way, not read whole', async () => {
+    const { request, sent, total } = streamed('A'.repeat(5_000_000));
+    expect(request.headers.get('content-length')).toBeNull();
+    const response = await caseFileRoute(request, deps());
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ ok: false, code: 'too_long' });
+    // Stopped once it was clearly over, rather than reading five megabytes.
+    expect(sent.bytes).toBeLessThan(total / 10);
+  });
+
+  test('a lie about the length does not buy a full read either', async () => {
+    const { request, sent, total } = streamed('A'.repeat(5_000_000), {
+      'content-length': 'not-a-number',
+    });
+    expect((await caseFileRoute(request, deps())).status).toBe(413);
+    expect(sent.bytes).toBeLessThan(total / 10);
+  });
+
+  test('a body inside the cap still arrives, streamed or not', async () => {
+    const { request } = streamed(REFUND);
+    const { done } = await readStream(await caseFileRoute(request, deps()));
+    expect(done?.ok).toBe(true);
+  });
+
   test('a few words is not a case', async () => {
     const response = await caseFileRoute(post('they owe me'), deps());
     expect(response.status).toBe(400);

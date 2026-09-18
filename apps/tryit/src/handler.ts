@@ -91,6 +91,39 @@ const json = (body: unknown, status: number): Response =>
 const refuse = (code: Exclude<Outcome, 'ok'>, status: number): Response =>
   json({ ok: false, code, message: WORDS[code] } satisfies Done, status);
 
+/**
+ * Read a request body only as far as it is allowed to be, and give up the
+ * moment it is over. Nothing here trusts what the request said about its own
+ * size: the budget holds on the bytes that actually turn up, so a body sent
+ * with no length, or a lying one, costs a few kilobytes rather than however
+ * much someone cares to send.
+ *
+ * Null means it was too big. The rest of the body is never read.
+ */
+export async function readWithin(
+  body: ReadableStream<Uint8Array> | null,
+  budget: number,
+): Promise<string | null> {
+  if (!body) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let seen = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      seen += value.byteLength;
+      if (seen > budget) return null;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return text + decoder.decode();
+}
+
 /** Cloudflare puts the caller's address here. The rest are fallbacks for local runs. */
 export function clientIp(request: Request): string {
   const direct = request.headers.get('cf-connecting-ip');
@@ -125,16 +158,25 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
     return refuse('bad_request', 415);
   }
 
-  // Refuse an oversized body before reading it, so a big paste costs nothing.
-  const declared = Number(request.headers.get('content-length') ?? '0');
-  if (Number.isFinite(declared) && declared > limits.maxInputChars * 4 + 2048) {
+  // The declared length is the cheap check. It is also the one an attacker
+  // omits, so it decides nothing on its own: a body with no length, or a
+  // nonsense one, falls through to the budget below and is stopped there.
+  const budget = limits.maxInputChars * 4 + 2048;
+  const declared = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > budget) {
+    record({ ...bare, outcome: 'too_long' });
+    return refuse('too_long', 413);
+  }
+
+  const raw = await readWithin(request.body, budget);
+  if (raw === null) {
     record({ ...bare, outcome: 'too_long' });
     return refuse('too_long', 413);
   }
 
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw) as unknown;
   } catch {
     record({ ...bare, outcome: 'bad_request' });
     return refuse('bad_request', 400);
