@@ -29,6 +29,57 @@ export type Script = {
 /* ---------- reading the text ---------- */
 
 const HEADER = /^\s*(from|to|cc|bcc|subject|date|sent|received|reply-to)\s*:/i;
+/** A line the person wrote, carried along under the company's reply. */
+const QUOTED = /^\s*>/;
+/** Where the company's own message ends and the thread beneath it begins. */
+const SEPARATOR =
+  /^\s*(on\s.{0,80}\bwrote\s*:|-{2,}\s*original message|_{5,}|>{0,2}\s*from\s*:.*\bwrote)/i;
+
+/**
+ * Everything above the thread: the reply itself, envelope included, with the
+ * quoted message beneath it removed.
+ *
+ * This is the whole of the third finding. Read as one blob, a reply and the
+ * message quoted underneath it are one voice, so the person's own words came
+ * back labelled as the company's and their own figure came back as a debt the
+ * company had admitted. Nothing that decides what this text *is* may see past
+ * this line.
+ */
+export function beforeThread(pasted: string): string {
+  const lines: string[] = [];
+  for (const line of pasted.split('\n')) {
+    if (SEPARATOR.test(line)) break;
+    if (QUOTED.test(line)) continue;
+    lines.push(line);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The company's own prose: the above, with the envelope off as well. Quoting
+ * a `Subject:` line back at the company it came from reads as a machine, so
+ * the headers are kept out of anything a person will see — but they are the
+ * surest sign of who wrote the message, so `company()` still reads them.
+ */
+export const companyText = (pasted: string): string =>
+  beforeThread(pasted)
+    .split('\n')
+    .filter((line) => !HEADER.test(line))
+    .join('\n');
+
+/**
+ * Whether this reads as a message from a company at all, rather than someone
+ * describing what happened. An address, a corporate sign-off or a company
+ * "we" is a message; "I bought a laptop and they stopped replying" is not.
+ * Nothing may be attributed to a company that never wrote any of it.
+ */
+export function fromCompany(pasted: string): boolean {
+  if (/^\s*(from|subject|sent)\s*:/im.test(pasted)) return true;
+  if (/@[a-z0-9-]+\.[a-z]{2,}/i.test(pasted)) return true;
+  return /\b(kind regards|best regards|yours (sincerely|faithfully)|customer (care|service|support)|we (have|are|can|will|would|apologise))\b/i.test(
+    pasted,
+  );
+}
 /** Split after a full stop only when a new sentence starts, so 249.99 stays whole. */
 const BREAK = /(?<=[.!?])\s+(?=["'(\p{Lu}])/u;
 
@@ -45,11 +96,7 @@ type Amount = { minor: number; currency: string };
  * read, and not the envelope. The ones carrying a figure come first, because
  * the sentence with the money in it is the one a person wants quoted back.
  */
-function sentences(pasted: string): string[] {
-  const body = pasted
-    .split('\n')
-    .filter((line) => !HEADER.test(line))
-    .join('\n');
+function sentences(body: string): string[] {
   const found = canonical(body)
     // Each block was written as its own piece. A candidate never spans two, or
     // the gate would refuse it — and rightly, since nobody wrote it that way.
@@ -57,7 +104,14 @@ function sentences(pasted: string): string[] {
     .flatMap((block) => block.split(BREAK))
     // A greeting has no full stop, so it runs into the first real sentence.
     .map((line) => line.replace(/^(dear|hi|hello)\b[^,]{0,40},\s*/i, '').trim())
-    .filter((line) => line.length >= 24 && line.length <= 300);
+    .filter((line) => line.length >= 24 && line.length <= 300)
+    // A sign-off proves nothing, and quoting one back reads as a machine.
+    .filter(
+      (line) =>
+        !/^(kind|best|warm) (regards|wishes)\b|^yours (sincerely|faithfully)\b|^(many )?thanks\b|^(the )?\w+ (customer (care|service|support)|team)$/i.test(
+          line,
+        ),
+    );
   const score = (line: string): number => (MONEY.test(line) ? 2 : /\d/.test(line) ? 1 : 0);
   return found
     .map((line, at) => ({ line, at, score: score(line) }))
@@ -100,10 +154,20 @@ const money = (amount: Amount): string =>
 
 /* ---------- which situation this is ---------- */
 
-export type Kind = 'refund' | 'price_rise' | 'delay' | 'general';
+export type Kind = 'refused' | 'refund' | 'price_rise' | 'delay' | 'general';
+
+/**
+ * A refusal says the word "refund" as often as a promise does, and reading
+ * only for that word turned "we are not able to offer a refund" into a debt
+ * the company had admitted. So a refusal is looked for first, and the rest of
+ * the word-matching only runs on text that is not one.
+ */
+const REFUSAL =
+  /\b(not able to|unable to|cannot|can ?not|won'?t be able|will not be able|are not in a position)\b[^.!?]{0,60}\b(offer|give|provide|issue|make|process|agree|honour|honor)\b|\b(we (have )?(decline|declined|rejected|denied)|not upheld|not entitled|no refund (is|will be)|unable to uphold|regret to (inform|advise))\b/i;
 
 /** Ordered: a delay notice often mentions a refund, and a price rise often mentions both. */
 export function kindOf(text: string): Kind {
+  if (REFUSAL.test(text)) return 'refused';
   if (
     /\b(delay|delays|delayed|cancell?ed)\b/i.test(text) &&
     /\b(flight|train|service)\b/i.test(text)
@@ -133,6 +197,22 @@ type Case = {
  */
 function read(kind: Kind, name: string, found: Amount[]): Case {
   const first = found[0] ?? null;
+
+  if (kind === 'refused') {
+    // They have said no. Nothing is owed on their own account, so no figure
+    // is claimed; what is worth having is the reason, in writing.
+    return {
+      issue: `${name} has turned down what you asked for.`,
+      summary:
+        'A first no is usually the cheapest answer to give, not the final one. Ask for the reason in writing, the term they are relying on, and how to take it further.',
+      amount: null,
+      level: 'low',
+      why: 'A refusal already in writing is the thing a complaints handler, or a scheme, will look at first.',
+      days: 30,
+      subject: `Please put the reason in writing`,
+      ask: 'Please send me the reason for this decision in writing, the term or policy you are relying on, and how I take this further if I disagree.',
+    };
+  }
 
   if (kind === 'price_rise') {
     const now = found[1] ?? null;
@@ -200,10 +280,18 @@ function read(kind: Kind, name: string, found: Amount[]): Case {
  * clears the gate and the page can be seen working before a key exists.
  */
 export function draftFrom(run: ProviderRun): DraftCaseFile {
-  const text = canonical(run.pasted);
-  const name = company(text);
+  // Everything that decides what this is reads the company's own words only.
+  // The thread underneath belongs to the person, and reading it as the
+  // company's is how a refusal turned into an admission of debt.
+  const above = beforeThread(run.pasted);
+  const body = companyText(run.pasted);
+  const text = canonical(body);
+  const theirs = fromCompany(above);
+  // Who wrote it is clearest from the envelope, so this one line reads it.
+  const name = company(canonical(above));
   const reading = read(kindOf(text), name, amounts(text));
-  const quoted = sentences(run.pasted).slice(0, 3);
+  const quoted = sentences(body).slice(0, 3);
+  const said = theirs ? quoted : [];
 
   return {
     company: name,
@@ -212,7 +300,10 @@ export function draftFrom(run: ProviderRun): DraftCaseFile {
       summary: reading.summary,
       amount_minor: reading.amount?.minor ?? null,
       currency: reading.amount?.currency ?? null,
-      basis: quoted.slice(0, 2).map((line, at) => ({
+      // A basis is something the company put in writing. With no message from
+      // one there is nothing to stand on, and saying otherwise would put the
+      // person's own account in the company's mouth.
+      basis: said.slice(0, 2).map((line, at) => ({
         claim:
           at === 0
             ? `${name} put this in writing, unprompted.`
@@ -223,7 +314,10 @@ export function draftFrom(run: ProviderRun): DraftCaseFile {
         title: null,
       })),
     },
-    evidence: quoted.map((line) => ({ quote: line, why: 'From the message itself.' })),
+    evidence: quoted.map((line) => ({
+      quote: line,
+      why: theirs ? 'From the message itself.' : 'From what you described.',
+    })),
     odds: { level: reading.level, why: reading.why, expected_days: reading.days },
     message: {
       subject: reading.subject,
@@ -231,7 +325,7 @@ export function draftFrom(run: ProviderRun): DraftCaseFile {
         'Hello,',
         '',
         `I am writing about ${name === 'the company' ? 'this account' : `my account with ${name}`}.`,
-        quoted[0] ? `Your own message says: "${quoted[0]}"` : 'I have had no resolution so far.',
+        said[0] ? `Your own message says: "${said[0]}"` : 'I have had no resolution so far.',
         '',
         reading.ask,
         '',
