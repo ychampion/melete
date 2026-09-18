@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
-import { brokerCatalogState } from '@melete/runtime-hermes';
+import {
+  brokerCatalogState,
+  DEFAULT_COMPACTION_MAX_TOKENS,
+  DEFAULT_ENGINE_MAX_TURNS,
+} from '@melete/runtime-hermes';
 import { parse } from 'yaml';
 import { brokerUrlForBind, loadEnv, readEnv } from './env.ts';
 
@@ -90,6 +94,31 @@ describe('the model defaults', () => {
 
   test('Compose passes the output limit through to the service', () => {
     expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
+  });
+});
+
+describe('the engine limits', () => {
+  test('a malformed engine limit stops the service instead of every attempt', () => {
+    // These are read again when an attempt starts, which is where they are
+    // applied. If the only reading were there, a typo would let the service boot
+    // healthy and then fail each attempt at launch, one at a time, for as long
+    // as nobody looked at the environment.
+    for (const name of [
+      'MELETE_ENGINE_MAX_TURNS',
+      'MELETE_COMPACTION_MAX_TOKENS',
+      'MELETE_MODEL_CONTEXT_WINDOW',
+    ]) {
+      for (const value of ['0', '-1', '1.5', 'many'])
+        expect(readEnv({ [name]: value }).ok).toBe(false);
+      expect(readEnv({ [name]: '64000' }).ok).toBe(true);
+    }
+  });
+
+  test('the defaults are the ones the engine configuration renders', () => {
+    const env = loadEnv({});
+    expect(env.MELETE_ENGINE_MAX_TURNS).toBe(DEFAULT_ENGINE_MAX_TURNS);
+    expect(env.MELETE_COMPACTION_MAX_TOKENS).toBe(DEFAULT_COMPACTION_MAX_TOKENS);
+    expect(env.MELETE_MODEL_CONTEXT_WINDOW).toBeUndefined();
   });
 });
 

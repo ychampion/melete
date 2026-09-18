@@ -11,6 +11,8 @@ import {
 } from '@melete/contracts';
 import {
   type CatalogState,
+  engineConfigEnvironment,
+  engineSettingsFromEnvironment,
   type FetchLike,
   HERMES_PINNED_COMMIT,
   HermesRuntimeAdapter,
@@ -339,6 +341,17 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             `MELETE_MODEL_PROVIDER=${bundle.model.provider}`,
             `MELETE_MODEL_NAME=${bundle.model.model}`,
             `MELETE_MODEL_API_MODE=${modelApiMode(bundle.model.provider, bundle.model.model)}`,
+            // The image carries the rendered configuration; these are the parts
+            // of it that follow the model this attempt was granted, worked out
+            // by the same renderer and applied by the entrypoint at boot.
+            ...Object.entries(
+              engineConfigEnvironment({
+                provider: bundle.model.provider,
+                model: bundle.model.model,
+                brokerUrl: broker,
+                ...engineSettingsFromEnvironment(),
+              }),
+            ).map(([key, value]) => `${key}=${value}`),
           ],
           HostConfig: {
             NetworkMode: resources.network,

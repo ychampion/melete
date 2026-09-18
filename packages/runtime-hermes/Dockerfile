@@ -76,8 +76,14 @@ RUN chmod +x /usr/local/bin/melete-runtime-entrypoint
 # this path: a broker tool returns a structured needs-approval result and the
 # job parks on Melete's ledger. This is a safety net for a command that should
 # not exist in this toolset at all.
+#
+# HERMES_BUNDLED_SKILLS names a directory that does not exist and is never
+# created. The engine copies its own bundled skills into the writable home on
+# every start; pointing the source at nothing makes that copy do nothing, so the
+# only skills an attempt can ever see are the ones Melete authorised.
 ENV HERMES_EXEC_ASK=1 \
     HERMES_ACCEPT_HOOKS=1 \
+    HERMES_BUNDLED_SKILLS=/opt/melete-runtime/no-bundled-skills \
     API_SERVER_ENABLED=1 \
     API_SERVER_HOST=0.0.0.0 \
     API_SERVER_PORT=8790 \

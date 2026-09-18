@@ -21,12 +21,17 @@ PATCHES = {
     "agent/conversation_compression.py": (
         "d7296110769f0b2934cd31d43434d818c16de911463d564be068b5f169dc6aa6",
         [("    # Rotation-independent flag: the gateway uses it (not an id diff) to re-baseline\n",
-          """    # Melete observer: expose actual successful compaction, without changing its result.
-    if session_commit_succeeded and compression_made_progress and not compression_feasibility_skip:
+          """    # Melete observer: expose the actual compaction, without changing its result.
+    # A pre-LLM feasibility skip drops the middle deterministically instead of
+    # summarizing it; it is reported as observed, never as a summarized success,
+    # so the ledger shows the drop for what it was.
+    if session_commit_succeeded and compression_made_progress:
         with _swallow('on_compaction observer failed: %s'):
             from hermes_cli.lifecycle import invoke_hook
             invoke_hook("on_compaction", session_id=agent.session_id,
-                        compression_count=compressor.compression_count, in_place=in_place)
+                        compression_count=compressor.compression_count, in_place=in_place,
+                        used_fallback=compression_used_fallback,
+                        status="observed" if compression_feasibility_skip else "succeeded")
 
     # Rotation-independent flag: the gateway uses it (not an id diff) to re-baseline
 """)],
@@ -80,7 +85,11 @@ def patched(content: str, expected_hash: str, changes: list[tuple[str, str]]) ->
     if digest(original) != expected_hash:
         for before, after in reversed(changes):
             if original.count(after) != 1:
-                raise ValueError("Source is neither the audited pin nor the reviewed observer patch")
+                raise ValueError(
+                    "Source is neither the audited pin nor this version of the reviewed observer "
+                    "patch. A checkout carrying an earlier patch version has to be restored to the "
+                    "pinned commit before this one is applied."
+                )
             original = original.replace(after, before, 1)
         if digest(original) != expected_hash:
             raise ValueError("Restored source does not match the audited pin")

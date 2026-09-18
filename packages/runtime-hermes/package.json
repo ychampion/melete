@@ -15,7 +15,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest tests -q"
+    "test:plugin": "uv run --no-project --python 3.12 --with pytest==9.1.1 python -m pytest tests -q",
+    "test:engine-surface": "bun run tests/engine-surface.ts"
   },
   "dependencies": {
     "@melete/contracts": "workspace:*",

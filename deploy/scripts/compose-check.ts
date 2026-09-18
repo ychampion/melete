@@ -362,6 +362,49 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   return results;
 }
 
+/**
+ * The engine configuration the attempt image carries. A boundary the release
+ * claims is only as good as the settings that hold it up, and three of those
+ * are one edited line away from being undone: an engine-side memory store that
+ * outlives what the owner forgot, an unlimited run, and a conversation that
+ * grows until the provider refuses it.
+ *
+ * This reads the file the image copies in, so it fails in CI on any machine
+ * rather than on someone else's installation. Toolsets and the terminal backend
+ * are checked where they are turned on.
+ */
+export function checkCellConfig(root: string): CheckResult[] {
+  const path = join(root, 'packages', 'runtime-hermes', 'config', 'config.yaml');
+  const config = parse(readFileSync(path, 'utf8')) as {
+    memory?: Record<string, unknown>;
+    agent?: { max_turns?: unknown };
+    compression?: Record<string, unknown>;
+    checkpoints?: { enabled?: unknown };
+  };
+  const memory = config.memory ?? {};
+  const compression = config.compression ?? {};
+  const turns = config.agent?.max_turns;
+  const threshold = compression.threshold_tokens;
+  return [
+    {
+      name: 'the cell config pins memory keys, turn ceiling and compaction',
+      ok:
+        memory.memory_enabled === false &&
+        memory.user_profile_enabled === false &&
+        !('enabled' in memory) &&
+        config.checkpoints?.enabled === false &&
+        typeof turns === 'number' &&
+        turns > 0 &&
+        compression.enabled === true &&
+        compression.in_place === true &&
+        typeof threshold === 'number' &&
+        threshold > 0,
+      detail:
+        'memory.memory_enabled and memory.user_profile_enabled must both be false (memory.enabled is not a key the engine reads), checkpoints must be off, agent.max_turns must be a positive ceiling, and compression must be on in place with a threshold in tokens',
+    },
+  ];
+}
+
 export function loadCompose(path: string): ComposeFile {
   return parse(readFileSync(path, 'utf8')) as ComposeFile;
 }
@@ -371,11 +414,13 @@ export const defaultComposePath = (): string =>
 
 if (import.meta.main) {
   const path = process.argv[2] ?? defaultComposePath();
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const results = [
     ...checkCompose(loadCompose(path)),
     // The images this file builds are read from the repository, not from `path`.
-    ...checkDockerfileWorkspaces(join(dirname(fileURLToPath(import.meta.url)), '..', '..')),
-    ...checkRuntimePluginPin(join(dirname(fileURLToPath(import.meta.url)), '..', '..')),
+    ...checkDockerfileWorkspaces(root),
+    ...checkRuntimePluginPin(root),
+    ...checkCellConfig(root),
   ];
   for (const result of results) {
     process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);

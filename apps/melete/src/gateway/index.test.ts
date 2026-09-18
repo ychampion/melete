@@ -252,7 +252,7 @@ describe('model gateway effect boundary', () => {
     });
     expect((await post('/v1/chat/completions', { max_tokens: 601 })).status).toBe(429);
     expect(
-      (await post('/v1/chat/completions', { messages: [{ content: 'x'.repeat(700) }] })).status,
+      (await post('/v1/chat/completions', { messages: [{ content: 'x'.repeat(4000) }] })).status,
     ).toBe(413);
     expect((await post('/v1/chat/completions', { n: 2 })).status).toBe(400);
     expect(
@@ -265,6 +265,54 @@ describe('model gateway effect boundary', () => {
       ).status,
     ).toBe(400);
     expect(budget.reservations).toHaveLength(0);
+  });
+
+  test('a conversation the engine has not yet compacted is forwarded, not refused', async () => {
+    // The engine compacts a 128,000-token window at 96,000 tokens, which is
+    // about 384,000 characters of request body. Counting a token per byte put
+    // the refusal at roughly a quarter of that, so the engine never got the
+    // chance: the gateway has to estimate the way the engine does.
+    const { post } = await start({
+      authenticate: async () => ({ ...principal, maxTokens: 8000, maxInputTokens: 120_000 }),
+      budget: { reserve: async () => ({ id: 'below-the-trigger' }), settle: async () => {} },
+    });
+    const belowTheTrigger = await post('/v1/chat/completions', {
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: 'conversation so far '.repeat(19_000) }],
+    });
+    expect(belowTheTrigger.status).toBe(200);
+    await belowTheTrigger.body?.cancel();
+    // Past the window itself it is still refused, which is what the engine's
+    // reactive compaction reads as its signal to summarize.
+    const pastTheWindow = await post('/v1/chat/completions', {
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: 'conversation so far '.repeat(30_000) }],
+    });
+    expect(pastTheWindow.status).toBe(413);
+  });
+
+  test('a conversation in a script the engine charges by codepoint honours the input cap', async () => {
+    // A CJK codepoint is three UTF-8 bytes, and both the engine's own estimate
+    // and a real tokenizer charge about a whole token for it. Dividing bytes by
+    // four charges three quarters of one, so a conversation a third past the
+    // owner's input cap was forwarded and billed as though it were inside it.
+    const { post } = await start({
+      authenticate: async () => ({ ...principal, maxTokens: 8000, maxInputTokens: 120_000 }),
+      budget: { reserve: async () => ({ id: 'counted-by-codepoint' }), settle: async () => {} },
+    });
+    const insideTheCap = await post('/v1/chat/completions', {
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: '会話記録'.repeat(25_000) }],
+    });
+    expect(insideTheCap.status).toBe(200);
+    await insideTheCap.body?.cancel();
+    // 130,000 codepoints: 130,000 tokens to the engine and to the provider,
+    // and 97,756 to a byte count divided by four.
+    const pastTheCap = await post('/v1/chat/completions', {
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: '会話記録'.repeat(32_500) }],
+    });
+    expect(pastTheCap.status).toBe(413);
   });
 
   test('a request without an output limit gets the configured default, within what the attempt may spend', async () => {

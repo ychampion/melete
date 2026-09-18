@@ -205,6 +205,40 @@ describe('lifecycle hook bridge', () => {
     }
   });
 
+  test("a compaction's allow-listed scalars reach the ledger and nothing beside them does", async () => {
+    const { fetch } = harness({
+      sse: frames(
+        {
+          ...hook('on_compaction'),
+          outcome: 'succeeded',
+          detail: { compression_count: 2, in_place: true },
+        },
+        { event: 'run.completed', output: 'Done' },
+      ),
+    });
+    const sink = new Collector();
+    expect((await adapterWith(fetch).start(bundle, sink, new AbortController().signal)).kind).toBe(
+      'completed',
+    );
+    expect(sink.events.find((value) => value.type === 'hook_event')).toMatchObject({
+      name: 'on_compaction',
+      detail: { compression_count: 2, in_place: true },
+    });
+    // A detail field nobody declared is a gap, not a record with an extra key.
+    const rejected = harness({
+      sse: frames({
+        ...hook('on_compaction'),
+        detail: { compression_count: 2, session_id: 'ses_private' },
+      }),
+    });
+    const outcome = await adapterWith(rejected.fetch).start(
+      bundle,
+      new Collector(),
+      new AbortController().signal,
+    );
+    expect(outcome.kind).toBe('failed');
+  });
+
   test('unrecognized fields never leave the adapter in a hook record', async () => {
     const { fetch } = harness({
       sse: frames(

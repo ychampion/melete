@@ -210,6 +210,38 @@ After changing provider settings, recreate Melete and the warm runtime:
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
 ```
 
+## Engine limits
+
+Three settings bound what one attempt's engine may do. All have working
+defaults; change them only for a reason you can name, and all take effect on the
+next attempt started.
+
+`MELETE_ENGINE_MAX_TURNS` (default `150`) is how many iterations one run may
+take before the engine stops it. It is a runaway stop, not a cost control: what
+an attempt may spend is decided by the job's budget, and a run that has taken
+150 turns is looping. Lower it and long legitimate work is cut off in the
+middle; raise it and a loop runs longer before anything notices.
+
+`MELETE_COMPACTION_MAX_TOKENS` (default `200000`) is the largest conversation,
+in tokens, that may build up before the engine summarizes it and carries on with
+the summary. The engine would otherwise wait for half the model's context
+window, which on a million-token model means every request carries half a
+million tokens before the first summary is written. The trigger actually used is
+the lowest of this number, the engine's own trigger for that model's window, and
+what keeps a request inside the body the gateway accepts — so a number larger
+than the model allows changes nothing. Each compaction costs one extra model
+call, and a summary is lossy by nature: every durable fact stays on the job's
+ledger, not in the conversation.
+
+`MELETE_MODEL_CONTEXT_WINDOW` (no default) is the context window, in tokens, of
+the models this deployment serves. Set it when a model is smaller than the
+128,000-token figure Melete assumes for a model it does not know: a model with a
+32,000-token window would otherwise be told to compact at 96,000, never get
+there, and have every request past its own window refused by the provider with
+nothing summarized. For a model Melete does know, this may lower the window and
+not raise it, because the same catalog figure is what the model gateway's
+accounting is keyed on.
+
 ## Memory extraction
 
 Deployment memory can extract structured observations without a model. If

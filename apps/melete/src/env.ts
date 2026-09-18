@@ -5,6 +5,7 @@
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -165,6 +166,21 @@ const variables = z.object({
    */
   MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MELETE_SPEECH_MODEL: z.string().optional(),
+
+  /**
+   * What the engine in an attempt's cell is bounded by. Each is read again from
+   * the environment when an attempt starts, which is where it is applied, but it
+   * is checked here so a malformed value stops the service on boot rather than
+   * failing every attempt one at a time afterwards. `docs/DEPLOYMENT.md` says
+   * what each of them buys.
+   */
+  MELETE_ENGINE_MAX_TURNS: z.coerce.number().int().positive().default(DEFAULT_ENGINE_MAX_TURNS),
+  MELETE_COMPACTION_MAX_TOKENS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_COMPACTION_MAX_TOKENS),
+  MELETE_MODEL_CONTEXT_WINDOW: z.coerce.number().int().positive().optional(),
 });
 
 /**

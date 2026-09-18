@@ -28,6 +28,13 @@ _ARGUMENT_NAMES = frozenset((
     "payload", "arguments", "connection_id",
 ))
 _TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
+# Scalars a boundary is allowed to keep, by boundary name. Nothing else survives:
+# a compaction's count and mode are facts the ledger needs, and both are bounded
+# numbers, so neither can carry conversation content out of the runtime.
+_DETAIL_SCALARS: dict[str, dict[str, type]] = {
+    "on_compaction": {"compression_count": int, "in_place": bool, "used_fallback": bool},
+}
+_MAX_DETAIL_COUNT = 1_000_000
 
 
 class Capture:
@@ -64,6 +71,26 @@ def reset_capture(token) -> None:
     _current.reset(token)
 
 
+def detail(name: str, payload: dict[str, Any]) -> dict | None:
+    """The allow-listed scalars this boundary keeps, or None when it keeps none.
+
+    A bool is an int in Python, so each field is checked against its own type
+    and a bool is never accepted where a count is named.
+    """
+    allowed = _DETAIL_SCALARS.get(name)
+    if not allowed:
+        return None
+    kept: dict[str, Any] = {}
+    for field in sorted(allowed):
+        value = payload.get(field)
+        if allowed[field] is bool:
+            if isinstance(value, bool):
+                kept[field] = value
+        elif isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _MAX_DETAIL_COUNT:
+            kept[field] = value
+    return kept or None
+
+
 def observation(name: str, payload: dict[str, Any]) -> dict:
     """Only allow-listed field names survive; every argument value is erased."""
     tool = payload.get("tool_name")
@@ -81,18 +108,24 @@ def observation(name: str, payload: dict[str, Any]) -> dict:
         outcome = "failed"
     elif status in ("interrupted", "cancelled"):
         outcome = "interrupted"
+    elif status == "observed":
+        # A boundary that happened but claims no success of its own: a compaction
+        # that dropped its middle deterministically rather than summarizing it.
+        outcome = "observed"
     elif name.startswith("pre_") or name in ("on_session_start", "on_stream_start", "subagent_start"):
         outcome = "started"
     elif name.startswith("post_") or name in ("on_compaction", "on_session_end", "on_stream_end", "subagent_stop"):
         outcome = "succeeded" if status not in ("unknown", "blocked", "denied") else "unknown"
     else:
         outcome = "observed"
+    kept = detail(name, payload)
     return {
         "name": name,
         "tool_name": tool,
         "timing": {"captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), "duration_ms": duration},
         "outcome": outcome,
         "redacted_args_digest": digest,
+        **({"detail": kept} if kept else {}),
     }
 
 

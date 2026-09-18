@@ -291,6 +291,53 @@ describe('Docker attempt supervision', () => {
     }
   });
 
+  test('every attempt container is told the window and trigger its model implies', async () => {
+    const f = await setup();
+    const cases = [
+      // A million-token window, so the owner's cap on the trigger decides.
+      ['fireworks', 'accounts/fireworks/models/deepseek-v4p1-flash', '1000000', '200000'],
+      // A model the catalog does not name: the documented fallback and the
+      // engine's own trigger for it.
+      ['openai-compatible', 'llama3.1', '128000', '96000'],
+    ] as const;
+    for (const [index, [provider, model, window, threshold]] of cases.entries()) {
+      await f.runtime.start(
+        { ...bundle(index), model: { provider, model, fallback: null } },
+        f.sink,
+        new AbortController().signal,
+      );
+      const environment = f.daemon.created[index]?.Env ?? [];
+      expect(environment).toContain(`MELETE_ENGINE_CONTEXT_LENGTH=${window}`);
+      expect(environment).toContain(`MELETE_ENGINE_COMPACTION_THRESHOLD=${threshold}`);
+      expect(environment).toContain('MELETE_ENGINE_MAX_TURNS=150');
+    }
+  });
+
+  test('a window the operator states reaches the container it was stated for', async () => {
+    // Without this a model whose real window is smaller than the fallback is
+    // told to compact at a figure it can never reach, and every request past its
+    // own window is refused by the provider instead of being summarized.
+    const previous = process.env.MELETE_MODEL_CONTEXT_WINDOW;
+    process.env.MELETE_MODEL_CONTEXT_WINDOW = '32000';
+    try {
+      const f = await setup();
+      await f.runtime.start(
+        {
+          ...bundle(0),
+          model: { provider: 'openai-compatible', model: 'llama3.1', fallback: null },
+        },
+        f.sink,
+        new AbortController().signal,
+      );
+      const environment = f.daemon.created[0]?.Env ?? [];
+      expect(environment).toContain('MELETE_ENGINE_CONTEXT_LENGTH=32000');
+      expect(environment).toContain('MELETE_ENGINE_COMPACTION_THRESHOLD=27200');
+    } finally {
+      if (previous === undefined) delete process.env.MELETE_MODEL_CONTEXT_WINDOW;
+      else process.env.MELETE_MODEL_CONTEXT_WINDOW = previous;
+    }
+  });
+
   test('concurrent jobs never share a network or writable Hermes home', async () => {
     const f = await setup();
     await Promise.all(

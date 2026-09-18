@@ -692,7 +692,7 @@ proof(
               tx,
               former,
               { provider: 'fake', model: 'scripted-learning-v1', fallback: null },
-              'hermes@v2026.9.7+melete-observers.2',
+              'hermes@v2026.9.7+melete-observers.3',
             ),
           );
         } catch (error) {

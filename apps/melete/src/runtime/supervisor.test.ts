@@ -56,7 +56,7 @@ const options: SupervisorOptions = {
 };
 
 describe('runtime launch boundaries', () => {
-  test('process startup preserves model settings and selects the scoped gateway', async () => {
+  test('process startup hands the child the rendered engine configuration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'melete-process-config-'));
     const runtimePackage = join(root, 'runtime');
     const supervisor = new ProcessRuntimeSupervisor({
@@ -71,13 +71,8 @@ describe('runtime launch boundaries', () => {
       await mkdir(join(root, 'engine', '.git'), { recursive: true });
       await writeFile(join(root, 'engine', '.git', 'HEAD'), HERMES_PINNED_COMMIT);
       await mkdir(join(runtimePackage, 'patches'), { recursive: true });
-      await mkdir(join(runtimePackage, 'config'));
       await mkdir(join(runtimePackage, 'melete_plugin'));
       await writeFile(join(runtimePackage, 'patches', 'observer_bridge.py'), '# Fixture only.\n');
-      await writeFile(
-        join(runtimePackage, 'config', 'config.yaml'),
-        'provider: obsolete\nmodel:\n  max_tokens: 1234\n  temperature: 0.2\n',
-      );
       // A loopback-only stand-in returns the exact configuration the child received.
       await writeFile(
         join(runtimePackage, 'process_launcher.py'),
@@ -100,11 +95,13 @@ server.serve_forever()
       const response = await fetch(`${instance.baseUrl}/config`);
       const config = parse(await response.text());
       expect(config.provider).toBeUndefined();
+      // The capability sits in both places: the main agent reads the provider
+      // entry, the compaction summary client reads the model section.
       expect(config.model).toEqual({
-        max_tokens: 1234,
-        temperature: 0.2,
         provider: 'melete-gateway',
         default: 'scripted',
+        context_length: 128_000,
+        extra_headers: { 'x-melete-capability': bundle.attempt.token },
       });
       expect(Object.keys(config.providers)).toEqual(['melete-gateway']);
       expect(config.providers['melete-gateway']).toMatchObject({
@@ -112,6 +109,15 @@ server.serve_forever()
         key_env: 'MELETE_MODEL_KEY',
         extra_headers: { 'x-melete-capability': bundle.attempt.token },
       });
+      // Nothing about this path renders a different engine from the container's.
+      expect(config.memory).toEqual({
+        memory_enabled: false,
+        user_profile_enabled: false,
+        provider: '',
+      });
+      expect(config.agent).toEqual({ max_turns: 150 });
+      expect(config.compression.enabled).toBe(true);
+      expect(config.compression.threshold_tokens).toBe(96_000);
     } finally {
       await supervisor.close();
       await rm(root, { recursive: true, force: true });
