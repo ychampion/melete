@@ -21,6 +21,17 @@ import { type AdmissionContext, admitAll, noDrops } from './validate.ts';
 
 export const DEFAULT_WINDOW_DAYS = 90;
 
+/**
+ * A failure reduced to a short key for the scan's counts. Only the shapes this
+ * module raises survive: lowercase letters, digits and underscores, capped.
+ * Anything else becomes `other`, so nothing a provider or a mail body put in a
+ * message can arrive on a row a person reads.
+ */
+export function failureCode(error: unknown): string {
+  const raw = error instanceof Error ? error.message : '';
+  return /^[a-z0-9_]{1,40}$/.test(raw) ? raw : 'other';
+}
+
 export type ScanOptions = {
   store: CompanyStore;
   mailbox: ScanMailbox;
@@ -143,8 +154,13 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
             receivedAt: message.receivedAt,
             text,
           });
-        } catch {
+        } catch (error) {
           counts.extractor_failed = (counts.extractor_failed ?? 0) + 1;
+          // And why, so a scan that found nothing can be told apart from a scan
+          // that was refused. The reason is a short code the extractor chose,
+          // reduced to a key here so nothing from a message can reach the row.
+          counts[`extractor_${failureCode(error)}`] =
+            (counts[`extractor_${failureCode(error)}`] ?? 0) + 1;
           continue;
         }
         for (const candidate of items)

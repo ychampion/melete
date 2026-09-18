@@ -16,7 +16,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { GatewayProvider } from '../gateway/types.ts';
 import { EXTRACTION_INSTRUCTIONS, extractionInput, parseExtractionReply } from './extract.ts';
+import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
+import { fixtureMailbox } from './mailbox.ts';
+import { MemoryCompanyStore } from './repository.ts';
+import { runScan } from './scan.ts';
 
 const TEXT =
   'Subject: Your return\n\nA refund of GBP 429.99 will reach your account within 10 working days.';
@@ -217,28 +221,83 @@ describe('what comes back', () => {
     // validate.ts's job, and it runs whatever the provider said.
   });
 
+  test('a provider failure is raised, not swallowed into an empty list', async () => {
+    // An empty list and a failed request are the same value to the caller, and
+    // they mean opposite things: "this email says nothing about money" versus
+    // "nobody asked". Returning [] for both is how a scan closes `done` having
+    // silently found nothing on every message.
+    await expect(
+      withGateway(responder(oneItem, [], 500), (gateway) => gateway.extractor.extract(request)),
+    ).rejects.toThrow();
+  });
+
+  test('so does a reply that cannot be read at all', async () => {
+    await expect(
+      withGateway(
+        async () =>
+          Response.json({
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'sorry, no' }] }],
+          }),
+        (gateway) => gateway.extractor.extract(request),
+      ),
+    ).rejects.toThrow();
+  });
+
+  test('and a budget that has run out says so instead of going quiet', async () => {
+    const gateway = await openExtractionGateway({
+      provider: 'openai',
+      model: DEFAULT_EXTRACTION_MODEL,
+      providers: [provider],
+      fetch: responder(oneItem),
+      maxCalls: 1,
+    });
+    try {
+      expect(await gateway.extractor.extract(request)).toHaveLength(1);
+      await expect(gateway.extractor.extract(request)).rejects.toThrow();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  test('a scan carries on past a failing message and counts it', async () => {
+    // The point of throwing: scan.ts already drops one message and keeps the
+    // rest. Before this, extract() never threw, so that path never ran.
+    const store = new MemoryCompanyStore();
+    const gateway = await openExtractionGateway({
+      provider: 'openai',
+      model: DEFAULT_EXTRACTION_MODEL,
+      providers: [provider],
+      fetch: responder(oneItem, [], 500),
+      maxCalls: 100,
+    });
+    try {
+      const outcome = await runScan({
+        store,
+        mailbox: fixtureMailbox(fixtureMessages()),
+        extractor: gateway.extractor,
+        owner: {
+          spaceId: 'sp_01J0000000000000000000000A',
+          principalId: 'own_01J0000000000000000000000B',
+        },
+        now: new Date(FIXTURE_REFERENCE),
+      });
+      expect(outcome.status).toBe('done');
+      expect(outcome.counts.extractor_failed).toBeGreaterThan(0);
+      expect(outcome.itemsFound).toBe(0);
+      // And the row says why it found nothing, not merely that it did. The code
+      // is the status this module saw: the gateway answers 502 for an upstream
+      // it could not use, so 502 is the honest thing to record, not the 500 the
+      // provider sent to the gateway.
+      expect(outcome.counts.extractor_extraction_http_502).toBe(outcome.counts.extractor_failed);
+    } finally {
+      await gateway.close();
+    }
+  });
+
   test('a reply that is not the schema yields nothing rather than a guess', async () => {
     const items = await withGateway(
       responder({ items: [{ kind: 'not_a_kind', kind_of_thing: true }] }),
       (gateway) => gateway.extractor.extract(request),
-    );
-    expect(items).toEqual([]);
-  });
-
-  test('a reply that is not JSON yields nothing', async () => {
-    const items = await withGateway(
-      async () =>
-        Response.json({
-          output: [{ type: 'message', content: [{ type: 'output_text', text: 'sorry, no' }] }],
-        }),
-      (gateway) => gateway.extractor.extract(request),
-    );
-    expect(items).toEqual([]);
-  });
-
-  test('a provider error yields nothing and does not throw into the scan', async () => {
-    const items = await withGateway(responder(oneItem, [], 500), (gateway) =>
-      gateway.extractor.extract(request),
     );
     expect(items).toEqual([]);
   });
@@ -269,8 +328,9 @@ describe('the budget', () => {
     try {
       expect(await gateway.extractor.extract(request)).toHaveLength(1);
       expect(await gateway.extractor.extract(request)).toHaveLength(1);
-      // The third is refused at the ledger, before anything is forwarded.
-      expect(await gateway.extractor.extract(request)).toEqual([]);
+      // The third is refused at the ledger, before anything is forwarded, and
+      // it says so rather than reading as an email with nothing in it.
+      await expect(gateway.extractor.extract(request)).rejects.toThrow();
       expect(seen).toHaveLength(2);
       expect(gateway.callsSpent).toBe(2);
     } finally {
@@ -287,6 +347,6 @@ describe('the budget', () => {
       maxCalls: 4,
     });
     await gateway.close();
-    expect(await gateway.extractor.extract(request)).toEqual([]);
+    await expect(gateway.extractor.extract(request)).rejects.toThrow();
   });
 });

@@ -174,7 +174,15 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
           redirect: 'error',
           signal: AbortSignal.timeout(EXTRACTION_LIMITS.timeout_ms + 1000),
         });
-        if (!response.ok) return [];
+        // A failed request and an email with nothing in it are not the same
+        // thing, and returning an empty list for both made them the same thing
+        // to every caller. A budget that has run out, a refused schema, a
+        // timeout and a truncated reply would all have read as "this company
+        // said nothing about money", on every message, until somebody went
+        // looking in the provider's logs. So a failure is raised: `scan.ts`
+        // already drops the one message, counts `extractor_failed`, and carries
+        // on with the rest.
+        if (!response.ok) throw new Error(`extraction_http_${response.status}`);
         const result = await response.json();
         const text =
           protocol === 'responses'
@@ -185,10 +193,17 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
                 .map((item) => item.text)
                 .join('')
             : (chatReply.parse(result).choices[0]?.message.content ?? '');
-        // A reply that is not the schema yields no items. It never yields a guess.
-        return parseExtractionReply(JSON.parse(text));
-      } catch {
-        return [];
+        if (!text) throw new Error('extraction_reply_empty');
+        // A reply that is not the schema yields no items. It never yields a
+        // guess — but a reply that is not JSON at all is a failure, not a
+        // finding, so the two are told apart here.
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          throw new Error('extraction_reply_unreadable');
+        }
+        return parseExtractionReply(parsed);
       } finally {
         tokens.delete(token);
       }
