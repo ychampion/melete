@@ -185,129 +185,6 @@ export function buildOpenApiDocument() {
         { name: 'companies' },
       ],
       paths: {
-        '/spaces/{spaceId}/companies/scan': {
-          post: {
-            tags: ['companies'],
-            summary: 'Read the connected mailbox and rebuild the company map',
-            description:
-              'Idempotent while a scan is running: a second request returns the scan already ' +
-              'under way rather than reading the mailbox twice.',
-            requestParams: idParam('spaceId', 'Space id'),
-            responses: {
-              '200': jsonResponse(
-                'A scan was already running',
-                z.object({ scan_id: z.string(), status: z.literal('running') }),
-              ),
-              '202': jsonResponse(
-                'Scan started',
-                z.object({ scan_id: z.string(), status: z.literal('running') }),
-              ),
-              '403': problem('This space is not accessible to the signed-in account'),
-              '409': problem('No mailbox is connected to this space'),
-            },
-          },
-        },
-        '/spaces/{spaceId}/companies/scan/{scanId}': {
-          get: {
-            tags: ['companies'],
-            summary: 'How far one scan has got',
-            requestParams: {
-              path: z.object({
-                spaceId: z.string().meta({ description: 'Space id' }),
-                scanId: z.string().meta({ description: 'Scan id' }),
-              }),
-            },
-            responses: {
-              '200': jsonResponse(
-                'Scan progress',
-                z.object({
-                  status: z.enum(['running', 'done', 'failed']),
-                  messages_seen: z.number().int().nonnegative(),
-                  items_found: z.number().int().nonnegative(),
-                  error: z.string().optional(),
-                }),
-              ),
-              '403': problem('This space is not accessible to the signed-in account'),
-              '404': problem('No such scan in this space'),
-            },
-          },
-        },
-        '/spaces/{spaceId}/companies': {
-          get: {
-            tags: ['companies'],
-            summary: 'Every company in this person’s life, with the ledger behind each figure',
-            requestParams: idParam('spaceId', 'Space id'),
-            responses: {
-              '200': jsonResponse('The company map', companyMap),
-              '403': problem('This space is not accessible to the signed-in account'),
-            },
-          },
-        },
-        '/ledger/{id}': {
-          get: {
-            tags: ['companies'],
-            summary: 'One item, its company, and the message text its quotes index into',
-            requestParams: {
-              ...idParam('id', 'Ledger item id'),
-              query: z.object({
-                space_id: z
-                  .string()
-                  .optional()
-                  .meta({ description: 'Narrows the lookup to one space' }),
-              }),
-            },
-            responses: {
-              '200': jsonResponse(
-                'Item and evidence',
-                z.object({
-                  item: ledgerItem,
-                  company,
-                  message: z
-                    .object({
-                      id: z.string(),
-                      subject: z.string(),
-                      from: z.string(),
-                      received_at: z.string(),
-                      text: z.string(),
-                    })
-                    .nullable(),
-                }),
-              ),
-              '404': problem('No such item for this person'),
-            },
-          },
-          patch: {
-            tags: ['companies'],
-            summary: 'Drop an item, or mark it settled',
-            requestParams: {
-              ...idParam('id', 'Ledger item id'),
-              query: z.object({ space_id: z.string().optional() }),
-            },
-            requestBody: json(z.object({ status: z.enum(['dropped', 'settled']) })),
-            responses: {
-              '200': jsonResponse('The item as it now stands', ledgerItem),
-              '404': problem('No such item for this person'),
-            },
-          },
-        },
-        '/ledger/{id}/handle': {
-          post: {
-            tags: ['companies'],
-            summary: 'Start the job that handles this item',
-            description:
-              'Creates the job that runs the item’s playbook. Any message it sends goes ' +
-              'through the existing approval path; this route starts the work, it does not send.',
-            requestParams: {
-              ...idParam('id', 'Ledger item id'),
-              query: z.object({ space_id: z.string().optional() }),
-            },
-            responses: {
-              '201': jsonResponse('The job now handling it', z.object({ job_id: z.string() })),
-              '404': problem('No such item for this person'),
-              '503': problem('Handling is not connected yet'),
-            },
-          },
-        },
         '/episodes': {
           get: {
             tags: ['learning'],
@@ -1320,6 +1197,129 @@ export function buildOpenApiDocument() {
               '403': problem('Request origin refused'),
               '404': problem('No such browser session'),
               '409': problem('Browser control could not change'),
+            },
+          },
+        },
+        '/spaces/{spaceId}/companies/scan': {
+          post: {
+            tags: ['companies'],
+            summary: 'Read the connected mailbox and rebuild the company map',
+            description:
+              'Idempotent while a scan is running: a second request returns the scan already ' +
+              'under way rather than reading the mailbox twice.',
+            requestParams: idParam('spaceId', 'Space id'),
+            responses: {
+              '200': jsonResponse(
+                'A scan was already running',
+                z.object({ scan_id: z.string(), status: z.literal('running') }),
+              ),
+              '202': jsonResponse(
+                'Scan started',
+                z.object({ scan_id: z.string(), status: z.literal('running') }),
+              ),
+              '403': problem('This space is not accessible to the signed-in account'),
+              '409': problem('No mailbox is connected to this space'),
+            },
+          },
+        },
+        '/spaces/{spaceId}/companies/scan/{scanId}': {
+          get: {
+            tags: ['companies'],
+            summary: 'How far one scan has got',
+            requestParams: {
+              path: z.object({
+                spaceId: z.string().meta({ description: 'Space id' }),
+                scanId: z.string().meta({ description: 'Scan id' }),
+              }),
+            },
+            responses: {
+              '200': jsonResponse(
+                'Scan progress',
+                z.object({
+                  status: z.enum(['running', 'done', 'failed']),
+                  messages_seen: z.number().int().nonnegative(),
+                  items_found: z.number().int().nonnegative(),
+                  error: z.string().optional(),
+                }),
+              ),
+              '403': problem('This space is not accessible to the signed-in account'),
+              '404': problem('No such scan in this space'),
+            },
+          },
+        },
+        '/spaces/{spaceId}/companies': {
+          get: {
+            tags: ['companies'],
+            summary: 'Every company in this person’s life, with the ledger behind each figure',
+            requestParams: idParam('spaceId', 'Space id'),
+            responses: {
+              '200': jsonResponse('The company map', companyMap),
+              '403': problem('This space is not accessible to the signed-in account'),
+            },
+          },
+        },
+        '/ledger/{id}': {
+          get: {
+            tags: ['companies'],
+            summary: 'One item, its company, and the message text its quotes index into',
+            requestParams: {
+              ...idParam('id', 'Ledger item id'),
+              query: z.object({
+                space_id: z
+                  .string()
+                  .optional()
+                  .meta({ description: 'Narrows the lookup to one space' }),
+              }),
+            },
+            responses: {
+              '200': jsonResponse(
+                'Item and evidence',
+                z.object({
+                  item: ledgerItem,
+                  company,
+                  message: z
+                    .object({
+                      id: z.string(),
+                      subject: z.string(),
+                      from: z.string(),
+                      received_at: z.string(),
+                      text: z.string(),
+                    })
+                    .nullable(),
+                }),
+              ),
+              '404': problem('No such item for this person'),
+            },
+          },
+          patch: {
+            tags: ['companies'],
+            summary: 'Drop an item, or mark it settled',
+            requestParams: {
+              ...idParam('id', 'Ledger item id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            requestBody: json(z.object({ status: z.enum(['dropped', 'settled']) })),
+            responses: {
+              '200': jsonResponse('The item as it now stands', ledgerItem),
+              '404': problem('No such item for this person'),
+            },
+          },
+        },
+        '/ledger/{id}/handle': {
+          post: {
+            tags: ['companies'],
+            summary: 'Start the job that handles this item',
+            description:
+              'Creates the job that runs the item’s playbook. Any message it sends goes ' +
+              'through the existing approval path; this route starts the work, it does not send.',
+            requestParams: {
+              ...idParam('id', 'Ledger item id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '201': jsonResponse('The job now handling it', z.object({ job_id: z.string() })),
+              '404': problem('No such item for this person'),
+              '503': problem('Handling is not connected yet'),
             },
           },
         },
