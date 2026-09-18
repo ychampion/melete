@@ -40,6 +40,17 @@ export const REPLY_EVENT_NAME = 'mail.new';
 /** How often the mailbox is looked at. Modest: a reply is not an emergency. */
 export const REPLY_POLL_SECONDS = 120;
 
+/**
+ * The same interval, said in the only language the scheduler listens to.
+ *
+ * pg-boss schedules on cron and the payload beside it is data nobody reads, so
+ * a constant that disagrees with the cron is not a slower poll, it is a comment
+ * that is wrong. The cron is derived here rather than written out, and a test
+ * reads the interval back out of it, so the two cannot drift apart. Cron's
+ * finest grain is a minute, which is why the interval is minutes.
+ */
+export const REPLY_POLL_CRON = `*/${Math.max(1, Math.round(REPLY_POLL_SECONDS / 60))} * * * *`;
+
 /** The connector refuses a larger read; this is its ceiling, not a choice. */
 export const REPLY_READ_LIMIT = 50;
 
@@ -370,9 +381,9 @@ export class CompanyReplyPoller {
         await this.runOnce();
       },
     );
-    await boss.schedule(QUEUES.companyReplies, '* * * * *', {
-      interval_seconds: REPLY_POLL_SECONDS,
-    });
+    // The cron is the whole of the schedule; there is no payload to carry,
+    // because nothing on the other side would read one.
+    await boss.schedule(QUEUES.companyReplies, REPLY_POLL_CRON);
     this.started = true;
   }
 

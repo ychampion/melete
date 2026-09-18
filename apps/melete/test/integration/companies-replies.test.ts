@@ -16,6 +16,8 @@ import {
   fromAddress,
   isReplyFrom,
   REPLY_EVENT_NAME,
+  REPLY_POLL_CRON,
+  REPLY_POLL_SECONDS,
   type ReplyCandidate,
   type ReplyMessage,
   readCandidates,
@@ -365,4 +367,13 @@ test('noticing a reply cannot send one', async () => {
   expect(code).toContain("kind: 'email.search'");
   expect(code).toContain("effect_class: 'read'");
   expect(code.match(/connector\.execute\(/g) ?? []).toHaveLength(1);
+});
+
+test('the poll schedule says exactly what the interval constant says', () => {
+  // pg-boss schedules on cron, whose finest grain is a minute, and the payload
+  // it carries is data nobody reads. The cron is therefore the only thing that
+  // decides how often this runs, so it has to be the constant's own voice.
+  const minutes = /^\*\/(\d+) \* \* \* \*$/.exec(REPLY_POLL_CRON)?.[1];
+  expect(minutes).toBeDefined();
+  expect(Number(minutes) * 60).toBe(REPLY_POLL_SECONDS);
 });
