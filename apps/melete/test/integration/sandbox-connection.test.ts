@@ -5,7 +5,11 @@
  * provider, and the key in these tests is the stand-in's own fixture key.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { connectionKindListResponse, connectionResponse } from '@melete/contracts';
+import { BrokerService } from '../../src/broker/service.ts';
 import {
   ConnectorFactory,
   type SandboxRuntimeOptions,
@@ -15,7 +19,10 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
+import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
+import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
 import { SandboxSessions } from '../../src/sandbox/sessions.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -26,10 +33,12 @@ const PROJECT = 'sandbox-connection-test';
 const fixture = await testDatabase();
 const queue = fixture ? await startQueue(fixture.url) : null;
 const registry = new ConnectorRegistry();
+const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-sandbox-connection-'));
 afterAll(async () => {
   await registry.close();
   await queue?.stop();
   await fixture?.close();
+  await rm(workRoot, { recursive: true, force: true });
 }, 30_000);
 
 const standin = createE2bStandin();
@@ -59,13 +68,20 @@ async function harness() {
     registry,
     new ConnectorFactory({
       sql: fixture.sql,
-      workRoot: 'unused',
+      workRoot,
       spacesRoot: 'unused',
       masterKey: MASTER_KEY,
       sandbox,
     }),
   );
   const jobs = new JobService(fixture.db, queue.boss);
+  const catalog = new RuntimeCatalog(fixture.db, registry, 'unused');
+  const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+    key: 'sandbox-connection-capability-key-32-bytes',
+    liveConnectionScopes: true,
+    loadCatalog: catalog.forAttempt,
+  });
+  const broker = new BrokerService({ sql: fixture.sql, connectors: registry, boss: queue.boss });
   const app = createApp({
     env,
     db: fixture.db,
@@ -126,6 +142,27 @@ async function harness() {
       (select count(*)::int from secret) as secrets`;
     return { connections: Number(row?.connections), secrets: Number(row?.secrets) };
   };
+  /** What a newly claimed attempt is offered, from its bundle and from the broker. */
+  const offered = async () => {
+    const row = await jobs.create({
+      space_id: spaceId,
+      title: 'Sandbox work',
+      objective: 'Run something in the sandbox',
+    });
+    const claimed = await runner.claim({
+      job_id: row.id,
+      expected_epoch: row.leaseEpoch,
+      expected_version: row.stateVersion,
+      reason: 'created',
+    });
+    if (!claimed) throw new Error('Attempt was not claimed');
+    await mkdir(path.join(workRoot, row.id), { recursive: true });
+    return {
+      claimed,
+      bundle: claimed.bundle.tools.map((tool) => tool.name),
+      brokered: (await broker.discovery.available(claimed.claims)).map((tool) => tool.name),
+    };
+  };
   return {
     app,
     as,
@@ -137,6 +174,8 @@ async function harness() {
     sealed,
     everythingReadable,
     counts,
+    offered,
+    broker,
   };
 }
 
@@ -280,4 +319,54 @@ withDb('the sandbox connection kind', () => {
     const installed = connectionResponse.parse(own.json).connection;
     expect(installed.space_id).not.toBe(h.spaceId);
   }, 120_000);
+
+  test('an attempt is offered terminal.run, and the broker runs it in the sandbox', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    // Before the connection exists, nothing offers a terminal.
+    const before = await h.offered();
+    expect(before.bundle).not.toContain('terminal.run');
+    expect(before.brokered).not.toContain('terminal.run');
+
+    const created = await h.install(body());
+    expect(created.status).toBe(201);
+    const installed = connectionResponse.parse(created.json).connection;
+    expect(installed.scopes).toEqual(['terminal.run']);
+
+    const offered = await h.offered();
+    expect(offered.bundle).toContain('terminal.run');
+    expect(offered.brokered).toContain('terminal.run');
+
+    // The whole path: the model asks for a command, the broker admits it, the
+    // service runs it in the sandbox and records what came back.
+    const ran = await h.broker.propose(offered.claimed.claims, {
+      connection_id: installed.id,
+      kind: 'terminal.run',
+      payload: { command: "printf 'through the broker'" },
+    });
+    expect(ran.status).toBe('succeeded');
+    const recorded = await h.broker.get(offered.claimed.claims, ran.action_id);
+    expect(recorded.receipt?.detail).toMatchObject({
+      command: "printf 'through the broker'",
+      exit_code: 0,
+      digest_verified: true,
+      adapter: 'e2b',
+      image_ref: 'base',
+      egress: 'deny_all',
+    });
+    expect(JSON.stringify(recorded).includes(AUTHORING_KEY)).toBe(false);
+    // The session the command opened belongs to this installation and is leased.
+    const [session] = await h.sql`select connection_id, status, adapter from sandbox_session
+      where space_id = ${h.spaceId} order by opened_at desc limit 1`;
+    expect(session).toMatchObject({
+      connection_id: installed.id,
+      status: 'ready',
+      adapter: 'e2b',
+    });
+
+    // Removing the connection takes the terminal away again.
+    expect((await h.revoke(installed.id)).status).toBe(200);
+    const after = await h.offered();
+    expect(after.bundle).not.toContain('terminal.run');
+    expect(after.brokered).not.toContain('terminal.run');
+  }, 180_000);
 });
