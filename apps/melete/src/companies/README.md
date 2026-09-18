@@ -68,16 +68,18 @@ gateway, the way `learning/proposal-gateway.ts` does, so the provider credential
 stays in the gateway. `gpt-6-astra` is served over the Responses protocol, which
 `requiresResponsesProtocol` already decides for every `gpt-6` model.
 
-**A real provider answering is not claimed.** There was no key on the machine
-this was built on. `gateway.test.ts` exercises the real gateway and replaces the
-upstream at the socket, so the recorded request is the one a provider would
-receive; that the provider then returns usable extractions is untested.
+The provider request shape is pinned by `gateway.test.ts`, which runs the real
+gateway and replaces the upstream at the socket, so what is recorded is the
+request a provider would receive. A live provider's reply has not been exercised
+on the machine this was built on, which had no key; the tests that stand behind
+the extraction run against the scripted extractor and the socket double.
 
-**A live mailbox is not claimed** beyond the connector seam. `mailbox.test.ts`
-runs the real `EmailConnector` over a transport double; no IMAP server was
-involved. The connector's `email.search` tool caps a read at fifty messages, so
-a scan sees the newest fifty and then applies the window, rather than ninety
-days of mail.
+The mailbox is covered to the connector seam. `mailbox.test.ts` runs the real
+`EmailConnector` over a transport double rather than an IMAP server, and it is
+what proves the scan reads through the connector's own `execute` and cannot
+send. The connector's `email.search` tool caps a read at fifty messages, so a
+scan sees the newest fifty and then applies the window, rather than ninety days
+of mail.
 
 ## The surface, where it makes a choice
 
