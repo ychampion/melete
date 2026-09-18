@@ -10,6 +10,7 @@ import { calendarManifest } from './calendar.ts';
 import { emailManifest } from './email.ts';
 import { execManifest } from './exec.ts';
 import { filesManifest } from './files.ts';
+import { sandboxExecManifest } from './sandbox-exec.ts';
 import { webManifest } from './web.ts';
 
 const toolNames = (manifest: ConnectorManifest) => manifest.tools.map((tool) => tool.name).sort();
@@ -85,11 +86,14 @@ describe('installable kinds against the connectors they select', () => {
     expect(sorted(CONNECTION_KIND_SCOPES.mail)).toEqual(toolNames(emailManifest));
     expect(sorted(CONNECTION_KIND_SCOPES.caldav)).toEqual(toolNames(calendarManifest));
     expect(sorted(CONNECTION_KIND_SCOPES.ics)).toEqual(['calendar.list']);
+    expect(sorted(CONNECTION_KIND_SCOPES.sandbox)).toEqual(toolNames(sandboxExecManifest));
   });
 
   test('a form says a grant asks first exactly when the connector requires approval', () => {
     const tools = new Map(
-      [...emailManifest.tools, ...calendarManifest.tools].map((tool) => [tool.name, tool]),
+      [...emailManifest.tools, ...calendarManifest.tools, ...sandboxExecManifest.tools].map(
+        (tool) => [tool.name, tool],
+      ),
     );
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS)
       for (const scope of descriptor.scopes) {
