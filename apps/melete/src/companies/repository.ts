@@ -10,7 +10,7 @@
  */
 
 import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -63,6 +63,13 @@ export interface CompanyStore {
   ): Promise<void>;
   scan(owner: Owner, scanId: string): Promise<ScanRecord | null>;
   saveMessages(owner: Owner, messages: readonly StoredMessage[]): Promise<void>;
+  /**
+   * The text the store actually holds for these ids, which is the only text a
+   * span may be checked against. The scan reads it back immediately after
+   * writing, so the string the extractor is shown and the string a person later
+   * opens are the same by construction, rather than by two code paths agreeing.
+   */
+  storedTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>>;
   /** Insert or refresh one company and return the id the ledger should cite. */
   saveCompany(
     owner: Owner,
@@ -239,6 +246,21 @@ export class PostgresCompanyStore implements CompanyStore {
       )
       // The stored text is what spans were checked against. It is never rewritten.
       .onConflictDoNothing();
+  }
+
+  async storedTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>> {
+    if (!messageIds.length) return new Map();
+    const rows = await this.db
+      .select({ messageId: companyMessage.messageId, body: companyMessage.body })
+      .from(companyMessage)
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          inArray(companyMessage.messageId, [...new Set(messageIds)]),
+        ),
+      );
+    return new Map(rows.map((row) => [row.messageId, row.body]));
   }
 
   async saveCompany(
@@ -470,6 +492,14 @@ export class MemoryCompanyStore implements CompanyStore {
       const key = this.key(owner, message.messageId);
       if (!this.messages.has(key)) this.messages.set(key, { ...message, ...owner });
     }
+  }
+  async storedTexts(owner: Owner, messageIds: readonly string[]): Promise<Map<string, string>> {
+    const found = new Map<string, string>();
+    for (const messageId of new Set(messageIds)) {
+      const held = this.messages.get(this.key(owner, messageId));
+      if (held) found.set(messageId, held.text);
+    }
+    return found;
   }
   async saveCompany(
     owner: Owner,

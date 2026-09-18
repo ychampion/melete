@@ -205,6 +205,66 @@ describe('a message that tries to give the agent orders', () => {
   });
 });
 
+describe('two messages arriving under one Message-ID', () => {
+  // A sender chooses that header, so two messages can claim the same id. The
+  // store kept one text per id while the scan had read another, which left an
+  // admitted figure whose own span, in the message it cites, said something
+  // else: a reviewer produced GBP 5.00 displayed against a stored GBP 900.00.
+  const ID = '<duplicate@attacker.example>';
+  const clash = (subject: string, text: string, ago: number) => ({
+    messageId: ID,
+    from: 'Nimbus Ledger <billing@nimbusledger.example>',
+    to: 'accounts@thackeraylane.example',
+    subject,
+    text,
+    receivedAt: new Date(now.getTime() - ago * 86_400_000).toISOString(),
+  });
+  const twoUnderOneId = () => [
+    clash('Receipt A', 'Your subscription charge of GBP 5.00 was taken today.', 1),
+    clash('Receipt B', 'Your subscription charge of GBP 900.00 was taken today.', 2),
+  ];
+  const scanThem = async () => {
+    const store = new MemoryCompanyStore();
+    const outcome = await runScan({
+      store,
+      mailbox: fixtureMailbox(twoUnderOneId()),
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+    return { store, outcome, map: await store.map(owner, now) };
+  };
+
+  test('every admitted figure still opens back to the text the store kept', async () => {
+    const { store, map } = await scanThem();
+    for (const item of map.items) {
+      const detail = await store.item(owner, item.id);
+      expect(detail?.message).not.toBe(null);
+      // The promise the module exists to keep, on a mailbox built to break it.
+      for (const evidence of item.evidence)
+        expect(evidenceHolds(detail?.message?.text ?? '', evidence)).toBe(true);
+    }
+  });
+
+  test('the second message under the id is refused and counted, not quietly read', async () => {
+    const { outcome } = await scanThem();
+    expect(outcome.status).toBe('done');
+    expect(outcome.counts.duplicate_message_id).toBe(1);
+  });
+
+  test('which message is read is decided the same way twice', async () => {
+    const subjectRead = async () => {
+      const { store, map } = await scanThem();
+      const first = map.items[0];
+      if (!first) return null;
+      return (await store.item(owner, first.id))?.message?.subject ?? null;
+    };
+    const first = await subjectRead();
+    expect(first).not.toBe(null);
+    expect(await subjectRead()).toBe(first);
+  });
+});
+
 describe('scanning again after a price has changed', () => {
   const subscription = (amountMinor: number): LedgerItem => ({
     id: `li_01J00000000000000000${amountMinor}`,

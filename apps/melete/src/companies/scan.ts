@@ -11,7 +11,7 @@
  * of the sentences underneath it.
  */
 
-import type { LedgerItem } from '@melete/contracts';
+import { evidenceHolds, type LedgerItem } from '@melete/contracts';
 import type { CompanyExtractor } from './extract.ts';
 import type { ScanMailbox } from './mailbox.ts';
 import { messageText, type ScanMessage } from './messages.ts';
@@ -65,22 +65,42 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     Object.assign(counts, grouped.counts);
 
     // Stored first: a quote is only ever checked against text the store has.
+    //
+    // A Message-ID is chosen by whoever sent the mail, so two messages can
+    // claim the same one. The store keeps one row per id, so a scan that read
+    // both would admit a figure from one and leave the other's text for the
+    // person to open — the figure and its own sentence disagreeing, which is
+    // the one thing this module promises cannot happen. The second message
+    // under an id is therefore refused here and counted, before anything reads
+    // it, and the survivor is the first the prefilter ordered: newest wins.
     const stored: StoredMessage[] = [];
-    const texts = new Map<string, string>();
+    const claimed = new Set<string>();
     for (const group of grouped.companies) {
       for (const message of group.candidates) {
-        const text = messageText(message);
-        texts.set(message.messageId, text);
+        if (claimed.has(message.messageId)) {
+          counts.duplicate_message_id = (counts.duplicate_message_id ?? 0) + 1;
+          continue;
+        }
+        claimed.add(message.messageId);
         stored.push({
           messageId: message.messageId,
           subject: message.subject,
           from: message.from,
           receivedAt: message.receivedAt,
-          text,
+          text: messageText(message),
         });
       }
     }
     await options.store.saveMessages(options.owner, stored);
+
+    // And then read back what the store actually kept, rather than trusting the
+    // copy in hand to match it. From here on the extractor sees the stored
+    // string and admission checks the stored string, so "the text the model
+    // read" and "the text the person opens" are one value, not two that agree.
+    const texts = await options.store.storedTexts(
+      options.owner,
+      stored.map((message) => message.messageId),
+    );
 
     const admitted: LedgerItem[] = [];
     for (const group of grouped.companies) {
@@ -99,7 +119,14 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         context: AdmissionContext;
       }[] = [];
       for (const message of group.candidates) {
-        const text = texts.get(message.messageId) ?? messageText(message);
+        // Only the stored string will do. A message the store does not hold —
+        // because it lost a Message-ID clash, or because the write did not land
+        // — is one nothing can be checked against, so it is not read at all.
+        const text = texts.get(message.messageId);
+        if (text === undefined) {
+          counts.text_not_stored = (counts.text_not_stored ?? 0) + 1;
+          continue;
+        }
         // One message the extractor cannot read is one message missing from the
         // map, not a failed scan. This is the same judgement the contract makes
         // about a bad span: drop the one thing, count it, and keep the rest,
@@ -158,8 +185,26 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
           message_count: group.messageCount,
         });
     }
-    found = await options.store.saveItems(options.owner, record.id, admitted);
-    counts.proposed = admitted.length;
+    // The last gate, and the one that makes the promise structural rather than
+    // procedural: before a single row is written, every admitted item is
+    // checked once more against the text the store holds for the message it
+    // cites, read fresh. Admission already checked the same string, so this
+    // should never drop anything — and that is the point. If some future change
+    // lets the text a span was measured against drift from the text a person
+    // opens, items stop being written instead of being written wrong.
+    const finalTexts = await options.store.storedTexts(
+      options.owner,
+      admitted.flatMap((item) => item.evidence.map((entry) => entry.message_id)),
+    );
+    const writable = admitted.filter((item) =>
+      item.evidence.every((entry) => {
+        const text = finalTexts.get(entry.message_id);
+        return text !== undefined && evidenceHolds(text, entry);
+      }),
+    );
+    counts.evidence_after_store = admitted.length - writable.length;
+    found = await options.store.saveItems(options.owner, record.id, writable);
+    counts.proposed = writable.length;
     await options.store.closeScan(options.owner, record.id, {
       status: 'done',
       messagesSeen: seen,
