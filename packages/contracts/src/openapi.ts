@@ -302,6 +302,10 @@ export function buildOpenApiDocument() {
               query: z.object({ space_id: z.string().optional() }),
             },
             responses: {
+              '200': jsonResponse(
+                'Already being handled, by the job named here',
+                z.object({ job_id: z.string() }),
+              ),
               '201': jsonResponse('The job now handling it', z.object({ job_id: z.string() })),
               '400': problem('Nothing ships yet that handles this kind of item on its own'),
               '404': problem('No such item for this person'),

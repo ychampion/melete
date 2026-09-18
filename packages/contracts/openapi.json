@@ -562,6 +562,25 @@
           }
         ],
         "responses": {
+          "200": {
+            "description": "Already being handled, by the job named here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "job_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "job_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
           "201": {
             "description": "The job now handling it",
             "content": {

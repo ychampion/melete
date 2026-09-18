@@ -3910,6 +3910,17 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
+                /** @description Already being handled, by the job named here */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            job_id: string;
+                        };
+                    };
+                };
                 /** @description The job now handling it */
                 201: {
                     headers: {

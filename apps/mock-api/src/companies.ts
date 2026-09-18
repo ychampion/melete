@@ -187,7 +187,9 @@ export function mountCompaniesMock(
     if (chat) chat.follow = { from: fixture.from_address };
     row.job_id = conversation.id;
     row.status = 'handling';
-    return c.json({ job_id: conversation.id });
+    // 201 for the job this call made, and 200 above for one that already
+    // existed: the same two answers the real route gives.
+    return c.json({ job_id: conversation.id }, 201);
   });
 
   return { fixture };
