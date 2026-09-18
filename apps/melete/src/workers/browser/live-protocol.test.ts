@@ -106,6 +106,35 @@ describe('live site scope', () => {
       expect(scope.allow(host)).toBe('off_scope');
     expect(scope.allow('Example.ORG')).toBe('admitted');
   });
+
+  test('a person cannot put the machine or its own network on the list', () => {
+    const scope = new LiveSiteScope([], 'https://www.example.com/');
+    for (const local of [
+      'localhost',
+      'LOCALHOST',
+      'anything.localhost',
+      '127.0.0.1',
+      '127.0.0.9',
+      '10.0.0.5',
+      '192.168.1.1',
+      '172.16.4.4',
+      '169.254.169.254',
+      '100.64.0.1',
+      '0.0.0.0',
+      '[::1]',
+      '[fd00::1]',
+      'metadata.google.internal',
+      'printer.local',
+      'files.home.arpa',
+      'nas.lan',
+    ])
+      expect([local, scope.allow(local)]).toEqual([local, 'off_scope']);
+    expect(scope.list()).toEqual(['example.com']);
+    // A public address or name is still the person's to allow.
+    expect(scope.allow('203.0.113.9')).toBe('off_scope');
+    expect(scope.allow('8.8.8.8')).toBe('admitted');
+    expect(scope.allow('idp.example.org')).toBe('admitted');
+  });
 });
 
 describe('live input limits', () => {

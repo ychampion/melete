@@ -57,12 +57,23 @@ test('nothing in the worker or its container turns the sandbox off again', async
     join(root, 'deploy/Dockerfile.browser'),
     join(root, 'deploy/docker-compose.browser.yml'),
   ];
+  // Every way the sandbox could be given back: the flags, the profile, and the container
+  // settings that would make it moot.
+  const given = [
+    /no-sandbox/,
+    /disable-setuid-sandbox/,
+    /disable-gpu-sandbox/,
+    /disable-namespace-sandbox/,
+    /seccomp[=:]\s*unconfined/,
+    /apparmor[=:]\s*unconfined/,
+    /privileged:\s*true/,
+    /cap_add/,
+    /SYS_ADMIN/,
+  ];
   for (const file of files) {
     const text = await readFile(file, 'utf8');
-    expect([file, /no-sandbox|disable-setuid-sandbox|seccomp=unconfined/.test(text)]).toEqual([
-      file,
-      false,
-    ]);
+    for (const pattern of given)
+      expect([file, String(pattern), pattern.test(text)]).toEqual([file, String(pattern), false]);
   }
   const compose = await readFile(join(root, 'deploy/docker-compose.browser.yml'), 'utf8');
   expect(compose).toContain('seccomp=./config/browser-seccomp.json');

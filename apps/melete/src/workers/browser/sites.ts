@@ -5,7 +5,7 @@
  * the profile and the record with them.
  */
 import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { type BrowserSite, browserSiteForgotten, browserSiteList } from '@melete/contracts';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -15,6 +15,19 @@ import type { BrowserWorkers } from './routes.ts';
 import { BrowserFault } from './sessions.ts';
 
 type SiteRow = { domain: string; label: string; last_used: string | Date };
+
+/**
+ * The one directory a space's browser owns, or a refusal. The id is the only part a caller
+ * supplies, so it is held to the shape a space id has and the result is held inside the root:
+ * `rm` with `force` is silent, and a silent removal outside the spaces root is the worst kind.
+ */
+export function confinedSpaceProfile(spacesRoot: string, spaceId: string): string {
+  if (!/^sp_[A-Za-z0-9_-]+$/.test(spaceId)) throw new BrowserFault('invalid_space');
+  const root = resolve(spacesRoot);
+  const profile = resolve(root, spaceId, 'browser');
+  if (!profile.startsWith(root + sep)) throw new BrowserFault('profile_outside_space');
+  return profile;
+}
 
 /** What a space kept in its browser, and what became of it. `profile` is the directory removed. */
 export type ForgottenBrowserProfiles = {
@@ -77,9 +90,13 @@ export class BrowserSiteService {
    * for a space with no worker running and no profile is silent and safe.
    */
   async forgetSpace(spaceId: string): Promise<ForgottenBrowserProfiles> {
-    await this.workers.release?.(spaceId);
     const root = this.workers.spacesRoot;
-    const profile = root === undefined ? null : join(root, spaceId, 'browser');
+    // A directory is removed here, so the space names one inside the spaces root or none at all.
+    const profile = root === undefined ? null : confinedSpaceProfile(root, spaceId);
+    // Nothing is removed while a worker may still be writing to it; where a worker cannot be
+    // stopped, nothing is removed at all.
+    if (profile && !this.workers.release) throw new BrowserFault('worker_release_unavailable');
+    await this.workers.release?.(spaceId);
     if (profile) await rm(profile, { recursive: true, force: true });
     const removed = await this.sql`delete from browser_site_profile
       where space_id = ${spaceId}`;

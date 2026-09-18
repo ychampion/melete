@@ -350,6 +350,27 @@ suite('the sites a space is signed in to', () => {
       profile: null,
       rows: 0,
     });
+    // A browser that cannot be stopped keeps its profile: nothing is removed behind a worker
+    // that may still be writing to it.
+    const unstoppable = new BrowserSessionService(sql, {
+      get: (id: string) => pool.get(id),
+      spacesRoot: root,
+    });
+    expect(
+      await forgetBrowserProfilesForSpace(unstoppable, spaceId).then(
+        () => 'removed',
+        (error: Error) => error.message,
+      ),
+    ).toBe('worker_release_unavailable');
+    // A space id is the only part a caller supplies, and it cannot name a directory elsewhere.
+    for (const outside of ['../elsewhere', 'sp_ok/../../elsewhere', '', 'elsewhere'])
+      expect([
+        outside,
+        await forgetBrowserProfilesForSpace(sessions, outside).then(
+          () => 'removed',
+          (error: Error) => error.message,
+        ),
+      ]).toEqual([outside, 'invalid_space']);
 
     // The rows also follow the space when it goes, so a caller that forgets to ask still leaves
     // nothing behind in the database.

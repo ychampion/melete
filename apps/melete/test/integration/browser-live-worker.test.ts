@@ -244,11 +244,19 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       expect(account?.search).toStartWith('?ticket=');
       expect(account?.cookie).toContain('step=code');
       // The person allows one more host for this takeover, which fills the injected scope.
-      expect(await worker.liveScope(open.live_id, '127.0.0.5')).toEqual({
-        site_scope: ['127.0.0.1', '127.0.0.2', '127.0.0.5'],
+      expect(await worker.liveScope(open.live_id, 'allowed.example')).toEqual({
+        site_scope: ['127.0.0.1', '127.0.0.2', 'allowed.example'],
       });
-      expect(await reason(worker.liveScope(open.live_id, '127.0.0.6'))).toBe('scope_full');
-      expect(await reason(worker.liveScope(open.live_id, '127.0.0.4:8080'))).toBe('invalid_host');
+      expect(await reason(worker.liveScope(open.live_id, 'another.example'))).toBe('scope_full');
+      expect(await reason(worker.liveScope(open.live_id, 'evil.example:8080'))).toBe(
+        'invalid_host',
+      );
+      // Nothing local may join the list the panel shows, whatever the person types.
+      for (const local of ['localhost', '127.0.0.9', '169.254.169.254', '10.0.0.5', '[::1]'])
+        expect([local, await reason(worker.liveScope(open.live_id, local))]).toEqual([
+          local,
+          'invalid_host',
+        ]);
       await click(SIGN_IN_POINTS.elsewhere);
       expect(
         await until(() =>

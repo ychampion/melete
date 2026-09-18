@@ -1,6 +1,8 @@
+import { isIP } from 'node:net';
 import type { LiveEndCode, LiveNoticeCode } from '@melete/contracts';
 import { getDomain } from 'tldts';
 import { z } from 'zod';
+import { isPublicAddress } from '../../connectors/web.ts';
 
 export type { LiveDown, LiveEndCode, LiveNoticeCode, LiveOpen } from '@melete/contracts';
 
@@ -132,6 +134,19 @@ export function siteOf(host: string): string {
   return getDomain(name, { allowPrivateDomains: true }) ?? name;
 }
 
+/** Names that never leave the machine or the local network, whatever DNS is asked. */
+const LOCAL_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan'];
+
+/** A host a person may not add to a takeover's scope: an address that is not public, or a name
+ * reserved for the machine or its network. A public name that resolves privately is refused
+ * later by the egress guard, which resolves it and pins what it resolved. */
+export function localName(host: string): boolean {
+  const name = normalHost(host);
+  const address = name.startsWith('[') ? name.slice(1, -1) : name;
+  if (isIP(address)) return !isPublicAddress(address);
+  return name === 'localhost' || LOCAL_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
 export type LiveScopeDecision = 'in_scope' | 'admitted' | 'off_scope' | 'scope_full';
 
 /**
@@ -177,6 +192,10 @@ export class LiveSiteScope {
       return 'off_scope';
     }
     if (name !== host.toLowerCase() && `[${host.toLowerCase()}]` !== name) return 'off_scope';
+    // The egress guard refuses a private address whoever asks, but a person's list should never
+    // carry one either: the panel shows this list, and the deployment's own network is not a
+    // site anybody signs in to.
+    if (localName(name)) return 'off_scope';
     return this.admits(name) ? 'in_scope' : this.add(name);
   }
 
