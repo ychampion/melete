@@ -3,13 +3,12 @@
  * them: one base URL, the session cookie, and a { data, error, unavailable }
  * result rather than a thrown exception.
  *
- * They go through `fetch` rather than the typed client because openapi.json
- * does not describe these paths yet.
- *
- * INTEGRATOR: when it does, each call below becomes an `api.GET(...)` in
- * `experience/adapter.ts` with the same names, and this file goes away. The
- * space id is read from `GET /spaces`, which is the one place the interface
- * learns which space it is looking at.
+ * The shapes below are the generated ones, from openapi.json through
+ * `experience/types.ts`, so a change to the contract stops this compiling. The
+ * calls themselves still go through `fetch` on the shared client's options
+ * rather than through `api.GET`, because each of these answers a plain body and
+ * has no `not_available` arm to unwrap. The space id is read from `GET /spaces`,
+ * which is the one place the interface learns which space it is looking at.
  */
 import { API_BASE_URL, client, type Result } from '../experience/adapter.ts';
 import type {
@@ -19,7 +18,7 @@ import type {
   LedgerItemStatus,
   ScanProgress,
   ScanStarted,
-} from './types.ts';
+} from '../experience/types.ts';
 
 const OFFLINE = 'Couldn’t reach Melete. Check that the service is running.';
 

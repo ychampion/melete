@@ -8,7 +8,7 @@
  */
 import type { Filter } from './format.ts';
 import { money, sameFilter } from './format.ts';
-import type { CompanyMapTotals } from './types.ts';
+import type { CompanyMapTotals } from '../experience/types.ts';
 
 export type Total = {
   key: string;
@@ -65,23 +65,19 @@ export function totalsOf(totals: CompanyMapTotals, companies: number, currency: 
       figure: String(totals.data_holders),
       filter: { kind: 'item', value: 'data_held' },
     },
-  ];
-  // A service that does not read promises yet serves neither count, and these
-  // two cells are not drawn rather than drawn as nothing.
-  if (typeof totals.promises_in_force === 'number')
-    rows.push({
+    {
       key: 'promises',
       label: 'Promises in force',
       figure: String(totals.promises_in_force),
       filter: { kind: 'promise', lapsed: false },
-    });
-  if (typeof totals.promises_lapsed === 'number')
-    rows.push({
+    },
+    {
       key: 'lapsed',
       label: 'Promises lapsed',
       figure: String(totals.promises_lapsed),
       filter: { kind: 'promise', lapsed: true },
-    });
+    },
+  ];
   return rows;
 }
 

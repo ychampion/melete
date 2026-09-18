@@ -14,7 +14,7 @@ import type { Filter } from '../companies/format.ts';
 import { byCompany, inOrder, matches } from '../companies/format.ts';
 import { CompanyHeader, EmptyLedger, LedgerDetailPanel, LedgerRow } from '../companies/Ledger.tsx';
 import { TotalsRow } from '../companies/Totals.tsx';
-import type { CompanyMap, LedgerDetail, ScanProgress } from '../companies/types.ts';
+import type { CompanyMap, LedgerDetail, ScanProgress } from '../experience/types.ts';
 import { Icon } from '../design/icons.tsx';
 import { Segmented } from '../design/primitives.tsx';
 import { useMedia, useNow } from '../experience/hooks.ts';

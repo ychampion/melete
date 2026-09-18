@@ -9,7 +9,7 @@
  */
 
 import { messageDate } from './format.ts';
-import type { LedgerEvidence, LedgerMessage } from './types.ts';
+import type { LedgerEvidence, LedgerMessage } from '../experience/types.ts';
 
 /** Does the text at this span read exactly as the quote claims? */
 export function holds(

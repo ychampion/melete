@@ -16,7 +16,7 @@ import {
   STATUS_WORDS,
   whenDue,
 } from './format.ts';
-import type { Company, Confidence, LedgerDetail, LedgerItem, ScanProgress } from './types.ts';
+import type { Company, Confidence, LedgerDetail, LedgerItem, ScanProgress } from '../experience/types.ts';
 
 const CONFIDENCE_WORDS: Record<Confidence, string> = {
   high: 'Read with high confidence',
@@ -128,7 +128,7 @@ export function LedgerDetailPanel({
       </div>
     );
   const { item, company, message } = detail;
-  const spans = item.evidence.filter((span) => span.message_id === message.id);
+  const spans = message ? item.evidence.filter((span) => span.message_id === message.id) : [];
   const done = item.status === 'settled' || item.status === 'dropped';
   return (
     <div className="ledger-detail">
@@ -138,7 +138,17 @@ export function LedgerDetailPanel({
           {company.name} · {company.domain} · {CONFIDENCE_WORDS[item.confidence].toLowerCase()}
         </span>
       </div>
-      <MessageCard message={message} spans={spans} />
+      {message ? (
+        <MessageCard message={message} spans={spans} />
+      ) : (
+        // A figure is only ever shown with the sentence it came from, so when the
+        // message is no longer held there is nothing to open. Saying so is
+        // better than drawing the quote on its own, which would look like
+        // evidence while no longer being checkable against anything.
+        <p className="ledger-detail-gone">
+          The message this came from is no longer on this machine.
+        </p>
+      )}
       <div className="ledger-actions">
         {item.job_id ? (
           <Button icon="arrowUpRight" onClick={onHandle}>

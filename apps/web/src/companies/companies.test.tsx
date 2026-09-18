@@ -14,7 +14,7 @@ import { EvidenceText, holds, MessageCard, segment } from './evidence.tsx';
 import { type Filter, inOrder, matches, money, whenDue } from './format.ts';
 import { EmptyLedger, LedgerRow } from './Ledger.tsx';
 import { TotalsRow } from './Totals.tsx';
-import type { Company, CompanyMapTotals, LedgerItem, LedgerMessage } from './types.ts';
+import type { Company, CompanyMapTotals, LedgerItem, LedgerMessage } from '../experience/types.ts';
 
 const NOW = Date.parse('2026-09-18T09:00:00.000Z');
 
@@ -111,22 +111,21 @@ test('every total is drawn with its figure and the plain word for it', () => {
   expect(html).toContain('>9<');
 });
 
-test('the promise figures are not drawn when the service does not serve them', () => {
-  const { promises_in_force, promises_lapsed, ...six } = TOTALS;
-  expect(promises_in_force).toBe(4);
-  expect(promises_lapsed).toBe(1);
+test('a promise still standing and one already broken are counted apart', () => {
   const html = renderToStaticMarkup(
     <TotalsRow
-      totals={six}
+      totals={{ ...TOTALS, promises_in_force: 4, promises_lapsed: 1 }}
       companies={9}
       currency="GBP"
       filter={null}
       onFilter={() => undefined}
     />,
   );
-  expect(html).not.toContain('Promises in force');
-  expect(html).not.toContain('Promises lapsed');
-  expect(html).toContain('Holding your data');
+  // A company that has broken its word is the most useful thing the map knows,
+  // so it gets its own figure rather than being folded into the ones still standing.
+  expect(html).toContain('>4<');
+  expect(html).toContain('>1<');
+  expect(html.indexOf('Promises in force')).toBeLessThan(html.indexOf('Promises lapsed'));
 });
 
 test('the pressed figure says so, and only that one', () => {
