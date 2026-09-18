@@ -23,3 +23,7 @@ conformance/memory/report.json
 
 # wrangler dev writes its local state and bundles here.
 .wrangler/
+
+# The runtime data directories above are matched at any depth, which would
+# also swallow source directories that happen to share their names.
+!apps/melete/src/spaces/

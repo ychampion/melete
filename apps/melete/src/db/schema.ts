@@ -52,6 +52,8 @@ export const space = pgTable('space', {
   ownerPrincipalId: text('owner_principal_id').references(() => principal.id),
   audience: text('audience').notNull().default('owner'),
   gitPath: text('git_path').notNull(),
+  /** Stamped by the fence that begins a removal. A stamped space serves nothing. */
+  removedAt: timestamp('removed_at', { withTimezone: true }),
   createdAt: created(),
 });
 
