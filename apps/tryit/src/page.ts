@@ -231,7 +231,13 @@ section.block:last-child { border-bottom: 0; }
 .src { font-size: 12.5px; color: var(--muted); }
 .src a { word-break: break-word; }
 .src.verbatim { margin-top: 10px; }
-.srcq { border-left: 2px solid var(--blue-line); padding-left: 10px; color: var(--muted); font-size: 13px; }
+.srcq {
+  border-left: 2px solid var(--blue-line); padding-left: 10px;
+  color: var(--muted); font-size: 13px;
+  /* A quote is cut from the paste and keeps its line breaks; folding them
+     into spaces would lay the words out differently from the thing quoted. */
+  white-space: pre-wrap;
+}
 
 blockquote {
   margin: 0; padding: 10px 0 10px 14px; border-left: 3px solid var(--blue-line);
@@ -239,6 +245,7 @@ blockquote {
 }
 blockquote q {
   font-size: 14.5px; line-height: 23px; color: var(--blue-ink);
+  white-space: pre-wrap;
   quotes: "\\201C" "\\201D" "\\2018" "\\2019";
 }
 blockquote .why { display: block; margin-top: 5px; font-size: 12px; color: var(--muted); }

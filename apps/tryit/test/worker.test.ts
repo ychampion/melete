@@ -58,6 +58,21 @@ describe('the page', () => {
     expect(html).not.toContain('Why you are owed it');
   });
 
+  /**
+   * A quote is cut from the paste, so it carries whatever line break the paste
+   * had. Left alone a browser folds that break into a space, which puts the
+   * words "word for word" over text laid out differently from the thing it
+   * quotes. Both places a quote is drawn keep the break.
+   */
+  test('a quote keeps the line breaks the paste gave it', async () => {
+    const html = await (await call(new Request('https://tryit.example/'))).text();
+    const style = /<style[^>]*>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? '';
+    const declarations = (selector: string): string =>
+      new RegExp(`(?:^|\\})\\s*${selector}\\s*\\{([^}]*)\\}`, 'm').exec(style)?.[1] ?? '';
+    expect(declarations('blockquote q')).toContain('white-space: pre-wrap');
+    expect(declarations('\\.srcq')).toContain('white-space: pre-wrap');
+  });
+
   test('carries the headline, the three samples and the two links', async () => {
     const html = await (await call(new Request('https://tryit.example/'))).text();
     expect(html).toContain('Deals with every company in your life');
