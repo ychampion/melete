@@ -23,6 +23,7 @@ import {
   type ProcedureScope,
   type VersionEvidence,
 } from './contracts.ts';
+import { OBJECTIVE_ORIGINS, type ObjectiveOrigin } from './provenance.ts';
 import { episode, learningAttempt, learningJob } from './schema.ts';
 import { derivedScope } from './scope.ts';
 
@@ -35,6 +36,12 @@ const unknownScope: ProcedureScope = {
   role: 'owner',
   audience: 'private',
 };
+/** The recorded origin of a job's objective, or the closed answer when there is none. */
+const objectiveOrigin = (row: { objectiveOrigin: string | null }): ObjectiveOrigin =>
+  (OBJECTIVE_ORIGINS as readonly string[]).includes(row.objectiveOrigin ?? '')
+    ? (row.objectiveOrigin as ObjectiveOrigin)
+    : 'derived';
+
 export type EpisodeRow = typeof episode.$inferSelect;
 
 /** Admission calls this before enqueueing the first wake; optional metadata never grants authority. */
@@ -318,22 +325,28 @@ export class EpisodeService {
       await revertDeliveredCanaries(tx, row, saved.id);
       if (['completed', 'failed', 'cancelled'].includes(row.state)) {
         // Terminal jobs are immutable. A linked correction cannot replay their effects.
-        const corrective = await this.jobs.createInTransaction(tx, {
-          space_id: row.spaceId,
-          title: `Correction: ${row.title}`.slice(0, 200),
-          objective: row.objective,
-          constraints: jobConstraints.parse(row.constraints),
-          budget: { ...jobBudget.parse(row.budget), max_actions: 0 },
-          ...(registration
-            ? {
-                learning: {
-                  scope: registration.scope,
-                  template_id: registration.templateId,
-                  input_refs: registration.inputRefs,
-                },
-              }
-            : {}),
-        });
+        const corrective = await this.jobs.createInTransaction(
+          tx,
+          {
+            space_id: row.spaceId,
+            title: `Correction: ${row.title}`.slice(0, 200),
+            objective: row.objective,
+            constraints: jobConstraints.parse(row.constraints),
+            budget: { ...jobBudget.parse(row.budget), max_actions: 0 },
+            ...(registration
+              ? {
+                  learning: {
+                    scope: registration.scope,
+                    template_id: registration.templateId,
+                    input_refs: registration.inputRefs,
+                  },
+                }
+              : {}),
+          },
+          undefined,
+          // The corrective job copies this objective; it copies where it came from too.
+          objectiveOrigin(row),
+        );
         await appendEvent(tx, {
           jobId: corrective.id,
           type: 'notice',

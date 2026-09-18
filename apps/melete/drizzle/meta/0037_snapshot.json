@@ -1,5 +1,5 @@
 {
-  "id": "c012c690-14de-4835-9c44-bb79635c97da",
+  "id": "317b5409-9974-4d02-80f7-a7805a915cfb",
   "prevId": "d9375a49-0f9a-4fdf-aeab-cd1889943700",
   "version": "7",
   "dialect": "postgresql",
@@ -2299,6 +2299,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "objective_origin": {
+          "name": "objective_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "kind": {
           "name": "kind",

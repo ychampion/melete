@@ -23,6 +23,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { registerJobLearning } from '../learning/episodes.ts';
+import { type ObjectiveOrigin, recordedObjectiveOrigin } from '../learning/provenance.ts';
 import { derivedScope } from '../learning/scope.ts';
 import {
   requestPrincipal,
@@ -141,6 +142,12 @@ export class JobService {
       scheduledAt?: Date;
       dormant?: boolean;
     },
+    /**
+     * Whose words this objective is, for a job that carries text written
+     * somewhere else: a correction of another job, or an evaluation arm running a
+     * variant. Left out, it is decided from how this job is being made.
+     */
+    objectiveOrigin?: ObjectiveOrigin,
   ): Promise<JobRow> {
     const value = createResponsibilityRequest.parse(input);
     const [parent] = await tx
@@ -157,6 +164,7 @@ export class JobService {
         principalId: access.principalId,
         title: value.title,
         objective: value.objective,
+        objectiveOrigin: objectiveOrigin ?? recordedObjectiveOrigin(experience ?? {}),
         constraints: jobConstraints.parse(value.constraints ?? {}),
         budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
         nextWakeAt:

@@ -165,9 +165,8 @@ export class ProcedureService {
     const [origin] = await tx
       .select({
         objective: job.objective,
-        kind: job.kind,
+        objectiveOrigin: job.objectiveOrigin,
         principalId: job.principalId,
-        planId: job.planId,
       })
       .from(job)
       .where(eq(job.id, source.jobId));

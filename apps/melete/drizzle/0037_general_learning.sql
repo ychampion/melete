@@ -1,3 +1,4 @@
+ALTER TABLE "job" ADD COLUMN "objective_origin" text;--> statement-breakpoint
 ALTER TABLE "episode" ADD COLUMN "prior_output" text;--> statement-breakpoint
 ALTER TABLE "episode" ADD COLUMN "corrected_output" text;--> statement-breakpoint
 ALTER TABLE "procedure_candidate" ADD COLUMN "triggers" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint

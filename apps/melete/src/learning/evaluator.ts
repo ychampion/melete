@@ -526,20 +526,26 @@ export class ProcedureEvaluator {
         gitPath: `evaluation/${id}`,
         ownerPrincipalId: ownerId,
       });
-      const row = await this.jobs.createInTransaction(tx, {
-        space_id: id,
-        title: value.template,
-        objective: value.objective,
-        learning: { scope: candidate.scope, template_id: value.template, input_refs: [] },
-        budget: {
-          max_turns: 2,
-          max_output_tokens: OUTPUT_BUDGET,
-          max_actions: 0,
-          max_attempts: 1,
-          max_wall_ms: 15000,
-          max_usd_est: 0.1,
+      const row = await this.jobs.createInTransaction(
+        tx,
+        {
+          space_id: id,
+          title: value.template,
+          objective: value.objective,
+          learning: { scope: candidate.scope, template_id: value.template, input_refs: [] },
+          budget: {
+            max_turns: 2,
+            max_output_tokens: OUTPUT_BUDGET,
+            max_actions: 0,
+            max_attempts: 1,
+            max_wall_ms: 15000,
+            max_usd_est: 0.1,
+          },
         },
-      });
+        undefined,
+        // Held-out history or a model-authored variant, never a request typed now.
+        'derived',
+      );
       await tx.insert(learningTrial).values({
         jobId: row.id,
         candidateId: candidate.id,

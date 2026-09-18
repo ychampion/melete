@@ -272,7 +272,10 @@ const verdict = (
       .from(episode)
       .where(eq(episode.id, automated.episodeId));
     if (!origin) throw new Error('No source episode');
-    await fixture.handle.db.update(job).set({ kind: 'routine' }).where(eq(job.id, origin.jobId));
+    await fixture.handle.db
+      .update(job)
+      .set({ kind: 'routine', objectiveOrigin: 'derived' })
+      .where(eq(job.id, origin.jobId));
     await rejectsWith(
       () => procedures.enableCanary(fixture.ownerId, fixture.spaceId, automated.id),
       'evidence_changed',

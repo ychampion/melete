@@ -141,6 +141,12 @@ export const job = pgTable(
     title: text('title').notNull(),
     principalId: text('principal_id').references(() => principal.id),
     objective: text('objective').notNull(),
+    /**
+     * Whose words the objective is, decided where it was written down rather than
+     * inferred later from `kind`: a corrective job and an evaluation arm both carry
+     * the origin of the text they were given. Null on rows written before this.
+     */
+    objectiveOrigin: text('objective_origin'),
     kind: text('kind').notNull().default('responsibility'),
     agentId: text('agent_id').references(() => agent.id, { onDelete: 'restrict' }),
     currentTurnId: text('current_turn_id'),
