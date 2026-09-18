@@ -179,8 +179,11 @@ databaseTest(
     if ('reason' in read) throw new Error(read.reason);
     const [execution] = await s.sql`select * from attempt where id = ${read.attempt_id}`;
     expect(execution?.lease_expires_at).not.toBeNull();
+    // The lease is stamped by the database's clock and compared against this
+    // process's, so a few seconds of drift between the two is not a lease that
+    // is too long. The claim is five minutes, not five minutes to the millisecond.
     expect(new Date(execution?.lease_expires_at).getTime() - Date.now()).toBeLessThanOrEqual(
-      300000,
+      305000,
     );
     await s.sql`update attempt set lease_expires_at = now() - interval '1 second' where id = ${read.attempt_id}`;
     const queue = await startQueue(fixture.url);
