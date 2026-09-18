@@ -75,7 +75,9 @@ function headlineFor(removal: SpaceRemoval): string {
       ? `${name} is empty. The space is yours to start again whenever you like.`
       : `${name} is gone.`;
   if (removal.state === 'blocked')
-    return `${name} is part way through being cleared, and one thing could not be reached: ${removal.blocked_reason ?? 'the verification pass could not account for everything'}. Melete keeps trying, and the space stays closed until it can finish.`;
+    // The reason is written by the verification pass and already says what
+    // kind of thing stopped it, so this sentence does not say it again.
+    return `${name} is part way through being cleared, and it cannot finish yet: ${removal.blocked_reason ?? 'the verification pass could not account for everything'}. Melete keeps trying, and the space stays closed until it can.`;
   return `${name} is being cleared. It is closed to everyone while that runs.`;
 }
 
@@ -88,7 +90,7 @@ function clearedLines(kind: SpaceRemovalKind): string[] {
     'Its browser profile, including the cookies that kept it signed in.',
     kind === 'emptied'
       ? 'The space itself is still here, with a fresh, empty repository.'
-      : 'The space itself, and everyone else’s access to it.',
+      : "The space itself, and everyone else's access to it.",
   ];
 }
 
