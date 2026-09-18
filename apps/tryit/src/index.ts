@@ -32,6 +32,8 @@ export type Env = {
   REPO_URL?: string;
   MODEL?: string;
   REASONING_EFFORT?: 'low' | 'medium' | 'high';
+  /** Optional secret. See `counterKey` in handler.ts. */
+  TRYIT_COUNTER_SALT?: string;
 };
 
 const DEFAULT_LANDING = 'https://melete.axcelner.com';
@@ -102,6 +104,10 @@ export default {
         limits,
         log,
         heartbeatMs: 10_000,
+        // Optional. Without it the counter's key still rotates daily and keeps
+        // the address out of storage; with it, an address cannot be searched
+        // for at all. See `counterKey`.
+        ...(env.TRYIT_COUNTER_SALT ? { salt: env.TRYIT_COUNTER_SALT } : {}),
       });
     }
 

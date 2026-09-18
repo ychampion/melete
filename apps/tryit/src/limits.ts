@@ -25,7 +25,9 @@ export const DEFAULT_LIMITS: Limits = {
   minInputChars: 40,
   perIpPerDay: 5,
   globalPerDay: 400,
-  requestTimeoutMs: 110_000,
+  // The same number as wrangler.toml and the README. Three copies drifting
+  // apart is how a timeout turns into a mystery.
+  requestTimeoutMs: 100_000,
 };
 
 const camelToScreaming = (key: string): string =>

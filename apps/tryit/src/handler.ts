@@ -51,6 +51,8 @@ export type Deps = {
   limits: Limits;
   now?: () => number;
   log?: (line: LogLine) => void;
+  /** Mixed into the counter's key, so an address cannot be searched for. */
+  salt?: string;
   /** Sent between stages so a long wait keeps the connection warm. */
   heartbeatMs?: number;
 };
@@ -124,6 +126,24 @@ export async function readWithin(
   return text + decoder.decode();
 }
 
+/**
+ * What the counter is told instead of an address.
+ *
+ * It has to tell one visitor from another for a day, and it does not have to
+ * know who they are. The day goes into the digest, so the same person is a
+ * different value tomorrow and nothing in storage can be lined up against
+ * yesterday. An address is a small space to search, so this alone obscures
+ * rather than conceals: set `TRYIT_COUNTER_SALT` and it becomes one-way in
+ * earnest. Nothing reads the value back — it is only ever compared.
+ */
+export async function counterKey(ip: string, day: string, salt = ''): Promise<string> {
+  const bytes = new TextEncoder().encode(`${salt}:${day}:${ip}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest).slice(0, 8))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 /** Cloudflare puts the caller's address here. The rest are fallbacks for local runs. */
 export function clientIp(request: Request): string {
   const direct = request.headers.get('cf-connecting-ip');
@@ -194,7 +214,9 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
   }
   const chars = checked.text.length;
 
-  const ip = clientIp(request);
+  // The address is turned into a key here and goes no further, so neither the
+  // counter nor its storage ever sees one.
+  const ip = await counterKey(clientIp(request), today(started), deps.salt ?? '');
   const turn = await deps.limiter.take(ip);
   if (!turn.allowed) {
     const outcome = turn.reason === 'ip' ? 'rate_limited' : 'busy';

@@ -417,6 +417,66 @@ describe('what a failure costs', () => {
   });
 });
 
+/**
+ * The counter has to tell one visitor from another for a day. It does not have
+ * to know who they are, and the page promises it keeps nothing but the day's
+ * counters — which was not quite true while up to four hundred raw addresses
+ * sat in the object until the next day overwrote them.
+ */
+describe('what the counter is told about a visitor', () => {
+  const watching = () => {
+    const keys: string[] = [];
+    const limiter = {
+      take: async (key: string) => {
+        keys.push(key);
+        return { allowed: true as const, remaining: 4 };
+      },
+      giveBack: async (key: string) => {
+        keys.push(key);
+      },
+    };
+    return { keys, limiter };
+  };
+
+  const keyFor = async (ip: string, at: string) => {
+    const { keys, limiter } = watching();
+    const request = new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
+      body: JSON.stringify({ text: REFUND }),
+    });
+    await readStream(
+      await caseFileRoute(request, deps({}, { limiter, now: () => Date.parse(at) })),
+    );
+    return keys[0] ?? '';
+  };
+
+  test('the address itself is never handed over', async () => {
+    const key = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    expect(key).not.toContain('203.0.113.7');
+    expect(key).not.toContain('203');
+    expect(key).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test('the same visitor on the same day is the same one', async () => {
+    const first = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    const later = await keyFor('203.0.113.7', '2026-09-19T23:00:00Z');
+    expect(later).toBe(first);
+  });
+
+  test('two visitors are two', async () => {
+    const one = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    const other = await keyFor('203.0.113.8', '2026-09-19T10:00:00Z');
+    expect(other).not.toBe(one);
+  });
+
+  test('tomorrow they are someone else again', async () => {
+    const today = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    const tomorrow = await keyFor('203.0.113.7', '2026-09-20T10:00:00Z');
+    expect(tomorrow).not.toBe(today);
+  });
+});
+
 describe('the caller’s address', () => {
   test('comes from Cloudflare first, then a proxy header, then nothing', () => {
     const at = (headers: Record<string, string>) =>

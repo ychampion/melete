@@ -6,8 +6,9 @@ and what to do if they go quiet. No account, nothing kept.
 
 One page and one endpoint, on a Cloudflare Worker. It stands on its own: it
 shares the design tokens and the mark with `apps/web`, and nothing else. It
-does not talk to the Melete API, it has no database, and it holds no state
-except the day's counters.
+does not talk to the Melete API and it has no database. The only thing it
+keeps is the day's counters, and those are keyed by a daily digest rather than
+by an address, so no visitor's address is written down anywhere.
 
 ## Run it
 
@@ -40,6 +41,11 @@ The model's answer is checked before anyone sees it. The rules are in
 - **Nothing pasted is stored.** No database, no session, `store: false` on the
   API call. The log line carries character counts, timings and an outcome code,
   never content.
+- **No address is stored either.** The counter is keyed by a digest of the
+  address and the day, worked out in the Worker, so the address never reaches
+  the counter or its storage and the key changes at midnight. Set
+  `TRYIT_COUNTER_SALT` to make that digest one-way in earnest rather than
+  merely daily.
 - **The paste is data.** The system prompt says so, the model gets web search
   and no other tool, and the fence around the text cannot be closed from inside
   it.
