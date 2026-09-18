@@ -29,6 +29,12 @@ That is why the backup comes first and is never skipped.
 The volumes (`spaces`, `artifacts`, `work`, `runtime-home`, `restrictions`) and
 `deploy/.env` are not changed by an upgrade. No step removes a volume.
 
+An installation running the tailnet override also has `tailscale-state`, which
+holds the node's key. Keeping it is optional: nothing you have written is in it,
+and an installation that loses it authenticates the node again with a fresh auth
+key and comes back at the same address. Keep it if you would rather not repeat
+that step.
+
 ## Before you start
 
 You need what the [install](../README.md#install-on-a-linux-docker-host) needs:
@@ -50,7 +56,12 @@ non-zero when the preflight found a problem; the plan is printed either way.
 | `--dry-run` | Print the preflight result, the plan and the rollback. Execute nothing. |
 | `--backup-dir /absolute/parent` | Parent directory for this run's backup. Default: `~/melete-backups`. It must exist. |
 | `--browser` | Include `deploy/docker-compose.browser.yml` in every Compose command and stop the browser worker with the other writers. Use it if you start the stack with that override. |
+| `--tailscale` | Include `deploy/docker-compose.tailscale.yml` in every Compose command and stop the Tailscale node with the other writers. Use it if you start the stack with that override. |
 | `--wait-timeout seconds` | How long `up --wait` may take. Default 300. Image builds are not bounded by it. |
+
+Name the overrides the installation actually runs with. An upgrade that leaves
+one out rebuilds and starts the stack without that service, and the address it
+answered on stops answering.
 
 ## Preflight
 

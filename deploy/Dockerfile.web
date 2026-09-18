@@ -30,7 +30,10 @@ FROM oven/bun:1.3.13-slim@sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16
 
 WORKDIR /app
 COPY --from=build /app/apps/web/dist ./dist
-COPY deploy/scripts/serve-static.ts ./serve-static.ts
+# Two source files at their repository paths, because the server imports the
+# peer-trust rule the owner API uses rather than keeping a second copy of it.
+COPY deploy/scripts/serve-static.ts ./deploy/scripts/serve-static.ts
+COPY apps/melete/src/api/trusted-peer.ts ./apps/melete/src/api/trusted-peer.ts
 
 RUN useradd --uid 10003 --create-home --home-dir /home/web web
 USER web
@@ -39,5 +42,5 @@ EXPOSE 3000
 
 # A committed file server rather than `bunx serve`, which would reach the
 # registry on every container start. A client that cannot boot without the
-# network is not self-hosted.
-CMD ["bun", "run", "serve-static.ts"]
+# network is not self-hosted. The bundle is read from ./dist beside it.
+CMD ["bun", "run", "deploy/scripts/serve-static.ts"]

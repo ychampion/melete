@@ -10,8 +10,11 @@
  * pure functions, and every command goes through an injected runner, so the
  * tests exercise the procedure without Docker.
  *
- *   bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser]
+ *   bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale]
  *     [--backup-dir /absolute/parent] [--wait-timeout seconds]
+ *
+ * Name the same overlay files the installation runs with. An upgrade that
+ * forgets one would rebuild the stack without that service.
  */
 import { closeSync, openSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -25,7 +28,7 @@ import {
 } from '../../apps/melete/src/runtime/docker-engine.ts';
 
 export const USAGE =
-  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--backup-dir /absolute/parent] [--wait-timeout seconds]';
+  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds]';
 
 const GIB = 1024 ** 3;
 /** The README's floor for the filesystem that holds Docker's data. */
@@ -42,8 +45,13 @@ export type UpgradeOptions = {
   repositoryRoot: string;
   /** Include deploy/docker-compose.browser.yml in every Compose command. */
   browser: boolean;
+  /** Include deploy/docker-compose.tailscale.yml in every Compose command. */
+  tailscale: boolean;
   waitTimeoutSeconds: number;
 };
+
+/** The overlay files an installation runs with, which the upgrade must repeat. */
+export type Overlays = Pick<UpgradeOptions, 'browser' | 'tailscale'>;
 
 export type UpgradeContext = UpgradeOptions & {
   project: string;
@@ -81,11 +89,13 @@ export function parseArguments(
   let parent = join(home, 'melete-backups');
   let dryRun = false;
   let browser = false;
+  let tailscale = false;
   let waitTimeoutSeconds = 300;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] ?? '';
     if (argument === '--dry-run') dryRun = true;
     else if (argument === '--browser') browser = true;
+    else if (argument === '--tailscale') tailscale = true;
     else if (argument === '--backup-dir') {
       index += 1;
       const value = argv[index];
@@ -108,18 +118,20 @@ export function parseArguments(
     tag,
     dryRun,
     browser,
+    tailscale,
     waitTimeoutSeconds,
     repositoryRoot,
     backupDir: join(parent, `upgrade-${tag}-${stamp}`).replaceAll('\\', '/'),
   };
 }
 
-const composeArguments = (browser: boolean) => [
+const composeArguments = (overlays: Overlays) => [
   'docker',
   'compose',
   '-f',
   'deploy/docker-compose.yml',
-  ...(browser ? ['-f', 'deploy/docker-compose.browser.yml'] : []),
+  ...(overlays.browser ? ['-f', 'deploy/docker-compose.browser.yml'] : []),
+  ...(overlays.tailscale ? ['-f', 'deploy/docker-compose.tailscale.yml'] : []),
 ];
 
 const inPostgres = (script: string) => ['exec', '-T', 'postgres', 'sh', '-c', script];
@@ -128,9 +140,18 @@ const MIGRATION_COUNT =
 
 /** Every command of the upgrade, in the order it runs, relative to the repository root. */
 export function upgradePlan(context: UpgradeContext): PlanStep[] {
-  const compose = composeArguments(context.browser);
+  const compose = composeArguments(context);
   const backup = (name: string) => `${context.backupDir}/${name}`;
-  const writers = ['melete', 'runtime', 'web', ...(context.browser ? ['browser'] : [])];
+  // The node holds no backed-up data, but it proxies the web service, so it is
+  // stopped with it: a device on the tailnet then finds a closed address rather
+  // than a gateway error for as long as the upgrade runs.
+  const writers = [
+    'melete',
+    'runtime',
+    'web',
+    ...(context.browser ? ['browser'] : []),
+    ...(context.tailscale ? ['tailscale'] : []),
+  ];
   const archives = ['database.dump', 'data.tar', 'work.tar', 'restrictions.tar', 'deploy.env'];
   return [
     {
@@ -264,7 +285,7 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
 
 /** The commands that return this installation to where it started, as shell lines. */
 export function rollbackSteps(context: UpgradeContext): string[] {
-  const compose = renderCommand({ command: composeArguments(context.browser) });
+  const compose = renderCommand({ command: composeArguments(context) });
   const back = context.fromBranch
     ? `git checkout ${context.fromBranch}`
     : `git checkout --detach ${context.fromCommit}`;
@@ -418,7 +439,7 @@ export async function gatherPreflight(
   options: UpgradeOptions,
   { run, environment }: Pick<UpgradeDependencies, 'run' | 'environment'>,
 ): Promise<{ facts: PreflightFacts; context: UpgradeContext; secrets: string[] }> {
-  const compose = composeArguments(options.browser);
+  const compose = composeArguments(options);
   const text = async (command: readonly string[]) => {
     const result = await run(command);
     return result.code === 0 ? result.stdout.trim() : null;
@@ -576,7 +597,7 @@ export async function runUpgrade(
       if (stopped) {
         const restart = await run(
           [
-            ...composeArguments(context.browser),
+            ...composeArguments(context),
             'up',
             '-d',
             '--wait',

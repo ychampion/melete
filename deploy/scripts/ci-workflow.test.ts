@@ -95,6 +95,7 @@ describe('the continuous integration workflow', () => {
       'lint',
       'compose:check',
       'browser:compose:check',
+      'tailscale:compose:check',
       'doctor',
       'test',
       'test:plugin',
