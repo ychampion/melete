@@ -848,7 +848,15 @@ export function totalsOf(fixture: Pick<Fixture, 'items' | 'companies' | 'currenc
 /** Promises in force and promises whose date has passed, for the map's last two figures. */
 export function promiseCounts(items: FixtureItem[]) {
   const now = Date.now();
-  const promises = items.filter((item) => item.kind === 'promise' && item.status === 'found');
+  // Every promise still in play, which includes the ones being chased. A
+  // promise somebody is working on is still a promise; counting only `found`
+  // would tick the figure down the moment a person pressed "Handle it", which
+  // reads as if the problem went away when in fact work just started on it.
+  const promises = items.filter(
+    (item) =>
+      item.kind === 'promise' &&
+      (item.status === 'found' || item.status === 'handling' || item.status === 'waiting'),
+  );
   return {
     promises_in_force: promises.filter(
       (item) => item.due_at === null || Date.parse(item.due_at) >= now,

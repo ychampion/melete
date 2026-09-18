@@ -46,7 +46,8 @@ export function totalsOf(totals: CompanyMapTotals, companies: number, currency: 
       key: 'renewals',
       label: 'Renews in 30 days',
       figure: String(totals.renewals_next_30d),
-      filter: { kind: 'item', value: 'renewal' },
+      // The window is part of the figure, so it is part of what pressing it shows.
+      filter: { kind: 'renewing', days: 30 },
     },
     {
       key: 'rises',
