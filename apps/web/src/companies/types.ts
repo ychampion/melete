@@ -10,6 +10,10 @@
  * INTEGRATOR: when `/spaces/{spaceId}/companies` reaches openapi.json, delete
  * this file and derive the same names in `experience/types.ts` the way the rest
  * of the screens do. `companies/api.ts` is the only other file to change.
+ *
+ * `companyMapTotals` in the shared contract now carries `promises_in_force` and
+ * `promises_lapsed`, under those exact names, as required non-negative
+ * integers. They are still optional below; the note on that type says why.
  */
 
 export const LEDGER_ITEM_KINDS = [
@@ -71,9 +75,14 @@ export type LedgerItem = {
 };
 
 /**
- * The figures at the top of the map. The promise counts are optional: a service
- * that does not read promises yet serves the six, and those two cells are not
- * drawn rather than drawn as zero.
+ * The figures at the top of the map.
+ *
+ * The promise counts stay optional here even though the contract requires them.
+ * `Totals.tsx` decides whether to draw those two cells by looking for a number
+ * at runtime, so a service that serves only the six — an older build, or one
+ * that does not read promises — quietly loses two cells instead of drawing
+ * "undefined" twice. Requiring them here would move that judgement to compile
+ * time, where it cannot help.
  */
 export type CompanyMapTotals = {
   owed_to_you_minor: number;

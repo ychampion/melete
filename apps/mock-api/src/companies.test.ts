@@ -237,16 +237,51 @@ test('"not this" takes a row off the map and "settled" leaves it on it', async (
   expect(after.items.find((item) => item.id === settled.id)?.status).toBe('settled');
 });
 
+test('a promise being chased is still counted; handling one does not tick the figure down', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const counts = (map: C.CompanyMap) =>
+    map.totals as C.CompanyMapTotals & { promises_in_force: number; promises_lapsed: number };
+  const before = await mapOf(mock);
+  const first = counts(before);
+  const promise = before.items.find(
+    (row) => row.kind === 'promise' && row.due_at !== null && Date.parse(row.due_at) < Date.now(),
+  );
+  if (!promise) throw new Error('the fixture has no lapsed promise');
+  expect(first.promises_lapsed).toBeGreaterThan(0);
+
+  // Pressing "Handle it" starts work on it. It has not stopped being a promise.
+  await call(mock, `/ledger/${promise.id}/handle`, 'POST');
+  const after = await mapOf(mock);
+  expect(after.items.find((row) => row.id === promise.id)?.status).toBe('handling');
+  expect(counts(after).promises_lapsed).toBe(first.promises_lapsed);
+  expect(counts(after).promises_in_force).toBe(first.promises_in_force);
+
+  // Settling it is what takes it out of the count.
+  await call(mock, `/ledger/${promise.id}`, 'PATCH', { status: 'settled' });
+  expect(counts(await mapOf(mock)).promises_lapsed).toBe(first.promises_lapsed - 1);
+});
+
 test('handling an item starts one job, and asking again returns the same one', async () => {
   const mock = createMock({ speed: 0, experience: { seed: true } });
   const map = await mapOf(mock);
   const item = map.items.find((row) => row.kind === 'refund_owed');
   if (!item) throw new Error('the fixture has no refund');
 
-  const first = (await call(mock, `/ledger/${item.id}/handle`, 'POST')).body as { job_id: string };
+  // The first call made a job, so it answers 201; a repeat made nothing and
+  // answers 200, with the same job either way.
+  const made = await call(mock, `/ledger/${item.id}/handle`, 'POST');
+  const first = made.body as { job_id: string };
+  expect(made.response.status).toBe(201);
   expect(first.job_id.startsWith('job_')).toBe(true);
-  const again = (await call(mock, `/ledger/${item.id}/handle`, 'POST')).body as { job_id: string };
-  expect(again.job_id).toBe(first.job_id);
+  const repeat = await call(mock, `/ledger/${item.id}/handle`, 'POST');
+  expect(repeat.response.status).toBe(200);
+  expect((repeat.body as { job_id: string }).job_id).toBe(first.job_id);
+
+  // One job, not two: the playbook does not run again.
+  const jobs = C.experienceOperations['GET /conversations'].response.parse(
+    (await call(mock, '/conversations')).body,
+  ).conversations;
+  expect(jobs.filter((job) => job.id === first.job_id)).toHaveLength(1);
 
   // The job is a conversation like any other, and the item now names it.
   const conversation = C.experienceOperations['GET /conversations/{id}'].response.parse(

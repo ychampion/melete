@@ -173,7 +173,10 @@ export function mountCompaniesMock(
     const row = item(c.req.param('id'));
     const company = row ? companyOf(row) : null;
     if (!row || !company) return c.json(fail('not_found', 'No such item.'), 404);
-    if (row.job_id) return c.json({ job_id: row.job_id });
+    // Idempotent: an item that already names a job hands that job back and the
+    // playbook is not run a second time. The first call made something, so it
+    // answers 201; a repeat made nothing, so it answers 200.
+    if (row.job_id) return c.json({ job_id: row.job_id }, 200);
     const agent = [...experience.agents.values()][0];
     if (!agent) return c.json(fail('no_agent', 'Make an assistant first.'), 409);
     const conversation = experience.start(
@@ -187,7 +190,7 @@ export function mountCompaniesMock(
     if (chat) chat.follow = { from: fixture.from_address };
     row.job_id = conversation.id;
     row.status = 'handling';
-    return c.json({ job_id: conversation.id });
+    return c.json({ job_id: conversation.id }, 201);
   });
 
   return { fixture };
