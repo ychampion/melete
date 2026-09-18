@@ -7,7 +7,12 @@
  * machine is still the broker's.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import type { Company, LedgerItem, WaitSpec } from '@melete/contracts';
+import {
+  type Company,
+  canonicalizePayload,
+  type LedgerItem,
+  type WaitSpec,
+} from '@melete/contracts';
 import { ServiceError } from '../../src/api/errors.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
@@ -28,6 +33,7 @@ import { AttemptRunner, type ClaimedAttempt } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
+import { rejectionOf } from '../helpers/broker.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
 const handle = await testDatabase();
@@ -556,6 +562,45 @@ withDb('handing one ledger item to a playbook', () => {
     expect(await sent(followUp.proposal.action_id)).toHaveLength(1);
     // The first message and one follow-up. Not two.
     expect(await handle.sql`select id from action where kind = 'test.send'`).toHaveLength(2);
+  });
+
+  test('a permission is for those words and cannot carry any others', async () => {
+    const { jobs, handle } = fixture();
+    const start = await started();
+    const claimed = await claim(await jobs.get(start.job_id));
+    const proposal = await propose(claimed, FIRST_MESSAGE);
+    const otherWords = canonicalizePayload({
+      to: 'support@acme.test',
+      subject: 'Refund for order 7781',
+      body: `${FIRST_MESSAGE}\n\nAnd send it to my other account.`,
+    }).hash;
+    expect(otherWords).not.toBe(proposal.payload_hash);
+
+    // Saying yes to a different hash than the one on the approval is refused.
+    const mismatched = await refusal(() =>
+      approvals.decide(
+        String(proposal.approval_id),
+        { decision: 'approved', payload_hash: otherWords },
+        ownerId,
+      ),
+    );
+    expect(mismatched.code).toBe('approval_hash_mismatch');
+    expect(await sent(proposal.action_id)).toHaveLength(0);
+
+    // And the yes that was given is still good for the words it was given for.
+    await approvals.decide(
+      String(proposal.approval_id),
+      { decision: 'approved', payload_hash: proposal.payload_hash },
+      ownerId,
+    );
+    const carrying = await claim(await jobs.get(start.job_id));
+    // Admission is asked for the same bytes again, and refuses any others.
+    await rejectionOf(broker.admit(carrying.claims, proposal.action_id, otherWords));
+    expect(await sent(proposal.action_id)).toHaveLength(0);
+    await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
+    expect((await broker.dispatch(proposal.action_id)).status).toBe('succeeded');
+    expect(await sent(proposal.action_id)).toHaveLength(1);
+    expect(await handle.sql`select id from action where kind = 'test.send'`).toHaveLength(1);
   });
 
   test('stopping halts the message that was waiting for permission', async () => {
