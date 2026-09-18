@@ -97,26 +97,33 @@ withDb('sandbox reconciliation', () => {
     // ordinary shape when two spaces are given the same E2B org or Modal
     // workspace. Only the connection label tells their sandboxes apart.
     const other = await seedSessionScope(sql);
-    const openFor = async (of: {
-      connectionId: string;
-      spaceId: string;
-      jobId: string;
-      attempt: () => Promise<string>;
-    }) =>
-      sessions.open(
-        {
-          connectionId: of.connectionId,
-          spaceId: of.spaceId,
-          jobId: of.jobId,
-          attemptId: await of.attempt(),
-          agentId: null,
-        },
-        provider,
-        sessionSpec('install-a', of.spaceId, of.connectionId),
-        signal(),
-      );
-    const mine = await openFor(scope);
-    const theirs = await openFor(other);
+    const mine = await sessions.open(
+      {
+        connectionId: scope.connectionId,
+        spaceId: scope.spaceId,
+        jobId: scope.jobId,
+        attemptId: await scope.attempt(),
+        agentId: null,
+      },
+      provider,
+      sessionSpec('install-a', scope.spaceId, scope.connectionId),
+      signal(),
+    );
+    // The other connection's live sandbox, under a session minted long ago, so
+    // that nothing but its connection label can save it: a session minted just
+    // now is held live by the rule for sessions still opening.
+    const theirs = await sandbox(
+      sandboxLabels({
+        project: 'install-a',
+        connection: other.connectionId,
+        space: other.spaceId,
+        session: oldSession(8),
+      }),
+    );
+    await sql`insert into sandbox_session (id, connection_id, space_id, adapter, provider_sandbox_id,
+        image_ref, egress_policy, persistence, status, lease_expires_at)
+      values (${oldSession(8)}, ${other.connectionId}, ${other.spaceId}, 'fake', ${theirs},
+        'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready', now() + interval '5 minutes')`;
     // An orphan of this connection's own, so the reconciliation still bites.
     const orphan = await sandbox(
       sandboxLabels({
@@ -135,9 +142,11 @@ withDb('sandbox reconciliation', () => {
     });
     expect(report.destroyed).toEqual([orphan]);
     // The other connection's sandbox is still running, and so is this one's.
-    expect(await provider.inspect(sessionHandle(theirs), signal())).toBe('running');
+    const running = async (id: string) =>
+      provider.inspect({ providerSandboxId: id, imageDigest: null, region: null }, signal());
+    expect(await running(theirs)).toBe('running');
     expect(await provider.inspect(sessionHandle(mine), signal())).toBe('running');
-    expect((await sessions.get(theirs.id))?.status).toBe('ready');
+    expect((await sessions.get(oldSession(8)))?.status).toBe('ready');
   });
 
   test('a labelled orphan is destroyed and a foreign sandbox is left alone', async () => {
