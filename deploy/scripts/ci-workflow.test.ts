@@ -172,6 +172,52 @@ describe('the continuous integration workflow', () => {
       expect(existsSync(join(root, context))).toBe(true);
     }
   });
+
+  test('a job of its own proves the browser renderer sandbox', () => {
+    const [name, job] = ci.named.find(([key]) => key === 'browser-sandbox') ?? [];
+    expect(name).toBe('browser-sandbox');
+    // Its own job, so a sandbox failure is named and the image builds stay one signal.
+    expect(job?.['timeout-minutes']).toBeGreaterThan(0);
+    const lines = (job?.steps ?? [])
+      .flatMap((step) => (step.run ?? '').split('\n'))
+      .map((line) => line.trim());
+    expect(lines).toContain(
+      'docker build -t melete-browser-sandbox-proof -f deploy/Dockerfile.browser .',
+    );
+    const proof = (job?.steps ?? []).find((step) => step.env?.MELETE_BROWSER_SANDBOX_PROOF === '1');
+    expect(proof?.run).toContain('bun test apps/melete/test/integration/browser-sandbox.test.ts');
+    expect(proof?.run).toContain('--max-concurrency=1');
+  });
+
+  test('the sandbox job fails rather than skips where the kernel refuses user namespaces', () => {
+    const job = ci.named.find(([key]) => key === 'browser-sandbox')?.[1];
+    const check = (job?.steps ?? []).find((step) => step.run?.includes('max_user_namespaces'));
+    expect(check?.run).toContain('unprivileged_userns_clone');
+    // A missing prerequisite ends the job; nothing here may pass quietly.
+    expect(check?.run).toContain('exit 1');
+    expect(check?.if).toBeUndefined();
+    expect(check?.run).toMatch(/::error::/);
+  });
+});
+
+describe('the browser sandbox proof this workflow expects', () => {
+  test('is run when it is in the tree, and named in the summary when it is not', () => {
+    const job = ci.named.find(([key]) => key === 'browser-sandbox')?.[1];
+    const guard = (job?.steps ?? []).find((step) => step.id === 'proof');
+    // Whether the proof is here yet or not, the job names the path it looks for.
+    expect(guard?.run).toContain(SANDBOX_PROOF);
+    expect(guard?.run).toContain('::notice::');
+    const gated = (job?.steps ?? []).filter((step) =>
+      step.if?.includes("steps.proof.outputs.present == 'true'"),
+    );
+    // Only the build and the proof itself wait on it; the user-namespace check never does.
+    expect(gated.length).toBe(2);
+    expect(gated.every((step) => /docker build|bun test/.test(step.run ?? ''))).toBe(true);
+    // Whenever the proof is in the tree the guard resolves true and the job runs it.
+    expect((job?.steps ?? []).some((step) => step.run?.includes(`bun test ${SANDBOX_PROOF}`))).toBe(
+      true,
+    );
+  });
 });
 
 describe('the nightly conformance workflow', () => {
