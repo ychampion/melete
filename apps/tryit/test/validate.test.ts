@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { DraftCaseFile } from '../src/schema.ts';
-import { canonical, locate, MIN_QUOTE } from '../src/text.ts';
+import { canonical, locate, MIN_QUOTE, SENTINEL } from '../src/text.ts';
 import { gate, normaliseUrl, parseDraft, retrievedIndex } from '../src/validate.ts';
 
 const PASTED = `From: Customer Care <care@northwind-electricals.example>
@@ -46,6 +46,77 @@ describe('canonical text', () => {
   test('a quote shorter than the floor proves nothing and is refused', () => {
     expect('8 August'.length).toBeLessThan(MIN_QUOTE);
     expect(locate(canonical(PASTED), '8 August')).toBeNull();
+  });
+});
+
+/**
+ * Folding every run of whitespace made one paragraph of a whole email, so a
+ * "quote" could begin in the company's sentence and end inside the person's
+ * own reply two paragraphs below, under a caption promising it was word for
+ * word. A blank line and a quoted-reply marker are structural: text on either
+ * side of one was never written as a single sentence, and a quote may not
+ * cross one. A single newline is not structural — that is an email wrapping a
+ * sentence — so those still fold to a space.
+ */
+describe('breaks a quote may not cross', () => {
+  const THREAD = `Hello,
+
+We are not able to offer a refund on this occasion.
+
+Kind regards,
+Brightfibre Support
+
+On 2 September you wrote:
+> You told me on the phone that you would refund the £89.00
+> and that the engineer visit would cost me nothing.`;
+
+  test('a hard-wrapped sentence still reads as one sentence', () => {
+    const wrapped = 'We have approved a full refund\nof £249.99 to your account.';
+    expect(locate(canonical(wrapped), 'We have approved a full refund of £249.99')).not.toBeNull();
+  });
+
+  test('a span across a blank line does not match', () => {
+    expect(locate(canonical(THREAD), 'on this occasion. Kind regards,')).toBeNull();
+  });
+
+  test('a span from the company’s words into the person’s reply does not match', () => {
+    expect(
+      locate(
+        canonical(THREAD),
+        'Brightfibre Support On 2 September you wrote: > You told me on the phone',
+      ),
+    ).toBeNull();
+  });
+
+  test('each side of a break is still quotable on its own', () => {
+    const folded = canonical(THREAD);
+    expect(locate(folded, 'We are not able to offer a refund on this occasion.')).not.toBeNull();
+    expect(locate(folded, 'You told me on the phone that you would refund')).not.toBeNull();
+  });
+
+  test('a line someone chose to end is a break; a wrapped one is not', () => {
+    const table = 'Refund due:\nno\nReplacement due:\nyes, within 30 days';
+    expect(locate(canonical(table), 'no Replacement due: yes')).toBeNull();
+    const asked = 'Was a refund approved?\nNo.\nWill we pay you £249.99?';
+    expect(locate(canonical(asked), 'No. Will we pay you £249.99?')).toBeNull();
+    // ...while a sentence wrapped mid-way still reads as one sentence.
+    const wrapped = 'We received your returned item on 8 August and it was\nfaulty on arrival.';
+    expect(locate(canonical(wrapped), 'on 8 August and it was faulty on arrival')).not.toBeNull();
+  });
+
+  test('a line ending in no punctuation at all is still joined to the next', () => {
+    // Known and accepted: the only signals available are a blank line, a reply
+    // marker and a sentence ending, and a bare two-column row carries none of
+    // them. Ruling on indentation instead would break every wrapped email,
+    // which is the far commoner case. Recorded here so it is a decision.
+    const bare = 'Refund due: no\nReplacement due: yes';
+    expect(locate(canonical(bare), 'no Replacement due: yes')).not.toBeNull();
+  });
+
+  test('the mark for a break can never be smuggled in by the model', () => {
+    const folded = canonical(THREAD);
+    expect(folded).toContain(SENTINEL);
+    expect(locate(folded, `on this occasion.${SENTINEL}Kind regards,`)).toBeNull();
   });
 });
 

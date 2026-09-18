@@ -28,6 +28,32 @@ const ELLIPSIS = /\u2026/g;
 const INVISIBLE = /[\u200b-\u200d\ufeff\u00ad]/g;
 const WHITESPACE = /\s+/g;
 
+/**
+ * A break in the text that no sentence was ever written across: a blank line,
+ * or the start of a quoted reply. The space either side is taken with it, so
+ * the mark sits directly between the two pieces.
+ *
+ * A single newline is deliberately not one of these. An email wraps a sentence
+ * across lines all the time, and refusing to quote across that would drop most
+ * true quotes.
+ */
+const BLANK_LINE = /[^\S\n]*\n(?:[^\S\n]*\n)+[^\S\n]*/g;
+const QUOTED_REPLY = /\n[^\S\n]*(?=>)/g;
+/**
+ * A line that ends where a sentence ends. Wrapping breaks a line in the middle
+ * of a sentence, never tidily after the full stop, so this is a line someone
+ * chose to end: a table row, a list item, the next question in a list of them.
+ * It also means a shown quote is one sentence, which is what it was asked for.
+ */
+const SENTENCE_END = /(?<=[.!?:]["')\]]?)[^\S\n]*\n[^\S\n]*/g;
+
+/**
+ * Stands where a break was. It survives the whitespace collapse, so a span
+ * that crosses one carries it and can be refused. The model cannot produce it
+ * by accident, and `locate` refuses a quote containing it however it got there.
+ */
+export const SENTINEL = String.fromCharCode(0);
+
 /** Fold a string into the form every substring check runs against. */
 export function canonical(text: string): string {
   return text
@@ -38,6 +64,9 @@ export function canonical(text: string): string {
     .replace(DOUBLE_QUOTES, '"')
     .replace(DASHES, '-')
     .replace(ELLIPSIS, '...')
+    .replace(BLANK_LINE, SENTINEL)
+    .replace(QUOTED_REPLY, SENTINEL)
+    .replace(SENTENCE_END, SENTINEL)
     .replace(WHITESPACE, ' ')
     .trim();
 }
@@ -58,6 +87,9 @@ export type Located = { quote: string; start: number; end: number };
 export function locate(haystack: string, quote: string): Located | null {
   const needle = canonical(quote);
   if (needle.length < MIN_QUOTE || needle.length > MAX_QUOTE) return null;
+  // A quote that spans a blank line or reaches into a quoted reply was never
+  // one sentence, whoever assembled it.
+  if (needle.includes(SENTINEL)) return null;
   const start = haystack.indexOf(needle);
   if (start < 0) return null;
   const end = start + needle.length;

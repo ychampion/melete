@@ -12,7 +12,7 @@
 import type { CaseFileProvider, ProviderResult, ProviderRun } from './provider.ts';
 import { ProviderError } from './provider.ts';
 import type { DraftCaseFile } from './schema.ts';
-import { canonical } from './text.ts';
+import { canonical, SENTINEL } from './text.ts';
 import type { SearchSource } from './validate.ts';
 
 export type Script = {
@@ -51,7 +51,10 @@ function sentences(pasted: string): string[] {
     .filter((line) => !HEADER.test(line))
     .join('\n');
   const found = canonical(body)
-    .split(BREAK)
+    // Each block was written as its own piece. A candidate never spans two, or
+    // the gate would refuse it — and rightly, since nobody wrote it that way.
+    .split(SENTINEL)
+    .flatMap((block) => block.split(BREAK))
     // A greeting has no full stop, so it runs into the first real sentence.
     .map((line) => line.replace(/^(dear|hi|hello)\b[^,]{0,40},\s*/i, '').trim())
     .filter((line) => line.length >= 24 && line.length <= 300);
