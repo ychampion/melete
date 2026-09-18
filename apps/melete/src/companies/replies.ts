@@ -33,6 +33,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
+import { registrableDomain, senderAddress } from './messages.ts';
 
 /** The event a waiting chase listens on. Must match `REPLY_EVENT_NAME`. */
 export const REPLY_EVENT_NAME = 'mail.new';
@@ -93,54 +94,10 @@ export interface ReplyMailbox {
 // who sent it
 // --------------------------------------------------------------------------
 
-/** The address inside `Acme Billing <billing@acme.test>`, lowercased. */
-export function fromAddress(from: string): string | null {
-  const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(from);
-  const bare = angled?.[1] ?? (/^[^<>@\s]+@[^<>@\s]+$/.test(from.trim()) ? from.trim() : null);
-  return bare ? bare.toLowerCase() : null;
-}
-
-/**
- * Suffixes registrations happen under, so `billing.acme.co.uk` and
- * `mail.acme.co.uk` are one company. A short list rather than the public suffix
- * list: anything it does not know is cut to its last two labels, which is right
- * for every single-label suffix. Kept in step with the scan's own copy.
- */
-const MULTI_LABEL_SUFFIXES = new Set([
-  'co.uk',
-  'org.uk',
-  'ac.uk',
-  'gov.uk',
-  'me.uk',
-  'ltd.uk',
-  'plc.uk',
-  'co.in',
-  'net.in',
-  'org.in',
-  'co.jp',
-  'or.jp',
-  'com.au',
-  'net.au',
-  'org.au',
-  'co.nz',
-  'com.br',
-  'com.sg',
-  'com.mx',
-  'co.za',
-]);
-
-/** The registrable domain of an address or host: the company's identity. */
-export function registrableDomain(value: string): string | null {
-  const at = value.lastIndexOf('@');
-  const host = (at < 0 ? value : value.slice(at + 1)).trim().toLowerCase().replace(/\.$/, '');
-  if (!host || !/^[a-z0-9.-]+$/.test(host) || host.startsWith('.') || host.includes('..'))
-    return null;
-  const labels = host.split('.');
-  if (labels.length < 2) return null;
-  const lastTwo = labels.slice(-2).join('.');
-  if (MULTI_LABEL_SUFFIXES.has(lastTwo) && labels.length >= 3) return labels.slice(-3).join('.');
-  return lastTwo;
-}
+// Who a message is from is answered by the scan's parser, not by a second one
+// here. That answer decides whether a stranger can wake somebody's chase, so
+// two copies of it would be two rules that drift apart without anything saying
+// so — and the one that drifted would be the one nobody was reading.
 
 /**
  * The company a job is about, read off the domains it was allowed to fetch.
@@ -158,7 +115,7 @@ export function isReplyFrom(
   message: ReplyMessage,
 ): boolean {
   if (!message.messageId) return false;
-  const sender = fromAddress(message.from);
+  const sender = senderAddress(message.from);
   if (!sender || registrableDomain(sender) !== candidate.domain) return false;
   const at = Date.parse(message.receivedAt);
   const since = Date.parse(candidate.since);

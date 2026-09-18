@@ -8,13 +8,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:tes
 import type { Company, LedgerItem } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { handleLedgerItem } from '../../src/companies/handle.ts';
+import { registrableDomain, senderAddress } from '../../src/companies/messages.ts';
 import {
   CompanyReplyPoller,
   candidatesFrom,
   companyDomain,
   deliverReplies,
   fixtureReplyMailbox,
-  fromAddress,
   isReplyFrom,
   REPLY_EVENT_NAME,
   REPLY_POLL_CRON,
@@ -23,7 +23,6 @@ import {
   type ReplyMessage,
   type ReplyPollerDeps,
   readCandidates,
-  registrableDomain,
 } from '../../src/companies/replies.ts';
 import { action, connection, owner, space, trigger } from '../../src/db/schema.ts';
 import { newId } from '../../src/ids.ts';
@@ -413,9 +412,9 @@ withDb('noticing that a company wrote back', () => {
 });
 
 test('who sent it, and whether it answers us', () => {
-  expect(fromAddress('Acme Support <support@acme.test>')).toBe('support@acme.test');
-  expect(fromAddress('support@acme.test')).toBe('support@acme.test');
-  expect(fromAddress('Acme Support')).toBeNull();
+  expect(senderAddress('Acme Support <support@acme.test>')).toBe('support@acme.test');
+  expect(senderAddress('support@acme.test')).toBe('support@acme.test');
+  expect(senderAddress('Acme Support')).toBeNull();
   expect(registrableDomain('no-reply@billing.acme.test')).toBe('acme.test');
   expect(registrableDomain('someone@shop.acme.co.uk')).toBe('acme.co.uk');
   expect(registrableDomain('nonsense')).toBeNull();
@@ -480,4 +479,15 @@ test('the poll schedule says exactly what the interval constant says', () => {
   const minutes = /^\*\/(\d+) \* \* \* \*$/.exec(REPLY_POLL_CRON)?.[1];
   expect(minutes).toBeDefined();
   expect(Number(minutes) * 60).toBe(REPLY_POLL_SECONDS);
+});
+
+test('there is one domain parser, and noticing replies uses it', async () => {
+  const text = await Bun.file(new URL('../../src/companies/replies.ts', import.meta.url)).text();
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  // Who a message is from decides whether a stranger can wake someone's chase,
+  // so it is answered in one place. A second copy here would be a second answer
+  // that drifts from the first without anything noticing.
+  for (const copy of ['MULTI_LABEL_SUFFIXES', 'function registrableDomain', 'function fromAddress'])
+    expect(code).not.toContain(copy);
+  expect(code).toContain("from './messages.ts'");
 });
