@@ -84,8 +84,9 @@ The [memory runner](../conformance/memory/README.md) calls the real memory
 functions against disposable Postgres, with scripted extraction and answers
 over local HTTP. It runs the memory service directly rather than the normal
 service entry point or a Compose installation. Ten executable scenarios span
-seven families; procedure promotion is covered by the [learning](LEARNING.md)
-tests instead of by this harness.
+seven families. An eighth family, procedure transfer, holds one scenario
+recorded as a todo and has no executed case here, because this harness does not
+enable promotion; the [learning](LEARNING.md) tests cover it instead.
 
 Each executable scenario requiring memory runs again with empty recall; a
 scenario that still passes fails the suite as `memory not exercised`.

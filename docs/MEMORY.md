@@ -189,8 +189,8 @@ Extraction and view publication use durable work and fenced leases
 lease holder`). pg-boss runs on the fixture database (`pg-boss uses the embedded
 database`). Each attempt assembles and records its own context at start rather
 than reusing one prepared earlier. Procedure promotion is a separate, scoped
-loop with its own tests ([LEARNING](LEARNING.md)), and the memory runner leaves
-it to them.
+loop with its own tests ([LEARNING](LEARNING.md)); the memory runner records its
+procedure-transfer scenario as a todo rather than executing it.
 
 ## Verify
 
@@ -203,7 +203,9 @@ bun run conformance:memory
 
 The integration fixture uses disposable Postgres and scripted HTTP extraction.
 The standalone runner covers seven families with ten scenarios and a
-withheld-memory arm; procedure promotion is covered by the learning tests. See
-the [memory conformance README](../conformance/memory/README.md) for exact scope.
+withheld-memory arm. Its eighth family, procedure transfer, holds one scenario
+recorded as a todo and so has no executed case; the learning tests cover
+promotion. See the [memory conformance README](../conformance/memory/README.md)
+for exact scope.
 Both use scripted extraction and answers, so they measure the memory service's
 behaviour rather than a model's reasoning.

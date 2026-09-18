@@ -4,7 +4,9 @@ Email and calendar connectors run inside the trusted service. This page
 describes how they work and the local IMAP, SMTP and CalDAV servers their tests
 run against. A mailbox, a CalDAV calendar or a calendar feed is installed
 through `POST /connections`; the fields each kind takes are under
-[Installing a connection](CONNECTORS.md#installing-a-connection).
+[Installing a connection](CONNECTORS.md#installing-a-connection). Mail and
+CalDAV authenticate with an account name and a password or app password; a
+provider that only accepts OAuth cannot be connected.
 See [CONNECTORS](CONNECTORS.md) for the manifest and broker boundary.
 
 ## Credentials and configuration
@@ -67,9 +69,10 @@ all writes`). A calendar feed is the same read-only list over an address rather
 than a file: the whole address is sealed, because a published feed address is a
 credential, and it must be a public HTTPS destination when it is installed and
 again on every read. Importing an ICS file from disk stays with the
-owner-controlled configuration file. A CalDAV collection address must be
-HTTPS, and an address the connector cannot be built for is answered with `400`
-before a row or a sealed secret exists.
+owner-controlled configuration file. A CalDAV collection address must be HTTPS,
+apart from a loopback address for local fixtures, and an address the connector
+cannot be built for is answered with `400` before a row or a sealed secret
+exists.
 
 CalDAV creation uses action UID and a conditional write
 (`CalDAV create uses action UID and conditional PUT; list and verify use real
@@ -94,5 +97,5 @@ Run from the repository root after dependency installation:
 bun test apps/melete/src/connectors
 ```
 
-The fixtures use local sockets and HTTP with test credentials. No real mailbox
-or remote calendar is used.
+The fixtures use local sockets and HTTP with credentials belonging to them
+rather than to live accounts. No real mailbox or remote calendar is used.

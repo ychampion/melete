@@ -172,8 +172,9 @@ with the new connection and the result of its one test, described below.
 Passwords, MCP tokens and the whole feed address are sealed with the master key
 before the row is written. No route returns them, and the row's configuration
 keeps only endpoints and account names. A CalDAV or feed address that is not
-HTTPS, and any endpoint the connector cannot be built for, is answered with
-`400` before anything is stored. A mailbox is named by host, port and a TLS
+HTTPS, apart from a loopback address for local fixtures, and any endpoint the
+connector cannot be built for, is answered with `400` before anything is
+stored. A mailbox is named by host, port and a TLS
 mode: `secure` means TLS from the first byte, and without it the connector
 demands STARTTLS on IMAP and TLS on SMTP before it authenticates. A mailbox that
 will not upgrade is therefore stored rather than refused, with status `error`
@@ -261,9 +262,9 @@ reach SMTP`). Hygiene withholds the tested shapes of one-time codes, password
 resets and magic links; a sensitive message in any other shape is read like any
 other message.
 
-Mail signs in with an account name and a password or app password, so there is
-no provider-specific OAuth flow to complete. Tests use credentials belonging to
-local fixtures.
+Mail and CalDAV authenticate with an account name and a password or app
+password; a provider that only accepts OAuth cannot be connected. Tests use
+credentials belonging to local fixtures rather than live accounts.
 
 ### Calendar
 

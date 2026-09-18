@@ -2,7 +2,9 @@
 
 This page describes how to build a client for Melete: the typed client, the
 contract it follows, and the rules the web app adds on top. The typed client,
-the web app and the scripted mock are separate from the deployed service.
+the web app and the scripted mock are separate from the deployed service: the
+generated client follows `openapi.json`, and a deployment mounts the routes its
+entry point wires.
 
 ## Typed requests and errors
 

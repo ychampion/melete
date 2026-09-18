@@ -93,8 +93,8 @@ Conformance 8 runs against the Linux stack with the scripted provider: a cell
 capability can read the catalog but not approve, and an altered approval hash is
 refused. Its comparison against a second, real provider runs when the stack has
 that provider's credential and `MELETE_CONFORMANCE_REAL_PROVIDER` and
-`MELETE_CONFORMANCE_REAL_MODEL` select it. API keys stay in the gateway, which
-forwards them. Configuring provider OAuth inside Hermes would place those
+`MELETE_CONFORMANCE_REAL_MODEL` select it; no recorded run has. API keys stay
+in the gateway, which forwards them. Configuring provider OAuth inside Hermes would place those
 credentials in the runtime's auth store, outside this boundary: a runtime
 compromise exposes an OAuth token stored there, and it does not expose a
 provider API key kept in Melete's gateway. The runtime image and Compose volumes
@@ -176,7 +176,8 @@ consequences follow:
 Scenario 6 runs Python standard-library probes from a real claimed Hermes
 container and the warm probe container; the recorded run used Docker Engine
 29.1.3 on Linux. The claimed cell mounts only `work/<job>` and its private
-runtime home.
+runtime home. What the table records holds for a Linux Docker host; macOS,
+Windows and rootless Docker hosts are outside it, as is a kernel exploit.
 
 | Boundary | Observed evidence | What a breach would look like |
 | --- | --- | --- |
@@ -407,10 +408,10 @@ The relay policy constrains an intact worker; a compromised Node process can
 use its own outbound sockets and can steal or alter its mounted browser profile.
 It can read whatever the configured uid may read within that one mounted space.
 It has no direct mount of the vault, runtime cell, or another space. The worker
-is a container on the host kernel rather than a virtual machine, and Chromium
-runs with its own renderer sandbox off (`--no-sandbox`, Playwright's default),
-so a compromised renderer has the worker's access; a kernel compromise removes
-the remaining boundaries.
+is a container on the host kernel rather than a virtual machine, and
+Playwright's `chromiumSandbox` default is off, so Chromium runs without its
+renderer sandbox and a compromised renderer has the worker's access; a kernel
+compromise removes the remaining boundaries.
 
 Docker bridge membership is not directional. A compromised worker can reach the
 Melete service ports on `browser-control`, even though it cannot directly join the

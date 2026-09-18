@@ -266,7 +266,10 @@ and model proxy, and retains Hermes state on a named volume. The warm `runtime`
 service uses the `_probe` subdirectory and has no valid job capability.
 Linux's isolated bridge mode removes the bridge's host address; live probes,
 not the Compose configuration checker alone, establish the network result.
-See the [threat model](THREAT-MODEL.md) for the verified boundary and limits.
+Those probes cover a Linux Docker host, which is the host this page describes;
+macOS, Windows and rootless Docker hosts are outside them, as is a kernel
+exploit. See the [threat model](THREAT-MODEL.md) for the boundary and what
+rests on it.
 
 The runtime build asserts that Hermes tag `v2026.9.7` resolves to commit
 `2237be355906fbe6065ce1815711eee52b2d646e`. It also asserts the plugin content
