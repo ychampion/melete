@@ -1,5 +1,61 @@
 import { expect, test } from 'bun:test';
-import { REDACTED, redactSecretText } from './redact.ts';
+import { REDACTED, redactSecretText, withoutValues } from './redact.ts';
+
+/** How a page shows a person a secret, in the shapes a real sign-in uses. */
+const SHOWN = [
+  '- textbox "Password": hunter2',
+  '- textbox "One-time code": "482913"',
+  '- textbox "Enter code": 48213',
+  '- textbox "Memorable word": swordfish',
+  '- textbox "First pet\'s name": Mittens',
+  '- textbox "Account": 12345678901',
+  '- text: recovery key abcd-efgh-ijkl',
+  '- text: key ABC-DEF-GHI-JKL',
+  '- text: JBSWY3DPEHPK3PXP',
+  '- text: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.c2ln',
+  '- paragraph: Backup code: ABCD-EFGH-IJKL',
+].join('\n');
+const SECRETS = [
+  'hunter2',
+  '482913',
+  '48213',
+  'swordfish',
+  'Mittens',
+  '12345678901',
+  'abcd-efgh-ijkl',
+  'ABC-DEF-GHI-JKL',
+  'JBSWY3DPEHPK3PXP',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+  'ABCD-EFGH-IJKL',
+];
+
+test('the first look after a handback keeps labels and roles and no contents', () => {
+  const kept = withoutValues(SHOWN);
+  for (const secret of SECRETS) expect([secret, kept.includes(secret)]).toEqual([secret, false]);
+  // What a locator needs is still there: every role, and every name a control was given.
+  expect(kept.split('\n')).toEqual([
+    '- textbox "Password"',
+    '- textbox "One-time code"',
+    '- textbox "Enter code"',
+    '- textbox "Memorable word"',
+    '- textbox "First pet\'s name"',
+    '- textbox "Account"',
+    '- text',
+    '- text',
+    '- text',
+    '- text',
+    '- paragraph',
+  ]);
+});
+
+test('a name that carries a code loses it, and an ordinary page keeps its shape', () => {
+  expect(withoutValues('- heading "Your account" [level=1]')).toBe(
+    '- heading "Your account" [level=1]',
+  );
+  expect(withoutValues('- textbox "Code ABCD-EFGH-IJKL"')).toBe(`- textbox "Code ${REDACTED}"`);
+  expect(withoutValues('- link "Open help"')).toBe('- link "Open help"');
+  expect(withoutValues('- button "Save note"')).toBe('- button "Save note"');
+});
 
 test('a line naming a secret loses its value while its label stays', () => {
   const tree = [
@@ -41,4 +97,25 @@ test('grouped codes and standalone six to ten digit numbers are blanked anywhere
     '- link "Open help"',
   ])
     expect(redactSecretText(kept)).toBe(kept);
+});
+
+test('a later look blanks seeds, tokens and grouped codes in any case', () => {
+  for (const [line, blanked] of [
+    ['- text: JBSWY3DPEHPK3PXP', `- text: ${REDACTED}`],
+    ['- text: seed JBSWY3DPEHPK3PXPJBSWY3DP', `- text: seed ${REDACTED}`],
+    [
+      '- text: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.c2ln',
+      `- text: ${REDACTED}`,
+    ],
+    ['- text: recovery key abcd-efgh-ijkl', `- text: recovery key ${REDACTED}`],
+    ['- text: key ABC-DEF-GHI-JKL', `- text: key ${REDACTED}`],
+  ] as const)
+    expect([line, redactSecretText(line)]).toEqual([line, blanked]);
+  // Ordinary hyphenated prose is not a code, and stays.
+  for (const kept of [
+    '- paragraph: a state-of-the-art mother-in-law joke',
+    '- paragraph: the up-to-date read-me file',
+    '- paragraph: a well-thought-out plan',
+  ])
+    expect([kept, redactSecretText(kept)]).toEqual([kept, kept]);
 });

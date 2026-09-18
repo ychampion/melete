@@ -9,7 +9,7 @@ import {
   createBrowserEgress,
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
-import { redactSecretText } from './redact.ts';
+import { withoutValues } from './redact.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
@@ -375,8 +375,8 @@ export class BrowserController {
     if (session.control !== 'automation') throw new BrowserFault('human_control');
     const epoch = session.control_epoch;
     // What a person typed or was shown can still be on the page they hand back: the first
-    // observation afterwards carries no picture, no form values and a redacted tree, and it
-    // still refuses below.
+    // observation afterwards carries no picture, no form values, and a tree with labels and
+    // roles but no contents at all, and it still refuses below.
     const handedBack = this.humanJustLeft;
     const { page, cdp } = await this.attach();
     const schema = await this.schema(page, cdp);
@@ -385,7 +385,7 @@ export class BrowserController {
       throw new BrowserFault('sensitive_input_require_takeover');
     const snapshot = await page.locator('body').ariaSnapshot();
     if (snapshot.length > 128_000) throw new BrowserFault('observation_too_large');
-    const tree = handedBack ? redactSecretText(snapshot) : snapshot;
+    const tree = handedBack ? withoutValues(snapshot) : snapshot;
     const screenshot = handedBack
       ? ''
       : (

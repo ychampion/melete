@@ -362,17 +362,24 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       session = await worker.takeover(session.id);
     }, 30_000);
 
-    test('the first observation after handback carries no screenshot and a redacted tree', async () => {
+    test('the first observation after handback carries no screenshot and no contents', async () => {
       session = await worker.handback(session.id);
       const first = await command({ kind: 'observe' });
       expect(first.observation?.url).toBe(`${fixture.app}/account`);
       expect(first.observation?.screenshot).toBe('');
       expect(first.result).toEqual({ submit_intents: [] });
-      const redacted = first.observation?.tree ?? '';
-      expect(redacted).toContain('Your account');
-      expect(redacted).toContain('[redacted]');
-      for (const secret of [SIGN_IN.backup_code, SIGN_IN.reference, 'over-the-cap'])
-        expect(redacted).not.toContain(secret);
+      // Labels and roles stay, so the agent can still find its way; no contents do.
+      const structure = first.observation?.tree ?? '';
+      expect(structure).toContain('- heading "Your account"');
+      expect(structure).toContain('- button "Save note"');
+      for (const shown of [
+        SIGN_IN.backup_code,
+        SIGN_IN.reference,
+        'over-the-cap',
+        'kept-note',
+        'Backup code',
+      ])
+        expect([shown, structure.includes(shown)]).toEqual([shown, false]);
       const second = await command({ kind: 'observe' });
       expect(second.result?.submit_intents).toMatchObject([{ fields: { note: 'kept-note' } }]);
       expect(second.observation?.screenshot.length).toBeGreaterThan(1000);
