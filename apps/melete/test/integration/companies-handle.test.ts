@@ -36,6 +36,8 @@ const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
 const withDb = jobs ? describe : describe.skip;
 const key = 'companies-handle-integration-key-32-bytes';
 const scopes = ['test.send', 'test.read', 'job.wait'];
+/** The person's own mailbox: what the message goes out as. */
+const SENDER = 'jo@example.test';
 
 let runner: AttemptRunner;
 let triggers: TriggerService;
@@ -236,6 +238,9 @@ withDb('handing one ledger item to a playbook', () => {
       provider: 'test',
       label: 'Scripted mailbox',
       scopes,
+      // Shaped like a mailbox a person installed, so the card can say which
+      // address the message leaves from.
+      configuration: { kind: 'mail', mail: { from: SENDER } },
     });
     runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), { key, scopes });
     triggers = new TriggerService(jobs, runner);
@@ -386,11 +391,12 @@ withDb('handing one ledger item to a playbook', () => {
     const preview = card.preview;
     if (!preview) throw new Error('Expected the permission to carry a preview');
     const facts = Object.fromEntries(preview.facts.map((f) => [f.label, f.value]));
+    // Which mailbox it leaves from, who it goes to, and every word of it.
+    expect(facts.From).toBe(SENDER);
     expect(facts.To).toBe('support@acme.test');
     expect(facts.Subject).toBe('Refund for order 7781');
     expect(facts.Message).toContain('the refund has not arrived');
-    // The sending address is not a field on the card today: it is a property of
-    // the connection, and the card names the connection rather than the address.
+    expect(preview.facts.map((f) => f.label).slice(0, 2)).toEqual(['From', 'To']);
     expect(preview.source_connection).toBe(connectionId);
     expect(card.options).toContain('allow_once');
   });

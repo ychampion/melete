@@ -6,7 +6,13 @@ import type { BrokerService } from '../broker/service.ts';
 import { ownJobClause } from '../principals/authority.ts';
 import { actionProjectionRow, type ExperienceEffects } from './effects.ts';
 import { explainHandles } from './evidence.ts';
-import { draftForReview, plainText, projectPermission, recipientText } from './projectors.ts';
+import {
+  draftForReview,
+  plainText,
+  projectPermission,
+  recipientText,
+  senderAddress,
+} from './projectors.ts';
 import { permissionVersion, ruleKinds, ruleRecipient, ruleView } from './rules.ts';
 import { experienceMissing } from './service.ts';
 
@@ -19,7 +25,7 @@ export class ExperiencePermissions {
 
   async find(spaceId: string, id: string) {
     const [row] = await this.sql`select p.*, j.experience_parent_id, c.label, c.provider,
-      a.job_id, a.connection_id from approval p join action a on a.id = p.action_id
+      c.configuration, a.job_id, a.connection_id from approval p join action a on a.id = p.action_id
       join job j on j.id = a.job_id join connection c on c.id = a.connection_id
       where p.id = ${id} and j.space_id = ${spaceId} and c.space_id = ${spaceId}
       ${ownJobClause(this.sql, 'j')}`;
@@ -56,6 +62,8 @@ export class ExperiencePermissions {
         id: String(row.connection_id),
         label: String(row.label),
         provider: String(row.provider),
+        // Which mailbox this leaves from is part of the question being asked.
+        sender: senderAddress(row.configuration),
       },
       reasons,
       canAlways: warnings.length === 0 && Boolean(ruleKinds[action.kind]),

@@ -288,11 +288,33 @@ export function draftForReview(row: ActionRow) {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * The address a message would leave from, read off the connection it would
+ * leave through.
+ *
+ * It is not part of the message payload — a send names only its recipients, and
+ * the mailbox is a property of the connection — so a person cannot see it in
+ * the words they are approving unless it is put there. Someone with two
+ * mailboxes connected is being asked a different question depending on which
+ * one this is, and they should be able to tell which.
+ *
+ * Unknown is unknown: an operator-configured mailbox keeps its address in the
+ * environment rather than on the row, and nothing is invented to fill the gap.
+ */
+export function senderAddress(configuration: unknown): string | null {
+  const stored = object(configuration);
+  const value = object(stored.mail).from ?? stored.from;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  // Held to the same bar as the recipients beside it: shown exactly, or not at
+  // all. A fallback string in this row would read as an address and not be one.
+  return plainText(value, '', 4000) === value.trim() ? value.trim() : null;
+}
+
 export function projectPermission(input: {
   id: string;
   version: string;
   action: ActionRow;
-  connection: ConnectionRow;
+  connection: ConnectionRow & { sender?: string | null };
   reasons: string[];
   canAlways: boolean;
 }) {
@@ -309,6 +331,7 @@ export function projectPermission(input: {
   const facts = [
     ...(draft
       ? [
+          ...(input.connection.sender ? [{ label: 'From', value: input.connection.sender }] : []),
           { label: 'To', value: draft.recipient },
           ...(draft.cc?.length ? [{ label: 'Cc', value: draft.cc.join(', ') }] : []),
           ...(draft.bcc?.length ? [{ label: 'Bcc', value: draft.bcc.join(', ') }] : []),
