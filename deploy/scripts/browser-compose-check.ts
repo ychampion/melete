@@ -22,6 +22,10 @@ const SPACE = '${MELETE_BROWSER_SPACE:?set MELETE_BROWSER_SPACE in .env}';
 const TOKEN = '${MELETE_BROWSER_TOKEN:?set MELETE_BROWSER_TOKEN in .env}';
 const CONTROL = 'browser-control';
 const EGRESS = 'browser-egress';
+/** Relative to this compose file, which is how the engine is given the profile. */
+export const BROWSER_SECCOMP = './config/browser-seccomp.json';
+/** CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC: not the sandbox's to make. */
+const DENIED_NAMESPACES = 0x0e020000;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -141,12 +145,14 @@ export function checkBrowserCompose(
       base.services?.melete?.user !== browser.user,
     'browser uid 10003 differs from runtime uid 10001 and the service image uid 10002',
   );
+  const options = names(browser.security_opt).map((option) => option.replace(/\s/g, ''));
   say(
     'the browser drops capabilities and cannot gain privileges',
     browser.read_only === true &&
+      browser.privileged === undefined &&
       sameNames(names(browser.cap_drop), ['ALL']) &&
-      sameNames(names(browser.security_opt), ['no-new-privileges:true']),
-    'read_only, cap_drop ALL, and no-new-privileges are required',
+      sameNames(options, ['no-new-privileges:true', `seccomp=${BROWSER_SECCOMP}`]),
+    `read_only, cap_drop ALL, no-new-privileges and seccomp=${BROWSER_SECCOMP} are required`,
   );
   say(
     'the browser has bounded private temporary storage and process limits',
@@ -245,6 +251,54 @@ export function checkBrowserImage(
   };
 }
 
+type SeccompRule = {
+  names?: string[];
+  action?: string;
+  args?: { index?: number; value?: number; op?: string }[];
+  includes?: { caps?: string[] };
+};
+
+/**
+ * The profile the worker container is given. It must keep the engine's floor — everything is
+ * refused unless the profile allows it — and open only the namespaces Chromium's sandbox makes:
+ * a renderer may leave the process, pid and network namespace it was given, and nothing else.
+ */
+export function checkBrowserSandbox(profile: string | undefined): CheckResult {
+  const name = 'the browser renderer sandbox has a profile of its own';
+  let parsed: { defaultAction?: string; syscalls?: SeccompRule[] };
+  try {
+    parsed = JSON.parse(profile ?? '') as typeof parsed;
+  } catch {
+    return { name, ok: false, detail: `${BROWSER_SECCOMP} is missing or is not JSON` };
+  }
+  const rules = parsed.syscalls ?? [];
+  const allows = (call: string, predicate: (rule: SeccompRule) => boolean) =>
+    rules.some(
+      (rule) =>
+        rule.action === 'SCMP_ACT_ALLOW' &&
+        (rule.names ?? []).includes(call) &&
+        !(rule.includes?.caps ?? []).length &&
+        predicate(rule),
+    );
+  const bounded = (rule: SeccompRule) =>
+    (rule.args ?? []).some(
+      (argument) => argument.op === 'SCMP_CMP_MASKED_EQ' && argument.value === DENIED_NAMESPACES,
+    );
+  const ok =
+    parsed.defaultAction === 'SCMP_ACT_ERRNO' &&
+    rules.length > 20 &&
+    allows('clone', bounded) &&
+    allows('unshare', bounded) &&
+    allows('chroot', (rule) => !(rule.args ?? []).length);
+  return {
+    name,
+    ok,
+    detail:
+      'the profile must refuse by default and allow only clone, unshare and chroot for the ' +
+      "sandbox's own user, pid and network namespaces",
+  };
+}
+
 export function loadBrowserCompose(path: string): BrowserComposeFile {
   return parse(readFileSync(path, 'utf8')) as BrowserComposeFile;
 }
@@ -271,6 +325,14 @@ if (import.meta.main) {
       ),
     ),
   );
+  // Read by the path the compose file names, so a profile that is not there fails the check.
+  let profile: string | undefined;
+  try {
+    profile = readFileSync(join(dirname(paths.override), BROWSER_SECCOMP), 'utf8');
+  } catch {
+    profile = undefined;
+  }
+  results.push(checkBrowserSandbox(profile));
   for (const result of results) {
     process.stdout.write(`${result.ok ? 'ok  ' : 'FAIL'} ${result.name}\n`);
     if (!result.ok) process.stdout.write(`     ${result.detail}\n`);

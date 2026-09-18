@@ -2,10 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  BROWSER_SECCOMP,
   type BrowserComposeFile,
   browserComposePaths,
   checkBrowserCompose,
   checkBrowserImage,
+  checkBrowserSandbox,
   loadBrowserCompose,
 } from './browser-compose-check.ts';
 
@@ -192,6 +194,62 @@ describe('the isolated browser deployment', () => {
         'the browser drops capabilities and cannot gain privileges',
       );
     }
+  });
+
+  test('refuses a worker without the renderer sandbox profile, or with it turned off', () => {
+    expect(override.services?.browser?.security_opt).toContain(`seccomp=${BROWSER_SECCOMP}`);
+    for (const security of [
+      ['no-new-privileges:true'],
+      ['no-new-privileges:true', 'seccomp=unconfined'],
+      ['no-new-privileges:true', 'seccomp=./config/somebody-elses.json'],
+      ['seccomp=./config/browser-seccomp.json'],
+      ['no-new-privileges:true', 'seccomp=./config/browser-seccomp.json', 'apparmor=unconfined'],
+    ]) {
+      const broken = mutation((browser) => {
+        browser.security_opt = security;
+      });
+      expect([security, failures(broken)]).toEqual([
+        security,
+        expect.arrayContaining(['the browser drops capabilities and cannot gain privileges']),
+      ]);
+    }
+    const elevated = mutation((browser) => {
+      browser.privileged = true;
+    });
+    expect(failures(elevated)).toContain(
+      'the browser drops capabilities and cannot gain privileges',
+    );
+  });
+
+  test('the seccomp profile refuses by default and opens only the sandbox namespaces', () => {
+    const profile = readFileSync(join(paths.override, '..', BROWSER_SECCOMP), 'utf8');
+    expect(checkBrowserSandbox(profile)).toMatchObject({ ok: true });
+    const shipped = JSON.parse(profile) as {
+      defaultAction: string;
+      syscalls: { names?: string[]; action?: string; args?: { value?: number }[] }[];
+    };
+    // Docker's own floor is kept: this is that profile with the namespace calls added.
+    expect(shipped.syscalls.length).toBeGreaterThan(30);
+    expect(shipped.syscalls.flatMap((rule) => rule.names ?? []).length).toBeGreaterThan(400);
+
+    const permissive = { ...shipped, defaultAction: 'SCMP_ACT_ALLOW' };
+    const widened = {
+      ...shipped,
+      // The same rules, but the mask no longer keeps mount, uts, ipc and cgroup namespaces shut.
+      syscalls: shipped.syscalls.map((rule) =>
+        (rule.args ?? []).some((argument) => argument.value === 0x0e020000)
+          ? { ...rule, args: [{ index: 0, value: 0, op: 'SCMP_CMP_MASKED_EQ' }] }
+          : rule,
+      ),
+    };
+    const withoutChroot = {
+      ...shipped,
+      syscalls: shipped.syscalls.filter((rule) => !(rule.names ?? []).includes('chroot')),
+    };
+    for (const broken of [undefined, '', 'not json', JSON.stringify({ syscalls: [] })])
+      expect([broken, checkBrowserSandbox(broken).ok]).toEqual([broken, false]);
+    for (const broken of [permissive, widened, withoutChroot])
+      expect(checkBrowserSandbox(JSON.stringify(broken)).ok).toBe(false);
   });
 
   test('refuses broadening the broker override or mismatching its endpoint', () => {

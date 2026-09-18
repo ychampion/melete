@@ -92,6 +92,25 @@ async function storedOrigins(data: string, site: string, depth = 4): Promise<str
   return [...found];
 }
 
+/**
+ * How Chromium is launched wherever this worker opens it: no network but the dead proxy, no
+ * downloads, no service workers, and its own renderer sandbox. Playwright turns that sandbox off
+ * unless `chromiumSandbox` is exactly true, and an unsandboxed renderer hands a page that breaks
+ * out of it everything this worker process can reach.
+ */
+export function browserLaunchOptions(headless = true) {
+  return {
+    timeout: 10_000,
+    headless,
+    chromiumSandbox: true,
+    viewport: { width: 1024, height: 768 },
+    serviceWorkers: 'block' as const,
+    acceptDownloads: false,
+    proxy: { server: 'http://127.0.0.1:1' },
+    args: ['--disable-quic', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+  };
+}
+
 export type BrowserSessionsOptions = {
   spaceId: string;
   spaceRoot: string;
@@ -206,17 +225,8 @@ export class BrowserSessions {
     });
   }
 
-  /** Chromium is launched the same way wherever it is opened: no network, no downloads. */
   private launchOptions() {
-    return {
-      timeout: 10_000,
-      headless: this.options.headless ?? true,
-      viewport: { width: 1024, height: 768 },
-      serviceWorkers: 'block' as const,
-      acceptDownloads: false,
-      proxy: { server: 'http://127.0.0.1:1' },
-      args: ['--disable-quic', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
-    };
+    return browserLaunchOptions(this.options.headless ?? true);
   }
 
   requireSession(id: string, jobId?: string): BrowserSession {
