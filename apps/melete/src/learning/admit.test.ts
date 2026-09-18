@@ -893,6 +893,48 @@ function outcome(triple: Triple) {
   }
 }
 
+describe('recompiling a stored step', () => {
+  test("a verbatim step whose quote carries the wrapper's own words still recompiles", () => {
+    // The wrapper reads "Owner's correction: …", and this quote says both those words itself.
+    const intervention = "the owner's corrections about invoices should be kept, sort by date";
+    const objective = 'File the invoices from the supplier';
+    const admitted = admitProposal(
+      {
+        target: 'skill_body',
+        steps: [
+          {
+            text: 'Archive the invoices in Dropbox.',
+            evidence: span('intervention', intervention, intervention),
+          },
+        ],
+        triggers: [{ phrase: 'invoices', evidence: span('objective', objective, 'invoices') }],
+        checks: [],
+        variant_objectives: [],
+      },
+      { sources: sourcesOf(intervention, objective), objective },
+    );
+    const [step] = admitted.change.steps;
+    expect(step?.evidence.fallback).toBe('verbatim');
+    expect(step?.text).toBe(verbatimStep(intervention));
+    // Recompiling the stored definition is what every delivery does.
+    expect(() => compileStoredProcedure(admitted.change, admitted.triggers)).not.toThrow();
+    expect(compileStoredProcedure(admitted.change, admitted.triggers).body).toBe(admitted.body);
+    // A stored step that is not a fallback still has to pass the word rule.
+    const tampered = {
+      ...admitted.change,
+      steps: [
+        {
+          text: 'Archive the invoices in Dropbox.',
+          evidence: { ...step?.evidence, fallback: undefined },
+        },
+      ],
+    };
+    expect(reasonOf(() => compileStoredProcedure(tampered, admitted.triggers))).toBe(
+      'step_not_supported_by_quote',
+    );
+  });
+});
+
 describe('admission yield across realistic corrections', () => {
   test('the yield table admits honest corrections and refuses the rest for the stated reason', () => {
     expect(TRIPLES.length).toBeGreaterThanOrEqual(20);

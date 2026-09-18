@@ -497,11 +497,16 @@ export function compileStoredProcedure(raw: unknown, triggers: readonly unknown[
   for (const step of change.steps) {
     scan(step.text, 'A procedure step');
     scan(step.evidence.quote, 'A procedure quote');
-    const expected = supportedStep(
-      step.evidence.fallback === 'verbatim' ? verbatimStep(step.evidence.quote) : step.text,
-      step.evidence,
-    );
-    if (expected.text !== step.text || expected.evidence.fallback !== step.evidence.fallback)
+    // What this step's text must be, given how it was admitted. A stored fallback is
+    // the owner's quote wrapped by trusted code; anything else must still pass the
+    // word rule. Re-deciding which branch applies would refuse a fallback whose quote
+    // happens to contain the wrapper's own words ("owner", "correction"), which is a
+    // coincidence of stemming, not tampering.
+    const expected =
+      step.evidence.fallback === 'verbatim'
+        ? verbatimStep(step.evidence.quote)
+        : supportedStep(step.text, step.evidence).text;
+    if (expected !== step.text)
       refuse('step_not_supported_by_quote', 'A stored step is not what its quote supports.');
   }
   if (triggers.length > MAX_TRIGGERS) refuse('too_many_triggers', 'At most four triggers.');
