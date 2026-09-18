@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, setSystemTime, test } from 'bun:test';
 import {
   type AttemptBundle,
   EMPTY_SINCE_LAST,
@@ -110,6 +110,24 @@ function discoveryHarness(
   };
 }
 
+/**
+ * Run a body with a wall clock that stands still while timers keep running.
+ *
+ * A wall budget is armed as a timer and the expiry is then read back off
+ * `Date.now()`. Those are two different clocks, and on a loaded or virtualised
+ * host they disagree: the timer fires while the wall clock still reads inside
+ * the budget. Stopping the wall clock makes that disagreement the ordinary case
+ * for these tests instead of a race the suite loses once in a hundred runs.
+ */
+async function withStoppedClock<T>(body: () => Promise<T>): Promise<T> {
+  setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+  try {
+    return await body();
+  } finally {
+    setSystemTime();
+  }
+}
+
 describe('broker-verified tool continuation', () => {
   test('loads, stops, waits for termination and resumes with one public outcome', async () => {
     const h = discoveryHarness();
@@ -180,14 +198,16 @@ describe('broker-verified tool continuation', () => {
           ? new Response(new ReadableStream())
           : Response.json({ run_id: 'silent', status: 'started' }),
     });
-    const started = Date.now();
-    const outcome = await adapter.start(
-      { ...bundle, budget: { ...bundle.budget, max_wall_ms: 25 } },
-      { emit: async () => {} },
-      new AbortController().signal,
+    const started = performance.now();
+    const outcome = await withStoppedClock(() =>
+      adapter.start(
+        { ...bundle, budget: { ...bundle.budget, max_wall_ms: 25 } },
+        { emit: async () => {} },
+        new AbortController().signal,
+      ),
     );
     expect(outcome.kind).toBe('budget_exhausted');
-    expect(Date.now() - started).toBeLessThan(500);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   test('the wall deadline also bounds a stalled broker callback', async () => {
@@ -199,14 +219,16 @@ describe('broker-verified tool continuation', () => {
         throw new Error('no run may start before its catalog arrives');
       },
     });
-    const started = Date.now();
-    const outcome = await adapter.start(
-      { ...bundle, budget: { ...bundle.budget, max_wall_ms: 25 } },
-      { emit: async () => {} },
-      new AbortController().signal,
+    const started = performance.now();
+    const outcome = await withStoppedClock(() =>
+      adapter.start(
+        { ...bundle, budget: { ...bundle.budget, max_wall_ms: 25 } },
+        { emit: async () => {} },
+        new AbortController().signal,
+      ),
     );
     expect(outcome.kind).toBe('budget_exhausted');
-    expect(Date.now() - started).toBeLessThan(500);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   test('wall exhaustion still observes a pending approval through a real asynchronous ledger read', async () => {

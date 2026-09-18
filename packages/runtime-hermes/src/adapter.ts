@@ -124,7 +124,17 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     const emitter = new SequencedSink(bundle.attempt.id, sink);
     const controller = new AbortController();
     const deadline = Date.now() + bundle.budget.max_wall_ms;
-    const timer = setTimeout(() => controller.abort(), bundle.budget.max_wall_ms);
+    // The timer that ends the budget is also what records that it ended. The
+    // deadline is armed off a monotonic timer and would otherwise be read back
+    // off the wall clock, and those two disagree: a timer may fire a tick early,
+    // and a host whose clock is slewed or stepped back leaves a spent budget
+    // reading as unspent. The attempt is then written down as a failure rather
+    // than an exhausted budget, which is a different thing to tell an owner.
+    let wallExpired = false;
+    const timer = setTimeout(() => {
+      wallExpired = true;
+      controller.abort();
+    }, bundle.budget.max_wall_ms);
     const abort = () => controller.abort();
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
@@ -249,7 +259,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
       signal.removeEventListener('abort', abort);
       controller.signal.removeEventListener('abort', stop);
     }
-    if (Date.now() >= deadline && !signal.aborted)
+    // Either clock is enough to settle this: the timer fired, or the wall clock
+    // says the deadline is behind us. Whichever notices first, the budget is
+    // what ended the attempt, so a rejection the deadline caused never survives
+    // as a failure.
+    if ((wallExpired || Date.now() >= deadline) && !signal.aborted)
       final = exhausted('The attempt reached its wall-time limit.');
     return await this.finish(bundle, emitter, final);
   }
