@@ -246,10 +246,43 @@ describe('the isolated browser deployment', () => {
       ...shipped,
       syscalls: shipped.syscalls.filter((rule) => !(rule.names ?? []).includes('chroot')),
     };
+    // A profile that merely contains the three rules can still allow anything beside them.
+    const allowing = (...names: string[]) => ({
+      ...shipped,
+      syscalls: [
+        ...shipped.syscalls.slice(0, -3),
+        { names, action: 'SCMP_ACT_ALLOW', args: [] },
+        ...shipped.syscalls.slice(-3),
+      ],
+    });
+    const gutted = {
+      ...shipped,
+      syscalls: [
+        ...Array.from({ length: 21 }, (_, index) => ({
+          names: [`junk_${index}`],
+          action: 'SCMP_ACT_ALLOW',
+          args: [],
+        })),
+        ...shipped.syscalls.slice(-3),
+      ],
+    };
+    const reordered = {
+      ...shipped,
+      syscalls: [...shipped.syscalls.slice(-3), ...shipped.syscalls.slice(0, -3)],
+    };
     for (const broken of [undefined, '', 'not json', JSON.stringify({ syscalls: [] })])
       expect([broken, checkBrowserSandbox(broken).ok]).toEqual([broken, false]);
-    for (const broken of [permissive, widened, withoutChroot])
-      expect(checkBrowserSandbox(JSON.stringify(broken)).ok).toBe(false);
+    for (const [what, broken] of [
+      ['a profile that allows everything by default', permissive],
+      ['a widened namespace mask', widened],
+      ['no chroot for the zygote', withoutChroot],
+      ['an unconditional ptrace beside the three', allowing('ptrace')],
+      ['an unconditional mount beside the three', allowing('mount')],
+      ['bpf and init_module beside the three', allowing('bpf', 'init_module')],
+      ["a base gutted to junk under the engine's name", gutted],
+      ['the sandbox rules moved off the end', reordered],
+    ] as const)
+      expect([what, checkBrowserSandbox(JSON.stringify(broken)).ok]).toEqual([what, false]);
   });
 
   test('refuses broadening the broker override or mismatching its endpoint', () => {

@@ -3,6 +3,7 @@
  * is deliberately additive: rejecting unreviewed merge fields avoids guessing at
  * Compose semantics when a mount, environment file, or shared namespace is added.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -255,48 +256,92 @@ type SeccompRule = {
   names?: string[];
   action?: string;
   args?: { index?: number; value?: number; op?: string }[];
-  includes?: { caps?: string[] };
+  comment?: string;
+  includes?: { caps?: string[]; arches?: string[] };
+  excludes?: { caps?: string[]; arches?: string[] };
 };
+type SeccompProfile = { defaultAction?: string; syscalls?: SeccompRule[] };
 
 /**
- * The profile the worker container is given. It must keep the engine's floor — everything is
- * refused unless the profile allows it — and open only the namespaces Chromium's sandbox makes:
- * a renderer may leave the process, pid and network namespace it was given, and nothing else.
+ * The engine's own default profile, as moby v28.0.1 ships it, hashed with its keys in order.
+ * Pinned rather than described: a rule added anywhere in it — an unconditional ptrace, a mount,
+ * a bpf — changes this digest, which is the only way to tell a narrowed profile from a widened
+ * one by reading it.
+ */
+const ENGINE_DEFAULT_DIGEST = '885442dc08f21f8d60f99ea43d59af88b1c529103815fe24bbf9ce998d3a609d';
+
+/** What Chromium's sandbox needs on top of that default, in the order the profile carries them. */
+const SANDBOX_ADDITIONS: SeccompRule[] = [
+  {
+    names: ['clone', 'unshare'],
+    action: 'SCMP_ACT_ALLOW',
+    args: [{ index: 0, value: DENIED_NAMESPACES, op: 'SCMP_CMP_MASKED_EQ' }],
+    comment: "Chromium's sandbox makes a user, pid and net namespace for each renderer",
+    includes: {},
+    excludes: { arches: ['s390', 's390x'] },
+  },
+  {
+    names: ['clone', 'unshare'],
+    action: 'SCMP_ACT_ALLOW',
+    args: [{ index: 1, value: DENIED_NAMESPACES, op: 'SCMP_CMP_MASKED_EQ' }],
+    comment: 'The same, where the flags are the second argument',
+    includes: { arches: ['s390', 's390x'] },
+    excludes: {},
+  },
+  {
+    names: ['chroot'],
+    action: 'SCMP_ACT_ALLOW',
+    args: [],
+    comment: 'The zygote chroots to an empty directory inside its own user namespace',
+    includes: {},
+    excludes: {},
+  },
+];
+
+/** The same bytes for the same profile however it is formatted: keys in order, no spacing. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.entries(item as Record<string, unknown>).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+          ),
+        )
+      : item,
+  );
+}
+
+/** The digest of a profile with the sandbox's own rules taken back off the end of it. */
+export function engineDefaultDigest(profile: SeccompProfile): string {
+  const rules = profile.syscalls ?? [];
+  const base = { ...profile, syscalls: rules.slice(0, -SANDBOX_ADDITIONS.length) };
+  return createHash('sha256').update(canonical(base)).digest('hex');
+}
+
+/**
+ * The profile the worker container is given: the engine's own default, unchanged, plus exactly
+ * the three rules Chromium's sandbox needs. Both halves are checked, because a profile that
+ * merely *contains* those three rules can allow anything else beside them.
  */
 export function checkBrowserSandbox(profile: string | undefined): CheckResult {
   const name = 'the browser renderer sandbox has a profile of its own';
-  let parsed: { defaultAction?: string; syscalls?: SeccompRule[] };
+  const detail =
+    "the profile must be the engine's default profile, unchanged, plus exactly the clone, " +
+    'unshare and chroot rules the sandbox makes its own namespaces with';
+  let parsed: SeccompProfile;
   try {
-    parsed = JSON.parse(profile ?? '') as typeof parsed;
+    parsed = JSON.parse(profile ?? '') as SeccompProfile;
   } catch {
     return { name, ok: false, detail: `${BROWSER_SECCOMP} is missing or is not JSON` };
   }
   const rules = parsed.syscalls ?? [];
-  const allows = (call: string, predicate: (rule: SeccompRule) => boolean) =>
-    rules.some(
-      (rule) =>
-        rule.action === 'SCMP_ACT_ALLOW' &&
-        (rule.names ?? []).includes(call) &&
-        !(rule.includes?.caps ?? []).length &&
-        predicate(rule),
-    );
-  const bounded = (rule: SeccompRule) =>
-    (rule.args ?? []).some(
-      (argument) => argument.op === 'SCMP_CMP_MASKED_EQ' && argument.value === DENIED_NAMESPACES,
-    );
+  const added = rules.slice(-SANDBOX_ADDITIONS.length);
   const ok =
     parsed.defaultAction === 'SCMP_ACT_ERRNO' &&
-    rules.length > 20 &&
-    allows('clone', bounded) &&
-    allows('unshare', bounded) &&
-    allows('chroot', (rule) => !(rule.args ?? []).length);
-  return {
-    name,
-    ok,
-    detail:
-      'the profile must refuse by default and allow only clone, unshare and chroot for the ' +
-      "sandbox's own user, pid and network namespaces",
-  };
+    rules.length > SANDBOX_ADDITIONS.length &&
+    canonical(added) === canonical(SANDBOX_ADDITIONS) &&
+    engineDefaultDigest(parsed) === ENGINE_DEFAULT_DIGEST;
+  return { name, ok, detail };
 }
 
 export function loadBrowserCompose(path: string): BrowserComposeFile {
