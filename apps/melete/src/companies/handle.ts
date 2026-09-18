@@ -104,7 +104,13 @@ export type HandleInput = {
   messageText: string;
   principalId: string;
   spaceId: string;
-  /** The mail connection the message goes out on, when one is connected. */
+  /**
+   * The mail connection the message goes out on, when one is connected. The
+   * route finds it the way sign-in already does: the space's active connection
+   * holding the `email.send` scope. It must hold that scope, because the job
+   * declares a sent message as its deliverable and cannot finish without one.
+   * Left out, the job still runs and still drafts, but nothing can leave.
+   */
   connectionId?: string;
   /** Overridden only by a caller whose mail feed names its events differently. */
   replyEventName?: string;
