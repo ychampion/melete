@@ -24,3 +24,6 @@ conformance/memory/report.json
 .agents/w10b-*.log
 .agents/w10b-measurements.json
 .eval-state
+
+# wrangler dev writes its local state and bundles here.
+.wrangler/
