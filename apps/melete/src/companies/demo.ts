@@ -14,12 +14,7 @@
 import { openDatabase } from '../db/client.ts';
 import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
-import {
-  type CompanyStore,
-  contractMap,
-  MemoryCompanyStore,
-  PostgresCompanyStore,
-} from './repository.ts';
+import { type CompanyStore, MemoryCompanyStore, PostgresCompanyStore } from './repository.ts';
 import { runScan } from './scan.ts';
 import { scriptedExtractor } from './scripted.ts';
 
@@ -43,7 +38,7 @@ export async function runDemoScan(options: DemoOptions) {
     now: new Date(reference),
   });
   const map = await store.map(owner, new Date(reference));
-  return { outcome, map, contract: contractMap(map) };
+  return { outcome, map, contract: map };
 }
 
 if (import.meta.main) {

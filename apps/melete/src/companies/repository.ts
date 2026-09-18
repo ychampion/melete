@@ -15,7 +15,7 @@ import type { Database } from '../db/client.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import { company, companyMessage, companyScan, ledgerItem } from './schema.ts';
-import { type CompanyTotals, computeTotals, contractTotals, DEFAULT_CURRENCY } from './totals.ts';
+import { computeTotals, DEFAULT_CURRENCY } from './totals.ts';
 import { dedupeKey } from './validate.ts';
 
 export type Owner = { spaceId: string; principalId: string };
@@ -69,7 +69,7 @@ export interface CompanyStore {
     input: Omit<Company, 'id' | 'space_id'> & { id?: string },
   ): Promise<string>;
   saveItems(owner: Owner, scanId: string, items: readonly LedgerItem[]): Promise<number>;
-  map(owner: Owner, now: Date): Promise<CompanyMap & { totals: CompanyTotals }>;
+  map(owner: Owner, now: Date): Promise<CompanyMap>;
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
   setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
@@ -268,7 +268,7 @@ export class PostgresCompanyStore implements CompanyStore {
     return written.length;
   }
 
-  async map(owner: Owner, now: Date): Promise<CompanyMap & { totals: CompanyTotals }> {
+  async map(owner: Owner, now: Date): Promise<CompanyMap> {
     const companies = await this.db
       .select()
       .from(company)
@@ -448,7 +448,7 @@ export class MemoryCompanyStore implements CompanyStore {
     }
     return written;
   }
-  async map(owner: Owner, now: Date): Promise<CompanyMap & { totals: CompanyTotals }> {
+  async map(owner: Owner, now: Date): Promise<CompanyMap> {
     const companies = [...this.companies.values()]
       .filter((row) => this.mine(owner, row))
       .map(({ spaceId: _s, principalId: _p, ...rest }) => rest)
@@ -499,9 +499,4 @@ export class MemoryCompanyStore implements CompanyStore {
     this.items.set(id, updated);
     return updated;
   }
-}
-
-/** The contract's `CompanyMap`, without the promise counts that sit beside it. */
-export function contractMap(map: CompanyMap & { totals: CompanyTotals }): CompanyMap {
-  return { ...map, totals: contractTotals(map.totals) };
 }

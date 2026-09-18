@@ -303,7 +303,9 @@ export function buildOpenApiDocument() {
             },
             responses: {
               '201': jsonResponse('The job now handling it', z.object({ job_id: z.string() })),
+              '400': problem('Nothing ships yet that handles this kind of item on its own'),
               '404': problem('No such item for this person'),
+              '409': problem('Already being handled, already finished, or no longer quotable'),
               '503': problem('Handling is not connected yet'),
             },
           },

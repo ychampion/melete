@@ -1,5 +1,5 @@
 /**
- * The six figures at the top of the map, and the two counts promises add.
+ * The eight figures at the top of the map.
  *
  * They are computed from admitted items only, by adding integers. No model is
  * consulted and no figure is carried over from the extraction, so the number a
@@ -14,18 +14,6 @@ export const DEFAULT_CURRENCY = 'GBP';
 
 const OPEN_STATUSES = new Set(['found', 'handling', 'waiting']);
 
-/**
- * Promises in force and promises that lapsed. The shared contract's totals do
- * not carry these, so they live beside them rather than inside them: adding a
- * field to the contract would change a shape three lanes build against.
- */
-export type PromiseTotals = {
-  promises_in_force: number;
-  promises_lapsed: number;
-};
-
-export type CompanyTotals = CompanyMapTotals & PromiseTotals;
-
 export const RENEWAL_WINDOW_DAYS = 30;
 
 /**
@@ -36,10 +24,10 @@ export const RENEWAL_WINDOW_DAYS = 30;
 export function computeTotals(
   items: readonly LedgerItem[],
   options: { now: Date; currency?: string },
-): CompanyTotals {
+): CompanyMapTotals {
   const currency = options.currency ?? DEFAULT_CURRENCY;
   const horizon = options.now.getTime() + RENEWAL_WINDOW_DAYS * 86_400_000;
-  const totals: CompanyTotals = {
+  const totals: CompanyMapTotals = {
     owed_to_you_minor: 0,
     monthly_spend_minor: 0,
     renewals_next_30d: 0,
@@ -73,10 +61,4 @@ export function computeTotals(
   }
   totals.data_holders = dataHolders.size;
   return totals;
-}
-
-/** The contract's own six, for the shape `CompanyMap.totals` names. */
-export function contractTotals(totals: CompanyTotals): CompanyMapTotals {
-  const { promises_in_force: _inForce, promises_lapsed: _lapsed, ...rest } = totals;
-  return rest;
 }

@@ -3921,8 +3921,26 @@ export interface paths {
                         };
                     };
                 };
+                /** @description Nothing ships yet that handles this kind of item on its own */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema73"];
+                    };
+                };
                 /** @description No such item for this person */
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema73"];
+                    };
+                };
+                /** @description Already being handled, already finished, or no longer quotable */
+                409: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -7269,6 +7287,8 @@ export interface paths {
                                 monthly_spend_minor: components["schemas"]["__schema76"];
                                 owed_to_you_minor: components["schemas"]["__schema76"];
                                 price_rises: number;
+                                promises_in_force: number;
+                                promises_lapsed: number;
                                 renewals_next_30d: number;
                                 trials_ending: number;
                             };

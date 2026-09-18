@@ -26,7 +26,7 @@ import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
 import type { ScanMailbox } from './mailbox.ts';
-import { type CompanyStore, contractMap, type LedgerDetail, type Owner } from './repository.ts';
+import type { CompanyStore, LedgerDetail, Owner } from './repository.ts';
 import { runScan } from './scan.ts';
 
 export const ledgerStatusChange = z.strictObject({ status: z.enum(['dropped', 'settled']) });
@@ -157,7 +157,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   app.get('/spaces/:spaceId/companies', async (c) => {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
     const map = await deps.store.map(owner, now());
-    return c.json(companyMapContract.parse(contractMap(map)));
+    return c.json(companyMapContract.parse(map));
   });
 
   app.get('/ledger/:id', async (c) => {

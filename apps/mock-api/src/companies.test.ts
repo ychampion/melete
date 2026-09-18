@@ -54,19 +54,10 @@ const draftOf = (mock: ReturnType<typeof createMock>, jobId: string) =>
 test('the map is the contract: prefixed ids, snake_case fields, optionals present and null', () => {
   const mock = createMock({ speed: 0, experience: { seed: true } });
   return mapOf(mock).then((map) => {
-    const parsed = C.companyMap.parse({
-      companies: map.companies,
-      items: map.items,
-      totals: {
-        owed_to_you_minor: map.totals.owed_to_you_minor,
-        monthly_spend_minor: map.totals.monthly_spend_minor,
-        renewals_next_30d: map.totals.renewals_next_30d,
-        price_rises: map.totals.price_rises,
-        trials_ending: map.totals.trials_ending,
-        data_holders: map.totals.data_holders,
-      },
-      currency: map.currency,
-    });
+    // The whole map, handed to the contract as it was served. `companyMapTotals`
+    // is strict, so a figure the mock invents fails here rather than reaching a
+    // screen that would draw it.
+    const parsed = C.companyMap.parse(map);
     expect(parsed.companies.length).toBeGreaterThan(5);
     expect(parsed.items.length).toBeGreaterThan(10);
     for (const company of parsed.companies) expect(company.id.startsWith('co_')).toBe(true);
@@ -90,10 +81,7 @@ test('the map is the contract: prefixed ids, snake_case fields, optionals presen
 test('the map counts promises in force and promises whose date has passed', async () => {
   const mock = createMock({ speed: 0, experience: { seed: true } });
   const map = await mapOf(mock);
-  const totals = map.totals as C.CompanyMapTotals & {
-    promises_in_force: number;
-    promises_lapsed: number;
-  };
+  const totals: C.CompanyMapTotals = map.totals;
   const promises = map.items.filter((item) => item.kind === 'promise');
   expect(promises.length).toBeGreaterThan(3);
   expect(totals.promises_in_force + totals.promises_lapsed).toBe(promises.length);

@@ -130,11 +130,14 @@ describe('the company and the map', () => {
         price_rises: 0,
         trials_ending: 0,
         data_holders: 1,
+        promises_in_force: 2,
+        promises_lapsed: 1,
       },
       currency: 'GBP',
     });
     expect(parsed.success).toBe(true);
     expect(parsed.data?.totals.owed_to_you_minor).toBe(4200);
+    expect(parsed.data?.totals.promises_lapsed).toBe(1);
   });
 
   test('every launch playbook is a valid playbook name', () => {
