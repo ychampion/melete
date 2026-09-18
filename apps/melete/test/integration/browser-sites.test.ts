@@ -15,6 +15,7 @@ import { type BrowserWorkerClient, BrowserWorkerPool } from '../../src/workers/b
 import type { BrowserCommandResult } from '../../src/workers/browser/controller.ts';
 import type { LiveInput, LiveOpen } from '../../src/workers/browser/live-protocol.ts';
 import { BrowserSessionService } from '../../src/workers/browser/routes.ts';
+import { forgetBrowserProfilesForSpace } from '../../src/workers/browser/sites.ts';
 import { seedJob } from '../helpers/broker.ts';
 import { SIGN_IN, SIGN_IN_POINTS, startSignInFixture } from '../helpers/browser-fixture.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -321,21 +322,33 @@ suite('the sites a space is signed in to', () => {
     const held = await sql`select domain from browser_site_profile where space_id = ${spaceId}`;
     expect(held.map((row) => row.domain)).toContain('still.example');
 
-    // What a space-deletion path calls, before it deletes the space row. The worker for this
+    // What a space-deletion sweep calls, before it deletes the space row. The worker for this
     // space is running and holding the profile open, which is the case that matters.
-    expect(await sessions.sites.forgetSpace(spaceId)).toEqual({
+    expect(await forgetBrowserProfilesForSpace(sessions, spaceId)).toEqual({
       space_id: spaceId,
       profile,
+      rows: held.length,
     });
     expect(existsSync(profile)).toBe(false);
     const gone = await sql`select domain from browser_site_profile where space_id = ${spaceId}`;
     expect(gone.map((row) => row.domain)).toEqual([]);
     // The space root itself is the caller's to remove; only the browser's part of it went.
     expect(existsSync(join(root, spaceId))).toBe(true);
-    // Saying it twice is not an error, and neither is saying it for a space that never browsed.
-    expect(await sessions.sites.forgetSpace(spaceId)).toMatchObject({ space_id: spaceId });
-    expect(await sessions.sites.forgetSpace('sp_never_browsed')).toMatchObject({
+    // Saying it twice is not an error, and neither is saying it for a space that never browsed,
+    // nor saying it on a deployment that has no browser worker at all.
+    expect(await forgetBrowserProfilesForSpace(sessions, spaceId)).toEqual({
+      space_id: spaceId,
+      profile,
+      rows: 0,
+    });
+    expect(await forgetBrowserProfilesForSpace(sessions, 'sp_never_browsed')).toMatchObject({
       space_id: 'sp_never_browsed',
+      rows: 0,
+    });
+    expect(await forgetBrowserProfilesForSpace(undefined, spaceId)).toEqual({
+      space_id: spaceId,
+      profile: null,
+      rows: 0,
     });
 
     // The rows also follow the space when it goes, so a caller that forgets to ask still leaves

@@ -16,6 +16,13 @@ import { BrowserFault } from './sessions.ts';
 
 type SiteRow = { domain: string; label: string; last_used: string | Date };
 
+/** What a space kept in its browser, and what became of it. `profile` is the directory removed. */
+export type ForgottenBrowserProfiles = {
+  space_id: string;
+  profile: string | null;
+  rows: number;
+};
+
 export class BrowserSiteService {
   constructor(
     private readonly sql: Sql,
@@ -69,13 +76,14 @@ export class BrowserSiteService {
    * records with it, since they reference the space, but never the profile on disk. Calling it
    * for a space with no worker running and no profile is silent and safe.
    */
-  async forgetSpace(spaceId: string): Promise<{ space_id: string; profile: string | null }> {
+  async forgetSpace(spaceId: string): Promise<ForgottenBrowserProfiles> {
     await this.workers.release?.(spaceId);
     const root = this.workers.spacesRoot;
     const profile = root === undefined ? null : join(root, spaceId, 'browser');
     if (profile) await rm(profile, { recursive: true, force: true });
-    await this.sql`delete from browser_site_profile where space_id = ${spaceId}`;
-    return { space_id: spaceId, profile };
+    const removed = await this.sql`delete from browser_site_profile
+      where space_id = ${spaceId}`;
+    return { space_id: spaceId, profile, rows: removed.count };
   }
 
   /** Signed-in sites belong to whoever owns the space, even where others may work in it. */
@@ -85,6 +93,27 @@ export class BrowserSiteService {
       and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId}`;
     if (!owned) throw new BrowserFault('space_not_found');
   }
+}
+
+/**
+ * The one call a space-deletion sweep makes for the browser, before it deletes the space row.
+ *
+ * It stops that space's worker, removes the space's Chromium profile directory — cookies, storage
+ * and all — and deletes the sites recorded over it. Order matters in one direction: a running
+ * worker holds the profile open, so this must finish before the space root or the space row goes.
+ * The space root itself is the caller's to remove; only the browser's directory inside it goes
+ * here. Calling it twice, or for a space that never opened a browser, does nothing and says so.
+ *
+ * `browser` is the service's `browserSessions`, which is absent on a deployment with no browser
+ * worker; then there is no profile and no worker, and the rows — if an earlier configuration left
+ * any — follow the space row by cascade.
+ */
+export async function forgetBrowserProfilesForSpace(
+  browser: { sites: BrowserSiteService } | undefined,
+  spaceId: string,
+): Promise<ForgottenBrowserProfiles> {
+  if (!browser) return { space_id: spaceId, profile: null, rows: 0 };
+  return browser.sites.forgetSpace(spaceId);
 }
 
 function refused(error: unknown): never {
