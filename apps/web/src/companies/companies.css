@@ -1,0 +1,405 @@
+/*
+ * The companies screen. Two ideas carry it.
+ *
+ * The totals are one band rather than a row of cards: cells separated by the
+ * grid's own gap showing through as a hairline, so the figures read across as
+ * a single sentence about money and no cell looks more important than the one
+ * beside it. They are buttons, and a pressed one keeps a rule under it.
+ *
+ * The ledger is a table on a desktop and a stack on a phone, from one grid
+ * whose columns collapse. The evidence sits inside the row it explains rather
+ * than in a dialog, so the figure and the sentence it came from are on screen
+ * at the same time.
+ */
+
+.companies {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---------- the totals band ---------- */
+
+/*
+ * The hairlines are the cells' own outlines rather than a coloured background
+ * showing through the gap: a row that does not fill then ends in paper rather
+ * than in a grey block, at every width, whether or not the promise figures
+ * are served.
+ */
+.totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
+  gap: 1px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.total {
+  outline: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 16px 16px 14px;
+  min-height: 92px;
+  background: var(--surface);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  transition: background 120ms ease;
+}
+.total:hover {
+  background: var(--row-hover);
+}
+.total[data-on="true"] {
+  background: var(--soft);
+  border-bottom-color: var(--primary);
+}
+.total-figure {
+  font-family: var(--font-head);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 34px;
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+  color: var(--heading);
+}
+.total[data-tone="owed"] .total-figure {
+  color: var(--success);
+}
+.total-label {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+@media (max-width: 767px) {
+  .totals {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .total {
+    min-height: 72px;
+    padding: 10px 10px 9px;
+  }
+  .total-figure {
+    font-size: 19px;
+    line-height: 24px;
+  }
+  .total-label {
+    font-size: 11px;
+    line-height: 14px;
+  }
+}
+
+/* ---------- the ledger ---------- */
+
+.ledger {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ledger-group {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  padding: 14px 16px 8px;
+  border-top: 1px solid var(--line);
+  background: var(--soft);
+}
+.ledger > div:first-child > .ledger-group {
+  border-top: 0;
+}
+.ledger-group-name {
+  font-family: var(--font-head);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.ledger-group-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ledger-group-owed {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--success);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 118px 96px 152px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  min-height: 56px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.ledger-row:first-child {
+  border-top: 0;
+}
+.ledger-row:hover {
+  background: var(--row-hover);
+}
+.ledger-row[data-open="true"] {
+  background: var(--soft);
+}
+.ledger-caret {
+  display: flex;
+  color: var(--muted);
+}
+.ledger-what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ledger-company {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ledger-summary {
+  font-size: 14px;
+  color: var(--heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ledger-amount,
+.ledger-due {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+  min-width: 0;
+}
+.ledger-figure,
+.ledger-day {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--heading);
+}
+.ledger-amount[data-direction="owed_to_you"] .ledger-figure {
+  color: var(--success);
+}
+.ledger-direction {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ledger-status {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* A row that is settled or off the list stays readable and stops competing. */
+.ledger-row[data-faded="true"] .ledger-summary,
+.ledger-row[data-faded="true"] .ledger-figure {
+  color: var(--muted);
+}
+
+.confidence {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--control);
+}
+.confidence[data-level="high"] {
+  background: var(--control);
+}
+.confidence[data-level="medium"] {
+  background: linear-gradient(to right, var(--control) 50%, transparent 50%);
+}
+
+/* ---------- the evidence ---------- */
+
+.ledger-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 16px 20px 48px;
+  border-top: 1px solid var(--line);
+  background: var(--soft);
+}
+.ledger-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 12px;
+}
+.ledger-detail-summary {
+  font-family: var(--font-head);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.ledger-detail-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ledger-detail-gone {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.evidence-mail {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+  max-width: 68ch;
+}
+.evidence-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+}
+.evidence-subject {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.evidence-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.evidence-text {
+  margin: 0;
+  padding: 14px 16px 16px;
+  font-size: 13.5px;
+  line-height: 22px;
+  color: var(--secondary);
+  white-space: pre-wrap;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.evidence-mark {
+  background: var(--sand);
+  color: var(--sand-ink);
+  border-radius: 3px;
+  padding: 1px 0;
+  box-shadow: 0 0 0 3px var(--sand);
+  font-weight: 500;
+}
+.ledger-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------- the empty state ---------- */
+
+.ledger-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 40px 24px 44px;
+  max-width: 60ch;
+}
+.ledger-empty-title {
+  font-family: var(--font-head);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.ledger-empty-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--muted);
+}
+.ledger-empty-error {
+  font-size: 13px;
+  color: var(--danger);
+}
+.scan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+}
+.scan-bar {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+.scan-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  transition: width 300ms ease;
+}
+.scan-words {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the phone ---------- */
+
+@media (max-width: 767px) {
+  .ledger-row {
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "caret what amount"
+      ". status due";
+    row-gap: 6px;
+    padding: 12px;
+  }
+  .ledger-caret {
+    grid-area: caret;
+  }
+  .ledger-what {
+    grid-area: what;
+  }
+  .ledger-summary {
+    white-space: normal;
+  }
+  .ledger-amount {
+    grid-area: amount;
+  }
+  .ledger-due {
+    grid-area: due;
+    align-items: flex-end;
+  }
+  .ledger-status {
+    grid-area: status;
+    justify-content: flex-start;
+  }
+  .ledger-detail {
+    padding: 4px 12px 16px;
+  }
+  .evidence-text {
+    max-height: 260px;
+  }
+}

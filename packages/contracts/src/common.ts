@@ -37,6 +37,13 @@ export const ID_PREFIXES = {
   skill: 'skl',
   question: 'qst',
   repair_candidate: 'rpc',
+  company: 'co',
+  /** An item on a company's ledger. `ledger` above is the budget ledger. */
+  ledger_item: 'li',
+  /** One run of the inbox scan that builds the company map. */
+  scan: 'scn',
+  /** A stored message the ledger's evidence spans are checked against. */
+  company_message: 'msg',
 } as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[keyof typeof ID_PREFIXES];

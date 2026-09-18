@@ -35,7 +35,8 @@
     "client:generate": "bun run packages/client/scripts/generate.ts",
     "dev:mock": "bun run --cwd apps/mock-api dev",
     "dev:web": "bun run --cwd apps/web dev",
-    "evals": "bun run evals/run.ts"
+    "evals": "bun run evals/run.ts",
+    "companies:demo": "bun run apps/melete/src/companies/demo.ts"
   },
   "type": "module",
   "workspaces": [

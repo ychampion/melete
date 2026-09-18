@@ -276,9 +276,8 @@ capability authorization, revocation fences, and the skill-selector wiring in
 against PostgreSQL and pg-boss, including private-space refusal and regrant.
 This does not supply W11's evaluated promotion or the gated MCP chain.
 
-The [contract-additions note](proposed/2026-09-12-w14-contract-additions.md)
-records compatibility details. The current three-state matrix is in
-[docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
+Compatibility details live with the schemas in `packages/contracts`. The current
+three-state matrix is in [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
 
 ## PR 27 upgrade review - 2026-09-12
 

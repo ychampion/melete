@@ -37,6 +37,12 @@ type Chat = {
   proposals: Map<string, Proposal>;
   /** The last card a scenario drew, which a following proposal shows as its preview. */
   lastCard: C.ResultCard | null;
+  /**
+   * A company job: the address it writes from, shown on the approval, and the
+   * promise that the script keeps going after the send — the reply, the
+   * follow-up and the ending are steps that come after it.
+   */
+  follow?: { from: string };
 };
 type Proposal = {
   ref: string;
@@ -258,9 +264,9 @@ export class ExperienceMock {
     return C.permissionOutcome.parse({ status: 'ok', option: input.option, rule });
   }
   /** Start a scripted conversation without an HTTP round trip, for seeding. */
-  start(title: string, agentId: string, text: string, planId?: string) {
+  start(title: string, agentId: string, text: string, planId?: string, scenarioId?: string) {
     const { conversation } = this.create({ title, agent_id: agentId, plan_id: planId });
-    this.message(required(this.chats, conversation.id), { text });
+    this.message(required(this.chats, conversation.id), { text }, undefined, scenarioId);
     return conversation;
   }
   /** What the web app needs on first paint. Only the server calls this. */
@@ -877,7 +883,7 @@ export class ExperienceMock {
     }
     this.schedule(chat);
   }
-  message(chat: Chat, raw: unknown, key?: string) {
+  message(chat: Chat, raw: unknown, key?: string, scenarioId?: string) {
     const input = C.conversationMessage.parse(raw);
     const fingerprint = `${chat.view.id}:${key}`;
     const previous = key ? this.submissions.get(fingerprint) : undefined;
@@ -911,10 +917,13 @@ export class ExperienceMock {
     // The service stores both records in one transaction with the same creation timestamp.
     turn.created_at = spoken.created_at;
     chat.messageSeqs.set(turn.id, spoken.seq);
-    chat.script = chooseScenario(this.deps.scenarios, `${chat.view.title} ${input.text}`);
+    // A caller that names the script gets it; everything else is chosen by text.
+    chat.script =
+      (scenarioId ? this.deps.scenarios.find((entry) => entry.id === scenarioId) : undefined) ??
+      chooseScenario(this.deps.scenarios, `${chat.view.title} ${input.text}`);
     // The first message after setup gets the welcome, which names one setup answer.
     const welcome = this.deps.scenarios.find((entry) => entry.id === 'welcome');
-    if (welcome && this.answers.size > 0 && !this.welcomed) {
+    if (!scenarioId && welcome && this.answers.size > 0 && !this.welcomed) {
       chat.script = welcome;
       this.welcomed = true;
     }
@@ -969,11 +978,25 @@ export class ExperienceMock {
       what: `Sent a message to ${draft.recipient}`,
       where: 'Mail',
       when: this.now(),
+      // A company job's first message can still be pulled back for a few minutes.
+      ...(chat.follow
+        ? {
+            undo: {
+              handle: newId('undo'),
+              valid_until: new Date(Date.now() + 10 * 60_000).toISOString(),
+            },
+          }
+        : {}),
     });
     chat.receipts.push(receipt);
     this.sentReceipts.set(draft.id, receipt);
+    if (chat.follow) this.undoable.set(receipt.id, { chatId: chat.view.id, what: receipt.what });
     this.event(chat, { type: 'receipt', receipt });
-    this.finish(chat, 'Your message was sent.');
+    // A company job keeps going after the send: the reply, the follow-up, the ending.
+    if (chat.follow && chat.script && chat.position < chat.script.steps.length) {
+      this.state(chat, 'working');
+      this.schedule(chat);
+    } else this.finish(chat, 'Your message was sent.');
     return receipt;
   }
   /**
@@ -1086,7 +1109,14 @@ export class ExperienceMock {
       id: newId('permission'),
       conversation_id: chat.view.id,
       what: `Send this draft to ${draft.recipient}`,
-      why: ['You asked to send this reviewed draft.'],
+      // A company job says which of the person's addresses it goes from.
+      why: chat.follow
+        ? [
+            'This is the first message to this company. You are asked once.',
+            `From: ${chat.follow.from}`,
+            `To: ${draft.recipient}`,
+          ]
+        : ['You asked to send this reviewed draft.'],
       options:
         chat.script?.id === 'approved-send'
           ? ['allow_once', 'always', 'deny']

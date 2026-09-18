@@ -7,6 +7,35 @@ to named tests on the tagged tree; the README's gates table is the summary.
 
 ### Ships
 
+- **A map of every company in your life, built from your own inbox.** A scan
+  reads the connected mailbox and draws what each company takes every month,
+  what it owes back, what renews next, whose price has gone up, whose trial
+  ends, who is holding data, and what each one promised in writing. Every figure
+  carries the span it was read from, and `evidenceHolds` re-derives that span
+  from the stored message before the figure may be shown: a quote that is not
+  exactly the characters at its own offsets is dropped rather than shown with a
+  caveat. The extraction call has no tools and returns the schema only, so an
+  email that asks to be believed changes nothing. Served at
+  `GET /spaces/{spaceId}/companies`, with the ledger behind each figure at
+  `GET /ledger/{id}`.
+- **A company's own promises, counted kept and broken apart.** A commitment with
+  a date on it — a refund within five working days, a reply within 48 hours, a
+  price held until 2027 — is a ledger item of its own, and the map counts the
+  ones still in force separately from the ones whose date has passed.
+- **Six playbooks that write to the company for you.** Refund owed, wrong
+  charge, cancel a subscription, price rise at renewal, quotes and negotiation,
+  unpaid invoice, shipped as skills. `POST /ledger/{id}/handle` turns one item
+  into a job running its playbook, carrying only the sentences that item can
+  still quote and only the company's own hostnames to read from. The job waits
+  for the reply, follows up on the deadline, looks before it chases, and stops
+  when the matter is settled. Pressing it twice hands back the job already doing
+  it. Nothing here is a second way to send: the first message out passes the
+  existing approval, bound to its exact bytes.
+- **A try-it page with no account behind it.** `apps/tryit` takes one message
+  from a company, or a description of the problem, and answers with a case file:
+  what the person is entitled to and why, the sentence that proves it, how
+  likely it is and how long it usually takes, the message to send, and what to
+  do on each date. Every claim is held to the words it was built from.
 - **Long conversations are compacted as they run.** When an attempt's
   conversation grows past its trigger, the engine shortens the middle and
   carries on inside the same attempt, without the job stopping or a request

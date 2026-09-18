@@ -1,0 +1,45 @@
+# The try-it page: one Worker, one Durable Object, one secret.
+#
+# Deployed to workers.dev only. No custom domain and no DNS record belongs in
+# this file; adding one is a separate, deliberate act somewhere else.
+#
+#   bunx wrangler deploy                      from apps/tryit
+#   bunx wrangler secret put OPENAI_API_KEY   once, before the first live run
+#
+# Without the secret the Worker answers from the scripted provider and says so
+# at /healthz. See README.md.
+
+name = "melete-tryit"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Only the mark. The page itself is built by the Worker.
+[assets]
+directory = "./public"
+
+[vars]
+LANDING_URL = "https://melete.axcelner.com"
+REPO_URL = "https://github.com/ychampion/melete"
+MODEL = "gpt-6-astra"
+REASONING_EFFORT = "medium"
+# Both caps and the paste limit. Strings, because Worker variables are strings.
+TRYIT_MAX_INPUT_CHARS = "20000"
+TRYIT_MIN_INPUT_CHARS = "40"
+TRYIT_PER_IP_PER_DAY = "5"
+TRYIT_GLOBAL_PER_DAY = "400"
+TRYIT_REQUEST_TIMEOUT_MS = "100000"
+
+# One object, reached by a fixed name, so the day's counting is one number
+# wherever a request lands.
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "TryItLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TryItLimiter"]
+
+[observability]
+enabled = true

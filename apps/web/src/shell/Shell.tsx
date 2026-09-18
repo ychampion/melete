@@ -88,6 +88,12 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
   { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
   {
+    icon: 'piggy',
+    label: 'Companies',
+    path: '/companies',
+    match: (p) => p.startsWith('/companies'),
+  },
+  {
     icon: 'automations',
     label: 'Automations',
     path: '/automations',

@@ -127,3 +127,23 @@ export type Capabilities = {
 };
 
 export type TourStage = 'calendar' | 'drafting' | 'browser' | 'plans' | 'memory';
+
+/* ---------- companies ---------- */
+
+export type CompanyMap = Ok<paths['/spaces/{spaceId}/companies'], 'get'>;
+export type CompanyMapTotals = CompanyMap['totals'];
+export type Company = CompanyMap['companies'][number];
+export type LedgerItem = CompanyMap['items'][number];
+export type LedgerItemKind = LedgerItem['kind'];
+export type LedgerDirection = LedgerItem['direction'];
+export type LedgerItemStatus = LedgerItem['status'];
+export type LedgerEvidence = LedgerItem['evidence'][number];
+export type Confidence = LedgerItem['confidence'];
+export type LedgerDetail = Ok<paths['/ledger/{id}'], 'get'>;
+/**
+ * The stored message a figure was read out of, when the installation still
+ * holds it. `LedgerDetail.message` is nullable for the case where it does not.
+ */
+export type LedgerMessage = NonNullable<LedgerDetail['message']>;
+export type ScanStarted = Ok<paths['/spaces/{spaceId}/companies/scan'], 'post'>;
+export type ScanProgress = Ok<paths['/spaces/{spaceId}/companies/scan/{scanId}'], 'get'>;

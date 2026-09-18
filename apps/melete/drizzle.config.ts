@@ -11,6 +11,7 @@ export default defineConfig({
     './src/db/schema.ts',
     './src/db/auth-schema.ts',
     './src/memory/schema.ts',
+    './src/companies/schema.ts',
     './src/learning/schema.ts',
     './src/learning/proposal-schema.ts',
     './src/learning/evaluation-schema.ts',

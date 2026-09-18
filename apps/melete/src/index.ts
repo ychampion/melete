@@ -36,6 +36,9 @@ import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
+import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
+import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
 import {
   type ConfiguredConnection,
@@ -132,6 +135,8 @@ export type AppDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   sql?: Sql;
+  /** Overrides for the company map: a test's store, extractor or handler. */
+  companies?: Partial<CompaniesDeps>;
 };
 
 export function createApp(deps: AppDeps) {
@@ -204,6 +209,18 @@ export function createApp(deps: AppDeps) {
       questions,
       memoryJournal: deps.memory?.journal,
       triggers: deps.triggers,
+    });
+  if (deps.db)
+    mountCompanies(app, {
+      ...companiesDeps({
+        db: deps.db,
+        sql: deps.sql,
+        registry: deps.registry,
+        env: deps.env,
+        jobs: deps.jobs,
+        triggers: deps.triggers,
+      }),
+      ...deps.companies,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
@@ -334,6 +351,7 @@ export async function bootstrap(
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
+  let companyReplies: CompanyReplyPoller | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -345,6 +363,7 @@ export async function bootstrap(
         Promise.all([
           learning?.close(),
           events?.close(),
+          companyReplies?.stop(),
           triggers?.stop(),
           runner?.stop(),
           operations?.stop(),
@@ -574,6 +593,27 @@ export async function bootstrap(
         await operations.start();
         await triggers.start();
         await runner.start();
+        // A chase spends most of its life waiting on a reply, and the wait it
+        // holds is an event wait on a `mail.new` trigger. Without something
+        // putting that event there, only the deadline ever wakes the job, and a
+        // company that answered the same day would be followed up on anyway.
+        const connectors = registry;
+        if (handle && connectors) {
+          companyReplies = new CompanyReplyPoller({
+            sql: handle.sql,
+            triggers,
+            mailboxFor: (candidate) =>
+              connectorReplyMailbox({
+                registry: connectors,
+                connectionId: candidate.connectionId,
+                spaceId: candidate.spaceId,
+                // A message the connector could not date is treated as having
+                // arrived when the chase started, so it is read, not discarded.
+                undatedAt: candidate.since,
+              }),
+          });
+          await companyReplies.start();
+        }
       }
       if (options.workers === false) await replies?.recover();
       if (options.workers === false) await operations.recover();

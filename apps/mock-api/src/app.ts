@@ -65,6 +65,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
+import { mountCompaniesMock } from './companies.ts';
 import { mountExperienceMock } from './experience.ts';
 import type { Runner } from './runner.ts';
 import { chooseScenario, type Scenario } from './scenario.ts';
@@ -119,6 +120,9 @@ export function createMockApp(deps: AppDeps) {
 
   const experience = mountExperienceMock(app, deps);
   if (deps.seedExperience) experience.seed();
+  // The companies surface is agreed but not yet in openapi.json, so it mounts
+  // its own routes rather than going through the contract's operation table.
+  mountCompaniesMock(app, deps, experience);
 
   /**
    * Parse an outgoing body with the contract before it leaves. A failure here is

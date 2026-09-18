@@ -111,5 +111,17 @@ export const BUILT_IN_SKILLS = [
   'remember-this',
   /** Offered only where a speech capability is configured. */
   'make-a-podcast',
+  /**
+   * One playbook per `LAUNCH_PLAYBOOKS` entry, in that order. A ledger item is
+   * handled by the job objective naming its playbook, which is what the
+   * deterministic matcher above then selects; the names are the same string in
+   * both lists on purpose.
+   */
+  'refund-owed',
+  'wrong-charge',
+  'cancel-subscription',
+  'price-rise',
+  'get-quotes',
+  'unpaid-invoice',
 ] as const;
 export type BuiltInSkill = (typeof BUILT_IN_SKILLS)[number];
