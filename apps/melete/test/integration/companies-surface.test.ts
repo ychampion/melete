@@ -410,6 +410,45 @@ withDb('the company map over HTTP', () => {
   }, 60_000);
 });
 
+withDb('a shared space', () => {
+  // A scan reads through a connection somebody installed with their own
+  // account, and writes the message bodies it reads as private rows belonging
+  // to whoever asked. Space membership is the wrong question to ask about
+  // another person's mailbox, so scanning takes what installing took.
+  let sharedSpace = '';
+
+  test('is set up with the first account as owner and the second as a member', async () => {
+    const created = await call(firstCookie, '/spaces/shared', 'POST', { name: 'The studio' });
+    expect(created.status).toBe(201);
+    sharedSpace = (await json<{ space: { id: string } }>(created)).space.id;
+    const me = await json<{ owner: { id: string } }>(await call(secondCookie, '/me'));
+    const granted = await call(firstCookie, `/spaces/${sharedSpace}/memberships`, 'POST', {
+      principal_id: me.owner.id,
+      role: 'member',
+    });
+    expect(granted.status).toBe(201);
+  }, 60_000);
+
+  test('a member cannot scan the space mailbox', async () => {
+    const refused = await call(secondCookie, `/spaces/${sharedSpace}/companies/scan`, 'POST');
+    expect(refused.status).toBe(403);
+    expect((await json<{ error: { code: string } }>(refused)).error.code).toBe('scope_denied');
+  }, 60_000);
+
+  test('and neither can its owner, because a shared space is not owner-audience', async () => {
+    // The same rule the installer answers: owner of an OWNER-AUDIENCE space. A
+    // shared space is not one, so nobody scans it — which is the conservative
+    // half of the answer and the one that cannot leak somebody's mail.
+    const refused = await call(firstCookie, `/spaces/${sharedSpace}/companies/scan`, 'POST');
+    expect(refused.status).toBe(403);
+  }, 60_000);
+
+  test('the personal space still scans, so the rule did not close the product', async () => {
+    const started = await call(firstCookie, `/spaces/${firstSpace}/companies/scan`, 'POST');
+    expect([200, 202]).toContain(started.status);
+  }, 60_000);
+});
+
 withDb('a second account on the same installation', () => {
   // The database outlives both groups, so it is closed once, here, after the
   // last assertion that needs it.

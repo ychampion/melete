@@ -20,6 +20,7 @@ import {
 import { sql } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import { z } from 'zod';
+import { mayUseSpaceConnections } from '../api/connections.ts';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
 import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
@@ -75,6 +76,30 @@ async function ownerFor(db: Database, spaceId: string): Promise<Owner> {
   return { spaceId, principalId: access.principalId };
 }
 
+/**
+ * Reading a space's mailbox takes the same authority as connecting it.
+ *
+ * A scan reads through a connection somebody installed with their own account,
+ * and writes what it finds — companies, items, and the stored message bodies —
+ * stamped with the principal who asked. In a shared space that meant any member
+ * could scan a mailbox another member connected and end up holding their mail
+ * as private rows. Space membership is the wrong question to ask about somebody
+ * else's account; `mayUseSpaceConnections` is the question the installer had to
+ * answer, so it is the one asked here.
+ *
+ * Reading a map that already exists is not this. That is ordinary row
+ * ownership, and it is already exact.
+ */
+async function requireMailboxAuthority(db: Database, spaceId: string): Promise<void> {
+  const access = await spaceAuthority(db, spaceId, requestPrincipal());
+  if (!mayUseSpaceConnections(access))
+    throw new ServiceError(
+      'scope_denied',
+      'Scanning this mailbox requires the owner of an owner-audience space.',
+      403,
+    );
+}
+
 /** The spaces a principal may speak for: personal ones they own, shared ones they joined. */
 async function visibleSpaceIds(db: Database, principalId: string): Promise<string[]> {
   const rows = await db.execute<{ id: string }>(sql`select s.id from space s
@@ -121,6 +146,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   app.post('/spaces/:spaceId/companies/scan', async (c) => {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
+    await requireMailboxAuthority(deps.db, owner.spaceId);
     // One scan at a time. Asking again while one runs hands back the one that is
     // running, so a doubled click does not read the mailbox twice.
     const running = await deps.store.runningScan(owner);

@@ -339,6 +339,22 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
  * alone. The same judgement is made before anything in the request is acted on
  * and again under the lock that writes the row.
  */
+/**
+ * Who may install a space's connections, and therefore who may use them.
+ *
+ * A connection carries somebody's own account. Installing one takes the owner
+ * of an owner-audience space, and anything that reads through an installed
+ * connection has to ask the same question — otherwise a member of a shared
+ * space could reach a mailbox another member connected. Stated once, here,
+ * because two copies of an authority rule drift.
+ */
+export function mayUseSpaceConnections(access: {
+  role: string;
+  space: { audience: string };
+}): boolean {
+  return access.role === 'owner' && access.space.audience === 'owner';
+}
+
 async function requireInstaller(
   reader: Database | Transaction,
   spaceId: string,
@@ -347,7 +363,7 @@ async function requireInstaller(
   lock = false,
 ) {
   const access = await spaceAuthority(reader, spaceId, actor, lock);
-  if (access.role !== 'owner' || access.space.audience !== 'owner')
+  if (!mayUseSpaceConnections(access))
     throw new ServiceError(
       'scope_denied',
       kind === 'mcp'
