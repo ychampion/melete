@@ -156,8 +156,16 @@ export function openAiProvider(options: OpenAiOptions): CaseFileProvider {
       if (!response.ok) {
         // An error body can echo the request back, key included, so only the status travels.
         await response.body?.cancel();
-        // A status instead of a completion: refused before any tokens.
-        throw new ProviderError('upstream', `responses api returned ${response.status}`, false);
+        // A request the API turned down was read and rejected before anyone
+        // generated a word, so it costs nothing. A server error is different:
+        // a gateway can fail after the model has already done the work, and
+        // the rule here is that unsure counts as paid for.
+        const turnedDown = response.status < 500;
+        throw new ProviderError(
+          'upstream',
+          `responses api returned ${response.status}`,
+          !turnedDown,
+        );
       }
 
       const billed = (message: string) => new ProviderError('malformed', message);

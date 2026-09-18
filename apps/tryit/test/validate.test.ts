@@ -150,6 +150,62 @@ On 2 September you wrote:
   });
 });
 
+/**
+ * The card says the quotes are word for word from what was pasted, so they
+ * have to be exactly that and not a tidied copy. A model retypes typographic
+ * characters as the plain ones, which is why the two sides are compared in a
+ * fold — but what is shown is cut from the paste at the offsets the fold
+ * recorded, so the person reads their own punctuation back.
+ */
+describe('the quote that is shown is the paste’s own text', () => {
+  const said = (quote: string) => draft({ evidence: [{ quote, why: 'w' }] });
+
+  const pairs: Array<[string, string, string]> = [
+    [
+      'curly quotes',
+      'Our agent said “we will refund you in full” yesterday.',
+      'Our agent said "we will refund you in full" yesterday.',
+    ],
+    [
+      'em dashes',
+      'Refund — in full — within five working days.',
+      'Refund - in full - within five working days.',
+    ],
+    [
+      'an ellipsis',
+      'We will pay you… eventually, we promise.',
+      'We will pay you... eventually, we promise.',
+    ],
+    [
+      'primes',
+      'The clearance is 5′ 10″ and a refund is due.',
+      `The clearance is 5' 10" and a refund is due.`,
+    ],
+  ];
+
+  for (const [what, pasted, typed] of pairs) {
+    test(`${what}: matched as the model typed it, shown as it was pasted`, () => {
+      const { file, counts } = gate(said(typed), pasted, []);
+      expect(counts.quotesDropped).toBe(0);
+      const shown = file.evidence[0]?.quote ?? '';
+      expect(pasted).toContain(shown);
+      expect(shown).not.toBe(typed);
+    });
+  }
+
+  test('a wrapped sentence comes back with its own line break, still literal', () => {
+    const pasted = 'We have approved a full refund of £249.99\nto your original payment method.';
+    const { file } = gate(
+      said('We have approved a full refund of £249.99 to your original payment method.'),
+      pasted,
+      [],
+    );
+    const shown = file.evidence[0]?.quote ?? '';
+    expect(pasted).toContain(shown);
+    expect(shown).toContain('\n');
+  });
+});
+
 describe('shape', () => {
   test('a complete draft is accepted', () => {
     expect(parseDraft(draft())).not.toBeNull();

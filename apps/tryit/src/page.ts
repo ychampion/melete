@@ -601,7 +601,7 @@ const SCRIPT = String.raw`
       }
       h += '</div>';
       h +=
-        '<div class="src verbatim">Every sentence above is word for word from what you pasted.</div>';
+        '<div class="src verbatim">Each quote above is word for word from what you pasted.</div>';
     } else {
       h += '<div class="list"><div class="notice"><span>' + esc(file.noEvidenceNote || '') + '</span></div></div>';
     }

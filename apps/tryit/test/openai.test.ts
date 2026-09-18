@@ -165,6 +165,39 @@ describe('the ways it disappoints', () => {
     expect(error.message).not.toContain('sk-');
   });
 
+  /**
+   * Which failures are free decides whether the day's budget means anything.
+   * A request the API turned down is free: it was read and rejected before
+   * anyone generated a word. A 5xx is not — a gateway can fail after the model
+   * has done the work — and the rule everywhere here is that unsure counts as
+   * paid for.
+   */
+  test('a request the API turned down outright costs nothing', async () => {
+    for (const status of [400, 401, 403, 404, 422, 429]) {
+      expect((await failing({ error: {} }, status)).billed).toBe(false);
+    }
+  });
+
+  test('a server error may have come after the work, so it counts as paid for', async () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect((await failing({ error: {} }, status)).billed).toBe(true);
+    }
+  });
+
+  test('anything that arrived as a completion counts as paid for', async () => {
+    const refusal = await failing({
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'no' }] }],
+    });
+    expect(refusal.billed).toBe(true);
+    const stopped = await failing({
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [],
+    });
+    expect(stopped.billed).toBe(true);
+  });
+
   test('a request that is given up on is a timeout', async () => {
     const controller = new AbortController();
     const call: Transport = async () => {
