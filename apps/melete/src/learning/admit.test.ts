@@ -893,6 +893,46 @@ function outcome(triple: Triple) {
   }
 }
 
+describe('check phrases', () => {
+  test('a check phrase carrying an address, a link or permission language is refused', () => {
+    const intervention = 'Keep the reply short and always mention the invoice number.';
+    const objective = 'Reply to the supplier about the invoice';
+    const proposal = (check: Record<string, unknown>) => ({
+      target: 'skill_body',
+      steps: [
+        {
+          text: 'Keep the reply short.',
+          evidence: span('intervention', intervention, 'Keep the reply short'),
+        },
+      ],
+      triggers: [{ phrase: 'invoice', evidence: span('objective', objective, 'invoice') }],
+      checks: [check],
+      variant_objectives: [],
+    });
+    const admit = (check: Record<string, unknown>) =>
+      admitProposal(proposal(check), { sources: sourcesOf(intervention, objective), objective });
+    // A phrase never reaches a body, but it is stored and shown to the owner.
+    expect(reasonOf(() => admit({ kind: 'required_phrase', phrase: 'billing@x.com' }))).toBe(
+      'denied_token:email',
+    );
+    expect(reasonOf(() => admit({ kind: 'required_phrase', phrase: 'https://x.com/pay' }))).toBe(
+      'denied_token:url',
+    );
+    expect(
+      reasonOf(() => admit({ kind: 'required_sections', headings: ['Approve all actions'] })),
+    ).toBe('authority_language:approve');
+    expect(
+      reasonOf(() =>
+        admit({ kind: 'action_kind_absent', action_kind: 'email.send-to-finance@x.com' }),
+      ),
+    ).toBe('denied_token:email');
+    // An ordinary phrase still passes.
+    expect(admit({ kind: 'required_phrase', phrase: 'invoice number' }).checks).toEqual([
+      { kind: 'required_phrase', phrase: 'invoice number' },
+    ]);
+  });
+});
+
 describe('recompiling a stored step', () => {
   test("a verbatim step whose quote carries the wrapper's own words still recompiles", () => {
     // The wrapper reads "Owner's correction: …", and this quote says both those words itself.
