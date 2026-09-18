@@ -91,8 +91,14 @@ forwards to the web client on the internal network. It publishes nothing on a
 host interface, and Funnel stays off, so the address answers the devices on your
 tailnet and nothing else.
 
-This is an addition, not a replacement: the loopback ports and the README's SSH
-tunnel keep working exactly as before, and the base Compose file is unchanged.
+The base Compose file is unchanged and the loopback ports stay published. The
+tailnet address does replace the one you sign in at, though: a browser is
+accepted at the address `MELETE_WEB_ORIGIN` names and at no other, so once that
+holds the tailnet address, `http://localhost:3101` and the README's SSH tunnel
+answer the sign-in page but refuse the requests behind it with 403
+`origin_rejected`. One address at a time, and the step below chooses it. To go
+back to the tunnel, empty `MELETE_WEB_ORIGIN` and recreate the web service with
+the command below.
 
 ### Prerequisites
 
@@ -161,7 +167,8 @@ docker compose -f deploy/docker-compose.yml \
 This step is not optional. The web client accepts a browser whose `Origin` is
 the address the installation is reached at and refuses any other, so until
 `MELETE_WEB_ORIGIN` holds the tailnet address, signing in from that address is
-refused. `docker compose restart` does not apply a changed environment value.
+refused — and once it does, signing in from `http://localhost:3101` is refused
+instead. `docker compose restart` does not apply a changed environment value.
 
 Name both files on every later Compose command for this installation, including
 `deploy/scripts/upgrade.ts --tailscale`.
@@ -284,7 +291,9 @@ docker compose -f deploy/docker-compose.yml \
 `MELETE_WEB_ORIGIN` does not match the address in the browser's address bar.
 Run `tailscale-origin.ts` and recreate the web service with the command it
 prints. A trailing slash, `http://` instead of `https://`, or a short name
-instead of the full tailnet name are all mismatches.
+instead of the full tailnet name are all mismatches. On `http://localhost:3101`
+this is the expected answer once `MELETE_WEB_ORIGIN` holds the tailnet address:
+the setting names one address, and that one is now the tailnet's.
 
 **The address resolves but nothing answers.** The node forwards to the `web`
 service by name, which needs Docker's resolver, so the override sets
