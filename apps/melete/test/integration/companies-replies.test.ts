@@ -336,6 +336,42 @@ withDb('noticing that a company wrote back', () => {
     ).toHaveLength(0);
   });
 
+  test('every waiting chase is polled, however many pages it takes', async () => {
+    const { handle } = fixture();
+    const chases = [await waitingChase(), await waitingChase(), await waitingChase()];
+    expect(await readCandidates(handle.sql)).toHaveLength(3);
+
+    // A page smaller than the work, so the pass has to turn the page twice.
+    const looked: string[] = [];
+    const pass = await new CompanyReplyPoller({
+      sql: handle.sql,
+      triggers,
+      pageSize: 2,
+      mailboxFor: (candidate) => {
+        looked.push(candidate.jobId);
+        return fixtureReplyMailbox([]);
+      },
+    }).runOnce();
+
+    expect(pass).toEqual({ delivered: 0, failed: 0 });
+    // Every one of them, once each, and nobody twice.
+    expect([...looked].sort()).toEqual(chases.map((chase) => chase.jobId).sort());
+  });
+
+  test('paging asks for the page after the one it just read', async () => {
+    const { handle } = fixture();
+    await waitingChase();
+    await waitingChase();
+    const all = await readCandidates(handle.sql);
+    expect(all).toHaveLength(2);
+    const [first, second] = all;
+    if (!first || !second) throw new Error('Expected two chases');
+    expect(first.jobId < second.jobId).toBe(true);
+    expect(await readCandidates(handle.sql, { limit: 1 })).toEqual([first]);
+    expect(await readCandidates(handle.sql, { limit: 1, after: first.jobId })).toEqual([second]);
+    expect(await readCandidates(handle.sql, { after: second.jobId })).toEqual([]);
+  });
+
   test('a connection the person took back is not read again', async () => {
     const { handle, jobs } = fixture();
     const chase = await waitingChase();

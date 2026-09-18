@@ -54,6 +54,16 @@ export const REPLY_POLL_CRON = `*/${Math.max(1, Math.round(REPLY_POLL_SECONDS / 
 /** The connector refuses a larger read; this is its ceiling, not a choice. */
 export const REPLY_READ_LIMIT = 50;
 
+/** How many chases one query asks for. A pass turns as many pages as it needs. */
+export const REPLY_CANDIDATE_PAGE = 200;
+
+/**
+ * A ceiling on the pages one pass will turn, so a query that somehow stops
+ * making progress ends the pass instead of running forever. At the page size
+ * above this is forty thousand chases, which is far past anything real.
+ */
+export const REPLY_MAX_PAGES = 200;
+
 /** One message, as little of it as deciding needs. No body is read here. */
 export type ReplyMessage = {
   messageId: string;
@@ -208,7 +218,15 @@ export function candidatesFrom(rows: readonly CandidateRow[]): ReplyCandidate[] 
  * they changed rather than by whether some registry still happens to hold a
  * connector for it — a mailbox nobody may read is not read.
  */
-export async function readCandidates(sql: Sql, limit = 200): Promise<ReplyCandidate[]> {
+export async function readCandidates(
+  sql: Sql,
+  options: { after?: string; limit?: number } = {},
+): Promise<ReplyCandidate[]> {
+  const limit = options.limit ?? REPLY_CANDIDATE_PAGE;
+  // Keyset, not offset: the pass walks job ids upward and asks for what comes
+  // after the last one it read, so a chase settling mid-pass cannot shuffle a
+  // later one into a page that has already gone by.
+  const after = options.after ?? '';
   const rows = await sql`
     select j.id as job_id, j.space_id, j.constraints, t.id as trigger_id, t.spec,
       min(a.resolved_at) as first_send_at
@@ -220,6 +238,7 @@ export async function readCandidates(sql: Sql, limit = 200): Promise<ReplyCandid
       join action a on a.job_id = j.id and a.status = 'succeeded'
         and a.kind in ('email.send', 'test.send') and a.resolved_at is not null
     where j.state not in ('completed', 'failed', 'cancelled')
+      and (${after} = '' or j.id > ${after})
     group by j.id, j.space_id, j.constraints, t.id, t.spec
     order by j.id
     limit ${limit}`;
@@ -329,6 +348,8 @@ export type ReplyPollerDeps = {
   triggers: TriggerService;
   /** How to read one candidate's mailbox. Production reads the connector. */
   mailboxFor: (candidate: ReplyCandidate) => ReplyMailbox;
+  /** How many chases one query asks for. Tests use a small one to turn pages. */
+  pageSize?: number;
 };
 
 /**
@@ -378,19 +399,30 @@ export class CompanyReplyPoller {
 
   /** One pass. Returns the number of new events, for tests and for logs. */
   async runOnce(): Promise<ReplyPass> {
+    const limit = this.deps.pageSize ?? REPLY_CANDIDATE_PAGE;
     let delivered = 0;
     let failed = 0;
-    for (const candidate of await readCandidates(this.deps.sql)) {
-      // One chase that cannot be read is one chase missing from this pass, not
-      // a failed pass. A space deleted or a credential pulled between the query
-      // and the read throws here, and every other person waiting on a reply is
-      // owed their turn regardless. The same judgement the scan makes about a
-      // message the extractor cannot read.
-      try {
-        delivered += await deliverReplies(this.deps, candidate);
-      } catch {
-        failed += 1;
+    let after: string | undefined;
+    // Every waiting chase, not the first page of them. A person whose job id
+    // sorts late is owed their reply as much as anyone.
+    for (let page = 0; page < REPLY_MAX_PAGES; page += 1) {
+      const batch = await readCandidates(this.deps.sql, { after, limit });
+      if (batch.length === 0) break;
+      for (const candidate of batch) {
+        // One chase that cannot be read is one chase missing from this pass,
+        // not a failed pass. A space deleted or a credential pulled between the
+        // query and the read throws here, and every other person waiting on a
+        // reply is owed their turn regardless. The same judgement the scan
+        // makes about a message the extractor cannot read.
+        try {
+          delivered += await deliverReplies(this.deps, candidate);
+        } catch {
+          failed += 1;
+        }
       }
+      if (batch.length < limit) break;
+      after = batch.at(-1)?.jobId;
+      if (!after) break;
     }
     return { delivered, failed };
   }
