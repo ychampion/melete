@@ -257,8 +257,11 @@ and quiet stays connected.
 
 Tailscale states the requesting user on a proxied request. Melete does not read
 it: the sign-in is a password and a device cookie, and nothing about the tailnet
-grants an account. The web server strips those headers from any request that did
-not come from the node, so a browser cannot state one either.
+grants an account. The web server removes every `Tailscale-` header from every
+request before it reaches the API, whichever socket it arrived on. Serve
+rewrites the fixed set of names it owns and passes any other `Tailscale-`
+header on as the browser sent it, so arriving through the node is not evidence
+that the node wrote one.
 
 Treating a tailnet identity as a sign-in is a possible later option. It would
 mean deciding which tailnet user maps to which account, and what happens when a

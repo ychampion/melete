@@ -494,7 +494,12 @@ describe('same-origin API proxy', () => {
  */
 describe('a trusted upstream in front of the web server', () => {
   let api: ReturnType<typeof Bun.serve>;
-  let seen: { clientAddress: string | null; identity: string | null; forwarded: string | null };
+  let seen: {
+    clientAddress: string | null;
+    identity: string | null;
+    invented: string | null;
+    forwarded: string | null;
+  };
   const apiOrigin = () => `http://127.0.0.1:${api.port}`;
   /** Two events three seconds apart, then held open, as a job stream is. */
   const EVENT_GAP_MS = 3000;
@@ -516,6 +521,8 @@ describe('a trusted upstream in front of the web server', () => {
         seen = {
           clientAddress: request.headers.get('x-melete-client-address'),
           identity: request.headers.get('tailscale-user-login'),
+          // A name Serve does not rewrite, so a browser could have written it.
+          invented: request.headers.get('tailscale-account'),
           forwarded: request.headers.get('x-forwarded-for'),
         };
         if (new URL(request.url).pathname !== '/events') return Response.json(seen);
@@ -626,11 +633,19 @@ describe('a trusted upstream in front of the web server', () => {
     }
   });
 
-  test('an identity header from the upstream is passed on unchanged', async () => {
+  test('an identity header from the upstream does not reach the API either', async () => {
+    // Serve rewrites the five names it owns and leaves every other
+    // `Tailscale-` header a browser invents in place, so a name from that
+    // connection is not evidence that the node wrote it. Nothing here reads
+    // one, so nothing here forwards one.
     const web = serverWith('127.0.0.1');
     try {
-      const result = await ask(web, { 'tailscale-user-login': 'owner@example.test' });
-      expect(result.identity).toBe('owner@example.test');
+      const result = await ask(web, {
+        'tailscale-user-login': 'owner@example.test',
+        'tailscale-account': 'owner',
+      });
+      expect(result.identity).toBeNull();
+      expect(result.invented).toBeNull();
     } finally {
       web.stop(true);
     }

@@ -464,10 +464,12 @@ Reaching the sign-in page is not signing in. The password, the per-address and
 per-account limits, and the device cookie apply to a tailnet peer as they apply
 to any other browser. Tailscale states the requesting user on a proxied
 request; the service reads no such header as identity, and the web server
-removes them from any request whose socket peer is not the node named in
-`MELETE_WEB_TRUSTED_UPSTREAM`. The address in `X-Forwarded-For` is believed on
-that one connection and from nowhere else, so a browser cannot choose the
-bucket its sign-in attempts are counted in.
+removes every `Tailscale-` header from every request before the API sees it,
+whichever socket it arrived on, because Serve rewrites only the names it owns
+and forwards the rest as the browser sent them. The address in
+`X-Forwarded-For` is believed on a connection from the node named in
+`MELETE_WEB_TRUSTED_UPSTREAM` and from nowhere else, so a browser cannot choose
+the bucket its sign-in attempts are counted in.
 
 What this leaves in place: every device on the tailnet can open the address
 unless the tailnet policy file restricts the node, and a peer that reaches it is

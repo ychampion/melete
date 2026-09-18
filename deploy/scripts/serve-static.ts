@@ -52,8 +52,15 @@ export const CLIENT_ADDRESS_HEADER = 'x-melete-client-address';
 /**
  * Identity headers a Tailscale node writes on a request it proxies. They are
  * not a sign-in here: password and device cookie remain the sign-in, and the
- * API reads none of these. They are stripped from every request that did not
- * come from the trusted upstream, so a browser cannot state one to the API.
+ * API reads none of these. They are stripped from every request, whatever
+ * socket it arrived on, so nothing behind this server can mistake one for a
+ * claim the installation has checked.
+ *
+ * Arriving from the trusted upstream is not evidence that the upstream wrote
+ * them. Serve rewrites the fixed set of names it owns and passes every other
+ * `Tailscale-` header on as the browser sent it, so a browser chooses the
+ * rest. The whole prefix goes rather than the names that happen to be
+ * rewritten today.
  */
 const IDENTITY_HEADER_PREFIX = 'tailscale-';
 
@@ -71,12 +78,6 @@ const IDENTITY_HEADER_PREFIX = 'tailscale-';
 export function forwardedAddress(header: string | null): string | null {
   if (header === null || header.includes(',')) return null;
   return plainAddress(header);
-}
-
-/** Whether anything upstream-shaped is present worth asking about the peer for. */
-function hasIdentityHeader(headers: Headers): boolean {
-  for (const name of headers.keys()) if (name.startsWith(IDENTITY_HEADER_PREFIX)) return true;
-  return false;
 }
 
 function parseOrigin(value: string): string {
@@ -141,22 +142,21 @@ async function proxyApi(
 
   // One question about the socket, asked before the forwarding headers are
   // dropped: is this connection from the upstream the deployment named? Only
-  // then does its X-Forwarded-For state the browser's address, and only then
-  // are its identity headers something other than a browser's invention.
+  // then does its X-Forwarded-For state the browser's address.
   const stated = forwardedAddress(request.headers.get('x-forwarded-for'));
-  const fromUpstream =
-    peer !== undefined && (stated !== null || hasIdentityHeader(request.headers))
-      ? await upstream(peer)
-      : false;
-  const clientAddress = fromUpstream && stated !== null ? stated : peer;
+  const clientAddress =
+    stated !== null && peer !== undefined && (await upstream(peer)) ? stated : peer;
 
   const headers = endToEndHeaders(request.headers);
   for (const name of [...headers.keys()]) {
-    if (name === 'host' || name === 'forwarded' || name.startsWith('x-forwarded-')) {
+    if (
+      name === 'host' ||
+      name === 'forwarded' ||
+      name.startsWith('x-forwarded-') ||
+      name.startsWith(IDENTITY_HEADER_PREFIX)
+    ) {
       headers.delete(name);
     }
-    // A browser can send these; only the trusted upstream's are its own.
-    if (!fromUpstream && name.startsWith(IDENTITY_HEADER_PREFIX)) headers.delete(name);
   }
   // The browser origin has been checked here. The API checks the internal
   // origin on the new connection and retains its own direct-request defense.
