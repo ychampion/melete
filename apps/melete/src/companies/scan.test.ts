@@ -205,6 +205,38 @@ describe('a message that tries to give the agent orders', () => {
   });
 });
 
+describe('an extractor that fails on one message', () => {
+  test('costs that message its items and nothing else its place on the map', async () => {
+    let seen = 0;
+    const flaky: CompanyExtractor = {
+      async extract(request) {
+        seen++;
+        // Every third message is unreadable, whatever it says.
+        if (seen % 3 === 0) throw new Error('provider refused');
+        return scriptedExtractor().extract(request);
+      },
+    };
+    const store = new MemoryCompanyStore();
+    const outcome = await runScan({
+      store,
+      mailbox: fixtureMailbox(fixtureMessages()),
+      extractor: flaky,
+      owner,
+      now,
+    });
+    const map = await store.map(owner, now);
+    expect(outcome.status).toBe('done');
+    expect(outcome.counts.extractor_failed).toBeGreaterThan(0);
+    expect(map.items.length).toBeGreaterThan(10);
+    // What survived is still admitted evidence, not a partial guess.
+    for (const item of map.items) {
+      const detail = await store.item(owner, item.id);
+      for (const evidence of item.evidence)
+        expect(evidenceHolds(detail?.message?.text ?? '', evidence)).toBe(true);
+    }
+  });
+});
+
 describe('a scan whose mailbox will not answer', () => {
   test('is recorded as failed, and leaves no half-written map', async () => {
     const store = new MemoryCompanyStore();

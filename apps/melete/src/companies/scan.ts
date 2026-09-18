@@ -100,15 +100,26 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       }[] = [];
       for (const message of group.candidates) {
         const text = texts.get(message.messageId) ?? messageText(message);
-        const items = await options.extractor.extract({
-          messageId: message.messageId,
-          companyName: group.name,
-          domain: group.domain,
-          from: message.from,
-          subject: message.subject,
-          receivedAt: message.receivedAt,
-          text,
-        });
+        // One message the extractor cannot read is one message missing from the
+        // map, not a failed scan. This is the same judgement the contract makes
+        // about a bad span: drop the one thing, count it, and keep the rest,
+        // because a person is better served by most of their companies than by
+        // an error where a map should be.
+        let items: Awaited<ReturnType<CompanyExtractor['extract']>> = [];
+        try {
+          items = await options.extractor.extract({
+            messageId: message.messageId,
+            companyName: group.name,
+            domain: group.domain,
+            from: message.from,
+            subject: message.subject,
+            receivedAt: message.receivedAt,
+            text,
+          });
+        } catch {
+          counts.extractor_failed = (counts.extractor_failed ?? 0) + 1;
+          continue;
+        }
         for (const candidate of items)
           proposed.push({
             candidate,
