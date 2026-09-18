@@ -6,9 +6,10 @@
  * puts the whole ledger back — which is why the counted figures and the shown
  * rows can never disagree.
  */
+
+import type { CompanyMapTotals } from '../experience/types.ts';
 import type { Filter } from './format.ts';
 import { money, sameFilter } from './format.ts';
-import type { CompanyMapTotals } from '../experience/types.ts';
 
 export type Total = {
   key: string;

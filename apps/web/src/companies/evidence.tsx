@@ -8,8 +8,8 @@
  * reading it is never shown the wrong words under a highlight.
  */
 
-import { messageDate } from './format.ts';
 import type { LedgerEvidence, LedgerMessage } from '../experience/types.ts';
+import { messageDate } from './format.ts';
 
 /** Does the text at this span read exactly as the quote claims? */
 export function holds(

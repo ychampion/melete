@@ -3,7 +3,12 @@
  * function of the contract's own fields, so what a person reads on a row can
  * always be traced back to what the service served.
  */
-import type { CompanyMap, LedgerDirection, LedgerItem, LedgerItemKind } from '../experience/types.ts';
+import type {
+  CompanyMap,
+  LedgerDirection,
+  LedgerItem,
+  LedgerItemKind,
+} from '../experience/types.ts';
 
 const DAY = 86_400_000;
 

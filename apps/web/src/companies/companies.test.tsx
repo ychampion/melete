@@ -10,11 +10,11 @@
  */
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { Company, CompanyMapTotals, LedgerItem, LedgerMessage } from '../experience/types.ts';
 import { EvidenceText, holds, MessageCard, segment } from './evidence.tsx';
 import { type Filter, inOrder, matches, money, whenDue } from './format.ts';
 import { EmptyLedger, LedgerRow } from './Ledger.tsx';
 import { TotalsRow } from './Totals.tsx';
-import type { Company, CompanyMapTotals, LedgerItem, LedgerMessage } from '../experience/types.ts';
 
 const NOW = Date.parse('2026-09-18T09:00:00.000Z');
 

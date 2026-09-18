@@ -6,6 +6,13 @@
  */
 import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Skeleton } from '../design/primitives.tsx';
+import type {
+  Company,
+  Confidence,
+  LedgerDetail,
+  LedgerItem,
+  ScanProgress,
+} from '../experience/types.ts';
 import { MessageCard } from './evidence.tsx';
 import {
   amountWords,
@@ -16,7 +23,6 @@ import {
   STATUS_WORDS,
   whenDue,
 } from './format.ts';
-import type { Company, Confidence, LedgerDetail, LedgerItem, ScanProgress } from '../experience/types.ts';
 
 const CONFIDENCE_WORDS: Record<Confidence, string> = {
   high: 'Read with high confidence',
