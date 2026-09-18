@@ -1,10 +1,14 @@
 import { describe, expect, test } from 'bun:test';
+import { dirname } from 'node:path';
 import {
   certDomain,
   DEFAULT_NODE_NAME,
+  ENV_FILE_MODE,
+  type FileReplacer,
   originReport,
   readStatus,
   recreateCommand,
+  replaceFile,
   STATUS_COMMAND,
   tailnetOrigin,
   tailscaleNodeName,
@@ -212,6 +216,105 @@ describe('the node name configure.ts settles', () => {
     expect(notes).toContain('MELETE_WEB_ORIGIN');
     // The key is never echoed, so nothing here can carry one.
     expect(notes).not.toMatch(/tskey-/i);
+  });
+});
+
+describe('writing deploy/.env back', () => {
+  const PATH = 'deploy/.env';
+  /** The file this replaces holds the key that decrypts the installation. */
+  const ORIGINAL = ['MELETE_MASTER_KEY=kept', 'MELETE_WEB_ORIGIN=', ''].join('\n');
+  const NEXT = ['MELETE_MASTER_KEY=kept', 'MELETE_WEB_ORIGIN=https://melete.ts.net', ''].join('\n');
+
+  /**
+   * A writer and a renamer over a map of paths, so the order of the two and
+   * what stood at each path in between are both visible to the test.
+   */
+  function disk(options: { failWrite?: boolean; failRename?: boolean } = {}) {
+    const files: Record<string, string> = { [PATH]: ORIGINAL };
+    const attempted: { path: string; mode: number }[] = [];
+    const renamed: [string, string][] = [];
+    const removed: string[] = [];
+    let atRename: { original: string | undefined; temporary: string | undefined } | null = null;
+    const replacer: FileReplacer = {
+      write: async (path, text, mode) => {
+        attempted.push({ path, mode });
+        if (options.failWrite) throw new Error('no space left on device');
+        files[path] = text;
+      },
+      rename: async (from, to) => {
+        atRename = { original: files[to], temporary: files[from] };
+        if (options.failRename) throw new Error('rename refused');
+        renamed.push([from, to]);
+        files[to] = files[from] ?? '';
+        delete files[from];
+      },
+      remove: async (path) => {
+        removed.push(path);
+        delete files[path];
+      },
+    };
+    return {
+      replacer,
+      files,
+      attempted,
+      renamed,
+      removed,
+      rename: () => atRename as { original?: string; temporary?: string } | null,
+      /** The one temporary the run asked to write, whether the write succeeded or not. */
+      temporary: () => {
+        const [first] = attempted;
+        if (first === undefined) throw new Error('the run wrote nothing');
+        return first;
+      },
+    };
+  }
+
+  test('leaves the original whole until the rename puts the new text in its place', async () => {
+    const it = disk();
+    await replaceFile(PATH, NEXT, it.replacer);
+    // The rename is what changes the file: until it runs the original still
+    // reads as it did, so an interrupted run cannot leave an empty deploy/.env.
+    expect(it.rename()?.original).toBe(ORIGINAL);
+    expect(it.rename()?.temporary).toBe(NEXT);
+    expect(it.renamed).toEqual([[it.temporary().path, PATH]]);
+    expect(it.files[PATH]).toBe(NEXT);
+  });
+
+  test('writes the temporary beside the original, with the same mode', async () => {
+    const it = disk();
+    await replaceFile(PATH, NEXT, it.replacer);
+    expect(it.attempted).toHaveLength(1);
+    const temporary = it.temporary().path;
+    // Same directory, or the rename would cross a filesystem and not be one
+    // step; the mode is the file's, so the key is never briefly readable.
+    expect(dirname(temporary)).toBe(dirname(PATH));
+    expect(temporary).not.toBe(PATH);
+    expect(it.temporary().mode).toBe(ENV_FILE_MODE);
+    expect(ENV_FILE_MODE).toBe(0o600);
+    expect(it.files[temporary]).toBeUndefined();
+  });
+
+  test('a failed write leaves the original intact and renames nothing', async () => {
+    const it = disk({ failWrite: true });
+    await expect(replaceFile(PATH, NEXT, it.replacer)).rejects.toThrow('no space left on device');
+    expect(it.files[PATH]).toBe(ORIGINAL);
+    expect(it.renamed).toEqual([]);
+    expect(it.removed).toEqual([it.temporary().path]);
+  });
+
+  test('a failed rename leaves the original intact and clears the temporary', async () => {
+    const it = disk({ failRename: true });
+    await expect(replaceFile(PATH, NEXT, it.replacer)).rejects.toThrow('rename refused');
+    expect(it.files[PATH]).toBe(ORIGINAL);
+    expect(it.removed).toEqual([it.temporary().path]);
+    expect(it.files[it.temporary().path]).toBeUndefined();
+  });
+
+  test('two runs at once do not write to the one temporary path', async () => {
+    const it = disk();
+    await replaceFile(PATH, NEXT, it.replacer);
+    await replaceFile(PATH, NEXT, it.replacer);
+    expect(new Set(it.attempted.map((write) => write.path)).size).toBe(2);
   });
 });
 

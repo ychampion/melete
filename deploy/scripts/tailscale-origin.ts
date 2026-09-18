@@ -21,10 +21,10 @@
  * change is stated, and applying it stays a decision.
  *
  * Every judgement is a pure function over the recorded JSON and over the file's
- * text, and the command runner is injected, so the tests cover the whole path
- * without Docker and without a tailnet.
+ * text, and the command runner and the three filesystem steps are injected, so
+ * the tests cover the whole path without Docker and without a tailnet.
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { CommandOutput } from '../../apps/melete/src/runtime/docker-engine.ts';
 
@@ -206,6 +206,66 @@ export function originReport(status: TailscaleStatus, envFile: string): OriginRe
   };
 }
 
+/** The mode deploy/.env is created with, and the mode its replacement carries. */
+export const ENV_FILE_MODE = 0o600;
+
+/**
+ * The three filesystem steps `replaceFile` takes, injected so the order of them
+ * is something a test can watch without a disk that can be made to fail.
+ *
+ * `write` must refuse a path that already exists, so two runs at once cannot
+ * share a half-written temporary.
+ */
+export type FileReplacer = {
+  write: (path: string, text: string, mode: number) => Promise<void>;
+  rename: (from: string, to: string) => Promise<void>;
+  remove: (path: string) => Promise<void>;
+};
+
+/**
+ * Put `text` at `path`, leaving whatever is already there whole until it does.
+ *
+ * deploy/.env holds MELETE_MASTER_KEY, without which the installation cannot
+ * read its own stored credentials. Writing over it in place truncates it first,
+ * so a run interrupted between the truncation and the write — a killed
+ * terminal, a full disk, a lost host — would leave the key gone and no copy of
+ * it anywhere. The new text goes to a temporary file beside the original
+ * instead, with the same mode so the key is never briefly readable by anyone
+ * else, and one rename puts it in place. Until that rename the original is
+ * untouched; after it the file is either wholly the old text or wholly the new.
+ * The temporary is in the same directory because a rename is one step only
+ * within a filesystem. A failed write or rename takes the temporary away and
+ * reports, rather than leaving a stray file holding the key.
+ */
+export async function replaceFile(
+  path: string,
+  text: string,
+  file: FileReplacer,
+  mode: number = ENV_FILE_MODE,
+): Promise<void> {
+  const temporary = `${path}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  try {
+    await file.write(temporary, text, mode);
+    await file.rename(temporary, path);
+  } catch (error) {
+    await file.remove(temporary).catch(() => {});
+    throw error;
+  }
+}
+
+/** The replacer over the real filesystem. `wx` is what refuses an existing path. */
+export const fileReplacer: FileReplacer = {
+  write: async (path, text, mode) => {
+    await writeFile(path, text, { flag: 'wx', mode });
+  },
+  rename: async (from, to) => {
+    await rename(from, to);
+  },
+  remove: async (path) => {
+    await rm(path, { force: true });
+  },
+};
+
 export async function readStatus(run: CommandRunner): Promise<TailscaleStatus> {
   const result = await run(STATUS_COMMAND);
   if (result.code !== 0)
@@ -237,7 +297,7 @@ if (import.meta.main) {
     }),
     envFile,
   );
-  if (report.text !== undefined) await writeFile(envPath, report.text, { mode: 0o600 });
+  if (report.text !== undefined) await replaceFile(envPath, report.text, fileReplacer);
   for (const line of report.lines) process.stdout.write(`${line}\n`);
   process.exit(report.found ? 0 : 1);
 }
