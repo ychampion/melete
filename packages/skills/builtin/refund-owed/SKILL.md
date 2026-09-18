@@ -3,8 +3,9 @@ name: refund-owed
 description: Get back money a company has already agreed it owes, in the person's own words.
 triggers:
   - refund-owed
+  - refund
   - owed a refund
-  - refund has not arrived
+  - owe me a refund
 tools:
   - email.draft
   - email.send
