@@ -129,6 +129,15 @@ describe('the request the provider would receive', () => {
     expect((format?.schema as { required?: string[] })?.required).toEqual(['items']);
   });
 
+  test('asks the provider not to retain the mail it is shown', async () => {
+    // Every scanned message goes to the provider in full, and this is somebody's
+    // whole inbox rather than one pasted email. Default retention is not a
+    // decision anybody made about that.
+    const seen: Seen[] = [];
+    await withGateway(responder(oneItem, seen), (gateway) => gateway.extractor.extract(request));
+    expect(seen[0]?.body.store).toBe(false);
+  });
+
   test('offers the model no tools at all', async () => {
     const seen: Seen[] = [];
     await withGateway(responder(oneItem, seen), (gateway) => gateway.extractor.extract(request));

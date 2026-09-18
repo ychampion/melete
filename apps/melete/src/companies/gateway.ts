@@ -121,6 +121,11 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
       tokens.add(token);
       const input = extractionInput(request);
       // No tools, and the schema is the only shape the reply may take.
+      //
+      // `store: false` because this is somebody's whole inbox, message by
+      // message, not one email they chose to paste. Asking a provider to keep
+      // none of it is the least that can be done about mail the person never
+      // decided to hand over, and it costs one field.
       const body =
         protocol === 'responses'
           ? {
@@ -130,6 +135,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
                 { role: 'user', content: input },
               ],
               max_output_tokens: EXTRACTION_LIMITS.output_tokens,
+              store: false,
               text: {
                 format: {
                   type: 'json_schema',
@@ -146,6 +152,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
                 { role: 'user', content: input },
               ],
               max_tokens: EXTRACTION_LIMITS.output_tokens,
+              store: false,
               response_format: {
                 type: 'json_schema',
                 json_schema: {
