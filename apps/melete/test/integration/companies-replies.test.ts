@@ -68,6 +68,8 @@ const MESSAGE = 'Your order 7781 was cancelled.\nWe will refund you within 5-7 w
 const QUOTE = 'We will refund you within 5-7 working days.';
 const QUOTE_AT = MESSAGE.indexOf(QUOTE);
 const SENT_AT = '2026-09-18T09:00:00.000Z';
+/** Every chase here writes through the scripted connector, so every read says so. */
+const TEST_SENDS = { includeTestSends: true } as const;
 
 function company(): Company {
   return {
@@ -175,7 +177,7 @@ function poller(messages: readonly ReplyMessage[]) {
 
 function pollerWith(mailboxFor: ReplyPollerDeps['mailboxFor']) {
   const { handle } = fixture();
-  return new CompanyReplyPoller({ sql: handle.sql, triggers, mailboxFor });
+  return new CompanyReplyPoller({ sql: handle.sql, triggers, mailboxFor, ...TEST_SENDS });
 }
 
 withDb('noticing that a company wrote back', () => {
@@ -217,7 +219,7 @@ withDb('noticing that a company wrote back', () => {
   test('a chase that has written and is waiting is what the poller looks for', async () => {
     const { handle } = fixture();
     const chase = await waitingChase();
-    const candidates = await readCandidates(handle.sql);
+    const candidates = await readCandidates(handle.sql, TEST_SENDS);
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({
       jobId: chase.jobId,
@@ -258,7 +260,7 @@ withDb('noticing that a company wrote back', () => {
     // Polls two and three see the same message sitting in the mailbox, whether
     // the whole pass runs or the integrator drives one candidate directly.
     expect(await again.runOnce()).toEqual({ delivered: 0, failed: 0 });
-    const [candidate] = await readCandidates(handle.sql);
+    const [candidate] = await readCandidates(handle.sql, TEST_SENDS);
     if (!candidate) throw new Error('Expected the chase to still be a candidate');
     expect(
       await deliverReplies(
@@ -304,7 +306,7 @@ withDb('noticing that a company wrote back', () => {
     const { jobs, handle } = fixture();
     const broken = await waitingChase();
     const healthy = await waitingChase();
-    expect(await readCandidates(handle.sql)).toHaveLength(2);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(2);
 
     // The space was deleted, or the credential was pulled, between the query
     // and the read. One chase is no longer readable; the rest still are.
@@ -338,13 +340,14 @@ withDb('noticing that a company wrote back', () => {
   test('every waiting chase is polled, however many pages it takes', async () => {
     const { handle } = fixture();
     const chases = [await waitingChase(), await waitingChase(), await waitingChase()];
-    expect(await readCandidates(handle.sql)).toHaveLength(3);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(3);
 
     // A page smaller than the work, so the pass has to turn the page twice.
     const looked: string[] = [];
     const pass = await new CompanyReplyPoller({
       sql: handle.sql,
       triggers,
+      ...TEST_SENDS,
       pageSize: 2,
       mailboxFor: (candidate) => {
         looked.push(candidate.jobId);
@@ -361,32 +364,49 @@ withDb('noticing that a company wrote back', () => {
     const { handle } = fixture();
     await waitingChase();
     await waitingChase();
-    const all = await readCandidates(handle.sql);
+    const all = await readCandidates(handle.sql, TEST_SENDS);
     expect(all).toHaveLength(2);
     const [first, second] = all;
     if (!first || !second) throw new Error('Expected two chases');
     expect(first.jobId < second.jobId).toBe(true);
-    expect(await readCandidates(handle.sql, { limit: 1 })).toEqual([first]);
-    expect(await readCandidates(handle.sql, { limit: 1, after: first.jobId })).toEqual([second]);
-    expect(await readCandidates(handle.sql, { after: second.jobId })).toEqual([]);
+    expect(await readCandidates(handle.sql, { ...TEST_SENDS, limit: 1 })).toEqual([first]);
+    expect(
+      await readCandidates(handle.sql, { ...TEST_SENDS, limit: 1, after: first.jobId }),
+    ).toEqual([second]);
+    expect(await readCandidates(handle.sql, { ...TEST_SENDS, after: second.jobId })).toEqual([]);
+  });
+
+  test('a scripted send is invisible unless test connections are turned on', async () => {
+    const { handle } = fixture();
+    const chase = await waitingChase();
+    // A deployment without the test connector has no business looking for mail
+    // sent through it, so by default the query does not mention it at all.
+    expect(await readCandidates(handle.sql)).toEqual([]);
+    expect(await poller([reply()]).runOnce()).toEqual({ delivered: 1, failed: 0 });
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(1);
+
+    // A real send is found either way.
+    await handle.sql`update action set kind = 'email.send' where job_id = ${chase.jobId}`;
+    expect(await readCandidates(handle.sql)).toHaveLength(1);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(1);
   });
 
   test('a connection the person took back is not read again', async () => {
     const { handle, jobs } = fixture();
     const chase = await waitingChase();
-    expect(await readCandidates(handle.sql)).toHaveLength(1);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(1);
 
     for (const status of ['revoked', 'disabled', 'error']) {
       await handle.sql`update connection set status = ${status} where id = ${connectionId}`;
       // Revocation is the person saying stop. Whether the registry still holds
       // a connector for it is not the question; the row is, and the row says no.
-      expect(await readCandidates(handle.sql)).toEqual([]);
+      expect(await readCandidates(handle.sql, TEST_SENDS)).toEqual([]);
       expect(await poller([reply()]).runOnce()).toEqual({ delivered: 0, failed: 0 });
       expect((await jobs.get(chase.jobId)).state).toBe('waiting_for_event_or_time');
     }
 
     await handle.sql`update connection set status = 'active' where id = ${connectionId}`;
-    expect(await readCandidates(handle.sql)).toHaveLength(1);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(1);
   });
 
   test('a connection belonging to another space is not this chase to poll', async () => {
@@ -399,14 +419,14 @@ withDb('noticing that a company wrote back', () => {
       gitPath: `/spaces/${elsewhere}`,
     });
     await handle.sql`update connection set space_id = ${elsewhere} where id = ${connectionId}`;
-    expect(await readCandidates(handle.sql)).toEqual([]);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toEqual([]);
   });
 
   test('a finished chase is left alone', async () => {
     const { jobs, handle } = fixture();
     const chase = await waitingChase();
     await jobs.cancel(chase.jobId, 'the person said stop');
-    expect(await readCandidates(handle.sql)).toHaveLength(0);
+    expect(await readCandidates(handle.sql, TEST_SENDS)).toHaveLength(0);
     expect(await poller([reply()]).runOnce()).toEqual({ delivered: 0, failed: 0 });
   });
 });

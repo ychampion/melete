@@ -126,6 +126,11 @@ export function isReplyFrom(
 // what to look at
 // --------------------------------------------------------------------------
 
+/** A message that really left, in a deployment that really sends. */
+const PRODUCTION_SEND_KINDS = ['email.send'];
+/** The same, plus the scripted connector's, where that connector is built. */
+const SEND_KINDS = [...PRODUCTION_SEND_KINDS, 'test.send'];
+
 export type CandidateRow = {
   job_id: unknown;
   space_id: unknown;
@@ -174,13 +179,17 @@ export function candidatesFrom(rows: readonly CandidateRow[]): ReplyCandidate[] 
  */
 export async function readCandidates(
   sql: Sql,
-  options: { after?: string; limit?: number } = {},
+  options: { after?: string; limit?: number; includeTestSends?: boolean } = {},
 ): Promise<ReplyCandidate[]> {
   const limit = options.limit ?? REPLY_CANDIDATE_PAGE;
   // Keyset, not offset: the pass walks job ids upward and asks for what comes
   // after the last one it read, so a chase settling mid-pass cannot shuffle a
   // later one into a page that has already gone by.
   const after = options.after ?? '';
+  // A deployment without the scripted connector has no business looking for
+  // mail sent through it, so the test kind is named only where it exists. The
+  // flag is the same one that decides whether the connector is built at all.
+  const kinds = options.includeTestSends ? SEND_KINDS : PRODUCTION_SEND_KINDS;
   const rows = await sql`
     select j.id as job_id, j.space_id, j.constraints, t.id as trigger_id, t.spec,
       min(a.resolved_at) as first_send_at
@@ -190,7 +199,7 @@ export async function readCandidates(
       join connection c on c.id = t.spec->>'connection_id'
         and c.space_id = j.space_id and c.status = 'active'
       join action a on a.job_id = j.id and a.status = 'succeeded'
-        and a.kind in ('email.send', 'test.send') and a.resolved_at is not null
+        and a.kind = any(${kinds}) and a.resolved_at is not null
     where j.state not in ('completed', 'failed', 'cancelled')
       and (${after} = '' or j.id > ${after})
     group by j.id, j.space_id, j.constraints, t.id, t.spec
@@ -247,6 +256,12 @@ export type ReplyPollerDeps = {
   mailboxFor: (candidate: ReplyCandidate) => ReplyMailbox;
   /** How many chases one query asks for. Tests use a small one to turn pages. */
   pageSize?: number;
+  /**
+   * Whether mail sent through the scripted connector counts as a first message.
+   * The service passes `MELETE_ENABLE_TEST_CONNECTOR`, the same flag that
+   * decides whether that connector is built at all.
+   */
+  includeTestSends?: boolean;
 };
 
 /**
@@ -303,7 +318,11 @@ export class CompanyReplyPoller {
     // Every waiting chase, not the first page of them. A person whose job id
     // sorts late is owed their reply as much as anyone.
     for (let page = 0; page < REPLY_MAX_PAGES; page += 1) {
-      const batch = await readCandidates(this.deps.sql, { after, limit });
+      const batch = await readCandidates(this.deps.sql, {
+        after,
+        limit,
+        includeTestSends: this.deps.includeTestSends,
+      });
       if (batch.length === 0) break;
       for (const candidate of batch) {
         // One chase that cannot be read is one chase missing from this pass,

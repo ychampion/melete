@@ -602,6 +602,8 @@ export async function bootstrap(
           companyReplies = new CompanyReplyPoller({
             sql: handle.sql,
             triggers,
+            // The scripted connector's sends count only where it is built.
+            includeTestSends: env.MELETE_ENABLE_TEST_CONNECTOR,
             mailboxFor: (candidate) =>
               connectorReplyMailbox({
                 registry: connectors,
