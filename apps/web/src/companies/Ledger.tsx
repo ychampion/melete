@@ -205,11 +205,11 @@ export function EmptyLedger({
       : 0;
   return (
     <div className="ledger-empty">
-      <span className="ledger-empty-title">Nothing from your companies yet</span>
+      <span className="ledger-empty-title">No companies found yet</span>
       <p className="ledger-empty-body">
-        Connect a mailbox and Melete reads it: what each company takes from you every month, what it
-        owes you back, what renews next, whose price went up, whose trial ends this week, and who is
-        holding your data. Every figure opens the sentence in the email it came from.
+        Connect a mailbox and Melete reads it: what each company takes every month, what it owes
+        back, what renews next, whose price went up, whose trial ends this week, and who is holding
+        data. Every figure opens the sentence in the email it came from.
       </p>
       {scanning ? (
         <div className="scan" role="status">
@@ -226,7 +226,7 @@ export function EmptyLedger({
         </div>
       ) : (
         <Button icon="search" onClick={onScan}>
-          Scan my inbox
+          Scan the inbox
         </Button>
       )}
       {error ? <span className="ledger-empty-error">{error}</span> : null}

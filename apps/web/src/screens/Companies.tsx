@@ -188,7 +188,7 @@ export function CompaniesScreen() {
           <div className="col" style={{ gap: 6 }}>
             <h1>Companies</h1>
             <div style={{ fontSize: 14, color: 'var(--muted)' }}>
-              Everything the companies in your life take, owe and promised.
+              What each company takes, what it owes back, and what it promised.
             </div>
           </div>
           {map && !nothingFound ? (

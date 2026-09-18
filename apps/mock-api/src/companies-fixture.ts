@@ -587,6 +587,161 @@ const DRAFTS: Draft[] = [
       },
     ],
   },
+  {
+    company: {
+      name: 'Halliwell & Fox',
+      domain: 'halliwellfox.example',
+      first_seen_days: -140,
+      last_seen_days: -12,
+      message_count: 27,
+    },
+    messages: [
+      {
+        key: 'halliwell-invoice',
+        subject: 'Invoice 0147 received',
+        from: 'Priya Nadkarni <priya@halliwellfox.example>',
+        received_days: -12,
+        text: [
+          'Hi Jamie,',
+          '',
+          'Invoice 0147 for £1,150.00 has gone through to accounts and is scheduled for our 22 September payment run.',
+          '',
+          'One thing for next time: our terms are 14 days from receipt, so anything you send before the 8th of a month lands in that month.',
+          '',
+          'Thanks again for turning the brand sheet round so quickly.',
+          '',
+          'Priya',
+        ].join('\n'),
+      },
+    ],
+    items: [
+      {
+        message: 'halliwell-invoice',
+        kind: 'invoice_unpaid',
+        direction: 'owed_to_you',
+        amount_minor: 115_000,
+        due_days: 4,
+        confidence: 'high',
+        playbook: 'unpaid-invoice',
+        summary: 'Invoice 0147 is in their 22 September payment run',
+        quotes: [
+          'Invoice 0147 for £1,150.00 has gone through to accounts and is scheduled for our 22 September payment run.',
+        ],
+      },
+      {
+        message: 'halliwell-invoice',
+        kind: 'promise',
+        direction: 'info',
+        due_days: 4,
+        confidence: 'medium',
+        summary: 'They pay 14 days from receipt, on a run on the 22nd',
+        quotes: ['our terms are 14 days from receipt'],
+      },
+    ],
+  },
+  {
+    company: {
+      name: 'Corvid Couriers',
+      domain: 'corvidcouriers.example',
+      first_seen_days: -76,
+      last_seen_days: -8,
+      message_count: 14,
+    },
+    messages: [
+      {
+        key: 'corvid-lost',
+        subject: 'About parcel CV-4471902',
+        from: 'Corvid Couriers <claims@corvidcouriers.example>',
+        received_days: -8,
+        text: [
+          'Dear Jamie Davis,',
+          '',
+          'We are sorry to say that we have been unable to locate parcel CV-4471902 and have now marked it as lost in transit.',
+          '',
+          'You may claim for the value of the contents up to £85.00, which is the cover on the service you paid for. Send us the invoice or receipt for the items and we will assess it.',
+          '',
+          'Accepted claims are paid within 14 days of acceptance.',
+          '',
+          'Corvid Couriers Claims',
+        ].join('\n'),
+      },
+    ],
+    items: [
+      {
+        message: 'corvid-lost',
+        kind: 'compensation',
+        direction: 'owed_to_you',
+        amount_minor: 8500,
+        due_days: 6,
+        confidence: 'high',
+        summary: 'They lost parcel CV-4471902 and owe up to £85 for the contents',
+        quotes: [
+          'You may claim for the value of the contents up to £85.00, which is the cover on the service you paid for.',
+        ],
+      },
+      {
+        message: 'corvid-lost',
+        kind: 'promise',
+        direction: 'info',
+        due_days: 6,
+        confidence: 'high',
+        summary: 'They pay an accepted claim within 14 days',
+        quotes: ['Accepted claims are paid within 14 days of acceptance.'],
+      },
+    ],
+  },
+  {
+    company: {
+      name: 'Thornbury Lettings',
+      domain: 'thornburylettings.example',
+      first_seen_days: -1020,
+      last_seen_days: -19,
+      message_count: 37,
+    },
+    messages: [
+      {
+        key: 'thornbury-deposit',
+        subject: 'End of tenancy at 14 Ashcombe Row',
+        from: 'Thornbury Lettings <tenancies@thornburylettings.example>',
+        received_days: -19,
+        text: [
+          'Dear Jamie,',
+          '',
+          'Thank you for returning the keys. The final inspection was carried out on 30 August and nothing was raised.',
+          '',
+          'Your deposit of £1,100.00 is held with the protection scheme and is returned within 10 working days of the final inspection, less any agreed deductions. No deductions apply here.',
+          '',
+          'We keep your tenancy file, including your identity and reference documents, for six years after the tenancy ends.',
+          '',
+          'Thornbury Lettings',
+        ].join('\n'),
+      },
+    ],
+    items: [
+      {
+        message: 'thornbury-deposit',
+        kind: 'deposit',
+        direction: 'owed_to_you',
+        amount_minor: 110_000,
+        due_days: -5,
+        confidence: 'high',
+        summary: 'The deposit on Ashcombe Row, five days past the date they gave',
+        quotes: [
+          'Your deposit of £1,100.00 is held with the protection scheme and is returned within 10 working days of the final inspection, less any agreed deductions.',
+        ],
+      },
+      {
+        message: 'thornbury-deposit',
+        kind: 'data_held',
+        direction: 'info',
+        confidence: 'high',
+        summary: 'They keep your tenancy file for six years after it ends',
+        quotes: [
+          'We keep your tenancy file, including your identity and reference documents, for six years after the tenancy ends.',
+        ],
+      },
+    ],
+  },
 ];
 
 /** Build the fixture, deriving every evidence span from the message it cites. */

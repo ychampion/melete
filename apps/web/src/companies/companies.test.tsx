@@ -268,10 +268,13 @@ test('an empty ledger explains what will appear and offers the one thing to pres
   const html = renderToStaticMarkup(
     <EmptyLedger scanning={false} progress={null} error={null} onScan={() => undefined} />,
   );
-  expect(html).toContain('Nothing from your companies yet');
+  expect(html).toContain('No companies found yet');
   expect(html).toContain('what renews next');
   expect(html).toContain('opens the sentence in the email it came from');
-  expect(html).toContain('Scan my inbox');
+  // Nothing on this screen assumes one kind of person behind the mailbox.
+  expect(html).not.toContain('your life');
+  expect(html).not.toContain('personal');
+  expect(html).toContain('Scan the inbox');
   expect(html).not.toContain('messages read');
 });
 
@@ -287,7 +290,7 @@ test('a scan in progress counts out loud and takes the button away', () => {
   expect(html).toContain('1,204 messages read');
   expect(html).toContain('7 found so far');
   expect(html).toContain('role="status"');
-  expect(html).not.toContain('Scan my inbox');
+  expect(html).not.toContain('Scan the inbox');
 });
 
 test('a scan that has started but said nothing yet still says it is going', () => {
@@ -295,7 +298,7 @@ test('a scan that has started but said nothing yet still says it is going', () =
     <EmptyLedger scanning progress={null} error={null} onScan={() => undefined} />,
   );
   expect(html).toContain('Starting');
-  expect(html).not.toContain('Scan my inbox');
+  expect(html).not.toContain('Scan the inbox');
 });
 
 /* ---------- the words on a figure ---------- */

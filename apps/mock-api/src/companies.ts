@@ -46,6 +46,10 @@ function askFor(item: FixtureItem, companyName: string, money: string): string {
       return `Cancel ${companyName} before the next payment.`;
     case 'renewal':
       return `Ask ${companyName} for a better price before this renews.`;
+    case 'deposit':
+      return `Ask ${companyName} to return the ${money} deposit they are holding.`;
+    case 'compensation':
+      return `Claim the ${money} back from ${companyName} for what they lost.`;
     default:
       return `Take this up with ${companyName} and hold them to what they said.`;
   }

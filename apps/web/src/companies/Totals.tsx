@@ -1,5 +1,5 @@
 /**
- * The head of the map: what every company in your life adds up to.
+ * The head of the map: what every company on it adds up to.
  *
  * Each figure is a control, not a caption. Pressing one filters the ledger
  * under it to the rows that figure was counted from, and pressing it again
@@ -100,7 +100,7 @@ export function TotalsRow({
 }) {
   const rows = totalsOf(totals, companies, currency);
   return (
-    <section className="totals" aria-label="What your companies add up to">
+    <section className="totals" aria-label="What these companies add up to">
       {rows.map((total) => {
         const on = total.filter !== null && sameFilter(total.filter, filter);
         return (

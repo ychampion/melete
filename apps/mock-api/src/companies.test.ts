@@ -76,6 +76,42 @@ test('the map counts promises in force and promises whose date has passed', asyn
   expect(totals.promises_lapsed).toBeGreaterThan(0);
 });
 
+test('the fixture is a freelancer’s inbox: two clients, the bills, and the things owed back', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const map = await mapOf(mock);
+  const of = (kind: string) => map.items.filter((item) => item.kind === kind);
+
+  // Two clients owing invoices, one already late and one not yet due.
+  const invoices = of('invoice_unpaid');
+  expect(invoices).toHaveLength(2);
+  expect(new Set(invoices.map((item) => item.company_id)).size).toBe(2);
+  expect(invoices.some((item) => Date.parse(item.due_at ?? '') < Date.now())).toBe(true);
+  expect(invoices.some((item) => Date.parse(item.due_at ?? '') > Date.now())).toBe(true);
+
+  // The things a person is owed back, each one a different shape of owing.
+  expect(of('refund_owed').length).toBeGreaterThan(0);
+  expect(of('deposit').length).toBeGreaterThan(0);
+  expect(of('compensation').length).toBeGreaterThan(0);
+  expect(of('wrong_charge').length).toBeGreaterThan(0);
+
+  // A refund that was promised and has not arrived: the promise lapsed.
+  const refund = of('refund_owed')[0];
+  if (!refund) throw new Error('the fixture has no refund');
+  expect(Date.parse(refund.due_at ?? '')).toBeLessThan(Date.now());
+
+  // What goes out every month, and a price rise on some of it.
+  expect(of('subscription').length).toBeGreaterThan(1);
+  expect(of('price_rise').length).toBeGreaterThan(0);
+  expect(of('trial_ending').length).toBeGreaterThan(0);
+  expect(of('renewal').length).toBeGreaterThan(0);
+
+  // Everything a company said it would do, from more than one company.
+  expect(new Set(of('promise').map((item) => item.company_id)).size).toBeGreaterThan(3);
+
+  // Every name is invented and every domain is reserved for examples.
+  for (const company of map.companies) expect(company.domain.endsWith('.example')).toBe(true);
+});
+
 test('every figure on the map opens a sentence that is word for word in its message', async () => {
   const mock = createMock({ speed: 0, experience: { seed: true } });
   const map = await mapOf(mock);
