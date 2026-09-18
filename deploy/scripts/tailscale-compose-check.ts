@@ -44,6 +44,10 @@ const WEB_TARGET = 'http://web:3000';
 /** A version tag, optionally pinned further by digest. Never a moving name. */
 const PINNED_IMAGE = /^tailscale\/tailscale:v\d+\.\d+\.\d+(?:@sha256:[0-9a-f]{64})?$/;
 const MOVING_TAG = /:(?:latest|stable|unstable)(?:@|$)/;
+/** A tmpfs mount option that gives the filesystem a size. Without one it has none. */
+const SIZED = /[:,]size=\d+[kmg]?(?:,|$)/i;
+/** The health listener's address, which must name the loopback interface. */
+const LOOPBACK_PORT = /^127\.0\.0\.1:\d+$/;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -154,6 +158,9 @@ export function checkTailscaleCompose(
     'the default node needs no /dev/net/tun and no NET_ADMIN; kernel mode is the separate opt-in file',
   );
 
+  const tmpfs = names(node.tmpfs);
+  const sized = (path: string) =>
+    tmpfs.some((entry) => entry.startsWith(`${path}:`) && SIZED.test(entry));
   say(
     'the node has bounded memory, processes and private temporary storage',
     typeof node.pids_limit === 'number' &&
@@ -161,9 +168,16 @@ export function checkTailscaleCompose(
       node.pids_limit <= 512 &&
       typeof node.mem_limit === 'string' &&
       /^(?:[1-4]g|[1-9]\d{1,3}m)$/.test(node.mem_limit) &&
-      names(node.tmpfs).some((entry) => entry.startsWith('/tmp:')) &&
-      names(node.tmpfs).some((entry) => entry.startsWith('/var/run:')),
-    'a read-only root still needs a private /tmp and a writable socket directory, and finite limits',
+      sized('/tmp') &&
+      sized('/var/run'),
+    'a read-only root still needs a private /tmp and a writable socket directory, each with a size',
+  );
+
+  say(
+    'the health endpoint answers inside the container only',
+    environment.TS_ENABLE_HEALTH_CHECK === 'true' &&
+      LOOPBACK_PORT.test(String(environment.TS_LOCAL_ADDR_PORT ?? '')),
+    'the listener defaults to every interface, which an edge peer reaches; pin it to 127.0.0.1',
   );
 
   say(

@@ -136,6 +136,45 @@ describe('the Tailscale deployment', () => {
     expect(failures(broken)).toContain('the node publishes nothing on a host interface');
   });
 
+  test('refuses a temporary filesystem without a size', () => {
+    // Read-only roots need these two writable, and a tmpfs with no size is as
+    // large as the host lets it be.
+    for (const tmpfs of [
+      ['/tmp:mode=1777', '/var/run:size=8m,mode=0755'],
+      ['/tmp:size=64m,mode=1777', '/var/run:mode=0755'],
+      ['/tmp', '/var/run'],
+    ]) {
+      const broken = mutation((node) => {
+        node.tmpfs = tmpfs;
+      });
+      expect(failures(broken), JSON.stringify(tmpfs)).toContain(
+        'the node has bounded memory, processes and private temporary storage',
+      );
+    }
+  });
+
+  test('refuses a health endpoint that answers anything but the container itself', () => {
+    // The default listener is [::]:9002, which every peer on the edge network
+    // can reach; the file pins loopback and says so, so the check holds it.
+    for (const value of [undefined, '0.0.0.0:9002', '[::]:9002', ':9002']) {
+      const broken = mutation((node) => {
+        const environment = { ...(node.environment as Record<string, string>) };
+        if (value === undefined) delete environment.TS_LOCAL_ADDR_PORT;
+        else environment.TS_LOCAL_ADDR_PORT = value;
+        node.environment = environment;
+      });
+      expect(failures(broken), String(value)).toContain(
+        'the health endpoint answers inside the container only',
+      );
+    }
+    const off = mutation((node) => {
+      const environment = { ...(node.environment as Record<string, string>) };
+      delete environment.TS_ENABLE_HEALTH_CHECK;
+      node.environment = environment;
+    });
+    expect(failures(off)).toContain('the health endpoint answers inside the container only');
+  });
+
   test('refuses kernel networking smuggled into the default file', () => {
     for (const change of [
       (node: Record<string, unknown>) => {

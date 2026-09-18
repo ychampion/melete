@@ -248,8 +248,10 @@ the sign-in page and whatever a signed-in browser can reach through it. The
 `bun run tailscale:compose:check` asserts each of those properties from the
 YAML: one added service, the `edge` network only, no published port, no
 privilege or device outside the kernel-mode file, a pinned image, bounded logs,
-the node key on a named volume, the auth key from the environment, and Funnel
-off. It runs in the same continuous-integration job as the other Compose checks.
+sized temporary filesystems, the health endpoint on the container's own
+loopback, the node key on a named volume, the auth key from the environment,
+and Funnel off. It runs in the same continuous-integration job as the other
+Compose checks.
 
 ### Streaming and idle connections
 
