@@ -130,8 +130,17 @@ withDb('pressing “Handle it” on a real item', () => {
   }, 120_000);
 
   test('pressing it twice does not start a second chase', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const first = await json<{ item: { job_id: string } }>(
+      await call(cookie, `/ledger/${refundItem}`),
+    );
+    const before = await handle.db.select().from(job);
     const again = await call(cookie, `/ledger/${refundItem}/handle`, 'POST');
-    expect(again.status).toBe(409);
-    expect((await json<{ error: { code: string } }>(again)).error.code).toBe('already_handling');
+    // The route hands back the job already doing it rather than refusing, and
+    // the count is what proves it: writing to a company twice is the failure
+    // this whole product exists to avoid.
+    expect(again.status).toBe(200);
+    expect((await json<{ job_id: string }>(again)).job_id).toBe(first.item.job_id);
+    expect((await handle.db.select().from(job)).length).toBe(before.length);
   }, 60_000);
 });

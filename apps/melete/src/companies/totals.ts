@@ -1,10 +1,14 @@
 /**
- * The eight figures at the top of the map.
+ * The figures at the top of the map.
  *
  * They are computed from admitted items only, by adding integers. No model is
  * consulted and no figure is carried over from the extraction, so the number a
  * person reads is the sum of the sentences they can open — which is the whole
  * claim the map makes.
+ *
+ * The promise counts used to live beside the contract's totals because the
+ * contract did not carry them. It does now, so there is one shape again and
+ * nothing has to be stripped at the boundary.
  */
 
 import type { CompanyMapTotals, LedgerItem } from '@melete/contracts';
@@ -12,7 +16,13 @@ import type { CompanyMapTotals, LedgerItem } from '@melete/contracts';
 /** Items in another currency are left out of the money totals, never converted. */
 export const DEFAULT_CURRENCY = 'GBP';
 
+/**
+ * An item still in play. A promise being handled is still a promise in force —
+ * more so, if anything — so `handling` and `waiting` count alongside `found`.
+ */
 const OPEN_STATUSES = new Set(['found', 'handling', 'waiting']);
+
+export type CompanyTotals = CompanyMapTotals;
 
 export const RENEWAL_WINDOW_DAYS = 30;
 
@@ -24,10 +34,10 @@ export const RENEWAL_WINDOW_DAYS = 30;
 export function computeTotals(
   items: readonly LedgerItem[],
   options: { now: Date; currency?: string },
-): CompanyMapTotals {
+): CompanyTotals {
   const currency = options.currency ?? DEFAULT_CURRENCY;
   const horizon = options.now.getTime() + RENEWAL_WINDOW_DAYS * 86_400_000;
-  const totals: CompanyMapTotals = {
+  const totals: CompanyTotals = {
     owed_to_you_minor: 0,
     monthly_spend_minor: 0,
     renewals_next_30d: 0,

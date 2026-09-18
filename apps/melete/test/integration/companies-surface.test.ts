@@ -182,6 +182,60 @@ withDb('the company map over HTTP', () => {
     expect(map.items.length).toBeGreaterThan(20);
   }, 60_000);
 
+  test('the map carries the promise counts, so the launch figures are real', async () => {
+    const map = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    // These are contract fields now, not a shape carried beside the contract.
+    expect(map.totals.promises_in_force).toBeGreaterThan(0);
+    expect(typeof map.totals.promises_lapsed).toBe('number');
+    const promises = map.items.filter((item) => item.kind === 'promise');
+    expect(map.totals.promises_in_force + map.totals.promises_lapsed).toBe(promises.length);
+  }, 60_000);
+
+  test('a dropped item leaves the map, a settled one stays on it', async () => {
+    const before = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const open = before.items.filter((item) => item.status === 'found');
+    const toDrop = open[0];
+    const toSettle = open[1];
+    expect(toDrop).toBeDefined();
+    expect(toSettle).toBeDefined();
+    if (!toDrop || !toSettle) return;
+    await call(firstCookie, `/ledger/${toDrop.id}`, 'PATCH', { status: 'dropped' });
+    await call(firstCookie, `/ledger/${toSettle.id}`, 'PATCH', { status: 'settled' });
+    const after = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    expect(after.items.some((item) => item.id === toDrop.id)).toBe(false);
+    expect(after.items.find((item) => item.id === toSettle.id)?.status).toBe('settled');
+    // Off the map but not forgotten: the row survives, so a re-scan does not
+    // offer the person the same thing they have already said no to.
+    expect((await call(firstCookie, `/ledger/${toDrop.id}`)).status).toBe(200);
+  }, 60_000);
+
+  test('handling the same item twice creates one job, not two', async () => {
+    const map = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const item = map.items.find((entry) => entry.status === 'found' && entry.job_id === null);
+    expect(item).toBeDefined();
+    if (!item) return;
+    const asked = handled.length;
+    const first = await call(firstCookie, `/ledger/${item.id}/handle`, 'POST');
+    expect(first.status).toBe(201);
+    const second = await call(firstCookie, `/ledger/${item.id}/handle`, 'POST');
+    // The second call answers with the job the first one made, and the playbook
+    // is never asked again. Writing to a company twice is the failure this whole
+    // product exists to avoid.
+    expect(second.status).toBe(200);
+    expect((await json<{ job_id: string }>(second)).job_id).toBe(
+      (await json<{ job_id: string }>(first)).job_id,
+    );
+    expect(handled.length).toBe(asked + 1);
+  }, 60_000);
+
   test('an item can be dropped, and the totals stop counting it', async () => {
     const before = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),

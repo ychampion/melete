@@ -157,7 +157,15 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   app.get('/spaces/:spaceId/companies', async (c) => {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
     const map = await deps.store.map(owner, now());
-    return c.json(companyMapContract.parse(map));
+    // A dropped item is one the person has said is not a thing. It stays in the
+    // store, so a re-scan does not offer it again, but it is off the map.
+    // A settled one stays: finishing with a company is worth seeing.
+    return c.json(
+      companyMapContract.parse({
+        ...map,
+        items: map.items.filter((item) => item.status !== 'dropped'),
+      }),
+    );
   });
 
   app.get('/ledger/:id', async (c) => {
@@ -179,6 +187,11 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   app.post('/ledger/:id/handle', async (c) => {
     const found = await findItem(deps, c.req.param('id'), c.req.query('space_id'));
+    // Handling an item twice would write to a company twice. An item that
+    // already names a job is already being handled, so the job it names is the
+    // answer and the playbook is not asked again — the same rule the rest of
+    // the product follows about never saying the same thing twice.
+    if (found.item.job_id) return c.json({ job_id: found.item.job_id }, 200);
     // Which mailbox the message would leave from is the installation's to decide,
     // not the caller's: it is looked up from the space the item was found in.
     const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;

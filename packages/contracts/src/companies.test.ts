@@ -3,6 +3,7 @@ import { ID_PREFIXES } from './common.ts';
 import {
   company,
   companyMap,
+  companyMapTotals,
   evidenceHolds,
   LAUNCH_PLAYBOOKS,
   ledgerEvidence,
@@ -119,25 +120,41 @@ describe('the company and the map', () => {
     expect(company.safeParse(acme).success).toBe(true);
   });
 
+  const totals = {
+    owed_to_you_minor: 4200,
+    monthly_spend_minor: 999,
+    renewals_next_30d: 1,
+    price_rises: 0,
+    trials_ending: 0,
+    data_holders: 1,
+    promises_in_force: 2,
+    promises_lapsed: 1,
+  };
+
   test('a map carries its companies, its items and its totals', () => {
     const parsed = companyMap.safeParse({
       companies: [acme],
       items: [item],
-      totals: {
-        owed_to_you_minor: 4200,
-        monthly_spend_minor: 999,
-        renewals_next_30d: 1,
-        price_rises: 0,
-        trials_ending: 0,
-        data_holders: 1,
-        promises_in_force: 2,
-        promises_lapsed: 1,
-      },
+      totals,
       currency: 'GBP',
     });
     expect(parsed.success).toBe(true);
     expect(parsed.data?.totals.owed_to_you_minor).toBe(4200);
-    expect(parsed.data?.totals.promises_lapsed).toBe(1);
+  });
+
+  test('the totals count promises in force apart from promises that lapsed', () => {
+    const parsed = companyMapTotals.safeParse(totals);
+    expect(parsed.success).toBe(true);
+    expect([parsed.data?.promises_in_force, parsed.data?.promises_lapsed]).toEqual([2, 1]);
+  });
+
+  test('a map missing the promise counts is not a map', () => {
+    const { promises_in_force: _inForce, ...withoutPromises } = totals;
+    expect(companyMapTotals.safeParse(withoutPromises).success).toBe(false);
+  });
+
+  test('a promise count cannot be negative', () => {
+    expect(companyMapTotals.safeParse({ ...totals, promises_lapsed: -1 }).success).toBe(false);
   });
 
   test('every launch playbook is a valid playbook name', () => {
