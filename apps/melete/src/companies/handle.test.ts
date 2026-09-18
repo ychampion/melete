@@ -4,6 +4,7 @@ import { ServiceError } from '../api/errors.ts';
 import {
   admittedEvidence,
   formatAmount,
+  hostnames,
   oneLine,
   PLAYBOOK_FOR_KIND,
   playbookFor,
@@ -86,4 +87,34 @@ test('outside text cannot open a second line in the instructions', () => {
   expect(oneLine('x'.repeat(500))).toHaveLength(300);
   expect(oneLine('x'.repeat(500), 20)).toHaveLength(20);
   expect(oneLine('')).toBe('');
+});
+
+test('a domain that is not a plain host name is refused, not passed through', () => {
+  // The scan's own character rule. `web.fetch` compares host names exactly, so
+  // a fragment, a port, a path or a wildcard could never match anything — but
+  // "harmless because nothing matches it" is a property of today's matcher, and
+  // an allowance should not depend on a matcher staying narrow.
+  for (const bad of [
+    'evil.com#tunestack.example',
+    '*.tunestack.example',
+    'tunestack.example:8443',
+    'tunestack.example/../evil.com',
+    'https://tunestack.example',
+    'tune stack.example',
+    'tunestack..example',
+    '.tunestack.example',
+    'localhost',
+    '-lead.example',
+    'trail-.example',
+    '',
+    '   ',
+  ])
+    expect(hostnames(bad)).toEqual([]);
+
+  // A real host keeps both forms a policy page might live on, and only those.
+  expect(hostnames('acme.test')).toEqual(['acme.test', 'www.acme.test']);
+  expect(hostnames('www.acme.test')).toEqual(['www.acme.test', 'acme.test']);
+  expect(hostnames('  Acme.TEST.  ')).toEqual(['acme.test', 'www.acme.test']);
+  // One host, not a registrable domain: a subdomain is its own entry.
+  expect(hostnames('support.acme.test')).toEqual(['support.acme.test', 'www.support.acme.test']);
 });

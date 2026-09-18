@@ -135,13 +135,37 @@ export function oneLine(value: string, limit = 300): string {
     .slice(0, limit);
 }
 
-const hostnames = (domain: string): string[] => {
-  const host = domain.trim().toLowerCase().replace(/\.$/, '');
+/**
+ * One host name, or nothing.
+ *
+ * The same character rule the scan applies when it reads a domain out of an
+ * address, so a name admitted there is admitted here and nowhere else is a
+ * second opinion. It is a host, not a registrable domain: `support.acme.test`
+ * is its own entry, because that is the granularity `web.fetch` compares at.
+ *
+ * Everything else is refused rather than passed along — a fragment, a port, a
+ * path or a wildcard matches nothing today, but that is a property of the
+ * matcher being narrow, and an allowance should not lean on that staying true.
+ */
+export function validHost(value: string): string | null {
+  const host = value.trim().toLowerCase().replace(/\.$/, '');
+  if (!host || host.length > 253) return null;
+  if (!/^[a-z0-9.-]+$/.test(host)) return null;
+  if (host.startsWith('.') || host.includes('..')) return null;
+  const labels = host.split('.');
+  if (labels.length < 2) return null;
+  if (labels.some((label) => !label || label.length > 63 || /^-|-$/.test(label))) return null;
+  return host;
+}
+
+/** The two forms a company's own page might live on, or nothing at all. */
+export function hostnames(domain: string): string[] {
+  const host = validHost(domain);
   if (!host) return [];
-  // `web.fetch` matches a hostname exactly, so the bare domain does not admit
+  // `web.fetch` matches a host name exactly, so the bare name does not admit
   // `www.`, and a policy page usually lives on one of the two.
   return host.startsWith('www.') ? [host, host.slice(4)] : [host, `www.${host}`];
-};
+}
 
 /**
  * The currencies whose minor unit is not a hundredth. Dividing by a hundred is
@@ -310,6 +334,15 @@ export async function handleLedgerItem(
     );
 
   const domains = hostnames(company.domain);
+  // A company whose domain is not a host name is a record something upstream
+  // got wrong, and the answer is to say so rather than to open a job holding an
+  // allowance nobody can read.
+  if (domains.length === 0)
+    throw new ServiceError(
+      'invalid_request',
+      'That company has no usable web address on record.',
+      400,
+    );
   // The trigger cannot exist before the job does, so the objective names the
   // event rather than the id; the id itself reaches the attempt through the
   // job's own trigger list, which the bundle already carries, and `job.wait`
