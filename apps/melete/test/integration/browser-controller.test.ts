@@ -85,9 +85,16 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       reason = error instanceof Error ? error.message : String(error);
     }
     expect(reason).toBe('fresh_observation_required');
+    // The first look after a handback carries the page's shape and none of its contents, so
+    // neither what was typed before the takeover nor anything refused during it appears.
     const refreshed = await call({ kind: 'observe' });
-    expect(refreshed.observation?.tree).not.toContain('must-not-enter');
-    expect(refreshed.observation?.tree).toContain('Before takeover');
+    expect(refreshed.observation?.tree).toContain('- textbox "Name"');
+    for (const value of ['must-not-enter', 'Before takeover'])
+      expect([value, refreshed.observation?.tree.includes(value)]).toEqual([value, false]);
+    // The next look is an ordinary one: the field still holds what was typed before the takeover.
+    const second = await call({ kind: 'observe' });
+    expect(second.observation?.tree).toContain('Before takeover');
+    expect(second.observation?.tree).not.toContain('must-not-enter');
     await call({ kind: 'fill', label: 'Email', value: 'after@example.com' });
   }, 15_000);
   test('a guarded document redirect uses a new page with the actual final URL', async () => {

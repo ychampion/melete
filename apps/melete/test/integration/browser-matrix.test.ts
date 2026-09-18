@@ -142,8 +142,22 @@ const measurements: Measurement[] = [];
               control_epoch: returned.control_epoch,
               operation: { kind: 'observe' },
             });
-            expect(observation.observation?.tree).not.toContain('MUST_NOT_BE_ENTERED');
-            expect(observation.observation?.tree).toContain(values.name);
+            // The first look after a handback keeps the page's shape and none of its contents:
+            // not what a refused fill tried to enter, and not what was there before either.
+            expect(observation.observation?.tree).toContain('- textbox "Name"');
+            for (const value of ['MUST_NOT_BE_ENTERED', values.name])
+              expect([value, observation.observation?.tree.includes(value)]).toEqual([
+                value,
+                false,
+              ]);
+            const second = await worker.request<BrowserCommandResult>('/command', {
+              session_id: detail.session_id,
+              job_id: driver.claims().job_id,
+              control_epoch: returned.control_epoch,
+              operation: { kind: 'observe' },
+            });
+            expect(second.observation?.tree).toContain(values.name);
+            expect(second.observation?.tree).not.toContain('MUST_NOT_BE_ENTERED');
             return;
           }
           if (step.action === 'fill') {
