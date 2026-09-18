@@ -178,6 +178,39 @@ describe('the ways it ends badly', () => {
     expect(await response.json()).toMatchObject({ ok: false, code: 'empty_input' });
   });
 
+  /**
+   * `text/plain` is one of the three content types a browser will send
+   * cross-origin without asking permission first. Accepting it let any website
+   * spend a visitor's five, and a slot of the day's budget, from inside their
+   * browser with no preflight and nothing on screen. Insisting on JSON forces
+   * a preflight, and this Worker answers none.
+   */
+  test('only json is accepted, so no other site can spend a visitor’s turns', async () => {
+    const use = deps();
+    for (const type of ['text/plain;charset=UTF-8', 'application/x-www-form-urlencoded', '']) {
+      const request = new Request('https://tryit.example/api/case-file', {
+        method: 'POST',
+        headers: type ? { 'content-type': type } : {},
+        body: JSON.stringify({ text: REFUND }),
+      });
+      const response = await caseFileRoute(request, use);
+      expect(response.status).toBe(415);
+      if (response.body) await response.text();
+    }
+    // ...and no turn was spent finding that out.
+    expect(await use.limiter.take('1.2.3.4')).toMatchObject({ allowed: true });
+  });
+
+  test('a charset or spacing on the json type is still json', async () => {
+    const request = new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ text: REFUND }),
+    });
+    const { done } = await readStream(await caseFileRoute(request, deps()));
+    expect(done?.ok).toBe(true);
+  });
+
   test('a body that is not json, and the wrong method', async () => {
     const use = deps();
     const broken = new Request('https://tryit.example/api/case-file', {

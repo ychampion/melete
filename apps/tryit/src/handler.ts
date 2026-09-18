@@ -116,6 +116,15 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
     return refuse('bad_request', 405);
   }
 
+  // A browser will send `text/plain` to another origin without asking first,
+  // so accepting it would let any site spend a visitor's turns, and the day's
+  // budget, from inside their browser with nothing on screen. Insisting on
+  // JSON forces a preflight, and this Worker answers none.
+  if (!(request.headers.get('content-type') ?? '').includes('application/json')) {
+    record({ ...bare, outcome: 'bad_request' });
+    return refuse('bad_request', 415);
+  }
+
   // Refuse an oversized body before reading it, so a big paste costs nothing.
   const declared = Number(request.headers.get('content-length') ?? '0');
   if (Number.isFinite(declared) && declared > limits.maxInputChars * 4 + 2048) {
