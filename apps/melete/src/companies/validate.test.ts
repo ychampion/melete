@@ -1,0 +1,234 @@
+import { describe, expect, test } from 'bun:test';
+import type { LedgerItem } from '@melete/contracts';
+import type { ExtractedItem } from './extract.ts';
+import { computeTotals } from './totals.ts';
+import { type AdmissionContext, admit, admitAll, dedupeKey } from './validate.ts';
+
+const TEXT =
+  'Subject: Your refund\n\nA refund of GBP 129.99 will reach your account within 10 working days.';
+const QUOTE = 'A refund of GBP 129.99 will reach your account within 10 working days.';
+const START = TEXT.indexOf(QUOTE);
+
+const context: AdmissionContext = {
+  spaceId: 'sp_01J0000000000000000000000A',
+  principalId: 'own_01J0000000000000000000000B',
+  companyId: 'co_01J0000000000000000000000C',
+  messageId: '<m1@example.test>',
+  messageText: TEXT,
+};
+
+const candidate = (over: Partial<ExtractedItem> = {}): ExtractedItem => ({
+  kind: 'refund_owed',
+  direction: 'owed_to_you',
+  amount_minor: 12999,
+  currency: 'GBP',
+  due_at: null,
+  confidence: 'high',
+  suggested_playbook: 'refund-owed',
+  summary: 'Refund owed to you',
+  evidence: [{ quote: QUOTE, start: START, end: START + QUOTE.length }],
+  ...over,
+});
+
+describe('the admission gate', () => {
+  test('admits a claim whose quote sits exactly where it says it does', () => {
+    const result = admit(candidate(), context);
+    expect(result.admitted).toBe(true);
+    if (!result.admitted) return;
+    expect(result.item.amount_minor).toBe(12999);
+    expect(result.item.status).toBe('found');
+    expect(result.item.evidence[0]?.message_id).toBe('<m1@example.test>');
+  });
+
+  test('drops a fabricated quote, however plausible it reads', () => {
+    const invented = 'A refund of GBP 900.00 will reach your account within 3 working days.';
+    const result = admit(
+      candidate({
+        amount_minor: 90000,
+        evidence: [{ quote: invented, start: START, end: START + invented.length }],
+      }),
+      context,
+    );
+    expect(result).toEqual({ admitted: false, reason: 'evidence_span' });
+  });
+
+  test('drops a real sentence carrying the wrong span', () => {
+    const result = admit(
+      candidate({ evidence: [{ quote: QUOTE, start: START + 1, end: START + 1 + QUOTE.length }] }),
+      context,
+    );
+    expect(result).toEqual({ admitted: false, reason: 'evidence_span' });
+  });
+
+  test('drops a span that runs past the end of the message', () => {
+    const result = admit(
+      candidate({ evidence: [{ quote: QUOTE, start: START, end: TEXT.length + 5 }] }),
+      context,
+    );
+    expect(result).toEqual({ admitted: false, reason: 'evidence_span' });
+  });
+
+  test('drops every item whose second quote fails, not only its first', () => {
+    const result = admit(
+      candidate({
+        evidence: [
+          { quote: QUOTE, start: START, end: START + QUOTE.length },
+          { quote: 'never written', start: 0, end: 13 },
+        ],
+      }),
+      context,
+    );
+    expect(result).toEqual({ admitted: false, reason: 'evidence_span' });
+  });
+
+  test('refuses an amount with no currency, which names no quantity', () => {
+    expect(admit(candidate({ currency: null }), context)).toEqual({
+      admitted: false,
+      reason: 'amount_without_currency',
+    });
+  });
+
+  test('refuses money on an item that is not about money', () => {
+    expect(admit(candidate({ direction: 'info' }), context)).toEqual({
+      admitted: false,
+      reason: 'info_with_amount',
+    });
+  });
+
+  test('refuses a due date that is not a date', () => {
+    expect(admit(candidate({ due_at: 'sometime soon' }), context)).toEqual({
+      admitted: false,
+      reason: 'bad_due_date',
+    });
+  });
+});
+
+describe('dedupe', () => {
+  test('one claim read out of two emails is one item', () => {
+    const second: AdmissionContext = { ...context, messageId: '<m2@example.test>' };
+    const result = admitAll([
+      { candidate: candidate(), context },
+      { candidate: candidate(), context: second },
+    ]);
+    expect(result.items).toHaveLength(1);
+    expect(result.drops.duplicate).toBe(1);
+    // The surviving item cites the message the scan read first.
+    expect(result.items[0]?.evidence[0]?.message_id).toBe('<m1@example.test>');
+  });
+
+  test('a different amount is a different claim', () => {
+    const result = admitAll([
+      { candidate: candidate(), context },
+      { candidate: candidate({ amount_minor: 4200 }), context },
+    ]);
+    expect(result.items).toHaveLength(2);
+    expect(result.drops.duplicate).toBe(0);
+  });
+
+  test('the key names the company, the kind, the direction, the amount and the day', () => {
+    const one = admit(candidate({ due_at: '2026-10-12T00:00:00.000Z' }), context);
+    const two = admit(candidate({ due_at: '2026-10-12T18:30:00.000Z' }), context);
+    expect(one.admitted && two.admitted && dedupeKey(one.item) === dedupeKey(two.item)).toBe(true);
+  });
+
+  test('counts every refusal so a thin map can be explained', () => {
+    const result = admitAll([
+      { candidate: candidate(), context },
+      { candidate: candidate({ currency: null }), context },
+      { candidate: candidate({ evidence: [{ quote: 'not there', start: 0, end: 9 }] }), context },
+    ]);
+    expect(result.items).toHaveLength(1);
+    expect(result.drops.amount_without_currency).toBe(1);
+    expect(result.drops.evidence_span).toBe(1);
+  });
+});
+
+describe('the totals', () => {
+  const now = new Date('2026-09-18T09:00:00.000Z');
+  const item = (over: Partial<LedgerItem>): LedgerItem => ({
+    id: 'li_01J0000000000000000000000A',
+    space_id: context.spaceId,
+    principal_id: context.principalId,
+    company_id: context.companyId,
+    kind: 'refund_owed',
+    direction: 'owed_to_you',
+    amount_minor: 1000,
+    currency: 'GBP',
+    due_at: null,
+    status: 'found',
+    confidence: 'high',
+    evidence: [{ message_id: '<m1@example.test>', quote: QUOTE, start: START, end: START + 1 }],
+    suggested_playbook: null,
+    job_id: null,
+    summary: 'x',
+    ...over,
+  });
+
+  test('adds what is owed and what is paid, in whole minor units', () => {
+    const totals = computeTotals(
+      [item({ amount_minor: 12999 }), item({ direction: 'you_pay', amount_minor: 4800 })],
+      { now },
+    );
+    expect(totals.owed_to_you_minor).toBe(12999);
+    expect(totals.monthly_spend_minor).toBe(4800);
+  });
+
+  test('leaves another currency out of the money totals rather than converting it', () => {
+    const totals = computeTotals([item({ currency: 'EUR', amount_minor: 40000 })], { now });
+    expect(totals.owed_to_you_minor).toBe(0);
+  });
+
+  test('counts a renewal only when it falls inside the next thirty days', () => {
+    const totals = computeTotals(
+      [
+        item({ kind: 'renewal', direction: 'you_pay', due_at: '2026-10-08T00:00:00.000Z' }),
+        item({ kind: 'renewal', direction: 'you_pay', due_at: '2027-01-08T00:00:00.000Z' }),
+      ],
+      { now },
+    );
+    expect(totals.renewals_next_30d).toBe(1);
+  });
+
+  test('counts promises in force apart from promises that have run out', () => {
+    const totals = computeTotals(
+      [
+        item({
+          kind: 'promise',
+          direction: 'info',
+          amount_minor: null,
+          currency: null,
+          due_at: '2026-10-01T00:00:00.000Z',
+        }),
+        item({
+          kind: 'promise',
+          direction: 'info',
+          amount_minor: null,
+          currency: null,
+          due_at: '2026-08-01T00:00:00.000Z',
+        }),
+        item({ kind: 'promise', direction: 'info', amount_minor: null, currency: null }),
+      ],
+      { now },
+    );
+    expect([totals.promises_in_force, totals.promises_lapsed]).toEqual([2, 1]);
+  });
+
+  test('a settled or dropped item is out of every total', () => {
+    const totals = computeTotals(
+      [item({ status: 'settled' }), item({ status: 'dropped', amount_minor: 5000 })],
+      { now },
+    );
+    expect(totals.owed_to_you_minor).toBe(0);
+  });
+
+  test('counts each company holding data once, however many items say so', () => {
+    const totals = computeTotals(
+      [
+        item({ kind: 'data_held', direction: 'info', amount_minor: null, currency: null }),
+        item({ kind: 'data_held', direction: 'info', amount_minor: null, currency: null }),
+      ],
+      { now },
+    );
+    expect(totals.data_holders).toBe(1);
+  });
+});

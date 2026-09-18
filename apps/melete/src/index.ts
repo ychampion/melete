@@ -36,6 +36,8 @@ import { verifyCapability } from './broker/capability.ts';
 import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
+import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
+import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
 import {
   type ConfiguredConnection,
@@ -132,6 +134,8 @@ export type AppDeps = {
   broker?: BrokerService;
   registry?: ConnectorRegistry;
   sql?: Sql;
+  /** Overrides for the company map: a test's store, extractor or handler. */
+  companies?: Partial<CompaniesDeps>;
 };
 
 export function createApp(deps: AppDeps) {
@@ -204,6 +208,11 @@ export function createApp(deps: AppDeps) {
       questions,
       memoryJournal: deps.memory?.journal,
       triggers: deps.triggers,
+    });
+  if (deps.db)
+    mountCompanies(app, {
+      ...companiesDeps({ db: deps.db, sql: deps.sql, registry: deps.registry, env: deps.env }),
+      ...deps.companies,
     });
   if (deps.events && deps.jobs) mountEvents(app, deps.events, deps.jobs);
   if (deps.memory)
