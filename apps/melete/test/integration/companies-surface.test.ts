@@ -182,6 +182,22 @@ withDb('the company map over HTTP', () => {
     expect(map.items.length).toBeGreaterThan(20);
   }, 60_000);
 
+  test('the route answers a map the contract accepts, from the Postgres store', async () => {
+    // The strict-object risk lives here rather than in the unit tests: this is
+    // the path where a stray key on what PostgresCompanyStore returns would
+    // throw on every request. A 200 that parses is the proof.
+    const response = await call(firstCookie, `/spaces/${firstSpace}/companies`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(() => companyMap.parse(body)).not.toThrow();
+    expect(Object.keys(body as object).sort()).toEqual([
+      'companies',
+      'currency',
+      'items',
+      'totals',
+    ]);
+  }, 60_000);
+
   test('the map carries the promise counts, so the launch figures are real', async () => {
     const map = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),

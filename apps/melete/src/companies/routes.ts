@@ -186,10 +186,19 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
     // A dropped item is one the person has said is not a thing. It stays in the
     // store, so a re-scan does not offer it again, but it is off the map.
     // A settled one stays: finishing with a company is worth seeing.
+    //
+    // The four fields are named rather than spread. `companyMap` and
+    // `companyMapTotals` are both strict, so one extra key on whatever the
+    // store returns would throw on every map request — and this shape has
+    // carried extra fields before, when the promise totals lived beside the
+    // contract rather than in it. Naming them means a field added to the store
+    // cannot reach `parse` by accident; somebody has to add it here on purpose.
     return c.json(
       companyMapContract.parse({
-        ...map,
+        companies: map.companies,
         items: map.items.filter((item) => item.status !== 'dropped'),
+        totals: map.totals,
+        currency: map.currency,
       }),
     );
   });

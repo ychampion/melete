@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { evidenceHolds, LEDGER_ITEM_KINDS, type LedgerItem } from '@melete/contracts';
+import { companyMap, evidenceHolds, LEDGER_ITEM_KINDS, type LedgerItem } from '@melete/contracts';
 import type { CompanyExtractor } from './extract.ts';
 import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
@@ -202,6 +202,47 @@ describe('a message that tries to give the agent orders', () => {
     const { store } = await scanFixtures();
     const detail = await store.item(owner, 'li_nothing');
     expect(detail).toBe(null);
+  });
+});
+
+describe('the map handed to the contract', () => {
+  // `companyMap` and `companyMapTotals` are both strict objects, so one extra
+  // key anywhere in what the store returns throws on every map request rather
+  // than being ignored. The service-side map has carried extra fields before —
+  // the promise totals lived beside the contract until they were added to it —
+  // so this is a shape that has actually drifted once already.
+
+  test('parses, with every field a real scan produces', async () => {
+    const { map } = await scanFixtures();
+    expect(map.items.length).toBeGreaterThan(20);
+    // The real thing, not a fixture of the right shape.
+    expect(() => companyMap.parse(map)).not.toThrow();
+  });
+
+  test('carries exactly the keys the contract names, and no others', async () => {
+    const { map } = await scanFixtures();
+    expect(Object.keys(map).sort()).toEqual(['companies', 'currency', 'items', 'totals']);
+    expect(Object.keys(map.totals).sort()).toEqual(
+      [
+        'data_holders',
+        'monthly_spend_minor',
+        'owed_to_you_minor',
+        'price_rises',
+        'promises_in_force',
+        'promises_lapsed',
+        'renewals_next_30d',
+        'trials_ending',
+      ].sort(),
+    );
+  });
+
+  test('and one extra key would be caught here rather than at runtime', async () => {
+    const { map } = await scanFixtures();
+    // What the failure looks like, so the guard above is known to bite.
+    expect(() => companyMap.parse({ ...map, scan_id: 'scn_x' })).toThrow();
+    expect(() =>
+      companyMap.parse({ ...map, totals: { ...map.totals, promises_broken: 0 } }),
+    ).toThrow();
   });
 });
 
