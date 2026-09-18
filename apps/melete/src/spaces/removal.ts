@@ -26,6 +26,7 @@ import {
 import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
+import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
 import { connection, job, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -46,28 +47,70 @@ import { type SpaceRemovalRow, spaceRemoval } from './schema.ts';
 import { verifyRemoval, verifySpaceGone } from './verify.ts';
 
 /**
+ * A provider is reached for an adapter and the connection whose account holds
+ * it: one space can hold sandboxes in more than one account, so an adapter
+ * alone would reach into the wrong one. The provider type is the sandbox lane's
+ * and is carried opaquely, because nothing here looks inside it.
+ */
+export type SandboxProviderFor = (adapter: string, connectionId: string) => unknown;
+
+/**
  * The sandbox lane owns live workspaces and the snapshots a provider keeps for
  * them. This module never reaches into a provider itself; it asks for the two
- * things a removal needs and believes neither without re-listing afterwards.
+ * things a removal needs, and believes the first only because of the second.
  */
 export type SandboxTeardown = {
+  /** Resolves the provider for an adapter in a given connection's account. */
+  providerFor: SandboxProviderFor;
   /** Close every live session for the space and delete its provider-side snapshots. */
-  destroyWorkspacesForSpace(spaceId: string, signal?: AbortSignal): Promise<void>;
-  /** What the provider still lists for the space. The verification pass reads this. */
-  listWorkspacesForSpace(spaceId: string): Promise<{ sessions: string[]; snapshots: string[] }>;
+  destroyWorkspacesForSpace(
+    spaceId: string,
+    providerFor: SandboxProviderFor,
+    signal: AbortSignal,
+  ): Promise<{ closed: string[]; snapshotsDeleted: string[] }>;
+  /**
+   * What the provider still lists for the space. This is a different question
+   * from what the call above reports it did, which is the whole reason it
+   * exists: a removal is never finished on a provider's own account of itself.
+   */
+  listWorkspacesForSpace(
+    spaceId: string,
+    providerFor: SandboxProviderFor,
+  ): Promise<{ sessions: string[]; snapshots: string[] }>;
 };
 
 /**
- * The browser lane owns the worker process that holds a space's Chromium
- * profile open, and the record of which sites that profile is signed in to.
+ * The browser lane owns the worker that holds a space's Chromium profile open
+ * and the record of which sites it is signed in to. One call does all of it,
+ * in the order it has to happen: the worker exits, then the profile directory
+ * goes, then the site rows. It leaves the space root itself alone, so the
+ * filesystem phase below still owns it — which is why this runs first.
  */
 export type BrowserTeardown = {
-  /** Stop the worker for the space. It must exit before the profile directory can go. */
-  stop(spaceId: string): Promise<void>;
-  /** The domains this space is signed in to. */
-  sitesForSpace(spaceId: string): Promise<string[]>;
-  /** Forget one site: its stored profile and its cookies. */
-  forgetSite(spaceId: string, domain: string): Promise<void>;
+  forgetSpace(spaceId: string): Promise<{ space_id: string; profile: string | null; rows: number }>;
+};
+
+/**
+ * Per-job engine session volumes, labelled by job. Nothing makes one yet; this
+ * is the shape the work that does will be wired into.
+ */
+export type RuntimeHomeTeardown = {
+  /** Remove the engine session volume each of these jobs kept. */
+  removeHomesForJobs(
+    jobIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<{ removed: string[] }>;
+  /** What is still labelled for these jobs. The verification reads this. */
+  listHomesForJobs(jobIds: readonly string[]): Promise<string[]>;
+};
+
+/**
+ * Just enough of the connector registry to stop it answering for a space while
+ * that space is being taken apart. `ConnectorRegistry` satisfies this as it is.
+ */
+export type ConnectorReleases = {
+  get(connectionId: string): Connector | undefined;
+  remove(connectionId: string, expected: Connector): Promise<void>;
 };
 
 export type RemovalDeps = {
@@ -78,6 +121,9 @@ export type RemovalDeps = {
   roots: { spacesRoot: string; workRoot: string };
   sandboxes?: SandboxTeardown;
   browser?: BrowserTeardown;
+  runtimeHomes?: RuntimeHomeTeardown;
+  /** Left out, nothing is serving connectors in this process and none is released. */
+  connectors?: ConnectorReleases;
   /** How long a claimed removal holds its lease before another run may take it. */
   leaseMs?: number;
   /** Named so tests can watch a phase boundary without timing it. */
@@ -92,6 +138,7 @@ const SWEEP: readonly RemovalPhase[] = [
   'journal',
   'sandboxes',
   'browser',
+  'runtime',
   'files',
   'operational',
   'principals',
@@ -235,6 +282,13 @@ export class SpaceRemovalService {
         .from(connection)
         .where(eq(connection.spaceId, spaceId))
         .orderBy(connection.provider, connection.label);
+      // The ids too: the connector registry and a sandbox provider are both
+      // addressed by connection id, and phase 8 deletes the rows that carry it.
+      const connections = await tx
+        .select({ id: connection.id })
+        .from(connection)
+        .where(eq(connection.spaceId, spaceId))
+        .orderBy(connection.id);
       const [row] = await tx
         .insert(spaceRemoval)
         .values({
@@ -250,6 +304,7 @@ export class SpaceRemovalService {
           state: 'pending',
           phase: 'fence',
           jobIds: all.map((entry) => entry.id),
+          connectionIds: connections.map((entry) => entry.id),
           counts: EMPTY_COUNTS,
         })
         .returning();
@@ -339,6 +394,8 @@ export class SpaceRemovalService {
         return this.tearDownSandboxes(row, counts, signal);
       case 'browser':
         return this.tearDownBrowser(row, counts);
+      case 'runtime':
+        return this.tearDownRuntimeHomes(row, counts, signal);
       case 'files':
         // The worker holding the profile has exited by now: on Windows the
         // directory cannot be removed while Chromium has it open.
@@ -348,7 +405,9 @@ export class SpaceRemovalService {
           row.jobIds,
           emptied,
           this.deps.browser
-            ? () => this.deps.browser?.stop(row.spaceId) ?? Promise.resolve()
+            ? async () => {
+                await this.deps.browser?.forgetSpace(row.spaceId);
+              }
             : undefined,
         );
         return counts;
@@ -356,6 +415,11 @@ export class SpaceRemovalService {
         await sweepOperational(raw, row.spaceId, row.jobIds);
         return counts;
       case 'principals':
+        // The registry stops answering for these connections before their rows
+        // go, so nothing is still serving a connector for a space that is
+        // halfway gone. Recreating one is refused separately, by the removal
+        // stamp the default-connection query reads.
+        await this.releaseConnectors(row.connectionIds);
         await sweepPrincipals(raw, row.spaceId);
         return counts;
       case 'memory':
@@ -369,7 +433,12 @@ export class SpaceRemovalService {
           spacesRoot: roots.spacesRoot,
           workRoot: roots.workRoot,
           omitted: counts.omitted,
-          sandboxes: this.deps.sandboxes,
+          // The provider re-listing is carried forward from its own phase
+          // rather than repeated here; see tearDownSandboxes.
+          providers: counts.providers,
+          connectionIds: row.connectionIds,
+          connectors: this.deps.connectors,
+          cleared: counts.cleared,
         });
       case 'space':
         if (emptied) {
@@ -396,15 +465,68 @@ export class SpaceRemovalService {
     counts: RemovalCounts,
     signal?: AbortSignal,
   ): Promise<RemovalCounts> {
-    const present = await tableExists(this.deps.sql, 'sandbox_session');
-    if (!this.deps.sandboxes) {
+    const sandboxes = this.deps.sandboxes;
+    if (!sandboxes) {
       // Nothing to reach means nothing to prove. Something to reach and no way
       // to reach it means this removal can never be reported as finished.
+      const present = await tableExists(this.deps.sql, 'sandbox_session');
       const held = present ? await countRows(this.deps.sql, 'sandbox_session', row.spaceId) : 0;
       return omit(counts, 'sandboxes', held > 0 ? 'capability_absent' : 'not_applicable');
     }
-    await this.deps.sandboxes.destroyWorkspacesForSpace(row.spaceId, signal);
-    return counts;
+    const aborts = new AbortController();
+    signal?.addEventListener('abort', () => aborts.abort(), { once: true });
+    const destroyed = await sandboxes.destroyWorkspacesForSpace(
+      row.spaceId,
+      sandboxes.providerFor,
+      aborts.signal,
+    );
+    // Asked again, here rather than in the verification phase, because a
+    // provider is reached through the connection whose account holds it and
+    // phase 8 deletes those rows. This is still a second, independent question
+    // — what is left, not what the call above says it did — and its answer is
+    // carried forward into the counts that decide whether this can finish.
+    const left = await sandboxes.listWorkspacesForSpace(row.spaceId, sandboxes.providerFor);
+    const went = cleared(counts, {
+      sandbox_sessions_closed: destroyed.closed.length,
+      sandbox_snapshots_deleted: destroyed.snapshotsDeleted.length,
+    });
+    return {
+      ...went,
+      providers: {
+        ...went.providers,
+        sandbox_sessions: left.sessions.length,
+        sandbox_snapshots: left.snapshots.length,
+      },
+    };
+  }
+
+  /**
+   * Nothing makes an engine session volume yet, so today this phase proves
+   * there is nothing to make and says so. When the work that makes them lands,
+   * it wires `runtimeHomes` and this clears them by the job ids the fence
+   * captured, in the one place in the order where that is safe.
+   */
+  private async tearDownRuntimeHomes(
+    row: SpaceRemovalRow,
+    counts: RemovalCounts,
+    signal?: AbortSignal,
+  ): Promise<RemovalCounts> {
+    const homes = this.deps.runtimeHomes;
+    if (!homes) return omit(counts, 'runtime', 'not_applicable');
+    const removed = await homes.removeHomesForJobs(row.jobIds, signal);
+    const left = await homes.listHomesForJobs(row.jobIds);
+    const went = cleared(counts, { runtime_homes_removed: removed.removed.length });
+    return { ...went, providers: { ...went.providers, runtime_homes: left.length } };
+  }
+
+  /** Whatever the registry is still holding for these connections, closed. */
+  private async releaseConnectors(connectionIds: readonly string[]): Promise<void> {
+    const registry = this.deps.connectors;
+    if (!registry) return;
+    for (const id of connectionIds) {
+      const connector = registry.get(id);
+      if (connector) await registry.remove(id, connector);
+    }
   }
 
   private async tearDownBrowser(
@@ -418,10 +540,15 @@ export class SpaceRemovalService {
         : 0;
       return omit(counts, 'browser', held > 0 ? 'capability_absent' : 'not_applicable');
     }
-    await this.deps.browser.stop(row.spaceId);
-    for (const domain of await this.deps.browser.sitesForSpace(row.spaceId))
-      await this.deps.browser.forgetSite(row.spaceId, domain);
-    return counts;
+    // One call, which stops the worker, removes the profile directory and
+    // deletes the site rows in that order. It is idempotent and silent for a
+    // space that never browsed, and it leaves the space root for the
+    // filesystem phase below, which is why it has to run before it.
+    const forgotten = await this.deps.browser.forgetSpace(row.spaceId);
+    // What went, which is a different record from what is left: the site rows
+    // being zero afterwards is proved by the verification walk, and this is
+    // what the finished account says about the profile that went with them.
+    return cleared(counts, { signed_in_sites: forgotten.rows });
   }
 
   /**
@@ -589,6 +716,11 @@ function omit(
   reason: 'not_applicable' | 'capability_absent',
 ): RemovalCounts {
   return { ...counts, omitted: { ...counts.omitted, [phase]: reason } };
+}
+
+/** Record what a phase removed. Nothing here can stop a removal finishing. */
+function cleared(counts: RemovalCounts, went: Record<string, number>): RemovalCounts {
+  return { ...counts, cleared: { ...counts.cleared, ...went } };
 }
 
 async function tableExists(raw: Sql, name: string): Promise<boolean> {

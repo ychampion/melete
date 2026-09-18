@@ -22,11 +22,13 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../../src/api/errors.ts';
 import { artifactsManifest } from '../../src/connectors/artifacts.ts';
 import { browserManifest } from '../../src/connectors/browser.ts';
+import { builtinEnvironment, ensureBuiltinConnections } from '../../src/connectors/builtin.ts';
 import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { grantedToolCatalog, REACT_TOOL } from '../../src/connectors/catalog.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { execManifest } from '../../src/connectors/exec.ts';
 import { filesManifest } from '../../src/connectors/files.ts';
+import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { webManifest } from '../../src/connectors/web.ts';
 import { space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
@@ -69,6 +71,7 @@ type Overrides = {
   sandboxes?: SandboxTeardown;
   browser?: BrowserTeardown;
   onPhase?: (removalId: string, phase: RemovalPhase) => void;
+  connectors?: ConnectorRegistry;
 };
 
 async function service(overrides: Overrides = {}) {
@@ -85,6 +88,7 @@ async function service(overrides: Overrides = {}) {
     ...(overrides.sandboxes ? { sandboxes: overrides.sandboxes } : {}),
     ...(overrides.browser ? { browser: overrides.browser } : {}),
     ...(overrides.onPhase ? { onPhase: overrides.onPhase } : {}),
+    ...(overrides.connectors ? { connectors: overrides.connectors } : {}),
   });
 }
 
@@ -200,6 +204,7 @@ describe.if(handle !== null)('removing a space', () => {
     expect(columns.map((row) => row.column_name)).toEqual([
       'attempts',
       'blocked_reason',
+      'connection_ids',
       'counts',
       'finished_at',
       'git_path',
@@ -492,6 +497,7 @@ describe.if(handle !== null)('removing a space', () => {
   test('removal_reports_partial_as_blocked — a provider that refuses leaves the space in place', async () => {
     const seeded = await seed('shared');
     const refusing: SandboxTeardown = {
+      providerFor: () => ({}),
       destroyWorkspacesForSpace: async () => {
         throw new Error('the sandbox provider could not be reached');
       },
@@ -567,27 +573,43 @@ describe.if(handle !== null)('removing a space', () => {
   test('removal_clears_provider_snapshots — the provider is asked, and asked again', async () => {
     const seeded = await seed('shared');
     const held = { sessions: ['sbx_1'], snapshots: ['snap_1'] };
+    const asked: string[] = [];
     const sandboxes: SandboxTeardown = {
-      destroyWorkspacesForSpace: async () => {
+      providerFor: (adapter, connectionId) => ({ adapter, connectionId }),
+      destroyWorkspacesForSpace: async (spaceId, providerFor, signal) => {
+        // A provider is reached through a connection, never an adapter alone:
+        // one space can hold sandboxes in more than one account.
+        expect(providerFor('fake', seeded.connectionId)).toEqual({
+          adapter: 'fake',
+          connectionId: seeded.connectionId,
+        });
+        expect(signal.aborted).toBe(false);
+        asked.push(spaceId);
+        const closed = [...held.sessions];
+        const snapshotsDeleted = [...held.snapshots];
         held.sessions = [];
         held.snapshots = [];
+        return { closed, snapshotsDeleted };
       },
       listWorkspacesForSpace: async () => ({ ...held }),
     };
     const { finished } = await removeCompletely(seeded, { sandboxes });
     expect(outcome(finished)).toBe('complete');
+    expect(asked).toEqual([seeded.spaceId]);
     expect(held).toEqual({ sessions: [], snapshots: [] });
     expect(finished.counts).toMatchObject({
       providers: { sandbox_sessions: 0, sandbox_snapshots: 0 },
+      cleared: { sandbox_sessions_closed: 1, sandbox_snapshots_deleted: 1 },
     });
   });
 
   test('removal_blocked_when_provider_unreachable — a provider that still lists a snapshot is not finished', async () => {
     const seeded = await seed('shared');
     const stubborn: SandboxTeardown = {
-      destroyWorkspacesForSpace: async () => {},
-      // It said it destroyed them and it still lists one. The re-listing is
-      // what makes the difference between a claim and a fact.
+      providerFor: () => ({}),
+      // It reports that it deleted the snapshot, and still lists it. The
+      // re-listing is what makes the difference between a claim and a fact.
+      destroyWorkspacesForSpace: async () => ({ closed: [], snapshotsDeleted: ['snap_1'] }),
       listWorkspacesForSpace: async () => ({ sessions: [], snapshots: ['snap_1'] }),
     };
     const removals = await service({ sandboxes: stubborn });
@@ -598,24 +620,65 @@ describe.if(handle !== null)('removing a space', () => {
     expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
   });
 
-  test('removal_clears_browser_profile — the worker is stopped, each site forgotten, the profile gone', async () => {
+  test('removal_clears_browser_profile — the worker stops, the profile and its sites go, the space root is left for the sweep', async () => {
     const seeded = await seed('shared');
-    const stopped: string[] = [];
-    const forgotten: string[] = [];
+    const forgot: string[] = [];
     const browser: BrowserTeardown = {
-      stop: async (id) => {
-        stopped.push(id);
-      },
-      sitesForSpace: async () => ['mail.example.test', 'calendar.example.test'],
-      forgetSite: async (_id, domain) => {
-        forgotten.push(domain);
+      forgetSpace: async (spaceId) => {
+        // One call: the worker exits, the profile directory goes, then the
+        // site rows. It leaves the space root alone, which is why the
+        // filesystem phase still owns it and has to run after this.
+        forgot.push(spaceId);
+        const profile = join(spacesRoot, spaceId, 'browser');
+        await rm(profile, { recursive: true, force: true });
+        return { space_id: spaceId, profile, rows: 2 };
       },
     };
     const { finished } = await removeCompletely(seeded, { browser });
     expect(outcome(finished)).toBe('complete');
-    expect(stopped).toEqual([seeded.spaceId]);
-    expect(forgotten).toEqual(['mail.example.test', 'calendar.example.test']);
+    expect(forgot).toEqual([seeded.spaceId]);
+    expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 2 } });
     expect(await exists(join(spacesRoot, seeded.spaceId, 'browser'))).toBe(false);
+  });
+
+  // ------------------------------------------------------------------
+  // Nothing puts back what the sweep has taken
+  // ------------------------------------------------------------------
+
+  test('connector_cannot_be_served_for_a_space_under_removal — not recreated, and not still answering', async () => {
+    const seeded = await seed('shared');
+    const environment = builtinEnvironment(loadEnv({ NODE_ENV: 'test' }));
+
+    // Before the fence, the space is furnished as any space is.
+    const furnished = await ensureBuiltinConnections(sql, environment, seeded.spaceId);
+    const before = await countOf(sql, 'connection', sql`space_id = ${seeded.spaceId}`);
+    expect(before).toBeGreaterThan(1);
+
+    // A registry that is answering for every one of them.
+    const registry = new ConnectorRegistry();
+    const rows = await sql<{ id: string }[]>`select id from connection
+      where space_id = ${seeded.spaceId} order by id`;
+    const connector = { manifest: emailManifest } as never;
+    for (const row of rows) registry.register(row.id, connector);
+
+    const removals = await service({ connectors: registry });
+    await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+
+    // A request landing mid-sweep, and the pass over every space at startup,
+    // both refuse to furnish a space that is being removed.
+    expect(await ensureBuiltinConnections(sql, environment, seeded.spaceId)).toEqual([]);
+    expect(await ensureBuiltinConnections(sql, environment)).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ spaceId: seeded.spaceId })]),
+    );
+
+    const finished = await removals.run((await removals.current(seeded.spaceId))?.id ?? '');
+    expect(outcome(finished)).toBe('complete');
+    // Nothing is left to serve, and nothing in this process is still serving.
+    expect(await countOf(sql, 'connection', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    expect(await countOf(sql, 'secret', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    for (const row of [...rows, ...furnished.map((made) => ({ id: made.id }))])
+      expect(registry.get(row.id)).toBeUndefined();
+    expect(finished.counts).toMatchObject({ providers: { connectors_served: 0 } });
   });
 
   // ------------------------------------------------------------------

@@ -25,9 +25,19 @@ export type VerifyOptions = {
   spacesRoot: string;
   workRoot: string;
   omitted: Partial<Record<RemovalPhase, PhaseOmission>>;
-  sandboxes?: {
-    listWorkspacesForSpace(spaceId: string): Promise<{ sessions: string[]; snapshots: string[] }>;
-  };
+  /**
+   * What the provider re-listings already found, carried forward from the
+   * phases that asked. They are asked there rather than here because a
+   * provider is reached through the connection whose account holds it, and
+   * those rows are gone by the time this runs.
+   */
+  providers: Record<string, number>;
+  /** Captured at the fence, because the rows that carried them are gone. */
+  connectionIds: readonly string[];
+  /** Left out, nothing is serving connectors in this process. */
+  connectors?: { get(connectionId: string): unknown };
+  /** Carried through untouched; nothing here can stop a removal finishing. */
+  cleared: Record<string, number>;
 };
 
 /**
@@ -105,8 +115,17 @@ export async function verifyRemoval(raw: Sql, options: VerifyOptions): Promise<R
   return {
     tables,
     paths: await remainingPaths(options),
-    providers: await remainingProviders(options),
+    providers: {
+      ...options.providers,
+      // Nothing in this process may still answer for a connection of a space
+      // that is going. A recreated one is refused separately, by the removal
+      // stamp the default-connection query reads.
+      connectors_served: options.connectionIds.filter(
+        (id) => options.connectors?.get(id) !== undefined,
+      ).length,
+    },
     omitted: options.omitted,
+    cleared: options.cleared,
   };
 }
 
@@ -169,12 +188,6 @@ async function remainingPaths(options: VerifyOptions): Promise<string[]> {
     if (entries.length > 0) remaining.push(content);
   }
   return remaining;
-}
-
-async function remainingProviders(options: VerifyOptions): Promise<Record<string, number>> {
-  if (!options.sandboxes) return {};
-  const held = await options.sandboxes.listWorkspacesForSpace(options.spaceId);
-  return { sandbox_sessions: held.sessions.length, sandbox_snapshots: held.snapshots.length };
 }
 
 async function exists(path: string): Promise<boolean> {

@@ -10,6 +10,7 @@ CREATE TABLE "space_removal" (
   "state" text NOT NULL DEFAULT 'pending',
   "phase" text NOT NULL DEFAULT 'fence',
   "job_ids" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "connection_ids" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "providers" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "counts" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "blocked_reason" text,
@@ -20,7 +21,7 @@ CREATE TABLE "space_removal" (
   "finished_at" timestamptz,
   CONSTRAINT "space_removal_kind" CHECK ("kind" IN ('removed','emptied')),
   CONSTRAINT "space_removal_state" CHECK ("state" IN ('pending','running','blocked','complete')),
-  CONSTRAINT "space_removal_phase" CHECK ("phase" IN ('fence','sessions','journal','sandboxes','browser','files','operational','principals','memory','verify','space'))
+  CONSTRAINT "space_removal_phase" CHECK ("phase" IN ('fence','sessions','journal','sandboxes','browser','runtime','files','operational','principals','memory','verify','space'))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX "space_removal_live_idx" ON "space_removal" ("space_id") WHERE "state" <> 'complete';

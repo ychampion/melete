@@ -50,27 +50,31 @@ function fakeSandboxes(): SandboxTeardown & { held: { sessions: string[]; snapsh
   const held = { sessions: ['sbx_one'], snapshots: ['snap_one'] };
   return {
     held,
+    providerFor: (adapter, connectionId) => ({ adapter, connectionId }),
     destroyWorkspacesForSpace: async () => {
+      const closed = [...held.sessions];
+      const snapshotsDeleted = [...held.snapshots];
       held.sessions = [];
       held.snapshots = [];
+      return { closed, snapshotsDeleted };
     },
     listWorkspacesForSpace: async () => ({ ...held }),
   };
 }
 
-/** A browser worker that records being stopped and each site it is told to forget. */
-function fakeBrowser(): BrowserTeardown & { stopped: string[]; forgotten: string[] } {
-  const stopped: string[] = [];
-  const forgotten: string[] = [];
+/**
+ * A browser worker that removes the profile it is asked to forget and leaves
+ * the space root alone, as the real one does.
+ */
+function fakeBrowser(): BrowserTeardown & { forgot: string[] } {
+  const forgot: string[] = [];
   return {
-    stopped,
-    forgotten,
-    stop: async (spaceId) => {
-      stopped.push(spaceId);
-    },
-    sitesForSpace: async () => ['mail.example.test'],
-    forgetSite: async (_spaceId, domain) => {
-      forgotten.push(domain);
+    forgot,
+    forgetSpace: async (spaceId) => {
+      forgot.push(spaceId);
+      const profile = join(spacesRoot, spaceId, 'browser');
+      await rm(profile, { recursive: true, force: true });
+      return { space_id: spaceId, profile, rows: 1 };
     },
   };
 }
@@ -221,8 +225,8 @@ withDb(`conformance 9: ${s.title}`, () => {
   test(s.assertions[2] ?? '', async () => {
     expect(await present(join(spacesRoot, seeded.spaceId))).toBe(false);
     expect(await present(join(spacesRoot, seeded.spaceId, '.git'))).toBe(false);
-    expect(browser.stopped).toEqual([seeded.spaceId]);
-    expect(browser.forgotten).toEqual(['mail.example.test']);
+    expect(browser.forgot).toEqual([seeded.spaceId]);
+    expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 1 } });
   });
 
   test(s.assertions[3] ?? '', async () => {
@@ -285,6 +289,7 @@ withDb(`conformance 9: ${s.title}`, () => {
       journal: await newJournal(),
       roots: { spacesRoot, workRoot },
       sandboxes: {
+        providerFor: () => ({}),
         destroyWorkspacesForSpace: async () => {
           throw new Error('the sandbox provider could not be reached');
         },

@@ -36,6 +36,12 @@ export const spaceRemoval = pgTable(
      */
     jobIds: jsonb('job_ids').$type<string[]>().notNull().default([]),
     /**
+     * Also captured at the fence. Phase 8 deletes the connection rows, and both
+     * the connector registry and a sandbox provider are addressed by connection
+     * id, so the ids have to outlive the rows that carried them.
+     */
+    connectionIds: jsonb('connection_ids').$type<string[]>().notNull().default([]),
+    /**
      * Also captured at the fence: the connection rows are deleted in phase 8,
      * and the finished report has to name the services where a key of theirs
      * keeps working until the person revokes it there.

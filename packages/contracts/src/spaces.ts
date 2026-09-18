@@ -21,6 +21,14 @@ export const REMOVAL_PHASES = [
   'journal',
   'sandboxes',
   'browser',
+  /**
+   * The engine session volume a job's runtime keeps, labelled by job. Nothing
+   * makes one yet, so the phase clears nothing and says so; it is named here in
+   * the order it has to run — after the worker that could still write into one,
+   * and before the directories that hold them — so the work that adds them
+   * slots into the sweep instead of rearranging it.
+   */
+  'runtime',
   'files',
   'operational',
   'principals',
@@ -66,10 +74,22 @@ export const removalCounts = z.object({
   providers: z.record(z.string(), z.number().int().nonnegative()).default({}),
   /** Phases that did no work, and whether that was proven or merely unreachable. */
   omitted: z.partialRecord(removalPhase, phaseOmission).default({}),
+  /**
+   * What went, which is the opposite question from every field above. Nothing
+   * here can stop a removal finishing; it is what the finished account draws on
+   * when it says how many signed-in sites or provider snapshots were cleared.
+   */
+  cleared: z.record(z.string(), z.number().int().nonnegative()).default({}),
 });
 export type RemovalCounts = z.infer<typeof removalCounts>;
 
-export const EMPTY_COUNTS: RemovalCounts = { tables: {}, paths: [], providers: {}, omitted: {} };
+export const EMPTY_COUNTS: RemovalCounts = {
+  tables: {},
+  paths: [],
+  providers: {},
+  omitted: {},
+  cleared: {},
+};
 
 /** True only when the sweep left nothing behind and skipped nothing it could not prove. */
 export function removalIsClear(counts: RemovalCounts): boolean {
