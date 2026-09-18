@@ -25,13 +25,29 @@ export type ProviderResult = {
 
 export type FailureCode = 'timeout' | 'upstream' | 'refused' | 'malformed';
 
-/** A failure with an outcome code the page already has words for. */
+/**
+ * A failure with an outcome code the page already has words for, and one thing
+ * the caller cannot work out for itself: whether the model was paid for before
+ * this went wrong.
+ *
+ * It matters because the day's budget is handed back on a failure, and handing
+ * back a turn that has already cost tokens is not a budget at all. Only a
+ * failure that reached nobody is free — the connection never opened, or the
+ * API answered with a status instead of a completion.
+ *
+ * So the default is `true`, and a caller has to state that a failure was free.
+ * A provider that forgets this flag costs a visitor a turn; a provider that
+ * forgot it the other way round would hand the owner's key to anyone able to
+ * provoke an error on demand. Only one of those two mistakes is survivable.
+ */
 export class ProviderError extends Error {
   readonly code: FailureCode;
-  constructor(code: FailureCode, message: string) {
+  readonly billed: boolean;
+  constructor(code: FailureCode, message: string, billed = true) {
     super(message);
     this.name = 'ProviderError';
     this.code = code;
+    this.billed = billed;
   }
 }
 

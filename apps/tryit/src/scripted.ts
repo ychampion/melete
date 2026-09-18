@@ -278,7 +278,8 @@ export function scriptedProvider(script: Script = {}): CaseFileProvider {
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
-      reject(new ProviderError('timeout', 'the model took too long'));
+      // Nothing was called, so nothing was paid for.
+      reject(new ProviderError('timeout', 'the model took too long', false));
       return;
     }
     const timer = setTimeout(() => {
@@ -287,7 +288,8 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new ProviderError('timeout', 'the model took too long'));
+      // Nothing was called, so nothing was paid for.
+      reject(new ProviderError('timeout', 'the model took too long', false));
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });

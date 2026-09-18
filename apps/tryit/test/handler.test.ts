@@ -10,6 +10,7 @@ import { caseFileRoute, clientIp, readStream } from '../src/handler.ts';
 import { memoryLimiter } from '../src/limiter.ts';
 import type { Limits } from '../src/limits.ts';
 import { DEFAULT_LIMITS } from '../src/limits.ts';
+import type { CaseFileProvider } from '../src/provider.ts';
 import { ProviderError } from '../src/provider.ts';
 import { SAMPLES } from '../src/samples.ts';
 import type { Script } from '../src/scripted.ts';
@@ -204,13 +205,11 @@ describe('the ways it ends badly', () => {
     expect(await everyone.json()).toMatchObject({ ok: false, code: 'busy' });
   });
 
-  test('a model that never answers is given up on, and the turn is handed back', async () => {
+  test('a model that never answers is given up on', async () => {
     const use = deps({ delayMs: 5_000 });
     const { done } = await readStream(await caseFileRoute(post(REFUND), use));
     expect(done).toMatchObject({ ok: false, code: 'timeout' });
     expect(use.lines[0]?.outcome).toBe('timeout');
-    // The attempt produced nothing, so it did not cost one of the day's turns.
-    expect(await use.limiter.take('1.2.3.4')).toMatchObject({ allowed: true });
   });
 
   test('an upstream failure is reported as one', async () => {
@@ -224,6 +223,107 @@ describe('the ways it ends badly', () => {
     const use = deps({ fail: new ProviderError('refused', 'I cannot help with that') });
     const { done } = await readStream(await caseFileRoute(post(REFUND), use));
     expect(done).toMatchObject({ ok: false, code: 'refused' });
+  });
+});
+
+/**
+ * A cap that hands the turn back after the model has been paid for is not a
+ * cap: anyone who can make the model refuse, overrun or run slow gets as many
+ * calls as they like. So the question each test asks is not "was there an
+ * error" but "how many times could the model be called", and the counter is
+ * spent down to the cap first — a test with room left over passes whether or
+ * not the rule holds, which is how this went unnoticed.
+ */
+describe('what a failure costs', () => {
+  /** Count the calls that would really have been billed, and fail after them. */
+  const billing = (error: ProviderError) => {
+    const calls = { made: 0 };
+    const provider: CaseFileProvider = {
+      name: 'billing',
+      async run() {
+        calls.made += 1; // the tokens are spent here
+        throw error; // ...and the failure happens after
+      },
+    };
+    return { calls, provider };
+  };
+
+  const attempts = async (error: ProviderError, tries: number) => {
+    const { calls, provider } = billing(error);
+    const use = deps({}, { provider });
+    for (let turn = 0; turn < tries; turn += 1) {
+      const response = await caseFileRoute(post(REFUND, '1.1.1.1'), use);
+      if (response.body) await response.text();
+    }
+    return calls.made;
+  };
+
+  test('a refusal costs a turn: the paid-for call is counted', async () => {
+    // Twenty tries against a cap of two may buy two calls, and no more.
+    expect(await attempts(new ProviderError('refused', 'no', true), 20)).toBe(LIMITS.perIpPerDay);
+  });
+
+  test('so does a reply that stopped early', async () => {
+    expect(await attempts(new ProviderError('malformed', 'stopped early', true), 20)).toBe(
+      LIMITS.perIpPerDay,
+    );
+  });
+
+  test('so does a reply that answered, but in the wrong shape', async () => {
+    // This one returns rather than throws, so it is the handler's own
+    // `malformed` branch that must not hand the turn back.
+    let calls = 0;
+    const nonsense: CaseFileProvider = {
+      name: 'nonsense',
+      async run() {
+        calls += 1;
+        return { json: { not: 'a case file' }, sources: [], searches: 0 };
+      },
+    };
+    const use = deps({}, { provider: nonsense });
+    for (let turn = 0; turn < 20; turn += 1) {
+      const response = await caseFileRoute(post(REFUND, '2.2.2.2'), use);
+      if (response.body) await response.text();
+    }
+    expect(calls).toBe(LIMITS.perIpPerDay);
+  });
+
+  test('so does a request given up on after it was sent', async () => {
+    expect(await attempts(new ProviderError('timeout', 'too slow', true), 20)).toBe(
+      LIMITS.perIpPerDay,
+    );
+  });
+
+  test('a failure that never reached the model is handed back', async () => {
+    // Nothing was sent, so nothing was paid for, and the turn is still theirs.
+    expect(await attempts(new ProviderError('upstream', 'could not connect', false), 20)).toBe(20);
+  });
+
+  test('the whole page runs out too, however the attempts fail', async () => {
+    const { calls, provider } = billing(new ProviderError('refused', 'no', true));
+    const use = deps({}, { provider });
+    for (let turn = 0; turn < 20; turn += 1) {
+      const response = await caseFileRoute(post(REFUND, `9.9.9.${turn}`), use);
+      if (response.body) await response.text();
+    }
+    expect(calls.made).toBe(LIMITS.globalPerDay);
+  });
+
+  test('a case file that arrives is never handed back', async () => {
+    const handed: string[] = [];
+    const use = deps(
+      {},
+      {
+        limiter: {
+          take: async () => ({ allowed: true, remaining: 4 }),
+          giveBack: async (ip) => {
+            handed.push(ip);
+          },
+        },
+      },
+    );
+    await readStream(await caseFileRoute(post(REFUND), use));
+    expect(handed).toEqual([]);
   });
 });
 

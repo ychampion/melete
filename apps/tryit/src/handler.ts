@@ -171,7 +171,8 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
 
       const draft = parseDraft(result.json);
       if (!draft) {
-        await deps.limiter.giveBack(ip);
+        // The model answered, so the call was paid for. The turn is spent even
+        // though there is nothing to show for it.
         record({ ...bare, chars, outcome: 'malformed' });
         return { ok: false, code: 'malformed', message: WORDS.malformed };
       }
@@ -196,7 +197,11 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
       };
     } catch (error) {
       const code = failureOf(error, controller.signal);
-      await deps.limiter.giveBack(ip);
+      // A turn goes back only when the failure proves the model was never paid
+      // for. Anything else — a refusal, a reply that stopped early, a request
+      // given up on after it was sent — has already cost tokens, and refunding
+      // it would let anyone who can provoke one have the key for nothing.
+      if (!wasBilled(error)) await deps.limiter.giveBack(ip);
       record({ ...bare, chars, outcome: code });
       return { ok: false, code, message: WORDS[code] };
     } finally {
@@ -205,6 +210,14 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
     }
   });
 }
+
+/**
+ * Only a provider that says so proves nothing was paid for. A failure from
+ * anywhere else is unexplained, and an unexplained failure is assumed to have
+ * cost something.
+ */
+const wasBilled = (error: unknown): boolean =>
+  error instanceof ProviderError ? error.billed : true;
 
 const failureOf = (error: unknown, signal: AbortSignal): Exclude<Outcome, 'ok'> => {
   if (signal.aborted) return 'timeout';
