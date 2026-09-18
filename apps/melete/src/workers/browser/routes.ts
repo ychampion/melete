@@ -9,7 +9,12 @@ import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-servi
 import { BrowserFault, type BrowserSession } from './sessions.ts';
 import { BrowserSiteService } from './sites.ts';
 
-export type BrowserWorkers = { get(spaceId: string): Promise<BrowserWorkerClient> };
+export type BrowserWorkers = {
+  get(spaceId: string): Promise<BrowserWorkerClient>;
+  /** Where one directory per space lives, and how one space's worker stops: see forgetSpace. */
+  readonly spacesRoot?: string;
+  release?(spaceId: string): Promise<void>;
+};
 type Binding = Pick<BrowserSession, 'id' | 'space_id' | 'job_id' | 'control_epoch' | 'control'>;
 export const browserInputReasons = new Set([
   'stale_control_epoch',

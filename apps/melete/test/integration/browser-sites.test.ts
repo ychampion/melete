@@ -320,13 +320,31 @@ suite('the sites a space is signed in to', () => {
     await sessions.sites.record(spaceId, 'still.example');
     const held = await sql`select domain from browser_site_profile where space_id = ${spaceId}`;
     expect(held.map((row) => row.domain)).toContain('still.example');
-    // Forgetting a space stops its worker and deletes the space root, the profile with it.
-    await pool.close();
-    await rm(join(root, spaceId), { recursive: true, force: true });
-    await sql`delete from job where space_id = ${spaceId}`;
-    await sql`delete from space where id = ${spaceId}`;
+
+    // What a space-deletion path calls, before it deletes the space row. The worker for this
+    // space is running and holding the profile open, which is the case that matters.
+    expect(await sessions.sites.forgetSpace(spaceId)).toEqual({
+      space_id: spaceId,
+      profile,
+    });
     expect(existsSync(profile)).toBe(false);
     const gone = await sql`select domain from browser_site_profile where space_id = ${spaceId}`;
     expect(gone.map((row) => row.domain)).toEqual([]);
+    // The space root itself is the caller's to remove; only the browser's part of it went.
+    expect(existsSync(join(root, spaceId))).toBe(true);
+    // Saying it twice is not an error, and neither is saying it for a space that never browsed.
+    expect(await sessions.sites.forgetSpace(spaceId)).toMatchObject({ space_id: spaceId });
+    expect(await sessions.sites.forgetSpace('sp_never_browsed')).toMatchObject({
+      space_id: 'sp_never_browsed',
+    });
+
+    // The rows also follow the space when it goes, so a caller that forgets to ask still leaves
+    // nothing behind in the database.
+    await sessions.sites.record(spaceId, 'cascades.example');
+    await sql`delete from job where space_id = ${spaceId}`;
+    await sql`delete from space where id = ${spaceId}`;
+    const cascaded = await sql`select domain from browser_site_profile
+      where space_id = ${spaceId}`;
+    expect(cascaded.map((row) => row.domain)).toEqual([]);
   }, 60_000);
 });

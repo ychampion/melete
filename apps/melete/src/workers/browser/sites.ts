@@ -4,6 +4,8 @@
  * never what the person did there. Signing out of a site removes its cookies and storage from
  * the profile and the record with them.
  */
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { type BrowserSite, browserSiteForgotten, browserSiteList } from '@melete/contracts';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -57,6 +59,23 @@ export class BrowserSiteService {
     await this.sql`delete from browser_site_profile
       where space_id = ${spaceId} and domain = ${site}`;
     return { domain: site, forgotten: true as const };
+  }
+
+  /**
+   * Everything this space's browser holds, gone: its worker stopped, its Chromium profile removed
+   * from the space directory, and its records deleted. Whoever deletes a space calls this before
+   * deleting the space row, because a running worker holds the profile open and would write files
+   * back under a root the caller believes is already gone. Deleting the space row alone takes the
+   * records with it, since they reference the space, but never the profile on disk. Calling it
+   * for a space with no worker running and no profile is silent and safe.
+   */
+  async forgetSpace(spaceId: string): Promise<{ space_id: string; profile: string | null }> {
+    await this.workers.release?.(spaceId);
+    const root = this.workers.spacesRoot;
+    const profile = root === undefined ? null : join(root, spaceId, 'browser');
+    if (profile) await rm(profile, { recursive: true, force: true });
+    await this.sql`delete from browser_site_profile where space_id = ${spaceId}`;
+    return { space_id: spaceId, profile };
   }
 
   /** Signed-in sites belong to whoever owns the space, even where others may work in it. */

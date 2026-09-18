@@ -210,6 +210,19 @@ export class BrowserWorkerPool {
     }
   }
 
+  /** Where this pool keeps one directory per space, so a space's profile can be found again. */
+  get spacesRoot(): string {
+    return this.options.spacesRoot;
+  }
+
+  /** Stop one space's worker and forget it; the next request for that space starts a new one. */
+  async release(spaceId: string): Promise<void> {
+    const worker = this.workers.get(spaceId);
+    if (!worker) return;
+    this.workers.delete(spaceId);
+    await (await worker.catch(() => undefined))?.close();
+  }
+
   async close() {
     const handles = await Promise.allSettled(this.workers.values());
     this.workers.clear();
