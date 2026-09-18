@@ -72,6 +72,20 @@ export interface CompanyExtractor {
  * a Zod conversion produces for nullable fields.
  */
 export const EXTRACTION_SCHEMA_NAME = 'company_ledger_items';
+
+/**
+ * Strict Structured Outputs accepts a subset of JSON Schema, and that subset
+ * has no `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`,
+ * `minimum` or `maximum`. A schema carrying any of them is refused whole with a
+ * 400 before the model sees it — and a refused request is indistinguishable
+ * from an email with nothing in it, so every scan would close `done` having
+ * found nothing.
+ *
+ * So the bounds are said in words here and enforced in code by `extractedItem`
+ * above, which is the thing that actually decides what is admitted. Saying them
+ * twice was never what made them true; the Zod schema was always the authority.
+ * `extract.test.ts` asserts the subset, so this cannot drift back.
+ */
 export const EXTRACTION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -79,7 +93,8 @@ export const EXTRACTION_SCHEMA = {
   properties: {
     items: {
       type: 'array',
-      maxItems: 12,
+      description:
+        'One entry per distinct claim, at most 12. Return an empty array if there are none.',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -97,24 +112,47 @@ export const EXTRACTION_SCHEMA = {
         properties: {
           kind: { type: 'string', enum: [...LEDGER_ITEM_KINDS] },
           direction: { type: 'string', enum: [...LEDGER_DIRECTIONS] },
-          amount_minor: { type: ['integer', 'null'], minimum: 0 },
-          currency: { type: ['string', 'null'], pattern: '^[A-Z]{3}$' },
-          due_at: { type: ['string', 'null'] },
+          amount_minor: {
+            type: ['integer', 'null'],
+            description:
+              'Whole minor units as a non-negative integer, or null. Never negative: direction carries the sign.',
+          },
+          currency: {
+            type: ['string', 'null'],
+            description:
+              'An ISO-4217 code in upper case, exactly three letters, such as GBP. Null without an amount.',
+          },
+          due_at: {
+            type: ['string', 'null'],
+            description: 'An ISO-8601 date or timestamp, or null.',
+          },
           confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
           suggested_playbook: { type: ['string', 'null'], enum: [...LAUNCH_PLAYBOOKS, null] },
-          summary: { type: 'string', maxLength: 500 },
+          summary: {
+            type: 'string',
+            description: 'One short line in plain words, at most 500 characters.',
+          },
           evidence: {
             type: 'array',
-            minItems: 1,
-            maxItems: 8,
+            description: 'One to eight quotes, at most 8. At least one is required.',
             items: {
               type: 'object',
               additionalProperties: false,
               required: ['quote', 'start', 'end'],
               properties: {
-                quote: { type: 'string', maxLength: 2000 },
-                start: { type: 'integer', minimum: 0 },
-                end: { type: 'integer', minimum: 0 },
+                quote: {
+                  type: 'string',
+                  description:
+                    'The exact characters of the message at [start, end), at most 2000 characters.',
+                },
+                start: {
+                  type: 'integer',
+                  description: 'Non-negative offset of the first character of the quote.',
+                },
+                end: {
+                  type: 'integer',
+                  description: 'Non-negative offset one past the last character of the quote.',
+                },
               },
             },
           },
