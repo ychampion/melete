@@ -98,18 +98,36 @@ export type Filter =
   | null
   | { kind: 'direction'; value: LedgerDirection }
   | { kind: 'item'; value: LedgerItemKind }
+  /** Renewals inside a window, which is what the "renews in 30 days" figure counts. */
+  | { kind: 'renewing'; days: number }
   | { kind: 'promise'; lapsed: boolean }
   | { kind: 'company'; value: string };
 
+/**
+ * Still in play. Every figure at the top of the map counts these and no others,
+ * so every filter derived from a figure has to agree — otherwise a person
+ * presses "3 price rises" and is shown four rows.
+ */
+export const isLive = (item: LedgerItem): boolean =>
+  item.status !== 'settled' && item.status !== 'dropped';
+
 export function matches(item: LedgerItem, filter: Filter, now = Date.now()): boolean {
   if (filter === null) return true;
+  // A company is a place, not a figure: asking for one shows everything it has,
+  // settled rows included.
+  if (filter.kind === 'company') return item.company_id === filter.value;
+  if (!isLive(item)) return false;
   switch (filter.kind) {
     case 'direction':
       return item.direction === filter.value;
     case 'item':
       return item.kind === filter.value;
-    case 'company':
-      return item.company_id === filter.value;
+    case 'renewing':
+      return (
+        item.kind === 'renewal' &&
+        item.due_at !== null &&
+        Date.parse(item.due_at) <= now + filter.days * 86_400_000
+      );
     case 'promise':
       if (item.kind !== 'promise') return false;
       return filter.lapsed

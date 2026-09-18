@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { EvidenceText, holds, MessageCard, segment } from './evidence.tsx';
 import { type Filter, inOrder, matches, money, whenDue } from './format.ts';
 import { EmptyLedger, LedgerRow } from './Ledger.tsx';
-import { TotalsRow } from './Totals.tsx';
+import { TotalsRow, totalsOf } from './Totals.tsx';
 import type { Company, CompanyMapTotals, LedgerItem, LedgerMessage } from './types.ts';
 
 const NOW = Date.parse('2026-09-18T09:00:00.000Z');
@@ -160,6 +160,77 @@ test('a total filters to exactly the rows it was counted from', () => {
   expect(under({ kind: 'promise', lapsed: true })).toEqual(['li_d']);
   expect(under({ kind: 'promise', lapsed: false })).toEqual(['li_e']);
   expect(under(null)).toHaveLength(5);
+});
+
+/**
+ * The promise this screen makes is that a figure IS the rows under it. That
+ * holds only while every cell's filter selects exactly what its figure counted,
+ * so this pins each cell against a map built to break the ones that are easy to
+ * get right by accident: a renewal outside the window, and a settled row of
+ * every counted kind.
+ */
+test('every counted figure selects exactly the rows it counted, and nothing else', () => {
+  const soon = '2026-10-10T12:00:00.000Z'; // 22 days out — inside the window
+  const far = '2026-12-20T12:00:00.000Z'; // 93 days out — outside it
+  const rows = [
+    item({ id: 'li_renew_soon', kind: 'renewal', direction: 'you_pay', due_at: soon }),
+    item({ id: 'li_renew_far', kind: 'renewal', direction: 'you_pay', due_at: far }),
+    item({ id: 'li_rise', kind: 'price_rise', direction: 'you_pay', due_at: soon }),
+    item({ id: 'li_rise_done', kind: 'price_rise', direction: 'you_pay', status: 'settled' }),
+    item({ id: 'li_trial', kind: 'trial_ending', direction: 'you_pay', due_at: soon }),
+    item({ id: 'li_data', kind: 'data_held', direction: 'info', amount_minor: null }),
+    item({ id: 'li_owed', direction: 'owed_to_you', amount_minor: 6400 }),
+    item({ id: 'li_owed_done', direction: 'owed_to_you', amount_minor: 9900, status: 'settled' }),
+    item({ id: 'li_promise', kind: 'promise', direction: 'info', due_at: far }),
+    item({
+      id: 'li_promise_done',
+      kind: 'promise',
+      direction: 'info',
+      due_at: far,
+      status: 'settled',
+    }),
+  ];
+  // The totals a service would serve for exactly these rows.
+  const totals: CompanyMapTotals = {
+    owed_to_you_minor: 6400,
+    monthly_spend_minor: 0,
+    renewals_next_30d: 1,
+    price_rises: 1,
+    trials_ending: 1,
+    data_holders: 1,
+    promises_in_force: 1,
+    promises_lapsed: 0,
+  };
+  const cells = totalsOf(totals, 1, 'GBP');
+  const under = (filter: Filter) => rows.filter((row) => matches(row, filter, NOW));
+  const cell = (key: string) => {
+    const found = cells.find((entry) => entry.key === key);
+    if (!found) throw new Error(`no ${key} cell`);
+    return found;
+  };
+
+  // Every cell whose figure is a count of rows selects exactly that many.
+  for (const key of ['renewals', 'rises', 'trials', 'data', 'promises', 'lapsed'])
+    expect({ key, rows: under(cell(key).filter).length }).toEqual({
+      key,
+      rows: Number(cell(key).figure),
+    });
+
+  // And the right ones: the renewal outside the window is not among them.
+  expect(under(cell('renewals').filter).map((row) => row.id)).toEqual(['li_renew_soon']);
+
+  // A settled row is off every counted figure, of every kind.
+  for (const key of ['rises', 'owed', 'promises', 'lapsed'])
+    expect(under(cell(key).filter).map((row) => row.id)).not.toContain(
+      key === 'owed' ? 'li_owed_done' : `li_${key === 'rises' ? 'rise' : 'promise'}_done`,
+    );
+
+  // The money figure is the sum of the rows it selects, to the penny.
+  const owed = under(cell('owed').filter).reduce((sum, row) => sum + (row.amount_minor ?? 0), 0);
+  expect(owed).toBe(totals.owed_to_you_minor);
+
+  // But the whole ledger still shows the settled rows, faded rather than gone.
+  expect(under(null)).toHaveLength(rows.length);
 });
 
 /* ---------- the evidence ---------- */
