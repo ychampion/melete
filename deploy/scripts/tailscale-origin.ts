@@ -36,9 +36,11 @@ export type CommandRunner = (command: readonly string[]) => Promise<CommandOutpu
  * `CertDomains` are the names the control plane will issue a certificate for,
  * without a trailing dot, and it is what Serve terminates HTTPS on, so it is
  * the address a browser uses. `Self.DNSName` is the node's own FQDN and ends
- * with a dot; it is the fallback, because a tailnet with HTTPS certificates
- * disabled reports no certificate domain and the name is still worth printing
- * in the error.
+ * with a dot; it is the fallback, and it is written as the origin, because a
+ * tailnet with HTTPS certificates disabled reports no certificate domain while
+ * the name it will be issued for is already settled. Turning the setting on
+ * afterwards changes nothing that was written here. A node still joining has
+ * neither, and that is what the report calls no origin yet.
  */
 export type TailscaleStatus = {
   CertDomains?: readonly unknown[] | null;
