@@ -93,6 +93,11 @@ export type BrowserTeardown = {
 /**
  * Per-job engine session volumes, labelled by job. Nothing makes one yet; this
  * is the shape the work that does will be wired into.
+ *
+ * Both calls take job ids and address volumes labelled by them. The
+ * deployment's `runtime-home` volume is one volume shared by every space and
+ * every job, so it is never what this clears: removing one space must not take
+ * the engine's home out from under every other space on the installation.
  */
 export type RuntimeHomeTeardown = {
   /** Remove the engine session volume each of these jobs kept. */

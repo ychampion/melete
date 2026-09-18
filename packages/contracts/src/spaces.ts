@@ -27,6 +27,9 @@ export const REMOVAL_PHASES = [
    * the order it has to run — after the worker that could still write into one,
    * and before the directories that hold them — so the work that adds them
    * slots into the sweep instead of rearranging it.
+   *
+   * It clears volumes labelled by job, and only those. The deployment's single
+   * `runtime-home` volume is shared by every space and is not one of them.
    */
   'runtime',
   'files',
