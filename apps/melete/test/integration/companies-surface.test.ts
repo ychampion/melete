@@ -240,8 +240,16 @@ withDb('the company map over HTTP', () => {
     const before = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
     );
+    // It has to be one the totals are actually counting. The test above settles
+    // an item; a settled item stays on the map but leaves the totals, so
+    // dropping that one would move no figure — right behaviour, failing
+    // assertion. The item is chosen by status rather than by position.
     const owed = before.items.find(
-      (item) => item.direction === 'owed_to_you' && item.currency === 'GBP' && item.amount_minor,
+      (item) =>
+        item.status === 'found' &&
+        item.direction === 'owed_to_you' &&
+        item.currency === 'GBP' &&
+        item.amount_minor,
     );
     expect(owed).toBeDefined();
     if (!owed) return;
