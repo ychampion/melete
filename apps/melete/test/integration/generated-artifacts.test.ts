@@ -15,7 +15,7 @@ import { testDatabase } from '../helpers/database.ts';
 
 const fixture = await testDatabase();
 const databaseTest = fixture ? test : test.skip;
-const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-w9-artifacts-'));
+const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-generated-artifacts-'));
 const env = loadEnv({
   MELETE_SPACES_DIR: root,
   MELETE_WORK_DIR: root,

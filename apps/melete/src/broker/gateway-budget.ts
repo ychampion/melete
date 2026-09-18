@@ -23,7 +23,7 @@ export class PostgresGatewayBudget implements GatewayBudget {
     private readonly options: {
       sql: Sql;
       capabilityKey: string;
-      /** W1 supplies only an explicitly authorized fallback for this job revision. */
+      /** The service supplies only an explicitly authorized fallback for this job revision. */
       fallback?: (jobId: string, revision: number) => Promise<ModelChoice | null>;
     },
   ) {}

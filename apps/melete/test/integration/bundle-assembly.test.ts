@@ -32,7 +32,7 @@ afterAll(async () => {
     const db = { ...handle, boss: queue.boss };
     const a = await createScope(db);
     const b = await createScope(db);
-    const root = await mkdtemp(join(tmpdir(), 'melete-w15-bundle-'));
+    const root = await mkdtemp(join(tmpdir(), 'melete-bundle-assembly-'));
     const skills = join(root, a.spaceId, 'skills');
     await mkdir(skills, { recursive: true });
     await handle.sql`update space set git_path = ${join(root, a.spaceId)} where id = ${a.spaceId}`;
@@ -67,7 +67,7 @@ afterAll(async () => {
     const broker = new BrokerService({ sql: handle.sql, connectors: registry });
     const jobs = new JobService(handle.db, queue.boss);
     const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
-      key: 'w15-bundle-signing-key-32-characters',
+      key: 'bundle-assembly-signing-key-32-chars',
       scopes: ['test.send'],
     });
     const bundles = [];

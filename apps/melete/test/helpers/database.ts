@@ -15,7 +15,7 @@ let server: Promise<TestServer | null> | undefined;
 const templates = new Map<string, Promise<string>>();
 let globalCleanup = false;
 let fixtures = 0;
-const tempPrefix = 'melete-w1-pg-';
+const tempPrefix = 'melete-pg-';
 
 function trace(event: string) {
   if (process.env.MELETE_FIXTURE_TIMINGS === '1') {

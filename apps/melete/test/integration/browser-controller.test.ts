@@ -20,7 +20,7 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
   beforeAll(async () => {
     fixture = startBrowserFixture();
     pool = new BrowserWorkerPool({
-      spacesRoot: await mkdtemp(join(tmpdir(), 'melete-w10b-controller-')),
+      spacesRoot: await mkdtemp(join(tmpdir(), 'melete-browser-controller-')),
       allowLocalProcess: true,
       workerEntry: new URL('../helpers/browser-child.ts', import.meta.url),
       workerArguments: [fixture.url],

@@ -73,7 +73,7 @@ const jobs = handle && queue ? new JobService(handle.db, queue.boss) : null;
 const key = 'principal-capability-test-key-at-least-32-bytes';
 const runner = jobs ? new AttemptRunner(jobs, new StubRuntimeAdapter(), { key }) : null;
 const stream = handle ? new EventStream(handle, { keepaliveMs: 25, pollIntervalMs: 25 }) : null;
-const root = await mkdtemp(join(tmpdir(), 'melete-w14-principals-'));
+const root = await mkdtemp(join(tmpdir(), 'melete-principals-'));
 const withDb = jobs ? describe : describe.skip;
 async function refusal(operation: Promise<unknown>) {
   let caught: unknown;

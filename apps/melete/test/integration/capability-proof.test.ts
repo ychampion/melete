@@ -23,10 +23,10 @@ import { record } from './properties-fixtures.ts';
 const enabled =
   process.env.MELETE_CAPABILITY_PROOF === '1' || process.env.MELETE_CAPABILITY_AUDIT === '1';
 const proof = enabled ? test : test.skip;
-const KEY = 'w14-proof-capability-key-at-least-32';
+const KEY = 'capability-proof-key-at-least-32-chars';
 const PRIVATE = 'OWNER-PRIVATE-CORRECTION-76392';
 const training: RecordCase = {
-  template: 'w14-owner-dates',
+  template: 'owner-dates',
   task: {
     columns: ['id', 'date'],
     rows: [
@@ -42,7 +42,7 @@ const training: RecordCase = {
   expectedIds: ['c', 'b', 'a'],
 };
 const later: RecordCase = {
-  template: 'w14-renewal-dates',
+  template: 'renewal-dates',
   task: {
     columns: ['id', 'due'],
     rows: [
@@ -59,7 +59,7 @@ const later: RecordCase = {
   expectedIds: ['y', 'w', 'z', 'x'],
 };
 const teammateExample: RecordCase = {
-  template: 'w14-teammate-renewals',
+  template: 'teammate-renewals',
   task: {
     columns: ['id', 'renewal'],
     rows: [
@@ -82,7 +82,7 @@ proof(
     expect(existsSync(loadEnv({}).MELETE_HERMES_PYTHON)).toBe(true);
     const handle = await testDatabase();
     if (!handle) throw new Error('The capability proof requires Postgres');
-    const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-w14-capability-'));
+    const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-capability-proof-'));
     const spaces = join(root, 'spaces');
     const evidence: Record<string, unknown> = {
       engine: 'hermes@v2026.9.7',
@@ -217,7 +217,7 @@ proof(
         failures.push(`${name}: ${detail}`);
         stages[name] = { status: 'failed', detail };
       }
-      process.stdout.write(`W14 capability ${name}: ${JSON.stringify(stages[name])}\n`);
+      process.stdout.write(`capability proof ${name}: ${JSON.stringify(stages[name])}\n`);
     }
     async function create(
       spaceId: string,
@@ -272,7 +272,7 @@ proof(
       throw new Error(`Job ${id} did not finish`);
     }
     try {
-      // Seed only the durable account, then boot exactly the W15 product path.
+      // Seed only the durable account, then boot exactly the wired product path.
       const ownerId = newId('own');
       const personalId = newId('sp');
       const hash = await Bun.password.hash('capability-proof-password', { algorithm: 'argon2id' });
@@ -288,7 +288,7 @@ proof(
           MELETE_RUNTIME_ADAPTER: 'hermes',
           MELETE_RUNTIME_SUPERVISOR: 'process',
           MELETE_CAPABILITY_KEY: KEY,
-          MELETE_APPROVAL_KEY: 'w14-proof-approval-key-at-least-32',
+          MELETE_APPROVAL_KEY: 'capability-proof-approval-key-at-least-32',
           MELETE_MASTER_KEY: '94'.repeat(32),
           MELETE_SPACES_DIR: spaces,
           MELETE_WORK_DIR: join(root, 'work'),
@@ -299,7 +299,7 @@ proof(
           MELETE_DEFAULT_MODEL: 'scripted-learning-v1',
         }),
         fakeProvider: async (body, id, protocol) => {
-          if (!installationProbe && JSON.stringify(body).includes('W14 MCP discovery')) {
+          if (!installationProbe && JSON.stringify(body).includes('MCP discovery proof')) {
             const [active] =
               await handle.sql`select j.state from attempt a join job j on j.id = a.job_id where a.id = ${id}`;
             const response = await call('/connections', {
@@ -325,7 +325,7 @@ proof(
         },
         onBundle: (bundle) => bundles.push(bundle),
         onTiming: (timing) =>
-          process.stdout.write(`W14 Hermes ${timing.attemptId}: ${timing.wallMs}ms\n`),
+          process.stdout.write(`Hermes ${timing.attemptId}: ${timing.wallMs}ms\n`),
       });
       const { jobs, queue, memory, broker, registry } = service;
       if (!jobs || !queue || !memory || !broker || !registry)
@@ -369,7 +369,7 @@ proof(
         const id = await create(
           personalId,
           'MCP',
-          'W14 MCP discovery: search, load, read capability fixture.',
+          'MCP discovery proof: search, load, read capability fixture.',
         );
         let outcomeError: unknown;
         try {
@@ -429,7 +429,11 @@ proof(
             expiredCredential = scenario === 'expired';
             revokedCredential = scenario === 'revoked';
             const before = calls;
-            const id = await create(personalId, `MCP ${scenario}`, `W14 MCP discovery ${scenario}`);
+            const id = await create(
+              personalId,
+              `MCP ${scenario}`,
+              `MCP discovery proof ${scenario}`,
+            );
             const output = await run(id).catch((error: Error) => error.message);
             const actions =
               await handle.sql`select status, receipt, repair_trace, repair_disposition from action where job_id = ${id}`;
@@ -479,7 +483,7 @@ proof(
           expect(gradeRecords(training, await run(original))).toBe(false);
           const corrected = await json<{ episode: { id: string; correctiveJobId: string } }>(
             await call(`/jobs/${original}/interventions`, {
-              idempotency_key: 'w14-correction',
+              idempotency_key: 'capability-proof-correction',
               kind: 'correction',
               signal: 'typed_ordering',
               text: `${PRIVATE}: compare dates chronologically using the declared date format; preserve columns and rows.`,
@@ -523,7 +527,7 @@ proof(
           );
           const memberTask = await create(
             sharedId,
-            'w14-member-dates',
+            'member-dates',
             taskObjective(later.task),
             memberCookie,
             true,
@@ -605,7 +609,7 @@ proof(
           { ...handle, boss: queue.boss },
           ownerScope,
           {
-            identity: 'w14-private-memory',
+            identity: 'private-memory',
             text: `records ${PRIVATE}`,
             eventAt: '2026-09-01T00:00:00Z',
           },
@@ -627,7 +631,7 @@ proof(
         );
         const queued = await create(
           sharedId,
-          'w14-revoke-queued',
+          'revoke-queued',
           taskObjective(teammateExample.task),
           memberCookie,
           true,
@@ -719,7 +723,7 @@ proof(
         );
         const after = await create(
           sharedId,
-          'w14-after-rollback',
+          'after-rollback',
           taskObjective(later.task),
           cookie,
           true,
@@ -752,7 +756,9 @@ proof(
         join(root, 'provider-requests.json'),
         `${JSON.stringify([...provider.requests], null, 2)}\n`,
       );
-      process.stdout.write(`W14 capability evidence: ${join(root, 'capability-evidence.json')}\n`);
+      process.stdout.write(
+        `capability proof evidence: ${join(root, 'capability-evidence.json')}\n`,
+      );
       await api?.stop(true);
       await service?.close();
       await mcp.stop(true);

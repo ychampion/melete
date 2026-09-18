@@ -912,7 +912,7 @@ withDb('attempt runner against Postgres and pg-boss', () => {
 
   test('bootstrap starts migrated durable dependencies and the configured stub worker', async () => {
     const { handle, jobs } = fixture();
-    const memoryRoot = await mkdtemp(join(tmpdir(), 'melete-w15-bootstrap-'));
+    const memoryRoot = await mkdtemp(join(tmpdir(), 'melete-runner-bootstrap-'));
     const bootstrapOwner = newId('own');
     await handle.sql`insert into owner (id, email) values (${bootstrapOwner}, 'bootstrap@example.test') on conflict do nothing`;
     await handle.sql`insert into principal (id, email) values (${bootstrapOwner}, 'bootstrap@example.test') on conflict do nothing`;

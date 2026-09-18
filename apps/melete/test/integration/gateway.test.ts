@@ -243,7 +243,7 @@ databaseTest(
 );
 
 databaseTest(
-  'service startup binds the W2 internal port and runs pg-boss against the fixture',
+  'service startup binds the broker internal port and runs pg-boss against the fixture',
   async () => {
     if (!fixture) throw new Error('Postgres fixture unavailable');
     const spacesRoot = await mkdtemp(join(tmpdir(), 'melete-discovery-skills-'));

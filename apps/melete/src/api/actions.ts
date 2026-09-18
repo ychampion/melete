@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { actionFromRow } from '../broker/records.ts';
 
-/** W1 supplies owner authentication and a selected space; runtime capabilities cannot read here. */
+/** The service supplies owner authentication and a selected space; runtime capabilities cannot read here. */
 export function createActionReadApi(options: {
   sql: Sql;
   authorizeSpace(request: Request): Promise<string | null>;

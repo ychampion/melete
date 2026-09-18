@@ -18,7 +18,7 @@ export async function createJobAttempt(
   return { jobId, attemptId };
 }
 export async function createJournal() {
-  const directory = await mkdtemp(join(tmpdir(), 'melete-w7-journal-'));
+  const directory = await mkdtemp(join(tmpdir(), 'melete-lifecycle-journal-'));
   const journal = new FileRestrictionJournal(join(directory, 'restrictions.jsonl'));
   await journal.initializeNew();
   return {
@@ -26,7 +26,7 @@ export async function createJournal() {
     async close() {
       if (
         resolve(directory).startsWith(
-          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-w7-journal-`,
+          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-lifecycle-journal-`,
         )
       )
         await rm(directory, { recursive: true, force: true });

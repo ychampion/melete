@@ -95,12 +95,12 @@ withDb('memory evidence ledger', () => {
   });
   test('pg-boss uses the embedded database', async () => {
     if (!db) return;
-    await db.boss.createQueue('w7.probe');
-    await db.boss.send('w7.probe', { marker: 'durable' });
-    const jobs = await db.boss.fetch<{ marker: string }>('w7.probe');
+    await db.boss.createQueue('memory.probe');
+    await db.boss.send('memory.probe', { marker: 'durable' });
+    const jobs = await db.boss.fetch<{ marker: string }>('memory.probe');
     expect(jobs[0]?.data.marker).toBe('durable');
     await db.boss.complete(
-      'w7.probe',
+      'memory.probe',
       jobs.map((j) => j.id),
     );
   });

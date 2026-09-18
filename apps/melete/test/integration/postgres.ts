@@ -45,7 +45,7 @@ export async function createTestDatabase(
 }
 export async function createScope(db: TestDatabase): Promise<MemoryScope> {
   const spaceId = newId('sp');
-  // W1's owner_singleton_idx allows exactly one owner row per database, so
+  // The owner_singleton_idx allows exactly one owner row per database, so
   // scopes share it. A scope is isolated by its space, not by its owner.
   const candidate = newId('own');
   await db.sql`insert into owner (id, email) values (${candidate}, ${`${candidate}@example.test`}) on conflict do nothing`;

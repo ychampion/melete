@@ -49,7 +49,7 @@ export function capabilityProvider() {
           return task.direction === 'ascending' ? compared : -compared;
         });
       turn = { text: JSON.stringify({ columns: task.columns, rows }) };
-    } else if (text.includes('W14 MCP discovery')) {
+    } else if (text.includes('MCP discovery proof')) {
       const index = turns.get(id) ?? 0;
       turns.set(id, index + 1);
       const names = ((body.tools ?? []) as { function?: { name?: string } }[]).map(

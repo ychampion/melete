@@ -27,7 +27,7 @@ databaseTest(
     if (!fixture) return;
     const { sql } = fixture;
     const seed = await seedJob(sql, { provider: 'generation', scopes: ['audio.synthesize'] });
-    const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-w9-speech-'));
+    const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-speech-broker-'));
     const env = loadEnv({
       DATABASE_URL: fixture.url,
       MELETE_CAPABILITY_KEY: 'c'.repeat(32),

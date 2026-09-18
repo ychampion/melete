@@ -40,7 +40,7 @@ export async function selectedContext(
   }));
   if (publicCompartment) return { skills, knowledge: [] };
   const paths = spacePaths(dirname(access.space.gitPath), basename(access.space.gitPath));
-  // Bounded excerpts use only active published records. Candidate evaluation belongs to W11.
+  // Bounded excerpts use only active published records. Candidate evaluation belongs to the learning loop.
   const records = loadSpace(paths).records.filter(
     (record) =>
       !('memory_revision' in record.frontmatter) &&

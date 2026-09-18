@@ -36,7 +36,7 @@ const measurements: Measurement[] = [];
     await db?.close();
     if (measurements.length) {
       await writeFile(
-        new URL('../../../../.agents/w10b-measurements.json', import.meta.url),
+        new URL('../../../../.agents/browser-measurements.json', import.meta.url),
         JSON.stringify(
           { no_model_latency: true, browser_launch_excluded: true, measurements },
           null,

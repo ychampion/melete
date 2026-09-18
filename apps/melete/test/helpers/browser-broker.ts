@@ -36,7 +36,7 @@ export type BrowserDetail = {
 
 /** A scripted caller exercises the real broker; only the fixture's explicit owner approval is automated. */
 export async function browserBrokerFixture(db: TestDatabase, fixtureOrigin: string) {
-  const root = await mkdtemp(join(tmpdir(), 'melete-w10b-matrix-'));
+  const root = await mkdtemp(join(tmpdir(), 'melete-browser-matrix-'));
   const pool = new BrowserWorkerPool({
     spacesRoot: root,
     allowLocalProcess: true,

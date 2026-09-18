@@ -14,7 +14,7 @@ import { testDatabase } from '../helpers/database.ts';
 
 const fixture = await testDatabase();
 const databaseTest = fixture ? test : test.skip;
-const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-w9-catalog-'));
+const root = await mkdtemp(join(await realpath(tmpdir()), 'melete-capability-catalog-'));
 afterAll(async () => {
   await fixture?.close();
   if (dirname(await realpath(root)) !== (await realpath(tmpdir())))

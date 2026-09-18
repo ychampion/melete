@@ -633,7 +633,7 @@ test('the actual Hermes run request carries the since-last receipt and pending q
               action_id: ACTION,
               kind: 'email.send',
               status: 'succeeded',
-              receipt_ref: 'receipt-marker-w9-delta@example.test',
+              receipt_ref: 'receipt-marker-delta@example.test',
               at: '2026-09-11T10:00:00Z',
             },
           ],
@@ -647,7 +647,7 @@ test('the actual Hermes run request carries the since-last receipt and pending q
     );
     expect(outcome.kind).toBe('completed');
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.input).toContain('receipt receipt-marker-w9-delta@example.test');
+    expect(requests[0]?.input).toContain('receipt receipt-marker-delta@example.test');
     expect(requests[0]?.input).toContain('question asked: Which recording should I use?');
   } finally {
     await server.stop(true);

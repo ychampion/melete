@@ -58,7 +58,7 @@ export async function invalidateDependencies(
     const id = stableId(scope.spaceId, 'dependencies_invalidated', job.id, dataRevision);
     await tx`insert into memory_invalidations (id, space_id, type, job_id, claim_ids, data_revision)
       values (${id}, ${scope.spaceId}, 'dependencies_invalidated', ${job.id}, ${JSON.stringify(claimIds)}::text::jsonb, ${dataRevision}) on conflict do nothing`;
-    // The frozen event enum already supports notice. W1 can consume the typed memory event in payload.
+    // The frozen event enum already supports notice. The service can consume the typed memory event in payload.
     const payload = {
       type: 'dependencies_invalidated',
       job_id: job.id,

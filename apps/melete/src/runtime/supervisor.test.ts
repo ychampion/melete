@@ -207,7 +207,7 @@ server.serve_forever()
     await supervisor.close();
   });
   test('an unpinned process checkout is rejected before spawning', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'melete-w15-pin-'));
+    const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-pin-'));
     try {
       await mkdir(join(root, '.git'));
       await writeFile(join(root, '.git', 'HEAD'), 'wrong');
@@ -221,7 +221,7 @@ server.serve_forever()
     }
   });
   test('path traversal and a linked job workspace are rejected', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'melete-w15-workspace-'));
+    const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-workspace-'));
     try {
       await expect(jobWorkspace(root, '../sibling')).rejects.toThrow();
       const outside = join(root, 'sibling');
@@ -265,7 +265,7 @@ server.serve_forever()
   test.skipIf(process.platform === 'win32')(
     'a restrictive service umask cannot remove runtime-group workspace access',
     async () => {
-      const root = await mkdtemp(join(tmpdir(), 'melete-w15-mode-'));
+      const root = await mkdtemp(join(tmpdir(), 'melete-supervisor-mode-'));
       const previous = process.umask(0o077);
       try {
         const workspace = await jobWorkspace(root, bundle.attempt.job_id);
