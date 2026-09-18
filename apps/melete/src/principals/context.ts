@@ -23,6 +23,7 @@ export async function selectedContext(
   objective: string,
   latestMessage: string,
   publicCompartment = false,
+  pinned: { required?: readonly string[]; selectionText?: string } = {},
 ): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   const loaded = loadSkills(
@@ -33,11 +34,28 @@ export async function selectedContext(
       skill.source === 'builtin' ||
       audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner'),
   );
-  const skills = chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) => ({
+  const payload = (skill: (typeof eligible)[number]): SkillPayload => ({
     name: skill.frontmatter.name,
     body: skill.body,
     ...(skill.source === 'space' ? { space_id: spaceId } : {}),
-  }));
+  });
+  // A job that already knows which procedure applies names it, and that naming
+  // is not up for a vote. Pinned skills take their places first; matching fills
+  // whatever room is left, and reads only what the job says it may read.
+  const required = (pinned.required ?? []).flatMap((name) => {
+    const found = eligible.find((skill) => skill.frontmatter.name === name);
+    return found ? [payload(found)] : [];
+  });
+  const matched = chooseSkills(pinned.selectionText ?? objective, latestMessage, eligible, 3).map(
+    ({ skill }) => payload(skill),
+  );
+  const seen = new Set<string>();
+  const skills: SkillPayload[] = [];
+  for (const entry of [...required, ...matched]) {
+    if (seen.has(entry.name) || skills.length >= 3) continue;
+    seen.add(entry.name);
+    skills.push(entry);
+  }
   if (publicCompartment) return { skills, knowledge: [] };
   const paths = spacePaths(dirname(access.space.gitPath), basename(access.space.gitPath));
   // Bounded excerpts use only active published records. Candidate evaluation belongs to W11.

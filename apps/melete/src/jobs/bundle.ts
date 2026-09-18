@@ -450,6 +450,7 @@ export async function buildAttemptSkeleton(
     row.objective,
     history.inputs.new_user_messages.at(-1)?.content ?? '',
     constraints.public_compartment,
+    { required: constraints.required_skills, selectionText: constraints.selection_text },
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an

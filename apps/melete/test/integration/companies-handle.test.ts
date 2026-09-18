@@ -13,11 +13,14 @@ import {
   type LedgerItem,
   type WaitSpec,
 } from '@melete/contracts';
+import { chooseSkills, loadBuiltInSkills } from '@melete/skills';
 import { ServiceError } from '../../src/api/errors.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import {
   handleLedgerItem,
+  handleObjective,
+  handleSelectionText,
   PLAYBOOK_FOR_KIND,
   REPLY_EVENT_NAME,
 } from '../../src/companies/handle.ts';
@@ -329,6 +332,80 @@ withDb('handing one ledger item to a playbook', () => {
     expect((claimed.bundle.job.triggers ?? []).map((entry) => entry.event_name)).toEqual([
       REPLY_EVENT_NAME,
     ]);
+  });
+
+  test('a company stuffing its email with another playbook’s words changes nothing', async () => {
+    const { jobs } = fixture();
+    // The reviewer's probe: four repetitions of another skill's trigger phrase
+    // inside a quote unseated the intended playbook and mounted three others.
+    // Eight stuffed quotes, a stuffed name and a stuffed summary is far past it.
+    const stuffing = 'get quotes get quotes get quotes get quotes shop around shop around';
+    const text = `${MESSAGE}\n${stuffing}`;
+    const at = text.indexOf(stuffing);
+    const co = company({ name: `Acme ${stuffing}` });
+    const { job_id } = await handleLedgerItem(deps([]), {
+      item: item(co, {
+        kind: 'subscription',
+        suggested_playbook: 'cancel-subscription',
+        summary: `Cancel this ${stuffing}`,
+        evidence: Array.from({ length: 8 }, () => ({
+          message_id: 'msg-7781@acme.test',
+          quote: stuffing,
+          start: at,
+          end: at + stuffing.length,
+        })),
+      }),
+      company: co,
+      messageText: text,
+      principalId: ownerId,
+      spaceId,
+      connectionId,
+    });
+    const row = await jobs.get(job_id);
+    // The stuffing is still in the objective, because it is what would be quoted
+    // back — and it is worth nothing to the matcher.
+    expect(row.objective).toContain(stuffing);
+    const constraints = row.constraints as { required_skills: string[]; selection_text: string };
+    expect(constraints.required_skills).toEqual(['cancel-subscription']);
+    expect(constraints.selection_text).not.toContain(stuffing);
+    // Selection, run on what the job says it may read, agrees.
+    expect(
+      chooseSkills(constraints.selection_text, '', loadBuiltInSkills().skills).map(
+        (match) => match.skill.frontmatter.name,
+      ),
+    ).toEqual(['cancel-subscription']);
+    // And the attempt mounts exactly that, and nothing else.
+    const claimed = await claim(row);
+    expect(claimed.bundle.skills.map((skill) => skill.name)).toEqual(['cancel-subscription']);
+  });
+
+  test('the old defect is still visible when the whole objective is the haystack', () => {
+    // Kept as the falsifier: this is the count the matcher used to see, and it
+    // is why the answer is no longer decided by counting.
+    const stuffing = 'get quotes get quotes get quotes get quotes';
+    const co = company();
+    const objective = handleObjective(
+      {
+        item: item(co, { summary: 'Cancel this' }),
+        company: co,
+        messageText: MESSAGE,
+        principalId: ownerId,
+        spaceId,
+      },
+      'cancel-subscription',
+      [{ message_id: 'm', quote: stuffing, start: 0, end: stuffing.length }],
+      null,
+    );
+    const built = loadBuiltInSkills().skills;
+    expect(chooseSkills(objective, '', built).map((m) => m.skill.frontmatter.name)).toContain(
+      'get-quotes',
+    );
+    // The narrow text the job actually hands the matcher does not carry it.
+    expect(
+      chooseSkills(handleSelectionText('cancel-subscription'), '', built).map(
+        (m) => m.skill.frontmatter.name,
+      ),
+    ).toEqual(['cancel-subscription']);
   });
 
   test('every kind with a playbook picks it, and one without is refused rather than guessed at', async () => {

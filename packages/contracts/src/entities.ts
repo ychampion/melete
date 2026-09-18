@@ -129,6 +129,29 @@ export const jobConstraints = z.object({
   allowed_domains: z.array(z.string()).default([]),
   /** Public-research mode: no private knowledge is loaded into context. */
   public_compartment: z.boolean().default(false),
+  /**
+   * Skills every attempt on this job loads, whatever the matcher would pick.
+   *
+   * Selection is a substring count, which is the right rule when nobody but the
+   * person wrote the text being counted. A caller that already knows which
+   * procedure applies should not have to express that as a word-frequency
+   * argument it can lose: pinning says it once, and no amount of outside text
+   * outvotes it. A name matching no loaded skill is simply not mounted.
+   */
+  required_skills: z
+    .array(z.string().regex(/^[a-z][a-z0-9-]*$/, 'lowercase kebab-case'))
+    .max(3)
+    .optional(),
+  /**
+   * What skill selection reads in place of the objective.
+   *
+   * Some objectives have to carry text from outside — a company's own sentences,
+   * quoted so they can be quoted back to it. Counting trigger words in that text
+   * hands whoever wrote it a vote on which instructions the attempt runs under.
+   * A job that embeds such text names here the part the matcher may read, and
+   * the matcher never sees the rest.
+   */
+  selection_text: z.string().max(4000).optional(),
   notes: z.string().max(4000).optional(),
 });
 export type JobConstraints = z.infer<typeof jobConstraints>;

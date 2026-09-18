@@ -206,13 +206,24 @@ export function admittedEvidence(
 }
 
 /**
- * The job's objective, which is also how the playbook is mounted.
+ * What skill selection is allowed to read for this job.
  *
- * Skill selection is a deterministic string match over the objective and the
- * latest message — never a model call — so naming the playbook in the objective
- * is what puts its instructions in the attempt. The name appears three times so
- * that a company name or a summary that happens to contain another skill's
- * trigger word cannot outscore it.
+ * The objective has to carry the company's own sentences, because they are what
+ * gets quoted back to it. Selection is a substring count, so any text inside the
+ * thing being counted is a vote — and four repetitions of a common phrase in a
+ * quoted email were enough to unseat the intended playbook and mount three
+ * others, leaving the objective saying one procedure while a different one's
+ * cadence, escalation and stop rules governed. The matcher now reads this line
+ * and nothing else, and the playbook is pinned besides, so the outcome does not
+ * rest on counting at all.
+ */
+export const handleSelectionText = (playbook: PlaybookId): string =>
+  `Playbook: ${playbook}. Run the ${playbook} playbook for one company.`;
+
+/**
+ * The job's objective: everything the attempt needs to read, including the
+ * company's own words. What mounts the playbook is `required_skills` on the
+ * job's constraints, not anything written here.
  */
 export function handleObjective(
   input: HandleInput,
@@ -315,6 +326,10 @@ export async function handleLedgerItem(
         : {}),
       allowed_domains: domains,
       public_compartment: false,
+      // The playbook is named, not argued for. Nothing a company writes can
+      // unseat it, and the matcher never reads what a company wrote.
+      required_skills: [playbook],
+      selection_text: handleSelectionText(playbook),
       notes: `Handling ${item.id} for ${company.id} with the ${playbook} playbook.`,
     },
     budget: HANDLE_BUDGET,
