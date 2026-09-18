@@ -90,6 +90,56 @@ withDb('sandbox reconciliation', () => {
     expect(provider.engine.snapshots.has(suspended.resumeRef ?? '')).toBe(true);
   });
 
+  test('one connection never destroys another that shares its provider account', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { sql, scope, provider, sessions, sandbox } = await setup();
+    // One provider account and one installation label, two connections: the
+    // ordinary shape when two spaces are given the same E2B org or Modal
+    // workspace. Only the connection label tells their sandboxes apart.
+    const other = await seedSessionScope(sql);
+    const openFor = async (of: {
+      connectionId: string;
+      spaceId: string;
+      jobId: string;
+      attempt: () => Promise<string>;
+    }) =>
+      sessions.open(
+        {
+          connectionId: of.connectionId,
+          spaceId: of.spaceId,
+          jobId: of.jobId,
+          attemptId: await of.attempt(),
+          agentId: null,
+        },
+        provider,
+        sessionSpec('install-a', of.spaceId, of.connectionId),
+        signal(),
+      );
+    const mine = await openFor(scope);
+    const theirs = await openFor(other);
+    // An orphan of this connection's own, so the reconciliation still bites.
+    const orphan = await sandbox(
+      sandboxLabels({
+        project: 'install-a',
+        connection: scope.connectionId,
+        space: scope.spaceId,
+        session: oldSession(1),
+      }),
+    );
+    const report = await reconcileSandboxes({
+      sql,
+      provider,
+      project: 'install-a',
+      connectionId: scope.connectionId,
+      signal: signal(),
+    });
+    expect(report.destroyed).toEqual([orphan]);
+    // The other connection's sandbox is still running, and so is this one's.
+    expect(await provider.inspect(sessionHandle(theirs), signal())).toBe('running');
+    expect(await provider.inspect(sessionHandle(mine), signal())).toBe('running');
+    expect((await sessions.get(theirs.id))?.status).toBe('ready');
+  });
+
   test('a labelled orphan is destroyed and a foreign sandbox is left alone', async () => {
     const { sql, scope, provider, open, sandbox } = await setup();
     const owned = (session: string) =>

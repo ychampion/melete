@@ -194,28 +194,14 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
         return { row, reused: true };
       }
     }
-    // Two allowances, counted once. The connection's own comes first, because it
-    // names the account that is full; the installation's ceiling holds over all
-    // of them, so one connection can never take more than the service has.
+    // The two allowances this session must fit inside. They are counted where
+    // the row is written, under a lock, because counting here and inserting
+    // there would let concurrent attempts all read the same number and pass.
     const ceiling = options.maxConcurrent ?? Number.POSITIVE_INFINITY;
-    const own = Math.min(options.maxPerConnection ?? ceiling, ceiling);
-    if (Number.isFinite(own) || Number.isFinite(ceiling)) {
-      const [counted] = await sql`select count(*)::int as live,
-          count(*) filter (where connection_id = ${options.connectionId})::int as own
-        from sandbox_session where status in ('opening', 'ready')`;
-      const live = Number(counted?.live ?? 0);
-      const mine = Number(counted?.own ?? 0);
-      if (mine >= own)
-        throw new SandboxRefusal(
-          'concurrency_exhausted',
-          `this connection already has ${mine} running, which is its limit`,
-        );
-      if (live >= ceiling)
-        throw new SandboxRefusal(
-          'concurrency_exhausted',
-          `this installation already has ${live} running, which is its limit`,
-        );
-    }
+    const concurrency = {
+      perConnection: Math.min(options.maxPerConnection ?? ceiling, ceiling),
+      installation: ceiling,
+    };
     const facts = await jobFacts(ctx.job_id);
     checkSandboxConfiguration(options.config, {
       project: options.project,
@@ -225,6 +211,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     const specFor = (session: string) =>
       sandboxSpecFor(options.config, {
         project: options.project,
+        connectionId: options.connectionId,
         spaceId: ctx.space_id,
         jobId: ctx.job_id,
         attemptId: action.attempt_id,
@@ -236,6 +223,7 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
       jobId: ctx.job_id,
       attemptId: action.attempt_id,
       maxSandboxSeconds: facts.maxSandboxSeconds,
+      concurrency,
     };
     if (facts.agentId && options.config.persistence !== 'ephemeral')
       return {

@@ -64,6 +64,11 @@ function egressOf(body: {
     if (!allowOut.length) return { kind: 'deny_all' };
     const domains = allowOut.filter((entry) => isIP(entry.split('/')[0] ?? '') === 0);
     if (domains.length) return { kind: 'domain_allowlist', domains };
+    // With internet access on, a destination matching no rule is reachable, so
+    // an allow-list that denies only `0.0.0.0/0` fences IPv4 and leaves every
+    // IPv6 address open. The stand-in will not pretend otherwise.
+    if (internet && !denyOut.includes('::/0'))
+      throw new Error('an allow-list that denies only IPv4 leaves IPv6 egress unmatched');
     return { kind: 'cidr_allowlist', cidrs: allowOut };
   }
   if (denyOut.length) throw new Error('partial deny lists are not modelled by the stand-in');

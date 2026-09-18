@@ -56,6 +56,7 @@ export const CONFORMANCE_TESTS = [
   'a symbolic link returned by the provider is refused',
   'a manifest without deny_all refuses a deny_all connection',
   'deny-all egress holds from inside the sandbox',
+  'a CIDR allow-list admits its ranges and nothing else, in either family',
 ] as const;
 
 export type ConformanceTest = (typeof CONFORMANCE_TESTS)[number];
@@ -456,6 +457,49 @@ export function sandboxConformance(
       expect((refused as SandboxRefusal).code).toBe('egress_unsupported');
       expect(created).toBe(0);
     });
+
+    scenario(
+      'a CIDR allow-list admits its ranges and nothing else, in either family',
+      async (context) => {
+        if (!context.provider.capabilities.egress.includes('cidr_allowlist')) return;
+        // One address is allowed. Another of the same family, and an address of
+        // the other family, must both be refused: an allow-list that fences
+        // only IPv4 is an allow-list with a hole the size of IPv6.
+        const probe = [
+          'sh',
+          '-c',
+          [
+            "curl -s -m 5 -o /dev/null -w 'allowed_code=%{http_code}' http://1.1.1.1/ 2>/dev/null",
+            'printf \' allowed_exit=%s\\n\' "$?"',
+            "curl -s -m 5 -o /dev/null -w 'other_code=%{http_code}' http://1.0.0.1/ 2>/dev/null",
+            'printf \' other_exit=%s\\n\' "$?"',
+            "curl -s -g -m 5 -o /dev/null -w 'v6_code=%{http_code}' 'http://[2606:4700:4700::1111]/' 2>/dev/null",
+            'printf \' v6_exit=%s\\n\' "$?"',
+          ].join('; '),
+        ];
+        const listed = await context.open({ kind: 'cidr_allowlist', cidrs: ['1.1.1.1/32'] });
+        const seen = Object.fromEntries(
+          [
+            ...recordText(
+              succeeded(
+                await context.run(listed, probe, {
+                  marker: 'act_01J0CONFORMANCECIDR0000',
+                  timeoutMs: 30_000,
+                }),
+              ).record,
+            ).matchAll(/(\w+)=(\S+)/g),
+          ].map((match) => [match[1], match[2]]),
+        );
+        options.log?.(`cidr_allowlist probe: ${JSON.stringify(seen)}`);
+        // The listed range answers, so the probe itself works.
+        expect(seen.allowed_exit).toBe('0');
+        expect(seen.allowed_code).not.toBe('000');
+        for (const prefix of ['other', 'v6']) {
+          expect(seen[`${prefix}_code`]).toBe('000');
+          expect(['6', '7', '28', '35', '52', '56']).toContain(seen[`${prefix}_exit`] ?? '');
+        }
+      },
+    );
 
     scenario('deny-all egress holds from inside the sandbox', async (context) => {
       // Blocked connections can look open at the TCP level, so the probe asks

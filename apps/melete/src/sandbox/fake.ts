@@ -1386,11 +1386,12 @@ export class FakeSandboxProvider implements SandboxProvider {
     project: string,
     live: ReadonlySet<string>,
     signal: AbortSignal,
+    connection: string | null = null,
   ): Promise<string[]> {
     signal.throwIfAborted();
     const destroyed: string[] = [];
     for (const sandbox of [...this.engine.sandboxes.values()]) {
-      if (!ownedLabels(sandbox.labels, project)) continue;
+      if (!ownedLabels(sandbox.labels, project, connection)) continue;
       const session = sandbox.labels[LABEL_SESSION];
       if (live.has(sandbox.id) || (session !== undefined && live.has(session))) continue;
       this.engine.destroy(sandbox.id);

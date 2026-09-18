@@ -83,7 +83,7 @@ function watched(inner: SandboxProvider) {
     getFile: (handle, file, max, s) => inner.getFile(handle, file, max, s),
     destroy: (handle, s) => inner.destroy(handle, s),
     inspect: (handle, s) => inner.inspect(handle, s),
-    reconcile: (project, live, s) => inner.reconcile(project, live, s),
+    reconcile: (project, live, s, connection) => inner.reconcile(project, live, s, connection),
     ...(inner.pause ? { pause: (handle, s) => inner.pause?.(handle, s) as never } : {}),
     ...(inner.snapshot ? { snapshot: (handle, s) => inner.snapshot?.(handle, s) as never } : {}),
     ...(inner.deleteSnapshot

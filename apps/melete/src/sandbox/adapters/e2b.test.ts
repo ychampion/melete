@@ -123,7 +123,22 @@ test('deny-all egress is sent on create', async () => {
     );
     if (!first) continue;
     creates += 1;
-    // Every scenario opens deny-all first; only the egress control asks for more.
+    if (name.startsWith('a-cidr-allow-list')) {
+      // The one scenario whose own subject is an allow-list. Its create must
+      // fence both families here too, or the fixture would record the hole
+      // instead of failing on it.
+      expect(first.request.body).toMatchObject({
+        allow_internet_access: true,
+        secure: true,
+        network: {
+          allowPublicTraffic: false,
+          allowOut: ['1.1.1.1/32'],
+          denyOut: ['0.0.0.0/0', '::/0'],
+        },
+      });
+      continue;
+    }
+    // Every other scenario opens deny-all first; only the egress control asks for more.
     expect(first.request.body).toMatchObject({
       allow_internet_access: false,
       secure: true,
@@ -240,6 +255,7 @@ test("reconcile destroys only this installation's labelled orphans and leaves fo
     'install-a',
     new Set(['fake-sbx-0001', 'sbx_LIVE']),
     signal(),
+    null,
   );
   expect(destroyed).toEqual(['fake-sbx-0002']);
   if (subject.standin)

@@ -54,9 +54,16 @@ export type SessionPersistence = 'ephemeral' | 'pause' | 'snapshot';
 export const LABEL_OWNER = 'melete.owner';
 export const LABEL_PROJECT = 'melete.project';
 export const LABEL_SESSION = 'melete.session';
+/**
+ * Which connection's account this sandbox lives in. Two connections may share
+ * one provider account, and then the installation labels alone do not say whose
+ * a sandbox is, so reconciliation reads this before it destroys anything.
+ */
+export const LABEL_CONNECTION = 'melete.connection';
 const LABEL_KEYS = new Set([
   LABEL_OWNER,
   LABEL_PROJECT,
+  LABEL_CONNECTION,
   'melete.space',
   'melete.job',
   'melete.attempt',
@@ -81,6 +88,7 @@ export const SANDBOX_ENV_ALLOWED: ReadonlySet<string> = new Set([
 
 export function sandboxLabels(ids: {
   project: string;
+  connection?: string | null;
   space: string;
   job?: string | null;
   attempt?: string | null;
@@ -89,6 +97,7 @@ export function sandboxLabels(ids: {
   return {
     [LABEL_OWNER]: 'v1',
     [LABEL_PROJECT]: ids.project,
+    ...(ids.connection ? { [LABEL_CONNECTION]: ids.connection } : {}),
     'melete.space': ids.space,
     ...(ids.job ? { 'melete.job': ids.job } : {}),
     ...(ids.attempt ? { 'melete.attempt': ids.attempt } : {}),
@@ -96,12 +105,21 @@ export function sandboxLabels(ids: {
   };
 }
 
-/** The installation's own sandboxes, by the same strict test as the local cell runtime. */
+/**
+ * The installation's own sandboxes, by the same strict test as the local cell
+ * runtime. Given a connection, a sandbox must also carry that connection's
+ * label: two connections can share one provider account, and one of them must
+ * never judge the other's sandboxes. A sandbox with no connection label at all
+ * is not this connection's either, so it is left alone rather than destroyed —
+ * an orphan costs money, and the alternative destroys somebody's running work.
+ */
 export function ownedLabels(
   labels: Readonly<Record<string, string>> | undefined,
   project: string,
+  connection?: string | null,
 ): boolean {
-  return labels?.[LABEL_OWNER] === 'v1' && labels[LABEL_PROJECT] === project;
+  if (labels?.[LABEL_OWNER] !== 'v1' || labels[LABEL_PROJECT] !== project) return false;
+  return !connection || labels[LABEL_CONNECTION] === connection;
 }
 
 const DOMAIN = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;

@@ -169,9 +169,16 @@ export interface SandboxProvider {
    * Destroy this installation's sandboxes that the service no longer owns.
    * `live` holds provider sandbox ids and session ids; a sandbox whose id or
    * `melete.session` label is in it is kept. A sandbox without this project's
-   * `melete.owner` and `melete.project` labels is never touched.
+   * `melete.owner` and `melete.project` labels is never touched, and where
+   * `connection` is given neither is another connection's: one provider account
+   * may hold two connections, so the labels decide this, never the listing.
    */
-  reconcile(project: string, live: ReadonlySet<string>, signal: AbortSignal): Promise<string[]>;
+  reconcile(
+    project: string,
+    live: ReadonlySet<string>,
+    signal: AbortSignal,
+    connection: string | null,
+  ): Promise<string[]>;
   openStream?(h: SandboxHandle, spec: StreamSpec, s: AbortSignal): Promise<DuplexStream>;
 }
 

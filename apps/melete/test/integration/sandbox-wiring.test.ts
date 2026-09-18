@@ -162,7 +162,7 @@ withDb('the sandbox wiring', () => {
         agentId: null,
       },
       provider,
-      sessionSpec(PROJECT, scope.spaceId),
+      sessionSpec(PROJECT, scope.spaceId, scope.connectionId),
       signal(),
     );
     const orphan = (
@@ -171,6 +171,7 @@ withDb('the sandbox wiring', () => {
           ...sessionSpec(PROJECT, scope.spaceId)('sbx_ORPHANED000000000000000'),
           labels: sandboxLabels({
             project: PROJECT,
+            connection: scope.connectionId,
             space: scope.spaceId,
             session: 'sbx_ORPHANED000000000000000',
           }),
@@ -183,6 +184,22 @@ withDb('the sandbox wiring', () => {
         {
           ...sessionSpec('someone-else', scope.spaceId)('sbx_FOREIGN0000000000000000'),
           labels: {},
+        },
+        signal(),
+      )
+    ).providerSandboxId;
+    // This installation's label, another connection's account: the two may
+    // share one provider account, and this boot speaks only for its own.
+    const neighbour = (
+      await provider.create(
+        {
+          ...sessionSpec(PROJECT, 'sp_NEIGHBOUR')('sbx_NEIGHBOUR00000000000000'),
+          labels: sandboxLabels({
+            project: PROJECT,
+            connection: 'conn_01J0NEIGHBOUR000000000000',
+            space: 'sp_NEIGHBOUR',
+            session: 'sbx_NEIGHBOUR00000000000000',
+          }),
         },
         signal(),
       )
@@ -200,12 +217,13 @@ withDb('the sandbox wiring', () => {
         signal(),
       ),
     ).toBe('gone');
-    expect(
-      await provider.inspect(
-        { providerSandboxId: foreign, imageDigest: null, region: null },
-        signal(),
-      ),
-    ).toBe('running');
+    for (const kept of [foreign, neighbour])
+      expect(
+        await provider.inspect(
+          { providerSandboxId: kept, imageDigest: null, region: null },
+          signal(),
+        ),
+      ).toBe('running');
     expect((await sessions.get(live.id))?.status).toBe('ready');
     wiring.stop();
   }, 60_000);

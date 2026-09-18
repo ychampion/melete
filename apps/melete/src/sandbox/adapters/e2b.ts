@@ -18,12 +18,14 @@
  * envd access token is held in memory for the life of the process only.
  *
  * Egress is decided at creation and never afterwards: deny-all is
- * `allow_internet_access: false`, a CIDR allow-list denies 0.0.0.0/0 and allows
- * the listed blocks, and public sandbox URLs always require E2B's traffic
+ * `allow_internet_access: false`, a CIDR allow-list denies both 0.0.0.0/0 and
+ * ::/0 and allows the listed blocks, and public sandbox URLs require E2B's traffic
  * token. E2B's domain allow-list is not offered: its own documentation calls it
  * a routing control rather than a security boundary and it opens DNS to
  * 8.8.8.8, so a spec asking for it is refused.
  */
+
+import { ownedLabels } from '../manifest.ts';
 import { markerDirectory, reattachByMarker } from '../marker.ts';
 import {
   type EgressPolicy,
@@ -157,7 +159,14 @@ function networkFor(egress: EgressPolicy): {
     case 'cidr_allowlist':
       return {
         allow_internet_access: true,
-        network: { allowPublicTraffic: false, allowOut: [...egress.cidrs], denyOut: ['0.0.0.0/0'] },
+        network: {
+          allowPublicTraffic: false,
+          allowOut: [...egress.cidrs],
+          // Both families. `0.0.0.0/0` alone leaves every IPv6 destination
+          // matching no rule at all, and with internet access on, unmatched is
+          // open — an allow-list that fences one half of the internet.
+          denyOut: ['0.0.0.0/0', '::/0'],
+        },
       };
     case 'open':
       return { allow_internet_access: true, network: { allowPublicTraffic: false } };
@@ -815,7 +824,7 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
       throw new SandboxTransportError('E2B reported a sandbox state this adapter does not know');
     },
 
-    async reconcile(project, live, signal): Promise<string[]> {
+    async reconcile(project, live, signal, connection): Promise<string[]> {
       if (!PLAIN.test(project)) throw new SandboxAdapterRefusal('the project label is not plain');
       const filter = new URLSearchParams({ 'melete.owner': 'v1', 'melete.project': project });
       const destroyed: string[] = [];
@@ -838,8 +847,7 @@ export function createE2bProvider(options: E2bOptions): SandboxProvider {
           const id = typeof sandbox.sandboxID === 'string' ? sandbox.sandboxID : '';
           const metadata = (sandbox.metadata ?? {}) as Record<string, string>;
           // The server's filter is a convenience; ownership is decided here.
-          if (!SANDBOX_ID.test(id) || metadata['melete.owner'] !== 'v1') continue;
-          if (metadata['melete.project'] !== project) continue;
+          if (!SANDBOX_ID.test(id) || !ownedLabels(metadata, project, connection)) continue;
           const session = metadata['melete.session'];
           if (live.has(id) || (session !== undefined && live.has(session))) continue;
           await provider.destroy(

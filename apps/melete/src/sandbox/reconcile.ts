@@ -101,6 +101,7 @@ export async function reconcileSandboxes(options: {
     project,
     new LiveSandboxes(live, snapshot - OPENING_MARGIN_MS),
     signal,
+    options.connectionId ?? null,
   );
   return { destroyed, lost };
 }

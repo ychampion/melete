@@ -467,7 +467,7 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
       return state === 'running' ? 'running' : 'gone';
     },
 
-    async reconcile(project, live, signal): Promise<string[]> {
+    async reconcile(project, live, signal, connection): Promise<string[]> {
       if (!PLAIN.test(project)) throw new SandboxAdapterRefusal('the project label is not plain');
       const listed = await transport.list(
         options.appName,
@@ -478,7 +478,8 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
       for (const sandbox of listed) {
         const labels = labelsFrom(sandbox.tags);
         // The server's tag filter is a convenience; ownership is decided here.
-        if (!SANDBOX_ID.test(sandbox.sandboxId) || !ownedLabels(labels, project)) continue;
+        if (!SANDBOX_ID.test(sandbox.sandboxId) || !ownedLabels(labels, project, connection))
+          continue;
         const session = labels[LABEL_SESSION];
         if (live.has(sandbox.sandboxId) || (session !== undefined && live.has(session))) continue;
         try {

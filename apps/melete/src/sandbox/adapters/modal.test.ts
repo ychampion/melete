@@ -366,7 +366,12 @@ test("reconcile terminates only this installation's labelled orphans and leaves 
   );
   const bare = make({});
   const unowned = make({ melete_project: 'install-a', melete_session: 'sbx_NOOWNER' });
-  const destroyed = await provider.reconcile('install-a', new Set([one, 'sbx_LIVE']), signal());
+  const destroyed = await provider.reconcile(
+    'install-a',
+    new Set([one, 'sbx_LIVE']),
+    signal(),
+    null,
+  );
   expect(destroyed).toEqual([orphan]);
   expect([...standin.engine.sandboxes.keys()].sort()).toEqual(
     [one, live, other, bare, unowned].sort(),

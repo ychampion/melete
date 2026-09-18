@@ -34,8 +34,13 @@ export async function seedSessionScope(sql: Sql) {
   return { spaceId, connectionId, agentId, jobId, attempt, action };
 }
 
+/**
+ * A spec labelled the way the service labels one. `connectionId` is part of it
+ * because reconciliation reads that label, so a fixture that left it out would
+ * be kept by the rule that protects another connection rather than by its own.
+ */
 export const sessionSpec =
-  (project: string, spaceId: string) =>
+  (project: string, spaceId: string, connectionId?: string) =>
   (session: string): SandboxSpec => ({
     image: 'base',
     egress: { kind: 'deny_all' },
@@ -43,6 +48,6 @@ export const sessionSpec =
     lifetimeSeconds: 600,
     idleSeconds: null,
     workdir: '/work',
-    labels: sandboxLabels({ project, space: spaceId, session }),
+    labels: sandboxLabels({ project, connection: connectionId ?? null, space: spaceId, session }),
     env: {},
   });

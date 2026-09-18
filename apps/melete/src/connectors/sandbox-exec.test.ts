@@ -338,6 +338,24 @@ withDb('a command in a remote sandbox', () => {
     expect(provider.calls.create).toBe(1);
   }, 60_000);
 
+  test('concurrent attempts cannot race past the limit', async () => {
+    const { scope, provider, action, context, connector } = await setup({ maxConcurrent: 2 });
+    // Five attempts open at once. Counting before the row is written would let
+    // all five read the same total and pass; counting under the lock that
+    // writes it cannot.
+    const actions = await Promise.all(
+      [0, 1, 2, 3, 4].map(async () => action({ command: 'printf racing' }, await scope.attempt())),
+    );
+    const outcomes = await Promise.all(actions.map((one) => connector.execute(one, context(one))));
+    expect(outcomes.filter((one) => one.outcome === 'succeeded')).toHaveLength(2);
+    const refused = outcomes.filter((one) => one.outcome === 'failed');
+    expect(refused).toHaveLength(3);
+    for (const one of refused)
+      expect(one.outcome === 'failed' && one.reason).toContain('which is its limit');
+    // Exactly two sandboxes were ever created, not five.
+    expect(provider.calls.create).toBe(2);
+  }, 60_000);
+
   test('two connections each have their own allowance', async () => {
     // Room in the service for three, and one apiece: a provider quota belongs
     // to an account, and an account is a connection here.

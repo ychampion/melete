@@ -71,6 +71,12 @@ export type OpenSession = {
   persistence?: SessionPersistence;
   /** The job's sandbox-time budget in seconds. Absent or null means no cap. */
   maxSandboxSeconds?: number | null;
+  /**
+   * How many sandboxes may be running when this one opens: this connection's
+   * own allowance, and the whole installation's ceiling. Absent means neither
+   * is enforced.
+   */
+  concurrency?: { perConnection: number; installation: number };
 };
 
 export type WorkspacePersistence = Exclude<SessionPersistence, 'ephemeral'>;
@@ -243,6 +249,35 @@ export class SandboxSessions {
       );
   }
 
+  /**
+   * Both allowances, counted inside the transaction that writes the row and
+   * behind one lock, so concurrent opens queue rather than all reading the same
+   * count and passing. The lock is the installation's, which is what the
+   * ceiling belongs to; a connection's own allowance is counted under it too.
+   */
+  private async checkConcurrency(tx: TransactionSql, input: OpenSession) {
+    const limit = input.concurrency;
+    if (!limit || (!Number.isFinite(limit.perConnection) && !Number.isFinite(limit.installation)))
+      return;
+    await tx`select pg_advisory_xact_lock(hashtext('sandbox-open'))`;
+    const [counted] = await tx`select count(*)::int as live,
+        count(*) filter (where connection_id = ${input.connectionId})::int as own
+      from sandbox_session where status in ('opening', 'ready')`;
+    const live = Number(counted?.live ?? 0);
+    const mine = Number(counted?.own ?? 0);
+    // The connection's own first: it names the account that is full.
+    if (mine >= limit.perConnection)
+      throw new SandboxRefusal(
+        'concurrency_exhausted',
+        `this connection already has ${mine} running, which is its limit`,
+      );
+    if (live >= limit.installation)
+      throw new SandboxRefusal(
+        'concurrency_exhausted',
+        `this installation already has ${live} running, which is its limit`,
+      );
+  }
+
   private insertOpening(
     tx: TransactionSql,
     id: string,
@@ -277,6 +312,7 @@ export class SandboxSessions {
     try {
       await this.sql.begin(async (tx) => {
         await this.checkCap(tx, input, cap);
+        await this.checkConcurrency(tx, input);
         if (input.agentId) {
           await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
           const [existing] = await tx`select id from sandbox_session
@@ -361,6 +397,9 @@ export class SandboxSessions {
     try {
       await this.sql.begin(async (tx) => {
         await this.checkCap(tx, input, cap);
+        // Before the workspace lock, and in that order in both paths: two locks
+        // taken in opposite orders by two openings would deadlock.
+        await this.checkConcurrency(tx, input);
         await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-workspace:${input.spaceId}:${input.agentId}`}))`;
         const live = (
           await tx`select * from sandbox_session

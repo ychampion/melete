@@ -75,6 +75,8 @@ export function sandboxSpecFor(
   config: SandboxConnectionConfig,
   ids: {
     project: string;
+    /** The connection whose account this sandbox lives in. */
+    connectionId: string;
     spaceId: string;
     jobId?: string | null;
     attemptId?: string | null;
@@ -90,6 +92,7 @@ export function sandboxSpecFor(
     workdir: '/work',
     labels: sandboxLabels({
       project: ids.project,
+      connection: ids.connectionId,
       space: ids.spaceId,
       job: ids.jobId ?? null,
       attempt: ids.attemptId ?? null,
@@ -113,6 +116,9 @@ export function checkSandboxConfiguration(
     capabilities,
     sandboxSpecFor(config, {
       project: options.project,
+      // A configuration is checked before its connection exists, so the two
+      // identifiers a manifest never judges by value stand in for themselves.
+      connectionId: 'conn_00000000000000000000000000',
       spaceId: options.spaceId,
       session: 'sbx_00000000000000000000000000',
     }),
