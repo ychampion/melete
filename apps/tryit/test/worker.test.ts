@@ -34,7 +34,8 @@ describe('the page', () => {
     expect(nonce).toBeTruthy();
     expect(html).toContain(`nonce="${nonce}"`);
     // Every rule is in the one stylesheet, so the policy can forbid the rest.
-    expect(html).not.toContain(' style="');
+    // Any spelling of it: quoted either way, or not quoted at all.
+    expect(html).not.toMatch(/\sstyle\s*=/i);
   });
 
   test('a fresh nonce each time, so one page cannot lend its policy to another', async () => {

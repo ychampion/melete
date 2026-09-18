@@ -182,7 +182,8 @@ describe('the quote gate', () => {
     );
     expect(counts.quotesDropped).toBe(0);
     expect(file.evidence).toHaveLength(1);
-    expect(PASTED.includes('approved a full refund of £249.99')).toBe(true);
+    // The shown text is cut from the paste, so the paste contains it exactly.
+    expect(PASTED).toContain(file.evidence[0]?.quote ?? '__nothing__');
     expect(file.noEvidenceNote).toBeNull();
   });
 

@@ -36,7 +36,7 @@ const DASHES = /[\u2010-\u2015\u2212]/;
  * because these are text rather than markup. Nothing in an email from a
  * company needs them, so they go.
  */
-const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u00ad]/;
+const UNSEEN = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u00ad]/g;
 /** A base character with whatever combining marks belong to it. */
 const CLUSTER = /[\s\S]\p{M}*/gu;
 /** What a sentence ends with, allowing for a closing quote or bracket. */
@@ -106,10 +106,12 @@ export function fold(source: string): Folded {
     const cluster = match[0];
     const at = match.index;
     const until = at + cluster.length;
-    const shaped = cluster.normalize('NFC');
+    // Invisibles come out before composing, not after: a zero-width joiner
+    // between a letter and its accent would otherwise take the accent with it
+    // and the letter would never compose.
+    const shaped = cluster.replace(UNSEEN, '').normalize('NFC');
+    if (shaped === '') continue;
     const first = shaped[0] ?? '';
-
-    if (INVISIBLE.test(first)) continue;
 
     if (/\s/.test(first) || SPACES.test(first)) {
       run = run ? { at: run.at, until, text: run.text + first } : { at, until, text: first };

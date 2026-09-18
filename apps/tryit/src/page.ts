@@ -542,7 +542,10 @@ const SCRIPT = String.raw`
   function render(file, meta) {
     var h = '';
     var WORDS = { high: 'Good odds', medium: 'Fair odds', low: 'Long shot' };
-    var level = WORDS[file.odds.level] ? file.odds.level : 'low';
+    /* hasOwn, not truthiness: constructor and toString are truthy on any
+       object literal, and this value becomes a class name. */
+    var level = Object.prototype.hasOwnProperty.call(WORDS, file.odds.level)
+      ? file.odds.level : 'low';
     var days = Math.max(1, Math.round(Number(file.odds.expectedDays) || 1));
 
     h += '<div class="case-top">';

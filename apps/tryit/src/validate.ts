@@ -204,7 +204,10 @@ export function gate(draft: DraftCaseFile, pasted: string, sources: SearchSource
     }
     basis.push({
       claim: entry.claim,
-      source: { kind: 'url', url: source.url, title: entry.title ?? source.title },
+      // The search's own title, not the model's: the address is verified, and
+      // a verified address under a label like "Official Refund Law" is worse
+      // than no link at all.
+      source: { kind: 'url', url: source.url, title: source.title ?? entry.title },
     });
   }
 
