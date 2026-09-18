@@ -1,10 +1,14 @@
 /**
- * The six figures at the top of the map, and the two counts promises add.
+ * The figures at the top of the map.
  *
  * They are computed from admitted items only, by adding integers. No model is
  * consulted and no figure is carried over from the extraction, so the number a
  * person reads is the sum of the sentences they can open — which is the whole
  * claim the map makes.
+ *
+ * The promise counts used to live beside the contract's totals because the
+ * contract did not carry them. It does now, so there is one shape again and
+ * nothing has to be stripped at the boundary.
  */
 
 import type { CompanyMapTotals, LedgerItem } from '@melete/contracts';
@@ -12,19 +16,13 @@ import type { CompanyMapTotals, LedgerItem } from '@melete/contracts';
 /** Items in another currency are left out of the money totals, never converted. */
 export const DEFAULT_CURRENCY = 'GBP';
 
+/**
+ * An item still in play. A promise being handled is still a promise in force —
+ * more so, if anything — so `handling` and `waiting` count alongside `found`.
+ */
 const OPEN_STATUSES = new Set(['found', 'handling', 'waiting']);
 
-/**
- * Promises in force and promises that lapsed. The shared contract's totals do
- * not carry these, so they live beside them rather than inside them: adding a
- * field to the contract would change a shape three lanes build against.
- */
-export type PromiseTotals = {
-  promises_in_force: number;
-  promises_lapsed: number;
-};
-
-export type CompanyTotals = CompanyMapTotals & PromiseTotals;
+export type CompanyTotals = CompanyMapTotals;
 
 export const RENEWAL_WINDOW_DAYS = 30;
 
@@ -75,8 +73,5 @@ export function computeTotals(
   return totals;
 }
 
-/** The contract's own six, for the shape `CompanyMap.totals` names. */
-export function contractTotals(totals: CompanyTotals): CompanyMapTotals {
-  const { promises_in_force: _inForce, promises_lapsed: _lapsed, ...rest } = totals;
-  return rest;
-}
+/** The totals are the contract's own shape now, so nothing is stripped. */
+export const contractTotals = (totals: CompanyTotals): CompanyMapTotals => totals;

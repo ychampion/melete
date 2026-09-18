@@ -144,7 +144,16 @@ export type LedgerItem = z.infer<typeof ledgerItem>;
 // the map
 // --------------------------------------------------------------------------
 
-/** The six figures at the top of the map. Each one is a count of admitted items. */
+/**
+ * The figures at the top of the map. Each one is a sum or a count over admitted
+ * items, so every one of them is the total of things a person can open and read.
+ *
+ * The promise counts are here rather than beside them because a promise is a
+ * first-class ledger item: a company's own commitment with a date on it. In
+ * force means the date has not passed; lapsed means it has, and a lapsed
+ * promise is the most useful thing on the map, because it is the one a person
+ * can hold a company to in the company's own words.
+ */
 export const companyMapTotals = z.strictObject({
   owed_to_you_minor: minorAmount,
   monthly_spend_minor: minorAmount,
@@ -152,6 +161,8 @@ export const companyMapTotals = z.strictObject({
   price_rises: z.number().int().nonnegative(),
   trials_ending: z.number().int().nonnegative(),
   data_holders: z.number().int().nonnegative(),
+  promises_in_force: z.number().int().nonnegative(),
+  promises_lapsed: z.number().int().nonnegative(),
 });
 export type CompanyMapTotals = z.infer<typeof companyMapTotals>;
 

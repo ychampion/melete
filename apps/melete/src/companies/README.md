@@ -79,6 +79,17 @@ involved. The connector's `email.search` tool caps a read at fifty messages, so
 a scan sees the newest fifty and then applies the window, rather than ninety
 days of mail.
 
+## The surface, where it makes a choice
+
+- `GET /spaces/:spaceId/companies` omits items with status `dropped` and keeps
+  `settled` ones. A dropped item is one the person has said is not a thing; the
+  row survives so a re-scan does not offer it again, but it is off the map.
+- `POST /ledger/:id/handle` is idempotent. An item that already names a job is
+  already being handled, so the job it names is the answer and the playbook is
+  not asked a second time. Writing to a company twice is the failure this
+  product exists to avoid.
+- `PATCH /ledger/:id` takes `dropped` or `settled` and returns the item.
+
 ## Handing an item on
 
 `handle.ts` is the whole seam to the playbooks that write to a company. It is an

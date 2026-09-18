@@ -150,7 +150,7 @@ export class PostgresCompanyStore implements CompanyStore {
   async openScan(owner: Owner): Promise<ScanRecord> {
     const [row] = await this.db
       .insert(companyScan)
-      .values({ id: newId('job'), spaceId: owner.spaceId, principalId: owner.principalId })
+      .values({ id: newId('scn'), spaceId: owner.spaceId, principalId: owner.principalId })
       .returning();
     if (!row) throw new Error('scan row was not created');
     return scanRecord(row);
@@ -188,7 +188,7 @@ export class PostgresCompanyStore implements CompanyStore {
       .insert(companyMessage)
       .values(
         messages.map((message) => ({
-          id: newId('k'),
+          id: newId('msg'),
           spaceId: owner.spaceId,
           principalId: owner.principalId,
           messageId: message.messageId,
@@ -374,7 +374,7 @@ export class MemoryCompanyStore implements CompanyStore {
   async openScan(owner: Owner): Promise<ScanRecord> {
     const record: ScanRecord & Owner = {
       ...owner,
-      id: newId('job'),
+      id: newId('scn'),
       status: 'running',
       messagesSeen: 0,
       itemsFound: 0,

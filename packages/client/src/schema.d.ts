@@ -7269,6 +7269,8 @@ export interface paths {
                                 monthly_spend_minor: components["schemas"]["__schema76"];
                                 owed_to_you_minor: components["schemas"]["__schema76"];
                                 price_rises: number;
+                                promises_in_force: number;
+                                promises_lapsed: number;
                                 renewals_next_30d: number;
                                 trials_ending: number;
                             };

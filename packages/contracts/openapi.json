@@ -315,6 +315,16 @@
                           "type": "integer",
                           "minimum": 0,
                           "maximum": 9007199254740991
+                        },
+                        "promises_in_force": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "promises_lapsed": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
                         }
                       },
                       "required": [
@@ -323,7 +333,9 @@
                         "renewals_next_30d",
                         "price_rises",
                         "trials_ending",
-                        "data_holders"
+                        "data_holders",
+                        "promises_in_force",
+                        "promises_lapsed"
                       ],
                       "additionalProperties": false
                     },
