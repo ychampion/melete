@@ -129,8 +129,12 @@ export function tier0Values(
     for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
       const built = make(match);
       if (!built) continue;
-      if (built.type !== 'date' && overlaps(values, built.start - offset, built.end - offset))
-        continue;
+      // Both sides of this comparison are whole-source coordinates: the values
+      // already collected carry `offset`, and so does `built`. Subtracting it
+      // from one side only made every span look like it sat `offset` characters
+      // earlier than it does, so a value could be discarded as overlapping a
+      // date it does not touch. Harmless while every caller passed offset 0.
+      if (built.type !== 'date' && overlaps(values, built.start, built.end)) continue;
       values.push(built);
     }
   };
