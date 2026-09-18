@@ -24,8 +24,17 @@ const DOUBLE_QUOTES = /[\u201c\u201d\u201e\u201f\u2033]/g;
 /** Hyphens, dashes and the minus sign. */
 const DASHES = /[\u2010-\u2015\u2212]/g;
 const ELLIPSIS = /\u2026/g;
-/** Zero-width characters, soft hyphens and byte-order marks: present, unseen. */
-const INVISIBLE = /[\u200b-\u200d\ufeff\u00ad]/g;
+/**
+ * Characters that are present but never seen, and characters that change how
+ * what is seen is ordered.
+ *
+ * The second kind matters as much as the first. A right-to-left override makes
+ * a browser draw the rest of a quote backwards, so a sentence genuinely in the
+ * paste can be made to read as its own opposite \u2014 and escaping cannot help,
+ * because these are text rather than markup. Nothing in an email from a
+ * company needs them, so they go.
+ */
+const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u00ad]/g;
 const WHITESPACE = /\s+/g;
 
 /**

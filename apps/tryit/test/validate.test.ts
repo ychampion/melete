@@ -50,6 +50,36 @@ describe('canonical text', () => {
 });
 
 /**
+ * A right-to-left override reverses everything after it when a browser draws
+ * it, so a quote really present in the paste can be made to read as its own
+ * opposite on screen. Escaping does not help: the characters are not markup,
+ * they are text, and `<q>` is not an isolate. They carry no meaning in an
+ * email from a company, so they come out with the other invisibles.
+ */
+describe('characters that change what a quote says without changing it', () => {
+  const RLO = '‮';
+  const LRI = '⁦';
+  const PDI = '⁩';
+  const MARK = '‏';
+
+  test('an override is stripped, so the quote reads as it was written', () => {
+    const pasted = `We do not owe you a refund. ${RLO}dnufer a uoy ewo ton od eW`;
+    const folded = canonical(pasted);
+    for (const control of [RLO, LRI, PDI, MARK]) expect(folded).not.toContain(control);
+  });
+
+  test('a quote carrying one still matches the text without it', () => {
+    const pasted = `We have approved a full ${MARK}refund of £249.99 today.`;
+    expect(locate(canonical(pasted), 'We have approved a full refund of £249.99')).not.toBeNull();
+  });
+
+  test('every isolate and override is out, not only the one in the probe', () => {
+    const all = '‪‫‬‭‮⁦⁧⁨⁩‎‏';
+    expect(canonical(`a${all}b`)).toBe('ab');
+  });
+});
+
+/**
  * Folding every run of whitespace made one paragraph of a whole email, so a
  * "quote" could begin in the company's sentence and end inside the person's
  * own reply two paragraphs below, under a caption promising it was word for
