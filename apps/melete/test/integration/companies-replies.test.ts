@@ -336,6 +336,37 @@ withDb('noticing that a company wrote back', () => {
     ).toHaveLength(0);
   });
 
+  test('a connection the person took back is not read again', async () => {
+    const { handle, jobs } = fixture();
+    const chase = await waitingChase();
+    expect(await readCandidates(handle.sql)).toHaveLength(1);
+
+    for (const status of ['revoked', 'disabled', 'error']) {
+      await handle.sql`update connection set status = ${status} where id = ${connectionId}`;
+      // Revocation is the person saying stop. Whether the registry still holds
+      // a connector for it is not the question; the row is, and the row says no.
+      expect(await readCandidates(handle.sql)).toEqual([]);
+      expect(await poller([reply()]).runOnce()).toEqual({ delivered: 0, failed: 0 });
+      expect((await jobs.get(chase.jobId)).state).toBe('waiting_for_event_or_time');
+    }
+
+    await handle.sql`update connection set status = 'active' where id = ${connectionId}`;
+    expect(await readCandidates(handle.sql)).toHaveLength(1);
+  });
+
+  test('a connection belonging to another space is not this chase to poll', async () => {
+    const { handle } = fixture();
+    await waitingChase();
+    const elsewhere = newId('sp');
+    await handle.db.insert(space).values({
+      id: elsewhere,
+      name: 'Somewhere else',
+      gitPath: `/spaces/${elsewhere}`,
+    });
+    await handle.sql`update connection set space_id = ${elsewhere} where id = ${connectionId}`;
+    expect(await readCandidates(handle.sql)).toEqual([]);
+  });
+
   test('a finished chase is left alone', async () => {
     const { jobs, handle } = fixture();
     const chase = await waitingChase();

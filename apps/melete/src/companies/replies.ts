@@ -202,6 +202,11 @@ export function candidatesFrom(rows: readonly CandidateRow[]): ReplyCandidate[] 
 /**
  * Every live chase that has already written to somebody. A job that has sent
  * nothing has nothing to be replied to, and a finished job is finished.
+ *
+ * The connection is joined and required to be active in the job's own space.
+ * Revocation is a person saying stop, and stopping has to be decided by the row
+ * they changed rather than by whether some registry still happens to hold a
+ * connector for it — a mailbox nobody may read is not read.
  */
 export async function readCandidates(sql: Sql, limit = 200): Promise<ReplyCandidate[]> {
   const rows = await sql`
@@ -210,6 +215,8 @@ export async function readCandidates(sql: Sql, limit = 200): Promise<ReplyCandid
     from job j
       join trigger t on t.job_id = j.id and t.enabled = true
         and t.spec->>'event_name' = ${REPLY_EVENT_NAME}
+      join connection c on c.id = t.spec->>'connection_id'
+        and c.space_id = j.space_id and c.status = 'active'
       join action a on a.job_id = j.id and a.status = 'succeeded'
         and a.kind in ('email.send', 'test.send') and a.resolved_at is not null
     where j.state not in ('completed', 'failed', 'cancelled')
