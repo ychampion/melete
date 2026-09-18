@@ -108,9 +108,13 @@ the command below.
   itself with a certificate issued for that name; without this the node joins
   but has no address to answer HTTPS on.
 - **An auth key**, to join the node the first time.
+- **A decision about who may reach the node**, if anyone else is on the tailnet:
+  the default policy lets every member reach every device, so settle
+  [restricting the node to yourself](#restricting-the-node-to-yourself) before it
+  joins.
 
-Both settings are per tailnet and are turned on once, in the Tailscale admin
-console under DNS.
+The first two settings are per tailnet and are turned on once, in the Tailscale
+admin console under DNS.
 
 ### Create an auth key
 
