@@ -19,8 +19,7 @@ points model traffic at Melete's gateway. The image also applies
 the identical reviewed patch. It adds a real compaction dispatch and binds
 plugin observations to the current HTTP run queue; updating the pin means
 reviewing those seams again.
-The image was built from the pinned tag and run on a Linux Docker host on
-2026-09-12; its labels record the Hermes commit and the plugin content hash, and
+The image's labels record the Hermes commit and the plugin content hash, and
 `build-metadata.py` refuses a build whose plugin bytes do not match the pin.
 Historical measurements remain in
 [the engineering record](../../.agents/notes/0009-hermes-surface.md); the
@@ -28,13 +27,14 @@ current scaffolding measurement is below.
 
 The broker filters tools by scopes and serves a token-budgeted core (750
 estimated tokens, discovery tools included) plus `search_tools` and `load_tool`;
-a universal 15-tool cap is **not claimed**, and the contract constant is not an
-enforced catalog cap.
+the contract's tool-count constant is advisory and the catalog is bounded by the
+token budget rather than by a fixed number of tools.
 `renderInstructions` orders identity, skills and knowledge; named client tests
 include `the identity is short enough to be a prefix, not a personality`,
 `the instructions are identity, then skills, then knowledge`, and
-`every knowledge excerpt carries where it came from`. The engine's own prompt
-is additional; a 250-token total system prompt is **not claimed**.
+`every knowledge excerpt carries where it came from`. The engine adds its own
+prompt on top of these instructions, so the measurement below is of the whole
+assembled request.
 
 ## HTTP lifecycle and approvals
 
@@ -76,10 +76,10 @@ supports durable engine run-idempotency; the static check `taking away the
 runtime writable Hermes home` covers the declaration.
 
 Inside-container egress and filesystem probes are
-[conformance 6](../../conformance/scenarios/06-no-route-out.test.ts); they ran
-on a Linux Docker host on 2026-09-12 from a claimed attempt and the warm cell,
-and found the broker and model gateway to be the only reachable peers, with
-Postgres, the web service and the owner control plane unreachable. The service
+[conformance 6](../../conformance/scenarios/06-no-route-out.test.ts); run from a
+claimed attempt and the warm cell on a Linux Docker host, they found the broker
+and model gateway to be the only reachable peers, with Postgres, the web service
+and the owner control plane unreachable. The service
 starts and retires these containers itself when the Docker runtime is selected.
 
 ## What the thin configuration costs
@@ -162,9 +162,14 @@ absolute path outside the workspace is stopped by the container's read-only root
 and by `/work` being its only writable mount, not by anything in Python. On a
 developer machine that protection is simply absent, and
 `tests/test_execution.py` asserts that it is absent rather than implying a
-sandbox nobody built. One gap remains in `deploy/docker-compose.yml`: it mounts
-the whole work volume, so a snippet can read a sibling job's directory even
-though the tool refuses to. The per-attempt container has to mount `work/<job>`.
+sandbox nobody built. In a container, `/work` holds one job and no sibling:
+`apps/melete/src/runtime/docker.ts` mounts the work volume with
+`VolumeOptions.Subpath` set to the attempt's job id, and the warm cell in
+`deploy/docker-compose.yml` mounts the `_probe` subpath the same way. The
+declaration is covered by `pins the image, mounts only the job subpath, and
+isolates its sole broker peer` in `runtime/docker.test.ts`, and the live
+filesystem by conformance 6's `another job is absent from the mounted
+filesystem`.
 
 Enabling execution for a space is two things: an `exec` connection, and the
 `exec.run` / `exec.python` scopes on the job. A job without them sees no
@@ -217,8 +222,8 @@ captures retain the original attempt identity and use separate capture IDs.
 The proof records real lifecycle hooks and exercises runtime MCP installation,
 search/load, receipts, bounded reconnect, sealed credential refresh, private
 learning, evaluated teammate reuse and revocation. A lost acknowledgement stays
-unknown without replay. Real compaction is unverified. See the current
-[capability matrix](../../docs/CAPABILITIES.md) and [release evidence](../../README.md#the-six-gates-and-where-v01-stands).
+unknown without replay. Real compaction is unverified. See the
+[capability matrix](../../docs/CAPABILITIES.md).
 
 ## Per-attempt launch
 
