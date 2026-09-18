@@ -190,27 +190,31 @@ async function sent(actionId: string) {
 }
 
 /**
- * The whole way out, as it actually happens: an attempt proposes, the job stops
+ * The whole way out, as it actually happens: the attempt proposes, the job stops
  * and waits for the person, their yes queues it again, and the attempt that
  * picks it up is the one that carries it out.
  */
-async function sendApproved(row: JobRow, body: string) {
+async function approveAndDispatch(claimed: ClaimedAttempt, jobId: string, body: string) {
   const { jobs } = fixture();
-  const first = await claim(row);
-  const proposal = await propose(first, body);
+  const proposal = await propose(claimed, body);
   expect(proposal.status).toBe('needs_approval');
-  expect((await jobs.get(row.id)).state).toBe('waiting_for_approval');
+  expect((await jobs.get(jobId)).state).toBe('waiting_for_approval');
   await approvals.decide(
     String(proposal.approval_id),
     { decision: 'approved', payload_hash: proposal.payload_hash },
     ownerId,
   );
-  const carrying = await claim(await jobs.get(row.id));
+  const carrying = await claim(await jobs.get(jobId));
   await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
   const dispatched = await broker.dispatch(proposal.action_id);
   expect(dispatched.status).toBe('succeeded');
   expect(dispatched.receipt?.action_id).toBe(proposal.action_id);
   return { proposal, claimed: carrying };
+}
+
+/** The same, starting from a job nobody has claimed yet. */
+async function sendApproved(row: JobRow, body: string) {
+  return approveAndDispatch(await claim(row), row.id, body);
 }
 
 withDb('handing one ledger item to a playbook', () => {
@@ -448,6 +452,8 @@ withDb('handing one ledger item to a playbook', () => {
         and data->>'job_id' = ${waiting.id} and (data->>'expected_version')::int = ${waiting.stateVersion}`;
     expect(wakes).toHaveLength(1);
     expect(new Date(wakes[0]?.start_after).toISOString()).toBe(deadline);
+    // And until that deadline, silence keeps its quiet: nothing wakes early.
+    expect(await runner.claim(wake(waiting))).toBeNull();
 
     const reply = () =>
       triggers.deliver({
@@ -490,6 +496,41 @@ withDb('handing one ledger item to a playbook', () => {
       evidence: [{ kind: 'action', action_id: message.action_id }],
     });
     expect(settled.state).toBe('completed');
+  });
+
+  test('a window that runs out with no reply brings it back for one follow-up', async () => {
+    const { jobs, handle } = fixture();
+    const start = await started();
+    const row = await jobs.get(start.job_id);
+    const [registration] = await handle.db.select().from(trigger);
+    if (!registration) throw new Error('Expected the reply trigger');
+    const { proposal: first, claimed } = await sendApproved(row, FIRST_MESSAGE);
+
+    // The cadence window has run out and the company never wrote back. This is
+    // the path that carries the work when no mail feed is delivering replies:
+    // the deadline alone is enough to bring the job back.
+    const elapsed = await runner.commitOutcome(claimed.claims, {
+      kind: 'waiting_for_event_or_time',
+      wait: {
+        kind: 'event',
+        trigger_id: registration.id,
+        deadline_at: new Date(Date.now() - 1000).toISOString(),
+      } satisfies WaitSpec,
+    });
+    const resumed = await claim(elapsed);
+    // Nothing came in, so there is nothing to read; it is the deadline talking.
+    expect(resumed.bundle.inputs.trigger_events).toEqual([]);
+    expect(resumed.bundle.skills.map((skill) => skill.name)).toContain('refund-owed');
+
+    const followUp = await approveAndDispatch(
+      resumed,
+      elapsed.id,
+      `${FIRST_MESSAGE}\n\nJust following this up.`,
+    );
+    expect(followUp.proposal.action_id).not.toBe(first.action_id);
+    expect(await sent(followUp.proposal.action_id)).toHaveLength(1);
+    // The first message and one follow-up. Not two.
+    expect(await handle.sql`select id from action where kind = 'test.send'`).toHaveLength(2);
   });
 
   test('stopping halts the message that was waiting for permission', async () => {

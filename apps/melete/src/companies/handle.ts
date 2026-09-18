@@ -188,8 +188,13 @@ export function handleObjective(
         ]
       : [
           'No reply trigger is registered here, so wait on a timer at the cadence the',
-          'playbook names and look for their reply when it wakes you.',
+          'playbook names.',
         ]),
+    // Whichever brought it back, the deadline can arrive while a reply is
+    // sitting unread. Following up on a company that already answered reads as
+    // not having looked, so look first and let what is there decide.
+    'Whenever you wake, search the mail for their reply before deciding anything.',
+    'A follow-up is for silence; if they wrote back, answer what they actually said.',
     '',
     `The ${playbook} instructions above govern the wording, the cadence, the escalation and when to stop.`,
   ];
