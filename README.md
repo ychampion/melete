@@ -314,6 +314,7 @@ checks and how to run the deployment scenarios against a Compose stack.
 | `apps/melete` | The service: jobs, broker, memory, connectors and model metering |
 | `packages/contracts` | Schemas, state transitions and the generated OpenAPI document |
 | `packages/client`, `apps/web`, `apps/mock-api` | Typed client, the web app built from the design canvas, and the scripted mock |
+| `apps/tryit` | The try-it page above: one email in, one case file out, no account behind it |
 | `packages/runtime-hermes` | Runtime configuration, the Melete plugin, the HTTP adapter and the runtime image |
 | `packages/knowledge`, `packages/skills`, `apps/melete/src/memory` | File-view utilities, skill files and the authoritative memory service |
 | `deploy` | `docker-compose.yml`, the browser override, `.env.example`, the configuration generator, and the checks that the sandbox is really a sandbox |
