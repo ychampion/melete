@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { DraftCaseFile } from '../src/schema.ts';
-import { canonical, locate, MIN_QUOTE, SENTINEL } from '../src/text.ts';
+import { canonical, fold, locate, MIN_QUOTE, SENTINEL } from '../src/text.ts';
 import { gate, normaliseUrl, parseDraft, retrievedIndex } from '../src/validate.ts';
 
 const PASTED = `From: Customer Care <care@northwind-electricals.example>
@@ -39,13 +39,13 @@ describe('canonical text', () => {
   });
 
   test('a quote that spans a line break still matches the paste', () => {
-    const found = locate(canonical(PASTED), 'We have approved a full refund of £249.99');
+    const found = locate(fold(PASTED), 'We have approved a full refund of £249.99');
     expect(found?.quote).toBe('We have approved a full refund of £249.99');
   });
 
   test('a quote shorter than the floor proves nothing and is refused', () => {
     expect('8 August'.length).toBeLessThan(MIN_QUOTE);
-    expect(locate(canonical(PASTED), '8 August')).toBeNull();
+    expect(locate(fold(PASTED), '8 August')).toBeNull();
   });
 });
 
@@ -70,7 +70,7 @@ describe('characters that change what a quote says without changing it', () => {
 
   test('a quote carrying one still matches the text without it', () => {
     const pasted = `We have approved a full ${MARK}refund of £249.99 today.`;
-    expect(locate(canonical(pasted), 'We have approved a full refund of £249.99')).not.toBeNull();
+    expect(locate(fold(pasted), 'We have approved a full refund of £249.99')).not.toBeNull();
   });
 
   test('every isolate and override is out, not only the one in the probe', () => {
@@ -102,36 +102,36 @@ On 2 September you wrote:
 
   test('a hard-wrapped sentence still reads as one sentence', () => {
     const wrapped = 'We have approved a full refund\nof £249.99 to your account.';
-    expect(locate(canonical(wrapped), 'We have approved a full refund of £249.99')).not.toBeNull();
+    expect(locate(fold(wrapped), 'We have approved a full refund of £249.99')).not.toBeNull();
   });
 
   test('a span across a blank line does not match', () => {
-    expect(locate(canonical(THREAD), 'on this occasion. Kind regards,')).toBeNull();
+    expect(locate(fold(THREAD), 'on this occasion. Kind regards,')).toBeNull();
   });
 
   test('a span from the company’s words into the person’s reply does not match', () => {
     expect(
       locate(
-        canonical(THREAD),
+        fold(THREAD),
         'Brightfibre Support On 2 September you wrote: > You told me on the phone',
       ),
     ).toBeNull();
   });
 
   test('each side of a break is still quotable on its own', () => {
-    const folded = canonical(THREAD);
+    const folded = fold(THREAD);
     expect(locate(folded, 'We are not able to offer a refund on this occasion.')).not.toBeNull();
     expect(locate(folded, 'You told me on the phone that you would refund')).not.toBeNull();
   });
 
   test('a line someone chose to end is a break; a wrapped one is not', () => {
     const table = 'Refund due:\nno\nReplacement due:\nyes, within 30 days';
-    expect(locate(canonical(table), 'no Replacement due: yes')).toBeNull();
+    expect(locate(fold(table), 'no Replacement due: yes')).toBeNull();
     const asked = 'Was a refund approved?\nNo.\nWill we pay you £249.99?';
-    expect(locate(canonical(asked), 'No. Will we pay you £249.99?')).toBeNull();
+    expect(locate(fold(asked), 'No. Will we pay you £249.99?')).toBeNull();
     // ...while a sentence wrapped mid-way still reads as one sentence.
     const wrapped = 'We received your returned item on 8 August and it was\nfaulty on arrival.';
-    expect(locate(canonical(wrapped), 'on 8 August and it was faulty on arrival')).not.toBeNull();
+    expect(locate(fold(wrapped), 'on 8 August and it was faulty on arrival')).not.toBeNull();
   });
 
   test('a line ending in no punctuation at all is still joined to the next', () => {
@@ -140,12 +140,12 @@ On 2 September you wrote:
     // them. Ruling on indentation instead would break every wrapped email,
     // which is the far commoner case. Recorded here so it is a decision.
     const bare = 'Refund due: no\nReplacement due: yes';
-    expect(locate(canonical(bare), 'no Replacement due: yes')).not.toBeNull();
+    expect(locate(fold(bare), 'no Replacement due: yes')).not.toBeNull();
   });
 
   test('the mark for a break can never be smuggled in by the model', () => {
-    const folded = canonical(THREAD);
-    expect(folded).toContain(SENTINEL);
+    const folded = fold(THREAD);
+    expect(folded.text).toContain(SENTINEL);
     expect(locate(folded, `on this occasion.${SENTINEL}Kind regards,`)).toBeNull();
   });
 });

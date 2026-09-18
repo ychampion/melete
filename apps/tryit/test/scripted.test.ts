@@ -7,7 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import type { ProviderRun } from '../src/provider.ts';
 import { SAMPLES } from '../src/samples.ts';
 import { draftFrom, kindOf } from '../src/scripted.ts';
-import { canonical } from '../src/text.ts';
+import { canonical, fold, locate } from '../src/text.ts';
+import { gate } from '../src/validate.ts';
 
 const run = (pasted: string): ProviderRun => ({
   pasted,
@@ -197,13 +198,30 @@ describe('the sentences it picks', () => {
     for (const entry of draft.evidence) expect(entry.quote).not.toContain('care@');
   });
 
-  test('every quote it produces is in the paste', () => {
+  /**
+   * What this provider proposes is only a proposal: like the model's, it is
+   * checked afterwards. So the test is that every one of its quotes can be
+   * found in the paste — and the raw-substring guarantee is asserted on what
+   * comes out of the gate, where it is actually made.
+   */
+  test('every quote it proposes can be found in the paste', () => {
     for (const entry of SAMPLES) {
       const draft = draftFrom(run(entry.text));
-      const folded = canonical(entry.text);
-      for (const quote of draft.evidence) expect(folded).toContain(quote.quote);
+      const folded = fold(entry.text);
+      expect(draft.evidence.length).toBeGreaterThan(0);
+      for (const quote of draft.evidence) expect(locate(folded, quote.quote)).not.toBeNull();
       for (const basis of draft.entitlement.basis)
-        expect(folded).toContain(basis.quote ?? '__missing__');
+        expect(locate(folded, basis.quote ?? '')).not.toBeNull();
+    }
+  });
+
+  test('and what the gate lets through is cut from the paste itself', () => {
+    for (const entry of SAMPLES) {
+      const { file } = gate(draftFrom(run(entry.text)), entry.text, []);
+      expect(file.evidence.length).toBeGreaterThan(0);
+      for (const shown of file.evidence) expect(entry.text).toContain(shown.quote);
+      for (const basis of file.entitlement.basis)
+        if (basis.source.kind === 'quote') expect(entry.text).toContain(basis.source.quote);
     }
   });
 

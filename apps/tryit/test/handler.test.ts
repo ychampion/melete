@@ -15,7 +15,6 @@ import { ProviderError } from '../src/provider.ts';
 import { SAMPLES } from '../src/samples.ts';
 import type { Script } from '../src/scripted.ts';
 import { scriptedProvider } from '../src/scripted.ts';
-import { canonical } from '../src/text.ts';
 
 const REFUND = SAMPLES[0]?.text ?? '';
 
@@ -61,8 +60,10 @@ describe('the happy path', () => {
     expect(file.ladder.length).toBeGreaterThanOrEqual(3);
     expect(file.message.body).toContain('Northwind Electricals');
 
-    // Every quote shown is really in what was pasted.
-    for (const entry of file.evidence) expect(canonical(REFUND)).toContain(entry.quote);
+    // Every quote shown is really in what was pasted. Asserted against the
+    // paste itself, not against the fold the gate computes: comparing with
+    // the gate's own working restates it and cannot catch it being wrong.
+    for (const entry of file.evidence) expect(REFUND).toContain(entry.quote);
   });
 
   test('records sizes, timings and an outcome, and never the text', async () => {
@@ -493,8 +494,8 @@ describe('the three samples', () => {
       const { done } = await readStream(await caseFileRoute(post(sample.text, sample.id), deps()));
       if (!done?.ok) throw new Error(`${sample.id} did not produce a case file`);
       expect(done.caseFile.evidence.length).toBeGreaterThan(0);
-      const folded = canonical(sample.text);
-      for (const entry of done.caseFile.evidence) expect(folded).toContain(entry.quote);
+      // Against the paste, not against the gate's own fold of it.
+      for (const entry of done.caseFile.evidence) expect(sample.text).toContain(entry.quote);
     }
   });
 });
