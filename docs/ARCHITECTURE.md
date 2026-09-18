@@ -39,10 +39,11 @@ above; see [the browser worker](browser-worker.md).
 The static checker `checkCompose` in `deploy/scripts/compose-check.ts` reads
 this YAML (26 checks, `passes every boundary check` and its mutation tests);
 `bun run compose:check` adds two checks that each installing Dockerfile copies
-every workspace manifest, and one that the runtime Dockerfile's
-`MELETE_PLUGIN_SHA` still describes the plugin directory the image hashes at
-build time, 29 in all. It does not open sockets inside a
-container. Live behavior was established by
+every workspace manifest, one that the runtime Dockerfile's `MELETE_PLUGIN_SHA`
+still describes the plugin directory the image hashes at build time, and one
+that the engine configuration the attempt image carries still pins the memory
+keys, the turn ceiling and compaction, 30 in all. It does not open sockets
+inside a container. Live behavior was established by
 scenario 6 on a Linux Docker host: from a claimed cell and the warm cell, the
 internet, the host metadata address, a live host listener, Postgres (by DNS and
 by container IP), the web service and the owner control plane were unreachable,

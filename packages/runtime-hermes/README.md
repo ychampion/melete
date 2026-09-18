@@ -11,14 +11,47 @@ stub.
 
 ## Configuration and prompt scope
 
-`config/config.yaml` selects the Melete plugin toolset, disables Hermes memory,
-the tool-search bridge, the skill curator and the auxiliary title, review and
-compression requests that would spend a job's budget in the background, and
-points model traffic at Melete's gateway. The image also applies
+Every surface that starts the engine renders its configuration from
+[`src/engine-config.ts`](src/engine-config.ts): the image's own copy in
+`config/config.yaml`, the boot script, the process supervisor, the container
+supervisor, the evaluation stack and the local end-to-end harness. A setting is
+therefore changed in one place, and
+`the configuration in the image is what the renderer produces` in
+[`engine-config.test.ts`](src/engine-config.test.ts) fails if the committed file
+drifts from it.
+
+What it renders: the Melete plugin toolset alone, which is what turns every
+built-in toolset off; the tool-search bridge off; the skill curator,
+conversation checkpoints and the auxiliary title and review requests off, so
+nothing spends a job's budget in the background; `memory.memory_enabled` and
+`memory.user_profile_enabled` both false, which are the two keys the engine
+actually reads — a store built from either one loads its files out of the engine
+home whatever the toolset list says; a turn ceiling of 150
+(`MELETE_ENGINE_MAX_TURNS`), which is a runaway stop and not a cost control,
+since unset means unlimited; the tool-loop hard stop on by name, because the
+engine counts this platform as attended and would otherwise only warn; and model
+traffic pointed at Melete's gateway.
+
+Compaction is on, in place, and does not abort the attempt when a summary
+fails. `model.context_length` comes from Melete's model catalog, so the engine's
+arithmetic and Melete's agree, and `compression.threshold_tokens` is the lowest
+of the engine's own trigger for that window, the owner's cap
+(`MELETE_COMPACTION_MAX_TOKENS`, default 200,000) and a figure that keeps the
+request inside the body the gateway accepts. The summary call runs on the
+attempt's own model through the gateway and is metered like any other request;
+the capability header is written into the model section as well as the provider
+entry, because the auxiliary client that makes that call reads only the former.
+`HERMES_BUNDLED_SKILLS` names a directory that does not exist, so the engine's
+own bundled skills are never copied into an attempt's home.
+
+The boot script adds only what belongs to one attempt: the capability, the model
+it was granted, and the window and trigger that follow from that model. The
+image also applies
 `patches/observer_bridge.py`: three source hashes must match the audited pin or
 the identical reviewed patch. It adds a real compaction dispatch and binds
 plugin observations to the current HTTP run queue; updating the pin means
-reviewing those seams again.
+reviewing those seams again. A checkout carrying an earlier version of the patch
+is refused as well, so it has to be restored to the pinned commit first.
 The image's labels record the Hermes commit and the plugin content hash, and
 `build-metadata.py` refuses a build whose plugin bytes do not match the pin.
 Historical measurements remain in

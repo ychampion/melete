@@ -42,6 +42,61 @@ def test_registered_hooks_preserve_order_and_erase_payloads():
         assert secret not in encoded
 
 
+def test_on_compaction_scalars_survive_redaction():
+    """A compaction's count and mode are the two facts the ledger needs from it."""
+    ctx = Context()
+    register_observers(ctx)
+    records = []
+    token = bind_capture("att_compaction", records.append)
+    try:
+        assert ctx.hooks["on_compaction"](
+            session_id="ses_private_identifier", compression_count=2, in_place=True,
+        ) is None
+        # Every other boundary keeps no detail at all, whatever it is handed.
+        assert ctx.hooks["post_tool_call"](compression_count=2, in_place=True) is None
+    finally:
+        reset_capture(token)
+    assert records[0]["detail"] == {"compression_count": 2, "in_place": True}
+    assert "detail" not in records[1]
+    # The session id is an identifier, not a scalar, and never leaves the runtime.
+    assert "ses_private_identifier" not in json.dumps(records)
+
+
+def test_a_deterministic_drop_is_observed_and_never_a_summarized_success():
+    """A feasibility skip drops the middle without a summary; it claims no success."""
+    ctx = Context()
+    register_observers(ctx)
+    records = []
+    token = bind_capture("att_skip", records.append)
+    try:
+        assert ctx.hooks["on_compaction"](
+            compression_count=1, in_place=True, used_fallback=True, status="observed",
+        ) is None
+        assert ctx.hooks["on_compaction"](
+            compression_count=2, in_place=True, used_fallback=False, status="succeeded",
+        ) is None
+    finally:
+        reset_capture(token)
+    assert records[0]["outcome"] == "observed"
+    assert records[0]["detail"] == {"compression_count": 1, "in_place": True, "used_fallback": True}
+    assert records[1]["outcome"] == "succeeded"
+    assert records[1]["detail"]["used_fallback"] is False
+
+
+def test_on_compaction_detail_refuses_anything_but_the_named_scalars():
+    ctx = Context()
+    register_observers(ctx)
+    records = []
+    token = bind_capture("att_compaction_bad", records.append)
+    try:
+        assert ctx.hooks["on_compaction"](compression_count="2", in_place="yes") is None
+        assert ctx.hooks["on_compaction"](compression_count=True, in_place=1) is None
+        assert ctx.hooks["on_compaction"](compression_count=-1) is None
+    finally:
+        reset_capture(token)
+    assert all("detail" not in record for record in records)
+
+
 def test_throwing_observer_records_hook_error_and_next_hook_still_runs():
     def throwing(name, payload):
         if name == "pre_tool_call":

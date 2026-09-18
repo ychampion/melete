@@ -57,3 +57,4 @@ Two rules:
 | [0023](0023-experience-adapter.md) | The experience API is an adapter over saved work, never a second truth | accepted |
 | [0024](0024-browser-worker.md) | A browser worker outside the cell, with recipes and takeover | accepted |
 | [0025](0025-web-app.md) | The web app is built from the design canvas, behind one adapter | accepted |
+| [0026](0026-engine-forward.md) | Engine surface probes: what the pinned engine actually does | recorded |

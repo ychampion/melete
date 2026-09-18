@@ -123,10 +123,17 @@ six tools and 377 tokens. This is the only non-obvious line in the thin config.
 `platform_toolsets`-style key that reaches them on the `/v1/runs` path;
 `gateway.platforms.<plat>.skip_context_files` (`gateway/run_turn_runner.py:847`)
 belongs to the messaging turn runner, not the API server. Melete therefore
-reaches the same end by configuration rather than by argument: `memory.enabled:
-false` plus keeping `memory` out of the toolset list, and an image whose working
+reaches the same end by configuration rather than by argument: the memory flags
+plus keeping `memory` out of the toolset list, and an image whose working
 directory holds no `SOUL.md`, `AGENTS.md`, `CLAUDE.md`, `.hermes.md` or
 `.cursorrules` for `_context_files_part` (`agent/system_prompt.py:585`) to find.
+
+**Superseded on this point.** `memory.enabled` is not a key the engine reads:
+executed probes showed both built-in stores still on with it set to false. The
+keys are `memory.memory_enabled` and `memory.user_profile_enabled`, and the
+configuration now sets those. See
+[note 0026](0026-engine-forward.md) and
+`test_memory_flags_are_read_from_the_real_keys`.
 The measurement below confirms the context tier is empty in that arrangement.
 
 ## The HTTP routes

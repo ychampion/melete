@@ -10,4 +10,4 @@ export const HERMES_PINNED_TAG = 'v2026.9.7';
 export const HERMES_PINNED_COMMIT = '2237be355906fbe6065ce1815711eee52b2d646e';
 
 export const HERMES_REPOSITORY = 'https://github.com/NousResearch/hermes-agent';
-export const RUNTIME_VERSION = `hermes@${HERMES_PINNED_TAG}+melete-observers.2`;
+export const RUNTIME_VERSION = `hermes@${HERMES_PINNED_TAG}+melete-observers.3`;

@@ -15,8 +15,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type AttemptBundle, prefixedId } from '@melete/contracts';
-import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
-import { parse, stringify } from 'yaml';
+import {
+  engineSettingsFromEnvironment,
+  HERMES_PINNED_COMMIT,
+  renderEngineConfig,
+} from '@melete/runtime-hermes';
+import { stringify } from 'yaml';
 import { modelApiMode } from '../gateway/providers.ts';
 import { ATTEMPT_LOG_CONFIG } from './docker.ts';
 import { resolvePython } from './python.ts';
@@ -273,25 +277,18 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
         join(home, 'plugins', 'melete'),
         { recursive: true },
       );
-      const config = parse(
-        await readFile(join(this.options.runtimePackage, 'config', 'config.yaml'), 'utf8'),
-      ) as Record<string, unknown>;
       const environment = attemptEnvironment(bundle, this.options.brokerUrl, token);
-      delete config.provider;
-      config.model = {
-        ...(typeof config.model === 'object' ? config.model : {}),
-        provider: 'melete-gateway',
-        default: bundle.model.model,
-      };
-      config.providers = {
-        'melete-gateway': {
-          base_url: `${this.options.brokerUrl}/providers/${encodeURIComponent(bundle.model.provider)}/v1`,
-          key_env: 'MELETE_MODEL_KEY',
-          default_model: bundle.model.model,
-          api_mode: environment.MELETE_MODEL_API_MODE,
-          extra_headers: { 'x-melete-capability': bundle.attempt.token },
-        },
-      };
+      // No boot script runs on this path: the engine is started directly, so the
+      // whole configuration — the attempt's capability included — is rendered
+      // here from the same options the image is built with.
+      const config = renderEngineConfig({
+        provider: encodeURIComponent(bundle.model.provider),
+        model: bundle.model.model,
+        brokerUrl: this.options.brokerUrl,
+        modelApiMode: environment.MELETE_MODEL_API_MODE,
+        capability: bundle.attempt.token,
+        ...engineSettingsFromEnvironment(),
+      });
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
       signal.throwIfAborted();
       child = spawn(
