@@ -3,8 +3,10 @@ import { and, eq } from 'drizzle-orm';
 import { taskObjective } from '../../../../conformance/learning/records.ts';
 import { ScriptedRecordRuntime } from '../../../../conformance/learning/scripted-runtime.ts';
 import { openDatabase } from '../../src/db/client.ts';
+import { job } from '../../src/db/schema.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { learningTrial } from '../../src/learning/evaluation-schema.ts';
 import { assertEvaluationBudget, ProcedureEvaluator } from '../../src/learning/evaluator.ts';
 import { ProcedureService } from '../../src/learning/procedures.ts';
 import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
@@ -215,6 +217,14 @@ async function candidate(template: string, selected: string[]) {
     expect(final.passed).toBe(true);
     expect(final.createdAt.getTime()).toBeGreaterThanOrEqual(validation.selectedAt.getTime());
     expect(final.budget).toMatchObject({ jobs: 6, reservedTokens: 49152 });
+    // An arm runs held-out history or a model-authored variant under the owner's own
+    // principal; its objective is recorded as text the owner did not type.
+    const arms = await fixture.handle.db
+      .select({ origin: job.objectiveOrigin })
+      .from(job)
+      .innerJoin(learningTrial, eq(learningTrial.jobId, job.id));
+    expect(arms.length).toBeGreaterThan(0);
+    expect([...new Set(arms.map((row) => row.origin))]).toEqual(['derived']);
     const before = runtime.observed.length;
     expect(
       (await evaluator.evaluate(fixture.ownerId, fixture.spaceId, proposed.id)).evaluations,
