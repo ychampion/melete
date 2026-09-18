@@ -1,0 +1,74 @@
+# The deployment conformance scenarios — no route out, retraction, model-agnostic — need a whole
+# Compose stack on a Linux Docker host, so they cannot run on a pull request. Nightly, and on
+# request. Nothing is pushed, published or deployed, and no secret is read;
+# deploy/scripts/ci-workflow.test.ts checks this file.
+name: Conformance
+
+on:
+  schedule:
+    # Nightly, away from the top of the hour where the hosted queue is busiest.
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One stack at a time: two runs would build, bind and tear down the same deployment.
+  group: conformance-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  compose:
+    name: Deployment scenarios on a disposable stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # If the runner's engine is older than the deployment needs, nothing below could mean
+      # anything, so the host's own versions are printed and judged before an image is built.
+      - name: Report and judge the host's Docker
+        run: |
+          docker version
+          docker compose version
+          bun run deploy/scripts/docker-preflight.ts
+      - name: Generate a disposable configuration
+        run: |
+          bun run deploy/scripts/configure.ts --fake
+          chmod 600 deploy/.env
+      - name: Compose boundary checks
+        run: bun run compose:check
+      - name: Start the stack
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+          docker compose -f deploy/docker-compose.yml ps
+      - name: Deployment conformance scenarios
+        env:
+          MELETE_CONFORMANCE_COMPOSE: '1'
+        run: |
+          set -o pipefail
+          bun run conformance | tee conformance-report.txt
+      - name: Collect the stack logs
+        if: failure()
+        run: |
+          docker compose -f deploy/docker-compose.yml logs --no-color --tail=2000 > compose-logs.txt
+          docker compose -f deploy/docker-compose.yml ps --all >> compose-logs.txt
+      - name: Keep the report and the logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-${{ github.run_id }}
+          path: |
+            conformance-report.txt
+            compose-logs.txt
+          if-no-files-found: warn
+          retention-days: 7
+      # The stack owns ports and volumes on the runner; it goes whether the scenarios passed or not.
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v --remove-orphans
