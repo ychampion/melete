@@ -225,7 +225,7 @@ an attempt may spend is decided by the job's budget, and a run that has taken
 middle; raise it and a loop runs longer before anything notices.
 
 `MELETE_COMPACTION_MAX_TOKENS` (default `200000`) is the largest conversation,
-in tokens, that may build up before the engine summarizes it and carries on with
+in tokens, that may build up before the engine summarises it and carries on with
 the summary. The engine would otherwise wait for half the model's context
 window, which on a million-token model means every request carries half a
 million tokens before the first summary is written. The trigger actually used is
@@ -240,7 +240,7 @@ the models this deployment serves. Set it when a model is smaller than the
 128,000-token figure Melete assumes for a model it does not know: a model with a
 32,000-token window would otherwise be told to compact at 96,000, never get
 there, and have every request past its own window refused by the provider with
-nothing summarized. For a model Melete does know, this may lower the window and
+nothing summarised. For a model Melete does know, this may lower the window and
 not raise it, because the same catalog figure is what the model gateway's
 accounting is keyed on.
 
