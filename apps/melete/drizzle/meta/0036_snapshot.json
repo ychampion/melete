@@ -7521,6 +7521,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "company_scan_one_running_idx": {
+          "name": "company_scan_one_running_idx",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"company_scan\".\"status\" = 'running'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {

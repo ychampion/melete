@@ -73,5 +73,6 @@ ALTER TABLE "ledger_item" ADD CONSTRAINT "ledger_item_company_id_company_id_fk" 
 CREATE UNIQUE INDEX "company_owner_domain_idx" ON "company" USING btree ("space_id","principal_id","domain");--> statement-breakpoint
 CREATE UNIQUE INDEX "company_message_owner_idx" ON "company_message" USING btree ("space_id","principal_id","message_id");--> statement-breakpoint
 CREATE INDEX "company_scan_owner_idx" ON "company_scan" USING btree ("space_id","principal_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "company_scan_one_running_idx" ON "company_scan" USING btree ("space_id","principal_id") WHERE "company_scan"."status" = 'running';--> statement-breakpoint
 CREATE INDEX "ledger_item_owner_idx" ON "ledger_item" USING btree ("space_id","principal_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "ledger_item_dedupe_idx" ON "ledger_item" USING btree ("space_id","principal_id","dedupe_key");

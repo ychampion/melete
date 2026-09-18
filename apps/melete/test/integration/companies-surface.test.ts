@@ -241,6 +241,32 @@ withDb('the company map over HTTP', () => {
     expect(handled.length).toBe(asked + 1);
   }, 60_000);
 
+  test('two scans racing open one running scan, not two', async () => {
+    // The route checks for a running scan before opening one, but two requests
+    // can both pass that check before either writes. The partial unique index
+    // is what actually decides; the loser reads the winner's row. The cost of
+    // getting this wrong is two mailbox reads and two full sets of model calls.
+    if (!handle) throw new Error('Postgres unavailable');
+    const store = new PostgresCompanyStore(handle.db);
+    const map = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const principalId = map.items[0]?.principal_id ?? '';
+    expect(principalId).not.toBe('');
+    const owner = { spaceId: firstSpace, principalId };
+    const [a, b] = await Promise.all([store.openScan(owner), store.openScan(owner)]);
+    expect(a.id).toBe(b.id);
+    const running = await handle.sql`select count(*)::int as n from company_scan
+      where space_id = ${firstSpace} and principal_id = ${principalId} and status = 'running'`;
+    expect(running[0]?.n).toBe(1);
+    await store.closeScan(owner, a.id, {
+      status: 'done',
+      messagesSeen: 0,
+      itemsFound: 0,
+      counts: {},
+    });
+  }, 60_000);
+
   test('a later scan moves a subscription to the price in force', async () => {
     // The same rule the in-memory store follows, proved against Postgres,
     // because this one lives in an ON CONFLICT clause rather than in TypeScript.

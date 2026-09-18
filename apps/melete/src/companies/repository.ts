@@ -193,13 +193,24 @@ export class PostgresCompanyStore implements CompanyStore {
     return row ? scanRecord(row) : null;
   }
 
+  /**
+   * Open a scan, or hand back the one that beat this request to it.
+   *
+   * The partial unique index decides, not the check the route made a moment
+   * earlier: two requests can both find no running scan before either writes.
+   * The loser's insert does nothing and it reads the winner's row, so a doubled
+   * click gets one scan and one answer rather than two mailbox reads.
+   */
   async openScan(owner: Owner): Promise<ScanRecord> {
     const [row] = await this.db
       .insert(companyScan)
       .values({ id: newId('scn'), spaceId: owner.spaceId, principalId: owner.principalId })
+      .onConflictDoNothing()
       .returning();
-    if (!row) throw new Error('scan row was not created');
-    return scanRecord(row);
+    if (row) return scanRecord(row);
+    const running = await this.runningScan(owner);
+    if (!running) throw new Error('scan row was not created');
+    return running;
   }
 
   async closeScan(

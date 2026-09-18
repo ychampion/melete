@@ -149,5 +149,16 @@ export const companyScan = pgTable(
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: created(),
   },
-  (table) => [index('company_scan_owner_idx').on(table.spaceId, table.principalId, table.status)],
+  (table) => [
+    index('company_scan_owner_idx').on(table.spaceId, table.principalId, table.status),
+    /**
+     * One running scan per person. The route checks for one before opening
+     * another, but two requests can both pass that check before either writes,
+     * and the cost of losing the race is two mailbox reads and two full sets of
+     * model calls. A check cannot make itself atomic; the database can.
+     */
+    uniqueIndex('company_scan_one_running_idx')
+      .on(table.spaceId, table.principalId)
+      .where(sql`${table.status} = 'running'`),
+  ],
 );
