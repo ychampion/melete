@@ -27,6 +27,30 @@ const call = async (
 const mapOf = async (mock: ReturnType<typeof createMock>) =>
   (await call(mock, `/spaces/${mock.spaceId}/companies`)).body as unknown as C.CompanyMap;
 
+/**
+ * A scripted job advances on timers, so a test waits for the thing it needs
+ * rather than for a length of time — a fixed sleep passes alone and fails
+ * beside other tests on a loaded machine.
+ */
+async function until<T>(what: string, check: () => Promise<T | null>, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await check();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/** The job's first draft, once the script has written it. */
+const draftOf = (mock: ReturnType<typeof createMock>, jobId: string) =>
+  until(`a draft on ${jobId}`, async () => {
+    const drafts = C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
+      (await call(mock, `/conversations/${jobId}/drafts`)).body,
+    ).drafts;
+    return drafts[0] ?? null;
+  });
+
 test('the map is the contract: prefixed ids, snake_case fields, optionals present and null', () => {
   const mock = createMock({ speed: 0, experience: { seed: true } });
   return mapOf(mock).then((map) => {
@@ -145,8 +169,55 @@ test('a scan says what it has seen while it runs, and the same one comes back un
   expect(['running', 'done']).toContain(progress.status);
   expect(progress.messages_seen).toBeGreaterThanOrEqual(0);
   expect(progress.items_found).toBeGreaterThanOrEqual(0);
+  // Inside a space the caller can see, an unknown scan is simply missing.
   const missing = await call(mock, `/spaces/${mock.spaceId}/companies/scan/job_nope`);
   expect(missing.response.status).toBe(404);
+});
+
+test('a space the caller cannot see is refused, and says nothing about what is in it', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const started = (await call(mock, `/spaces/${mock.spaceId}/companies/scan`, 'POST')).body as {
+    scan_id: string;
+  };
+  const foreign = 'sp_01M2000000000000000000000A';
+  expect(foreign).not.toBe(mock.spaceId);
+
+  for (const [path, method] of [
+    [`/spaces/${foreign}/companies`, 'GET'],
+    [`/spaces/${foreign}/companies/scan`, 'POST'],
+    // A real scan id asked for through the wrong space is refused too, and the
+    // answer is the same whether or not that scan exists.
+    [`/spaces/${foreign}/companies/scan/${started.scan_id}`, 'GET'],
+    [`/spaces/${foreign}/companies/scan/job_nope`, 'GET'],
+  ] as const) {
+    const { response, body } = await call(mock, path, method);
+    expect(response.status).toBe(403);
+    expect((body as { error: { code: string } }).error.code).toBe('scope_denied');
+    // Nothing of the space's contents leaks through the refusal.
+    expect(JSON.stringify(body)).not.toContain(started.scan_id);
+    expect(JSON.stringify(body)).not.toContain('co_');
+  }
+
+  // A caller outside the space cannot tell a real scan id from a made-up one.
+  const real = await call(mock, `/spaces/${foreign}/companies/scan/${started.scan_id}`);
+  const fake = await call(mock, `/spaces/${foreign}/companies/scan/job_nope`);
+  expect(real.body).toEqual(fake.body);
+});
+
+test('an unknown ledger id stays a 404, on every route that takes one', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  for (const [path, method] of [
+    ['/ledger/li_01M2000000000000000000000A', 'GET'],
+    ['/ledger/li_01M2000000000000000000000A/handle', 'POST'],
+  ] as const) {
+    const { response, body } = await call(mock, path, method);
+    expect(response.status).toBe(404);
+    expect((body as { error: { code: string } }).error.code).toBe('not_found');
+  }
+  const patched = await call(mock, '/ledger/li_01M2000000000000000000000A', 'PATCH', {
+    status: 'settled',
+  });
+  expect(patched.response.status).toBe(404);
 });
 
 test('"not this" takes a row off the map and "settled" leaves it on it', async () => {
@@ -194,17 +265,9 @@ test('the job parks on one approval that names the address it sends from', async
   const map = await mapOf(mock);
   const item = map.items.find((row) => row.kind === 'refund_owed');
   if (!item) throw new Error('the fixture has no refund');
-  await call(mock, `/ledger/${item.id}/handle`, 'POST');
-  // The script runs on timers even at speed 0; give it the event loop.
-  await new Promise((resolve) => setTimeout(resolve, 60));
-
   const jobId = ((await call(mock, `/ledger/${item.id}/handle`, 'POST')).body as { job_id: string })
     .job_id;
-  const drafts = C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
-    (await call(mock, `/conversations/${jobId}/drafts`)).body,
-  ).drafts;
-  const draft = drafts[0];
-  if (!draft) throw new Error('the job drafted nothing');
+  const draft = await draftOf(mock, jobId);
   // Nothing has been sent: the draft is a draft until a person says so.
   expect(draft.status).toBe('draft');
 
@@ -226,11 +289,7 @@ test('once approved the job sends, keeps going, and the sent step can still be u
   if (!item) throw new Error('the fixture has no refund');
   const jobId = ((await call(mock, `/ledger/${item.id}/handle`, 'POST')).body as { job_id: string })
     .job_id;
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  const draft = C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
-    (await call(mock, `/conversations/${jobId}/drafts`)).body,
-  ).drafts[0];
-  if (!draft) throw new Error('the job drafted nothing');
+  const draft = await draftOf(mock, jobId);
   const permission = C.experienceOperations['POST /drafts/{id}/send'].response.parse(
     (await call(mock, `/drafts/${draft.id}/send`, 'POST')).body,
   ).permission;
@@ -240,24 +299,29 @@ test('once approved the job sends, keeps going, and the sent step can still be u
     option: 'allow_once',
     version: permission.version,
   });
-  await new Promise((resolve) => setTimeout(resolve, 120));
-
-  const receipts = C.experienceOperations['GET /conversations/{id}/receipts'].response.parse(
-    (await call(mock, `/conversations/${jobId}/receipts`)).body,
-  ).receipts;
+  // The send leaves a receipt, and the rest of the days play out after it.
+  const receipts = await until(`the receipt on ${jobId}`, async () => {
+    const rows = C.experienceOperations['GET /conversations/{id}/receipts'].response.parse(
+      (await call(mock, `/conversations/${jobId}/receipts`)).body,
+    ).receipts;
+    return rows.length > 0 ? rows : null;
+  });
   expect(receipts).toHaveLength(1);
   expect(receipts[0]?.what).toContain('Sent a message to');
   expect(receipts[0]?.undo).not.toBeNull();
 
   // The reply, the follow-up and the ending are on the timeline, in order.
-  const events = C.experienceEventPage.parse(
-    (await call(mock, `/conversations/${jobId}/events?since=0&limit=200`)).body,
-  ).events;
-  const said = events
-    .map((event) =>
-      event.item.type === 'note' || event.item.type === 'say' ? event.item.text : '',
-    )
-    .join('\n');
+  const said = await until(`the ending on ${jobId}`, async () => {
+    const events = C.experienceEventPage.parse(
+      (await call(mock, `/conversations/${jobId}/events?since=0&limit=200`)).body,
+    ).events;
+    const text = events
+      .map((event) =>
+        event.item.type === 'note' || event.item.type === 'say' ? event.item.text : '',
+      )
+      .join('\n');
+    return text.includes('Settled.') ? text : null;
+  });
   expect(said).toContain('they replied');
   expect(said).toContain('replied again');
   expect(said).toContain('Settled.');

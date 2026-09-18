@@ -76,6 +76,20 @@ export function mountCompaniesMock(
   const companyOf = (row: FixtureItem) =>
     fixture.companies.find((company) => company.id === row.company_id) ?? null;
 
+  /**
+   * A space the caller cannot see is refused, not reported missing. The real
+   * service guards `/spaces/:spaceId/*` before any route underneath it runs, so
+   * a caller outside the space learns only that it is not theirs — never
+   * whether it, or anything in it, exists. Returns the refusal, or null to go on.
+   *
+   * `/ledger/:id` is not scoped this way: a foreign or unknown item id is a 404
+   * there, because the id alone says nothing about which space it belongs to.
+   */
+  const outsideSpace = (spaceId: string): Response | null =>
+    spaceId === deps.spaceId
+      ? null
+      : Response.json(fail('scope_denied', 'This space is not yours to read.'), { status: 403 });
+
   /** The scan's progress, read from the clock rather than kept in a timer. */
   const progress = () => {
     if (!scan) return null;
@@ -92,22 +106,26 @@ export function mountCompaniesMock(
   };
 
   app.post('/spaces/:spaceId/companies/scan', (c) => {
-    if (c.req.param('spaceId') !== deps.spaceId)
-      return c.json(fail('not_found', 'No such space.'), 404);
+    const denied = outsideSpace(c.req.param('spaceId'));
+    if (denied) return denied;
     // Idempotent while one is running: the same scan comes back rather than a second.
     if (!scan || progress()?.status === 'done') scan = { id: newId('job'), started_at: Date.now() };
     return c.json({ scan_id: scan.id, status: 'running' });
   });
 
   app.get('/spaces/:spaceId/companies/scan/:scanId', (c) => {
+    // The space guard runs first, so a foreign space never learns whether a
+    // scan id exists inside it.
+    const denied = outsideSpace(c.req.param('spaceId'));
+    if (denied) return denied;
     if (!scan || scan.id !== c.req.param('scanId'))
       return c.json(fail('not_found', 'No such scan.'), 404);
     return c.json(progress());
   });
 
   app.get('/spaces/:spaceId/companies', (c) => {
-    if (c.req.param('spaceId') !== deps.spaceId)
-      return c.json(fail('not_found', 'No such space.'), 404);
+    const denied = outsideSpace(c.req.param('spaceId'));
+    if (denied) return denied;
     if (!found)
       return c.json({
         companies: [],
