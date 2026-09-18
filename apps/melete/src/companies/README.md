@@ -90,6 +90,22 @@ days of mail.
   product exists to avoid.
 - `PATCH /ledger/:id` takes `dropped` or `settled` and returns the item.
 
+## Scanning again
+
+A second scan over the same mailbox writes nothing and reports `items_found: 0`:
+every claim is already held, matched on `dedupeKey`.
+
+One exception, `refreshable()` in `repository.ts`. A subscription is keyed on its
+company alone, because a company charges one subscription at a time — so when a
+price rises and a new receipt arrives, the new figure has to replace the old one
+or monthly spend is wrong from then on. It replaces it only while the person has
+not touched the item (`found`, no job), and only when the figure actually
+differs, so an unchanged mailbox still reports nothing found. The row keeps its
+id; the amount, currency, evidence and summary move to the new reading.
+
+Every other kind carries its amount and date in the key, so a conflicting row is
+the same claim down to the figure and there is nothing to refresh.
+
 ## Handing an item on
 
 `handler.ts` is the whole seam to the playbooks that write to a company: an

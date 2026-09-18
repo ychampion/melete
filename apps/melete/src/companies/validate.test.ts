@@ -231,6 +231,34 @@ describe('the totals', () => {
     expect(totals.renewals_next_30d).toBe(1);
   });
 
+  test('a promise being chased is still a promise, until it is settled', () => {
+    // The screen lane found this one against their own implementation: counting
+    // only `found` promises made the total tick down the moment somebody
+    // pressed "Handle it", which tells a person the problem went away at the
+    // exact moment work started on it. A number must not say that.
+    const lapsed = (status: LedgerItem['status']) =>
+      computeTotals(
+        [
+          item({
+            kind: 'promise',
+            direction: 'info',
+            amount_minor: null,
+            currency: null,
+            due_at: '2026-08-01T00:00:00.000Z',
+            status,
+          }),
+        ],
+        { now },
+      );
+    expect(lapsed('found').promises_lapsed).toBe(1);
+    // Picked up, and still counted.
+    expect(lapsed('handling').promises_lapsed).toBe(1);
+    expect(lapsed('waiting').promises_lapsed).toBe(1);
+    // Only an ending takes it off the count.
+    expect(lapsed('settled').promises_lapsed).toBe(0);
+    expect(lapsed('dropped').promises_lapsed).toBe(0);
+  });
+
   test('counts promises in force apart from promises that have run out', () => {
     const totals = computeTotals(
       [

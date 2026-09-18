@@ -69,11 +69,9 @@ if (import.meta.main) {
             items_found: result.outcome.itemsFound,
             counts: result.outcome.counts,
           },
+          // The promise counts are part of the totals now, so the map below is
+          // the whole answer and nothing is reported beside it.
           map: result.contract,
-          promises: {
-            in_force: result.map.totals.promises_in_force,
-            lapsed: result.map.totals.promises_lapsed,
-          },
         },
         null,
         2,

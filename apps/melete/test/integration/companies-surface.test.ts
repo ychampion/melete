@@ -189,8 +189,13 @@ withDb('the company map over HTTP', () => {
     // These are contract fields now, not a shape carried beside the contract.
     expect(map.totals.promises_in_force).toBeGreaterThan(0);
     expect(typeof map.totals.promises_lapsed).toBe('number');
-    const promises = map.items.filter((item) => item.kind === 'promise');
-    expect(map.totals.promises_in_force + map.totals.promises_lapsed).toBe(promises.length);
+    // The invariant, stated so it survives a reordering: the two counts add up
+    // to the promises still in play. A settled promise stays on the map and is
+    // counted in neither, so filtering by status is part of the claim.
+    const open = map.items.filter(
+      (item) => item.kind === 'promise' && !['settled', 'dropped'].includes(item.status),
+    );
+    expect(map.totals.promises_in_force + map.totals.promises_lapsed).toBe(open.length);
   }, 60_000);
 
   test('a dropped item leaves the map, a settled one stays on it', async () => {
@@ -236,20 +241,83 @@ withDb('the company map over HTTP', () => {
     expect(handled.length).toBe(asked + 1);
   }, 60_000);
 
+  test('a later scan moves a subscription to the price in force', async () => {
+    // The same rule the in-memory store follows, proved against Postgres,
+    // because this one lives in an ON CONFLICT clause rather than in TypeScript.
+    if (!handle) throw new Error('Postgres unavailable');
+    const store = new PostgresCompanyStore(handle.db);
+    const map = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const held = map.items.find(
+      (item) => item.kind === 'subscription' && item.status === 'found' && item.job_id === null,
+    );
+    expect(held).toBeDefined();
+    if (!held) return;
+    // The rows name their own principal, so the owner comes off the map.
+    const owner = { spaceId: firstSpace, principalId: held.principal_id };
+    const raised = { ...held, id: 'li_01J0000000000000000000RAIS', amount_minor: 999_99 };
+
+    // A new price is a change, so it is written and reported.
+    expect(await store.saveItems(owner, 'scn_later', [raised])).toBe(1);
+    const after = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const now = after.items.find((item) => item.id === held.id);
+    expect(now?.amount_minor).toBe(999_99);
+    // One row still, under the id it already had.
+    expect(
+      after.items.filter(
+        (item) => item.company_id === held.company_id && item.kind === 'subscription',
+      ),
+    ).toHaveLength(1);
+    expect(after.items.some((item) => item.id === raised.id)).toBe(false);
+
+    // The same price again is no change, so nothing is written or reported.
+    expect(await store.saveItems(owner, 'scn_again', [raised])).toBe(0);
+  }, 60_000);
+
+  test('handling a promise does not make the totals row say it went away', async () => {
+    const before = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const promise = before.items.find(
+      (item) => item.kind === 'promise' && item.status === 'found' && item.job_id === null,
+    );
+    expect(promise).toBeDefined();
+    if (!promise) return;
+    expect((await call(firstCookie, `/ledger/${promise.id}/handle`, 'POST')).status).toBe(201);
+    const after = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    // Picked up, not gone. Both counts are unchanged and the row still shows.
+    expect(after.totals.promises_in_force).toBe(before.totals.promises_in_force);
+    expect(after.totals.promises_lapsed).toBe(before.totals.promises_lapsed);
+    expect(after.items.find((item) => item.id === promise.id)?.status).toBe('handling');
+
+    // Settling it is the ending, and only then does the count fall.
+    await call(firstCookie, `/ledger/${promise.id}`, 'PATCH', { status: 'settled' });
+    const settled = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    expect(settled.totals.promises_in_force + settled.totals.promises_lapsed).toBe(
+      before.totals.promises_in_force + before.totals.promises_lapsed - 1,
+    );
+  }, 60_000);
+
   test('an item can be dropped, and the totals stop counting it', async () => {
     const before = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
     );
-    // It has to be one the totals are actually counting. The test above settles
-    // an item; a settled item stays on the map but leaves the totals, so
-    // dropping that one would move no figure — right behaviour, failing
-    // assertion. The item is chosen by status rather than by position.
+    // It has to be an item the totals are still counting. A settled one stays
+    // on the map but contributes nothing, so dropping it would move no figure
+    // and the arithmetic below would be measuring the wrong thing.
     const owed = before.items.find(
       (item) =>
-        item.status === 'found' &&
         item.direction === 'owed_to_you' &&
         item.currency === 'GBP' &&
-        item.amount_minor,
+        item.amount_minor &&
+        item.status === 'found',
     );
     expect(owed).toBeDefined();
     if (!owed) return;

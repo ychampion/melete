@@ -10,7 +10,7 @@
  */
 
 import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
@@ -77,6 +77,45 @@ export interface CompanyStore {
 
 const iso = (value: Date | string): string =>
   typeof value === 'string' ? new Date(value).toISOString() : value.toISOString();
+
+/**
+ * When a later scan's version of a claim replaces the one already held.
+ *
+ * Only a subscription, because only a subscription is keyed on its company
+ * alone: every other kind carries its amount and its date in the key, so a
+ * conflicting row is the same claim down to the figure and there is nothing to
+ * refresh. A subscription is the standing charge in force, and a company that
+ * raises its price sends a new receipt — if that were discarded, the map would
+ * keep quoting a price nobody pays and monthly spend would be wrong for good.
+ *
+ * Only while the person has not touched it. Once an item is being handled or
+ * has been settled or dropped, a scan moving the figure underneath it would
+ * change what a job is working on without anybody asking.
+ *
+ * And only when the figure actually differs, so re-reading the same mailbox
+ * writes nothing and reports nothing found.
+ */
+export function refreshable(held: LedgerItem, found: LedgerItem): boolean {
+  return (
+    held.kind === 'subscription' &&
+    held.status === 'found' &&
+    held.job_id === null &&
+    (held.amount_minor !== found.amount_minor || held.currency !== found.currency)
+  );
+}
+
+/** What a refresh carries over: the claim, never the person's decisions about it. */
+export function refreshedFields(found: LedgerItem) {
+  return {
+    amount_minor: found.amount_minor,
+    currency: found.currency,
+    due_at: found.due_at,
+    confidence: found.confidence,
+    evidence: found.evidence,
+    suggested_playbook: found.suggested_playbook,
+    summary: found.summary,
+  };
+}
 
 // --------------------------------------------------------------------------
 // Postgres
@@ -260,9 +299,28 @@ export class PostgresCompanyStore implements CompanyStore {
           dedupeKey: dedupeKey(item),
         })),
       )
-      // A claim this person already has is the same claim, whichever scan found it.
-      .onConflictDoNothing({
+      // A claim this person already has is the same claim, whichever scan found
+      // it — with one exception, `refreshable` above: an untouched subscription
+      // whose price has actually changed takes the new figure. The condition is
+      // in the DO UPDATE's own WHERE, so a row it excludes is neither written
+      // nor returned, and re-reading an unchanged mailbox still reports nothing.
+      .onConflictDoUpdate({
         target: [ledgerItem.spaceId, ledgerItem.principalId, ledgerItem.dedupeKey],
+        set: {
+          amountMinor: sql`excluded.amount_minor`,
+          currency: sql`excluded.currency`,
+          dueAt: sql`excluded.due_at`,
+          confidence: sql`excluded.confidence`,
+          evidence: sql`excluded.evidence`,
+          suggestedPlaybook: sql`excluded.suggested_playbook`,
+          summary: sql`excluded.summary`,
+          scanId: sql`excluded.scan_id`,
+        },
+        setWhere: sql`${ledgerItem.kind} = 'subscription'
+          and ${ledgerItem.status} = 'found'
+          and ${ledgerItem.jobId} is null
+          and (${ledgerItem.amountMinor} is distinct from excluded.amount_minor
+            or ${ledgerItem.currency} is distinct from excluded.currency)`,
       })
       .returning({ id: ledgerItem.id });
     return written.length;
@@ -357,7 +415,8 @@ export class MemoryCompanyStore implements CompanyStore {
   private readonly companies = new Map<string, Company & Owner>();
   private readonly items = new Map<string, LedgerItem>();
   private readonly messages = new Map<string, StoredMessage & Owner>();
-  private readonly keys = new Set<string>();
+  /** Dedupe key to the id of the item holding it, so a refresh can find the row. */
+  private readonly keys = new Map<string, string>();
 
   private key(owner: Owner, suffix: string) {
     return `${owner.spaceId}|${owner.principalId}|${suffix}`;
@@ -437,8 +496,18 @@ export class MemoryCompanyStore implements CompanyStore {
     let written = 0;
     for (const item of items) {
       const key = this.key(owner, dedupeKey(item));
-      if (this.keys.has(key)) continue;
-      this.keys.add(key);
+      const held = this.keys.get(key);
+      if (held) {
+        const existing = this.items.get(held);
+        if (!existing || !refreshable(existing, item)) continue;
+        this.items.set(held, {
+          ...existing,
+          ...refreshedFields(item),
+        });
+        written++;
+        continue;
+      }
+      this.keys.set(key, item.id);
       this.items.set(item.id, {
         ...item,
         space_id: owner.spaceId,
@@ -485,17 +554,29 @@ export class MemoryCompanyStore implements CompanyStore {
         : null,
     };
   }
+  /**
+   * Changing an item is about the item, so it does not go through `item()`,
+   * which also needs the company row for its detail view. Postgres updates the
+   * ledger row on its own; this has to as well, or the two stores disagree
+   * about a ledger that has no company saved beside it.
+   */
+  private own(owner: Owner, id: string): LedgerItem | null {
+    const item = this.items.get(id);
+    if (!item || item.space_id !== owner.spaceId || item.principal_id !== owner.principalId)
+      return null;
+    return item;
+  }
   async setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null> {
-    const found = await this.item(owner, id);
-    if (!found) return null;
-    const updated = { ...found.item, status };
+    const item = this.own(owner, id);
+    if (!item) return null;
+    const updated = { ...item, status };
     this.items.set(id, updated);
     return updated;
   }
   async setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null> {
-    const found = await this.item(owner, id);
-    if (!found) return null;
-    const updated: LedgerItem = { ...found.item, job_id: jobId, status: 'handling' };
+    const item = this.own(owner, id);
+    if (!item) return null;
+    const updated: LedgerItem = { ...item, job_id: jobId, status: 'handling' };
     this.items.set(id, updated);
     return updated;
   }
