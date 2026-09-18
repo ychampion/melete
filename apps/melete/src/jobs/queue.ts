@@ -28,6 +28,8 @@ export const QUEUES = {
   /** Retries verify for actions that came back unknown. */
   reconcile: 'melete.reconcile',
   operation: 'melete.operation',
+  /** Looks for a company writing back to a chase that is waiting on a reply. */
+  companyReplies: 'melete.company-replies',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
