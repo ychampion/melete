@@ -236,6 +236,34 @@ withDb('the company map over HTTP', () => {
     expect(handled.length).toBe(asked + 1);
   }, 60_000);
 
+  test('handling a promise does not make the totals row say it went away', async () => {
+    const before = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const promise = before.items.find(
+      (item) => item.kind === 'promise' && item.status === 'found' && item.job_id === null,
+    );
+    expect(promise).toBeDefined();
+    if (!promise) return;
+    expect((await call(firstCookie, `/ledger/${promise.id}/handle`, 'POST')).status).toBe(201);
+    const after = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    // Picked up, not gone. Both counts are unchanged and the row still shows.
+    expect(after.totals.promises_in_force).toBe(before.totals.promises_in_force);
+    expect(after.totals.promises_lapsed).toBe(before.totals.promises_lapsed);
+    expect(after.items.find((item) => item.id === promise.id)?.status).toBe('handling');
+
+    // Settling it is the ending, and only then does the count fall.
+    await call(firstCookie, `/ledger/${promise.id}`, 'PATCH', { status: 'settled' });
+    const settled = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    expect(settled.totals.promises_in_force + settled.totals.promises_lapsed).toBe(
+      before.totals.promises_in_force + before.totals.promises_lapsed - 1,
+    );
+  }, 60_000);
+
   test('an item can be dropped, and the totals stop counting it', async () => {
     const before = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
