@@ -156,11 +156,18 @@ export function withOrigin(envFile: string, origin: string): { text: string; cha
   return { text, changed: text !== envFile };
 }
 
-/** The one command that gives the running web service the new origin. */
+/**
+ * The one command that gives the running web service the new origin.
+ *
+ * `--no-deps` keeps it to the web service. Without it the command also brings
+ * up what web depends on, from the two files named here, so an installation
+ * that runs a further override would have those services recreated without it.
+ * Applying one setting may not rebuild the rest of the stack behind the reader.
+ */
 export function recreateCommand(): string {
   return [
     'docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tailscale.yml',
-    'up -d --force-recreate web',
+    'up -d --no-deps --force-recreate web',
   ].join(' ');
 }
 

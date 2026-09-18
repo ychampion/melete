@@ -148,8 +148,14 @@ describe('what the run reports', () => {
 
   test('the applying command names both compose files and recreates only the web service', () => {
     expect(recreateCommand()).toBe(
-      'docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tailscale.yml up -d --force-recreate web',
+      'docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tailscale.yml up -d --no-deps --force-recreate web',
     );
+    // Only the web service. Without --no-deps the command also brings up what
+    // web depends on, built from the two files named here, so an installation
+    // running a further override would have its other services recreated
+    // without that override. A line printed to apply one setting may not do
+    // that, and the reader cannot be expected to notice.
+    expect(recreateCommand()).toContain('--no-deps');
   });
 
   test('nothing to write, and nothing to restart, on a second run', () => {

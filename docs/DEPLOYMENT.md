@@ -155,7 +155,7 @@ prints the one command that gives the running web service the new value:
 
 ```bash
 docker compose -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.tailscale.yml up -d --force-recreate web
+  -f deploy/docker-compose.tailscale.yml up -d --no-deps --force-recreate web
 ```
 
 This step is not optional. The web client accepts a browser whose `Origin` is
