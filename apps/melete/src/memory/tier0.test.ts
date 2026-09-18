@@ -77,6 +77,26 @@ describe('tier 0 resolves the facts that decide actions', () => {
     expect(values[0]).toMatchObject({ start: 100, end: 118 });
   });
 
+  test('an offset shifts every span and changes nothing else', () => {
+    // The overlap test that keeps a phone grammar off a date compares spans, so
+    // it has to compare them in one coordinate system. When it did not, a
+    // segment read at an offset silently lost values a whole source kept.
+    const text = 'From 1 October 2026 the price rises from GBP 79.00 to GBP 99.00 a month.';
+    const reference = { eventAt: '2026-09-02T00:00:00Z' };
+    const base = tier0Values(text, reference);
+    const moved = tier0Values(text, reference, 40);
+    expect(base.filter((value) => value.type === 'amount').map((value) => value.value)).toEqual([
+      '79.00',
+      '99.00',
+    ]);
+    expect(moved.map((value) => `${value.type}:${value.value}`)).toEqual(
+      base.map((value) => `${value.type}:${value.value}`),
+    );
+    expect(moved.map((value) => [value.start, value.end])).toEqual(
+      base.map((value) => [value.start + 40, value.end + 40]),
+    );
+  });
+
   test('a connector observation becomes a checked fact with no model call', () => {
     const text = JSON.stringify({
       kind: 'calendar_event',

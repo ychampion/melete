@@ -24,6 +24,8 @@ export type MailMessage = {
   subject: string;
   text: string;
   html: string;
+  /** The Date header as an ISO instant, when the message carried a usable one. */
+  date?: string | null;
 };
 
 /**
@@ -141,6 +143,12 @@ export class ImapSmtpTransport implements MailTransport {
       subject: parsed.subject ?? '',
       text: parsed.text ?? '',
       html: typeof parsed.html === 'string' ? parsed.html : '',
+      // A message nobody can date cannot be placed in a time window, so an
+      // unparseable Date header is absent rather than guessed at.
+      date:
+        parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime())
+          ? parsed.date.toISOString()
+          : null,
     };
   }
 
