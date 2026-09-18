@@ -466,10 +466,15 @@ test('noticing a reply cannot send one', async () => {
   // The send kinds appear only as values it looks for among already-sent rows,
   // never as the kind of an action it builds.
   for (const kind of ['email.send', 'test.send']) expect(code).not.toContain(`kind: '${kind}'`);
-  // The one thing it ever asks a connector to do is read, once.
-  expect(code).toContain("kind: 'email.search'");
-  expect(code).toContain("effect_class: 'read'");
-  expect(code.match(/connector\.execute\(/g) ?? []).toHaveLength(1);
+  // It mints no action of its own at all: the read seam is the scan's, so there
+  // is one place where an action reaches a connector and one place to check it.
+  expect(code).not.toContain('connector.execute(');
+  expect(code).not.toContain('canonicalizePayload');
+  expect(code).toContain('connectorMailbox(');
+  // And that shared seam is still a read.
+  const mailbox = await Bun.file(new URL('../../src/companies/mailbox.ts', import.meta.url)).text();
+  expect(mailbox).toContain("kind: 'email.search'");
+  expect(mailbox).toContain("effect_class: 'read'");
 });
 
 test('the poll schedule says exactly what the interval constant says', () => {

@@ -26,14 +26,13 @@
  * function over rows so the integrator can swap in a ledger-scoped query without
  * touching anything else here.
  */
-import { canonicalizePayload, jobConstraints } from '@melete/contracts';
+import { jobConstraints } from '@melete/contracts';
 import type { Sql } from 'postgres';
-import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
-import { newId } from '../ids.ts';
 import { QUEUES } from '../jobs/queue.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
-import { registrableDomain, senderAddress } from './messages.ts';
+import { connectorMailbox, MAILBOX_READ_LIMIT } from './mailbox.ts';
+import { registrableDomain, type ScanMessage, senderAddress } from './messages.ts';
 
 /** The event a waiting chase listens on. Must match `REPLY_EVENT_NAME`. */
 export const REPLY_EVENT_NAME = 'mail.new';
@@ -52,8 +51,8 @@ export const REPLY_POLL_SECONDS = 120;
  */
 export const REPLY_POLL_CRON = `*/${Math.max(1, Math.round(REPLY_POLL_SECONDS / 60))} * * * *`;
 
-/** The connector refuses a larger read; this is its ceiling, not a choice. */
-export const REPLY_READ_LIMIT = 50;
+/** The connector refuses a larger read; the ceiling is the mailbox's, not ours. */
+export const REPLY_READ_LIMIT = MAILBOX_READ_LIMIT;
 
 /** How many chases one query asks for. A pass turns as many pages as it needs. */
 export const REPLY_CANDIDATE_PAGE = 200;
@@ -65,13 +64,11 @@ export const REPLY_CANDIDATE_PAGE = 200;
  */
 export const REPLY_MAX_PAGES = 200;
 
-/** One message, as little of it as deciding needs. No body is read here. */
-export type ReplyMessage = {
-  messageId: string;
-  from: string;
-  subject: string;
-  receivedAt: string;
-};
+/**
+ * One message, as little of it as deciding needs — a narrowing of what the scan
+ * already reads, so the two cannot disagree about what a message is.
+ */
+export type ReplyMessage = Pick<ScanMessage, 'messageId' | 'from' | 'subject' | 'receivedAt'>;
 
 /** A job waiting on a reply, and what would count as one. */
 export type ReplyCandidate = {
@@ -216,78 +213,21 @@ export function fixtureReplyMailbox(messages: readonly ReplyMessage[]): ReplyMai
 }
 
 /**
- * The installed mailbox, read through the registered connector with a minted
- * read action. The action is never recorded as an effect: an agent looking at
- * mail is not something that happened to the world.
+ * The installed mailbox — the scan's own reader, borrowed.
+ *
+ * The action that reaches a connector is minted in exactly one place, which is
+ * `connectorMailbox`. A second copy of those forty lines here would be a second
+ * place for an effect class or a tool name to be got wrong, and the thing that
+ * would be got wrong is the promise that this can only read. A `ScanMessage`
+ * already carries everything a reply needs and guarantees the message id, so
+ * there is nothing left to adapt.
  */
-export function connectorReplyMailbox(options: {
+export const connectorReplyMailbox = (options: {
   registry: ConnectorRegistry;
   connectionId: string;
   spaceId: string;
   undatedAt: string;
-}): ReplyMailbox {
-  return {
-    async recent(limit) {
-      const connector = options.registry.get(options.connectionId);
-      if (!(connector instanceof EmailConnector)) return [];
-      const id = newId('act');
-      const payload = canonicalizePayload({
-        query: '',
-        limit: Math.min(limit, REPLY_READ_LIMIT),
-      });
-      const result = await connector.execute(
-        {
-          id,
-          job_id: id,
-          attempt_id: id,
-          connection_id: options.connectionId,
-          kind: 'email.search',
-          effect_class: 'read',
-          canonical_payload: payload.canonical,
-          payload_hash: payload.hash,
-          intent_key: null,
-          status: 'dispatched',
-          authorization_ref: null,
-          budget_reservation: null,
-          idempotency_key: id,
-          dispatched_at: options.undatedAt,
-          receipt: null,
-          resolved_at: null,
-          reconciliation: null,
-          repair_trace: [],
-          repair_counters: {},
-          repair_disposition: null,
-          retry_after_at: null,
-          created_at: options.undatedAt,
-        },
-        {
-          job_id: id,
-          space_id: options.spaceId,
-          idempotency_key: id,
-          constraints: jobConstraints.parse({}),
-        },
-      );
-      if (result.outcome !== 'succeeded') return [];
-      const messages = result.receipt.detail.messages;
-      if (!Array.isArray(messages)) return [];
-      const read: ReplyMessage[] = [];
-      for (const entry of messages) {
-        if (!entry || typeof entry !== 'object') continue;
-        const record = entry as Record<string, unknown>;
-        const messageId = typeof record.message_id === 'string' ? record.message_id : '';
-        // A message with no id cannot be delivered once rather than twice.
-        if (!messageId) continue;
-        read.push({
-          messageId,
-          from: String(record.from ?? ''),
-          subject: String(record.subject ?? ''),
-          receivedAt: typeof record.date === 'string' ? record.date : options.undatedAt,
-        });
-      }
-      return read.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, limit);
-    },
-  };
-}
+}): ReplyMailbox => connectorMailbox(options);
 
 // --------------------------------------------------------------------------
 // the poller
