@@ -3,7 +3,7 @@
 Each entry says what the version ships and what it does not claim. Claims map
 to named tests on the tagged tree; the README's gates table is the summary.
 
-## Unreleased
+## v0.2.0 — 2026-09-18
 
 ### Ships
 
@@ -258,8 +258,6 @@ receipt; the restore proof served the forgotten fact to nobody and produced
 exactly one destination effect. See the README's gates table for the test
 suite counts on Windows and Linux. The combined real-Hermes capability proof
 passes five stages and 85 assertions with a scripted HTTP provider.
-
-### Not claimed
 
 - Reliable autonomous task performance or answer quality with a real model. The
   recorded Fireworks campaign failed its own gate: deterministic passes were
