@@ -6,6 +6,7 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Company, LedgerItem } from '@melete/contracts';
+import { eq } from 'drizzle-orm';
 import { handleLedgerItem } from '../../src/companies/handle.ts';
 import {
   CompanyReplyPoller,
@@ -20,6 +21,7 @@ import {
   REPLY_POLL_SECONDS,
   type ReplyCandidate,
   type ReplyMessage,
+  type ReplyPollerDeps,
   readCandidates,
   registrableDomain,
 } from '../../src/companies/replies.ts';
@@ -128,7 +130,7 @@ async function waitingChase() {
       connectionId,
     },
   );
-  const [registration] = await handle.db.select().from(trigger);
+  const [registration] = await handle.db.select().from(trigger).where(eq(trigger.jobId, job_id));
   if (!registration) throw new Error('Expected the reply trigger');
   const claimed = await claim(await jobs.get(job_id));
   // The first message, already gone out: a succeeded send with a resolved time
@@ -169,12 +171,12 @@ const reply = (overrides: Partial<ReplyMessage> = {}): ReplyMessage => ({
 });
 
 function poller(messages: readonly ReplyMessage[]) {
+  return pollerWith(() => fixtureReplyMailbox(messages));
+}
+
+function pollerWith(mailboxFor: ReplyPollerDeps['mailboxFor']) {
   const { handle } = fixture();
-  return new CompanyReplyPoller({
-    sql: handle.sql,
-    triggers,
-    mailboxFor: () => fixtureReplyMailbox(messages),
-  });
+  return new CompanyReplyPoller({ sql: handle.sql, triggers, mailboxFor });
 }
 
 withDb('noticing that a company wrote back', () => {
@@ -234,7 +236,7 @@ withDb('noticing that a company wrote back', () => {
     const before = await jobs.get(chase.jobId);
     expect(before.state).toBe('waiting_for_event_or_time');
 
-    expect(await poller([reply()]).runOnce()).toBe(1);
+    expect(await poller([reply()]).runOnce()).toEqual({ delivered: 1, failed: 0 });
     const woken = await jobs.get(chase.jobId);
     expect(woken.state).toBe('queued');
 
@@ -251,12 +253,12 @@ withDb('noticing that a company wrote back', () => {
     const { jobs, handle } = fixture();
     const chase = await waitingChase();
     const again = poller([reply()]);
-    expect(await again.runOnce()).toBe(1);
+    expect(await again.runOnce()).toEqual({ delivered: 1, failed: 0 });
     const woken = await jobs.get(chase.jobId);
 
     // Polls two and three see the same message sitting in the mailbox, whether
     // the whole pass runs or the integrator drives one candidate directly.
-    expect(await again.runOnce()).toBe(0);
+    expect(await again.runOnce()).toEqual({ delivered: 0, failed: 0 });
     const [candidate] = await readCandidates(handle.sql);
     if (!candidate) throw new Error('Expected the chase to still be a candidate');
     expect(
@@ -284,7 +286,7 @@ withDb('noticing that a company wrote back', () => {
       // No message id, so nothing that could be delivered once.
       reply({ messageId: '' }),
     ];
-    expect(await poller(strangers).runOnce()).toBe(0);
+    expect(await poller(strangers).runOnce()).toEqual({ delivered: 0, failed: 0 });
     const after = await jobs.get(chase.jobId);
     expect(after.state).toBe('waiting_for_event_or_time');
     expect(after.stateVersion).toBe(before.stateVersion);
@@ -295,8 +297,43 @@ withDb('noticing that a company wrote back', () => {
     const chase = await waitingChase();
     expect(
       await poller([reply({ from: 'Acme Billing <no-reply@billing.acme.test>' })]).runOnce(),
-    ).toBe(1);
+    ).toEqual({ delivered: 1, failed: 0 });
     expect((await jobs.get(chase.jobId)).state).toBe('queued');
+  });
+
+  test('one chase whose mailbox has gone does not cost the others their pass', async () => {
+    const { jobs, handle } = fixture();
+    const broken = await waitingChase();
+    const healthy = await waitingChase();
+    expect(await readCandidates(handle.sql)).toHaveLength(2);
+
+    // The space was deleted, or the credential was pulled, between the query
+    // and the read. One chase is no longer readable; the rest still are.
+    const pass = await pollerWith((candidate) => {
+      if (candidate.jobId === broken.jobId) {
+        throw new Error('this space went away mid-pass');
+      }
+      return fixtureReplyMailbox([reply()]);
+    }).runOnce();
+
+    expect(pass).toEqual({ delivered: 1, failed: 1 });
+    expect((await jobs.get(healthy.jobId)).state).toBe('queued');
+  });
+
+  test('a mailbox that rejects rather than throws is counted the same way', async () => {
+    const { handle } = fixture();
+    await waitingChase();
+    const pass = await pollerWith(() => ({
+      recent: async () => {
+        throw new Error('the connector said no');
+      },
+    })).runOnce();
+    expect(pass).toEqual({ delivered: 0, failed: 1 });
+    // Nothing was delivered, and nothing was left half-done.
+    expect(
+      await handle.sql`select seq from event where type = 'notice'
+      and payload->>'kind' = 'connector_event'`,
+    ).toHaveLength(0);
   });
 
   test('a finished chase is left alone', async () => {
@@ -304,7 +341,7 @@ withDb('noticing that a company wrote back', () => {
     const chase = await waitingChase();
     await jobs.cancel(chase.jobId, 'the person said stop');
     expect(await readCandidates(handle.sql)).toHaveLength(0);
-    expect(await poller([reply()]).runOnce()).toBe(0);
+    expect(await poller([reply()]).runOnce()).toEqual({ delivered: 0, failed: 0 });
   });
 });
 

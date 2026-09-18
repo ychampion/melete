@@ -310,6 +310,13 @@ export function connectorReplyMailbox(options: {
 // the poller
 // --------------------------------------------------------------------------
 
+/**
+ * What one pass did. `failed` is a count rather than a thrown error because a
+ * pass that skipped one unreadable chase still did its job for the rest, and a
+ * caller that logs this can tell the difference between quiet and broken.
+ */
+export type ReplyPass = { delivered: number; failed: number };
+
 export type ReplyPollerDeps = {
   sql: Sql;
   triggers: TriggerService;
@@ -363,12 +370,22 @@ export class CompanyReplyPoller {
   constructor(readonly deps: ReplyPollerDeps) {}
 
   /** One pass. Returns the number of new events, for tests and for logs. */
-  async runOnce(): Promise<number> {
+  async runOnce(): Promise<ReplyPass> {
     let delivered = 0;
+    let failed = 0;
     for (const candidate of await readCandidates(this.deps.sql)) {
-      delivered += await deliverReplies(this.deps, candidate);
+      // One chase that cannot be read is one chase missing from this pass, not
+      // a failed pass. A space deleted or a credential pulled between the query
+      // and the read throws here, and every other person waiting on a reply is
+      // owed their turn regardless. The same judgement the scan makes about a
+      // message the extractor cannot read.
+      try {
+        delivered += await deliverReplies(this.deps, candidate);
+      } catch {
+        failed += 1;
+      }
     }
-    return delivered;
+    return { delivered, failed };
   }
 
   async start(): Promise<void> {
