@@ -389,7 +389,7 @@ not rerun and is incomplete. Typecheck, lint, clean schema/OpenAPI/client
 regeneration, 61 plugin tests and 19 Compose declaration checks pass.
 
 The final evidence path, checksum, focused checks and full-suite command ledger
-are in [REPORT.md](../../REPORT.md). Earlier red evidence in that
+are in `REPORT.md`, which is not published. Earlier red evidence in that
 append-only report describes superseded runs. The current capability matrix is
 [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
 
