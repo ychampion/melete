@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { evidenceHolds, LEDGER_ITEM_KINDS } from '@melete/contracts';
+import { evidenceHolds, LEDGER_ITEM_KINDS, type LedgerItem } from '@melete/contracts';
 import type { CompanyExtractor } from './extract.ts';
 import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
@@ -202,6 +202,58 @@ describe('a message that tries to give the agent orders', () => {
     const { store } = await scanFixtures();
     const detail = await store.item(owner, 'li_nothing');
     expect(detail).toBe(null);
+  });
+});
+
+describe('scanning again after a price has changed', () => {
+  const subscription = (amountMinor: number): LedgerItem => ({
+    id: `li_01J00000000000000000${amountMinor}`,
+    space_id: owner.spaceId,
+    principal_id: owner.principalId,
+    company_id: 'co_01J0000000000000000000000C',
+    kind: 'subscription',
+    direction: 'you_pay',
+    amount_minor: amountMinor,
+    currency: 'GBP',
+    due_at: null,
+    status: 'found',
+    confidence: 'high',
+    evidence: [{ message_id: `<${amountMinor}@x.example>`, quote: 'q', start: 0, end: 1 }],
+    suggested_playbook: 'cancel-subscription',
+    job_id: null,
+    summary: `Subscription at ${amountMinor}`,
+  });
+
+  test('the map shows the price in force, not the one it first learned', async () => {
+    const store = new MemoryCompanyStore();
+    expect(await store.saveItems(owner, 'scn_1', [subscription(14800)])).toBe(1);
+    // A later scan reads a receipt at the new price. One subscription per
+    // company means this is the same claim, so it has to replace the figure
+    // rather than be discarded — otherwise monthly spend is wrong for good.
+    expect(await store.saveItems(owner, 'scn_2', [subscription(17900)])).toBe(1);
+    const map = await store.map(owner, now);
+    expect(map.items.filter((item) => item.kind === 'subscription')).toHaveLength(1);
+    expect(map.totals.monthly_spend_minor).toBe(17900);
+  });
+
+  test('an unchanged price is not rewritten, so a re-scan still finds nothing new', async () => {
+    const store = new MemoryCompanyStore();
+    expect(await store.saveItems(owner, 'scn_1', [subscription(14800)])).toBe(1);
+    expect(await store.saveItems(owner, 'scn_2', [subscription(14800)])).toBe(0);
+  });
+
+  test('a subscription the person has picked up is left alone', async () => {
+    const store = new MemoryCompanyStore();
+    await store.saveItems(owner, 'scn_1', [subscription(14800)]);
+    const [held] = (await store.map(owner, now)).items;
+    expect(held).toBeDefined();
+    if (!held) return;
+    await store.setJob(owner, held.id, 'job_01J0000000000000000000000H');
+    // It is being handled. A scan must not move the figure under the job.
+    expect(await store.saveItems(owner, 'scn_2', [subscription(17900)])).toBe(0);
+    const after = await store.map(owner, now);
+    expect(after.items[0]?.amount_minor).toBe(14800);
+    expect(after.items[0]?.status).toBe('handling');
   });
 });
 

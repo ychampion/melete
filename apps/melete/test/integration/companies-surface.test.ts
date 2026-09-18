@@ -241,6 +241,42 @@ withDb('the company map over HTTP', () => {
     expect(handled.length).toBe(asked + 1);
   }, 60_000);
 
+  test('a later scan moves a subscription to the price in force', async () => {
+    // The same rule the in-memory store follows, proved against Postgres,
+    // because this one lives in an ON CONFLICT clause rather than in TypeScript.
+    if (!handle) throw new Error('Postgres unavailable');
+    const store = new PostgresCompanyStore(handle.db);
+    const map = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const held = map.items.find(
+      (item) => item.kind === 'subscription' && item.status === 'found' && item.job_id === null,
+    );
+    expect(held).toBeDefined();
+    if (!held) return;
+    // The rows name their own principal, so the owner comes off the map.
+    const owner = { spaceId: firstSpace, principalId: held.principal_id };
+    const raised = { ...held, id: 'li_01J0000000000000000000RAIS', amount_minor: 999_99 };
+
+    // A new price is a change, so it is written and reported.
+    expect(await store.saveItems(owner, 'scn_later', [raised])).toBe(1);
+    const after = companyMap.parse(
+      await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
+    );
+    const now = after.items.find((item) => item.id === held.id);
+    expect(now?.amount_minor).toBe(999_99);
+    // One row still, under the id it already had.
+    expect(
+      after.items.filter(
+        (item) => item.company_id === held.company_id && item.kind === 'subscription',
+      ),
+    ).toHaveLength(1);
+    expect(after.items.some((item) => item.id === raised.id)).toBe(false);
+
+    // The same price again is no change, so nothing is written or reported.
+    expect(await store.saveItems(owner, 'scn_again', [raised])).toBe(0);
+  }, 60_000);
+
   test('handling a promise does not make the totals row say it went away', async () => {
     const before = companyMap.parse(
       await (await call(firstCookie, `/spaces/${firstSpace}/companies`)).json(),
