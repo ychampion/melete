@@ -188,3 +188,34 @@ describe('parsing one skill file', () => {
     if (!parsed.ok) expect(parsed.issues[0]).toContain('its own cap is 50');
   });
 });
+
+describe('the hosts a skill says it reads', () => {
+  const withDomains = (domains: string) =>
+    `---\nname: read-a-page\ndescription: A skill this person added for themselves.\ntriggers:\n  - read a page\ndomains:\n${domains}\nmax_tokens: 400\n---\n\nDo the thing.\n`;
+
+  test('are parsed from the file, as host names', () => {
+    const parsed = parseSkill(withDomains('  - ombudsman.example\n  - support.acme.test'));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok)
+      expect(parsed.frontmatter.domains).toEqual(['ombudsman.example', 'support.acme.test']);
+  });
+
+  test('are absent when the skill reads nothing of its own', () => {
+    const parsed = parseSkill(
+      '---\nname: quiet\ndescription: A skill this person added for themselves.\ntriggers:\n  - quiet\n---\n\nDo the thing.\n',
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.frontmatter.domains ?? []).toEqual([]);
+  });
+
+  test('refuse anything that is not a plain host name', () => {
+    for (const bad of [
+      '*.evil.test',
+      'https://evil.test',
+      'evil.test:8443',
+      '10.0.0.1',
+      'localhost',
+    ])
+      expect(parseSkill(withDomains(`  - ${bad}`)).ok).toBe(false);
+  });
+});

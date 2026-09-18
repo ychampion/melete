@@ -7,6 +7,25 @@
 import { z } from 'zod';
 import { qualifiedAudience } from './principals.ts';
 
+/**
+ * One host name: `acme.test`, `support.acme.test`.
+ *
+ * Not a URL, not a wildcard, not a port, not an address. The granularity is one
+ * host rather than a registrable domain, because that is what `web.fetch`
+ * compares: `support.example.com` is its own entry and does not come along with
+ * `example.com`. A numeric name is refused — an address is not a host name, and
+ * allowing one would reach past whatever the name was meant to permit.
+ */
+export const hostName = z
+  .string()
+  .min(3)
+  .max(253)
+  .regex(
+    /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/,
+    'a lowercase host name, with no scheme, port, path or wildcard',
+  )
+  .refine((host) => !/^\d+(\.\d+)*$/.test(host), 'an address is not a host name');
+
 export const skillFrontmatter = z.object({
   audience: qualifiedAudience.optional(),
   name: z.string().regex(/^[a-z][a-z0-9-]*$/, 'lowercase kebab-case'),
@@ -15,6 +34,15 @@ export const skillFrontmatter = z.object({
   triggers: z.array(z.string().min(1)).min(1),
   /** Tool names this skill expects, for example `email.search`. */
   tools: z.array(z.string()).default([]),
+  /**
+   * Hosts this skill genuinely reads, and nothing else it merely mentions.
+   *
+   * Declaring a host does not open it: a job opens what its own constraints
+   * name, and a caller mounting this skill is expected to put these in that
+   * list beside whatever the work itself is about. A skill that reads only the
+   * page belonging to whoever it is writing to declares none.
+   */
+  domains: z.array(hostName).max(20).optional(),
   /** Skills are short by contract; the loader refuses anything longer. */
   max_tokens: z.number().int().positive().max(400).default(400),
 });

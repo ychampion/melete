@@ -3,6 +3,8 @@ import { LAUNCH_PLAYBOOKS, type LedgerEvidence } from '@melete/contracts';
 import { ServiceError } from '../api/errors.ts';
 import {
   admittedEvidence,
+  allowedDomainsFor,
+  builtinSkillDomains,
   formatAmount,
   hostnames,
   oneLine,
@@ -117,4 +119,48 @@ test('a domain that is not a plain host name is refused, not passed through', ()
   expect(hostnames('  Acme.TEST.  ')).toEqual(['acme.test', 'www.acme.test']);
   // One host, not a registrable domain: a subdomain is its own entry.
   expect(hostnames('support.acme.test')).toEqual(['support.acme.test', 'www.support.acme.test']);
+});
+
+test('a job may fetch the company and whatever its playbook declares, and nothing else', () => {
+  // Declaring a host in a skill does not open it; the job's own constraints do.
+  const declared = [
+    { name: 'refund-owed', domains: ['ombudsman.example', 'support.acme.test'] },
+    { name: 'get-quotes', domains: ['comparison.example'] },
+  ];
+  expect(allowedDomainsFor('refund-owed', 'acme.test', declared)).toEqual([
+    'acme.test',
+    'www.acme.test',
+    'ombudsman.example',
+    'support.acme.test',
+  ]);
+  // Another playbook's declaration is not this job's business.
+  expect(allowedDomainsFor('price-rise', 'acme.test', declared)).toEqual([
+    'acme.test',
+    'www.acme.test',
+  ]);
+  // A host the company already brings is not added twice.
+  expect(allowedDomainsFor('refund-owed', 'ombudsman.example', declared)).toEqual([
+    'ombudsman.example',
+    'www.ombudsman.example',
+    'support.acme.test',
+  ]);
+  // A declaration that is not a host name is dropped rather than trusted.
+  expect(
+    allowedDomainsFor('refund-owed', 'acme.test', [
+      { name: 'refund-owed', domains: ['*.evil.test', 'evil.test:8443', '10.0.0.1', 'ok.example'] },
+    ]),
+  ).toEqual(['acme.test', 'www.acme.test', 'ok.example']);
+  // And a company with no usable address opens nothing at all.
+  expect(allowedDomainsFor('refund-owed', '*.acme.test', declared)).toEqual([]);
+});
+
+test('the six playbooks declare only hosts they genuinely read', () => {
+  const declared = builtinSkillDomains();
+  for (const playbook of LAUNCH_PLAYBOOKS) {
+    const entry = declared.find((skill) => skill.name === playbook);
+    expect(entry).toBeDefined();
+    // Each one reads the page of the company it is writing to, which the job
+    // already opens, and none of them names a regulator or an issuer host.
+    expect(entry?.domains ?? []).toEqual([]);
+  }
 });

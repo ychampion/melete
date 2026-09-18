@@ -31,6 +31,7 @@ import {
   type Company,
   type CreateResponsibilityRequest,
   evidenceHolds,
+  hostName,
   LAUNCH_PLAYBOOKS,
   type LedgerEvidence,
   type LedgerItem,
@@ -39,6 +40,7 @@ import {
   type PlaybookId,
   type TriggerSpec,
 } from '@melete/contracts';
+import { loadBuiltInSkills } from '@melete/skills';
 import { ServiceError } from '../api/errors.ts';
 
 /**
@@ -148,14 +150,9 @@ export function oneLine(value: string, limit = 300): string {
  * matcher being narrow, and an allowance should not lean on that staying true.
  */
 export function validHost(value: string): string | null {
-  const host = value.trim().toLowerCase().replace(/\.$/, '');
-  if (!host || host.length > 253) return null;
-  if (!/^[a-z0-9.-]+$/.test(host)) return null;
-  if (host.startsWith('.') || host.includes('..')) return null;
-  const labels = host.split('.');
-  if (labels.length < 2) return null;
-  if (labels.some((label) => !label || label.length > 63 || /^-|-$/.test(label))) return null;
-  return host;
+  const normalized = value.trim().toLowerCase().replace(/\.$/, '');
+  const parsed = hostName.safeParse(normalized);
+  return parsed.success ? parsed.data : null;
 }
 
 /** The two forms a company's own page might live on, or nothing at all. */
@@ -165,6 +162,39 @@ export function hostnames(domain: string): string[] {
   // `web.fetch` matches a host name exactly, so the bare name does not admit
   // `www.`, and a policy page usually lives on one of the two.
   return host.startsWith('www.') ? [host, host.slice(4)] : [host, `www.${host}`];
+}
+
+/** What a skill says it reads, by skill name. */
+export type DeclaredDomains = { name: string; domains: readonly string[] };
+
+/** The skills that ship with the release, and the hosts each one declares. */
+export const builtinSkillDomains = (): DeclaredDomains[] =>
+  loadBuiltInSkills().skills.map((skill) => ({
+    name: skill.frontmatter.name,
+    domains: skill.frontmatter.domains ?? [],
+  }));
+
+/**
+ * Everything this job may fetch: the company it is about, plus whatever its
+ * playbook says it reads, and nothing else.
+ *
+ * Declaring a host in a skill does not open it — a job opens what its own
+ * constraints name — so the union is made here, once, at the moment the job is
+ * written. Each declared host is re-checked rather than trusted, because a
+ * frontmatter file is a place a mistake can be made quietly.
+ */
+export function allowedDomainsFor(
+  playbook: PlaybookId,
+  domain: string,
+  declared: readonly DeclaredDomains[] = builtinSkillDomains(),
+): string[] {
+  const allowed = hostnames(domain);
+  if (allowed.length === 0) return [];
+  for (const entry of declared.find((skill) => skill.name === playbook)?.domains ?? []) {
+    const host = validHost(entry);
+    if (host && !allowed.includes(host)) allowed.push(host);
+  }
+  return allowed;
 }
 
 /**
@@ -333,7 +363,7 @@ export async function handleLedgerItem(
       409,
     );
 
-  const domains = hostnames(company.domain);
+  const domains = allowedDomainsFor(playbook, company.domain);
   // A company whose domain is not a host name is a record something upstream
   // got wrong, and the answer is to say so rather than to open a job holding an
   // allowance nobody can read.
