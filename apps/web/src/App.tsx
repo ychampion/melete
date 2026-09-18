@@ -9,6 +9,7 @@ import type { Agent, Capabilities, Conversation } from './experience/types.ts';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
 import { AutomationsScreen } from './screens/Automations.tsx';
+import { CompaniesScreen } from './screens/Companies.tsx';
 import { HomeScreen } from './screens/Home.tsx';
 import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
 import { PlansScreen } from './screens/Plans.tsx';
@@ -200,6 +201,8 @@ export function App() {
     screen = <AgentsScreen selected={second ?? null} />;
   } else if (head === 'plans') {
     screen = <PlansScreen selected={second ?? null} />;
+  } else if (head === 'companies') {
+    screen = <CompaniesScreen />;
   } else if (head === 'automations') {
     screen = <AutomationsScreen />;
   } else if (head === 'settings') {

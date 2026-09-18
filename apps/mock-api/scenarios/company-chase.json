@@ -1,0 +1,79 @@
+{
+  "id": "company-chase",
+  "title": "Take one thing up with a company",
+  "summary": "The job reads the thread, drafts the message, stops for the one approval, sends it, waits for the reply, follows up on the date it said, and stops when it is settled.",
+  "match": ["hold them to what they said"],
+  "fallback": false,
+  "provider": "test",
+  "model": "scripted-companies-1",
+  "runtime_version": "mock-0.1",
+  "steps": [
+    {
+      "step": "text",
+      "delay_ms": 300,
+      "text": "Reading everything they have sent you. Their own message sets the date, so that is what the reply quotes back to them."
+    },
+    {
+      "step": "tool",
+      "delay_ms": 300,
+      "name": "email.search",
+      "arguments": { "query": "company thread" },
+      "result": { "matches": 7 },
+      "title": "Read the thread and their published terms",
+      "meta": "7 messages",
+      "sources": [
+        { "app": "gmail", "label": "Their message, with the date they gave" },
+        { "app": "web", "label": "Their published terms" }
+      ]
+    },
+    {
+      "step": "propose",
+      "delay_ms": 400,
+      "ref": "first-message",
+      "kind": "email.send",
+      "connection": "outbox",
+      "effect_class": "write_external",
+      "payload": {
+        "to": ["Customer Care <help@ternandco.example>"],
+        "subject": "Order TC-88412 — the refund you confirmed on 1 September",
+        "body": "Hello,\n\nOn 1 September you confirmed that my return for order TC-88412 had arrived and passed your checks, and that the refund of £64.00 would be back with me within 5 working days. That date has now passed and the money has not reached my card.\n\nPlease confirm today when the refund will be sent, and the reference for it.\n\nIf it has already been sent, please send me the date and the last four digits of the card it went to so I can take it up with my bank.\n\nThank you,\nJamie Davis"
+      }
+    },
+    {
+      "step": "say",
+      "delay_ms": 500,
+      "text": "Sent from your address. I will watch the thread and follow up if nothing comes back."
+    },
+    {
+      "step": "notice",
+      "delay_ms": 900,
+      "level": "info",
+      "title": "Reply received",
+      "body": "Two days later they replied: the refund was not raised and they have raised it now."
+    },
+    {
+      "step": "notice",
+      "delay_ms": 900,
+      "level": "attention",
+      "title": "Followed up",
+      "body": "Five days on, nothing had arrived, so I replied again with the reference and asked for a date."
+    },
+    {
+      "step": "notice",
+      "delay_ms": 900,
+      "level": "info",
+      "title": "They gave a date",
+      "body": "They confirmed the refund was sent on the eighth day and gave the reference TC-RF-88412."
+    },
+    {
+      "step": "say",
+      "delay_ms": 600,
+      "text": "Settled. £64.00 is back on your card, reference TC-RF-88412, eight days after the first message. Nothing else is needed from you."
+    },
+    {
+      "step": "complete",
+      "delay_ms": 300,
+      "answer": "Settled. £64.00 is back on your card, reference TC-RF-88412, eight days after the first message."
+    }
+  ]
+}
