@@ -105,6 +105,13 @@ export function admit(candidate: ExtractedItem, context: AdmissionContext): Admi
  * a date twice states the same date.
  */
 export function dedupeKey(item: LedgerItem): string {
+  // A company charges one subscription at a time. Two receipts and a price-rise
+  // notice state it three times at two different prices, and a map that listed
+  // all three would add them up and tell a person they pay twice what they pay.
+  // The scan reads newest first, so keying a subscription on its company alone
+  // keeps the price in force and leaves the old one to the price_rise item,
+  // which is where a change belongs.
+  if (item.kind === 'subscription') return [item.company_id, item.kind].join('|');
   const due = item.due_at ? item.due_at.slice(0, 10) : '';
   return [
     item.company_id,

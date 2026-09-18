@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { evidenceHolds, LEDGER_ITEM_KINDS } from '@melete/contracts';
 import type { CompanyExtractor } from './extract.ts';
-import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
+import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
 import { messageText } from './messages.ts';
 import { MemoryCompanyStore, type Owner } from './repository.ts';
@@ -30,7 +30,7 @@ describe('a scan of the demonstration mailbox', () => {
   test('finishes, and reports what it read rather than what it was given', async () => {
     const { outcome } = await scanFixtures();
     expect(outcome.status).toBe('done');
-    expect(outcome.messagesSeen).toBe(40);
+    expect(outcome.messagesSeen).toBe(FIXTURE_MESSAGE_COUNT);
     expect(outcome.counts.withheld).toBe(3);
     expect(outcome.itemsFound).toBeGreaterThan(20);
   });
@@ -59,13 +59,15 @@ describe('a scan of the demonstration mailbox', () => {
     }
   });
 
-  test('finds the companies the mailbox is from, and no company for a friend', async () => {
+  test('finds the companies on both sides of the studio’s money', async () => {
     const { map } = await scanFixtures();
     const domains = map.companies.map((entry) => entry.domain);
+    // A client who owes the studio, and a tool the studio pays.
+    expect(domains).toContain('pinegrovegroup.example');
     expect(domains).toContain('nimbusledger.example');
     expect(domains).toContain('beaconfibre.example');
-    expect(domains).toContain('pinegrovestudio.example');
-    expect(domains).not.toContain('friendsandfamily.example');
+    // A colleague and a newsletter are not companies in anybody's life.
+    expect(domains).not.toContain('thackeraylane.example');
     expect(domains).not.toContain('longshoreletter.example');
   });
 
@@ -78,26 +80,53 @@ describe('a scan of the demonstration mailbox', () => {
 
   test('reads the figures the emails actually state', async () => {
     const { map } = await scanFixtures();
-    const nimbus = map.companies.find((entry) => entry.domain === 'nimbusledger.example');
-    const nimbusItems = map.items.filter((item) => item.company_id === nimbus?.id);
-    const subscription = nimbusItems.find((item) => item.kind === 'subscription');
-    expect([subscription?.amount_minor, subscription?.currency]).toEqual([4800, 'GBP']);
+    const at = (domain: string) => map.companies.find((entry) => entry.domain === domain)?.id;
+    const find = (domain: string, kind: string) =>
+      map.items.find((item) => item.company_id === at(domain) && item.kind === kind);
 
-    const harrow = map.companies.find((entry) => entry.domain === 'harrowpeck.example');
-    const refund = map.items.find(
-      (item) => item.company_id === harrow?.id && item.kind === 'refund_owed',
-    );
+    // A tool the studio pays for, monthly.
+    const subscription = find('nimbusledger.example', 'subscription');
+    expect([subscription?.amount_minor, subscription?.currency, subscription?.direction]).toEqual([
+      14800,
+      'GBP',
+      'you_pay',
+    ]);
+
+    // A supplier who owes the studio a refund.
+    const refund = find('harrowgatehardware.example', 'refund_owed');
     expect([refund?.amount_minor, refund?.currency, refund?.direction]).toEqual([
-      12999,
+      42999,
       'GBP',
       'owed_to_you',
     ]);
 
-    const pinegrove = map.companies.find((entry) => entry.domain === 'pinegrovestudio.example');
-    const invoice = map.items.find(
-      (item) => item.company_id === pinegrove?.id && item.kind === 'invoice_unpaid',
-    );
-    expect([invoice?.amount_minor, invoice?.currency]).toEqual([320000, 'GBP']);
+    // A client who has not paid. This is the direction a CRM never points.
+    const invoice = find('pinegrovegroup.example', 'invoice_unpaid');
+    expect([invoice?.amount_minor, invoice?.currency, invoice?.direction]).toEqual([
+      1240000,
+      'GBP',
+      'owed_to_you',
+    ]);
+  });
+
+  test('money runs both ways, which is the point of pointing a CRM backwards', async () => {
+    const { map } = await scanFixtures();
+    const owed = map.items.filter((item) => item.direction === 'owed_to_you');
+    const paid = map.items.filter((item) => item.direction === 'you_pay');
+    expect(owed.length).toBeGreaterThan(5);
+    expect(paid.length).toBeGreaterThan(5);
+    // Three clients have not paid, and they are the largest sums on the map.
+    const invoices = map.items.filter((item) => item.kind === 'invoice_unpaid');
+    expect(invoices).toHaveLength(3);
+    expect(invoices.every((item) => item.direction === 'owed_to_you')).toBe(true);
+    expect(invoices.every((item) => item.suggested_playbook === 'unpaid-invoice')).toBe(true);
+    expect(invoices.reduce((sum, item) => sum + (item.amount_minor ?? 0), 0)).toBe(2_235_000);
+  });
+
+  test('every company in it is invented, and reachable only under .example', async () => {
+    const { map } = await scanFixtures();
+    expect(map.companies.length).toBeGreaterThan(20);
+    for (const entry of map.companies) expect(entry.domain.endsWith('.example')).toBe(true);
   });
 
   test('the totals are the sum of the items a person can open', async () => {

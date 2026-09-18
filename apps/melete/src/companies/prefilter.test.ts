@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
+import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { messageText, registrableDomain, senderAddress, withheldFromScan } from './messages.ts';
 import { isCandidate, monthlySpendFrom, prefilter } from './prefilter.ts';
 
@@ -55,12 +55,12 @@ describe('the prefilter over the fixture mailbox', () => {
   });
 
   test('groups every message by sender domain', () => {
-    expect(result.counts.seen).toBe(40);
-    expect(result.counts.inWindow).toBe(40);
+    expect(result.counts.seen).toBe(FIXTURE_MESSAGE_COUNT);
+    expect(result.counts.inWindow).toBe(FIXTURE_MESSAGE_COUNT);
     const domains = result.companies.map((group) => group.domain);
     expect(domains).toContain('nimbusledger.example');
     expect(domains).toContain('beaconfibre.example');
-    // Three messages from Nimbus Ledger, one of which hygiene withheld.
+    // Four messages from Nimbus Ledger, one of which hygiene withheld before grouping.
     const nimbus = result.companies.find((group) => group.domain === 'nimbusledger.example');
     expect(nimbus?.messageCount).toBe(3);
     expect(nimbus?.name).toBe('Nimbus Ledger');
@@ -77,9 +77,9 @@ describe('the prefilter over the fixture mailbox', () => {
     expect(old.counts.inWindow).toBeLessThan(result.counts.inWindow);
   });
 
-  test('a person writing to you is not a company', () => {
-    const friends = result.companies.find((group) => group.domain === 'friendsandfamily.example');
-    expect(friends?.candidates).toEqual([]);
+  test('a colleague writing from the studio’s own domain is not a company', () => {
+    const inside = result.companies.find((group) => group.domain === 'thackeraylane.example');
+    expect(inside?.candidates).toEqual([]);
   });
 });
 

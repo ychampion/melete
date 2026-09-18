@@ -54,7 +54,11 @@ export function computeTotals(
     if (!OPEN_STATUSES.has(item.status)) continue;
     const money = item.currency === currency ? (item.amount_minor ?? 0) : 0;
     if (item.direction === 'owed_to_you') totals.owed_to_you_minor += money;
-    if (item.direction === 'you_pay') totals.monthly_spend_minor += money;
+    // Monthly spend is what the standing charges come to, so only subscriptions
+    // count. An annual licence and a one-off balance are money the studio pays,
+    // but adding either to a figure labelled "a month" would overstate it.
+    if (item.direction === 'you_pay' && item.kind === 'subscription')
+      totals.monthly_spend_minor += money;
     const due = item.due_at ? Date.parse(item.due_at) : Number.NaN;
     const soon = Number.isFinite(due) && due >= options.now.getTime() && due <= horizon;
     if (soon && (item.kind === 'renewal' || item.kind === 'subscription'))

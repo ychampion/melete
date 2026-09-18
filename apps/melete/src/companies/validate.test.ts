@@ -125,6 +125,31 @@ describe('dedupe', () => {
     expect(result.drops.duplicate).toBe(0);
   });
 
+  test('a company has one subscription, and it is the price in force', () => {
+    // Two receipts and a price-rise notice state the same subscription three
+    // times at two prices. Listing all three would add them up and tell the
+    // studio it pays more than it pays. The scan reads newest first.
+    const subscription = (amount: number) =>
+      candidate({ kind: 'subscription', direction: 'you_pay', amount_minor: amount });
+    const result = admitAll([
+      { candidate: subscription(14800), context },
+      { candidate: subscription(17900), context },
+      { candidate: subscription(14800), context },
+    ]);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.amount_minor).toBe(14800);
+    expect(result.drops.duplicate).toBe(2);
+  });
+
+  test('two companies each keep their own subscription', () => {
+    const other = { ...context, companyId: 'co_01J0000000000000000000000D' };
+    const result = admitAll([
+      { candidate: candidate({ kind: 'subscription', direction: 'you_pay' }), context },
+      { candidate: candidate({ kind: 'subscription', direction: 'you_pay' }), context: other },
+    ]);
+    expect(result.items).toHaveLength(2);
+  });
+
   test('the key names the company, the kind, the direction, the amount and the day', () => {
     const one = admit(candidate({ due_at: '2026-10-12T00:00:00.000Z' }), context);
     const two = admit(candidate({ due_at: '2026-10-12T18:30:00.000Z' }), context);
@@ -166,10 +191,27 @@ describe('the totals', () => {
 
   test('adds what is owed and what is paid, in whole minor units', () => {
     const totals = computeTotals(
-      [item({ amount_minor: 12999 }), item({ direction: 'you_pay', amount_minor: 4800 })],
+      [
+        item({ amount_minor: 12999 }),
+        item({ kind: 'subscription', direction: 'you_pay', amount_minor: 4800 }),
+      ],
       { now },
     );
     expect(totals.owed_to_you_minor).toBe(12999);
+    expect(totals.monthly_spend_minor).toBe(4800);
+  });
+
+  test('monthly spend counts subscriptions, not an annual renewal or a one-off', () => {
+    // An annual licence and a balance due on delivery are both money going out,
+    // and neither is a monthly figure. Adding either to one would overstate it.
+    const totals = computeTotals(
+      [
+        item({ kind: 'subscription', direction: 'you_pay', amount_minor: 4800 }),
+        item({ kind: 'renewal', direction: 'you_pay', amount_minor: 42000 }),
+        item({ kind: 'price_rise', direction: 'you_pay', amount_minor: 9900 }),
+      ],
+      { now },
+    );
     expect(totals.monthly_spend_minor).toBe(4800);
   });
 

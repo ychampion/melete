@@ -36,7 +36,9 @@ type Rule = {
  */
 const RULES: readonly Rule[] = [
   {
-    pattern: /\b(?:refund(?:ed)?|money back|reimburse(?:d|ment)?)\b/i,
+    // "In credit" is the same claim in an energy or telecoms voice, and it is
+    // usually the sentence carrying the figure, so it must be reachable.
+    pattern: /\b(?:refund(?:ed)?|money back|reimburse(?:d|ment)?|in credit)\b/i,
     kind: 'refund_owed',
     direction: 'owed_to_you',
     playbook: 'refund-owed',
@@ -58,8 +60,10 @@ const RULES: readonly Rule[] = [
     summary: 'Compensation you can claim',
   },
   {
+    // Companies announce a rise in the present continuous far more often than
+    // the simple present: "your price is increasing", "the price is changing".
     pattern:
-      /\b(?:price (?:is )?(?:going up|rising|increase[sd]?|change[sd]?)|new price|increasing your|price rise)\b/i,
+      /\b(?:price (?:is |are )?(?:going up|ris(?:e|es|ing)|increas(?:e|es|ed|ing)|chang(?:e|es|ed|ing))|new price|increasing your|price rise|price (?:will|is going to) (?:increase|rise|change))\b/i,
     kind: 'price_rise',
     direction: 'you_pay',
     playbook: 'price-rise',
@@ -80,8 +84,15 @@ const RULES: readonly Rule[] = [
     summary: 'A renewal is coming',
   },
   {
+    // An invoice line names the invoice and then, some way further along the
+    // same sentence, what is wrong with it: "Invoice 2026-121 for GBP 6,750.00
+    // is now overdue". The words in between are the amount, so the two halves
+    // are matched with a bounded gap rather than side by side.
+    // The gap admits full stops, because the thing sitting between the invoice
+    // number and its verdict is usually the amount, and an amount has a decimal
+    // point in it. A character class that excluded stops could never span one.
     pattern:
-      /\b(?:invoice \S+ is (?:now )?(?:due|overdue)|remains unpaid|payment is overdue|still outstanding|awaiting payment)\b/i,
+      /\binvoice\b[\s\S]{0,90}?\b(?:is (?:now )?(?:due|overdue)|remains unpaid|still outstanding|awaiting payment)\b|\bpayment is overdue\b/i,
     kind: 'invoice_unpaid',
     direction: 'owed_to_you',
     playbook: 'unpaid-invoice',
@@ -119,7 +130,7 @@ const RULES: readonly Rule[] = [
   },
   {
     pattern:
-      /\bwe (?:will|'ll|shall)\b|\bwithin \d+(?:[-–]\d+)? (?:working )?days?\b|\bprice is locked\b|\bcancel any time\b|\bno price (?:rise|increase) (?:until|before)\b/i,
+      /\bwe (?:will|'ll|shall)\b|\bwithin \d+(?:[-–]\d+)? (?:working |business )?days?\b|\bheld for \d+ days\b|\bprice is locked\b|\bcancel any time\b|\bno price (?:rise|increase) (?:until|before)\b/i,
     kind: 'promise',
     direction: 'info',
     playbook: null,
@@ -198,7 +209,9 @@ export function scriptedItems(request: ExtractionRequest): ExtractedItem[] {
       direction: rule.direction,
       amount_minor: rule.direction === 'info' ? null : (money?.minor ?? null),
       currency: rule.direction === 'info' ? null : (money?.currency ?? null),
-      due_at: date?.value ?? null,
+      // A subscription is a standing charge, not a deadline. The date in the
+      // sentence beside it is the renewal, and the renewal is its own item.
+      due_at: rule.kind === 'subscription' ? null : (date?.value ?? null),
       confidence: rule.confidence ?? (money || date ? 'high' : 'medium'),
       suggested_playbook: rule.playbook,
       summary: `${rule.summary} — ${request.companyName}`,
