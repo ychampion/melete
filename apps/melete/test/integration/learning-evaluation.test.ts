@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, like } from 'drizzle-orm';
 import { taskObjective } from '../../../../conformance/learning/records.ts';
 import { ScriptedRecordRuntime } from '../../../../conformance/learning/scripted-runtime.ts';
 import { openDatabase } from '../../src/db/client.ts';
-import { job } from '../../src/db/schema.ts';
+import { job, space } from '../../src/db/schema.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
 import { JobService } from '../../src/jobs/service.ts';
-import { learningEvaluationLease, learningTrial } from '../../src/learning/evaluation-schema.ts';
+import { learningEvaluationLease } from '../../src/learning/evaluation-schema.ts';
 import {
   assertEvaluationBudget,
   EVALUATION_LEASE_MS,
@@ -67,6 +67,24 @@ async function candidate(template: string, selected: string[]) {
   return proposer.generate(fixture.ownerId, fixture.spaceId, source.id);
 }
 
+/** Reads what each arm job recorded about its objective, while that arm is running. */
+class OriginRecordingRuntime extends ScriptedRecordRuntime {
+  readonly origins: (string | null)[] = [];
+  override async start(
+    bundle: Parameters<ScriptedRecordRuntime['start']>[0],
+    sink: Parameters<ScriptedRecordRuntime['start']>[1],
+    signal: Parameters<ScriptedRecordRuntime['start']>[2],
+  ) {
+    const [row] = fixture
+      ? await fixture.handle.db
+          .select({ origin: job.objectiveOrigin })
+          .from(job)
+          .where(eq(job.id, bundle.attempt.job_id))
+      : [];
+    this.origins.push(row?.origin ?? null);
+    return super.start(bundle, sink, signal);
+  }
+}
 (fixture ? describe : describe.skip)('real jobs and unchanged memory conformance promotion', () => {
   test('independent evaluators exclude the same space and release its lock after failure', async () => {
     if (!fixture) return;
@@ -274,8 +292,10 @@ async function candidate(template: string, selected: string[]) {
       'promotion_denied',
     );
     let evaluated: Awaited<ReturnType<ProcedureEvaluator['evaluate']>>;
+    const origins = new OriginRecordingRuntime();
+    const watched = new ProcedureEvaluator(fixture.jobs, origins, fixture.runner.options);
     try {
-      evaluated = await evaluator.evaluate(fixture.ownerId, fixture.spaceId, proposed.id);
+      evaluated = await watched.evaluate(fixture.ownerId, fixture.spaceId, proposed.id);
     } catch (error) {
       console.error('evaluation cause', (error as Error).cause);
       throw error;
@@ -291,14 +311,14 @@ async function candidate(template: string, selected: string[]) {
     expect(final.passed).toBe(true);
     expect(final.createdAt.getTime()).toBeGreaterThanOrEqual(validation.selectedAt.getTime());
     expect(final.budget).toMatchObject({ jobs: 6, reservedTokens: 49152 });
+    // The spaces those arms ran in are finished with, and go.
+    expect(
+      await fixture.handle.db.select().from(space).where(like(space.gitPath, 'evaluation/%')),
+    ).toEqual([]);
     // An arm runs held-out history or a model-authored variant under the owner's own
-    // principal; its objective is recorded as text the owner did not type.
-    const arms = await fixture.handle.db
-      .select({ origin: job.objectiveOrigin })
-      .from(job)
-      .innerJoin(learningTrial, eq(learningTrial.jobId, job.id));
-    expect(arms.length).toBeGreaterThan(0);
-    expect([...new Set(arms.map((row) => row.origin))]).toEqual(['derived']);
+    // principal; each one recorded its objective as text the owner did not type.
+    expect(origins.origins.length).toBeGreaterThan(0);
+    expect([...new Set(origins.origins)]).toEqual(['derived']);
     const before = runtime.observed.length;
     expect(
       (await evaluator.evaluate(fixture.ownerId, fixture.spaceId, proposed.id)).evaluations,

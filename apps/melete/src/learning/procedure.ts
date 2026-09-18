@@ -54,7 +54,7 @@ export function compileProcedure(raw: unknown) {
 }
 
 /**
- * Every field that changes applicability or behavior is bound to the evaluation.
+ * Every field that changes applicability or behaviour is bound to the evaluation.
  * Triggers decide which requests receive the body, checks decide what counts as
  * a correction, and the case templates decide which held-out work the evidence
  * came from, so all three are part of the definition and not metadata beside it.

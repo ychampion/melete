@@ -598,6 +598,14 @@ export function admitProposal(
     const phrases = 'phrase' in check ? [check.phrase] : 'headings' in check ? check.headings : [];
     if (phrases.some((phrase) => !normalizeForMatch(phrase)))
       refuse('check_unsupported', 'A check phrase has no words to match.');
+    // A check phrase never reaches a delivered body, but it is stored and shown to
+    // the owner, so it is held to the same content rules as the rest of the proposal.
+    for (const value of [
+      ...phrases,
+      ...('key' in check ? [check.key] : []),
+      ...('action_kind' in check ? [check.action_kind] : []),
+    ])
+      scan(value, 'A check phrase');
   }
 
   const variants = proposal.variant_objectives.map((variant) => {

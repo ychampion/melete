@@ -6,7 +6,7 @@ import {
   type ProcedureDiscrimination,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { and, desc, eq, lte } from 'drizzle-orm';
+import { and, desc, eq, lte, sql } from 'drizzle-orm';
 import { openHarness } from '../../../../conformance/memory/harness.ts';
 import { scenario } from '../../../../conformance/memory/schema.ts';
 import { ServiceError } from '../api/errors.ts';
@@ -117,6 +117,7 @@ export class ProcedureEvaluator {
       await this.takeLease(spaceId, id, holder);
       return await this.evaluateLocked(ownerId, spaceId, id);
     } finally {
+      await this.removeArmSpaces(id);
       await this.jobs.db
         .delete(learningEvaluationLease)
         .where(
@@ -128,6 +129,25 @@ export class ProcedureEvaluator {
         .catch(() => undefined);
       this.busy = false;
     }
+  }
+
+  /**
+   * An arm's space exists to isolate one graded run and is finished with when the
+   * run is, whether it passed, failed or crashed: the evidence lives on the
+   * evaluation row, not in the space. A space the memory layer has provisioned is
+   * left alone — its retention is memory's to decide, not this evaluator's.
+   */
+  private async removeArmSpaces(candidateId: string) {
+    await this.jobs.db
+      .execute(
+        sql`delete from space s where s.id in (
+          select j.space_id from learning_trial t join job j on j.id = t.job_id
+          where t.candidate_id = ${candidateId}
+        ) and not exists (select 1 from memory_spaces m where m.space_id = s.id)`,
+      )
+      // In a finally after the verdict: a cleanup that cannot run leaves the rows it
+      // would have removed, and must not replace the result the caller is waiting for.
+      .catch(() => undefined);
   }
 
   /** One evaluation at a time in a space; a lease whose holder died expires. */

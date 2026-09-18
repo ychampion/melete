@@ -145,14 +145,18 @@ export class ProcedureProposer {
         return candidate;
       });
     } catch (error) {
-      await this.jobs.db
-        .update(episode)
-        .set({ generationState: 'rejected' })
-        .where(and(eq(episode.id, episodeId), eq(episode.restricted, false)));
-      await this.jobs.db
-        .update(learningModelCall)
-        .set({ errorCode: 'proposal_rejected', errorDetail: refusalCode(error) })
-        .where(eq(learningModelCall.episodeId, episodeId));
+      // The refusal and its reason are one record: a crash between them would leave
+      // a rejected episode with nothing saying why.
+      await this.jobs.transaction(async (tx) => {
+        await tx
+          .update(episode)
+          .set({ generationState: 'rejected' })
+          .where(and(eq(episode.id, episodeId), eq(episode.restricted, false)));
+        await tx
+          .update(learningModelCall)
+          .set({ errorCode: 'proposal_rejected', errorDetail: refusalCode(error) })
+          .where(eq(learningModelCall.episodeId, episodeId));
+      });
       throw new ServiceError(
         'proposal_rejected',
         'The proposal failed its bounded generation checks.',
