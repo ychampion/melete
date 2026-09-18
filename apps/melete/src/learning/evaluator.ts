@@ -6,7 +6,7 @@ import {
   type ProcedureDiscrimination,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, lte } from 'drizzle-orm';
 import { openHarness } from '../../../../conformance/memory/harness.ts';
 import { scenario } from '../../../../conformance/memory/schema.ts';
 import { ServiceError } from '../api/errors.ts';
@@ -19,7 +19,7 @@ import type { ProcedureScope } from './contracts.ts';
 import { discriminate } from './discriminate.ts';
 import { discriminationInput } from './discrimination-input.ts';
 import { digest, type EpisodeRow } from './episodes.ts';
-import { learningTrial } from './evaluation-schema.ts';
+import { learningEvaluationLease, learningTrial } from './evaluation-schema.ts';
 import type { GateInput, Metric } from './gate.ts';
 import {
   type Candidate,
@@ -41,6 +41,13 @@ export const OUTPUT_BUDGET = 8192;
 /** The promotion gate refuses more than this; asking first gives a reason instead of an opaque mismatch. */
 export const MAX_EVALUATION_JOBS = 40;
 export const MAX_RESERVED_TOKENS = 65536;
+/**
+ * Longer than any bounded evaluation can run (sixteen arms of twenty seconds, plus
+ * the harness), and short enough that a crashed run does not block a space for a
+ * day. The same bound frees the lease and lets the abandoned evaluation it left
+ * behind be recorded as failed.
+ */
+export const EVALUATION_LEASE_MS = 900000;
 const wake = (row: JobRow) => ({
   job_id: row.id,
   expected_epoch: row.leaseEpoch,
@@ -102,23 +109,41 @@ export class ProcedureEvaluator {
     if (this.busy)
       throw new ServiceError('evaluation_busy', 'Another bounded evaluation is running.');
     this.busy = true;
+    // The lease is a row, taken and released in short transactions. Holding a
+    // transaction open for the whole run would park a pooled connection idle in
+    // transaction while the evaluation drives real jobs through the runner.
+    const holder = newId('lease');
     try {
-      // Hold a separate transaction for the whole evaluation, across replicas and both phases.
-      // Do not use JobService.transaction here: its event-order lock must stay short-lived.
-      return await this.jobs.db.transaction(async (lock) => {
-        const [row] = await lock.execute(
-          sql`select pg_try_advisory_xact_lock(781103, hashtext(${spaceId})) as acquired`,
-        );
-        if (!row?.acquired)
-          throw new ServiceError(
-            'evaluation_busy',
-            'An evaluation is already running in this space.',
-          );
-        return this.evaluateLocked(ownerId, spaceId, id);
-      });
+      await this.takeLease(spaceId, id, holder);
+      return await this.evaluateLocked(ownerId, spaceId, id);
     } finally {
+      await this.jobs.db
+        .delete(learningEvaluationLease)
+        .where(
+          and(
+            eq(learningEvaluationLease.spaceId, spaceId),
+            eq(learningEvaluationLease.holder, holder),
+          ),
+        )
+        .catch(() => undefined);
       this.busy = false;
     }
+  }
+
+  /** One evaluation at a time in a space; a lease whose holder died expires. */
+  private async takeLease(spaceId: string, candidateId: string, holder: string) {
+    const expiresAt = new Date(Date.now() + EVALUATION_LEASE_MS);
+    const [taken] = await this.jobs.db
+      .insert(learningEvaluationLease)
+      .values({ spaceId, candidateId, holder, expiresAt })
+      .onConflictDoUpdate({
+        target: learningEvaluationLease.spaceId,
+        set: { candidateId, holder, acquiredAt: new Date(), expiresAt },
+        setWhere: lte(learningEvaluationLease.expiresAt, new Date()),
+      })
+      .returning();
+    if (!taken)
+      throw new ServiceError('evaluation_busy', 'An evaluation is already running in this space.');
   }
 
   private async evaluateLocked(ownerId: string, spaceId: string, id: string) {
@@ -153,7 +178,39 @@ export class ProcedureEvaluator {
           .from(procedureEvaluation)
           .where(eq(procedureEvaluation.candidateId, id))
           .limit(1);
-        if (existing) return null;
+        if (existing) {
+          // A crashed run leaves `running` behind, and nothing else ever closes it:
+          // every later call would return this inspection and the candidate could never
+          // be evaluated again. Past the lease bound it is recorded as the failure it
+          // was, with its reserved budget still charged, exactly as an in-process
+          // failure would have been.
+          if (
+            existing.evidence.status !== 'running' ||
+            Date.now() - existing.createdAt.getTime() < EVALUATION_LEASE_MS
+          )
+            return null;
+          await tx
+            .update(procedureEvaluation)
+            .set({
+              passed: false,
+              evidence: { ...existing.evidence, status: 'failed', reason: 'evaluation_abandoned' },
+            })
+            .where(eq(procedureEvaluation.id, existing.id));
+          await tx
+            .update(procedureCandidate)
+            .set({ rejectionReason: 'evaluation_abandoned' })
+            .where(eq(procedureCandidate.id, id));
+          if (candidate.state === 'candidate')
+            await transitionProcedure(
+              tx,
+              candidate,
+              'evaluated',
+              'evaluator',
+              'An earlier evaluation never finished; its budget remains charged.',
+            );
+          // Recorded here, refused outside: throwing would roll this record back.
+          return 'abandoned' as const;
+        }
         if (candidate.state !== 'candidate')
           throw new ServiceError('invalid_procedure_state', 'A fresh candidate is required.');
         const suite = resolveSuite(candidate.scope, this.suites);
@@ -169,6 +226,11 @@ export class ProcedureEvaluator {
         assertEvaluationBudget(plan.validation.cases);
         return { candidate: plan.candidate, source, suite, plan };
       });
+      if (reserved === 'abandoned')
+        throw new ServiceError(
+          'evaluation_abandoned',
+          'An earlier evaluation of this procedure never finished; it is recorded as failed.',
+        );
       if (!reserved) return this.procedures.inspect(ownerId, spaceId, id);
       const runtime = await this.runtime.capabilities();
       if (!reserved.source.versions.some((version) => version.runtime === runtime.version))
