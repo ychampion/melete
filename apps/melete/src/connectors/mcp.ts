@@ -11,6 +11,7 @@ import {
   jsonSchema,
   mcpHttpUrl,
   mcpOperatorPolicy,
+  mcpStdioLaunch,
   type VerifyResult,
 } from '@melete/contracts';
 import { z } from 'zod';
@@ -37,6 +38,13 @@ const endpoint = z.discriminatedUnion('transport', [
     .object({
       transport: z.literal('http'),
       url: mcpHttpUrl,
+    })
+    .strict(),
+  /** A stdio server in a container of its own; only an isolating launcher can start it. */
+  z
+    .object({
+      transport: z.literal('container'),
+      launch: mcpStdioLaunch,
     })
     .strict(),
 ]);
@@ -74,6 +82,10 @@ const toolPage = z.object({
   nextCursor: z.string().min(1).max(2048).optional(),
 });
 
+/** A server's own account of one tool, as `tools/list` gave it. */
+export const mcpToolDefinition = serverTool;
+export type McpToolDefinition = z.infer<typeof serverTool>;
+
 /** The service supplies audience and scopes from current authority, never the model payload. */
 export type McpExecutionContext = ConnectorContext & {
   audience: string;
@@ -81,6 +93,8 @@ export type McpExecutionContext = ConnectorContext & {
 };
 export type McpWorker = {
   tools: ConnectorTool[];
+  /** The server's definitions of the tools the policy names, from which `tools` was built. */
+  definitions: McpToolDefinition[];
   catalog: { source: 'mcp' };
   execute(action: Action, context: McpExecutionContext): Promise<DispatchResult>;
   verify(): Promise<VerifyResult>;
@@ -88,12 +102,25 @@ export type McpWorker = {
   reconnect(): Promise<void>;
   close(): Promise<void>;
 };
+type McpSession = Omit<McpWorker, 'reconnect'>;
 
 export type McpWorkerOptions = McpTransportOptions & {
   transport?: McpTransport;
   transportFactory?: () => Promise<McpTransport>;
   checkCredential?: () => Promise<void>;
+  /**
+   * The definitions recorded when the server was installed. With them the
+   * worker exists before any session does, and the first `reconnect` opens one
+   * only if the server still describes exactly these tools.
+   */
+  pinned?: McpToolDefinition[];
 };
+
+const notRunning = () =>
+  new ConnectorFaultError({
+    kind: 'transient_before_dispatch',
+    detail: 'MCP session is not open before dispatch',
+  });
 
 /** Transport and operator policy stay outside the runtime cell. */
 export async function openMcpWorker(
@@ -101,20 +128,42 @@ export async function openMcpWorker(
   binding: { connectionId: string; spaceId: string },
   options: McpWorkerOptions = {},
 ): Promise<McpWorker> {
-  let current = await openMcpSession(input, binding, options);
-  const pinned = canonicalizePayload({ tools: current.tools }).hash;
+  let current: McpSession | undefined = options.pinned
+    ? undefined
+    : await openMcpSession(input, binding, options);
+  const initial = current ?? {
+    ...policyTools(
+      mcpServerConfig.parse(input),
+      new Map(options.pinned?.map((tool) => [tool.name, mcpToolDefinition.parse(tool)])),
+    ),
+  };
+  const pinned = canonicalizePayload({ tools: initial.tools }).hash;
   let closed = false;
   let reopening: Promise<void> | undefined;
   return {
-    tools: structuredClone(current.tools),
-    catalog: current.catalog,
-    execute: (action, context) => current.execute(action, context),
-    verify: () => current.verify(),
-    health: () => current.health(),
+    tools: structuredClone(initial.tools),
+    definitions: structuredClone(initial.definitions),
+    catalog: { source: 'mcp' },
+    execute: (action, context) =>
+      current ? current.execute(action, context) : Promise.reject(notRunning()),
+    verify: async () => ({
+      decision: 'unsupported',
+      reason: 'MCP has no general effect verification protocol; unknown calls are not replayed',
+    }),
+    health: async () =>
+      current
+        ? current.health()
+        : {
+            status: 'failing',
+            detail: 'MCP server is not running',
+            checked_at: new Date().toISOString(),
+          },
     async reconnect() {
       if (closed) throw new Error('MCP worker is closed');
       reopening ??= (async () => {
-        await current.close();
+        const previous = current;
+        current = undefined;
+        await previous?.close();
         if (options.transport && !options.transportFactory)
           throw new Error('MCP test transport has no reconnect factory');
         const next = await openMcpSession(input, binding, { ...options, transport: undefined });
@@ -140,23 +189,65 @@ export async function openMcpWorker(
     async close() {
       closed = true;
       await reopening?.catch(() => {});
-      await current.close();
+      await current?.close();
     },
   };
+}
+
+/** The broker's tools, built only from the policy's names and the server's schemas for them. */
+function policyTools(config: McpServerConfig, discovered: Map<string, McpToolDefinition>) {
+  const healthNotes: string[] = [];
+  const rawNames = new Map<string, string>();
+  const definitions: McpToolDefinition[] = [];
+  const tools = config.tools
+    .flatMap((policy) => {
+      const definition = discovered.get(policy.name);
+      if (!definition) throw new Error(`Configured MCP tool is unavailable: ${policy.name}`);
+      definitions.push(definition);
+      const name = `mcp_${config.id}.${policy.alias}`;
+      const inputSchema = {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        ...definition.inputSchema,
+      };
+      if (!toolSchemaFits(inputSchema)) {
+        healthNotes.push(`${policy.name}: schema exceeds ${MAX_TOOL_SCHEMA_BYTES} UTF-8 bytes`);
+        return [];
+      }
+      rawNames.set(name, policy.name);
+      return connectorTool.parse({
+        name,
+        description:
+          (definition.description ?? policy.name).replace(/\s+/g, ' ').trim().slice(0, 400) ||
+          policy.name,
+        // MCP's unspecified dialect is 2020-12. Preserve it explicitly for the
+        // broker so newer constraints cannot be silently treated as draft-07.
+        input_schema: inputSchema,
+        effect_class: policy.effect_class,
+        required_scopes: [...new Set(policy.required_scopes)].sort(),
+        requires_approval: policy.effect_class !== 'read',
+        verify: false,
+      });
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  definitions.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  return { tools, definitions, rawNames, healthNotes };
 }
 
 async function openMcpSession(
   input: McpServerConfig,
   binding: { connectionId: string; spaceId: string },
   options: McpWorkerOptions,
-): Promise<Omit<McpWorker, 'reconnect'>> {
+): Promise<McpSession> {
   const config = mcpServerConfig.parse(input);
   const transport =
     options.transport ??
     (await options.transportFactory?.()) ??
     (config.endpoint.transport === 'stdio'
       ? await openStdioMcpTransport(config.endpoint, options)
-      : openHttpMcpTransport(config.endpoint, options));
+      : config.endpoint.transport === 'http'
+        ? openHttpMcpTransport(config.endpoint, options)
+        : undefined);
+  if (!transport) throw new Error('A container MCP server needs its isolating launcher');
   try {
     const initialized = jsonObject.parse(
       await transport.request('initialize', {
@@ -171,7 +262,7 @@ async function openMcpSession(
     const capabilities = jsonObject.parse(initialized.capabilities);
     if (!capabilities.tools) throw new Error('MCP server does not expose tools');
     await transport.notify('notifications/initialized');
-    const discovered = new Map<string, z.infer<typeof serverTool>>();
+    const discovered = new Map<string, McpToolDefinition>();
     const cursors = new Set<string>();
     let cursor: string | undefined;
     for (let pageNumber = 0; ; pageNumber++) {
@@ -187,41 +278,12 @@ async function openMcpSession(
       if (cursors.has(cursor)) throw new Error('Repeated MCP pagination cursor');
       cursors.add(cursor);
     }
-    const healthNotes: string[] = [];
-    const rawNames = new Map<string, string>();
-    const tools = config.tools
-      .flatMap((policy) => {
-        const definition = discovered.get(policy.name);
-        if (!definition) throw new Error(`Configured MCP tool is unavailable: ${policy.name}`);
-        const name = `mcp_${config.id}.${policy.alias}`;
-        const inputSchema = {
-          $schema: 'https://json-schema.org/draft/2020-12/schema',
-          ...definition.inputSchema,
-        };
-        if (!toolSchemaFits(inputSchema)) {
-          healthNotes.push(`${policy.name}: schema exceeds ${MAX_TOOL_SCHEMA_BYTES} UTF-8 bytes`);
-          return [];
-        }
-        rawNames.set(name, policy.name);
-        return connectorTool.parse({
-          name,
-          description:
-            (definition.description ?? policy.name).replace(/\s+/g, ' ').trim().slice(0, 400) ||
-            policy.name,
-          // MCP's unspecified dialect is 2020-12. Preserve it explicitly for the
-          // broker so newer constraints cannot be silently treated as draft-07.
-          input_schema: inputSchema,
-          effect_class: policy.effect_class,
-          required_scopes: [...new Set(policy.required_scopes)].sort(),
-          requires_approval: policy.effect_class !== 'read',
-          verify: false,
-        });
-      })
-      .sort((a, b) => a.name.localeCompare(b.name, 'en'));
+    const { tools, definitions, rawNames, healthNotes } = policyTools(config, discovered);
     // A caller receives a copy; mutating presentation cannot alter execution policy.
     const authoritative = new Map(tools.map((tool) => [tool.name, structuredClone(tool)]));
     return {
       tools,
+      definitions,
       catalog: { source: 'mcp' },
       async execute(action, context) {
         const tool = authoritative.get(action.kind);
