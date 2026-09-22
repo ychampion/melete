@@ -9,7 +9,7 @@ import {
   createBrowserEgress,
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
-import { handbackLabel, withoutValues } from './redact.ts';
+import { handbackLabel, handbackUrl, withoutValues } from './redact.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
@@ -59,20 +59,6 @@ function sorted(value: unknown): unknown {
   return typeof value === 'string' ? value.trim() : value;
 }
 const hash = (value: unknown) => digest(JSON.stringify(sorted(value)));
-
-/** Scheme, host and path only: a query or fragment can carry a code the person was just sent. */
-function withoutQuery(value: string): string {
-  try {
-    const url = new URL(value);
-    url.search = '';
-    url.hash = '';
-    url.username = '';
-    url.password = '';
-    return url.href;
-  } catch {
-    return '';
-  }
-}
 
 export const browserSubmitIntent = z.strictObject({
   url: z.string().url(),
@@ -416,7 +402,7 @@ export class BrowserController {
       control_epoch: epoch,
       observation: {
         id: `obs_${randomUUID()}`,
-        url: handedBack ? withoutQuery(page.url()) : page.url(),
+        url: handedBack ? handbackUrl(page.url()) : page.url(),
         schema: handedBack
           ? schema.map((control) => ({ ...control, label: handbackLabel(control.label) }))
           : schema,

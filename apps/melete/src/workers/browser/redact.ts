@@ -9,8 +9,13 @@ const STANDALONE_DIGITS = /(?<![\w.,-])\d{6,10}(?![\w-]|[.,]\d)/g;
 const BASE32_SEED = /\b[A-Z2-7]{16,}={0,6}\b/g;
 /** The same seed in lower or mixed case, told apart from a long word by carrying a digit. */
 const MIXED_SEED = /\b(?=[A-Za-z2-7]*[2-7])(?=[A-Za-z2-7]*[A-Za-z])[A-Za-z2-7]{16,}={0,6}\b/g;
-/** On a handed-back page a run of four digits or more in a control's name may be a code. */
-const DIGIT_RUN = /\d{4,}/g;
+/**
+ * On a handed-back page four digits or more in a control's name may be a code, however a site
+ * spaces them: `48213`, `482 913`, `482-913`, `4 8 2 1 3`.
+ */
+const DIGIT_RUN = /\d(?:[\s-]?\d){3,}/g;
+/** A path segment long enough to be a token and mixing letters with digits. */
+const PATH_TOKEN = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9._~-]{16,}$/;
 /** A JSON web token, with or without the bearer word in front of it. */
 const TOKEN = /\b(?:Bearer\s+)?eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?/g;
 
@@ -78,6 +83,34 @@ const ENTRY = /^(\s*- )('?)([a-z]+)(?: "((?:[^"\\]|\\.)*)")?(.*)$/;
  */
 export function handbackLabel(label: string): string {
   return patterns(label).replace(DIGIT_RUN, REDACTED);
+}
+
+/**
+ * Where a handed-back page is, as the agent may see it: scheme, host and a path whose segments
+ * went through the same filter as a control's name, with no query, fragment or credentials. A
+ * magic link or a reset code can sit in a path segment as easily as in a query.
+ */
+export function handbackUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return '';
+  }
+  const path = url.pathname
+    .split('/')
+    .map((segment) => {
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        return encodeURIComponent(REDACTED);
+      }
+      const kept = PATH_TOKEN.test(segment) ? REDACTED : handbackLabel(decoded);
+      return kept === decoded ? segment : encodeURIComponent(kept);
+    })
+    .join('/');
+  return `${url.protocol}//${url.host}${path}`;
 }
 
 /**

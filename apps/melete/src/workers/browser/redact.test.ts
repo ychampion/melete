@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { handbackLabel, REDACTED, redactSecretText, withoutValues } from './redact.ts';
+import { handbackLabel, handbackUrl, REDACTED, redactSecretText, withoutValues } from './redact.ts';
 
 /** How a page shows a person a secret, in the shapes a real sign-in uses. */
 const SHOWN = [
@@ -177,4 +177,38 @@ test('a control label on a handed-back page loses seeds, codes and digit runs', 
   expect(handbackLabel('Recovery ABCD-EFGH-IJKL')).toBe(`Recovery ${REDACTED}`);
   for (const kept of ['Continue', 'Sign out', 'Page 2 of 3', 'internationalization settings'])
     expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
+});
+
+test('a code in a control label is caught however the site spaces its digits', () => {
+  for (const [label, kept] of [
+    ['Use 482 913', 'Use '],
+    ['Use 482-913', 'Use '],
+    ['Code 4 8 2 1 3', 'Code '],
+    ['Code 12 34 56', 'Code '],
+    ['Copy 48213', 'Copy '],
+  ] as const)
+    expect([label, handbackLabel(label)]).toEqual([label, `${kept}${REDACTED}`]);
+  for (const kept of ['Step 2 of 3', 'Top 10 results', 'Call 911'])
+    expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
+});
+
+test('a handed-back URL keeps its host and path shape and loses what could be a code', () => {
+  const redacted = encodeURIComponent(REDACTED);
+  for (const [url, seen] of [
+    ['https://id.example.com/account?ticket=abc#done', 'https://id.example.com/account'],
+    ['https://user:pw@example.com/settings/profile', 'https://example.com/settings/profile'],
+    ['https://example.com/reset/482913', `https://example.com/reset/${redacted}`],
+    ['https://example.com/verify/482-913/', `https://example.com/verify/${redacted}/`],
+    ['https://example.com/totp/JBSWY3DPEHPK3PXP', `https://example.com/totp/${redacted}`],
+    ['https://example.com/confirm/abcd-efgh-ijkl', `https://example.com/confirm/${redacted}`],
+    [
+      'https://example.com/magic/f3a9c2e8b7d14a6c9e0f1a2b3c4d5e6f',
+      `https://example.com/magic/${redacted}`,
+    ],
+    ['https://example.com/help/getting-started', 'https://example.com/help/getting-started'],
+    ['https://example.com/orders/page-2', 'https://example.com/orders/page-2'],
+    ['http://127.0.0.1:3130/verify', 'http://127.0.0.1:3130/verify'],
+  ] as const)
+    expect([url, handbackUrl(url)]).toEqual([url, seen]);
+  expect(handbackUrl('not a url')).toBe('');
 });
