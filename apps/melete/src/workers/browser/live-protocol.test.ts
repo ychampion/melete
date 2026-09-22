@@ -3,6 +3,8 @@ import * as contracts from '@melete/contracts';
 import { z } from 'zod';
 import {
   hostOf,
+  LIVE_FOLLOW_SITES_PER_ACTION,
+  LIVE_FOLLOW_WINDOW_MS,
   LIVE_LIMITS,
   LIVE_VIEWPORT,
   LiveFrameBudget,
@@ -10,6 +12,7 @@ import {
   LiveInputLimiter,
   LiveNetworkBudget,
   LiveSiteScope,
+  liveAction,
   liveInput,
   liveUp,
   siteOf,
@@ -33,7 +36,8 @@ describe('live site scope', () => {
     expect(scope.list()).toEqual(['example.com']);
     expect(scope.admits('login.example.com')).toBe(true);
 
-    // The sign-in form redirects to an identity provider on another site.
+    // The person presses sign in, and the form redirects to an identity provider on another site.
+    scope.acted();
     expect(
       scope.follow('https://auth.idp-example.net/authorize?x=1', 'https://www.example.com/login'),
     ).toBe('admitted');
@@ -78,10 +82,13 @@ describe('live site scope', () => {
 
   test('additions stop at twelve sites and the floor is never dropped', () => {
     const scope = new LiveSiteScope(['start.example'], 'https://start.example/');
-    for (let index = 1; index < 12; index++)
+    for (let index = 1; index < 12; index++) {
+      if ((index - 1) % LIVE_FOLLOW_SITES_PER_ACTION === 0) scope.acted();
       expect(scope.follow(`https://site${index}.example/`, 'https://start.example/')).toBe(
         'admitted',
       );
+    }
+    scope.acted();
     expect(scope.list()).toHaveLength(12);
     expect(scope.follow('https://site12.example/', 'https://start.example/')).toBe('scope_full');
     expect(scope.allow('site12.example')).toBe('scope_full');
@@ -92,6 +99,65 @@ describe('live site scope', () => {
     );
     expect(wide.list()).toHaveLength(21);
     expect(wide.allow('another.example')).toBe('scope_full');
+  });
+
+  test('a page cannot walk the person to new sites without them acting', () => {
+    const time = clock();
+    const scope = new LiveSiteScope(['bank.example'], 'https://bank.example/', 12, time.now);
+    // Page-initiated navigations with nobody pressing anything add nothing.
+    expect(scope.follow('https://attacker0.example/', 'https://bank.example/')).toBe('off_scope');
+    expect(scope.list()).toEqual(['bank.example']);
+
+    // One action lets the page lead on to a few sites, then the chain stops.
+    scope.acted();
+    let from = 'https://bank.example/';
+    const walked: string[] = [];
+    for (let hop = 0; hop < 11; hop++) {
+      const to = `https://attacker${hop}.example/`;
+      if (scope.follow(to, from) !== 'admitted') break;
+      walked.push(to);
+      from = to;
+    }
+    expect(walked).toHaveLength(LIVE_FOLLOW_SITES_PER_ACTION);
+    expect(scope.list()).toHaveLength(1 + LIVE_FOLLOW_SITES_PER_ACTION);
+
+    // Sites already reached, and the person's own allow, are unaffected.
+    expect(scope.follow('https://bank.example/home', from)).toBe('in_scope');
+    expect(scope.allow('chosen.example')).toBe('admitted');
+
+    // An action's reach runs out with time, whatever it had left.
+    scope.acted();
+    time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
+    expect(scope.follow('https://late.example/', 'https://bank.example/')).toBe('off_scope');
+    scope.acted();
+    expect(scope.follow('https://late.example/', 'https://bank.example/')).toBe('admitted');
+  });
+
+  test('pressing, touching and typing are actions; pointing and scrolling are not', () => {
+    const at = { x: 10, y: 10, button: 0, mods: 0, clicks: 1 } as const;
+    const key = { k: 'key', key: 'Enter', code: 'Enter', vk: 13, mods: 0 } as const;
+    expect(
+      (
+        [
+          { k: 'down', ...at },
+          { ...key, down: true },
+          { k: 'text', text: 'a' },
+          { k: 'touch', phase: 'start', points: [{ id: 0, x: 1, y: 1 }] },
+        ] as LiveInput[]
+      ).map(liveAction),
+    ).toEqual([true, true, true, true]);
+    expect(
+      (
+        [
+          move,
+          { k: 'up', ...at },
+          { k: 'wheel', x: 1, y: 1, dx: 0, dy: 10, mods: 0 },
+          { ...key, down: false },
+          { k: 'touch', phase: 'move', points: [{ id: 0, x: 2, y: 2 }] },
+          { k: 'touch', phase: 'end', points: [] },
+        ] as LiveInput[]
+      ).map(liveAction),
+    ).toEqual([false, false, false, false, false, false]);
   });
 
   test('an allowed host must be a bare host name', () => {

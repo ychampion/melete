@@ -15,6 +15,7 @@ import {
   type LiveNoticeCode,
   type LiveOpen,
   LiveSiteScope,
+  liveAction,
 } from './live-protocol.ts';
 import {
   type BrowserControlChange,
@@ -177,6 +178,7 @@ export class BrowserLive {
         sessions.policy.allowed_domains,
         page.url(),
         this.limits.site_scope_hosts,
+        this.now,
       ),
       limiter: new LiveInputLimiter(this.now),
       main: page,
@@ -265,6 +267,7 @@ export class BrowserLive {
         await channel.switching;
         const screen = channel.screen;
         if (channel.ended || !screen) throw new BrowserFault('live_closed');
+        if (liveAction(event)) channel.scope.acted();
         try {
           await this.host.sessions.dispatchHumanInput(channel.sessionId, channel.epoch, () =>
             this.dispatch(channel, screen.cdp, event),

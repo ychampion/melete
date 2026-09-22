@@ -712,10 +712,13 @@ test('real Node relay pins the destination while retaining Host, query, request 
 
 function humanWindow(allowed: string[], page: string, scopeLimit?: number) {
   const notices: Array<{ code: LiveNoticeCode; host?: string }> = [];
+  const scope = new LiveSiteScope(allowed, page, scopeLimit);
+  // The person has just pressed something, which is what lets a page lead them to a new site.
+  scope.acted();
   return {
     notices,
     window: {
-      scope: new LiveSiteScope(allowed, page, scopeLimit),
+      scope,
       budget: new LiveNetworkBudget(),
       redirectHops: 20,
       notice: (code: LiveNoticeCode, host?: string) => {
