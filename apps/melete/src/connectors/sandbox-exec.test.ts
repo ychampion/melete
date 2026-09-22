@@ -224,6 +224,9 @@ withDb('a command in a remote sandbox', () => {
 
   test("a remote command's digest is verified because the service wrote the file", async () => {
     const { scope, run } = await setup();
+    const slow = await run({ command: 'printf started; sleep 5; printf never', timeout_ms: 1_000 });
+    if (slow.result.outcome !== 'succeeded') throw new Error(JSON.stringify(slow.result));
+    expect(slow.result.receipt.detail).toMatchObject({ timed_out: true, output: 'started' });
     const size = 70_000;
     const { action, result } = await run({ command: `head -c ${size} /dev/zero` });
     if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
