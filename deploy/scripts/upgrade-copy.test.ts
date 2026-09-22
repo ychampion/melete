@@ -114,7 +114,8 @@ describe('the release a copy was taken from', () => {
       await writeFile(join(repository, 'CHANGES'), 'second\n');
       git(repository, 'add', '.');
       git(repository, 'commit', '-q', '-m', 'second');
-      git(repository, 'tag', 'v1.1.0');
+      // Releases are annotated tags: the stamp is the commit the tag object points at.
+      git(repository, 'tag', '-a', 'v1.1.0', '-m', 'release');
       git(repository, 'checkout', '-q', 'v1.0.0');
       const commit = (tag: string) => git(repository, 'rev-parse', `${tag}^{commit}`);
       const copyOf = async (tag: string) => {
