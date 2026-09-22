@@ -12,7 +12,14 @@ import { constants } from 'node:fs';
 import { access, lstat, mkdir, realpath, rm } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { initSpace } from '@melete/knowledge';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
+
+/**
+ * Run first inside each destructive transaction, and throws when the run that
+ * asked no longer holds the removal. Holding the removal row for the rest of
+ * the transaction is what keeps a second run out until this one commits.
+ */
+export type LeaseHold = (tx: TransactionSql) => Promise<void>;
 
 export type SpaceRoots = { spacesRoot: string; workRoot: string };
 
@@ -31,8 +38,14 @@ export type SpaceRoots = { spacesRoot: string; workRoot: string };
  * removed, so clearing the selection is the whole of it: the next request
  * resolves the same space again.
  */
-export async function endSpaceAccess(raw: Sql, spaceId: string, emptied: boolean): Promise<void> {
+export async function endSpaceAccess(
+  raw: Sql,
+  spaceId: string,
+  emptied: boolean,
+  hold?: LeaseHold,
+): Promise<void> {
   await raw.begin(async (tx) => {
+    await hold?.(tx);
     await tx`update session set space_id = null, membership_generation = null
       where space_id = ${spaceId}`;
     if (!emptied)
@@ -56,8 +69,10 @@ export async function sweepOperational(
   raw: Sql,
   spaceId: string,
   jobIds: readonly string[],
+  hold?: LeaseHold,
 ): Promise<void> {
   await raw.begin(async (tx) => {
+    await hold?.(tx);
     const ids = [...jobIds];
     if (ids.length) {
       await tx`delete from submission where job_id = any(${ids})`;
@@ -110,8 +125,9 @@ const SPACE_KEYED_OPERATIONAL = [
  * and actions are already gone, so an agent and a connection can finally go.
  * A secret goes last because a connection points at one.
  */
-export async function sweepPrincipals(raw: Sql, spaceId: string): Promise<void> {
+export async function sweepPrincipals(raw: Sql, spaceId: string, hold?: LeaseHold): Promise<void> {
   await raw.begin(async (tx) => {
+    await hold?.(tx);
     await tx`delete from agent where space_id = ${spaceId}`;
     await tx`delete from connection where space_id = ${spaceId}`;
     await tx`delete from secret where space_id = ${spaceId}`;
@@ -123,8 +139,9 @@ export async function sweepPrincipals(raw: Sql, spaceId: string): Promise<void> 
  * table is named. Tables whose only key is their parent's are deleted through
  * it, before the parent.
  */
-export async function sweepMemory(raw: Sql, spaceId: string): Promise<void> {
+export async function sweepMemory(raw: Sql, spaceId: string, hold?: LeaseHold): Promise<void> {
   await raw.begin(async (tx) => {
+    await hold?.(tx);
     await tx`delete from memory_output_uses where output_row_id in
       (select id from memory_outputs where space_id = ${spaceId})`;
     await tx`delete from memory_references where claim_id in

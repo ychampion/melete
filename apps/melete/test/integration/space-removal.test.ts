@@ -77,6 +77,7 @@ type Overrides = {
   runtimeHomes?: RuntimeHomeTeardown;
   onPhase?: (removalId: string, phase: RemovalPhase) => void;
   connectors?: ConnectorRegistry;
+  leaseMs?: number;
 };
 
 async function service(overrides: Overrides = {}) {
@@ -89,7 +90,7 @@ async function service(overrides: Overrides = {}) {
     jobs: new JobService(handle.db, {} as PgBoss),
     journal: overrides.journal ?? (await newJournal()),
     roots: { spacesRoot, workRoot },
-    leaseMs: 5_000,
+    leaseMs: overrides.leaseMs ?? 5_000,
     ...(overrides.sandboxes ? { sandboxes: overrides.sandboxes } : {}),
     ...(overrides.browser ? { browser: overrides.browser } : {}),
     ...(overrides.runtimeHomes ? { runtimeHomes: overrides.runtimeHomes } : {}),
@@ -797,6 +798,75 @@ describe.if(handle !== null)('removing a space', () => {
     const finished = resumed.find((row) => row.id === fenced.id);
     expect(outcome(finished)).toBe('complete');
     expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
+  });
+
+  /** A provider whose first teardown takes longer than a lease, as a slow network does. */
+  const slowSandboxes = (ms: number): SandboxTeardown => {
+    let calls = 0;
+    return {
+      providerFor: () => ({}),
+      destroyWorkspacesForSpace: async () => {
+        calls += 1;
+        if (calls === 1) await Bun.sleep(ms);
+        return { closed: [], snapshotsDeleted: [] };
+      },
+      listWorkspacesForSpace: async () => ({ sessions: [], snapshots: [] }),
+    };
+  };
+
+  test('a_slow_phase_keeps_its_lease — no second run starts, and what the person makes afterwards stays', async () => {
+    const seeded = await seed('personal');
+    const first = await service({ sandboxes: slowSandboxes(2_500), leaseMs: 500 });
+    const fenced = await first.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const running = first.run(fenced.id);
+    await Bun.sleep(900);
+
+    // Well past the lease, the phase is still going. Another process finds it
+    // held, and this one leaves it to the run it already has.
+    const other = await service({ leaseMs: 500 });
+    const rival = await other.resume();
+    expect(rival.map((row) => row.id)).toEqual([fenced.id]);
+    expect(rival[0]?.state).toBe('running');
+    expect(await first.resume()).toEqual([]);
+
+    const finished = await running;
+    expect(outcome(finished)).toBe('complete');
+    expect(finished.attempts).toBe(1);
+
+    // The space is open again and the person uses it. Nothing is still
+    // running that could take that away.
+    const kept = `job_${crypto.randomUUID()}`;
+    await sql`insert into job (id, space_id, title, principal_id, objective, state)
+      values (${kept}, ${seeded.spaceId}, 'New work', ${seeded.principalId}, 'After emptying', 'queued')`;
+    await Bun.sleep(600);
+    expect(await other.resume()).toEqual([]);
+    expect(await countOf(sql, 'job', sql`id = ${kept}`)).toBe(1);
+  });
+
+  test('a_run_that_loses_its_lease_stops — and writes nothing after', async () => {
+    const seeded = await seed('shared');
+    const first = await service({ sandboxes: slowSandboxes(1_500), leaseMs: 300 });
+    const fenced = await first.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const running = first.run(fenced.id);
+    await Bun.sleep(400);
+    // Another run has taken it, as one would after this process stalled.
+    await sql`update space_removal set lease_owner = 'rem_rival',
+      lease_expires_at = now() + interval '1 hour' where id = ${fenced.id}`;
+
+    const stopped = await running;
+    expect(stopped.leaseOwner).toBe('rem_rival');
+    expect(stopped.state).toBe('running');
+    expect(stopped.phase).toBe('sandboxes');
+    // Nothing after the phase it was in: the files, the rows and the space
+    // are all still there for the run that holds it.
+    expect(await exists(join(spacesRoot, seeded.spaceId))).toBe(true);
+    expect(await countOf(sql, 'job', sql`space_id = ${seeded.spaceId}`)).toBeGreaterThan(0);
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
+
+    // When that run's lease lapses in turn, the removal is finished from here.
+    await sql`update space_removal set lease_expires_at = now() - interval '1 second'
+      where id = ${fenced.id}`;
+    expect(outcome(await (await service()).run(fenced.id))).toBe('complete');
   });
 
   // ------------------------------------------------------------------

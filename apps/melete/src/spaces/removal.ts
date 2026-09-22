@@ -39,6 +39,7 @@ import { appendRemovalRecord } from './journal.ts';
 import {
   clearSpaceFiles,
   endSpaceAccess,
+  type LeaseHold,
   sweepMemory,
   sweepOperational,
   sweepPrincipals,
@@ -167,10 +168,17 @@ export function removalView(row: SpaceRemovalRow): SpaceRemoval {
   });
 }
 
+/** The run that asked no longer holds the removal: another run has it now. */
+class LeaseLost extends Error {
+  constructor() {
+    super('another run holds this removal now');
+  }
+}
+
 export class SpaceRemovalService {
   private readonly leaseMs: number;
   private timer?: ReturnType<typeof setInterval>;
-  private readonly instance = newId('rem');
+  private resuming?: Promise<unknown>;
   private readonly inFlight = new Map<string, Promise<SpaceRemovalRow>>();
 
   constructor(readonly deps: RemovalDeps) {
@@ -183,26 +191,23 @@ export class SpaceRemovalService {
    * long as it takes, and survives this process either way.
    */
   dispatch(removalId: string, signal?: AbortSignal): void {
-    if (this.inFlight.has(removalId)) return;
-    const running = this.run(removalId, signal)
-      .catch((error) => {
-        process.stderr.write(`space removal failed: ${describe(error)}\n`);
-        return this.byId(removalId).then((row) => {
-          if (!row) throw error;
-          return row;
-        });
-      })
-      .finally(() => this.inFlight.delete(removalId));
-    this.inFlight.set(removalId, running);
+    void this.run(removalId, signal).catch((error) => {
+      process.stderr.write(`space removal failed: ${describe(error)}\n`);
+    });
   }
 
   /** The sweep this process is running for a removal, if it is running one. */
   settled(removalId: string): Promise<SpaceRemovalRow | undefined> {
-    return this.inFlight.get(removalId) ?? this.byId(removalId);
+    const running = this.inFlight.get(removalId);
+    return running ? running.catch(() => this.byId(removalId)) : this.byId(removalId);
   }
 
-  /** Let the sweeps this process started finish before it goes away. */
+  /**
+   * Let the sweeps this process is running finish before it goes away: the
+   * ones a request started and the ones the timer picked up.
+   */
   async drain(): Promise<void> {
+    await this.resuming;
     await Promise.allSettled([...this.inFlight.values()]);
   }
 
@@ -348,14 +353,59 @@ export class SpaceRemovalService {
    * Phases 2 to 11. Each phase is recorded before it starts and its result is
    * committed before the next one begins, so a crash resumes at a boundary and
    * repeats at most one phase.
+   *
+   * One run per removal in this process: asking while one runs is handed that
+   * run. Across processes the lease decides, and it is renewed while a phase
+   * takes its time rather than only between phases.
    */
-  async run(removalId: string, signal?: AbortSignal): Promise<SpaceRemovalRow> {
-    const claimed = await this.claim(removalId);
+  run(removalId: string, signal?: AbortSignal): Promise<SpaceRemovalRow> {
+    const running = this.inFlight.get(removalId);
+    if (running) return running;
+    const started = this.sweep(removalId, signal).finally(() => this.inFlight.delete(removalId));
+    this.inFlight.set(removalId, started);
+    return started;
+  }
+
+  private async sweep(removalId: string, signal?: AbortSignal): Promise<SpaceRemovalRow> {
+    // The run's own name for the lease, not the process's: two runs in one
+    // process are as much rivals as two runs in two.
+    const token = newId('rem');
+    const claimed = await this.claim(removalId, token);
     if (!claimed) {
       const row = await this.byId(removalId);
       if (!row) throw new ServiceError('not_found', 'Removal not found.', 404);
       return row;
     }
+    const lost = new AbortController();
+    const beat = setInterval(
+      () => {
+        void this.renew(removalId, token).then(
+          (held) => {
+            if (!held) lost.abort();
+          },
+          () => undefined,
+        );
+      },
+      Math.max(25, Math.floor(this.leaseMs / 3)),
+    );
+    try {
+      return await this.sweepHeld(claimed, token, lost.signal, signal);
+    } catch (error) {
+      // Another run has the removal now. This one stops where it is and writes
+      // nothing more: whatever it would have written is that run's to write.
+      if (error instanceof LeaseLost) return (await this.byId(removalId)) ?? claimed;
+      throw error;
+    } finally {
+      clearInterval(beat);
+    }
+  }
+
+  private async sweepHeld(
+    claimed: SpaceRemovalRow,
+    token: string,
+    lost: AbortSignal,
+    signal?: AbortSignal,
+  ): Promise<SpaceRemovalRow> {
     let row = claimed;
     // A removal the verification stopped goes round the whole sweep again
     // rather than asking the same question twice: what it found may be a row
@@ -366,36 +416,43 @@ export class SpaceRemovalService {
     const started = SWEEP.indexOf(from);
     const remaining = SWEEP.slice(started < 0 ? 0 : started);
     let counts: RemovalCounts = removalCounts.parse(row.counts ?? {});
+    const phaseSignal = signal ? AbortSignal.any([signal, lost]) : lost;
     for (const phase of remaining) {
-      if (signal?.aborted) return this.release(row.id);
-      row = await this.enter(row.id, phase);
+      if (lost.aborted) throw new LeaseLost();
+      if (signal?.aborted) return this.release(row.id, token);
+      row = await this.enter(row.id, token, phase);
       this.deps.onPhase?.(row.id, phase);
       try {
-        counts = await this.perform(row, phase, counts, signal);
+        counts = await this.perform(row, token, phase, counts, phaseSignal);
       } catch (error) {
-        return this.block(row.id, phase, counts, describe(error));
+        if (error instanceof LeaseLost || lost.aborted) throw new LeaseLost();
+        return this.block(row.id, token, phase, counts, describe(error));
       }
       if (phase === 'verify' && !removalIsClear(counts))
-        return this.block(row.id, phase, counts, unclearReason(counts));
-      await this.record(row.id, counts);
+        return this.block(row.id, token, phase, counts, unclearReason(counts));
+      await this.record(row.id, token, counts);
     }
-    return this.finish(row.id, counts);
+    return this.finish(row.id, token, counts);
   }
 
   /** One phase. Every branch is safe to run twice. */
   private async perform(
     row: SpaceRemovalRow,
+    token: string,
     phase: RemovalPhase,
     counts: RemovalCounts,
     signal?: AbortSignal,
   ): Promise<RemovalCounts> {
     const { sql: raw, roots } = this.deps;
     const emptied = row.kind === 'emptied';
+    // Every destructive transaction starts by holding the removal for this
+    // run; a run that has lost it deletes nothing more.
+    const hold = this.holdFor(row.id, token);
     switch (phase) {
       case 'sessions':
         // Access to the space ends before anything in it is destroyed, and
         // nobody is signed out of their account to achieve it.
-        await endSpaceAccess(raw, row.spaceId, emptied);
+        await endSpaceAccess(raw, row.spaceId, emptied, hold);
         return counts;
       case 'journal':
         // Before any data goes, and retained apart from database snapshots, so
@@ -409,8 +466,11 @@ export class SpaceRemovalService {
       case 'runtime':
         return this.tearDownRuntimeHomes(row, counts, signal);
       case 'files':
-        // The worker holding the profile has exited by now: on Windows the
-        // directory cannot be removed while Chromium has it open.
+        // Files cannot be held inside a transaction, so the lease is asked for
+        // just before they go. The worker holding the profile has exited by
+        // now: on Windows the directory cannot be removed while Chromium has
+        // it open.
+        await raw.begin(hold);
         await clearSpaceFiles(
           { spacesRoot: roots.spacesRoot, workRoot: roots.workRoot },
           row.spaceId,
@@ -424,7 +484,7 @@ export class SpaceRemovalService {
         );
         return counts;
       case 'operational':
-        await sweepOperational(raw, row.spaceId, row.jobIds);
+        await sweepOperational(raw, row.spaceId, row.jobIds, hold);
         return counts;
       case 'principals':
         // The registry stops answering for these connections before their rows
@@ -432,10 +492,10 @@ export class SpaceRemovalService {
         // halfway gone. Recreating one is refused separately, by the removal
         // stamp the default-connection query reads.
         await this.releaseConnectors(row.connectionIds);
-        await sweepPrincipals(raw, row.spaceId);
+        await sweepPrincipals(raw, row.spaceId, hold);
         return counts;
       case 'memory':
-        await sweepMemory(raw, row.spaceId);
+        await sweepMemory(raw, row.spaceId, hold);
         return counts;
       case 'verify':
         return verifyRemoval(raw, {
@@ -455,12 +515,19 @@ export class SpaceRemovalService {
       case 'space':
         if (emptied) {
           // The row, its id and its membership stay; the space is present and
-          // empty, and usable again from the next request.
-          await raw`update space set removed_at = null where id = ${row.spaceId}`;
+          // empty, and usable again from the next request. Reopening it is the
+          // one write a run that has lost the lease must never make.
+          await raw.begin(async (tx) => {
+            await hold(tx);
+            await tx`update space set removed_at = null where id = ${row.spaceId}`;
+          });
           return counts;
         }
-        await raw`delete from space_membership where space_id = ${row.spaceId}`;
-        await raw`delete from space where id = ${row.spaceId}`;
+        await raw.begin(async (tx) => {
+          await hold(tx);
+          await tx`delete from space_membership where space_id = ${row.spaceId}`;
+          await tx`delete from space where id = ${row.spaceId}`;
+        });
         // Checked after the fact and folded into the same counts, so the one
         // rule that lets a removal finish covers the space row too.
         return {
@@ -565,14 +632,15 @@ export class SpaceRemovalService {
 
   /**
    * Take the removal, or leave it to whoever holds it. A lease that has expired
-   * is free: the process that held it is gone and its phase was committed.
+   * is free: the run that held it is gone, or stalled for longer than its
+   * heartbeat, and its last phase was committed.
    */
-  private async claim(removalId: string): Promise<SpaceRemovalRow | undefined> {
+  private async claim(removalId: string, token: string): Promise<SpaceRemovalRow | undefined> {
     const [row] = await this.deps.db
       .update(spaceRemoval)
       .set({
         state: 'running',
-        leaseOwner: this.instance,
+        leaseOwner: token,
         leaseExpiresAt: new Date(Date.now() + this.leaseMs),
         attempts: sql`${spaceRemoval.attempts} + 1`,
         blockedReason: null,
@@ -581,87 +649,107 @@ export class SpaceRemovalService {
         and(
           eq(spaceRemoval.id, removalId),
           ne(spaceRemoval.state, 'complete'),
-          or(
-            isNull(spaceRemoval.leaseExpiresAt),
-            sql`${spaceRemoval.leaseExpiresAt} < now()`,
-            eq(spaceRemoval.leaseOwner, this.instance),
-          ),
+          or(isNull(spaceRemoval.leaseExpiresAt), sql`${spaceRemoval.leaseExpiresAt} < now()`),
         ),
       )
       .returning();
     return row;
   }
 
-  private async enter(removalId: string, phase: RemovalPhase): Promise<SpaceRemovalRow> {
+  /** The heartbeat. False once another run has the removal. */
+  private async renew(removalId: string, token: string): Promise<boolean> {
     const [row] = await this.deps.db
       .update(spaceRemoval)
-      .set({ phase, leaseExpiresAt: new Date(Date.now() + this.leaseMs) })
-      .where(eq(spaceRemoval.id, removalId))
+      .set({ leaseExpiresAt: new Date(Date.now() + this.leaseMs) })
+      .where(this.held(removalId, token))
+      .returning({ id: spaceRemoval.id });
+    return row !== undefined;
+  }
+
+  private held(removalId: string, token: string) {
+    return and(eq(spaceRemoval.id, removalId), eq(spaceRemoval.leaseOwner, token));
+  }
+
+  /** The removal row, held for this run for the rest of the caller's transaction. */
+  private holdFor(removalId: string, token: string): LeaseHold {
+    return async (tx) => {
+      const [row] = await tx`select id from space_removal
+        where id = ${removalId} and lease_owner = ${token} for update`;
+      if (!row) throw new LeaseLost();
+    };
+  }
+
+  /** Every write after the claim goes through here, and only while this run holds the lease. */
+  private async write(
+    removalId: string,
+    token: string,
+    values: Partial<typeof spaceRemoval.$inferInsert>,
+  ): Promise<SpaceRemovalRow> {
+    const [row] = await this.deps.db
+      .update(spaceRemoval)
+      .set(values)
+      .where(this.held(removalId, token))
       .returning();
-    if (!row) throw new Error('claimed removal disappeared');
+    if (!row) throw new LeaseLost();
     return row;
   }
 
-  private async record(removalId: string, counts: RemovalCounts): Promise<void> {
-    await this.deps.db
-      .update(spaceRemoval)
-      .set({ counts, leaseExpiresAt: new Date(Date.now() + this.leaseMs) })
-      .where(eq(spaceRemoval.id, removalId));
+  private enter(removalId: string, token: string, phase: RemovalPhase): Promise<SpaceRemovalRow> {
+    return this.write(removalId, token, {
+      phase,
+      leaseExpiresAt: new Date(Date.now() + this.leaseMs),
+    });
   }
 
-  private async block(
+  private async record(removalId: string, token: string, counts: RemovalCounts): Promise<void> {
+    await this.write(removalId, token, {
+      counts,
+      leaseExpiresAt: new Date(Date.now() + this.leaseMs),
+    });
+  }
+
+  private block(
     removalId: string,
+    token: string,
     phase: RemovalPhase,
     counts: RemovalCounts,
     reason: string,
   ): Promise<SpaceRemovalRow> {
-    const [row] = await this.deps.db
-      .update(spaceRemoval)
-      .set({
-        state: 'blocked',
-        phase,
-        counts,
-        blockedReason: reason,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-      })
-      .where(eq(spaceRemoval.id, removalId))
-      .returning();
-    if (!row) throw new Error('claimed removal disappeared');
-    return row;
+    return this.write(removalId, token, {
+      state: 'blocked',
+      phase,
+      counts,
+      blockedReason: reason,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
   }
 
-  private async release(removalId: string): Promise<SpaceRemovalRow> {
-    const [row] = await this.deps.db
-      .update(spaceRemoval)
-      .set({ state: 'pending', leaseOwner: null, leaseExpiresAt: null })
-      .where(and(eq(spaceRemoval.id, removalId), ne(spaceRemoval.state, 'complete')))
-      .returning();
-    if (row) return row;
-    const current = await this.byId(removalId);
-    if (!current) throw new Error('claimed removal disappeared');
-    return current;
+  private release(removalId: string, token: string): Promise<SpaceRemovalRow> {
+    return this.write(removalId, token, {
+      state: 'pending',
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
   }
 
   /** `complete` is written in one place, and only after a clear verification. */
-  private async finish(removalId: string, counts: RemovalCounts): Promise<SpaceRemovalRow> {
+  private finish(
+    removalId: string,
+    token: string,
+    counts: RemovalCounts,
+  ): Promise<SpaceRemovalRow> {
     if (!removalIsClear(counts))
-      return this.block(removalId, 'verify', counts, unclearReason(counts));
-    const [row] = await this.deps.db
-      .update(spaceRemoval)
-      .set({
-        state: 'complete',
-        phase: 'space',
-        counts,
-        blockedReason: null,
-        finishedAt: new Date(),
-        leaseOwner: null,
-        leaseExpiresAt: null,
-      })
-      .where(eq(spaceRemoval.id, removalId))
-      .returning();
-    if (!row) throw new Error('claimed removal disappeared');
-    return row;
+      return this.block(removalId, token, 'verify', counts, unclearReason(counts));
+    return this.write(removalId, token, {
+      state: 'complete',
+      phase: 'space',
+      counts,
+      blockedReason: null,
+      finishedAt: new Date(),
+      leaseOwner: null,
+      leaseExpiresAt: null,
+    });
   }
 
   /**
@@ -683,16 +771,30 @@ export class SpaceRemovalService {
     const finished: SpaceRemovalRow[] = [];
     for (const entry of ready) {
       if (signal?.aborted) break;
+      // One this process is already running is left to that run.
+      if (this.inFlight.has(entry.id)) continue;
       finished.push(await this.run(entry.id, signal));
     }
     return finished;
   }
 
+  /**
+   * Resume now and every lease period after, without holding up whoever
+   * started it: a removal waiting on a provider or a held file can take a
+   * while, and nothing else has to wait for it.
+   */
   start(signal?: AbortSignal): void {
     if (this.timer) return;
-    this.timer = setInterval(() => {
-      void this.resume(signal).catch(() => process.stderr.write('space removal resume failed\n'));
-    }, this.leaseMs);
+    const pass = () => {
+      if (this.resuming) return;
+      this.resuming = this.resume(signal)
+        .catch(() => process.stderr.write('space removal resume failed\n'))
+        .finally(() => {
+          this.resuming = undefined;
+        });
+    };
+    pass();
+    this.timer = setInterval(pass, this.leaseMs);
     this.timer.unref?.();
   }
 
