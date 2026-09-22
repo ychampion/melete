@@ -67,7 +67,13 @@ export type SocketAccess = {
 /** The socket's group as the service will see it, or an error that says why there is none. */
 export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAccess) {
   if (host.platform === 'linux' && !engineElsewhere(host)) {
-    const socket = await access.statHost();
+    const socket = await access.statHost().catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+        throw new ConfigureRefusal(
+          'There is no /var/run/docker.sock on this machine, and the Compose file mounts it into the service. Start Docker Engine, or link its socket to that path.',
+        );
+      throw error;
+    });
     if (!socket.isSocket())
       throw new ConfigureRefusal('/var/run/docker.sock is not a Docker socket');
     return socket.gid;

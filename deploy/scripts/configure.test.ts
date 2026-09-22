@@ -70,6 +70,33 @@ describe('the Docker socket group written as DOCKER_GID', () => {
     expect(linux.calls).toEqual(['stat']);
   });
 
+  test('Docker Engine on Linux with no socket file: one plain refusal, not ENOENT', async () => {
+    const enoent = Object.assign(
+      new Error("ENOENT: no such file or directory, stat '/var/run/docker.sock'"),
+      { code: 'ENOENT' },
+    );
+    const failure = await dockerSocketGroup(host('linux', 'Ubuntu 24.04 LTS'), {
+      ...access(''),
+      statHost: async () => {
+        throw enoent;
+      },
+    }).catch((error: unknown) => error);
+    expect(failureReport(failure)).toEqual({
+      text: 'There is no /var/run/docker.sock on this machine, and the Compose file mounts it into the service. Start Docker Engine, or link its socket to that path.\n',
+      code: 1,
+    });
+    // Any other failure to stat is unexpected and keeps its stack.
+    const denied = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    const other = await dockerSocketGroup(host('linux', 'Ubuntu 24.04 LTS'), {
+      ...access(''),
+      statHost: async () => {
+        throw denied;
+      },
+    }).catch((error: unknown) => error);
+    expect(other).toBe(denied);
+    expect(failureReport(other)).toBeNull();
+  });
+
   test('an engine on another machine: its socket group, measured from a container there', async () => {
     for (const platform of ['linux', 'win32'] as const) {
       const remote = access('998 660 socket\n');
