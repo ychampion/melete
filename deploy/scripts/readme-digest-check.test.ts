@@ -67,7 +67,32 @@ describe('reading the pins', () => {
 
   test('the section ends at the next heading, not at a shell comment', () => {
     const section = removalSection(readme(`docker image rm postgres@sha256:${PINNED}`));
-    expect(quotedImages(section ?? '')).toEqual([{ repository: 'postgres', digest: PINNED }]);
+    expect(quotedImages(section ?? '').references).toEqual([
+      { repository: 'postgres', digest: PINNED },
+    ]);
+  });
+
+  test('a tagged or registry-qualified reference names its whole repository', () => {
+    const { references, unreadable } = quotedImages(
+      [
+        `\`postgres:17-alpine@sha256:${PINNED}\`,`,
+        `localhost:5000/pg@sha256:${PINNED} \\`,
+        `"localhost:5000/pg:16@sha256:${BUMPED}".`,
+      ].join('\n'),
+    );
+    expect(references).toEqual([
+      { repository: 'postgres', digest: PINNED },
+      { repository: 'localhost:5000/pg', digest: PINNED },
+      { repository: 'localhost:5000/pg', digest: BUMPED },
+    ]);
+    expect(unreadable).toEqual([]);
+  });
+
+  test('a token that mentions a digest but does not read as one is kept as unreadable', () => {
+    expect(quotedImages(`postgres@sha256:${'A'.repeat(64)} x@sha256:abc`).unreadable).toEqual([
+      `postgres@sha256:${'A'.repeat(64)}`,
+      'x@sha256:abc',
+    ]);
   });
 });
 
@@ -80,6 +105,40 @@ describe('comparing them', () => {
       removalSection(readme(`docker image rm postgres@sha256:${PINNED}`)),
     );
     expect(results.map((result) => result.ok)).toEqual([true]);
+  });
+
+  test('the tagged form README could quote matches the pin as well', () => {
+    const results = compareDigests(
+      pins,
+      removalSection(readme(`docker image rm postgres:17-alpine@sha256:${PINNED}`)),
+    );
+    expect(results.map((result) => result.ok)).toEqual([true]);
+  });
+
+  test('a registry with a port matches only the pin with the same registry', () => {
+    const local = pinnedImages(compose(`localhost:5000/pg@sha256:${PINNED}`));
+    expect(local[0]?.repository).toBe('localhost:5000/pg');
+    const ok = compareDigests(
+      local,
+      removalSection(readme(`docker image rm localhost:5000/pg:16@sha256:${PINNED}`)),
+    );
+    expect(ok.map((result) => result.ok)).toEqual([true]);
+    const elsewhere = compareDigests(
+      local,
+      removalSection(readme(`docker image rm pg@sha256:${PINNED}`)),
+    );
+    expect(elsewhere.map((result) => result.ok)).toEqual([false, false]);
+  });
+
+  test('an unreadable digest reference fails rather than being skipped', () => {
+    const results = compareDigests(
+      pins,
+      removalSection(
+        readme(`docker image rm postgres@sha256:${PINNED} pg@sha256:${'A'.repeat(64)}`),
+      ),
+    );
+    expect(results.map((result) => result.ok)).toEqual([true, false]);
+    expect(results[1]?.detail).toContain('64 lower-case hex');
   });
 
   test('a pin bumped in Compose and not in README fails twice, naming both digests', () => {

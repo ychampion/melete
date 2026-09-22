@@ -17,8 +17,11 @@ export type PinnedImage = { repository: string; digest: string; source: string }
 export const README = 'README.md';
 export const REMOVAL_HEADING = '### Remove it completely';
 
+/**
+ * `repository[:tag]@sha256:digest`. A tag cannot hold a `/`, so the port in
+ * `localhost:5000/pg@sha256:…` stays part of the repository.
+ */
 const DIGEST_REFERENCE = /^([^@\s]+?)(?::[^@/\s]+)?@sha256:([0-9a-f]{64})$/;
-const QUOTED_REFERENCE = /([a-z0-9][a-z0-9._/-]*)@sha256:([0-9a-f]{64})/g;
 
 /** Every service image in the given Compose files that is pinned by digest. */
 export function pinnedImages(files: { file: string; text: string }[]): PinnedImage[] {
@@ -59,12 +62,27 @@ export function removalSection(readme: string): string | undefined {
   return lines.slice(start, end).join('\n');
 }
 
-/** Every `repository@sha256:digest` reference in a piece of text. */
-export function quotedImages(text: string): { repository: string; digest: string }[] {
-  return [...text.matchAll(QUOTED_REFERENCE)].map((match) => ({
-    repository: match[1] as string,
-    digest: match[2] as string,
-  }));
+/**
+ * Every digest reference in a piece of text, read one whitespace-separated
+ * token at a time with the pattern the Compose pins are read with, so a tagged
+ * or registry-qualified reference names its whole repository. Markdown and
+ * shell punctuation around a token is dropped first. A token that mentions
+ * `@sha256` and still does not read as a reference is returned as unreadable.
+ */
+export function quotedImages(text: string): {
+  references: { repository: string; digest: string }[];
+  unreadable: string[];
+} {
+  const references: { repository: string; digest: string }[] = [];
+  const unreadable: string[] = [];
+  for (const token of text.split(/\s+/)) {
+    if (!token.includes('@sha256')) continue;
+    const bare = token.replace(/^[^A-Za-z0-9]+/, '').replace(/[^0-9a-f]+$/, '');
+    const match = DIGEST_REFERENCE.exec(bare);
+    if (match) references.push({ repository: match[1] as string, digest: match[2] as string });
+    else unreadable.push(token);
+  }
+  return { references, unreadable };
 }
 
 /**
@@ -85,7 +103,7 @@ export function compareDigests(
         detail: `no "${REMOVAL_HEADING}" heading`,
       },
     ];
-  const quoted = quotedImages(section);
+  const { references: quoted, unreadable } = quotedImages(section);
   const results: CheckResult[] = pins.map((pin) => {
     const seen = quoted.filter((reference) => reference.repository === pin.repository);
     return {
@@ -107,6 +125,12 @@ export function compareDigests(
         ok: false,
         detail: `${reference.repository}@sha256:${reference.digest} is pinned by no deploy/docker-compose*.yml`,
       });
+  for (const token of unreadable)
+    results.push({
+      name: `${readme} quotes only digest references the check can read`,
+      ok: false,
+      detail: `${token} is not repository[:tag]@sha256:<64 lower-case hex digits>`,
+    });
   return results;
 }
 
