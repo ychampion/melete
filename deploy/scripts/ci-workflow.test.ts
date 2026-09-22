@@ -2,13 +2,14 @@
  * The workflows run on hosted runners nobody can step through, so everything they name is
  * checked here first: the YAML parses, each package script and file they refer to exists, every
  * action is pinned to a commit, and no secret is read. Both files are covered: the pull-request
- * workflow and the nightly conformance run.
+ * workflow and the conformance run with its upgrade proof.
  */
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
+import { parseArguments } from './upgrade.ts';
 
 type Step = {
   name?: string;
@@ -29,7 +30,7 @@ type Job = {
 type Workflow = {
   on?: {
     pull_request?: unknown;
-    push?: { branches?: string[] };
+    push?: { branches?: string[]; paths?: string[] };
     schedule?: { cron?: string }[];
     workflow_dispatch?: unknown;
   };
@@ -69,6 +70,7 @@ function filesNamed(lines: string[]): string[] {
   return lines.flatMap((line) => [
     ...(/^bun run (\S+\.ts)/.exec(line)?.slice(1) ?? []),
     ...(/^bun test (\S+\.ts)/.exec(line)?.slice(1) ?? []),
+    ...(/^bun build (\S+\.ts)/.exec(line)?.slice(1) ?? []),
     ...(/docker compose -f (\S+)/.exec(line)?.slice(1) ?? []),
     ...(/ -f (\S+\.\w+)(?: |$)/.exec(line.startsWith('docker build') ? line : '')?.slice(1) ?? []),
   ]);
@@ -220,23 +222,36 @@ describe('the browser sandbox proof this workflow expects', () => {
   });
 });
 
-describe('the nightly conformance workflow', () => {
-  test('parses, runs on a schedule and on request, and never on a pull request', () => {
+const linesOf = (job?: Job) =>
+  (job?.steps ?? []).flatMap((step) => (step.run ?? '').split('\n')).map((line) => line.trim());
+
+describe('the conformance workflow', () => {
+  test('runs weekly, on request, and when main changes what it proves', () => {
     expect(conformance.source).not.toBe('');
     expect(conformance.workflow.on).toHaveProperty('workflow_dispatch');
-    expect(conformance.workflow.on?.schedule?.length).toBe(1);
-    expect(conformance.workflow.on?.schedule?.[0]?.cron).toMatch(/^[\d*/, -]+$/);
-    // The deployment scenarios build and start a whole stack: too much for a pull request.
-    expect(conformance.workflow.on).not.toHaveProperty('pull_request');
-    expect(conformance.workflow.on).not.toHaveProperty('push');
+    // The cadence is one line; the pull request lists what the alternatives cost.
+    expect(conformance.workflow.on?.schedule).toEqual([{ cron: '0 3 * * 1' }]);
+    expect(conformance.workflow.on?.push?.branches).toEqual(['main']);
+    expect(conformance.workflow.on?.push?.paths).toEqual([
+      'deploy/**',
+      'apps/melete/src/runtime/**',
+      'conformance/**',
+    ]);
   });
 
-  test('holds read-only access, never overlaps itself, and bounds its time', () => {
+  test('runs on a pull request only when the pull request changes this workflow', () => {
+    // Each run builds and starts whole stacks: too much for every pull request.
+    expect(conformance.workflow.on?.pull_request).toEqual({
+      paths: ['.github/workflows/conformance.yml'],
+    });
+  });
+
+  test('holds read-only access, never cancels itself, and bounds its time', () => {
     expect(conformance.workflow.permissions).toEqual({ contents: 'read' });
     expect(conformance.workflow.concurrency?.group).toBeTruthy();
-    // A second nightly must wait rather than cancel a stack that is already running.
+    // A second run must wait rather than cancel a stack that is already running.
     expect(conformance.workflow.concurrency?.['cancel-in-progress']).toBe(false);
-    expect(conformance.jobs.length).toBeGreaterThan(0);
+    expect(conformance.named.map(([name]) => name).sort()).toEqual(['compose', 'upgrade']);
     for (const job of conformance.jobs) {
       expect(job['runs-on']).toMatch(/^ubuntu-/);
       expect(job['timeout-minutes']).toBeGreaterThan(0);
@@ -248,55 +263,68 @@ describe('the nightly conformance workflow', () => {
     expect(used.length).toBeGreaterThan(0);
     for (const action of used) expect(action).toMatch(/^[\w.-]+\/[\w.-]+@[a-f0-9]{40}$/);
     expect(conformance.source).not.toMatch(/secrets\./);
-    expect(conformance.source).not.toMatch(/docker (?:login|push)|--push/);
+    expect(conformance.source).not.toMatch(/docker (?:login|push)|git push|--push/);
   });
 
-  test('judges the host Docker before it builds or starts anything', () => {
-    const order = conformance.steps.findIndex((step) =>
-      step.run?.includes('deploy/scripts/docker-preflight.ts'),
-    );
-    const start = conformance.steps.findIndex((step) =>
-      step.run?.includes('docker-compose.yml up'),
-    );
-    expect(order).toBeGreaterThan(-1);
-    expect(order).toBeLessThan(start);
-    const preflight = conformance.steps[order];
-    // The runner's own versions are printed, so a refusal names the host it refused.
-    expect(preflight?.run).toContain('docker version');
-    expect(preflight?.run).toContain('docker compose version');
+  test('each job judges the host Docker before it starts a stack', () => {
+    for (const [name, job] of conformance.named) {
+      const jobSteps = job.steps ?? [];
+      const preflight = jobSteps.findIndex((step) =>
+        step.run?.includes('deploy/scripts/docker-preflight.ts'),
+      );
+      const start = jobSteps.findIndex((step) => step.run?.includes('docker-compose.yml up'));
+      expect([name, preflight > -1 && start > -1 && preflight < start]).toEqual([name, true]);
+      // The runner's own versions are printed, so a refusal names the host it refused.
+      expect(jobSteps[preflight]?.run).toContain('docker version');
+      expect(jobSteps[preflight]?.run).toContain('docker compose version');
+    }
   });
 
-  test('configures a disposable stack, runs the scenarios and takes it down', () => {
-    expect(conformance.commands).toContain('bun run deploy/scripts/configure.ts --fake');
-    expect(conformance.commands).toContain('bun run compose:check');
+  test('each job takes its stack down whatever happened', () => {
+    for (const [name, job] of conformance.named) {
+      const down = (job.steps ?? []).find((step) => step.run?.includes('down -v'));
+      expect([name, down?.if]).toEqual([name, 'always()']);
+    }
+  });
+
+  test('each job keeps its report and the stack logs when it fails', () => {
+    for (const [name, job] of conformance.named) {
+      const upload = (job.steps ?? []).find((step) =>
+        step.uses?.startsWith('actions/upload-artifact@'),
+      );
+      expect([name, upload?.if]).toEqual([name, 'failure()']);
+      const files = String(upload?.with?.path ?? '')
+        .split('\n')
+        .map((line) => line.trim().split('/').at(-1) ?? '')
+        .filter(Boolean);
+      expect(files.length).toBe(2);
+      expect(files).toContain('compose-logs.txt');
+      // Every file it keeps is one an earlier step of the same job writes.
+      for (const file of files)
+        expect([name, file, linesOf(job).some((line) => line.includes(file))]).toEqual([
+          name,
+          file,
+          true,
+        ]);
+    }
+  });
+
+  test('the scenario job configures a disposable stack and runs the scenarios', () => {
+    const compose = conformance.workflow.jobs?.compose;
+    const lines = linesOf(compose);
+    expect(lines).toContain('bun run deploy/scripts/configure.ts --fake');
+    expect(lines).toContain('bun run compose:check');
     expect(
-      conformance.commands.some((line) =>
+      lines.some((line) =>
         line.startsWith('docker compose -f deploy/docker-compose.yml up -d --build --wait'),
       ),
     ).toBe(true);
-    const scenarios = conformance.steps.find(
+    const scenarios = (compose?.steps ?? []).find(
       (step) => step.env?.MELETE_CONFORMANCE_COMPOSE === '1',
     );
     expect(scenarios?.run).toContain('bun run conformance');
     // A pipe must not swallow a failing run.
     expect(scenarios?.run).toContain('set -o pipefail');
-    const down = conformance.steps.find((step) => step.run?.includes('down -v'));
-    expect(down?.if).toBe('always()');
-  });
-
-  test('keeps the report and the stack logs when a run fails', () => {
-    const upload = conformance.steps.find((step) =>
-      step.uses?.startsWith('actions/upload-artifact@'),
-    );
-    expect(upload?.if).toBe('failure()');
-    const paths = String(upload?.with?.path ?? '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    expect(paths).toEqual(['conformance-report.txt', 'compose-logs.txt']);
-    // Every file it keeps is one an earlier step writes.
-    for (const file of paths)
-      expect(conformance.commands.some((line) => line.includes(file))).toBe(true);
   });
 
   test('every script, compose file and package script both workflows name exists', () => {
@@ -314,5 +342,86 @@ describe('the nightly conformance workflow', () => {
     expect(named).toContain('compose:check');
     expect(named).toContain('conformance');
     for (const script of named) expect(Object.keys(scripts)).toContain(script);
+  });
+});
+
+describe('the upgrade proof', () => {
+  const jobSteps = conformance.workflow.jobs?.upgrade?.steps ?? [];
+  const find = (text: string) => jobSteps.findIndex((step) => step.run?.includes(text));
+  const start = jobSteps.find((step) => step.id === 'start');
+  const upgrade = jobSteps.find((step) => step.run?.includes('"$TARGET" --backup-dir'));
+  const verify = jobSteps.find((step) => step.env?.BEFORE_ID);
+
+  test('has the whole history, so a release tag and the ancestry check can be read', () => {
+    const checkout = jobSteps.find((step) => step.uses?.startsWith('actions/checkout@'));
+    expect(checkout?.with?.['fetch-depth']).toBe(0);
+  });
+
+  test('starts from the newest release tag with the Compose layout, else the merge base', () => {
+    const run = start?.run ?? '';
+    expect(run).toContain('set -euo pipefail');
+    // A release before this tree, never this tree's own tag.
+    expect(run).toContain(
+      `git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "$head^"`,
+    );
+    expect(run).toContain('git cat-file -e "$start:deploy/docker-compose.yml"');
+    expect(run).toContain('git cat-file -e "$start:deploy/scripts/configure.ts"');
+    // Without one, it says where it started rather than proving a different upgrade quietly.
+    expect(run).toContain('git merge-base origin/main "$head"');
+    expect(run).toMatch(/::notice::.*starts from \$start on main/);
+  });
+
+  test('moves to this tree under a tag the upgrade script accepts', () => {
+    const tag = /target="([^"]+)"/.exec(start?.run ?? '')?.[1] ?? '';
+    const runId = /\$\{GITHUB_RUN_ID\}/;
+    expect(tag).toMatch(runId);
+    const concrete = tag.replace(runId, '17893021234');
+    expect(parseArguments([concrete], new Date(), '/home/runner', '/repo').tag).toBe(concrete);
+    expect(start?.run).toContain('git tag "$target" "$head"');
+  });
+
+  test("runs this tree's upgrade.ts from inside the older tree, which it reads as its own", () => {
+    const run = start?.run ?? '';
+    expect(run).toContain('bun build deploy/scripts/upgrade.ts --target=bun');
+    const placed = /cp "\$RUNNER_TEMP\/upgrade\.js" (\S+)/.exec(run)?.[1] ?? '';
+    // upgrade.ts takes the repository to be two directories above itself.
+    expect(placed.split('/').length).toBe(3);
+    expect(run).toContain(`echo ${placed} >> .git/info/exclude`);
+    // The preflight refuses an untracked file, so the older tree must still be clean.
+    expect(run).toContain('test -z "$(git status --porcelain)"');
+    expect(upgrade?.run).toContain(`bun run ${placed} "$TARGET"`);
+  });
+
+  test('writes nothing inside the tree the upgrade checks', () => {
+    const run = upgrade?.run ?? '';
+    expect(run).toContain('set -o pipefail');
+    expect(run).toContain('--backup-dir "$RUNNER_TEMP/backups"');
+    expect(run).toMatch(/\| tee "\$RUNNER_TEMP\/upgrade-report\.txt"$/m);
+  });
+
+  test('records the internal network before the upgrade and demands the same one after', () => {
+    const order = [
+      find('docker-compose.yml up -d --build'),
+      jobSteps.findIndex((step) => step.id === 'before'),
+      upgrade ? jobSteps.indexOf(upgrade) : -1,
+      verify ? jobSteps.indexOf(verify) : -1,
+    ];
+    expect(order.every((index) => index > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(verify?.env?.BEFORE_ID).toMatch(/^\$\{\{ steps\.before\.outputs\.id \}\}$/);
+    const run = verify?.run ?? '';
+    expect(run).toContain('set -euo pipefail');
+    expect(run).toContain('"$after" != "$BEFORE_ID"');
+    expect(run).toContain('"$attached" != "$BEFORE_ID"');
+    expect(run).toContain('::error::');
+    expect(run).toContain('exit 1');
+  });
+
+  test('the upgraded service answers from the image this tree built', () => {
+    const run = verify?.run ?? '';
+    expect(run).toContain('test "$(git rev-parse HEAD)" = "$(git rev-parse "$TARGET^{commit}")"');
+    expect(run).toContain('melete-service:$TARGET');
+    expect(run).toContain('port melete 8787)/health');
+    expect(run).toContain(`jq -e '.database == "ok"'`);
   });
 });
