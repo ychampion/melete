@@ -28,11 +28,20 @@ const TYPED: Record<string, string> = {
   'mcp.url': 'https://mcp.example.test/mcp',
   'credentials.access_token': 'token-value',
   'mcp.allowed_scopes': 'mcp_notes.search, mcp_notes.add',
+  'mcp_stdio.id': 'notes',
+  'mcp_stdio.source': '@example/notes-server@1.0.0',
+  'mcp_stdio.args': '/data',
+  'mcp_stdio.allowed_scopes': 'mcp_notes.search, mcp_notes.add',
 };
-const ROWS = [
+const TOOL_ROWS = [
   { name: 'search', alias: 'search', required_scopes: 'mcp_notes.search', effect_class: 'read' },
   { name: 'add', alias: 'add', required_scopes: 'mcp_notes.add', effect_class: 'write_external' },
 ];
+const ROWS: Record<string, Record<string, string>[]> = {
+  'mcp.tools': TOOL_ROWS,
+  'mcp_stdio.tools': TOOL_ROWS,
+  'mcp_stdio.secret_env': [{ name: 'NOTES_TOKEN', value: '  sealed variable  ' }],
+};
 
 test('a form drawn only from the served descriptors installs every kind', async () => {
   const mock = createMock({ speed: 0 });
@@ -54,6 +63,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
     'ics',
     'mail',
     'mcp',
+    'mcp_stdio',
   ]);
 
   for (const kind of kinds) {
@@ -62,7 +72,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
     expect(missing(kind, values)).not.toBeNull();
     for (const field of kind.fields) {
       if (field.input === 'list')
-        values.lists[field.path] = ROWS.map((row) => ({
+        values.lists[field.path] = (ROWS[field.path] ?? []).map((row) => ({
           ...emptyRow(field.item_fields ?? []),
           ...row,
         }));
@@ -92,8 +102,25 @@ test('a form drawn only from the served descriptors installs every kind', async 
         'email.send',
       ]);
     }
-    if (kind.kind === 'mcp')
+    if (kind.kind === 'mcp' || kind.kind === 'mcp_stdio')
       expect(view.connection.scopes).toEqual(['mcp_notes.search', 'mcp_notes.add']);
+    if (kind.kind === 'mcp_stdio') {
+      // A variable's value is sent exactly as typed and never comes back.
+      expect(body).toMatchObject({
+        mcp_stdio: { secret_env: [{ name: 'NOTES_TOKEN', value: '  sealed variable  ' }] },
+      });
+      expect(created.text).not.toContain('sealed variable');
+      // An optional list left blank is left out rather than sent as an empty row.
+      const blank = emptyForm(kind);
+      for (const field of kind.fields)
+        if (field.input === 'list' && field.required)
+          blank.lists[field.path] = values.lists[field.path] ?? [];
+        else if (field.input !== 'list') blank.fields[field.path] = values.fields[field.path] ?? '';
+      expect(missing(kind, blank)).toBeNull();
+      expect(
+        (requestBody(kind, blank).mcp_stdio as Record<string, unknown>).secret_env,
+      ).toBeUndefined();
+    }
   }
 
   // Unticking a grant narrows the request; unticking all of them is caught before sending.

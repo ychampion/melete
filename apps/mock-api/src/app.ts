@@ -734,8 +734,13 @@ export function createMockApp(deps: AppDeps) {
       // Sealed on arrival and never returned. The mock keeps only the pointer,
       // which is the same thing the API is allowed to know.
       secret_ref:
-        kind.kind === 'ics' || parsed.value.credentials ? newId(ID_PREFIXES.secret) : null,
-      scopes: kind.kind === 'mcp' ? kind.config.allowed_scopes : kind.scopes,
+        kind.kind === 'ics' ||
+        parsed.value.credentials ||
+        (kind.kind === 'mcp_stdio' && kind.config.secret_env.length)
+          ? newId(ID_PREFIXES.secret)
+          : null,
+      scopes:
+        kind.kind === 'mcp' || kind.kind === 'mcp_stdio' ? kind.config.allowed_scopes : kind.scopes,
       status: 'active',
       health: 'ok',
       setup_state: 'connected',

@@ -11,9 +11,9 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 import { err, ID_PREFIXES, ok, prefixedId, type Result, timestamp } from './common.ts';
 import { connectionProvider, connectionView } from './entities.ts';
-import { mcpConnectionConfig } from './mcp.ts';
+import { MCP_STDIO_RUNNERS, mcpConnectionConfig, mcpStdioConnectionConfig } from './mcp.ts';
 
-export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp'] as const;
+export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio'] as const;
 export const connectionKind = z.enum(CONNECTION_KINDS);
 export type ConnectionKind = z.infer<typeof connectionKind>;
 
@@ -123,7 +123,7 @@ export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.send'],
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
-} as const satisfies Record<Exclude<ConnectionKind, 'mcp'>, readonly string[]>;
+} as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
   /** Left out, the space of the signed-in session. */
@@ -140,6 +140,7 @@ export const createConnectionRequest = z.object({
   mcp: mcpConnectionConfig.optional(),
   mail: mailConnectionRequest.optional(),
   caldav: caldavConnectionRequest.optional(),
+  mcp_stdio: mcpStdioConnectionConfig.optional(),
   ics: icsConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
@@ -166,9 +167,21 @@ export type ConnectionInstallation =
       provider: 'mcp';
       config: z.infer<typeof mcpConnectionConfig>;
       credentials: Record<string, string> | undefined;
+    }
+  | {
+      kind: 'mcp_stdio';
+      provider: 'mcp';
+      config: z.infer<typeof mcpStdioConnectionConfig>;
     };
 
-const KIND_PROVIDER = { mail: 'imap', caldav: 'caldav', ics: 'caldav', mcp: 'mcp' } as const;
+const KIND_PROVIDER = {
+  mail: 'imap',
+  caldav: 'caldav',
+  ics: 'caldav',
+  mcp: 'mcp',
+  mcp_stdio: 'mcp',
+} as const;
+const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp or mcp_stdio.';
 
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
@@ -176,13 +189,19 @@ export function connectionInstallation(
 ): Result<ConnectionInstallation, string> {
   const present = CONNECTION_KINDS.filter((kind) => request[kind] !== undefined);
   const [kind] = present;
-  if (present.length !== 1 || !kind) return err('Supply exactly one of mail, caldav, ics or mcp.');
+  if (present.length !== 1 || !kind) return err(EXACTLY_ONE);
   if (request.provider !== KIND_PROVIDER[kind])
     return err(`A ${kind} connection uses the ${KIND_PROVIDER[kind]} provider.`);
   if (kind === 'mcp') {
     if (!request.mcp || request.scopes.length)
       return err('Supply MCP endpoint and operator policy in mcp.');
     return ok({ kind, provider: 'mcp', config: request.mcp, credentials: request.credentials });
+  }
+  if (kind === 'mcp_stdio') {
+    // Its secrets travel in `mcp_stdio.secret_env`, so each one is named for the variable it fills.
+    if (!request.mcp_stdio || request.scopes.length || request.credentials)
+      return err('Supply the launch, operator policy and secret variables in mcp_stdio.');
+    return ok({ kind, provider: 'mcp', config: request.mcp_stdio });
   }
   const allowed: readonly string[] = CONNECTION_KIND_SCOPES[kind];
   if (
@@ -218,7 +237,7 @@ export function connectionInstallation(
       credentials: credentials.data,
       scopes,
     });
-  return err('Supply exactly one of mail, caldav, ics or mcp.');
+  return err(EXACTLY_ONE);
 }
 
 /**
@@ -315,7 +334,7 @@ export const connectionKindDescriptor = z
      * Names this entry. A kind can appear more than once: a provider's entry
      * fixes its servers so the person gives only an address and an app password.
      */
-    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    id: z.string().regex(/^[a-z][a-z0-9_-]*$/),
     kind: connectionKind,
     title: z.string(),
     description: z.string(),
@@ -667,6 +686,94 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
           text('required_scopes', 'Grants it needs', {
             input: 'string_list',
             placeholder: 'mcp_notes.search',
+          }),
+          text('effect_class', 'How far it may act', {
+            input: 'select',
+            options: EFFECT_OPTIONS,
+            default: 'write_external',
+          }),
+        ],
+      },
+    ],
+    scopes: [],
+  },
+  {
+    id: 'mcp_stdio',
+    kind: 'mcp_stdio',
+    title: 'MCP server (package or image)',
+    description:
+      'Run an MCP server from npm, PyPI or a container image in its own container, with no network unless you name a destination. You choose each tool, its grant and how far it may act.',
+    fixed: [
+      { path: 'provider', value: 'mcp' },
+      { path: 'mcp_stdio.audience', value: 'owner' },
+    ],
+    fields: [
+      text('mcp_stdio.id', 'Short name', {
+        placeholder: 'files',
+        help: 'Lower-case letters, digits and underscores. Tools appear as mcp_<name>.<alias>.',
+      }),
+      text('mcp_stdio.runner', 'Runs with', {
+        input: 'select',
+        options: MCP_STDIO_RUNNERS.map((runner) => ({
+          value: runner,
+          label:
+            runner === 'npx'
+              ? 'npx (an npm package)'
+              : runner === 'uvx'
+                ? 'uvx (a PyPI package)'
+                : 'A container image',
+        })),
+        default: 'npx',
+      }),
+      text('mcp_stdio.source', 'Package or image', {
+        placeholder: '@modelcontextprotocol/server-filesystem',
+        help: 'An npm or PyPI package with an optional version, or an image such as ghcr.io/example/server:1.0.',
+      }),
+      text('mcp_stdio.command', 'Command', {
+        required: false,
+        help: "Left empty, the package's own command or the image's entry command.",
+      }),
+      text('mcp_stdio.args', 'Arguments', {
+        input: 'string_list',
+        required: false,
+        placeholder: '/data',
+        help: 'One per line. The server can write to /data, which is kept between runs.',
+      }),
+      text('mcp_stdio.egress', 'Destinations it may reach', {
+        input: 'string_list',
+        required: false,
+        placeholder: 'api.example.com',
+        help: 'HTTPS host names, one per line. Left empty, the server has no network.',
+      }),
+      {
+        path: 'mcp_stdio.secret_env',
+        label: 'Secret variables',
+        input: 'list',
+        required: false,
+        secret: false,
+        help: 'Sealed on arrival and given only to this server.',
+        item_fields: [
+          text('name', 'Variable', { placeholder: 'API_TOKEN' }),
+          text('value', 'Value', { input: 'password', secret: true }),
+        ],
+      },
+      text('mcp_stdio.allowed_scopes', 'Grants', {
+        input: 'string_list',
+        placeholder: 'mcp_files.read',
+        help: 'One per tool, written mcp_<name>.<alias>.',
+      }),
+      {
+        path: 'mcp_stdio.tools',
+        label: 'Tools',
+        input: 'list',
+        required: true,
+        secret: false,
+        item_fields: [
+          text('name', 'Tool name on the server', { placeholder: 'read_file' }),
+          text('alias', 'Alias', { placeholder: 'read' }),
+          text('required_scopes', 'Grants it needs', {
+            input: 'string_list',
+            placeholder: 'mcp_files.read',
           }),
           text('effect_class', 'How far it may act', {
             input: 'select',

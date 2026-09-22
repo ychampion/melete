@@ -442,6 +442,12 @@ async function storedShape(
       );
     }
   }
+  if (installation.kind === 'mcp_stdio')
+    throw new ServiceError(
+      'invalid_request',
+      'This service cannot launch a stdio MCP server.',
+      400,
+    );
   const shape =
     installation.kind === 'mail'
       ? {
