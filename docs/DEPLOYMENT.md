@@ -559,7 +559,10 @@ must outlive rotation belong in a log collector you run beside the stack.
 Back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.
 Stop Melete and runtime work before taking the database and volume snapshot so
-their durable state is consistent. From the repository root:
+their durable state is consistent. An installation started with an override
+names the same files on each Compose command below, and one running the browser
+worker stops `browser` with the others, since it writes into a space. From the
+repository root:
 
 ```bash
 backup_dir="$HOME/melete-backup-$(date -u +%Y%m%dT%H%M%SZ)"
