@@ -209,6 +209,9 @@ describe('the host judgement', () => {
     for (const [endpoint, host] of [
       ['ssh://deploy@droplet.example.net', 'droplet.example.net'],
       ['tcp://10.0.0.5:2376', '10.0.0.5'],
+      // Only 127.0.0.0/8 is loopback: 128.x and a name that starts with 127 are not.
+      ['tcp://128.0.0.1:2376', '128.0.0.1'],
+      ['tcp://127.example.net:2376', '127.example.net'],
       ['tcp://[2001:db8::5]:2376', '2001:db8::5'],
     ] as const) {
       expect(remoteEngineHost(endpoint)).toBe(host);
@@ -224,7 +227,13 @@ describe('the host judgement', () => {
     for (const endpoint of [
       'tcp://localhost:2375',
       'tcp://127.0.0.1:2375',
+      'tcp://127.0.1.1:2376',
+      'tcp://127.255.255.254:2376',
+      'tcp://0.0.0.0:2375',
       'tcp://[::1]:2375',
+      'tcp://[::]:2375',
+      'tcp://[::ffff:127.0.0.1]:2375',
+      'ssh://deploy@LOCALHOST',
       'unix:///var/run/docker.sock',
       'npipe:////./pipe/docker_engine',
     ]) {

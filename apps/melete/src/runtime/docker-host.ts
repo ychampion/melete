@@ -2,7 +2,8 @@
  * What the machine running the stack must provide beyond the engine and
  * Compose versions: Linux containers, enough memory when the engine runs in
  * Docker Desktop's VM, and on Windows, paths the checkout fits in. An engine
- * on another machine, reached over ssh:// or tcp://, is supported and named. The configuration generator, the upgrade script and
+ * on another machine, reached over ssh:// or tcp://, is supported and named.
+ * The configuration generator, the upgrade script and
  * `bun run doctor --docker` all gather these facts and judge them here, so a
  * Windows host running Docker Desktop hears the same thing from each of them.
  *
@@ -130,7 +131,15 @@ export function remoteEngineHost(endpoint: string | null): string | null {
   const match = /^(tcp|ssh|https?):\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^:/]+)/.exec(endpoint);
   if (!match) return null;
   const host = (match[2] ?? '').replace(/^\[|\]$/g, '').toLowerCase();
-  return ['localhost', '127.0.0.1', '::1'].includes(host) ? null : host;
+  return isLocalHost(host) ? null : host;
+}
+
+/** This machine by name or address: loopback, all of 127.0.0.0/8, or the unspecified address. */
+function isLocalHost(host: string): boolean {
+  return (
+    ['localhost', '0.0.0.0', '::1', '::'].includes(host) ||
+    /^(::ffff:)?127(\.\d{1,3}){3}$/.test(host)
+  );
 }
 
 /**
