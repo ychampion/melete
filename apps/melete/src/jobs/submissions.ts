@@ -292,6 +292,9 @@ export class SubmissionService {
               ? this.jobs.createInTransaction(
                   admission,
                   createResponsibilityRequest.parse(parsed.data),
+                  undefined,
+                  // The person typed this objective into the request.
+                  'owner_request',
                 )
               : this.jobs.inputInTransaction(
                   admission,

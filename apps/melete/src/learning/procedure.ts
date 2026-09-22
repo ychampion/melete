@@ -3,6 +3,9 @@ import { estimateTokens } from '@melete/skills';
 import { z } from 'zod';
 import type { ProcedureScope } from './contracts.ts';
 
+/** The one family with bundled fixtures and an audited step vocabulary of its own. */
+export const RECORDS_FAMILY = 'organize-records';
+
 /** Audited vocabulary: the model can compose procedure steps, never carry private prose forward. */
 export const STEP_BODIES = {
   'sort-typed-values':
@@ -50,13 +53,21 @@ export function compileProcedure(raw: unknown) {
   };
 }
 
-/** Every field that changes applicability or behavior is bound to the evaluation. */
+/**
+ * Every field that changes applicability or behaviour is bound to the evaluation.
+ * Triggers decide which requests receive the body, checks decide what counts as
+ * a correction, and the case templates decide which held-out work the evidence
+ * came from, so all three are part of the definition and not metadata beside it.
+ */
 export function definitionHash(value: {
   body: string;
   scope: ProcedureScope;
   compatibleModels: string[];
   change: Record<string, unknown>;
   tests: string[];
+  triggers?: readonly unknown[];
+  checks?: readonly unknown[];
+  caseTemplates?: Record<string, unknown>;
 }) {
   return createHash('sha256')
     .update(
@@ -67,6 +78,9 @@ export function definitionHash(value: {
           models: value.compatibleModels,
           change: value.change,
           tests: value.tests,
+          triggers: value.triggers ?? [],
+          checks: value.checks ?? [],
+          cases: value.caseTemplates ?? {},
         }),
       ),
     )

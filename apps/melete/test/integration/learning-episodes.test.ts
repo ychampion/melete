@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { action, artifact, connection } from '../../src/db/schema.ts';
+import { MAX_RECORDED_OUTPUT } from '../../src/learning/episodes.ts';
 import { learningTrial } from '../../src/learning/evaluation-schema.ts';
 import { compileProcedure, definitionHash } from '../../src/learning/procedure.ts';
 import { ProcedureService } from '../../src/learning/procedures.ts';
@@ -579,6 +580,177 @@ afterAll(async () => fixture?.close(), 15000);
       'scope_denied',
     );
   }, 15000);
+
+  test('a correction records the prior and corrected outputs', async () => {
+    if (!fixture) return;
+    const { jobs, runner, episodes, ownerId, spaceId, handle } = fixture;
+    const row = await fixture.create('prior-and-corrected');
+    const first = await runner.claim(wake(row));
+    if (!first) throw new Error('No attempt');
+    const connectionId = newId('conn');
+    const actionId = newId('act');
+    await handle.db
+      .insert(connection)
+      .values({ id: connectionId, spaceId, provider: 'test', label: 'Test' });
+    await handle.db.insert(action).values({
+      id: actionId,
+      jobId: row.id,
+      attemptId: first.claims.attempt_id,
+      connectionId,
+      kind: 'records.write',
+      effectClass: 'write_reversible',
+      canonicalPayload: {},
+      payloadHash: 'c'.repeat(64),
+      idempotencyKey: actionId,
+      status: 'succeeded',
+      receipt: { id: 'receipt-prior' },
+    });
+    await runner.commitOutcome(first.claims, {
+      kind: 'completed',
+      summary: 'Amounts as text: 10, 2, 9.',
+      evidence: [],
+    });
+    const source = await episodes.intervene(ownerId, row.id, {
+      idempotency_key: 'prior-and-corrected',
+      kind: 'correction',
+      text: 'Sort the amounts as numbers.',
+      signal: 'typed_ordering',
+    });
+    expect(source.priorOutput).toBe('Amounts as text: 10, 2, 9.');
+    expect(source.correctedOutput).toBeNull();
+    // An action-kind check needs the kind and the effect class, not just a receipt.
+    expect(source.receipts[0]).toMatchObject({
+      action_id: actionId,
+      kind: 'records.write',
+      effect_class: 'write_reversible',
+    });
+    if (!source.correctiveJobId) throw new Error('No corrective job');
+    const corrective = await jobs.get(source.correctiveJobId);
+    const second = await runner.claim(wake(corrective));
+    if (!second) throw new Error('No corrective attempt');
+    await runner.commitOutcome(second.claims, {
+      kind: 'completed',
+      summary: 'Amounts as numbers: 2, 9, 10.',
+      evidence: [],
+    });
+    const [saved] = await handle.db.select().from(episode).where(eq(episode.id, source.id));
+    expect(saved).toMatchObject({
+      judgement: 'corrected',
+      priorOutput: 'Amounts as text: 10, 2, 9.',
+      correctedOutput: 'Amounts as numbers: 2, 9, 10.',
+    });
+    // A completion that was never objected to keeps no outputs to compare.
+    const plain = await fixture.create('no-correction-no-outputs');
+    const only = await runner.claim(wake(plain));
+    if (!only) throw new Error('No plain attempt');
+    await runner.commitOutcome(only.claims, {
+      kind: 'completed',
+      summary: 'Nothing to correct here.',
+      evidence: [],
+    });
+    const [untouched] = await handle.db.select().from(episode).where(eq(episode.jobId, plain.id));
+    expect(untouched).toMatchObject({ priorOutput: null, correctedOutput: null });
+  }, 20000);
+
+  test('a recorded output is capped before it is stored', async () => {
+    if (!fixture) return;
+    const { runner, episodes, ownerId, handle } = fixture;
+    const row = await fixture.create('capped-output');
+    const first = await runner.claim(wake(row));
+    if (!first) throw new Error('No attempt');
+    await runner.commitOutcome(first.claims, {
+      kind: 'completed',
+      summary: 'x'.repeat(MAX_RECORDED_OUTPUT + 500),
+      evidence: [],
+    });
+    const source = await episodes.intervene(ownerId, row.id, {
+      idempotency_key: 'capped-output',
+      kind: 'correction',
+      text: 'Keep it much shorter.',
+    });
+    expect(source.priorOutput?.length).toBe(MAX_RECORDED_OUTPUT);
+    const [saved] = await handle.db.select().from(episode).where(eq(episode.id, source.id));
+    expect(saved?.priorOutput?.length).toBe(MAX_RECORDED_OUTPUT);
+  }, 20000);
+
+  test('forgetting erases the recorded outputs, including after a restore', async () => {
+    if (!fixture) return;
+    const { jobs, runner, episodes, ownerId, spaceId, handle } = fixture;
+    const scope = {
+      ownerId,
+      spaceId,
+      publisher: 'owner',
+      audience: 'private' as const,
+      role: 'owner' as const,
+    };
+    const made = async (key: string) => {
+      const row = await fixture.create(key);
+      const first = await runner.claim(wake(row));
+      if (!first) throw new Error('No attempt');
+      await runner.commitOutcome(first.claims, {
+        kind: 'completed',
+        summary: `PRIOR-OUTPUT-${key}`,
+        evidence: [],
+      });
+      const saved = await episodes.intervene(ownerId, row.id, {
+        idempotency_key: key,
+        kind: 'correction',
+        text: 'Use the other order.',
+      });
+      if (!saved.correctiveJobId) throw new Error('No corrective job');
+      const second = await runner.claim(wake(await jobs.get(saved.correctiveJobId)));
+      if (!second) throw new Error('No corrective attempt');
+      await runner.commitOutcome(second.claims, {
+        kind: 'completed',
+        summary: `CORRECTED-OUTPUT-${key}`,
+        evidence: [],
+      });
+      const [stored] = await handle.db.select().from(episode).where(eq(episode.id, saved.id));
+      expect(stored?.priorOutput).toBe(`PRIOR-OUTPUT-${key}`);
+      expect(stored?.correctedOutput).toBe(`CORRECTED-OUTPUT-${key}`);
+      return saved.id;
+    };
+    const erased = async (id: string, key: string) => {
+      const [saved] = await handle.db.select().from(episode).where(eq(episode.id, id));
+      expect(saved).toMatchObject({ priorOutput: null, correctedOutput: null, restricted: true });
+      const surviving = await handle.sql`select id from episode
+        where prior_output like ${`%${key}%`} or corrected_output like ${`%${key}%`}`;
+      expect(surviving).toHaveLength(0);
+    };
+    const deleted = await made('forget-by-owner');
+    await episodes.remove(ownerId, spaceId, deleted);
+    await erased(deleted, 'forget-by-owner');
+    const expired = await made('forget-by-retention');
+    await handle.db
+      .update(episode)
+      .set({ expiresAt: new Date(0) })
+      .where(eq(episode.id, expired));
+    await expireEpisodes(handle.sql);
+    await erased(expired, 'forget-by-retention');
+    const forgotten = await made('forget-by-memory');
+    const records: RestrictionRecord[] = [];
+    const journal: RestrictionJournal = {
+      read: async () => records,
+      append: async (record) => {
+        records.push(record);
+      },
+    };
+    await forgetMemory(handle.sql, scope, { all: true }, journal);
+    await erased(forgotten, 'forget-by-memory');
+    // Replaying the same record, as a restore does, erases them again on the restored rows.
+    const replayed = records[records.length - 1];
+    if (!replayed) throw new Error('No restriction record to replay');
+    await handle.db
+      .update(episode)
+      .set({
+        restricted: false,
+        priorOutput: 'PRIOR-OUTPUT-forget-by-memory',
+        correctedOutput: 'CORRECTED-OUTPUT-forget-by-memory',
+      })
+      .where(eq(episode.id, forgotten));
+    await handle.sql.begin((tx) => applyRestriction(tx, replayed));
+    await erased(forgotten, 'forget-by-memory');
+  }, 30000);
 
   test('an opaque source version can complete its job without creating unrepresentable learning evidence', async () => {
     if (!fixture) return;

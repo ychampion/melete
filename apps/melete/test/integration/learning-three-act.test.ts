@@ -1,28 +1,21 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { attemptOutcome } from '@melete/contracts';
-import { desc, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   gradeRecords,
   type RecordCase,
+  type RecordTask,
   taskObjective,
 } from '../../../../conformance/learning/records.ts';
-import { ScriptedRecordRuntime } from '../../../../conformance/learning/scripted-runtime.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
-import { attempt } from '../../src/db/schema.ts';
-import { createScriptedProvider, fakeProvider } from '../../src/gateway/fake.ts';
 import { newId } from '../../src/ids.ts';
-import type { JobRow } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { ProcedureEvaluator } from '../../src/learning/evaluator.ts';
-import { ProcedureService } from '../../src/learning/procedures.ts';
-import { openProposalGateway } from '../../src/learning/proposal-gateway.ts';
-import { ProcedureProposer } from '../../src/learning/proposer.ts';
 import { procedureCandidate } from '../../src/learning/schema.ts';
+import { derivedScope } from '../../src/learning/scope.ts';
 import { principalContext } from '../../src/principals/authority.ts';
-import { learningFixture, learningScope, wake } from './learning-fixtures.ts';
+import { at, generalLearningFixture } from './learning-general-fixtures.ts';
 
-const runtime = new ScriptedRecordRuntime();
-const fixture = await learningFixture(runtime);
+const fixture = await generalLearningFixture();
 // Exercise product catalog enrichment as well as the learning selector: the
 // evaluated body must survive the same final enrichment used by bootstrap().
 if (fixture)
@@ -31,85 +24,61 @@ if (fixture)
     new ConnectorRegistry(),
     'unused-learning-skill-root',
   ).forAttempt;
-const requests: unknown[] = [];
-const gateway = fixture
-  ? await openProposalGateway({
-      db: fixture.handle.db,
-      provider: 'fake',
-      model: 'scripted-proposer-v1',
-      providers: [fakeProvider],
-      fake: (body, id, protocol) => {
-        requests.push(body);
-        return createScriptedProvider([
-          {
-            text: JSON.stringify({
-              target: 'skill_body',
-              steps: ['sort-typed-values', 'keep-header-and-rows'],
-              test: 'ordering-and-shape',
-            }),
-          },
-        ])(body, id, protocol);
-      },
-    })
-  : null;
-const proposer = fixture && gateway ? new ProcedureProposer(fixture.jobs, gateway) : null;
 afterAll(async () => {
-  await gateway?.close();
   await fixture?.close();
 }, 30000);
 
-async function run(row: JobRow) {
-  if (!fixture) throw new Error('No fixture');
-  await fixture.runner.handleWake(wake(row));
-  let current = await fixture.jobs.get(row.id);
-  const deadline = Date.now() + 15000;
-  while (!['completed', 'failed', 'cancelled'].includes(current.state) && Date.now() < deadline) {
-    await Bun.sleep(20);
-    current = await fixture.jobs.get(row.id);
-  }
-  expect(current.state).toBe('completed');
-  const [execution] = await fixture.handle.db
-    .select()
-    .from(attempt)
-    .where(eq(attempt.jobId, row.id))
-    .orderBy(desc(attempt.epoch))
-    .limit(1);
-  const output = attemptOutcome.parse(execution?.outcomeDetail);
-  if (output.kind !== 'completed') throw new Error('Expected actual completed output');
-  return output.summary;
-}
+const CORRECTION =
+  'PLANTED-PRIVATE-THREE-ACT-482: keep every column, and sort the rows by due as dates ascending.';
+
+/** Earlier tables of the same kind, each accepted as it came back. */
+const historyTask = (month: number): RecordTask => ({
+  columns: ['id', 'due'],
+  rows: [
+    { id: 'a', due: `2027-0${month}-20` },
+    { id: 'b', due: `2027-0${month}-03` },
+    { id: 'c', due: `2027-0${month}-11` },
+  ],
+  key: 'due',
+  type: 'date',
+  direction: 'ascending',
+  dateFormat: 'iso',
+});
 
 (fixture ? describe : describe.skip)('the three-act procedure learning scenario', () => {
   test('completed job, owner correction, then a different job succeeds with fewer interventions and no private details', async () => {
-    if (!fixture || !proposer) return;
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
     const memberId = newId('own');
     await fixture.handle
       .sql`insert into principal (id, email) values (${memberId}, ${`${memberId}@example.test`})`;
     await fixture.handle
-      .sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${fixture.ownerId} where id = ${fixture.spaceId}`;
+      .sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${fixture.ownerId} where id = ${spaceId}`;
     await fixture.handle.sql`insert into space_membership (space_id, principal_id, role) values
-      (${fixture.spaceId}, ${fixture.ownerId}, 'owner'), (${fixture.spaceId}, ${memberId}, 'member')`;
+      (${spaceId}, ${fixture.ownerId}, 'owner'), (${spaceId}, ${memberId}, 'member')`;
+    for (let month = 1; month <= 6; month += 1)
+      await fixture.history(spaceId, taskObjective(historyTask(month)));
     const training: RecordCase = {
-      template: 'owner-dmy-training',
+      template: 'owner-training',
       task: {
-        columns: ['id', 'date'],
+        columns: ['id', 'due'],
         rows: [
-          { id: 'a', date: '15/12/2026' },
-          { id: 'b', date: '02/03/2026' },
-          { id: 'c', date: '11/01/2026' },
+          { id: 'a', due: '2026-12-15' },
+          { id: 'b', due: '2026-03-02' },
+          { id: 'c', due: '2026-01-11' },
         ],
-        key: 'date',
+        key: 'due',
         type: 'date',
-        dateFormat: 'dmy',
+        dateFormat: 'iso',
         direction: 'ascending',
       },
       expectedIds: ['c', 'b', 'a'],
     };
+    const objective = taskObjective(training.task);
     // Act 1: the real runner commits a baseline completion whose result needs an owner correction.
-    const original = await fixture.create(training.template, taskObjective(training.task));
-    const baseline = await run(original);
-    expect(gradeRecords(training, baseline)).toBe(false);
-    const firstEpisode = (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).find(
+    const original = await fixture.create(spaceId, objective);
+    expect(gradeRecords(training, await fixture.run(original))).toBe(false);
+    const firstEpisode = (await fixture.episodes.list(fixture.ownerId, spaceId)).find(
       (row) => row.jobId === original.id,
     );
     expect(firstEpisode).toMatchObject({ judgement: 'completed', intervention: null });
@@ -118,8 +87,7 @@ async function run(row: JobRow) {
     const input = {
       idempotency_key: 'owner-date-correction',
       kind: 'correction',
-      signal: 'typed_ordering',
-      text: 'PLANTED-PRIVATE-THREE-ACT-482: compare dates chronologically using the declared date format; preserve all columns and rows.',
+      text: CORRECTION,
     };
     const intervention = await fixture.episodes.intervene(fixture.ownerId, original.id, input);
     expect(intervention.correctiveJobId).toBeString();
@@ -130,66 +98,93 @@ async function run(row: JobRow) {
     const corrective = await fixture.jobs.get(intervention.correctiveJobId);
     expect(corrective.budget).toMatchObject({ max_actions: 0 });
     expect((await fixture.jobs.get(original.id)).state).toBe('completed');
-    expect(gradeRecords(training, await run(corrective))).toBe(true);
-    const corrected = (await fixture.episodes.list(fixture.ownerId, fixture.spaceId)).find(
+    expect(gradeRecords(training, await fixture.run(corrective))).toBe(true);
+    const corrected = (await fixture.episodes.list(fixture.ownerId, spaceId)).find(
       (row) => row.id === intervention.id,
     );
     expect(corrected?.judgement).toBe('corrected');
     expect(corrected?.versions).toHaveLength(2);
-    await proposer.drain();
+    fixture.propose({
+      target: 'skill_body',
+      steps: [
+        {
+          text: 'Sort the rows by due as dates ascending.',
+          evidence: at('intervention', CORRECTION, 'sort the rows by due as dates ascending'),
+        },
+      ],
+      triggers: [
+        { phrase: 'supplied records', evidence: at('objective', objective, 'supplied records') },
+      ],
+      // A held-out history case carries only its objective, so there are no input rows to preserve.
+      checks: [
+        {
+          kind: 'records_sorted',
+          key: 'due',
+          type: 'date',
+          direction: 'ascending',
+          preserve_rows: false,
+        },
+      ],
+      variant_objectives: [],
+    });
+    await fixture.proposer.drain();
     const [candidate] = await fixture.handle.db
       .select()
       .from(procedureCandidate)
       .where(eq(procedureCandidate.episodeId, intervention.id));
     if (!candidate) throw new Error('The durable intervention drain did not create a candidate');
-    expect(candidate.scope).toEqual(learningScope);
+    expect(candidate.scope).toEqual(derivedScope(objective).scope);
     expect(candidate.state).toBe('candidate');
+    expect(candidate.discrimination?.status).toBe('passed');
+    // The owner's correction is what the proposal model reads; none of its other words become the body.
     expect(candidate.body).not.toContain('PLANTED-PRIVATE-THREE-ACT-482');
-    expect(JSON.stringify(requests)).not.toContain('PLANTED-PRIVATE-THREE-ACT-482');
-    const evaluator = new ProcedureEvaluator(fixture.jobs, runtime, fixture.runner.options);
-    const evaluated = await evaluator.evaluate(fixture.ownerId, fixture.spaceId, candidate.id);
-    expect(evaluated.evaluations).toHaveLength(2);
-    expect(evaluated.evaluations.every((row) => row.passed)).toBe(true);
-    const procedures = new ProcedureService(fixture.jobs);
-    await procedures.enableCanary(fixture.ownerId, fixture.spaceId, candidate.id);
+    const evaluator = new ProcedureEvaluator(fixture.jobs, fixture.runtime, fixture.runner.options);
+    const evaluated = await evaluator.evaluate(fixture.ownerId, spaceId, candidate.id);
+    expect(evaluated.candidate.rejectionReason).toBeNull();
+    expect(evaluated.evaluations.map((row) => [row.phase, row.passed])).toEqual([
+      ['validation', true],
+      ['sealed_final', true],
+    ]);
+    await fixture.procedures.enableCanary(fixture.ownerId, spaceId, candidate.id);
 
     // Act 3: new row count, column, values, dates, and template; only the general procedure transfers.
     const later: RecordCase = {
       template: 'later-renewal-records',
       task: {
-        columns: ['id', 'due'],
+        columns: ['id', 'due', 'amount'],
         rows: [
-          { id: 'x', due: '22/11/2028' },
-          { id: 'y', due: '01/01/2028' },
-          { id: 'z', due: '17/06/2028' },
-          { id: 'w', due: '01/04/2028' },
+          { id: 'x', due: '2028-11-22', amount: 40 },
+          { id: 'y', due: '2028-01-01', amount: 15 },
+          { id: 'z', due: '2028-06-17', amount: 90 },
+          { id: 'w', due: '2028-04-01', amount: 25 },
         ],
         key: 'due',
         type: 'date',
-        dateFormat: 'dmy',
+        dateFormat: 'iso',
         direction: 'ascending',
       },
       expectedIds: ['y', 'w', 'z', 'x'],
     };
-    const next = await fixture.create(later.template, taskObjective(later.task));
-    expect(gradeRecords(later, await run(next))).toBe(true);
-    const delivered = runtime.observed.find((bundle) => bundle.attempt.job_id === next.id);
+    const next = await fixture.create(spaceId, taskObjective(later.task));
+    expect(gradeRecords(later, await fixture.run(next))).toBe(true);
+    const delivered = fixture.runtime.observed.find((bundle) => bundle.attempt.job_id === next.id);
     expect(delivered?.skills.map((skill) => skill.name)).toEqual([`procedure:${candidate.id}`]);
     expect(delivered?.inputs.new_user_messages).toEqual([]);
     expect(JSON.stringify(delivered)).not.toContain('PLANTED-PRIVATE-THREE-ACT-482');
     const memberJob = await principalContext.run(memberId, () =>
       fixture.jobs.create({
-        space_id: fixture.spaceId,
+        space_id: spaceId,
         title: 'Member records',
         objective: taskObjective(later.task),
-        learning: { scope: learningScope, template_id: 'member-records', input_refs: [] },
       }),
     );
-    await run(memberJob);
-    const memberBundle = runtime.observed.find((bundle) => bundle.attempt.job_id === memberJob.id);
+    await fixture.run(memberJob);
+    const memberBundle = fixture.runtime.observed.find(
+      (bundle) => bundle.attempt.job_id === memberJob.id,
+    );
     expect(memberBundle?.skills).toEqual([]);
     expect(JSON.stringify(memberBundle)).not.toContain('PLANTED-PRIVATE-THREE-ACT-482');
-    const episodes = await fixture.episodes.list(fixture.ownerId, fixture.spaceId);
+    const episodes = await fixture.episodes.list(fixture.ownerId, spaceId);
     const firstCorrections = episodes.filter(
       (row) => row.jobId === original.id && row.intervention,
     ).length;
@@ -199,18 +194,18 @@ async function run(row: JobRow) {
     expect(firstCorrections).toBe(1);
     expect(laterCorrections).toBe(0);
     expect(laterCorrections).toBeLessThan(firstCorrections);
-    expect((await procedures.activate(fixture.ownerId, fixture.spaceId, candidate.id)).state).toBe(
+    expect((await fixture.procedures.activate(fixture.ownerId, spaceId, candidate.id)).state).toBe(
       'active',
     );
     expect(
       (
-        await procedures.rollback(
+        await fixture.procedures.rollback(
           fixture.ownerId,
-          fixture.spaceId,
+          spaceId,
           candidate.id,
           'End the verified canary',
         )
       ).state,
     ).toBe('reverted');
-  }, 90000);
+  }, 180000);
 });

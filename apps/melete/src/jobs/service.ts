@@ -23,6 +23,8 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { registerJobLearning } from '../learning/episodes.ts';
+import type { ObjectiveOrigin } from '../learning/provenance.ts';
+import { derivedScope } from '../learning/scope.ts';
 import {
   requestPrincipal,
   requireJobAccess,
@@ -125,8 +127,13 @@ export class JobService {
       .limit(filters.limit);
   }
 
-  async create(input: CreateResponsibilityRequest): Promise<JobRow> {
-    return this.transaction((tx) => this.createInTransaction(tx, input));
+  async create(
+    input: CreateResponsibilityRequest,
+    objectiveOrigin?: ObjectiveOrigin,
+  ): Promise<JobRow> {
+    return this.transaction((tx) =>
+      this.createInTransaction(tx, input, undefined, objectiveOrigin),
+    );
   }
 
   /** Submission admission composes its receipt with the same job/wake transaction. */
@@ -140,6 +147,12 @@ export class JobService {
       scheduledAt?: Date;
       dormant?: boolean;
     },
+    /**
+     * Whose words this objective is. Only an entry point where the person types
+     * the objective passes `owner_request`; every other job, including one built
+     * from a company's mail or a copy of another job's objective, is `derived`.
+     */
+    objectiveOrigin: ObjectiveOrigin = 'derived',
   ): Promise<JobRow> {
     const value = createResponsibilityRequest.parse(input);
     const [parent] = await tx
@@ -156,6 +169,7 @@ export class JobService {
         principalId: access.principalId,
         title: value.title,
         objective: value.objective,
+        objectiveOrigin,
         constraints: jobConstraints.parse(value.constraints ?? {}),
         budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
         nextWakeAt:
@@ -187,6 +201,9 @@ export class JobService {
       .returning();
     if (!row) throw new Error('job insert returned no row');
     if (value.learning) await registerJobLearning(tx, row, value.learning);
+    // A correction made on an ordinary request has to be able to teach something.
+    else if (row.principalId && !jobConstraints.parse(row.constraints).public_compartment)
+      await registerJobLearning(tx, row, derivedScope(row.objective));
     await appendEvent(tx, {
       jobId: row.id,
       type: 'job_created',

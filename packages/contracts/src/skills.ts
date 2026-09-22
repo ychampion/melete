@@ -51,7 +51,8 @@ export const normalizeForMatch = (text: string): string =>
 const OBJECTIVE_WEIGHT = 1;
 const MESSAGE_WEIGHT = 2;
 
-const countMatches = (haystack: string, needle: string): number => {
+/** Non-overlapping occurrences of an already normalised needle. */
+export const countMatches = (haystack: string, needle: string): number => {
   if (!needle) return 0;
   let count = 0;
   let from = 0;

@@ -147,6 +147,8 @@ withDb('durable submission receipts', () => {
     const { submissions, jobs, handle } = fixture();
     const accepted = await submissions.create(payload(), 'create');
     if (!accepted.job) throw new Error('Accepted job missing');
+    // A submitted request is the one objective the person typed as it stands.
+    expect((await jobs.get(accepted.job.id)).objectiveOrigin).toBe('owner_request');
     const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
       key: 'submission-test-capability-key-32-bytes',
     });

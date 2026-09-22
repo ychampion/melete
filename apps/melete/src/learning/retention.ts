@@ -10,7 +10,8 @@ export async function restrictEpisodes(
   const ids = [...affectedClaims, ...record.targets.map((target) => target.source_id)];
   const removed =
     await tx`update episode set restricted = true, intervention = null, versions = '[]',
-    artifacts = '[]', receipts = '[]', input_refs = '[]', generation_state = 'restricted'
+    artifacts = '[]', receipts = '[]', input_refs = '[]', prior_output = null,
+    corrected_output = null, generation_state = 'restricted'
     where space_id = ${record.space_id} and (
       (${record.all} and exists (select 1 from job j where j.id = episode.job_id
         and j.created_at <= ${record.recorded_at})) or exists (
@@ -24,7 +25,8 @@ export async function expireEpisodes(sql: MemorySql, now = new Date()) {
   return sql.begin(async (tx) => {
     const rows =
       await tx`update episode set restricted = true, intervention = null, versions = '[]',
-      artifacts = '[]', receipts = '[]', input_refs = '[]', generation_state = 'restricted'
+      artifacts = '[]', receipts = '[]', input_refs = '[]', prior_output = null,
+      corrected_output = null, generation_state = 'restricted'
       where expires_at <= ${now.toISOString()} and not restricted returning id`;
     await tx`delete from procedure_candidate where episode_id = any(${rows.map((row) => row.id)})`;
     return rows.length;

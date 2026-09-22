@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   BUILT_IN_SKILLS,
+  countMatches,
   normalizeForMatch,
   type SkillCandidate,
   selectSkills,
@@ -134,5 +135,14 @@ describe('skill frontmatter', () => {
       });
       expect(parsed.success).toBe(true);
     }
+  });
+});
+
+describe('countMatches', () => {
+  test('counts non-overlapping occurrences and nothing for an empty needle', () => {
+    expect(countMatches('status report and status report', 'status report')).toBe(2);
+    expect(countMatches('aaaa', 'aa')).toBe(2);
+    expect(countMatches('weekly summary', 'monthly')).toBe(0);
+    expect(countMatches('anything', '')).toBe(0);
   });
 });

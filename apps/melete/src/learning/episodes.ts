@@ -6,7 +6,7 @@ import {
   jobConstraints,
   memoryHandle,
 } from '@melete/contracts';
-import { and, asc, desc, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { action, artifact, attempt, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -14,6 +14,7 @@ import { appendEvent } from '../events/store.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { requireJobAccess, spaceAuthority, visibleJob } from '../principals/authority.ts';
+import { revertDeliveredCanaries } from './canary.ts';
 import {
   type Intervention,
   interventionRequest,
@@ -22,7 +23,9 @@ import {
   type ProcedureScope,
   type VersionEvidence,
 } from './contracts.ts';
+import { OBJECTIVE_ORIGINS, type ObjectiveOrigin } from './provenance.ts';
 import { episode, learningAttempt, learningJob } from './schema.ts';
+import { derivedScope } from './scope.ts';
 
 export const digest = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -33,6 +36,12 @@ const unknownScope: ProcedureScope = {
   role: 'owner',
   audience: 'private',
 };
+/** The recorded origin of a job's objective, or the closed answer when there is none. */
+const objectiveOrigin = (row: { objectiveOrigin: string | null }): ObjectiveOrigin =>
+  (OBJECTIVE_ORIGINS as readonly string[]).includes(row.objectiveOrigin ?? '')
+    ? (row.objectiveOrigin as ObjectiveOrigin)
+    : 'derived';
+
 export type EpisodeRow = typeof episode.$inferSelect;
 
 /** Admission calls this before enqueueing the first wake; optional metadata never grants authority. */
@@ -106,12 +115,29 @@ async function evidence(tx: Transaction, row: JobRow) {
     .select({ id: artifact.id, hash: artifact.contentHash, path: artifact.path })
     .from(artifact)
     .where(and(eq(artifact.jobId, row.id), eq(artifact.spaceId, row.spaceId)));
+  // Kind and effect class are what an action-kind check reads; a receipt alone cannot say them.
   const receipts = await tx
-    .select({ action_id: action.id, status: action.status, receipt: action.receipt })
+    .select({
+      action_id: action.id,
+      kind: action.kind,
+      effect_class: action.effectClass,
+      status: action.status,
+      receipt: action.receipt,
+    })
     .from(action)
     .where(eq(action.jobId, row.id));
   return { versions, artifacts, receipts, inputRefs: await inputReferences(tx, row) };
 }
+
+export const MAX_RECORDED_OUTPUT = 32768;
+/** The words a person actually saw, or nothing: a partial answer would grade as a whole one. */
+const recordedOutput = (value: unknown) => {
+  if (!value || typeof value !== 'object') return null;
+  const summary = (value as { summary?: unknown }).summary;
+  return typeof summary === 'string' && summary.length
+    ? summary.slice(0, MAX_RECORDED_OUTPUT)
+    : null;
+};
 
 async function createEpisode(
   tx: Transaction,
@@ -122,6 +148,15 @@ async function createEpisode(
   judgement: string,
 ) {
   const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
+  // What the run had already produced when the owner objected to it.
+  const [last] = change
+    ? await tx
+        .select({ detail: attempt.outcomeDetail })
+        .from(attempt)
+        .where(and(eq(attempt.jobId, row.id), isNotNull(attempt.endedAt)))
+        .orderBy(desc(attempt.epoch))
+        .limit(1)
+    : [];
   const [saved] = await tx
     .insert(episode)
     .values({
@@ -136,6 +171,7 @@ async function createEpisode(
       actor,
       judgement,
       failureClass: change?.kind === 'correction' ? 'owner_correction' : null,
+      priorOutput: recordedOutput(last?.detail),
       ...(await evidence(tx, row)),
     })
     .onConflictDoNothing({ target: [episode.jobId, episode.segmentKey] })
@@ -189,6 +225,9 @@ export async function captureCompletedEpisode(
           ...combined,
           judgement: row.state === 'completed' ? 'corrected' : 'failed',
           failureClass: row.state === 'failed' ? outcome.kind : segment.failureClass,
+          // The answer the correction asked for, whether it came from the linked
+          // corrective job or from the next completion of this same job.
+          correctedOutput: recordedOutput(outcome) ?? segment.correctedOutput,
         })
         .where(eq(episode.id, segment.id));
     }
@@ -230,16 +269,19 @@ export class EpisodeService {
       await requireLearningSpace(tx, ownerId, row.spaceId);
       await requireJobAccess(tx, row.id, ownerId);
       const [old] = await tx.select().from(learningJob).where(eq(learningJob.jobId, jobId));
-      if (old) {
-        if (
-          digest(
-            jobLearningScope.parse({
-              scope: old.scope,
-              template_id: old.templateId,
-              input_refs: old.inputRefs,
-            }),
-          ) !== digest(input)
-        )
+      const recorded =
+        old &&
+        digest(
+          jobLearningScope.parse({
+            scope: old.scope,
+            template_id: old.templateId,
+            input_refs: old.inputRefs,
+          }),
+        );
+      // The scope the service derives for every job is a default, not the owner's
+      // declaration, so a declaration still replaces it while the job is untouched.
+      if (old && recorded !== digest(derivedScope(row.objective))) {
+        if (recorded !== digest(input))
           throw new ServiceError('scope_frozen', 'The recorded task scope is immutable.');
         return old;
       }
@@ -252,6 +294,7 @@ export class EpisodeService {
         .limit(1);
       if (previous)
         throw new ServiceError('scope_frozen', 'Set task scope before the first attempt.');
+      if (old) await tx.delete(learningJob).where(eq(learningJob.jobId, jobId));
       return registerJobLearning(tx, row, input);
     });
   }
@@ -278,24 +321,32 @@ export class EpisodeService {
       const registration = await liveJobEvidence(tx, row);
       const saved = await createEpisode(tx, row, `intervention:${key}`, ownerId, change, 'pending');
       if (!saved) throw new Error('Episode insert returned no row');
+      // A correction on a job that received a canary procedure ends that canary here.
+      await revertDeliveredCanaries(tx, row, saved.id);
       if (['completed', 'failed', 'cancelled'].includes(row.state)) {
         // Terminal jobs are immutable. A linked correction cannot replay their effects.
-        const corrective = await this.jobs.createInTransaction(tx, {
-          space_id: row.spaceId,
-          title: `Correction: ${row.title}`.slice(0, 200),
-          objective: row.objective,
-          constraints: jobConstraints.parse(row.constraints),
-          budget: { ...jobBudget.parse(row.budget), max_actions: 0 },
-          ...(registration
-            ? {
-                learning: {
-                  scope: registration.scope,
-                  template_id: registration.templateId,
-                  input_refs: registration.inputRefs,
-                },
-              }
-            : {}),
-        });
+        const corrective = await this.jobs.createInTransaction(
+          tx,
+          {
+            space_id: row.spaceId,
+            title: `Correction: ${row.title}`.slice(0, 200),
+            objective: row.objective,
+            constraints: jobConstraints.parse(row.constraints),
+            budget: { ...jobBudget.parse(row.budget), max_actions: 0 },
+            ...(registration
+              ? {
+                  learning: {
+                    scope: registration.scope,
+                    template_id: registration.templateId,
+                    input_refs: registration.inputRefs,
+                  },
+                }
+              : {}),
+          },
+          undefined,
+          // The corrective job copies this objective; it copies where it came from too.
+          objectiveOrigin(row),
+        );
         await appendEvent(tx, {
           jobId: corrective.id,
           type: 'notice',
@@ -390,6 +441,8 @@ export class EpisodeService {
           artifacts: [],
           receipts: [],
           inputRefs: [],
+          priorOutput: null,
+          correctedOutput: null,
           generationState: 'restricted',
         })
         .where(

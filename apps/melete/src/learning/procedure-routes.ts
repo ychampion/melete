@@ -4,6 +4,7 @@ import {
   procedureActivationRequest,
   procedureId,
   procedureReasonRequest,
+  procedureTrialRequest,
 } from '@melete/contracts';
 import type { Hono } from 'hono';
 import { ServiceError } from '../api/errors.ts';
@@ -49,22 +50,29 @@ export function mountProcedures(
   for (const action of ['canary', 'activate'] as const)
     app.post(`/procedures/:id/${action}`, async (c) => {
       const raw = await c.req.json();
-      const input =
-        action === 'activate'
-          ? procedureActivationRequest.parse(raw)
-          : learningSpaceRequest.parse(raw);
-      const args = [
+      const id = procedureId.parse(c.req.param('id'));
+      if (action === 'activate') {
+        const input = procedureActivationRequest.parse(raw);
+        return c.json({
+          candidate: await service.activate(c.get('owner').id, input.space_id, id, input.scope),
+        });
+      }
+      const input = learningSpaceRequest.parse(raw);
+      return c.json({
+        candidate: await service.enableCanary(c.get('owner').id, input.space_id, id),
+      });
+    });
+  app.post('/procedures/:id/trial', async (c) => {
+    const input = procedureTrialRequest.parse(await c.req.json());
+    return c.json({
+      candidate: await service.startTrial(
         c.get('owner').id,
         input.space_id,
         procedureId.parse(c.req.param('id')),
-      ] as const;
-      return c.json({
-        candidate:
-          action === 'canary'
-            ? await service.enableCanary(...args)
-            : await service.activate(...args, procedureActivationRequest.parse(raw).scope),
-      });
+        input.definition_hash,
+      ),
     });
+  });
   for (const action of ['reject', 'rollback'] as const)
     app.post(`/procedures/:id/${action}`, async (c) => {
       const input = procedureReasonRequest.parse(await c.req.json());

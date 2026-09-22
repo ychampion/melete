@@ -1,25 +1,109 @@
 import { type ProcedurePromotionScope, procedurePromotionScope } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { spaceAuthority, visibleJob } from '../principals/authority.ts';
+import { compileStoredProcedure, verifyStoredEvidence } from './admit.ts';
 import type { ProcedureState } from './contracts.ts';
 import { requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
+import { objectiveIsOwnerText } from './provenance.ts';
 import { episode, procedureCandidate, procedureEvaluation, procedureTransition } from './schema.ts';
+import { unshareableContent } from './share.ts';
 
 export type Candidate = typeof procedureCandidate.$inferSelect;
 
-/** The stored definition, not just the body, must still match the evaluated bytes. */
+/** A general procedure is graded by its checks; the records family by its fixtures. */
+export const isGeneralProcedure = (candidate: Pick<Candidate, 'tests'>) =>
+  candidate.tests.includes('checks');
+
+/**
+ * The stored definition, not just the body, must still match the evaluated
+ * bytes. Recompiling re-runs the deny scan, the authority scan and the
+ * word-subset rule over the stored steps, so a definition survives only while
+ * the rules that admitted it would admit it again. No episode is needed, which
+ * is what makes this affordable at every delivery.
+ */
 export function verifyDefinition(candidate: Candidate) {
-  const compiled = compileProcedure(candidate.change);
-  if (compiled.body !== candidate.body || definitionHash(candidate) !== candidate.bodyHash)
+  try {
+    const compiled = isGeneralProcedure(candidate)
+      ? compileStoredProcedure(candidate.change, candidate.triggers)
+      : compileProcedure(candidate.change);
+    if (compiled.body !== candidate.body || definitionHash(candidate) !== candidate.bodyHash)
+      throw new ServiceError(
+        'definition_changed',
+        'The procedure definition no longer matches its evidence.',
+      );
+  } catch (error) {
+    if (error instanceof ServiceError) throw error;
     throw new ServiceError(
       'definition_changed',
       'The procedure definition no longer matches its evidence.',
     );
+  }
+}
+
+/**
+ * The spans as well, re-sliced out of the correction and the objective they
+ * cite. Called where the episode row is already in hand, because a body that
+ * recompiles from its stored quotes still has to be quoting something real.
+ */
+export function verifyEvidence(
+  candidate: Candidate,
+  source: { intervention: { text: string } | null },
+  objective: string,
+) {
+  if (!isGeneralProcedure(candidate)) return;
+  try {
+    verifyStoredEvidence(candidate.evidence, [
+      { id: 'intervention', offset: 0, text: source.intervention?.text ?? '' },
+      { id: 'objective', offset: 0, text: objective },
+    ]);
+  } catch {
+    throw new ServiceError(
+      'evidence_changed',
+      'The procedure no longer quotes the correction it was learned from.',
+    );
+  }
+}
+
+/** A passing sealed final, bound to the candidate's selected validation and recorded after it. */
+export async function hasSelectedFinalEvidence(tx: Transaction, candidate: Candidate) {
+  if (!candidate.selectedEvaluationId) return false;
+  const [validation] = await tx
+    .select()
+    .from(procedureEvaluation)
+    .where(
+      and(
+        eq(procedureEvaluation.id, candidate.selectedEvaluationId),
+        eq(procedureEvaluation.candidateId, candidate.id),
+        eq(procedureEvaluation.phase, 'validation'),
+        eq(procedureEvaluation.passed, true),
+        eq(procedureEvaluation.bodyHash, candidate.bodyHash),
+      ),
+    );
+  const [final] = await tx
+    .select()
+    .from(procedureEvaluation)
+    .where(
+      and(
+        eq(procedureEvaluation.candidateId, candidate.id),
+        eq(procedureEvaluation.phase, 'sealed_final'),
+        eq(procedureEvaluation.bodyHash, candidate.bodyHash),
+        eq(procedureEvaluation.passed, true),
+      ),
+    )
+    .orderBy(desc(procedureEvaluation.createdAt))
+    .limit(1);
+  return !!(
+    validation?.selectedAt &&
+    final &&
+    final.evidence.selection_evaluation_id === validation.id &&
+    final.createdAt >= validation.selectedAt
+  );
 }
 
 export async function transitionProcedure(
@@ -76,7 +160,18 @@ export class ProcedureService {
       );
     if (!source)
       throw new ServiceError('evidence_unavailable', 'The procedure evidence is unavailable.');
-    return { candidate, source };
+    // The objective the spans may cite, alongside the correction itself: only when the
+    // correcting owner wrote it. Otherwise no span may cite it at all.
+    const [origin] = await tx
+      .select({
+        objective: job.objective,
+        objectiveOrigin: job.objectiveOrigin,
+        principalId: job.principalId,
+      })
+      .from(job)
+      .where(eq(job.id, source.jobId));
+    const objective = origin && objectiveIsOwnerText(origin, source.actor) ? origin.objective : '';
+    return { candidate, source, objective };
   }
 
   async list(ownerId: string, spaceId: string) {
@@ -145,8 +240,9 @@ export class ProcedureService {
 
   async enableCanary(ownerId: string, spaceId: string, id: string) {
     return this.jobs.transaction(async (tx) => {
-      const { candidate } = await this.locked(tx, ownerId, spaceId, id);
+      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
       verifyDefinition(candidate);
+      verifyEvidence(candidate, source, objective);
       if (
         candidate.state !== 'evaluated' ||
         candidate.rejectionReason ||
@@ -156,37 +252,7 @@ export class ProcedureService {
           'promotion_denied',
           'A selected procedure with passing final evidence is required.',
         );
-      const [validation] = await tx
-        .select()
-        .from(procedureEvaluation)
-        .where(
-          and(
-            eq(procedureEvaluation.id, candidate.selectedEvaluationId),
-            eq(procedureEvaluation.candidateId, id),
-            eq(procedureEvaluation.phase, 'validation'),
-            eq(procedureEvaluation.passed, true),
-            eq(procedureEvaluation.bodyHash, candidate.bodyHash),
-          ),
-        );
-      const [final] = await tx
-        .select()
-        .from(procedureEvaluation)
-        .where(
-          and(
-            eq(procedureEvaluation.candidateId, id),
-            eq(procedureEvaluation.phase, 'sealed_final'),
-            eq(procedureEvaluation.bodyHash, candidate.bodyHash),
-            eq(procedureEvaluation.passed, true),
-          ),
-        )
-        .orderBy(desc(procedureEvaluation.createdAt))
-        .limit(1);
-      if (
-        !validation?.selectedAt ||
-        !final ||
-        final.evidence.selection_evaluation_id !== validation.id ||
-        final.createdAt < validation.selectedAt
-      )
+      if (!(await hasSelectedFinalEvidence(tx, candidate)))
         throw new ServiceError(
           'promotion_denied',
           'The sealed final evidence does not follow this selection.',
@@ -205,6 +271,56 @@ export class ProcedureService {
     });
   }
 
+  /**
+   * The owner who made the correction approves the exact definition they were shown,
+   * by its hash, and tries it on their own work in this space. Discrimination is not
+   * required: a correction about tone may have nothing a check can read. Evaluation
+   * evidence is still required to activate or share.
+   */
+  async startTrial(ownerId: string, spaceId: string, id: string, definitionHash: string) {
+    return this.jobs.transaction(async (tx) => {
+      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
+      if (source.actor !== ownerId)
+        throw new ServiceError(
+          'trial_denied',
+          'Only the owner who made the correction may try what it taught.',
+          403,
+        );
+      verifyDefinition(candidate);
+      verifyEvidence(candidate, source, objective);
+      if (!['candidate', 'evaluated'].includes(candidate.state) || candidate.rejectionReason)
+        throw new ServiceError(
+          'invalid_procedure_state',
+          'Only a candidate that is not rejected can be tried.',
+        );
+      if (definitionHash !== candidate.bodyHash)
+        throw new ServiceError(
+          'definition_hash_mismatch',
+          'The approved definition is not the current one; review it again.',
+        );
+      await tx
+        .update(procedureCandidate)
+        .set({
+          canarySpaceId: spaceId,
+          promotion: {
+            scope: 'private',
+            principal_id: ownerId,
+            basis: 'owner_trial',
+            definition_hash: definitionHash,
+            approved_at: new Date().toISOString(),
+          },
+        })
+        .where(eq(procedureCandidate.id, id));
+      return transitionProcedure(
+        tx,
+        candidate,
+        'enabled_canary',
+        ownerId,
+        'The owner approved this exact definition for a private trial in its origin space.',
+      );
+    });
+  }
+
   async activate(
     ownerId: string,
     spaceId: string,
@@ -213,13 +329,20 @@ export class ProcedureService {
   ) {
     const scope = procedurePromotionScope.parse(delivery);
     return this.jobs.transaction(async (tx) => {
-      const { candidate } = await this.locked(tx, ownerId, spaceId, id);
+      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
       const access = await spaceAuthority(tx, spaceId, ownerId, true);
       if (scope === 'space' && access.space.kind !== 'shared')
         throw new ServiceError('scope_denied', 'Space promotion requires a shared space.', 403);
       verifyDefinition(candidate);
+      verifyEvidence(candidate, source, objective);
       if (candidate.state !== 'enabled_canary' || candidate.canarySpaceId !== spaceId)
         throw new ServiceError('invalid_procedure_state', 'Enable the one-space canary first.');
+      // An owner trial delivers to its owner; only held-out evidence can make a procedure active.
+      if (!(await hasSelectedFinalEvidence(tx, candidate)))
+        throw new ServiceError(
+          'promotion_denied',
+          'Activation needs passing sealed final evidence bound to its selection.',
+        );
       const learned = await tx.execute(sql`
         select e.id from episode e where e.space_id = ${spaceId} and e.judgement = 'completed'
           and e.intervention is null and not e.restricted and e.expires_at > now()
@@ -231,6 +354,12 @@ export class ProcedureService {
           'canary_evidence_required',
           'A completed canary job without an intervention is required.',
         );
+      // Sharing reaches other people; a body carrying the owner's private material stays private.
+      if (scope === 'space') {
+        const unshareable = await unshareableContent(tx, spaceId, candidate.body);
+        if (unshareable)
+          throw new ServiceError('shareable_check_failed', `shareable_check_failed:${unshareable}`);
+      }
       const previous = await tx
         .select()
         .from(procedureCandidate)

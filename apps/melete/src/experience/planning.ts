@@ -147,6 +147,7 @@ export class ExperiencePlanning {
         tx,
         { space_id: spaceId, title: input.title, objective: input.title },
         { kind: 'plan' },
+        'owner_request',
       );
       await tx.update(job).set({ experienceCategory: input.category }).where(eq(job.id, row.id));
       for (const [ordinal, milestone] of input.milestones.entries()) {

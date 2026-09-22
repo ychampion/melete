@@ -3,45 +3,51 @@ import {
   attemptOutcome,
   attemptUsage,
   jsonObject,
+  type ProcedureDiscrimination,
   type RuntimeAdapter,
 } from '@melete/contracts';
-import { desc, eq, sql } from 'drizzle-orm';
-import {
-  gradeRecords,
-  type RecordCase,
-  taskObjective,
-} from '../../../../conformance/learning/records.ts';
-import { validationCases, validationMemory } from '../../../../conformance/learning/validation.ts';
+import { and, desc, eq, lte, sql } from 'drizzle-orm';
 import { openHarness } from '../../../../conformance/memory/harness.ts';
 import { scenario } from '../../../../conformance/memory/schema.ts';
 import { ServiceError } from '../api/errors.ts';
-import { attempt, space } from '../db/schema.ts';
+import { action, attempt, space } from '../db/schema.ts';
 import { AttemptRunner, type RunnerOptions } from '../jobs/runner.ts';
 import { type JobRow, JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import type { CheckReport } from './checks.ts';
 import type { ProcedureScope } from './contracts.ts';
+import { discriminate } from './discriminate.ts';
+import { discriminationInput } from './discrimination-input.ts';
 import { digest, type EpisodeRow } from './episodes.ts';
-import { learningTrial } from './evaluation-schema.ts';
+import { learningEvaluationLease, learningTrial } from './evaluation-schema.ts';
 import type { GateInput, Metric } from './gate.ts';
 import {
   type Candidate,
+  isGeneralProcedure,
   ProcedureService,
   transitionProcedure,
   verifyDefinition,
 } from './procedures.ts';
 import { openPromoterProcess } from './promoter-process.ts';
 import { learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
-import { scopeMatches, selectProcedureSkills } from './selection.ts';
+import { selectProcedureSkills } from './selection.ts';
+import { assertSuiteModules, DEFAULT_SUITES, resolveSuite, suiteHash } from './suites/index.ts';
+import type { EvaluationCase, EvaluationSuite, PhaseCases } from './suites/types.ts';
 
-export const EVALUATED_SCOPE: ProcedureScope = {
-  task_family: 'organize-records',
-  app: 'table-editor',
-  app_version: '1.0',
-  role: 'owner',
-  audience: 'private',
-};
+export { EVALUATED_SCOPE } from './suites/records.ts';
+
 const CRITICAL = ['source-authority', 'forgetting-and-access', 'procedure-scope'];
-const OUTPUT_BUDGET = 8192;
+export const OUTPUT_BUDGET = 8192;
+/** The promotion gate refuses more than this; asking first gives a reason instead of an opaque mismatch. */
+export const MAX_EVALUATION_JOBS = 40;
+export const MAX_RESERVED_TOKENS = 65536;
+/**
+ * Longer than any bounded evaluation can run (sixteen arms of twenty seconds, plus
+ * the harness), and short enough that a crashed run does not block a space for a
+ * day. The same bound frees the lease and lets the abandoned evaluation it left
+ * behind be recorded as failed.
+ */
+export const EVALUATION_LEASE_MS = 900000;
 const wake = (row: JobRow) => ({
   job_id: row.id,
   expected_epoch: row.leaseEpoch,
@@ -51,13 +57,39 @@ const wake = (row: JobRow) => ({
 type Evaluation = typeof procedureEvaluation.$inferSelect;
 type Arm = {
   row: JobRow;
-  score: number;
+  report: CheckReport;
   tokens: number;
   outputHash: string;
   attemptId: string;
   runtime: string;
   modelActual: string | null;
 };
+
+/** Field by field: a jsonb round trip may reorder keys but never changes a verdict. */
+export const sameDiscrimination = (
+  stored: ProcedureDiscrimination | null,
+  recomputed: ProcedureDiscrimination,
+) =>
+  !!stored &&
+  stored.status === recomputed.status &&
+  stored.detail === recomputed.detail &&
+  stored.prior_failed === recomputed.prior_failed &&
+  stored.corrected_failed === recomputed.corrected_failed &&
+  stored.empty_failed === recomputed.empty_failed &&
+  stored.junk_failed === recomputed.junk_failed;
+
+/** Every phase is two jobs per case; both caps are the gate's own. */
+export function assertEvaluationBudget(cases: readonly EvaluationCase[]) {
+  if (
+    !cases.length ||
+    cases.length * 2 > MAX_EVALUATION_JOBS ||
+    cases.length * 2 * OUTPUT_BUDGET > MAX_RESERVED_TOKENS
+  )
+    throw new ServiceError(
+      'evaluation_budget_exceeded',
+      'This evaluation would exceed the jobs or tokens a promotion decision may rest on.',
+    );
+}
 
 /** The trusted evaluator owns fixtures, job grants and grading; the proposer receives none of them. */
 export class ProcedureEvaluator {
@@ -67,7 +99,9 @@ export class ProcedureEvaluator {
     readonly jobs: JobService,
     readonly runtime: RuntimeAdapter,
     readonly options: RunnerOptions,
+    readonly suites: readonly EvaluationSuite[] = DEFAULT_SUITES,
   ) {
+    assertSuiteModules(suites);
     this.procedures = new ProcedureService(jobs);
   }
 
@@ -75,23 +109,67 @@ export class ProcedureEvaluator {
     if (this.busy)
       throw new ServiceError('evaluation_busy', 'Another bounded evaluation is running.');
     this.busy = true;
+    // The lease is a row, taken and released in short transactions. Holding a
+    // transaction open for the whole run would park a pooled connection idle in
+    // transaction while the evaluation drives real jobs through the runner.
+    const holder = newId('lease');
+    let leased = false;
     try {
-      // Hold a separate transaction for the whole evaluation, across replicas and both phases.
-      // Do not use JobService.transaction here: its event-order lock must stay short-lived.
-      return await this.jobs.db.transaction(async (lock) => {
-        const [row] = await lock.execute(
-          sql`select pg_try_advisory_xact_lock(781103, hashtext(${spaceId})) as acquired`,
-        );
-        if (!row?.acquired)
-          throw new ServiceError(
-            'evaluation_busy',
-            'An evaluation is already running in this space.',
-          );
-        return this.evaluateLocked(ownerId, spaceId, id);
-      });
+      await this.takeLease(spaceId, id, holder);
+      leased = true;
+      return await this.evaluateLocked(ownerId, spaceId, id);
     } finally {
+      // A call refused the lease ran nothing: the arm spaces, and the lease, belong
+      // to the evaluation that holds it and may still be running.
+      if (leased) {
+        await this.removeArmSpaces(id);
+        await this.jobs.db
+          .delete(learningEvaluationLease)
+          .where(
+            and(
+              eq(learningEvaluationLease.spaceId, spaceId),
+              eq(learningEvaluationLease.holder, holder),
+            ),
+          )
+          .catch(() => undefined);
+      }
       this.busy = false;
     }
+  }
+
+  /**
+   * An arm's space exists to isolate one graded run and is finished with when the
+   * run is, whether it passed, failed or crashed: the evidence lives on the
+   * evaluation row, not in the space. A space the memory layer has provisioned is
+   * left alone — its retention is memory's to decide, not this evaluator's.
+   */
+  private async removeArmSpaces(candidateId: string) {
+    await this.jobs.db
+      .execute(
+        sql`delete from space s where s.id in (
+          select j.space_id from learning_trial t join job j on j.id = t.job_id
+          where t.candidate_id = ${candidateId}
+        ) and not exists (select 1 from memory_spaces m where m.space_id = s.id)`,
+      )
+      // In a finally after the verdict: a cleanup that cannot run leaves the rows it
+      // would have removed, and must not replace the result the caller is waiting for.
+      .catch(() => undefined);
+  }
+
+  /** One evaluation at a time in a space; a lease whose holder died expires. */
+  private async takeLease(spaceId: string, candidateId: string, holder: string) {
+    const expiresAt = new Date(Date.now() + EVALUATION_LEASE_MS);
+    const [taken] = await this.jobs.db
+      .insert(learningEvaluationLease)
+      .values({ spaceId, candidateId, holder, expiresAt })
+      .onConflictDoUpdate({
+        target: learningEvaluationLease.spaceId,
+        set: { candidateId, holder, acquiredAt: new Date(), expiresAt },
+        setWhere: lte(learningEvaluationLease.expiresAt, new Date()),
+      })
+      .returning();
+    if (!taken)
+      throw new ServiceError('evaluation_busy', 'An evaluation is already running in this space.');
   }
 
   private async evaluateLocked(ownerId: string, spaceId: string, id: string) {
@@ -103,24 +181,98 @@ export class ProcedureEvaluator {
         verifyDefinition(candidate);
         if (candidate.rejectionReason)
           throw new ServiceError('candidate_rejected', 'This candidate remains rejected history.');
-        const [existing] = await tx
+        // Checks that cannot tell the corrected answer from the objected one measure nothing.
+        if (
+          (candidate.discrimination || isGeneralProcedure(candidate)) &&
+          candidate.discrimination?.status !== 'passed'
+        )
+          throw new ServiceError(
+            'checks_do_not_discriminate',
+            `checks_do_not_discriminate:${candidate.discrimination?.detail ?? 'unrecorded'}`,
+          );
+        // The stored verdict is a record, not an authority: it has to follow from the episode now.
+        if (isGeneralProcedure(candidate)) {
+          const recomputed = discriminate(candidate.checks, await discriminationInput(tx, source));
+          if (!sameDiscrimination(candidate.discrimination, recomputed))
+            throw new ServiceError(
+              'discrimination_changed',
+              `The recorded discrimination no longer follows from the episode: ${recomputed.detail}.`,
+            );
+        }
+        // A crash in the final phase leaves a finished validation row beside the
+        // running final one, so the running row is asked for by name, newest first.
+        const [running] = await tx
           .select()
           .from(procedureEvaluation)
-          .where(eq(procedureEvaluation.candidateId, id))
+          .where(
+            and(
+              eq(procedureEvaluation.candidateId, id),
+              sql`${procedureEvaluation.evidence}->>'status' = 'running'`,
+            ),
+          )
+          .orderBy(desc(procedureEvaluation.createdAt), desc(procedureEvaluation.id))
           .limit(1);
-        if (existing) return null;
+        const [existing] = running
+          ? [running]
+          : await tx
+              .select()
+              .from(procedureEvaluation)
+              .where(eq(procedureEvaluation.candidateId, id))
+              .orderBy(desc(procedureEvaluation.createdAt), desc(procedureEvaluation.id))
+              .limit(1);
+        if (existing) {
+          // A crashed run leaves `running` behind, and nothing else ever closes it:
+          // every later call would return this inspection and the candidate could never
+          // be evaluated again. Past the lease bound it is recorded as the failure it
+          // was, with its reserved budget still charged, exactly as an in-process
+          // failure would have been.
+          if (
+            existing.evidence.status !== 'running' ||
+            Date.now() - existing.createdAt.getTime() < EVALUATION_LEASE_MS
+          )
+            return null;
+          await tx
+            .update(procedureEvaluation)
+            .set({
+              passed: false,
+              evidence: { ...existing.evidence, status: 'failed', reason: 'evaluation_abandoned' },
+            })
+            .where(eq(procedureEvaluation.id, existing.id));
+          await tx
+            .update(procedureCandidate)
+            .set({ rejectionReason: 'evaluation_abandoned' })
+            .where(eq(procedureCandidate.id, id));
+          if (candidate.state === 'candidate')
+            await transitionProcedure(
+              tx,
+              candidate,
+              'evaluated',
+              'evaluator',
+              'An earlier evaluation never finished; its budget remains charged.',
+            );
+          // Recorded here, refused outside: throwing would roll this record back.
+          return 'abandoned' as const;
+        }
         if (candidate.state !== 'candidate')
           throw new ServiceError('invalid_procedure_state', 'A fresh candidate is required.');
-        if (!scopeMatches(candidate.scope, EVALUATED_SCOPE))
+        const suite = resolveSuite(candidate.scope, this.suites);
+        if (!suite)
           throw new ServiceError(
-            'evaluation_scope_unsupported',
-            'This fixture suite evaluates organize-records in table-editor 1.0.',
+            'evaluation_suite_unavailable',
+            'No evaluation suite covers this procedure scope.',
           );
         const model = `${this.options.provider ?? 'stub'}/${this.options.model ?? 'script'}`;
         if (!candidate.compatibleModels.includes(model))
           throw new ServiceError('evaluation_model_mismatch', 'Evaluate with a compatible model.');
-        return { candidate, source };
+        const plan = await suite.plan({ tx, ownerId, candidate, source });
+        assertEvaluationBudget(plan.validation.cases);
+        return { candidate: plan.candidate, source, suite, plan };
       });
+      if (reserved === 'abandoned')
+        throw new ServiceError(
+          'evaluation_abandoned',
+          'An earlier evaluation of this procedure never finished; it is recorded as failed.',
+        );
       if (!reserved) return this.procedures.inspect(ownerId, spaceId, id);
       const runtime = await this.runtime.capabilities();
       if (!reserved.source.versions.some((version) => version.runtime === runtime.version))
@@ -138,24 +290,25 @@ export class ProcedureEvaluator {
         ownerId,
         reserved.candidate,
         reserved.source,
+        reserved.suite,
         'validation',
-        validationCases,
-        validationMemory,
+        reserved.plan.validation,
         null,
         runner,
         promoter,
       );
       if (!validation.passed || !validation.selectedAt)
         return this.procedures.inspect(ownerId, spaceId, id);
-      // The final module is deliberately loaded only after selection committed. No adaptive final retries.
-      const final = await import('../../../../conformance/learning/sealed-final.ts');
+      // Final cases are resolved only now, after selection committed, from the selection's own id.
+      const final = await reserved.plan.sealedFinal(validation.id);
+      assertEvaluationBudget(final.cases);
       await this.runPhase(
         ownerId,
         reserved.candidate,
         reserved.source,
+        reserved.suite,
         'sealed_final',
-        final.sealedFinalCases(),
-        final.sealedFinalMemory,
+        final,
         validation,
         runner,
         promoter,
@@ -174,15 +327,16 @@ export class ProcedureEvaluator {
     ownerId: string,
     candidate: Candidate,
     source: EpisodeRow,
+    suite: EvaluationSuite,
     phase: GateInput['phase'],
-    cases: readonly RecordCase[],
-    memoryFiles: readonly string[],
+    planned: PhaseCases,
     selection: Evaluation | null,
     runner: AttemptRunner,
     promoter: Awaited<ReturnType<typeof openPromoterProcess>>,
   ) {
+    const cases = planned.cases;
     const memory = [];
-    for (const path of memoryFiles)
+    for (const path of planned.memory)
       memory.push(
         scenario.parse(
           await Bun.file(
@@ -190,15 +344,12 @@ export class ProcedureEvaluator {
           ).json(),
         ),
       );
-    const code = [];
-    for (const path of [
-      'conformance/learning/records.ts',
-      'conformance/memory/harness.ts',
-      'conformance/memory/provider.ts',
-      'apps/melete/src/learning/gate.ts',
-    ])
-      code.push(digest(await Bun.file(new URL(`../../../../${path}`, import.meta.url)).text()));
-    const suiteHash = digest({ phase, cases, memory, code });
+    const hash = await suiteHash({
+      phase,
+      suite,
+      caseTemplates: cases.map((value) => value.template),
+      memory,
+    });
     const started = performance.now();
     const baseBudget = {
       jobs: cases.length * 2,
@@ -222,7 +373,8 @@ export class ProcedureEvaluator {
           candidateId: candidate.id,
           bodyHash: candidate.bodyHash,
           phase,
-          suiteHash,
+          suiteId: suite.id,
+          suiteHash: hash,
           evidence: { status: 'running', selection_evaluation_id: selection?.id ?? null },
           budget: baseBudget,
           passed: false,
@@ -238,8 +390,24 @@ export class ProcedureEvaluator {
       let latestCandidate: JobRow | undefined;
       for (const value of cases) {
         const occurredAt = new Date().toISOString();
-        const baseline = await this.runArm(ownerId, candidate, evaluation, value, false, runner);
-        const learned = await this.runArm(ownerId, candidate, evaluation, value, true, runner);
+        const baseline = await this.runArm(
+          ownerId,
+          candidate,
+          evaluation,
+          value,
+          false,
+          runner,
+          suite,
+        );
+        const learned = await this.runArm(
+          ownerId,
+          candidate,
+          evaluation,
+          value,
+          true,
+          runner,
+          suite,
+        );
         latestCandidate = learned.row;
         actualTokens += baseline.tokens + learned.tokens;
         rows.push({
@@ -247,20 +415,23 @@ export class ProcedureEvaluator {
           template: value.template,
           space: learned.row.spaceId,
           occurredAt,
-          baseline: baseline.score,
-          candidate: learned.score,
-          baselineCorrections: 1 - baseline.score,
-          candidateCorrections: 1 - learned.score,
+          baseline: baseline.report.score,
+          candidate: learned.report.score,
+          // Failed checks, measured on each run: not a restatement of the score.
+          baselineCorrections: baseline.report.corrections,
+          candidateCorrections: learned.report.corrections,
           scopeViolations: 0,
         });
         runs.push({
           template: value.template,
+          origin: value.origin,
           baseline: {
             job: baseline.row.id,
             attempt: baseline.attemptId,
             outputHash: baseline.outputHash,
             runtime: baseline.runtime,
             modelActual: baseline.modelActual,
+            corrections: baseline.report.corrections,
           },
           candidate: {
             job: learned.row.id,
@@ -268,11 +439,12 @@ export class ProcedureEvaluator {
             outputHash: learned.outputHash,
             runtime: learned.runtime,
             modelActual: learned.modelActual,
+            corrections: learned.report.corrections,
           },
         });
       }
       if (!latestCandidate) throw new Error('evaluation_cases_empty');
-      const violations = await this.scopeChecks(latestCandidate, candidate.scope, runner);
+      const violations = await this.scopeChecks(latestCandidate, candidate, runner);
       rows.push({
         family: 'procedure-scope',
         template: `${phase}-scope-boundaries`,
@@ -330,7 +502,7 @@ export class ProcedureEvaluator {
         phase,
         target: 'skill_body',
         definitionHash: candidate.bodyHash,
-        suiteHash,
+        suiteHash: hash,
         source: {
           family: source.scope.task_family,
           template: source.templateId,
@@ -445,9 +617,10 @@ export class ProcedureEvaluator {
     ownerId: string,
     candidate: Candidate,
     evaluation: Evaluation,
-    value: RecordCase,
+    value: EvaluationCase,
     useCandidate: boolean,
     runner: AttemptRunner,
+    suite: EvaluationSuite,
   ): Promise<Arm> {
     const row = await this.jobs.transaction(async (tx) => {
       const id = newId('sp');
@@ -457,20 +630,26 @@ export class ProcedureEvaluator {
         gitPath: `evaluation/${id}`,
         ownerPrincipalId: ownerId,
       });
-      const row = await this.jobs.createInTransaction(tx, {
-        space_id: id,
-        title: value.template,
-        objective: taskObjective(value.task),
-        learning: { scope: candidate.scope, template_id: value.template, input_refs: [] },
-        budget: {
-          max_turns: 2,
-          max_output_tokens: OUTPUT_BUDGET,
-          max_actions: 0,
-          max_attempts: 1,
-          max_wall_ms: 15000,
-          max_usd_est: 0.1,
+      const row = await this.jobs.createInTransaction(
+        tx,
+        {
+          space_id: id,
+          title: value.template,
+          objective: value.objective,
+          learning: { scope: candidate.scope, template_id: value.template, input_refs: [] },
+          budget: {
+            max_turns: 2,
+            max_output_tokens: OUTPUT_BUDGET,
+            max_actions: 0,
+            max_attempts: 1,
+            max_wall_ms: 15000,
+            max_usd_est: 0.1,
+          },
         },
-      });
+        undefined,
+        // Held-out history or a model-authored variant, never a request typed now.
+        'derived',
+      );
       await tx.insert(learningTrial).values({
         jobId: row.id,
         candidateId: candidate.id,
@@ -498,9 +677,13 @@ export class ProcedureEvaluator {
     const usage = attemptUsage.parse(execution.usage);
     const parsed = attemptOutcome.safeParse(execution.outcomeDetail);
     const summary = parsed.success && 'summary' in parsed.data ? parsed.data.summary : '';
+    const actions = await this.jobs.db
+      .select({ kind: action.kind, effectClass: action.effectClass, status: action.status })
+      .from(action)
+      .where(eq(action.jobId, row.id));
     return {
       row,
-      score: current.state === 'completed' && gradeRecords(value, summary) ? 1 : 0,
+      report: suite.grade(value, { output: summary, actions, state: current.state }, candidate),
       tokens: usage.input_tokens + usage.output_tokens,
       outputHash: digest(summary),
       attemptId: execution.id,
@@ -509,7 +692,8 @@ export class ProcedureEvaluator {
     };
   }
 
-  private async scopeChecks(row: JobRow, scope: ProcedureScope, runner: AttemptRunner) {
+  private async scopeChecks(row: JobRow, candidate: Candidate, runner: AttemptRunner) {
+    const scope: ProcedureScope = candidate.scope;
     const model: AttemptBundle['model'] = {
       provider: this.options.provider ?? 'stub',
       model: this.options.model ?? 'script',
@@ -518,6 +702,10 @@ export class ProcedureEvaluator {
     const runtime = await runner.runtime.capabilities();
     return this.jobs.transaction(async (tx) => {
       let violations = 0;
+      // Every probe below expects nothing, which proves nothing unless the unchanged job
+      // receives the candidate. A control that delivers nothing counts against the scope.
+      const control = await selectProcedureSkills(tx, row, model, runtime.version);
+      if (control.length !== 1 || control[0]?.name !== `procedure:${candidate.id}`) violations += 1;
       violations += (
         await selectProcedureSkills(
           tx,
@@ -538,15 +726,17 @@ export class ProcedureEvaluator {
         )
       ).length;
       violations += (await selectProcedureSkills(tx, row, model, 'incompatible-runtime')).length;
-      for (const changed of [
-        { ...scope, task_family: 'another-family' },
-        { ...scope, app: 'another-app' },
-        { ...scope, app_version: '99.0' },
-      ]) {
+      for (const key of ['task_family', 'app', 'app_version'] as const) {
+        const changed = { ...scope, [key]: `another-${scope[key]}` };
         await tx.update(learningJob).set({ scope: changed }).where(eq(learningJob.jobId, row.id));
         violations += (await selectProcedureSkills(tx, row, model, runtime.version)).length;
       }
       await tx.update(learningJob).set({ scope }).where(eq(learningJob.jobId, row.id));
+      // With the scope restored, work the triggers do not name still receives nothing.
+      if (candidate.triggers.length)
+        violations += (
+          await selectProcedureSkills(tx, { ...row, objective: '.' }, model, runtime.version, '')
+        ).length;
       return violations;
     });
   }

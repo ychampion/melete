@@ -1,4 +1,11 @@
-import type { ProcedurePromotion } from '@melete/contracts';
+import type {
+  ProcedureCaseTemplates,
+  ProcedureCheck,
+  ProcedureDiscrimination,
+  ProcedurePromotion,
+  ProcedureStepEvidence,
+  ProcedureTrigger,
+} from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
@@ -15,18 +22,22 @@ import { attempt, job, space } from '../db/schema.ts';
 import type { Intervention, ProcedureScope, ProcedureState, VersionEvidence } from './contracts.ts';
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
-export const learningJob = pgTable('learning_job', {
-  jobId: text('job_id')
-    .primaryKey()
-    .references(() => job.id, { onDelete: 'cascade' }),
-  spaceId: text('space_id')
-    .notNull()
-    .references(() => space.id, { onDelete: 'cascade' }),
-  scope: jsonb('scope').$type<ProcedureScope>().notNull(),
-  templateId: text('template_id').notNull(),
-  inputRefs: jsonb('input_refs').$type<string[]>().notNull().default([]),
-  createdAt: created(),
-});
+export const learningJob = pgTable(
+  'learning_job',
+  {
+    jobId: text('job_id')
+      .primaryKey()
+      .references(() => job.id, { onDelete: 'cascade' }),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    scope: jsonb('scope').$type<ProcedureScope>().notNull(),
+    templateId: text('template_id').notNull(),
+    inputRefs: jsonb('input_refs').$type<string[]>().notNull().default([]),
+    createdAt: created(),
+  },
+  (t) => [index('learning_job_scope_idx').on(t.spaceId, t.templateId)],
+);
 export const learningAttempt = pgTable('learning_attempt', {
   attemptId: text('attempt_id')
     .primaryKey()
@@ -56,6 +67,10 @@ export const episode = pgTable(
     receipts: jsonb('receipts').$type<Record<string, unknown>[]>().notNull().default([]),
     judgement: text('judgement').notNull().default('pending'),
     failureClass: text('failure_class'),
+    /** What the run produced before the correction, and after it: the only pair
+     * that can show a check tells the two apart. Both are erased by forgetting. */
+    priorOutput: text('prior_output'),
+    correctedOutput: text('corrected_output'),
     restricted: boolean('restricted').notNull().default(false),
     generationState: text('generation_state').notNull().default('pending'),
     generationStartedAt: timestamp('generation_started_at', { withTimezone: true }),
@@ -90,6 +105,12 @@ export const procedureCandidate = pgTable(
     body: text('body').notNull(),
     bodyHash: text('body_hash').notNull(),
     change: jsonb('change').$type<Record<string, unknown>>().notNull(),
+    triggers: jsonb('triggers').$type<ProcedureTrigger[]>().notNull().default([]),
+    checks: jsonb('checks').$type<ProcedureCheck[]>().notNull().default([]),
+    /** The flattened spans, for audit; the binding copies live inside `change`. */
+    evidence: jsonb('evidence').$type<ProcedureStepEvidence[]>().notNull().default([]),
+    caseTemplates: jsonb('case_templates').$type<ProcedureCaseTemplates>().notNull().default({}),
+    discrimination: jsonb('discrimination').$type<ProcedureDiscrimination>(),
     predictedBenefit: text('predicted_benefit').notNull(),
     knownRisk: text('known_risk').notNull(),
     tests: jsonb('tests').$type<string[]>().notNull(),
@@ -130,6 +151,7 @@ export const procedureEvaluation = pgTable(
       .references(() => procedureCandidate.id, { onDelete: 'cascade' }),
     bodyHash: text('body_hash').notNull(),
     phase: text('phase').notNull(),
+    suiteId: text('suite_id').notNull().default('records-fixtures/1'),
     suiteHash: text('suite_hash').notNull(),
     evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull(),
     budget: jsonb('budget').$type<Record<string, unknown>>().notNull(),
