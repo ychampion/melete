@@ -91,10 +91,10 @@ export async function recordAttemptContext(
         values (${scope.spaceId}, 'source', ${source.source_id}, ${source.source_version}, 'context', ${context.id}, '1') on conflict do nothing`;
     }
     if (context.items.length) {
-      // Only the space's owner sees what the details are called. A member of a
-      // shared space is told how many were used, never whose or which.
-      const [owned] = await tx`select (j.principal_id is null
-          or j.principal_id = s.owner_principal_id) as mine
+      // Details are named only in a personal space, to the person it belongs to.
+      // In a shared space a detail may be someone else's, so only the count is told.
+      const [owned] = await tx`select (s.kind = 'personal' and (j.principal_id is null
+          or j.principal_id = coalesce(s.owner_principal_id, (select id from owner limit 1)))) as mine
         from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
       await appendMemoryTool(tx, jobId, attemptId, {
         op: 'recall',

@@ -581,12 +581,82 @@ export class ExperienceMock {
     });
     this.state(chat, 'done');
   }
+  /**
+   * One tool entry as the service tells it: a running copy, then a finished one
+   * under the same id, and a trail step when the trail does not already carry it.
+   */
+  tool(chat: Chat, done: Omit<C.ToolCall, 'status' | 'ended_at'>, doing: string, trail = true) {
+    const finished = C.toolCall.parse({ ...done, status: 'done', ended_at: this.now() });
+    this.event(chat, {
+      type: 'tool',
+      tool: { ...finished, title: doing, status: 'running', ended_at: null, output_summary: null },
+    });
+    this.event(chat, { type: 'tool', tool: finished });
+    if (trail)
+      this.event(chat, {
+        type: 'action',
+        label: finished.title,
+        meta: finished.output_summary?.text ?? '',
+        sources: [],
+        tool: finished,
+      });
+  }
+  /** What memory gave the turn, named by the person's own saved details. */
+  recall(chat: Chat) {
+    const labels = [...this.memories.values()].slice(0, 3).map((item) => item.key);
+    if (!labels.length) return;
+    this.tool(
+      chat,
+      {
+        id: `memory:recall:${newId('att')}`,
+        kind: 'memory_recall',
+        title: `Used what you told me: ${labels.join(', ')}`.slice(0, C.TOOL_TITLE_LIMIT),
+        started_at: this.now(),
+        input_summary: null,
+        output_summary: {
+          text: `${labels.length} saved ${labels.length === 1 ? 'detail' : 'details'}`,
+        },
+        detail: null,
+        parent: null,
+      },
+      'Checking what I remember',
+    );
+  }
   step(chat: Chat) {
     if (chat.paused || chat.stopped) return;
+    if (chat.position === 0) this.recall(chat);
     const step = chat.script?.steps[chat.position++];
     if (!step) {
       this.finish(chat, 'Your request is ready.');
       return;
+    }
+    if (step.step === 'tool') {
+      const kind: C.ToolKind = step.name.startsWith('skills.')
+        ? 'skill'
+        : step.name.startsWith('browser')
+          ? 'browser'
+          : /^(exec|terminal|python)/.test(step.name)
+            ? 'sandbox'
+            : step.name.startsWith('web')
+              ? 'web'
+              : 'connector';
+      const title = plainText(step.title, 'Used a tool', C.TOOL_TITLE_LIMIT);
+      this.tool(
+        chat,
+        {
+          id: `call:${newId('call')}`,
+          kind,
+          title,
+          started_at: this.now(),
+          input_summary: null,
+          output_summary: step.meta ? { text: step.meta.slice(0, C.TOOL_SUMMARY_LIMIT) } : null,
+          detail: null,
+          parent: null,
+        },
+        plainText(step.active_title, title, C.TOOL_TITLE_LIMIT),
+        // Evidence-bearing and connector steps already reach the trail as a grouped action.
+        kind !== 'connector' && kind !== 'web' && !step.sources.length,
+      );
     }
     if (step.step === 'say') {
       this.flush(chat);
