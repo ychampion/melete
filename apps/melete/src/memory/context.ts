@@ -9,6 +9,8 @@ import {
   type StyleViolation,
   styleViolations as styleViolationsSchema,
 } from '@melete/contracts';
+import { memoryKeyLabel } from '../experience/evidence.ts';
+import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
 import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
@@ -23,6 +25,7 @@ export async function recordAttemptContext(
   attemptId: string,
   jobId: string,
   result: RecallResult,
+  startedAt?: Date,
 ): Promise<ContextRecord> {
   return sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope, false);
@@ -86,6 +89,25 @@ export async function recordAttemptContext(
       for (const source of item.sources)
         await tx`insert into memory_derivations (space_id, input_kind, input_id, input_version, output_kind, output_id, output_version)
         values (${scope.spaceId}, 'source', ${source.source_id}, ${source.source_version}, 'context', ${context.id}, '1') on conflict do nothing`;
+    }
+    if (context.items.length) {
+      // Only the space's owner sees what the details are called. A member of a
+      // shared space is told how many were used, never whose or which.
+      const [owned] = await tx`select (j.principal_id is null
+          or j.principal_id = s.owner_principal_id) as mine
+        from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+      await appendMemoryTool(tx, jobId, attemptId, {
+        op: 'recall',
+        id: `recall:${attemptId}`,
+        status: 'done',
+        started_at: startedAt?.toISOString() ?? context.created_at,
+        ended_at: context.created_at,
+        count: context.items.length,
+        labels: owned?.mine ? context.items.map((item) => memoryKeyLabel(item.key)) : [],
+        value: null,
+        memory_item_id: null,
+        parent: null,
+      });
     }
     return context;
   });
@@ -163,6 +185,7 @@ export async function assembleAttemptKnowledge(
   options: RecallOptions = {},
 ) {
   for (let retry = 0; retry < 3; retry++) {
+    const startedAt = new Date();
     const result = await recall(
       sql,
       scope,
@@ -173,7 +196,7 @@ export async function assembleAttemptKnowledge(
       },
     );
     try {
-      const context = await recordAttemptContext(sql, scope, attemptId, jobId, result);
+      const context = await recordAttemptContext(sql, scope, attemptId, jobId, result, startedAt);
       return { knowledge: result.items.map(asKnowledge), context, recall: result };
     } catch (error) {
       if (!(error instanceof MemoryError) || error.code !== 'stale_context' || retry === 2)
@@ -208,6 +231,7 @@ export function withMemoryRuntime(
             options,
           );
         for (let retry = 0; retry < 3; retry++) {
+          const startedAt = new Date();
           const built = await buildBundle(bundle, { sql, scope, catalog: options.catalog });
           try {
             const context = await recordAttemptContext(
@@ -216,6 +240,7 @@ export function withMemoryRuntime(
               bundle.attempt.id,
               bundle.attempt.job_id,
               built.recall,
+              startedAt,
             );
             assembled = built.bundle;
             return { knowledge: built.bundle.knowledge, context, recall: built.recall };

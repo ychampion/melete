@@ -81,6 +81,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     question: async (spaceId, id) =>
       (await questions.list(spaceId)).questions.find((item) => item.id === id),
   });
+  service.progress = (spaceId, jobId, turnId) => events.progress(spaceId, jobId, turnId);
   const effects = async (spaceId: string, id: string) => {
     await service.requireConversation(spaceId, id);
     const linked = deps.sql

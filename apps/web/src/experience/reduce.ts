@@ -160,9 +160,14 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
   // While a permission or question waits, the service emits nothing for that
   // turn except the status that says so (or a pause). Any other event means the
   // person decided somewhere else; the contract has no decision event, so the
-  // block closes without claiming which way it went.
+  // block closes without claiming which way it went. Tool entries are background
+  // work (memory, the model) that can land while the person decides, except an
+  // action entry moving on from needs_approval, which is the decision itself.
   const stillWaiting =
-    item.type === 'status' && ['needs_you', 'paused', 'queued', 'idle'].includes(item.status);
+    (item.type === 'status' && ['needs_you', 'paused', 'queued', 'idle'].includes(item.status)) ||
+    (item.type === 'tool' &&
+      !(item.tool.id.startsWith('action:') && item.tool.status !== 'needs_approval')) ||
+    (item.type === 'action' && item.tool !== undefined);
   const waited = stillWaiting
     ? base
     : patchTurn(base, event.turn_id, (turn) => ({

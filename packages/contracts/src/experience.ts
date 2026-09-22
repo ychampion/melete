@@ -153,6 +153,133 @@ export const permissionOutcome = z.strictObject({
   rule: standingRule.nullable(),
 });
 
+/**
+ * What kind of work a tool entry stands for. It picks an icon, never a code
+ * path: every kind has the same fields and the same status rules.
+ */
+export const TOOL_KINDS = [
+  'connector',
+  'web',
+  'file',
+  'artifact',
+  'browser',
+  'sandbox',
+  'skill',
+  'memory_recall',
+  'memory_write',
+  'memory_correct',
+  'memory_forget',
+  'model',
+  'retry',
+  'tool',
+] as const;
+export const toolKind = z.enum(TOOL_KINDS);
+export type ToolKind = z.infer<typeof toolKind>;
+/**
+ * `needs_approval` waits on the person; `unknown` means the destination never
+ * said whether it happened, and nothing is retried blindly.
+ */
+export const toolStatus = z.enum(['running', 'done', 'failed', 'needs_approval', 'unknown']);
+export type ToolStatus = z.infer<typeof toolStatus>;
+export const TOOL_TITLE_LIMIT = 120;
+export const TOOL_SUMMARY_LIMIT = 160;
+export const TOOL_QUOTE_LIMIT = 200;
+/**
+ * Text that came from somewhere other than the service: a page, a message, a
+ * file, or what was asked of a tool. A client shows it as a quotation from
+ * `from`, never in the assistant's voice.
+ */
+export const toolQuote = z.strictObject({
+  text: z.string().min(1).max(TOOL_QUOTE_LIMIT),
+  from: z.enum(['page', 'message', 'file', 'event', 'app', 'request']),
+});
+export type ToolQuote = z.infer<typeof toolQuote>;
+/** `text` is the service's own words; anything taken from outside is in `quote`. */
+export const toolSummary = z.strictObject({
+  text: z.string().min(1).max(TOOL_SUMMARY_LIMIT),
+  quote: toolQuote.optional(),
+});
+export type ToolSummary = z.infer<typeof toolSummary>;
+/** Something the person can open for more: a file, the pending permission, a page. */
+export const toolDetail = z.strictObject({
+  type: z.enum(['artifact', 'permission', 'receipt', 'memory', 'page']),
+  id,
+  url: url.optional(),
+});
+export type ToolDetail = z.infer<typeof toolDetail>;
+/**
+ * One piece of work done for the person, shown in the conversation. Each
+ * change arrives as a whole new copy under the same `id`; a client keeps the
+ * latest. `parent` names the entry this one belongs under.
+ */
+export const toolCall = z.strictObject({
+  id,
+  kind: toolKind,
+  title: z.string().min(1).max(TOOL_TITLE_LIMIT),
+  status: toolStatus,
+  started_at: date,
+  ended_at: date.nullable(),
+  input_summary: toolSummary.nullable(),
+  output_summary: toolSummary.nullable(),
+  detail: toolDetail.nullable(),
+  parent: id.nullable(),
+});
+export type ToolCall = z.infer<typeof toolCall>;
+
+/**
+ * What memory did during a turn. A memory writer appends this as a `notice`
+ * on the job, inside the transaction that did the work, and the conversation
+ * shows it as a tool entry: "Used what you told me: …", "Remembered: …",
+ * "Updated: …", "Forgot: …".
+ *
+ * `labels` name the details touched in plain words (a key label such as
+ * "Home city", never a key or claim id). `value` is the saved wording, shown
+ * as a quotation. Both may only describe details the conversation's own
+ * person told the service or may already see; a detail another person in a
+ * shared space said is counted, never named or quoted.
+ */
+export const MEMORY_TOOL_OPS = ['recall', 'write', 'correct', 'forget'] as const;
+export const memoryToolOp = z.enum(MEMORY_TOOL_OPS);
+export type MemoryToolOp = z.infer<typeof memoryToolOp>;
+export const MEMORY_TOOL_NOTICE = 'memory_tool';
+export const memoryToolNotice = z.strictObject({
+  kind: z.literal(MEMORY_TOOL_NOTICE),
+  op: memoryToolOp,
+  /** Stable per piece of work, for example `recall:<attempt id>` or `write:<claim id>@<revision>`. */
+  id,
+  status: toolStatus,
+  started_at: date,
+  ended_at: date.nullable(),
+  /** How many details the work touched, named or not. */
+  count,
+  labels: z.array(z.string().min(1).max(80)).max(20),
+  value: z.string().min(1).max(TOOL_QUOTE_LIMIT).nullable(),
+  /** The saved item the person can open, when there is one. */
+  memory_item_id: id.nullable(),
+  parent: id.nullable(),
+});
+export type MemoryToolNotice = z.infer<typeof memoryToolNotice>;
+/**
+ * Any other work, already described. The service scrubs every string again
+ * before showing it, so a writer cannot leak outside text through a title.
+ */
+export const TOOL_TRACE_NOTICE = 'tool_trace';
+export const toolTraceNotice = z.strictObject({
+  kind: z.literal(TOOL_TRACE_NOTICE),
+  call: toolCall,
+});
+export type ToolTraceNotice = z.infer<typeof toolTraceNotice>;
+
+/**
+ * How far a running conversation has got: finished steps and the one under
+ * way. There is no total, so there is no percentage.
+ */
+export const conversationProgress = z.strictObject({
+  steps_done: count,
+  current: z.string().min(1).max(TOOL_TITLE_LIMIT).nullable(),
+});
+export type ConversationProgress = z.infer<typeof conversationProgress>;
+
 export const trailStep = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('say'), text: z.string().min(1).max(600) }),
   z.strictObject({
@@ -160,6 +287,8 @@ export const trailStep = z.discriminatedUnion('type', [
     label: text,
     meta: z.string().max(4000),
     sources: z.array(experienceSource),
+    /** Present when the step is one tool entry: the same copy the `tool` item carries. */
+    tool: toolCall.optional(),
   }),
   z.strictObject({ type: z.literal('note'), text }),
   z.strictObject({
@@ -171,6 +300,7 @@ export const trailStep = z.discriminatedUnion('type', [
   }),
 ]);
 export type TrailStep = z.infer<typeof trailStep>;
+
 export const experienceEvent = z.strictObject({
   seq: count,
   conversation_id: id,
@@ -184,6 +314,7 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('permission'), permission: permissionCard }),
     z.strictObject({ type: z.literal('question'), question: experienceQuestion }),
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
+    z.strictObject({ type: z.literal('tool'), tool: toolCall }),
   ]),
 });
 export type ExperienceEvent = z.infer<typeof experienceEvent>;
@@ -206,6 +337,8 @@ export const conversation = z.strictObject({
   created_at: date,
   updated_at: date,
   plan_id: id.nullable(),
+  /** Present while a turn is under way, or when it finished with steps. */
+  progress: conversationProgress.optional(),
 });
 export type Conversation = z.infer<typeof conversation>;
 export const conversationTurn = z.strictObject({
