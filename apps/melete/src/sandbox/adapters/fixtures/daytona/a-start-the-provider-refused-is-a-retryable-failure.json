@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 12,
+        "atMs": 3,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox",
         "path": "/api/sandbox",
@@ -49,7 +49,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 13,
+        "atMs": 4,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -88,7 +88,7 @@
     },
     {
       "request": {
-        "atMs": 13,
+        "atMs": 5,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -107,7 +107,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 13,
+        "atMs": 5,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -146,7 +146,7 @@
     },
     {
       "request": {
-        "atMs": 58,
+        "atMs": 37,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -165,7 +165,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 58,
+        "atMs": 37,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -204,7 +204,7 @@
     },
     {
       "request": {
-        "atMs": 59,
+        "atMs": 38,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -229,7 +229,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 59,
+        "atMs": 38,
         "body": {
           "exitCode": 0,
           "result": "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/user\nUSER=user\nLOGNAME=user\nLANG=C.UTF-8\nDAYTONA_SANDBOX_ID=fake-sbx-0001\nDAYTONA_SANDBOX_SNAPSHOT=daytona-small\nDAYTONA_SANDBOX_USER=daytona\nDAYTONA_ORGANIZATION_ID=org_authoring\nDAYTONA_REGION_ID=us\n"
@@ -238,18 +238,67 @@
     },
     {
       "request": {
-        "atMs": 60,
+        "atMs": 39,
         "method": "POST",
-        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
-        "path": "/toolbox/fake-sbx-0001/process/execute",
-        "bodySha256": "e00230d667dac9017754bcc82f10eaa5b990e43b286519519ab98b0cbfd86150",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session",
+        "path": "/toolbox/fake-sbx-0001/process/session",
+        "bodySha256": "5af8ffd8220c129329a39d83b6f0cf00846a863581dac185c801eb3d1511033a",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "exec /bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\"; exec env \"$@\" < \"$f\"' 'melete-launch' '/work/not-a-directory' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'",
-          "timeout": 20
+          "sessionId": "melete-act_01J0CONFORMANCE00000000"
         }
+      },
+      "response": {
+        "status": 201,
+        "headers": {},
+        "chunks": [],
+        "end": "complete",
+        "atMs": 39
+      }
+    },
+    {
+      "request": {
+        "atMs": 39,
+        "method": "POST",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/exec",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/exec",
+        "bodySha256": "2c8a4cb7378c61be5092a53926e7fe94a39fa512c6342299a27f08250a0add51",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "command": "/bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\" < /dev/null; exec env \"$@\" < \"$f\"' 'melete-launch' '/work/not-a-directory' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' 'timeout' '-s' 'KILL' '20' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'",
+          "runAsync": true
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJjbWRJZCI6ImNtZC0wMDAxIn0="
+          }
+        ],
+        "end": "complete",
+        "atMs": 39,
+        "body": {
+          "cmdId": "cmd-0001"
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 40,
+        "method": "GET",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0001",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0001",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
       },
       "response": {
         "status": 200,
@@ -259,20 +308,85 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJleGl0Q29kZSI6MTEyLCJyZXN1bHQiOiIifQ=="
+            "base64": "eyJpZCI6ImNtZC0wMDAxIiwiY29tbWFuZCI6Ii9iaW4vc2ggLWMgJ2NkIFwiJDFcIiAyPi9kZXYvbnVsbCB8fCBleGl0IDExMjsgc2hpZnQ7IGY9XCIkMVwiOyBzaGlmdDsgWyBcIiRmXCIgPSAtIF0gJiYgZXhlYyBlbnYgXCIkQFwiIDwgL2Rldi9udWxsOyBleGVjIGVudiBcIiRAXCIgPCBcIiRmXCInICdtZWxldGUtbGF1bmNoJyAnL3dvcmsvbm90LWEtZGlyZWN0b3J5JyAnLScgJy11JyAnREFZVE9OQV9PUkdBTklaQVRJT05fSUQnICctdScgJ0RBWVRPTkFfUkVHSU9OX0lEJyAnLXUnICdEQVlUT05BX1NBTkRCT1hfSUQnICctdScgJ0RBWVRPTkFfU0FOREJPWF9TTkFQU0hPVCcgJy11JyAnREFZVE9OQV9TQU5EQk9YX1VTRVInICd0aW1lb3V0JyAnLXMnICdLSUxMJyAnMjAnICcvYmluL3NoJyAnLWMnICdkPS92YXIvdG1wLy5tZWxldGUtZXhlYy9hY3RfMDFKMENPTkZPUk1BTkNFMDAwMDAwMDBcbm1rZGlyIC1wIC92YXIvdG1wLy5tZWxldGUtZXhlYyB8fCBleGl0IDExMlxubWtkaXIgXCIkZFwiIDI+L2Rldi9udWxsIHx8IHsgZWNobyBtZWxldGVfZXhlY19yZWVudGVyZWQgPiYyOyBleGl0IDExMTsgfVxuKCAnXFwnJ3NoJ1xcJycgJ1xcJyctYydcXCcnICdcXCcncHJpbnRmIG9uY2UgPj4gL3dvcmsvY291bnRlcidcXCcnICkgPiBcIiRkL291dFwiIDI+JjFcbmVjPSQ/XG5wcmludGYgJ1xcJyclcydcXCcnIFwiJGVjXCIgPiBcIiRkL2V4aXQudG1wXCIgJiYgbXYgLWYgXCIkZC9leGl0LnRtcFwiIFwiJGQvZXhpdFwiXG5bIFwiJGVjXCIgPSAxMTEgXSAmJiBleGl0IDExM1xuWyBcIiRlY1wiID0gMTEyIF0gJiYgZXhpdCAxMTNcbmV4aXQgXCIkZWNcIicifQ=="
           }
         ],
         "end": "complete",
-        "atMs": 61,
+        "atMs": 40,
         "body": {
-          "exitCode": 112,
-          "result": ""
+          "id": "cmd-0001",
+          "command": "/bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\" < /dev/null; exec env \"$@\" < \"$f\"' 'melete-launch' '/work/not-a-directory' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' 'timeout' '-s' 'KILL' '20' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'"
         }
       }
     },
     {
       "request": {
-        "atMs": 61,
+        "atMs": 70,
+        "method": "GET",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0001",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0001",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJpZCI6ImNtZC0wMDAxIiwiY29tbWFuZCI6Ii9iaW4vc2ggLWMgJ2NkIFwiJDFcIiAyPi9kZXYvbnVsbCB8fCBleGl0IDExMjsgc2hpZnQ7IGY9XCIkMVwiOyBzaGlmdDsgWyBcIiRmXCIgPSAtIF0gJiYgZXhlYyBlbnYgXCIkQFwiIDwgL2Rldi9udWxsOyBleGVjIGVudiBcIiRAXCIgPCBcIiRmXCInICdtZWxldGUtbGF1bmNoJyAnL3dvcmsvbm90LWEtZGlyZWN0b3J5JyAnLScgJy11JyAnREFZVE9OQV9PUkdBTklaQVRJT05fSUQnICctdScgJ0RBWVRPTkFfUkVHSU9OX0lEJyAnLXUnICdEQVlUT05BX1NBTkRCT1hfSUQnICctdScgJ0RBWVRPTkFfU0FOREJPWF9TTkFQU0hPVCcgJy11JyAnREFZVE9OQV9TQU5EQk9YX1VTRVInICd0aW1lb3V0JyAnLXMnICdLSUxMJyAnMjAnICcvYmluL3NoJyAnLWMnICdkPS92YXIvdG1wLy5tZWxldGUtZXhlYy9hY3RfMDFKMENPTkZPUk1BTkNFMDAwMDAwMDBcbm1rZGlyIC1wIC92YXIvdG1wLy5tZWxldGUtZXhlYyB8fCBleGl0IDExMlxubWtkaXIgXCIkZFwiIDI+L2Rldi9udWxsIHx8IHsgZWNobyBtZWxldGVfZXhlY19yZWVudGVyZWQgPiYyOyBleGl0IDExMTsgfVxuKCAnXFwnJ3NoJ1xcJycgJ1xcJyctYydcXCcnICdcXCcncHJpbnRmIG9uY2UgPj4gL3dvcmsvY291bnRlcidcXCcnICkgPiBcIiRkL291dFwiIDI+JjFcbmVjPSQ/XG5wcmludGYgJ1xcJyclcydcXCcnIFwiJGVjXCIgPiBcIiRkL2V4aXQudG1wXCIgJiYgbXYgLWYgXCIkZC9leGl0LnRtcFwiIFwiJGQvZXhpdFwiXG5bIFwiJGVjXCIgPSAxMTEgXSAmJiBleGl0IDExM1xuWyBcIiRlY1wiID0gMTEyIF0gJiYgZXhpdCAxMTNcbmV4aXQgXCIkZWNcIiciLCJleGl0Q29kZSI6MTEyfQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 70,
+        "body": {
+          "id": "cmd-0001",
+          "command": "/bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\" < /dev/null; exec env \"$@\" < \"$f\"' 'melete-launch' '/work/not-a-directory' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' 'timeout' '-s' 'KILL' '20' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'",
+          "exitCode": 112
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 71,
+        "method": "GET",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0001/logs",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0001/logs",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8"
+        },
+        "chunks": [],
+        "end": "complete",
+        "atMs": 71
+      }
+    },
+    {
+      "request": {
+        "atMs": 71,
+        "method": "DELETE",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 204,
+        "headers": {},
+        "chunks": [],
+        "end": "complete",
+        "atMs": 71
+      }
+    },
+    {
+      "request": {
+        "atMs": 72,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -297,7 +411,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 61,
+        "atMs": 72,
         "body": {
           "exitCode": 3,
           "result": ""
@@ -306,7 +420,7 @@
     },
     {
       "request": {
-        "atMs": 62,
+        "atMs": 72,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fwork%2Fcounter",
@@ -325,7 +439,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 62,
+        "atMs": 73,
         "body": {
           "statusCode": 404,
           "message": "stat /work/counter: no such file or directory",
@@ -335,18 +449,67 @@
     },
     {
       "request": {
-        "atMs": 63,
+        "atMs": 73,
         "method": "POST",
-        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
-        "path": "/toolbox/fake-sbx-0001/process/execute",
-        "bodySha256": "da18f8078e946e09c47df60062d6a2e59bf072da25c8ed2f4de50c5a2e71e912",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session",
+        "path": "/toolbox/fake-sbx-0001/process/session",
+        "bodySha256": "5af8ffd8220c129329a39d83b6f0cf00846a863581dac185c801eb3d1511033a",
         "headers": {
           "content-type": "application/json"
         },
         "body": {
-          "command": "exec /bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\"; exec env \"$@\" < \"$f\"' 'melete-launch' '/work' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'",
-          "timeout": 20
+          "sessionId": "melete-act_01J0CONFORMANCE00000000"
         }
+      },
+      "response": {
+        "status": 201,
+        "headers": {},
+        "chunks": [],
+        "end": "complete",
+        "atMs": 73
+      }
+    },
+    {
+      "request": {
+        "atMs": 73,
+        "method": "POST",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/exec",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/exec",
+        "bodySha256": "7ad5916a36be14efcc7842f1c5ca03d6fe9d389ce960bd3f63413a3b05596cf2",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "command": "/bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\" < /dev/null; exec env \"$@\" < \"$f\"' 'melete-launch' '/work' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' 'timeout' '-s' 'KILL' '20' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'",
+          "runAsync": true
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJjbWRJZCI6ImNtZC0wMDAyIn0="
+          }
+        ],
+        "end": "complete",
+        "atMs": 74,
+        "body": {
+          "cmdId": "cmd-0002"
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 74,
+        "method": "GET",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0002",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0002",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
       },
       "response": {
         "status": 200,
@@ -356,20 +519,85 @@
         "chunks": [
           {
             "atMs": 0,
-            "base64": "eyJleGl0Q29kZSI6MCwicmVzdWx0IjoiIn0="
+            "base64": "eyJpZCI6ImNtZC0wMDAyIiwiY29tbWFuZCI6Ii9iaW4vc2ggLWMgJ2NkIFwiJDFcIiAyPi9kZXYvbnVsbCB8fCBleGl0IDExMjsgc2hpZnQ7IGY9XCIkMVwiOyBzaGlmdDsgWyBcIiRmXCIgPSAtIF0gJiYgZXhlYyBlbnYgXCIkQFwiIDwgL2Rldi9udWxsOyBleGVjIGVudiBcIiRAXCIgPCBcIiRmXCInICdtZWxldGUtbGF1bmNoJyAnL3dvcmsnICctJyAnLXUnICdEQVlUT05BX09SR0FOSVpBVElPTl9JRCcgJy11JyAnREFZVE9OQV9SRUdJT05fSUQnICctdScgJ0RBWVRPTkFfU0FOREJPWF9JRCcgJy11JyAnREFZVE9OQV9TQU5EQk9YX1NOQVBTSE9UJyAnLXUnICdEQVlUT05BX1NBTkRCT1hfVVNFUicgJ3RpbWVvdXQnICctcycgJ0tJTEwnICcyMCcgJy9iaW4vc2gnICctYycgJ2Q9L3Zhci90bXAvLm1lbGV0ZS1leGVjL2FjdF8wMUowQ09ORk9STUFOQ0UwMDAwMDAwMFxubWtkaXIgLXAgL3Zhci90bXAvLm1lbGV0ZS1leGVjIHx8IGV4aXQgMTEyXG5ta2RpciBcIiRkXCIgMj4vZGV2L251bGwgfHwgeyBlY2hvIG1lbGV0ZV9leGVjX3JlZW50ZXJlZCA+JjI7IGV4aXQgMTExOyB9XG4oICdcXCcnc2gnXFwnJyAnXFwnJy1jJ1xcJycgJ1xcJydwcmludGYgb25jZSA+PiAvd29yay9jb3VudGVyJ1xcJycgKSA+IFwiJGQvb3V0XCIgMj4mMVxuZWM9JD9cbnByaW50ZiAnXFwnJyVzJ1xcJycgXCIkZWNcIiA+IFwiJGQvZXhpdC50bXBcIiAmJiBtdiAtZiBcIiRkL2V4aXQudG1wXCIgXCIkZC9leGl0XCJcblsgXCIkZWNcIiA9IDExMSBdICYmIGV4aXQgMTEzXG5bIFwiJGVjXCIgPSAxMTIgXSAmJiBleGl0IDExM1xuZXhpdCBcIiRlY1wiJyJ9"
           }
         ],
         "end": "complete",
-        "atMs": 64,
+        "atMs": 75,
         "body": {
-          "exitCode": 0,
-          "result": ""
+          "id": "cmd-0002",
+          "command": "/bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\" < /dev/null; exec env \"$@\" < \"$f\"' 'melete-launch' '/work' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' 'timeout' '-s' 'KILL' '20' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'"
         }
       }
     },
     {
       "request": {
-        "atMs": 64,
+        "atMs": 115,
+        "method": "GET",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0002",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0002",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJpZCI6ImNtZC0wMDAyIiwiY29tbWFuZCI6Ii9iaW4vc2ggLWMgJ2NkIFwiJDFcIiAyPi9kZXYvbnVsbCB8fCBleGl0IDExMjsgc2hpZnQ7IGY9XCIkMVwiOyBzaGlmdDsgWyBcIiRmXCIgPSAtIF0gJiYgZXhlYyBlbnYgXCIkQFwiIDwgL2Rldi9udWxsOyBleGVjIGVudiBcIiRAXCIgPCBcIiRmXCInICdtZWxldGUtbGF1bmNoJyAnL3dvcmsnICctJyAnLXUnICdEQVlUT05BX09SR0FOSVpBVElPTl9JRCcgJy11JyAnREFZVE9OQV9SRUdJT05fSUQnICctdScgJ0RBWVRPTkFfU0FOREJPWF9JRCcgJy11JyAnREFZVE9OQV9TQU5EQk9YX1NOQVBTSE9UJyAnLXUnICdEQVlUT05BX1NBTkRCT1hfVVNFUicgJ3RpbWVvdXQnICctcycgJ0tJTEwnICcyMCcgJy9iaW4vc2gnICctYycgJ2Q9L3Zhci90bXAvLm1lbGV0ZS1leGVjL2FjdF8wMUowQ09ORk9STUFOQ0UwMDAwMDAwMFxubWtkaXIgLXAgL3Zhci90bXAvLm1lbGV0ZS1leGVjIHx8IGV4aXQgMTEyXG5ta2RpciBcIiRkXCIgMj4vZGV2L251bGwgfHwgeyBlY2hvIG1lbGV0ZV9leGVjX3JlZW50ZXJlZCA+JjI7IGV4aXQgMTExOyB9XG4oICdcXCcnc2gnXFwnJyAnXFwnJy1jJ1xcJycgJ1xcJydwcmludGYgb25jZSA+PiAvd29yay9jb3VudGVyJ1xcJycgKSA+IFwiJGQvb3V0XCIgMj4mMVxuZWM9JD9cbnByaW50ZiAnXFwnJyVzJ1xcJycgXCIkZWNcIiA+IFwiJGQvZXhpdC50bXBcIiAmJiBtdiAtZiBcIiRkL2V4aXQudG1wXCIgXCIkZC9leGl0XCJcblsgXCIkZWNcIiA9IDExMSBdICYmIGV4aXQgMTEzXG5bIFwiJGVjXCIgPSAxMTIgXSAmJiBleGl0IDExM1xuZXhpdCBcIiRlY1wiJyIsImV4aXRDb2RlIjowfQ=="
+          }
+        ],
+        "end": "complete",
+        "atMs": 115,
+        "body": {
+          "id": "cmd-0002",
+          "command": "/bin/sh -c 'cd \"$1\" 2>/dev/null || exit 112; shift; f=\"$1\"; shift; [ \"$f\" = - ] && exec env \"$@\" < /dev/null; exec env \"$@\" < \"$f\"' 'melete-launch' '/work' '-' '-u' 'DAYTONA_ORGANIZATION_ID' '-u' 'DAYTONA_REGION_ID' '-u' 'DAYTONA_SANDBOX_ID' '-u' 'DAYTONA_SANDBOX_SNAPSHOT' '-u' 'DAYTONA_SANDBOX_USER' 'timeout' '-s' 'KILL' '20' '/bin/sh' '-c' 'd=/var/tmp/.melete-exec/act_01J0CONFORMANCE00000000\nmkdir -p /var/tmp/.melete-exec || exit 112\nmkdir \"$d\" 2>/dev/null || { echo melete_exec_reentered >&2; exit 111; }\n( '\\''sh'\\'' '\\''-c'\\'' '\\''printf once >> /work/counter'\\'' ) > \"$d/out\" 2>&1\nec=$?\nprintf '\\''%s'\\'' \"$ec\" > \"$d/exit.tmp\" && mv -f \"$d/exit.tmp\" \"$d/exit\"\n[ \"$ec\" = 111 ] && exit 113\n[ \"$ec\" = 112 ] && exit 113\nexit \"$ec\"'",
+          "exitCode": 0
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 115,
+        "method": "GET",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0002/logs",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/command/cmd-0002/logs",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/plain; charset=utf-8"
+        },
+        "chunks": [],
+        "end": "complete",
+        "atMs": 115
+      }
+    },
+    {
+      "request": {
+        "atMs": 115,
+        "method": "DELETE",
+        "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000",
+        "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 204,
+        "headers": {},
+        "chunks": [],
+        "end": "complete",
+        "atMs": 115
+      }
+    },
+    {
+      "request": {
+        "atMs": 116,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -394,7 +622,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 65,
+        "atMs": 116,
         "body": {
           "exitCode": 0,
           "result": "f 1 644 exit\u0000f 0 644 out\u0000"
@@ -403,7 +631,7 @@
     },
     {
       "request": {
-        "atMs": 65,
+        "atMs": 117,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fwork%2Fcounter",
@@ -422,7 +650,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 66,
+        "atMs": 117,
         "body": {
           "bytes": 4
         }
@@ -430,7 +658,7 @@
     },
     {
       "request": {
-        "atMs": 66,
+        "atMs": 117,
         "method": "DELETE",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -449,7 +677,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 66,
+        "atMs": 117,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",

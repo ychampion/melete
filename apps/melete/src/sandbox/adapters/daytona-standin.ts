@@ -11,6 +11,13 @@
  *   process group, kills the group at the request's timeout and then answers
  *   408; a finished command answers 200 with `exitCode` and the combined
  *   output as `result` (`apps/daemon/pkg/toolbox/process/execute.go`).
+ * - A session is one shell that runs its commands one after another
+ *   (`apps/daemon/pkg/session`). Creating a session that exists is a 409; a
+ *   `runAsync` command answers 202 with its `cmdId` as soon as it is handed to
+ *   the shell; its `exitCode` appears once it has finished; its logs are the
+ *   combined output as plain text for a client that names no SDK version;
+ *   deleting a session kills what still runs in it. The daemon sets no
+ *   timeout on a session command.
  * - `/files/upload` creates missing parent directories
  *   (`apps/daemon/pkg/toolbox/fs/upload_file.go`, gin v1.10.1), and
  *   `/files/download` answers 404 for a missing path and 400 for a directory.
@@ -73,8 +80,19 @@ function formFile(contentType: string, bytes: Uint8Array): Uint8Array | null {
   return new Uint8Array(Buffer.from(text.slice(start + 4, end), 'latin1'));
 }
 
+type SessionCommand = {
+  command: string;
+  exitCode: number | null;
+  chunks: Uint8Array[];
+  kill: () => void;
+};
+
+type Session = { commands: Map<string, SessionCommand>; tail: Promise<void> };
+
 type Held = {
   sandbox: FakeSandbox;
+  /** Toolbox sessions; the daemon loses them when the sandbox stops. */
+  sessions: Map<string, Session>;
   state: string;
   /** What the next read shows, for states Daytona passes through. */
   next: string | null;
@@ -103,6 +121,7 @@ export function createDaytonaStandin(options: { ignoreLabelFilter?: boolean } = 
   const engine = new FakeSandboxEngine();
   const records = new Map<string, Held>();
   let refuseStop = false;
+  let commandCounter = 0;
 
   const dto = (record: Held) => ({
     id: record.sandbox.id,
@@ -192,6 +211,7 @@ export function createDaytonaStandin(options: { ignoreLabelFilter?: boolean } = 
       sandbox.env.DAYTONA_SANDBOX_ID = sandbox.id;
       const record: Held = {
         sandbox,
+        sessions: new Map(),
         state: 'creating',
         next: 'started',
         networkBlockAll: body.networkBlockAll === true,
@@ -240,6 +260,7 @@ export function createDaytonaStandin(options: { ignoreLabelFilter?: boolean } = 
         return json(200, dto(record));
       }
       for (const process of record.sandbox.processes.values()) process.kill();
+      record.sessions.clear();
       record.sandbox.state = 'paused';
       record.state = 'stopping';
       record.next = 'stopped';
@@ -282,6 +303,9 @@ export function createDaytonaStandin(options: { ignoreLabelFilter?: boolean } = 
         typeof body.timeout === 'number' ? body.timeout : 0,
       );
     }
+    const sessionRoute =
+      /^\/process\/session(?:\/([^/]+)(?:\/(exec|command\/([^/]+)(\/logs)?))?)?$/.exec(route);
+    if (sessionRoute) return session(record, method, init, sessionRoute);
     const target = url.searchParams.get('path') ?? '';
     if (route === '/files/download' && method === 'GET') {
       if (!target) return toolboxError(400, 'path is required');
@@ -304,6 +328,76 @@ export function createDaytonaStandin(options: { ignoreLabelFilter?: boolean } = 
       fs.writeFile(target, file, { parents: true });
       return new Response(null, { status: 200 });
     }
+    return toolboxError(404, 'no such route');
+  }
+
+  function session(
+    record: Held,
+    method: string,
+    init: RequestInit,
+    [, sessionId, action, commandId, logs]: RegExpExecArray,
+  ): Response {
+    const body = () =>
+      JSON.parse(new TextDecoder().decode(bodyBytes(init.body)) || '{}') as {
+        sessionId?: unknown;
+        command?: unknown;
+        runAsync?: unknown;
+      };
+    if (!sessionId) {
+      if (method !== 'POST') return toolboxError(404, 'no such route');
+      const wanted = body().sessionId;
+      if (typeof wanted !== 'string' || !wanted) return toolboxError(400, 'invalid request body');
+      if (record.sessions.has(wanted)) return toolboxError(409, 'session already exists');
+      record.sessions.set(wanted, { commands: new Map(), tail: Promise.resolve() });
+      return new Response(null, { status: 201 });
+    }
+    const held = record.sessions.get(sessionId);
+    if (!held) return toolboxError(404, 'session not found');
+    if (!action && method === 'DELETE') {
+      for (const command of held.commands.values()) command.kill();
+      record.sessions.delete(sessionId);
+      return new Response(null, { status: 204 });
+    }
+    if (action === 'exec' && method === 'POST') {
+      const request = body();
+      if (typeof request.command !== 'string' || !request.command.trim())
+        return toolboxError(400, 'command cannot be empty');
+      if (request.runAsync !== true)
+        return toolboxError(400, 'the stand-in runs session commands asynchronously only');
+      commandCounter += 1;
+      const id = `cmd-${String(commandCounter).padStart(4, '0')}`;
+      const text = request.command;
+      const entry: SessionCommand = { command: text, exitCode: null, chunks: [], kill: () => {} };
+      held.commands.set(id, entry);
+      // The session's shell runs one command at a time.
+      held.tail = held.tail.then(async () => {
+        if (!record.sessions.has(sessionId)) return;
+        // An asynchronous command's stdin is a pipe the daemon holds open.
+        const child = engine.spawn(record.sandbox, ['sh', '-c', text], {
+          cwd: '/',
+          stdin: 'open',
+          onOutput: (bytes) => entry.chunks.push(bytes),
+        });
+        entry.kill = () => child.kill();
+        const result = await child.done;
+        // A command killed by a signal is reported by its shell as 128 + 9.
+        entry.exitCode = result.killed ? 137 : (result.exitCode ?? 137);
+      });
+      return json(202, { cmdId: id });
+    }
+    const command = commandId ? held.commands.get(commandId) : undefined;
+    if (!command) return toolboxError(404, 'command not found');
+    if (method === 'GET' && logs)
+      return new Response(
+        new TextDecoder().decode(Buffer.concat(command.chunks.map((chunk) => Buffer.from(chunk)))),
+        { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+      );
+    if (method === 'GET')
+      return json(200, {
+        id: commandId,
+        command: command.command,
+        ...(command.exitCode === null ? {} : { exitCode: command.exitCode }),
+      });
     return toolboxError(404, 'no such route');
   }
 

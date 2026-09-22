@@ -11,6 +11,7 @@ import {
   type EgressPolicy,
   type ExecSpec,
   SandboxAdapterRefusal,
+  SandboxFileNotFound,
   SandboxGone,
   type SandboxHandle,
   type SandboxSpec,
@@ -97,7 +98,10 @@ const spec = (egress: EgressPolicy = { kind: 'deny_all' }): SandboxSpec => ({
 });
 
 /** A provider over a live stand-in, with every request it sends written down. */
-function standinProvider(rewrite?: (url: URL, response: Response) => Promise<Response>) {
+function standinProvider(
+  rewrite?: (url: URL, response: Response) => Promise<Response>,
+  options: { rewriteBody?: (url: URL, body: string) => string; graceMs?: number } = {},
+) {
   const standin = createDaytonaStandin();
   const sent: { method: string; url: URL; body: string | null; authorization: string | null }[] =
     [];
@@ -109,13 +113,18 @@ function standinProvider(rewrite?: (url: URL, response: Response) => Promise<Res
       body: typeof init.body === 'string' ? init.body : null,
       authorization: new Headers(init.headers).get('authorization'),
     });
-    const response = await standin.fetch(input, init);
+    const body =
+      options.rewriteBody && typeof init.body === 'string'
+        ? options.rewriteBody(url, init.body)
+        : init.body;
+    const response = await standin.fetch(input, { ...init, body });
     return rewrite ? rewrite(url, response) : response;
   };
   const provider = createDaytonaProvider({
     credential: (use) => use(AUTHORING_KEY),
     fetch,
     pollMs: 5,
+    ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
   });
   return { standin, provider, sent };
 }
@@ -438,18 +447,25 @@ test('stdin reaches a marked command once', async () => {
 });
 
 test("the toolbox's answers decide whether a command started", async () => {
-  const exec = (timeoutMs = 2_000): ExecSpec => ({
-    marker: 'act_01J0DAYTONAFACTS0000000',
-    argv: ['sh', '-c', 'exit 0'],
-    cwd: '/work',
-    timeoutMs,
-    maxOutputBytes: 4096,
-  });
-  let answer: (() => Response) | null = null;
+  let markers = 0;
+  const exec = (argv = ['sh', '-c', 'exit 0'], timeoutMs = 5_000): ExecSpec => {
+    markers += 1;
+    return {
+      marker: `act_01J0DAYTONAFACTS${String(markers).padStart(4, '0')}`,
+      argv,
+      cwd: '/work',
+      timeoutMs,
+      maxOutputBytes: 4096,
+    };
+  };
+  let answer: { route: RegExp; response: () => Response } | null = null;
   const { provider } = standinProvider(async (url, response) => {
-    if (!answer || !url.pathname.endsWith('/process/execute')) return response;
+    const chosen = answer;
+    if (!chosen?.route.test(url.pathname)) return response;
     await response.body?.cancel().catch(() => {});
-    return answer();
+    const replaced = chosen.response();
+    answer = null;
+    return replaced;
   });
   const handle: SandboxHandle = await openSandbox(provider, spec(), signal());
   const body = (status: number, value: unknown) => () =>
@@ -457,28 +473,140 @@ test("the toolbox's answers decide whether a command started", async () => {
       status,
       headers: { 'content-type': 'application/json' },
     });
-  // Turned away before the shell started: safe to send again.
-  for (const status of [400, 401, 404, 429]) {
-    answer = body(status, { statusCode: status, message: 'no' });
-    expect(await provider.exec(handle, exec(), signal()).catch((error) => error)).toBeInstanceOf(
-      SandboxStartRefused,
-    );
+  const opening = /\/process\/session$/;
+  const sending = /\/process\/session\/[^/]+\/exec$/;
+  const polling = /\/process\/session\/[^/]+\/command\/[^/]+$/;
+  const outcome = async (spec: ExecSpec) =>
+    provider.exec(handle, spec, signal()).catch((error: unknown) => error);
+  // The session could not be opened, or the command was turned away: nothing ran.
+  for (const route of [opening, sending])
+    for (const status of [400, 401, 404, 429]) {
+      answer = { route, response: body(status, { statusCode: status, message: 'no' }) };
+      expect(await outcome(exec())).toBeInstanceOf(SandboxStartRefused);
+    }
+  // A session for this action exists already: an earlier dispatch may have sent it.
+  answer = { route: opening, response: body(409, { statusCode: 409, message: 'exists' }) };
+  const conflict = await outcome(exec());
+  expect(conflict).toBeInstanceOf(SandboxTransportError);
+  expect((conflict as SandboxTransportError).started).toBe('unknown');
+  // Sent, and no command id came back: it may be running.
+  for (const response of [
+    body(408, { statusCode: 408, message: 'timeout' }),
+    body(502, { statusCode: 502, message: 'gateway' }),
+    body(202, {}),
+  ]) {
+    answer = { route: sending, response };
+    const lost = await outcome(exec());
+    expect(lost).toBeInstanceOf(SandboxTransportError);
+    expect((lost as SandboxTransportError).started).toBe('unknown');
   }
-  // A 408 before the deadline did not come from the toolbox's kill, and a
-  // server error may have come after the shell started.
-  for (const status of [408, 502, 504]) {
-    answer = body(status, { statusCode: status, message: 'gateway' });
-    const error = await provider.exec(handle, exec(5_000), signal()).catch((caught) => caught);
-    expect(error).toBeInstanceOf(SandboxTransportError);
-    expect((error as SandboxTransportError).started).toBe('unknown');
-  }
-  // The toolbox's -1 does not say whether its shell ran; the marker decides.
-  answer = body(200, { exitCode: -1, result: 'fork/exec: no such file or directory' });
-  expect(await provider.exec(handle, exec(), signal())).toMatchObject({
-    started: 'unknown',
-    state: 'lost',
+  // Once it has a command id it has started, whatever is lost afterwards.
+  answer = { route: polling, response: body(500, { statusCode: 500, message: 'broken' }) };
+  const after = await outcome(exec(['sh', '-c', 'sleep 1']));
+  expect(after).toBeInstanceOf(SandboxTransportError);
+  expect((after as SandboxTransportError).started).toBe('yes');
+  // A command's own 137 before its deadline is its own exit, not a kill.
+  expect(await outcome(exec(['sh', '-c', 'exit 137']))).toMatchObject({
+    started: 'yes',
+    state: 'exited',
+    exitCode: 137,
+    timedOut: false,
   });
-  answer = null;
+  await provider.destroy(handle, signal());
+});
+
+test('a poll lost after the command started is unknown and the command is never run again', async () => {
+  let cut = true;
+  const { provider } = standinProvider(async (url, response) => {
+    if (cut && /\/process\/session\/[^/]+\/command\/[^/]+$/.test(url.pathname)) {
+      cut = false;
+      await response.body?.cancel().catch(() => {});
+      throw new TypeError('network connection lost');
+    }
+    return response;
+  });
+  const workRoot = await mkdtemp(path.join(tmpdir(), 'melete-daytona-poll-'));
+  try {
+    const handle = await openSandbox(provider, spec(), signal());
+    const request = {
+      marker: 'act_01J0DAYTONAPOLLLOST00000',
+      argv: ['sh', '-c', 'printf once >> /work/counter; sleep 1; printf done'],
+      timeoutMs: 10_000,
+    };
+    const run = (dispatch: 'first' | 'again') =>
+      runCommand({
+        provider,
+        handle,
+        request: { ...request, dispatch },
+        workRoot,
+        jobId: 'job_DAYTONAPOLL',
+        signal: signal(),
+      });
+    expect((await run('first')).outcome).toBe('unknown');
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(await run('again')).toMatchObject({
+      outcome: 'succeeded',
+      late: true,
+      reattached: true,
+    });
+    // And a duplicate that reaches the sandbox meets its session, not a second run.
+    expect(await run('first')).toMatchObject({
+      outcome: 'succeeded',
+      late: true,
+      reattached: true,
+    });
+    const counter = await provider.getFile(handle, '/work/counter', 64, signal());
+    expect(new TextDecoder().decode(counter)).toBe('once');
+    await provider.destroy(handle, signal());
+  } finally {
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test('a command given no stdin reads an empty one, not the session pipe Daytona holds open', async () => {
+  const { provider } = standinProvider();
+  const handle = await openSandbox(provider, spec(), signal());
+  expect(
+    await provider.exec(
+      handle,
+      {
+        marker: 'act_01J0DAYTONANOSTDIN00000',
+        argv: ['cat'],
+        cwd: '/work',
+        timeoutMs: 2_000,
+        maxOutputBytes: 4096,
+      },
+      signal(),
+    ),
+  ).toMatchObject({ state: 'exited', exitCode: 0, timedOut: false });
+  await provider.destroy(handle, signal());
+});
+
+test('a command that outlives its timeout and the grace after it is ended with its session', async () => {
+  // As if `timeout` were missing from the image: the command would run on.
+  const { provider } = standinProvider(undefined, {
+    graceMs: 300,
+    rewriteBody: (url, body) =>
+      url.pathname.endsWith('/exec') ? body.replace(`'timeout' '-s' 'KILL' '1' `, '') : body,
+  });
+  const handle = await openSandbox(provider, spec(), signal());
+  const outcome = await provider.exec(
+    handle,
+    {
+      marker: 'act_01J0DAYTONAGRACE0000000',
+      argv: ['sh', '-c', 'sleep 3; printf late > /work/late'],
+      cwd: '/work',
+      timeoutMs: 1_000,
+      maxOutputBytes: 4096,
+    },
+    signal(),
+  );
+  expect(outcome).toMatchObject({ state: 'killed', timedOut: true, signal: 'SIGKILL' });
+  expect(outcome.durationMs).toBeGreaterThanOrEqual(1_300);
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  expect(
+    await provider.getFile(handle, '/work/late', 64, signal()).catch((error: unknown) => error),
+  ).toBeInstanceOf(SandboxFileNotFound);
   await provider.destroy(handle, signal());
 });
 

@@ -95,12 +95,13 @@ export async function latencyReplay(file: string) {
 
 /**
  * Wrap a fetch so the next admitted command loses its answer: before the
- * request leaves, or a second after it was sent, while the command runs on.
+ * request to run it in its session leaves, or a second after it was sent,
+ * while the command runs on.
  */
 export function acknowledgementControl(inner: Fetch) {
   let pending: 'before_start' | 'after_start' | null = null;
   const admitted = (url: URL, init: RequestInit) =>
-    url.pathname.endsWith('/process/execute') &&
+    /\/process\/session\/[^/]+\/exec$/.test(url.pathname) &&
     typeof init.body === 'string' &&
     init.body.includes('melete-launch');
   const controlled: Fetch = async (input, init = {}) => {

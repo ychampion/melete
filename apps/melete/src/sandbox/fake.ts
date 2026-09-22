@@ -915,7 +915,10 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
       if (redirect.stream === 'in') {
         let bytes: Uint8Array;
         try {
-          bytes = shell.sandbox.fs.readFile(shell.sandbox.fs.absolute(shell.cwd, target));
+          bytes =
+            target === '/dev/null'
+              ? EMPTY
+              : shell.sandbox.fs.readFile(shell.sandbox.fs.absolute(shell.cwd, target));
         } catch {
           io.err(encode(`sh: 1: cannot open ${target}: No such file\n`));
           return 2;

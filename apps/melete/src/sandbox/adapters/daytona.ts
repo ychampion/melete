@@ -9,7 +9,8 @@
  *   v0.190.0): create, get, list by label, stop, start and delete.
  * - Commands and files go to the toolbox inside each sandbox through Daytona's
  *   toolbox proxy (`{toolboxProxyUrl}/{sandboxId}/…`, OpenAPI
- *   `libs/toolbox-api-client-go/api/openapi.yaml`): `/process/execute`,
+ *   `libs/toolbox-api-client-go/api/openapi.yaml`): `/process/session` for
+ *   admitted commands, `/process/execute` for the adapter's own short ones,
  *   `/files/upload` and `/files/download`.
  *
  * The proxy is handed the key, so it is fixed by configuration: a sandbox whose
@@ -24,13 +25,20 @@
  * is not offered: like E2B's and Modal's it matches on the name a client
  * presents rather than on where a connection goes.
  *
- * Every command runs through `/process/execute`, which starts the sandbox's
- * shell in its own process group and, at the request's timeout, kills that
- * group and answers 408. The admitted command starts through a small launcher
- * that enters the working directory — exiting 112, before any marker exists,
- * when it cannot — and removes the `DAYTONA_*` variables the daemon passes on.
+ * An admitted command runs in a toolbox session of its own, named after its
+ * action: the session is opened, the command is handed to it with `runAsync`,
+ * and its state is polled until it has an exit code, so no request stays open
+ * while it runs. The command id in that answer is the proof it started; a poll
+ * lost after it leaves the outcome to the marker, never to a second run, and a
+ * session that already exists means an earlier dispatch may have sent it.
+ * A small launcher enters the working directory — exiting 112, before any
+ * marker exists, when it cannot — removes the `DAYTONA_*` variables the daemon
+ * passes on, and runs the command under `timeout -s KILL`, since the daemon
+ * sets no timeout on a session command; a command that outlives that and the
+ * grace after it is ended with its session, which kills its process group.
  * Which variables to remove is learnt once per sandbox, by a separate command
- * sent before the first admitted one. Files are listed with `find`, because the
+ * sent before the first admitted one. The adapter's own commands are short and
+ * go through `/process/execute`. Files are listed with `find`, because the
  * toolbox's own listing follows symbolic links and leaves out broken ones.
  *
  * A workspace persists by stopping the sandbox and starting it again: its files
@@ -74,8 +82,10 @@ export type DaytonaOptions = {
    * Keep it at least as long as the workspace retention.
    */
   stoppedRetentionMinutes?: number;
-  /** How often a sandbox that is changing state is asked again. */
+  /** How often a sandbox that is changing state, or a running command, is asked again. */
   pollMs?: number;
+  /** How long past its own timeout a command may run before its session is ended. */
+  graceMs?: number;
 };
 
 const MiB = 1024 * 1024;
@@ -86,8 +96,10 @@ export const DAYTONA_MAX_CIDRS = 10;
 const REQUEST_TIMEOUT_MS = 60_000;
 /** How long a sandbox may take to start, stop or be created. */
 const STATE_TIMEOUT_MS = 180_000;
-/** Past the command's own timeout, how long the answer may take before it is lost. */
+/** Past the command's own timeout, how long it may run before its session is ended. */
 const KILL_GRACE_MS = 30_000;
+const COMMAND_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const sessionFor = (marker: string) => `melete-${marker}`;
 /** How long an adapter command may run. */
 const ADAPTER_COMMAND_SECONDS = 120;
 const SANDBOX_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -99,7 +111,7 @@ const STDIN_ROOT = '/var/tmp/.melete-stdin';
  * reading stdin from a file when one was uploaded.
  */
 const LAUNCHER =
-  'cd "$1" 2>/dev/null || exit 112; shift; f="$1"; shift; [ "$f" = - ] && exec env "$@"; exec env "$@" < "$f"';
+  'cd "$1" 2>/dev/null || exit 112; shift; f="$1"; shift; [ "$f" = - ] && exec env "$@" < /dev/null; exec env "$@" < "$f"';
 const LIST = '[ -d "$1" ] || exit 3; cd "$1" && exec find . -mindepth 1 -printf "%y %s %m %P\\0"';
 /**
  * Create the workspace, as root through `sudo` where the sandbox user cannot,
@@ -224,6 +236,16 @@ function multipart(name: string, bytes: Uint8Array): { body: Uint8Array; type: s
   return { body, type: `multipart/form-data; boundary=${boundary}` };
 }
 
+/** One field of a JSON answer, or undefined when the answer is not JSON. */
+function jsonField(text: string, field: string): unknown {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown> | null;
+    return parsed && typeof parsed === 'object' ? parsed[field] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** What `/sandbox` is sent for an egress policy. */
 function networkFor(egress: EgressPolicy): Record<string, unknown> {
   switch (egress.kind) {
@@ -270,6 +292,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
   const apiUrl = trimSlash(options.apiUrl ?? DAYTONA_API_URL);
   const proxyUrl = trimSlash(options.toolboxProxyUrl ?? DAYTONA_TOOLBOX_PROXY_URL);
   const pollMs = options.pollMs ?? 500;
+  const graceMs = options.graceMs ?? KILL_GRACE_MS;
   const retention = options.stoppedRetentionMinutes ?? DEFAULT_STOPPED_RETENTION_MINUTES;
   if (!Number.isSafeInteger(retention) || retention <= 0)
     throw new Error('a stopped sandbox is kept a positive whole number of minutes');
@@ -497,6 +520,51 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
     return { exitCode: done.exitCode, result: done.result };
   }
 
+  /** One toolbox call that is not a command: its status and its body as text. */
+  async function toolboxCall(
+    toolbox: Toolbox,
+    method: string,
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+  ): Promise<{ status: number; text: string }> {
+    return options.credential(async (key) => {
+      const response = await send(
+        key,
+        `${proxyUrl}/${toolbox.id}${path}`,
+        {
+          method,
+          headers: {
+            Accept: 'application/json, text/plain',
+            ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
+        AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+        `${method} ${path.split('/').slice(0, 3).join('/')}`,
+      );
+      try {
+        const text = new TextDecoder().decode(await readLimited(response, LISTING_LIMIT));
+        return { status: response.status, text: scrub(text, [key]) };
+      } catch (error) {
+        throw new SandboxTransportError(
+          scrub(`the toolbox answer was cut: ${describeError(error)}`, [key]),
+        );
+      }
+    });
+  }
+
+  /** Ending a session kills whatever still runs in it. Best effort: the sandbox ends it too. */
+  async function closeSession(toolbox: Toolbox, session: string): Promise<void> {
+    await toolboxCall(
+      toolbox,
+      'DELETE',
+      `/process/session/${session}`,
+      undefined,
+      AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    ).catch(() => {});
+  }
+
   const variablesFrom = (listed: { exitCode: number | null; result: string }) => {
     if (listed.exitCode !== 0)
       throw new SandboxTransportError(`listing the environment exited ${listed.exitCode}`);
@@ -642,6 +710,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
       let toolbox: Toolbox;
       let hide: string[];
       let stdinPath = '-';
+      let opened: { status: number; text: string };
       // Everything before the command is sent is provably not the command.
       try {
         toolbox = await toolboxOf(handle, signal);
@@ -650,22 +719,51 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
           stdinPath = `${STDIN_ROOT}/${spec.marker}`;
           await upload(toolbox, stdinPath, spec.stdin, signal);
         }
+        // One session per action: a session runs its commands one after another.
+        opened = await toolboxCall(
+          toolbox,
+          'POST',
+          '/process/session',
+          { sessionId: sessionFor(spec.marker) },
+          signal,
+        );
       } catch (error) {
         if (error instanceof SandboxAdapterRefusal) throw error;
         throw new SandboxStartRefused(`the command was not sent: ${describeError(error)}`);
       }
-      const seconds = Math.ceil(spec.timeoutMs / 1000);
       const words = [
         'melete-launch',
         spec.cwd,
         stdinPath,
         ...hide.flatMap((name) => ['-u', name]),
+        'timeout',
+        '-s',
+        'KILL',
+        String(spec.timeoutMs / 1000),
         ...spec.argv,
       ];
-      const command = `exec /bin/sh -c ${shellQuote(LAUNCHER)} ${words.map(shellQuote).join(' ')}`;
-      let done: Executed;
+      // Sourced by the session's shell, so never `exec`: that would replace it.
+      const command = `/bin/sh -c ${shellQuote(LAUNCHER)} ${words.map(shellQuote).join(' ')}`;
+      const session = sessionFor(spec.marker);
+      if (opened.status === 409)
+        throw new SandboxTransportError(
+          `a session for ${spec.marker} already exists, so this action may have been sent before`,
+          'unknown',
+        );
+      if (opened.status !== 200 && opened.status !== 201)
+        throw new SandboxStartRefused(
+          `the toolbox would not open a session: ${opened.status} ${opened.text.slice(0, 200)}`,
+        );
+      const started = performance.now();
+      let sent: { status: number; text: string };
       try {
-        done = await execute(toolbox, command, seconds, signal);
+        sent = await toolboxCall(
+          toolbox,
+          'POST',
+          `/process/session/${session}/exec`,
+          { command, runAsync: true },
+          signal,
+        );
       } catch (error) {
         // The request left: the command may be running.
         throw new SandboxTransportError(
@@ -673,54 +771,85 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
           'unknown',
         );
       }
-      if (done.status === 408 && done.elapsedMs >= seconds * 1000 - 50) {
-        // The toolbox killed the process group at the deadline.
-        return {
-          started: 'yes',
-          state: 'killed',
-          exitCode: null,
-          signal: 'SIGKILL',
-          timedOut: true,
-          durationMs: done.elapsedMs,
-          output: new Uint8Array(),
-          totalBytes: 0,
-          captureLimited: false,
-        };
-      }
-      if (done.status >= 400 && done.status < 500 && done.status !== 408)
-        // The proxy or the toolbox turned the request away before the shell
-        // started: an unknown sandbox, a bad key, a malformed body.
+      if (sent.status >= 400 && sent.status < 500 && sent.status !== 408) {
+        // Turned away before the command reached the session's shell.
+        await closeSession(toolbox, session);
         throw new SandboxStartRefused(
-          `the toolbox refused the command with ${done.status}: ${done.result}`,
+          `the toolbox refused the command with ${sent.status}: ${sent.text.slice(0, 200)}`,
         );
-      if (done.status !== 200)
+      }
+      const commandId = jsonField(sent.text, 'cmdId');
+      if (
+        (sent.status !== 200 && sent.status !== 202) ||
+        typeof commandId !== 'string' ||
+        !COMMAND_ID.test(commandId)
+      )
         throw new SandboxTransportError(
-          `the toolbox answered ${done.status}, and the command may have run: ${done.result}`,
+          `the toolbox answered ${sent.status} without a command id, and the command may have run`,
           'unknown',
         );
-      if (done.exitCode === -1)
-        // The toolbox's answer when its shell could not be started or waited
-        // for; which of the two is not said, so the marker decides.
-        return {
-          started: 'unknown',
-          state: 'lost',
-          exitCode: null,
-          signal: null,
-          timedOut: false,
-          durationMs: done.elapsedMs,
-          output: new Uint8Array(),
-          totalBytes: 0,
-          captureLimited: false,
-        };
-      const bytes = new TextEncoder().encode(done.result);
+      // From here on the command has started; whatever is lost now, the marker decides.
+      const path = `/process/session/${session}/command/${commandId}`;
+      const after = (error: unknown) =>
+        new SandboxTransportError(`the command started, then: ${describeError(error)}`, 'yes');
+      let exitCode: number | null = null;
+      while (exitCode === null) {
+        let state: { status: number; text: string };
+        try {
+          state = await toolboxCall(toolbox, 'GET', path, undefined, signal);
+        } catch (error) {
+          throw after(error);
+        }
+        if (state.status !== 200)
+          throw after(new Error(`the toolbox answered ${state.status} about the command`));
+        const code = jsonField(state.text, 'exitCode');
+        if (typeof code === 'number') {
+          exitCode = code;
+          break;
+        }
+        if (performance.now() - started > spec.timeoutMs + graceMs) {
+          // The command outlived its own `timeout`: ending the session kills its
+          // process group, which the command runs in.
+          await closeSession(toolbox, session);
+          return {
+            started: 'yes',
+            state: 'killed',
+            exitCode: null,
+            signal: 'SIGKILL',
+            timedOut: true,
+            durationMs: Math.round(performance.now() - started),
+            output: new Uint8Array(),
+            totalBytes: 0,
+            captureLimited: false,
+          };
+        }
+        try {
+          await delay(pollMs, signal);
+        } catch (error) {
+          throw after(error);
+        }
+      }
+      const durationMs = Math.round(performance.now() - started);
+      let logs: { status: number; text: string };
+      try {
+        logs = await toolboxCall(toolbox, 'GET', `${path}/logs`, undefined, signal);
+      } catch (error) {
+        throw after(error);
+      }
+      if (logs.status !== 200)
+        throw after(new Error(`the toolbox answered ${logs.status} for the command's output`));
+      await closeSession(toolbox, session);
+      // `timeout -s KILL` dies with the group it kills, which the shell reports as 137.
+      const timedOut = exitCode === 137 && durationMs >= spec.timeoutMs - 50;
+      const bytes = new TextEncoder().encode(logs.text);
       const output = bytes.slice(0, spec.maxOutputBytes);
       return {
         started: 'yes',
-        state: 'exited',
-        exitCode: done.exitCode,
-        signal: null,
-        timedOut: false,
-        durationMs: done.elapsedMs,
+        state: timedOut ? 'killed' : 'exited',
+        exitCode: timedOut ? null : exitCode,
+        signal: timedOut ? 'SIGKILL' : null,
+        timedOut,
+        durationMs,
         output,
         totalBytes: bytes.byteLength,
         captureLimited: bytes.byteLength > output.byteLength,
