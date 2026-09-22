@@ -73,6 +73,7 @@ import { TriggerService } from './jobs/triggers.ts';
 import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
+import { attachConversationCorrections } from './learning/conversation.ts';
 import { EpisodeService } from './learning/episodes.ts';
 import { ProcedureEvaluator } from './learning/evaluator.ts';
 import { mountProcedures } from './learning/procedure-routes.ts';
@@ -363,6 +364,7 @@ export async function bootstrap(
   let approvals: ApprovalService | undefined;
   let events: EventStream | undefined;
   let submissions: SubmissionService | undefined;
+  let episodes: EpisodeService | undefined;
   let replies: ReplyService | undefined;
   let operations: OperationService | undefined;
   let policy: PolicyService | undefined;
@@ -464,6 +466,12 @@ export async function bootstrap(
     }
     if (jobs) {
       submissions = new SubmissionService(jobs);
+      episodes = new EpisodeService(jobs, (id) => runner?.interrupt(id));
+      // A correction made in the conversation reaches learning the same way one
+      // made through the route does.
+      attachConversationCorrections(submissions, episodes, (error) =>
+        console.error('conversation correction', String(error)),
+      );
       if (env.MELETE_RUNTIME_ADAPTER === 'docker' && !options.runtime) {
         if (!env.MELETE_RUNTIME_KEY || !handle)
           throw new Error('Docker runtime supervision requires MELETE_RUNTIME_KEY and Postgres');
@@ -711,7 +719,7 @@ export async function bootstrap(
     memory: deploymentMemory?.routes ?? memory,
     browserSessions: browser?.sessions,
     removals,
-    episodes: jobs ? new EpisodeService(jobs, (id) => runner?.interrupt(id)) : undefined,
+    episodes,
     proposer: learning?.proposer,
     evaluator,
     runtimeAdapter: options.runtime ? 'injected' : env.MELETE_RUNTIME_ADAPTER,

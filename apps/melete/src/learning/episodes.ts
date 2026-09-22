@@ -179,6 +179,15 @@ async function createEpisode(
   return saved;
 }
 
+/**
+ * A conversation never reaches `completed`: a finished turn rests on the person
+ * for the next message. For learning, that finished turn is the job's completion.
+ */
+export const finishedAs = (row: JobRow, outcome: AttemptOutcome) =>
+  row.kind === 'chat' && row.state === 'waiting_for_input' && outcome.kind === 'completed'
+    ? 'completed'
+    : row.state;
+
 /** The finish and episode update commit together; retries cannot duplicate a corrected segment. */
 export async function captureCompletedEpisode(
   tx: Transaction,
@@ -186,7 +195,8 @@ export async function captureCompletedEpisode(
   outcome: AttemptOutcome,
   attemptId: string,
 ) {
-  if (!['completed', 'failed'].includes(row.state)) return;
+  const finished = finishedAs(row, outcome);
+  if (!['completed', 'failed'].includes(finished)) return;
   try {
     await liveJobEvidence(tx, row);
   } catch (error) {
@@ -223,8 +233,8 @@ export async function captureCompletedEpisode(
         .update(episode)
         .set({
           ...combined,
-          judgement: row.state === 'completed' ? 'corrected' : 'failed',
-          failureClass: row.state === 'failed' ? outcome.kind : segment.failureClass,
+          judgement: finished === 'completed' ? 'corrected' : 'failed',
+          failureClass: finished === 'failed' ? outcome.kind : segment.failureClass,
           // The answer the correction asked for, whether it came from the linked
           // corrective job or from the next completion of this same job.
           correctedOutput: recordedOutput(outcome) ?? segment.correctedOutput,
@@ -239,8 +249,7 @@ export async function captureCompletedEpisode(
     .from(episode)
     .where(or(eq(episode.jobId, row.id), eq(episode.correctiveJobId, row.id)))
     .limit(1);
-  if (!existing)
-    await createEpisode(tx, row, `completion:${attemptId}`, 'runtime', null, row.state);
+  if (!existing) await createEpisode(tx, row, `completion:${attemptId}`, 'runtime', null, finished);
 }
 
 /** Owner authentication is supplied by the API. A requested space is checked, never trusted. */
@@ -300,8 +309,29 @@ export class EpisodeService {
   }
 
   async intervene(ownerId: string, jobId: string, raw: unknown) {
+    const result = await this.jobs.transaction((tx) =>
+      this.interveneInTransaction(tx, ownerId, jobId, raw),
+    );
+    this.interrupt?.(jobId);
+    return result;
+  }
+
+  /**
+   * The same correction, inside a transaction the caller already holds, for a
+   * correction that arrives with something else: a message the person has just
+   * sent is already on the job's stream, so `recordMessage` leaves it there
+   * instead of writing the same words twice.
+   */
+  async interveneInTransaction(
+    tx: Transaction,
+    ownerId: string,
+    jobId: string,
+    raw: unknown,
+    options: { recordMessage?: boolean } = {},
+  ) {
     const { idempotency_key: key, ...change } = interventionRequest.parse(raw);
-    const result = await this.jobs.transaction(async (tx) => {
+    const recordMessage = options.recordMessage ?? true;
+    const result = await (async () => {
       let row = await this.jobs.lock(tx, jobId);
       if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
       await requireLearningSpace(tx, ownerId, row.spaceId);
@@ -394,6 +424,7 @@ export class EpisodeService {
           })
           .where(and(eq(attempt.jobId, jobId), isNull(attempt.endedAt)));
       }
+      if (!recordMessage) return saved;
       if (row.state === 'waiting_for_input') {
         await this.jobs.inputInTransaction(tx, jobId, change.text);
       } else {
@@ -405,8 +436,7 @@ export class EpisodeService {
         });
       }
       return saved;
-    });
-    this.interrupt?.(jobId);
+    })();
     return result;
   }
 
