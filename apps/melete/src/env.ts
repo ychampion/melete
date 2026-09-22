@@ -56,6 +56,26 @@ function brokerUrlMismatch(bind: string, url: string): string | null {
 const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema);
 
+/**
+ * Whether the Postgres client can read this address. It is judged here, the
+ * way the client reads it (only the first of several hosts goes through the URL
+ * parser), because the client's own parse error quotes the whole address,
+ * password included, and does not say which setting it came from.
+ */
+export function isPostgresUrl(value: string): boolean {
+  if (!/^postgres(?:ql)?:\/\//.test(value)) return false;
+  const authority = value.slice(value.indexOf('://') + 3).split(/[?/]/)[0] ?? '';
+  try {
+    const hosts = decodeURIComponent(authority.slice(authority.indexOf('@') + 1));
+    const url = new URL(value.replace(hosts, hosts.split(',')[0] ?? ''));
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const variables = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8787),
@@ -74,7 +94,13 @@ const variables = z.object({
    */
   MELETE_MASTER_KEY: z.string().min(32).optional(),
 
-  DATABASE_URL: z.string().min(1).optional(),
+  DATABASE_URL: z
+    .string()
+    .refine(
+      isPostgresUrl,
+      'must be a postgres:// address, for example postgres://melete:password@postgres:5432/melete',
+    )
+    .optional(),
   MELETE_PUBLIC_URL: unsetWhenBlank(
     z
       .url()

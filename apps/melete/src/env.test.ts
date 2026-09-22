@@ -50,6 +50,9 @@ const unusedPort = () =>
     });
   });
 
+/** The shape deploy/scripts/configure.ts writes. */
+const GENERATED_DATABASE_URL = `postgres://melete:${'0f'.repeat(24)}@postgres:5432/melete`;
+
 /** The environment Compose would hand the service, with every placeholder filled in. */
 function composeServiceEnvironment(): Record<string, string> {
   const compose = parse(
@@ -59,7 +62,7 @@ function composeServiceEnvironment(): Record<string, string> {
     Object.entries(compose.services.melete.environment).map(([key, value]) => [
       key,
       String(value).replace(/\$\{[A-Z_]+:([-?])([^}]*)\}/g, (_match, kind, fallback) =>
-        kind === '-' ? fallback : 'x'.repeat(64),
+        kind === '-' ? fallback : key === 'DATABASE_URL' ? GENERATED_DATABASE_URL : 'x'.repeat(64),
       ),
     ]),
   );
@@ -145,6 +148,35 @@ describe('the engine limits', () => {
     expect(env.MELETE_ENGINE_MAX_TURNS).toBe(DEFAULT_ENGINE_MAX_TURNS);
     expect(env.MELETE_COMPACTION_MAX_TOKENS).toBe(DEFAULT_COMPACTION_MAX_TOKENS);
     expect(env.MELETE_MODEL_CONTEXT_WINDOW).toBeUndefined();
+  });
+});
+
+describe('the database address', () => {
+  test('one the Postgres client cannot read stops start-up by name, without its password', () => {
+    for (const value of [
+      'postgres://melete:hunter2-secret@postgres:54x2/melete',
+      'postgres://melete:hunter2-secret%zz@postgres:5432/melete',
+      'melete:hunter2-secret@postgres:5432/melete',
+      'mysql://melete:hunter2-secret@postgres/melete',
+    ]) {
+      const result = readEnv({ DATABASE_URL: value });
+      expect(result.ok).toBe(false);
+      const issues = result.ok ? '' : result.issues.join('\n');
+      expect(issues).toStartWith('DATABASE_URL: ');
+      expect(issues).not.toContain('hunter2');
+    }
+  });
+
+  test('the addresses the client reads are kept as written', () => {
+    for (const value of [
+      GENERATED_DATABASE_URL,
+      'postgres://melete:p%40ss@postgres:5432/melete',
+      'postgresql://melete:secret@db-a:5432,db-b:5433/melete?sslmode=require',
+      'postgres://melete:secret@[::1]:5432/melete',
+    ]) {
+      const result = readEnv({ DATABASE_URL: value });
+      expect(result.ok && result.env.DATABASE_URL).toBe(value);
+    }
   });
 });
 
