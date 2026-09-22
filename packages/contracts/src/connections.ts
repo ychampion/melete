@@ -31,6 +31,8 @@ const secureUrl = (protocols: readonly string[]) =>
     .url()
     .max(2048)
     .refine((value) => {
+      // The format check above has already refused what is not an address.
+      if (!URL.canParse(value)) return true;
       const url = new URL(value);
       return (
         !url.username &&
@@ -77,7 +79,7 @@ export type PasswordCredentials = z.infer<typeof passwordCredentials>;
 export const caldavConnectionConfig = z
   .object({
     calendar_url: secureUrl(['https:']).refine(
-      (value) => !new URL(value).search,
+      (value) => !URL.canParse(value) || !new URL(value).search,
       'A calendar collection address carries no query string',
     ),
     username: singleLine(320),

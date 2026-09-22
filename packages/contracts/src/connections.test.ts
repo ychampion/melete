@@ -304,3 +304,30 @@ describe('what a person is told when a request is refused', () => {
     ).not.toContain('value-never-echoed');
   });
 });
+
+describe('an address that is not a web address', () => {
+  test('is refused as invalid rather than failing the request', () => {
+    for (const body of [
+      { ...ics, ics: { url: 'not a link' } },
+      { ...caldav, caldav: { ...caldav.caldav, calendar_url: 'dav.example.test/calendars' } },
+      {
+        provider: 'mcp',
+        label: 'Notes',
+        mcp: {
+          id: 'notes',
+          url: 'mcp.example.test',
+          audience: 'owner',
+          allowed_scopes: ['mcp_notes.search'],
+          tools: [{ name: 'search', alias: 'search', required_scopes: ['mcp_notes.search'] }],
+        },
+      },
+    ]) {
+      const parsed = createConnectionRequest.safeParse(body);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success)
+        expect(connectionRequestProblem(parsed.error.issues)).toMatch(
+          /^(Feed address|Calendar address|Server address) is not a web address\.$/,
+        );
+    }
+  });
+});

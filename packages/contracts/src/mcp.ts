@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { effectClass } from './broker.ts';
 
 export const mcpHttpUrl = z.url().refine((value) => {
+  // The format check has already refused what is not an address.
+  if (!URL.canParse(value)) return true;
   const parsed = new URL(value);
   return (
     ['http:', 'https:'].includes(parsed.protocol) &&
