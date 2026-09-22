@@ -857,6 +857,24 @@ describe.if(handle !== null)('removing a space', () => {
     expect(await countOf(sql, 'job', sql`id = ${live}`)).toBe(0);
   });
 
+  test('a_replayed_removal_answers_to_the_person_who_asked — not to the memory owner', async () => {
+    const seeded = await seed('shared');
+    const journal = await newJournal();
+    const backup = await snapshot(sql, seeded.spaceId);
+    await removeCompletely(seeded, { journal });
+    const [record] = (await journal.read()).filter((entry) => entry.space_id === seeded.spaceId);
+    // The memory belongs to the installation owner; the removal was asked for
+    // by the space's owner, who is someone else.
+    expect(record?.owner_id).toBe(seeded.ownerId);
+    expect(seeded.principalId).not.toBe(seeded.ownerId);
+
+    await restore(sql, backup);
+    await restoreMemory(sql, journal);
+    const [queued] = await sql<{ requested_by: string }[]>`select requested_by from space_removal
+      where space_id = ${seeded.spaceId} and state <> 'complete'`;
+    expect(queued?.requested_by).toBe(seeded.principalId);
+  });
+
   test('replay_leaves_space_unserved — a queued removal is never restore_ready, even among spaces that are', async () => {
     const kept = await seed('shared', 'Kept');
     const going = await seed('shared');
@@ -993,6 +1011,36 @@ describe.if(handle !== null)('removing a space', () => {
     await Bun.sleep(600);
     expect(mine(await other.resume())).toEqual([]);
     expect(await countOf(sql, 'job', sql`id = ${kept}`)).toBe(1);
+  });
+
+  test('a_removal_is_swept_once_in_this_process — even when its lease looks lapsed', async () => {
+    const seeded = await seed('shared');
+    let sweeps = 0;
+    const counting: SandboxTeardown = {
+      providerFor: () => ({}),
+      destroyWorkspacesForSpace: async (spaceId) => {
+        // Other tests' removals are resumed too; only this space's sweeps count.
+        if (spaceId !== seeded.spaceId) return { closed: [], snapshotsDeleted: [] };
+        sweeps += 1;
+        await Bun.sleep(1_000);
+        return { closed: [], snapshotsDeleted: [] };
+      },
+      listWorkspacesForSpace: async () => ({ sessions: [], snapshots: [] }),
+    };
+    // A lease long enough that the heartbeat does not renew it during the test.
+    const removals = await service({ sandboxes: counting, leaseMs: 60_000 });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const running = removals.run(fenced.id);
+    await Bun.sleep(300);
+    // The lease reads as lapsed, as it would after the event loop stalled.
+    // The timer's pass in this same process must not start a second sweep.
+    await sql`update space_removal set lease_expires_at = now() - interval '1 second'
+      where id = ${fenced.id}`;
+    await removals.resume();
+    const finished = await running;
+    expect(outcome(finished)).toBe('complete');
+    expect(sweeps).toBe(1);
+    expect(finished.attempts).toBe(1);
   });
 
   test('a_run_that_loses_its_lease_stops — and writes nothing after', async () => {
