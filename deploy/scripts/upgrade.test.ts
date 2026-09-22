@@ -521,6 +521,20 @@ describe('running the upgrade with an injected command runner', () => {
     expect(text).toContain('Preflight passed');
   });
 
+  test('a copy with a release stamp says which commit it was taken from', async () => {
+    const output: string[] = [];
+    const stamped = {
+      ...dependencies(host().run, output),
+      releaseCommit: async () => 'b'.repeat(40),
+    };
+    expect((await runUpgrade({ ...options, dryRun: true }, stamped)).status).toBe('planned');
+    expect(output).toContain(`This copy was taken from ${'b'.repeat(12)}.`);
+    // A copy without a stamp, such as a checkout's own script, claims no commit.
+    const plain: string[] = [];
+    await runUpgrade({ ...options, dryRun: true }, dependencies(host().run, plain));
+    expect(plain.join('\n')).not.toContain('This copy was taken from');
+  });
+
   test('a dry run still prints the plan when the preflight finds problems', async () => {
     const { run, commands } = host({ 'git status --porcelain': { stdout: ' M README.md\n' } });
     const output: string[] = [];

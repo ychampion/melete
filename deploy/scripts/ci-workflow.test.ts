@@ -411,6 +411,17 @@ describe('the upgrade proof', () => {
     expect(run).toContain(archive);
     expect(run).toContain(script);
     expect(run.indexOf(archive)).toBeLessThan(run.indexOf(script));
+    // A missing stamp would pass the script's own check, so the copy's stamp is held to the
+    // tag's commit before it runs, and the script to saying it read it.
+    const stamp =
+      /if \[ "\$\(cat "\$RUNNER_TEMP\/release\/deploy\/scripts\/release-commit\.txt"\)" != "\$commit" \]; then\n\s*echo "::error::[^\n]+"\n\s*exit 1\n\s*fi/;
+    expect(run).toContain('commit=$(git rev-parse "$TARGET^{commit}")');
+    expect(run).toMatch(stamp);
+    expect(run.search(stamp)).toBeGreaterThan(run.indexOf(archive));
+    expect(run.search(stamp)).toBeLessThan(run.indexOf(script));
+    expect(run).toMatch(
+      /^grep -Fq "This copy was taken from \$\{commit:0:12\}\." "\$RUNNER_TEMP\/upgrade-report\.txt"$/m,
+    );
     // The same two commands an operator is given, with the release directory and the tag.
     const guide = readFileSync(join(root, 'docs/UPGRADING.md'), 'utf8');
     expect(guide).toMatch(/git archive (\S+) \| tar -x -C "\$release"/);

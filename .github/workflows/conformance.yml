@@ -171,8 +171,16 @@ jobs:
           set -o pipefail
           mkdir -p -m 700 "$RUNNER_TEMP/backups" "$RUNNER_TEMP/release"
           git archive "$TARGET" | tar -x -C "$RUNNER_TEMP/release"
+          # A copy with no stamp passes the script's own check as quietly as a matching one,
+          # so the stamp is held to the tag here, and the script is held to having read it.
+          commit=$(git rev-parse "$TARGET^{commit}")
+          if [ "$(cat "$RUNNER_TEMP/release/deploy/scripts/release-commit.txt")" != "$commit" ]; then
+            echo "::error::git archive did not stamp $TARGET's commit into deploy/scripts/release-commit.txt"
+            exit 1
+          fi
           df -h / "$RUNNER_TEMP"
           bun run "$RUNNER_TEMP/release/deploy/scripts/upgrade.ts" "$TARGET" --repository "$PWD" --backup-dir "$RUNNER_TEMP/backups" | tee "$RUNNER_TEMP/upgrade-report.txt"
+          grep -Fq "This copy was taken from ${commit:0:12}." "$RUNNER_TEMP/upgrade-report.txt"
       - name: The upgraded service answers and kept the internal network
         env:
           TARGET: ${{ steps.start.outputs.target }}
