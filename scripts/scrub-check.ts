@@ -8,8 +8,9 @@
  * readily as a line — more readily, because it is read before the file is
  * opened — and a name is checked even when the bytes are binary.
  *
- * With `MELETE_RELEASE=1` it also refuses a placeholder that must be replaced
- * before a release goes out: the `(TRYIT_URL)` link target in README.
+ * With `MELETE_RELEASE=1`, which `bun run release:check` sets, it also refuses
+ * a placeholder that must be replaced before a release goes out: the
+ * `(TRYIT_URL)` link target in README.
  *
  * The patterns are deliberately literal. This file and its test are the two
  * tracked files that have to spell them out, so they are exempt.
