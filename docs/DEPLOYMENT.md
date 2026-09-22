@@ -530,9 +530,9 @@ labels and inventories when rebuilding.
 
 ## Upgrading
 
-[Upgrading between releases](UPGRADING.md) is its own page:
-`bun run deploy/scripts/upgrade.ts <tag> --dry-run` prints the whole plan. The
-service migrates its database at every boot under an advisory lock, so the
+[Upgrading between releases](UPGRADING.md) is its own page: the target
+release's `deploy/scripts/upgrade.ts`, taken out of its tag, prints the whole
+plan with `--dry-run`. The service migrates its database at every boot under an advisory lock, so the
 procedure is a consistent backup, a checkout, a rebuild and a wait for health;
 the backup below is its first half.
 
