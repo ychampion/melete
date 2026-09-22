@@ -72,7 +72,10 @@ export function mountSpaceRemoval(app: Hono, deps: SpaceRemovalRoutes): void {
   /** Where the removal has got to, while there is still a space to ask about. */
   app.get('/spaces/:id/removal', async (c) => {
     const row = await removals.current(c.req.param('id'));
-    if (!row) throw new ServiceError('not_found', 'This space is not being removed.', 404);
+    // The space is closed while it is cleared, so its membership says nothing;
+    // the record of who asked is what answers here, as it does below.
+    if (!row || row.requestedBy !== c.get('owner').id)
+      throw new ServiceError('not_found', 'This space is not being removed.', 404);
     const view = removalView(row);
     return c.json({ removal: view, report: reportFor(view, row.providers) });
   });

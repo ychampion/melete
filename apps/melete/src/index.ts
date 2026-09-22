@@ -84,7 +84,12 @@ import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
-import { requestPrincipal, spaceAuthority } from './principals/authority.ts';
+import {
+  refusedForRemoval,
+  requestPrincipal,
+  SPACE_BEING_CLEARED,
+  spaceAuthority,
+} from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
@@ -150,6 +155,8 @@ export function createApp(deps: AppDeps) {
   app.onError((error, c) => {
     if (error instanceof ServiceError)
       return c.json({ error: { code: error.code, message: error.message } }, error.status);
+    if (refusedForRemoval(error))
+      return c.json({ error: { code: 'scope_denied', message: SPACE_BEING_CLEARED } }, 403);
     if (error instanceof ZodError || error instanceof SyntaxError)
       return c.json(
         { error: { code: 'invalid_request', message: 'Request data is invalid.' } },

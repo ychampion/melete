@@ -252,7 +252,7 @@ export class SpaceRemovalService {
       const generation = parent.policyGeneration + 1;
       await tx
         .update(space)
-        .set({ removedAt: new Date(), policyGeneration: generation })
+        .set({ policyGeneration: generation })
         .where(eq(space.id, spaceId));
       // Memory stops serving before anything of it is destroyed, and stays
       // stopped through a restore: `restore_ready` is what gates serving.
@@ -314,6 +314,10 @@ export class SpaceRemovalService {
         })
         .returning();
       if (!row) throw new Error('space removal insert returned no row');
+      // Stamped last. The row has been held for update since the top, so
+      // nothing could be admitted in between, and the work above still runs
+      // under the authority that the stamp withdraws from everyone.
+      await tx.update(space).set({ removedAt: new Date() }).where(eq(space.id, spaceId));
       return { row, cancelled };
     });
     if ('cancelled' in result) {

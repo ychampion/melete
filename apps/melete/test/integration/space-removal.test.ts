@@ -32,11 +32,12 @@ import { execManifest } from '../../src/connectors/exec.ts';
 import { filesManifest } from '../../src/connectors/files.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { webManifest } from '../../src/connectors/web.ts';
-import { space } from '../../src/db/schema.ts';
+import { job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
+import { refusedForRemoval, spaceAuthority } from '../../src/principals/authority.ts';
 import { PathOutsideRoot, removeConfined } from '../../src/spaces/plan.ts';
 import {
   type BrowserTeardown,
@@ -1121,6 +1122,101 @@ describe.if(handle !== null)('removing a space', () => {
       };
       expect(read.report.headline).toBe('The Ledger is gone.');
       expect(read.report.still_yours.join(' ')).toContain('Revoke them there');
+    });
+
+    test('a_space_under_removal_admits_no_new_work — a personal space whose emptying is waiting included', async () => {
+      const seeded = await seed('personal');
+      const jobsBefore = await countOf(sql, 'job', sql`space_id = ${seeded.spaceId}`);
+      // Stopped part way, the way an emptying that is waiting on something
+      // sits: stamped and closed, and not yet finished.
+      const halting = new AbortController();
+      const stopping = await service({
+        onPhase: (_id, phase) => {
+          if (phase === 'files') halting.abort();
+        },
+      });
+      const fenced = await stopping.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+      expect((await stopping.run(fenced.id, halting.signal)).state).toBe('pending');
+
+      // The session still resolves to this space: it is the account's own.
+      // Asking it for new work is refused, by name and through a space route.
+      const asked = await call(seeded.sessionToken, '/jobs', 'POST', {
+        space_id: seeded.spaceId,
+        title: 'Carry on',
+        objective: 'Keep working here',
+      });
+      expect(asked.status).toBe(403);
+      expect(((await asked.json()) as { error: { message: string } }).error.message).toBe(
+        'This space is being cleared.',
+      );
+      const scan = await call(
+        seeded.sessionToken,
+        `/spaces/${seeded.spaceId}/companies/scan`,
+        'POST',
+      );
+      expect(scan.status).toBe(403);
+
+      // And by the database, for an insert written as raw SQL the way the
+      // experience commands write theirs.
+      for (const insert of [
+        (tx: Sql) => tx`insert into job (id, space_id, title, principal_id, objective, state)
+          values (${`job_${crypto.randomUUID()}`}, ${seeded.spaceId}, 'Raw', ${seeded.principalId},
+            'Written directly', 'queued')`,
+        (tx: Sql) => tx`insert into connection (id, space_id, provider, label, scopes)
+          values (${`conn_${crypto.randomUUID()}`}, ${seeded.spaceId}, 'web', 'Web', '[]'::jsonb)`,
+        (tx: Sql) => tx`insert into company_scan (id, space_id, principal_id)
+          values (${`scn_${crypto.randomUUID()}`}, ${seeded.spaceId}, ${seeded.principalId})`,
+      ])
+        expect(await refused(insert)).toContain('space_removed');
+      expect(await countOf(sql, 'job', sql`space_id = ${seeded.spaceId}`)).toBe(jobsBefore);
+      // That refusal reaches a person as the same answer, whichever client
+      // made the insert: the error is recognised bare and wrapped.
+      const caught = (write: Promise<unknown>) =>
+        write.then(
+          () => undefined,
+          (error) => error,
+        );
+      expect(
+        refusedForRemoval(
+          await caught(sql`insert into job (id, space_id, title, principal_id, objective, state)
+            values (${`job_${crypto.randomUUID()}`}, ${seeded.spaceId}, 'Raw', ${seeded.principalId},
+              'Written directly', 'queued')`),
+        ),
+      ).toBe(true);
+      expect(
+        refusedForRemoval(
+          await caught(
+            db.insert(job).values({
+              id: `job_${crypto.randomUUID()}`,
+              spaceId: seeded.spaceId,
+              principalId: seeded.principalId,
+              title: 'Through drizzle',
+              objective: 'Written through the query builder',
+            }),
+          ),
+        ),
+      ).toBe(true);
+
+      // The removal still answers the person who asked for it.
+      expect((await call(seeded.sessionToken, `/spaces/${seeded.spaceId}/removal`)).status).toBe(
+        200,
+      );
+
+      // Once the emptying finishes, the space is theirs to use again.
+      expect(outcome(await stopping.run(fenced.id))).toBe('complete');
+      expect((await spaceAuthority(db, seeded.spaceId, seeded.principalId)).role).toBe('owner');
+    });
+
+    test('the progress of a removal is shown only to the person who asked', async () => {
+      const seeded = await seed('shared');
+      const removals = await service();
+      await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+      expect(
+        (await call(seeded.memberSessionToken, `/spaces/${seeded.spaceId}/removal`)).status,
+      ).toBe(404);
+      expect((await call(seeded.sessionToken, `/spaces/${seeded.spaceId}/removal`)).status).toBe(
+        200,
+      );
     });
 
     test('a mismatched name is refused with 400 and nothing changes', async () => {

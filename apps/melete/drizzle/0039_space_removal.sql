@@ -27,3 +27,24 @@ CREATE TABLE "space_removal" (
 CREATE UNIQUE INDEX "space_removal_live_idx" ON "space_removal" ("space_id") WHERE "state" <> 'complete';
 --> statement-breakpoint
 CREATE INDEX "space_removal_ready_idx" ON "space_removal" ("state", "lease_expires_at");
+--> statement-breakpoint
+-- A space under removal takes no new work, connection or mailbox scan, however
+-- the insert is written. The service refuses first where it checks authority;
+-- this is what holds for every path, including a personal space being emptied.
+CREATE FUNCTION "refuse_work_in_removed_space"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM "space" WHERE "id" = NEW."space_id" AND "removed_at" IS NOT NULL) THEN
+    RAISE EXCEPTION 'space_removed' USING ERRCODE = 'P0001';
+  END IF;
+  RETURN NEW;
+END
+$$;
+--> statement-breakpoint
+CREATE TRIGGER "job_refuses_removed_space" BEFORE INSERT ON "job"
+  FOR EACH ROW EXECUTE FUNCTION "refuse_work_in_removed_space"();
+--> statement-breakpoint
+CREATE TRIGGER "connection_refuses_removed_space" BEFORE INSERT ON "connection"
+  FOR EACH ROW EXECUTE FUNCTION "refuse_work_in_removed_space"();
+--> statement-breakpoint
+CREATE TRIGGER "company_scan_refuses_removed_space" BEFORE INSERT ON "company_scan"
+  FOR EACH ROW EXECUTE FUNCTION "refuse_work_in_removed_space"();
