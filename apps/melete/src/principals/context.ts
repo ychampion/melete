@@ -23,6 +23,8 @@ export async function selectedContext(
   objective: string,
   latestMessage: string,
   publicCompartment = false,
+  /** Whether the attempt could use a skill naming these tools; one it cannot takes no place. */
+  offered: (tools: readonly string[]) => boolean = () => true,
 ): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   const loaded = loadSkills(
@@ -30,8 +32,9 @@ export async function selectedContext(
   );
   const eligible = loaded.skills.filter(
     (skill) =>
-      skill.source === 'builtin' ||
-      audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner'),
+      (skill.source === 'builtin' ||
+        audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
+      offered(skill.frontmatter.tools),
   );
   const skills = chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) => ({
     name: skill.frontmatter.name,

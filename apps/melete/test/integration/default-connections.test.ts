@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { connectionListResponse } from '@melete/contracts';
@@ -401,4 +401,57 @@ const late = existing ? await database() : null;
     }
   },
   180_000,
+);
+
+const skilled = late ? await database() : null;
+
+(skilled ? test : test.skip)(
+  'a first attempt reads the skill its words call for, and a skill it cannot use takes no place',
+  async () => {
+    const fixture = skilled;
+    if (!fixture) throw new Error('Postgres unavailable');
+    const running = await service(fixture.url);
+    try {
+      const setup = await running.app.request('/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'skills@example.test', password: 'skills-install-password' }),
+      });
+      expect(setup.status).toBe(201);
+      const [space] = await fixture.sql`select id, git_path from space where kind = 'personal'`;
+      if (!space) throw new Error('Missing personal space');
+      const skillNames = (claimed: Awaited<ReturnType<typeof claimIn>>) =>
+        claimed.bundle.skills.map((skill) => skill.name);
+
+      // The default tools are enough for research, so the built-in skill arrives.
+      expect(
+        skillNames(await claimIn(running, space.id, 'Research standing desks and cite sources')),
+      ).toEqual(['research-with-sources']);
+
+      // A skill that waits on a trigger is usable: the lifecycle wait is the broker's own tool.
+      const skills = join(space.git_path, 'skills');
+      await mkdir(skills, { recursive: true });
+      const put = (name: string, triggers: string[], tools: string[]) =>
+        writeFile(
+          join(skills, `${name}.md`),
+          `---\nname: ${name}\ndescription: A skill this person wrote for themselves.\ntriggers:\n${triggers
+            .map((trigger) => `  - ${trigger}\n`)
+            .join('')}tools:\n${tools.map((tool) => `  - ${tool}\n`).join('')}---\n\nDo it.\n`,
+        );
+      await put('watch-a-page', ['watch the page'], ['web.fetch', 'job.wait']);
+      expect(
+        skillNames(await claimIn(running, space.id, 'Watch the page for a price drop')),
+      ).toEqual(['watch-a-page']);
+
+      // Three better matches that need a mailbox this space lacks leave room for the one it can use.
+      for (const name of ['desk-mail-one', 'desk-mail-two', 'desk-mail-three'])
+        await put(name, ['research', 'standing desks'], ['email.send']);
+      expect(
+        skillNames(await claimIn(running, space.id, 'Research standing desks and cite sources')),
+      ).toEqual(['research-with-sources']);
+    } finally {
+      await running.close();
+    }
+  },
+  120_000,
 );

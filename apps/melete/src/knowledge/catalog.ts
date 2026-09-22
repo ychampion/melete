@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { CONTEXT_LIMITS, skillsWithToolsAvailable, type ToolSpec } from '@melete/contracts';
 import { loadSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
+import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
@@ -29,15 +30,19 @@ export class RuntimeCatalog {
   }
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
-    const tools = (await this.toolsForSpace(claims.space_id, claims.scopes, tx)).slice(
-      0,
-      CONTEXT_LIMITS.max_tools,
-    );
+    const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx);
+    const tools = granted.slice(0, CONTEXT_LIMITS.max_tools);
+    // A skill is checked against everything the attempt can reach, not the first
+    // few tools by name: discovery loads the rest, and the lifecycle wait is the
+    // broker's own tool rather than a connection's.
+    const reachable: ToolSpec[] = claims.scopes.includes(RUNTIME_WAIT_TOOL.name)
+      ? [...granted, RUNTIME_WAIT_TOOL]
+      : granted;
     const available = new Set(
       skillsWithToolsAvailable(
         loadSkills({ spaceSkillsDirectory: join(this.spacesRoot, claims.space_id, 'skills') })
           .skills,
-        tools,
+        reachable,
       ).map((skill) => skill.frontmatter.name),
     );
     // Bundle construction already checked audience and evaluated-procedure evidence.

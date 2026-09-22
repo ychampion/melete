@@ -13,6 +13,7 @@ import {
   jobConstraints,
   jsonObject,
   QUESTION_GUIDANCE,
+  REACT_TOOL_NAME,
   type RecallResult,
   type ResponsibilityAttemptBundle,
   receipt,
@@ -321,6 +322,8 @@ export async function buildAttemptSkeleton(
   afterSeq: number,
   expected?: ContextGenerations,
   runtimeVersion?: string,
+  /** The attempt's granted scopes. Given, a skill needing a tool outside them is not chosen. */
+  scopes?: readonly string[],
 ): Promise<ResponsibilityAttemptBundle> {
   const access = await spaceAuthority(tx, row.spaceId, row.principalId, true);
   const generations = expected
@@ -450,6 +453,9 @@ export async function buildAttemptSkeleton(
     row.objective,
     history.inputs.new_user_messages.at(-1)?.content ?? '',
     constraints.public_compartment,
+    scopes
+      ? (tools) => tools.every((tool) => tool === REACT_TOOL_NAME || scopes.includes(tool))
+      : undefined,
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
