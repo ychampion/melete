@@ -1,0 +1,238 @@
+# The deployment proofs need a whole Compose stack on a Linux Docker host, so they stay off the
+# pull-request path: the conformance scenarios (no route out, retraction, model-agnostic), and an
+# upgrade from the previous release to this tree. Weekly, on request, when main changes what they
+# prove, and on a pull request that changes this file. Nothing is pushed, published or deployed,
+# and no secret is read; deploy/scripts/ci-workflow.test.ts checks this file.
+name: Conformance
+
+on:
+  schedule:
+    # Mondays at 03:00 UTC. The cadence is this one line; the pull request that added it lists
+    # the minutes a nightly, weekly or weekday schedule costs.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/**'
+      - 'apps/melete/src/**'
+      - 'packages/**'
+      - 'bun.lock'
+      - 'conformance/**'
+  # A change to this workflow is proved before it lands.
+  pull_request:
+    paths:
+      - '.github/workflows/conformance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run at a time per ref; a second waits rather than cancelling a stack mid-run.
+  group: conformance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compose:
+    name: Deployment scenarios on a disposable stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # If the runner's engine is older than the deployment needs, nothing below could mean
+      # anything, so the host's own versions are printed and judged before an image is built.
+      - name: Report and judge the host's Docker
+        run: |
+          docker version
+          docker compose version
+          bun run deploy/scripts/docker-preflight.ts
+      - name: Generate a disposable configuration
+        run: |
+          bun run deploy/scripts/configure.ts --fake
+          chmod 600 deploy/.env
+      - name: Compose boundary checks
+        run: bun run compose:check
+      - name: Start the stack
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+          docker compose -f deploy/docker-compose.yml ps
+      - name: Deployment conformance scenarios
+        env:
+          MELETE_CONFORMANCE_COMPOSE: '1'
+        run: |
+          set -o pipefail
+          bun run conformance | tee conformance-report.txt
+      # A job that fails inside the stack says why only in its attempts and events, and its
+      # attempt cells are containers Compose does not list.
+      - name: Collect the stack logs
+        if: failure()
+        run: |
+          docker compose -f deploy/docker-compose.yml logs --no-color --tail=2000 > compose-logs.txt
+          docker compose -f deploy/docker-compose.yml ps --all >> compose-logs.txt
+          docker ps --all >> compose-logs.txt
+          docker compose -f deploy/docker-compose.yml exec -T postgres sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >> compose-logs.txt <<'SQL' || true
+          select id, job_id, provider, model, outcome, outcome_detail from attempt order by id;
+          select e.job_id, e.type, e.payload from event e join job j on j.id = e.job_id where j.state = 'failed' order by e.seq;
+          SQL
+      - name: Keep the report and the logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-${{ github.run_id }}
+          path: |
+            conformance-report.txt
+            compose-logs.txt
+          if-no-files-found: warn
+          retention-days: 7
+      # The stack owns ports and volumes on the runner; it goes whether the scenarios passed or not.
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v --remove-orphans
+
+  upgrade:
+    name: Upgrade the previous release to this tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # The whole history and every tag: the upgrade checks that the target descends from the
+      # running commit, and the release it starts from is found by its tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Report and judge the host's Docker
+        run: |
+          docker version
+          docker compose version
+          bun run deploy/scripts/docker-preflight.ts
+      # The installation starts at the newest release tag before this tree that has the Compose
+      # layout and whose images build, and this tree becomes a local release tag for the upgrade
+      # to move to. The script is this tree's upgrade.ts in one file, placed where it reads the
+      # older tree as its own and excluded from git, so the older tree stays clean for the
+      # upgrade's preflight. docs/UPGRADING.md has an operator run the target release's script
+      # the same way, so this is the path an installation takes.
+      - name: Check out, configure and build the release to upgrade from
+        id: start
+        run: |
+          set -euo pipefail
+          head=$(git rev-parse HEAD)
+          target="v0.0.0-ci.${GITHUB_RUN_ID}"
+          git tag "$target" "$head"
+          bun build deploy/scripts/upgrade.ts --target=bun --outfile="$RUNNER_TEMP/upgrade.js"
+          prepare() {
+            git -c advice.detachedHead=false checkout --detach "$1" &&
+              rm -f deploy/.env &&
+              bun run deploy/scripts/configure.ts --fake &&
+              chmod 600 deploy/.env &&
+              docker compose -f deploy/docker-compose.yml build
+          }
+          start=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "$head^" 2>/dev/null || true)
+          if [ -n "$start" ] && git cat-file -e "$start:deploy/docker-compose.yml" && git cat-file -e "$start:deploy/scripts/configure.ts" && prepare "$start"; then
+            echo "Upgrading from the release $start"
+          else
+            if [ -n "$start" ]; then
+              echo "::warning::the images of the release $start do not build from a clean checkout, so the upgrade cannot start from it"
+            fi
+            start=$(git merge-base origin/main "$head")
+            if [ "$start" = "$head" ]; then start=$(git rev-parse "$head^"); fi
+            echo "::notice::no earlier release tag has the Compose layout and builds, so the upgrade starts from $start on main"
+            prepare "$start"
+          fi
+          cp "$RUNNER_TEMP/upgrade.js" deploy/scripts/upgrade-from-head.js
+          echo deploy/scripts/upgrade-from-head.js >> .git/info/exclude
+          test -z "$(git status --porcelain)"
+          echo "from=$start" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+      - name: Start the previous release
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+          docker compose -f deploy/docker-compose.yml ps
+      - name: Record the service and the internal network the previous release runs
+        id: before
+        run: |
+          set -euo pipefail
+          name=$(docker compose -f deploy/docker-compose.yml config --format json | jq -r '.networks.internal.name')
+          docker network inspect "$name" --format '{{.Name}} {{.Id}} {{json .Labels}}'
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "id=$(docker network inspect "$name" --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+          service=$(docker compose -f deploy/docker-compose.yml ps -q melete)
+          echo "container=$service" >> "$GITHUB_OUTPUT"
+          echo "image=$(docker inspect --format '{{.Image}}' "$service")" >> "$GITHUB_OUTPUT"
+          # The name upgrade.ts keeps the running images under for a rollback.
+          echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+      # Everything this job writes goes outside the tree: the upgrade refuses a tree with
+      # untracked files in it.
+      - name: Upgrade to this tree
+        env:
+          TARGET: ${{ steps.start.outputs.target }}
+        run: |
+          set -o pipefail
+          mkdir -p -m 700 "$RUNNER_TEMP/backups"
+          df -h / "$RUNNER_TEMP"
+          bun run deploy/scripts/upgrade-from-head.js "$TARGET" --backup-dir "$RUNNER_TEMP/backups" | tee "$RUNNER_TEMP/upgrade-report.txt"
+      - name: The upgraded service answers and kept the internal network
+        env:
+          TARGET: ${{ steps.start.outputs.target }}
+          BEFORE_NAME: ${{ steps.before.outputs.name }}
+          BEFORE_ID: ${{ steps.before.outputs.id }}
+          BEFORE_CONTAINER: ${{ steps.before.outputs.container }}
+          BEFORE_IMAGE: ${{ steps.before.outputs.image }}
+          BEFORE_VERSION: ${{ steps.before.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$TARGET^{commit}")"
+          service=$(docker compose -f deploy/docker-compose.yml ps -q melete)
+          built=$(docker image inspect --format '{{.Id}}' "melete-service:$TARGET")
+          # The container that answers runs the image this tree built, not the release's.
+          test "$(docker inspect --format '{{.Image}}' "$service")" = "$built"
+          # The image that ran before is kept for a rollback, under the version it was.
+          test "$(docker image inspect --format '{{.Id}}' "melete-service:$BEFORE_VERSION")" = "$BEFORE_IMAGE"
+          # A new image must mean a new container. The image only holds the workspaces, so a
+          # change to deploy/ alone builds the same one, and Compose rightly keeps the container.
+          if [ "$built" != "$BEFORE_IMAGE" ]; then
+            if [ "$service" = "$BEFORE_CONTAINER" ]; then
+              echo "::error::the service image changed but the upgrade left the old melete container running"
+              exit 1
+            fi
+          else
+            echo "::notice::this tree builds the same service image as $BEFORE_VERSION, so the container was not replaced and the switch was not exercised"
+          fi
+          curl -fsS "http://$(docker compose -f deploy/docker-compose.yml port melete 8787)/health" | tee "$RUNNER_TEMP/health.json"
+          jq -e '.database == "ok"' "$RUNNER_TEMP/health.json"
+          curl -fsS -o /dev/null "http://$(docker compose -f deploy/docker-compose.yml port web 3000)/"
+          # Recreating the network would give it a new id and cut the cells attached to it.
+          name=$(docker compose -f deploy/docker-compose.yml config --format json | jq -r '.networks.internal.name')
+          after=$(docker network inspect "$name" --format '{{.Id}}')
+          attached=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$name\").NetworkID}}" "$service")
+          echo "before: $BEFORE_NAME $BEFORE_ID"
+          echo "after:  $name $after (service attached to $attached)"
+          if [ "$name" != "$BEFORE_NAME" ] || [ "$after" != "$BEFORE_ID" ] || [ "$attached" != "$BEFORE_ID" ]; then
+            echo "::error::the upgrade recreated the internal network instead of reusing $BEFORE_NAME"
+            exit 1
+          fi
+      - name: Collect the stack logs
+        if: failure()
+        run: |
+          docker compose -f deploy/docker-compose.yml logs --no-color --tail=2000 > "$RUNNER_TEMP/compose-logs.txt"
+          docker compose -f deploy/docker-compose.yml ps --all >> "$RUNNER_TEMP/compose-logs.txt"
+          docker network ls >> "$RUNNER_TEMP/compose-logs.txt"
+      - name: Keep the upgrade report and the logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upgrade-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/upgrade-report.txt
+            ${{ runner.temp }}/compose-logs.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stop the stack
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v --remove-orphans

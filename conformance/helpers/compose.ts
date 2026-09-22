@@ -208,6 +208,21 @@ export async function job(jobId: string): Promise<StackJob> {
   return ((await response.json()) as { job: StackJob }).job;
 }
 
+/**
+ * The budget every stack job is submitted with. Output is a ceiling across the
+ * whole job, and each model request may carry only the model's context window
+ * less that ceiling as input, so a ceiling at or above the window refuses every
+ * request before it is sent. The scripted model has no catalog entry and gets
+ * the 128,000-token fallback window; this leaves half of it for input.
+ */
+export const STACK_JOB_BUDGET = {
+  max_attempts: 4,
+  max_turns: 4,
+  max_wall_ms: 180_000,
+  max_actions: 2,
+  max_output_tokens: 64_000,
+};
+
 export async function createStackJob(options: { title?: string; objective?: string } = {}) {
   const { spaceId, connectionId } = await ensureTestConnection();
   const response = await api('/jobs', {
@@ -217,15 +232,7 @@ export async function createStackJob(options: { title?: string; objective?: stri
       space_id: spaceId,
       title: options.title ?? 'Compose vertical slice',
       objective: options.objective ?? 'Send the scripted test message once and report its receipt.',
-      budget: {
-        max_attempts: 4,
-        max_turns: 4,
-        max_wall_ms: 180_000,
-        max_actions: 2,
-        // The gateway reserves serialized input bytes as well as the requested
-        // completion; Hermes includes its tool schemas in that reservation.
-        max_output_tokens: 250_000,
-      },
+      budget: STACK_JOB_BUDGET,
     }),
   });
   const body = (await response.json()) as { job?: StackJob; error?: { code: string } };
