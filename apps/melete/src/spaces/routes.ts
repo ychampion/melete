@@ -119,13 +119,17 @@ async function previewCounts(sql: Sql, spaceId: string) {
     (select count(*)::int from knowledge_record
       where space_id = ${spaceId} and status = 'active') as knowledge_files,
     (select count(*)::int from artifact where space_id = ${spaceId}) as artifacts,
-    (select count(*)::int from connection where space_id = ${spaceId}) as connections`;
+    (select count(*)::int from connection where space_id = ${spaceId}) as connections,
+    (select count(*)::int from company where space_id = ${spaceId}) as companies,
+    (select count(*)::int from ledger_item where space_id = ${spaceId}) as ledger_items`;
   return {
     jobs: Number(row?.jobs ?? 0),
     memory_claims: Number(row?.memory_claims ?? 0),
     knowledge_files: Number(row?.knowledge_files ?? 0),
     artifacts: Number(row?.artifacts ?? 0),
     connections: Number(row?.connections ?? 0),
+    companies: Number(row?.companies ?? 0),
+    ledger_items: Number(row?.ledger_items ?? 0),
     // Both live on lanes that have not landed. Counted when their table is
     // there, and honestly zero when it is not.
     signed_in_sites: await countIfPresent(sql, 'browser_site_profile', spaceId),

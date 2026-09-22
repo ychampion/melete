@@ -1080,7 +1080,13 @@ describe.if(handle !== null)('removing a space', () => {
       const preview = await call(seeded.sessionToken, `/spaces/${seeded.spaceId}/removal/preview`);
       expect(preview.status).toBe(200);
       const shown = (await preview.json()) as { preview: Record<string, unknown> };
-      expect(shown.preview.counts).toMatchObject({ jobs: 2, connections: 1, memory_claims: 1 });
+      expect(shown.preview.counts).toMatchObject({
+        jobs: 2,
+        connections: 1,
+        memory_claims: 1,
+        companies: 1,
+        ledger_items: 1,
+      });
       expect(shown.preview.confirmation).toContain('The Ledger');
       expect((shown.preview.stays as string[]).join(' ')).toContain('Revoke them there');
 

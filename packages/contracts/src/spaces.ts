@@ -132,6 +132,9 @@ export const removalPreviewCounts = z.object({
   knowledge_files: z.number().int().nonnegative(),
   artifacts: z.number().int().nonnegative(),
   connections: z.number().int().nonnegative(),
+  /** Companies found by scanning the mailbox, and the ledger items quoting its messages. */
+  companies: z.number().int().nonnegative(),
+  ledger_items: z.number().int().nonnegative(),
   signed_in_sites: z.number().int().nonnegative(),
   sandboxes: z.number().int().nonnegative(),
 });

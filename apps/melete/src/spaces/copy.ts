@@ -86,6 +86,7 @@ function clearedLines(kind: SpaceRemovalKind): string[] {
     'Its work, and everything each piece of work produced.',
     'Its memory: what was remembered, where each of those came from, and the index over them.',
     'Its knowledge files and their history, its artifacts, and its skills.',
+    'Its company map: the message text read from the mailbox, the lines quoted from it, and the companies found there.',
     'Its connections and the keys held for them here.',
     'Its browser profile, including the cookies that kept it signed in.',
     kind === 'emptied'
