@@ -114,10 +114,7 @@ jobs:
           bun run deploy/scripts/docker-preflight.ts
       # The installation starts at the newest release tag before this tree that has the Compose
       # layout and whose images build, and this tree becomes a local release tag for the upgrade
-      # to move to. The script is this tree's upgrade.ts in one file, placed where it reads the
-      # older tree as its own and excluded from git, so the older tree stays clean for the
-      # upgrade's preflight. docs/UPGRADING.md has an operator run the target release's script
-      # the same way, so this is the path an installation takes.
+      # to move to.
       - name: Check out, configure and build the release to upgrade from
         id: start
         run: |
@@ -125,7 +122,6 @@ jobs:
           head=$(git rev-parse HEAD)
           target="v0.0.0-ci.${GITHUB_RUN_ID}"
           git tag "$target" "$head"
-          bun build deploy/scripts/upgrade.ts --target=bun --outfile="$RUNNER_TEMP/upgrade.js"
           prepare() {
             git -c advice.detachedHead=false checkout --detach "$1" &&
               rm -f deploy/.env &&
@@ -145,8 +141,6 @@ jobs:
             echo "::notice::no earlier release tag has the Compose layout and builds, so the upgrade starts from $start on main"
             prepare "$start"
           fi
-          cp "$RUNNER_TEMP/upgrade.js" deploy/scripts/upgrade-from-head.js
-          echo deploy/scripts/upgrade-from-head.js >> .git/info/exclude
           test -z "$(git status --porcelain)"
           echo "from=$start" >> "$GITHUB_OUTPUT"
           echo "target=$target" >> "$GITHUB_OUTPUT"
@@ -167,16 +161,26 @@ jobs:
           echo "image=$(docker inspect --format '{{.Image}}' "$service")" >> "$GITHUB_OUTPUT"
           # The name upgrade.ts keeps the running images under for a rollback.
           echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
-      # Everything this job writes goes outside the tree: the upgrade refuses a tree with
-      # untracked files in it.
+      # The path docs/UPGRADING.md gives an operator: the target release's own upgrade.ts, taken
+      # from the tag into a directory outside the installation and pointed at it. Everything
+      # this job writes goes outside the tree, since the upgrade refuses untracked files.
       - name: Upgrade to this tree
         env:
           TARGET: ${{ steps.start.outputs.target }}
         run: |
           set -o pipefail
-          mkdir -p -m 700 "$RUNNER_TEMP/backups"
+          mkdir -p -m 700 "$RUNNER_TEMP/backups" "$RUNNER_TEMP/release"
+          git archive "$TARGET" | tar -x -C "$RUNNER_TEMP/release"
+          # A copy with no stamp passes the script's own check as quietly as a matching one,
+          # so the stamp is held to the tag here, and the script is held to having read it.
+          commit=$(git rev-parse "$TARGET^{commit}")
+          if [ "$(cat "$RUNNER_TEMP/release/deploy/scripts/release-commit.txt")" != "$commit" ]; then
+            echo "::error::git archive did not stamp $TARGET's commit into deploy/scripts/release-commit.txt"
+            exit 1
+          fi
           df -h / "$RUNNER_TEMP"
-          bun run deploy/scripts/upgrade-from-head.js "$TARGET" --backup-dir "$RUNNER_TEMP/backups" | tee "$RUNNER_TEMP/upgrade-report.txt"
+          bun run "$RUNNER_TEMP/release/deploy/scripts/upgrade.ts" "$TARGET" --repository "$PWD" --backup-dir "$RUNNER_TEMP/backups" | tee "$RUNNER_TEMP/upgrade-report.txt"
+          grep -Fq "This copy was taken from ${commit:0:12}." "$RUNNER_TEMP/upgrade-report.txt"
       - name: The upgraded service answers and kept the internal network
         env:
           TARGET: ${{ steps.start.outputs.target }}

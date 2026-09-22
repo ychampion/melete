@@ -67,13 +67,17 @@ const commands = ci.commands;
 
 /** Whatever the workflows name on disk has to be there: a script, a Dockerfile, a test. */
 function filesNamed(lines: string[]): string[] {
-  return lines.flatMap((line) => [
-    ...(/^bun run (\S+\.ts)/.exec(line)?.slice(1) ?? []),
-    ...(/^bun test (\S+\.ts)/.exec(line)?.slice(1) ?? []),
-    ...(/^bun build (\S+\.ts)/.exec(line)?.slice(1) ?? []),
-    ...(/docker compose -f (\S+)/.exec(line)?.slice(1) ?? []),
-    ...(/ -f (\S+\.\w+)(?: |$)/.exec(line.startsWith('docker build') ? line : '')?.slice(1) ?? []),
-  ]);
+  // The upgrade runs the script from an archive of this tree, so it names this tree's file.
+  const released = (line: string) => line.replace(/"\$RUNNER_TEMP\/release\/(\S+?)"/g, '$1');
+  return lines
+    .map(released)
+    .flatMap((line) => [
+      ...(/^bun run (\S+\.ts)/.exec(line)?.slice(1) ?? []),
+      ...(/^bun test (\S+\.ts)/.exec(line)?.slice(1) ?? []),
+      ...(/docker compose -f (\S+)/.exec(line)?.slice(1) ?? []),
+      ...(/ -f (\S+\.\w+)(?: |$)/.exec(line.startsWith('docker build') ? line : '')?.slice(1) ??
+        []),
+    ]);
 }
 
 describe('the continuous integration workflow', () => {
@@ -353,7 +357,7 @@ describe('the upgrade proof', () => {
   const jobSteps = conformance.workflow.jobs?.upgrade?.steps ?? [];
   const find = (text: string) => jobSteps.findIndex((step) => step.run?.includes(text));
   const start = jobSteps.find((step) => step.id === 'start');
-  const upgrade = jobSteps.find((step) => step.run?.includes('"$TARGET" --backup-dir'));
+  const upgrade = jobSteps.find((step) => step.run?.includes('--repository "$PWD"'));
   const verify = jobSteps.find((step) => step.env?.BEFORE_ID);
 
   test('has the whole history, so a release tag and the ancestry check can be read', () => {
@@ -399,16 +403,37 @@ describe('the upgrade proof', () => {
     expect(start?.run).toContain('git tag "$target" "$head"');
   });
 
-  test("runs this tree's upgrade.ts from inside the older tree, which it reads as its own", () => {
-    const run = start?.run ?? '';
-    expect(run).toContain('bun build deploy/scripts/upgrade.ts --target=bun');
-    const placed = /cp "\$RUNNER_TEMP\/upgrade\.js" (\S+)/.exec(run)?.[1] ?? '';
-    // upgrade.ts takes the repository to be two directories above itself.
-    expect(placed.split('/').length).toBe(3);
-    expect(run).toContain(`echo ${placed} >> .git/info/exclude`);
-    // The preflight refuses an untracked file, so the older tree must still be clean.
-    expect(run).toContain('test -z "$(git status --porcelain)"');
-    expect(upgrade?.run).toContain(`bun run ${placed} "$TARGET"`);
+  test("runs the target release's own upgrade.ts the way docs/UPGRADING.md does", () => {
+    const run = upgrade?.run ?? '';
+    const archive = 'git archive "$TARGET" | tar -x -C "$RUNNER_TEMP/release"';
+    const script =
+      'bun run "$RUNNER_TEMP/release/deploy/scripts/upgrade.ts" "$TARGET" --repository "$PWD"';
+    expect(run).toContain(archive);
+    expect(run).toContain(script);
+    expect(run.indexOf(archive)).toBeLessThan(run.indexOf(script));
+    // A missing stamp would pass the script's own check, so the copy's stamp is held to the
+    // tag's commit before it runs, and the script to saying it read it.
+    const stamp =
+      /if \[ "\$\(cat "\$RUNNER_TEMP\/release\/deploy\/scripts\/release-commit\.txt"\)" != "\$commit" \]; then\n\s*echo "::error::[^\n]+"\n\s*exit 1\n\s*fi/;
+    expect(run).toContain('commit=$(git rev-parse "$TARGET^{commit}")');
+    expect(run).toMatch(stamp);
+    expect(run.search(stamp)).toBeGreaterThan(run.indexOf(archive));
+    expect(run.search(stamp)).toBeLessThan(run.indexOf(script));
+    expect(run).toMatch(
+      /^grep -Fq "This copy was taken from \$\{commit:0:12\}\." "\$RUNNER_TEMP\/upgrade-report\.txt"$/m,
+    );
+    // The same two commands an operator is given, with the release directory and the tag.
+    const guide = readFileSync(join(root, 'docs/UPGRADING.md'), 'utf8');
+    expect(guide).toMatch(/git archive (\S+) \| tar -x -C "\$release"/);
+    expect(guide).toMatch(
+      /bun run "\$release\/deploy\/scripts\/upgrade\.ts" \S+ --repository "\$PWD"/,
+    );
+    expect(
+      parseArguments(['v0.2.0', '--repository', '/srv/melete'], new Date(), '/h', '/r'),
+    ).toMatchObject({ repositoryRoot: '/srv/melete' });
+    // Nothing is copied into the installation, so its tree stays clean for the preflight.
+    expect(conformance.source).not.toMatch(/bun build|\.git\/info\/exclude/);
+    expect(start?.run).toContain('test -z "$(git status --porcelain)"');
   });
 
   test('writes nothing inside the tree the upgrade checks', () => {

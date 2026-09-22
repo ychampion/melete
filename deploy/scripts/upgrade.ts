@@ -695,6 +695,8 @@ export async function runUpgrade(
   const plan = upgradePlan(context);
   const problems = judgePreflight(facts);
   for (const note of describeDockerHost(facts.host)) log(note);
+  // Said whenever there is a stamp, so a matching copy is seen to have been checked.
+  if (facts.scriptCommit) log(`This copy was taken from ${facts.scriptCommit.slice(0, 12)}.`);
   if (problems.length > 0) {
     log(`Preflight found ${problems.length} problem(s); nothing was changed:`);
     for (const problem of problems) log(`  - ${problem}`);
