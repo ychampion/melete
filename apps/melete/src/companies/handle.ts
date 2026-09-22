@@ -40,6 +40,7 @@ import {
   type TriggerSpec,
 } from '@melete/contracts';
 import { ServiceError } from '../api/errors.ts';
+import { companyDomain } from './replies.ts';
 
 /**
  * Which playbook handles a kind when the scan did not suggest a usable one.
@@ -134,6 +135,14 @@ export function oneLine(value: string, limit = 300): string {
     .trim()
     .slice(0, limit);
 }
+
+/**
+ * A `from` header sent by this registrable domain or a subdomain of it, as the
+ * watch grammar reads it: `support@acme.test`, `Acme <billing@mail.acme.test>`,
+ * but never `x@acme.test.evil.test` or `x@notacme.test`.
+ */
+export const senderPattern = (domain: string): string =>
+  `(?i)@(?:[a-z0-9-]+\\.)*${domain.replaceAll('.', '\\.')}>?\\s*$`;
 
 const hostnames = (domain: string): string[] => {
   const host = domain.trim().toLowerCase().replace(/\.$/, '');
@@ -324,11 +333,19 @@ export async function handleLedgerItem(
 
   // A reply is what this job mostly waits for, so the wait it can name has to
   // exist before the first attempt claims it.
-  if (deps.createTrigger && input.connectionId && replyEvent) {
+  // Every chase on one mailbox hears every reply on it, so the trigger is a
+  // watch that only wakes this job for mail from this company or a subdomain
+  // of it. An event trigger here would hand one company's answer to another
+  // company's chase, and the attempt would read it as that company replying.
+  const replyDomain = companyDomain(domains);
+  if (deps.createTrigger && input.connectionId && replyEvent && replyDomain) {
     await deps.createTrigger(job.id, {
-      kind: 'event',
+      kind: 'watch',
       connection_id: input.connectionId,
       event_name: replyEvent,
+      predicate: {
+        all: [{ field: 'from', op: 'matches', value: senderPattern(replyDomain) }],
+      },
       poll_seconds: 300,
     });
   }

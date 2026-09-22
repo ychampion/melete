@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { LAUNCH_PLAYBOOKS, type LedgerEvidence } from '@melete/contracts';
+import { evaluateWatch, LAUNCH_PLAYBOOKS, type LedgerEvidence } from '@melete/contracts';
 import { ServiceError } from '../api/errors.ts';
 import {
   admittedEvidence,
@@ -7,6 +7,7 @@ import {
   oneLine,
   PLAYBOOK_FOR_KIND,
   playbookFor,
+  senderPattern,
 } from './handle.ts';
 
 test('an amount is written the way its own currency is written', () => {
@@ -86,4 +87,17 @@ test('outside text cannot open a second line in the instructions', () => {
   expect(oneLine('x'.repeat(500))).toHaveLength(300);
   expect(oneLine('x'.repeat(500), 20)).toHaveLength(20);
   expect(oneLine('')).toBe('');
+});
+
+test('a reply watch hears the company and its subdomains, and nobody else', () => {
+  const watch = {
+    all: [{ field: 'from', op: 'matches' as const, value: senderPattern('acme.co.uk') }],
+  };
+  const heard = (from: string) => evaluateWatch(watch, { from });
+  expect(heard('support@acme.co.uk')).toBe(true);
+  expect(heard('Acme <Billing@MAIL.Acme.co.uk>')).toBe(true);
+  expect(heard('x@acme.co.uk.evil.test')).toBe(false);
+  expect(heard('x@notacme.co.uk')).toBe(false);
+  expect(heard('x@acmeXco.uk')).toBe(false);
+  expect(heard('acme.co.uk <x@evil.test>')).toBe(false);
 });

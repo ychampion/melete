@@ -6,6 +6,7 @@
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Company, LedgerItem } from '@melete/contracts';
+import { eq } from 'drizzle-orm';
 import { handleLedgerItem } from '../../src/companies/handle.ts';
 import {
   CompanyReplyPoller,
@@ -66,12 +67,12 @@ const QUOTE = 'We will refund you within 5-7 working days.';
 const QUOTE_AT = MESSAGE.indexOf(QUOTE);
 const SENT_AT = '2026-09-18T09:00:00.000Z';
 
-function company(): Company {
+function company(domain = 'acme.test'): Company {
   return {
     id: newId('co'),
     space_id: spaceId,
     name: 'Acme',
-    domain: 'acme.test',
+    domain,
     monthly_spend_minor: null,
     currency: null,
     first_seen_at: SENT_AT,
@@ -109,9 +110,9 @@ function item(co: Company): LedgerItem {
 }
 
 /** A chase that has already written to the company and is waiting on a reply. */
-async function waitingChase() {
+async function waitingChase(domain = 'acme.test', mailbox = connectionId) {
   const { jobs, handle } = fixture();
-  const co = company();
+  const co = company(domain);
   const { job_id } = await handleLedgerItem(
     {
       createJob: (input) => jobs.create(input),
@@ -123,10 +124,10 @@ async function waitingChase() {
       messageText: MESSAGE,
       principalId: ownerId,
       spaceId,
-      connectionId,
+      connectionId: mailbox,
     },
   );
-  const [registration] = await handle.db.select().from(trigger);
+  const [registration] = await handle.db.select().from(trigger).where(eq(trigger.jobId, job_id));
   if (!registration) throw new Error('Expected the reply trigger');
   const claimed = await claim(await jobs.get(job_id));
   // The first message, already gone out: a succeeded send with a resolved time
@@ -136,7 +137,7 @@ async function waitingChase() {
     id: sendId,
     jobId: job_id,
     attemptId: claimed.claims.attempt_id,
-    connectionId,
+    connectionId: mailbox,
     kind: 'test.send',
     effectClass: 'write_external',
     canonicalPayload: { to: 'support@acme.test', subject: 'Refund', body: 'Please refund me.' },
@@ -286,6 +287,26 @@ withDb('noticing that a company wrote back', () => {
     const after = await jobs.get(chase.jobId);
     expect(after.state).toBe('waiting_for_event_or_time');
     expect(after.stateVersion).toBe(before.stateVersion);
+  });
+
+  test('a reply from one company does not wake the chase with another', async () => {
+    const { jobs } = fixture();
+    const acme = await waitingChase('acme.test');
+    const other = await waitingChase('other.test');
+    const before = await jobs.get(other.jobId);
+    // One mailbox, two chases on it. Acme writes back; the other company has not.
+    expect(await poller([reply()]).runOnce()).toBe(1);
+    expect((await jobs.get(acme.jobId)).state).toBe('queued');
+    const after = await jobs.get(other.jobId);
+    expect(after.state).toBe('waiting_for_event_or_time');
+    expect(after.stateVersion).toBe(before.stateVersion);
+    // And when the other company does write, its own chase is the one that wakes.
+    expect(
+      await poller([
+        reply({ messageId: '<o1@other.test>', from: 'Other Ltd <help@other.test>' }),
+      ]).runOnce(),
+    ).toBe(1);
+    expect((await jobs.get(other.jobId)).state).toBe('queued');
   });
 
   test('a subdomain of the company is still the company', async () => {
