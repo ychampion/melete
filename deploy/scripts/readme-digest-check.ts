@@ -172,7 +172,7 @@ export function compareDigests(
   const results: CheckResult[] = pins.map((pin) => {
     const seen = quoted.filter((reference) => reference.repository === pin.repository);
     return {
-      name: `${readme} removes ${pin.repository} at the digest ${pin.source} pins`,
+      name: `${readme} quotes ${pin.repository} at the digest ${pin.source} pins`,
       ok: seen.some((reference) => reference.digest === pin.digest),
       detail: `quote ${pin.repository}@sha256:${pin.digest} (quoted: ${
         seen.map((reference) => reference.digest).join(', ') || 'nothing'

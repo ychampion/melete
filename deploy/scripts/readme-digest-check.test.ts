@@ -40,10 +40,12 @@ const readme = (commands: string) =>
   ].join('\n');
 
 describe('the repository', () => {
-  test('README removes every pulled image at the digest the Compose files pin', () => {
+  test('README quotes every pulled image at the digest the Compose files pin', () => {
     const results = checkReadmeDigests(root);
     expect(results.filter((result) => !result.ok)).toEqual([]);
-    expect(results.length).toBeGreaterThanOrEqual(2);
+    expect(results.map((result) => result.name)).toContain(
+      'README.md quotes postgres at the digest deploy/docker-compose.yml service postgres pins',
+    );
   });
 
   test('the Compose files it reads include the base file and the Tailscale override', () => {
