@@ -97,6 +97,10 @@ export class PostgresCredentialRepository implements CredentialRepository {
   }
 }
 
+/** The client may hand a timestamptz back as a Date or as text. */
+const timestampOf = (value: unknown): Date | null =>
+  value === null || value === undefined ? null : new Date(value as string | Date);
+
 function rowFrom(row: Record<string, unknown> | undefined): CredentialRow | null {
   if (!row) return null;
   return {
@@ -108,8 +112,8 @@ function rowFrom(row: Record<string, unknown> | undefined): CredentialRow | null
     status: row.status === 'active' ? 'active' : 'sign_in_required',
     reason: (row.reason as string | null) ?? null,
     account: (row.account as string | null) ?? null,
-    expiresAt: (row.expires_at as Date | null) ?? null,
-    refreshedAt: (row.refreshed_at as Date | null) ?? null,
+    expiresAt: timestampOf(row.expires_at),
+    refreshedAt: timestampOf(row.refreshed_at),
   };
 }
 
