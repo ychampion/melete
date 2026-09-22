@@ -18,6 +18,51 @@ in `broker/start.ts` and tested by `an address read off a page is refused as
 untrusted_recipient_origin`. The scripted HTTP proof `wired-assistant.test.ts`
 corrects a claim over these routes through a real local engine.
 
+## Automatic memory from chat
+
+What a person types into a conversation or a job is offered to their memory
+with no step of theirs. A capture loop reads each user message off the job's
+stream once and keeps it as evidence on the `chat` stream, in the speaker's own
+memory for that space; `memory_capture` records what it did with every message.
+Only the person's own messages are evidence here: assistant answers, pages,
+mail and tool output are never read as facts about them. The memory model then
+reads the message through the model gateway (see
+[DEPLOYMENT](DEPLOYMENT.md#memory-model)) and proposes claims, which pass the
+same validation, precedence and correction rules as every other extraction. It
+keeps preferences, standing instructions and facts about people, places,
+projects and dates, and supersedes a claim the message corrects.
+
+In a shared space, memory belongs to the space's owner, and a message from
+another member is not kept.
+
+A person can say these in plain words:
+
+| They say | What memory does |
+| --- | --- |
+| "Remember that ..." | Keeps it as their own statement, at owner trust |
+| "That's wrong, it's ..." or "Actually, ... now" | Supersedes the claim it corrects |
+| "Forget that" or "Don't remember that" | Removes what their previous kept message in the conversation taught, through the restriction journal |
+| "Forget &lt;something&gt;" | Removes the saved details that name it, through the restriction journal |
+| "Don't remember this: ..." | Does not keep that message |
+
+Each change is shown in the conversation as a tool entry ("Remembered",
+"Updated", "Forgot"). It is written as a
+`notice` with payload kind `memory_tool` and operation `write`, `correct` or
+`forget`, naming the detail by its plain label and quoting the value from the
+person's own message; a forget names the detail without its value. The notice
+goes only on the conversation the message came from. What an attempt was handed
+is read from its context record.
+
+`GET /memory/settings` and `PUT /memory/settings` (`{ "capture": boolean }`)
+read and change whether new messages are kept for the signed-in person. Capture
+is on by default; turned off, "forget ..." still works.
+
+Evidence: `say, recall later, correct in plain words, and forget, each told as a
+tool entry`, `a person who turns memory off is not remembered, and can still say
+forget`, `a message from someone who does not own the space is never kept in its
+memory` and `the memory gateway holds each person to a daily number of calls`
+in [memory-chat.test.ts](../apps/melete/test/integration/memory-chat.test.ts).
+
 ## Evidence, claims and correction
 
 Accepted evidence records exact source identity, version, spans and stream
@@ -85,6 +130,17 @@ and audience checks (`lexical and dense candidates are independent and
 incompatible embeddings fail closed`). The comparison fixture uses scripted
 three-dimensional embeddings, so it checks the independence and fail-closed
 rules rather than retrieval quality.
+
+A request is matched by any of its meaningful words, ranked by how many match
+and how closely, so "Email Ana the agenda for Thursday" finds the claim on
+Ana's address. An attempt recalls by the person's newest messages and the job's
+objective, and always carries the eight newest preferences, read from the claims
+themselves. The knowledge budget charges a quarter of each item's UTF-8 bytes
+per token, the estimate the model gateway charges input by
+(`a request phrased as a sentence recalls the fact it needs and not the others`,
+`the four setup answers all reach an everyday request within the knowledge
+budget` and `the newest preferences are the ones every attempt carries` in
+[memory-recall-quality.test.ts](../apps/melete/test/integration/memory-recall-quality.test.ts)).
 
 Recall reports `complete`, `degraded` or `unavailable`, with a coverage reason.
 A successful empty search is distinct from timeout (`database timeout is
@@ -166,7 +222,12 @@ before replay, then opens eligible spaces. The break test
 journal must be retained independently of database rollback.
 
 Cleanup deletes the forgotten content and its index entries from Melete's
-database. Old Git commits, backups, the external source account and copies
+database: a source removed whole loses its text, a span forgotten out of a longer
+message is blanked in place, and repair briefs and owner questions that quote a
+forgotten value go with it (`forgetting a detail erases its text and keeps what
+was said beside it` in
+[memory-forget-quality.test.ts](../apps/melete/test/integration/memory-forget-quality.test.ts)).
+Old Git commits, backups, the external source account and copies
 already delivered elsewhere keep what they hold, and Postgres's data files and
 write-ahead log keep deleted rows until that space is reused. Rolling the
 database and the journal back together also rolls back the removals made since,
@@ -209,3 +270,9 @@ promotion. See the [memory conformance README](../conformance/memory/README.md)
 for exact scope.
 Both use scripted extraction and answers, so they measure the memory service's
 behaviour rather than a model's reasoning.
+
+`bun run conformance:memory:eval` runs conversations a person might have (in
+`conformance/memory/eval`) through the same service, the chat capture loop
+included, and counts what is stored, what a later attempt is handed, what a
+removal erased from every memory table, what stayed out of a recall, and what
+the conversation was told.
