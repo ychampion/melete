@@ -47,8 +47,12 @@ the database is dumped from the running `postgres` service.
 ```bash
 cd melete
 git fetch --tags origin
+mkdir -p -m 700 ~/melete-backups
 bun run deploy/scripts/upgrade.ts v0.2.0 --dry-run
 ```
+
+The backup parent must exist before the first run; the `mkdir` creates the
+default one, `~/melete-backups`, private to you.
 
 The dry run performs the read-only preflight and prints the plan. It exits
 non-zero when the preflight found a problem; the plan is printed either way.
