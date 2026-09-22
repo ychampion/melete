@@ -8,7 +8,7 @@ import { cleanupMemory } from '../../src/memory/forget.ts';
 import { claimWork } from '../../src/memory/work.ts';
 import { fakeProvider, tripProposal } from './fake-provider.ts';
 
-const sql = postgres(process.env.W7_FAULT_DATABASE_URL ?? '', { max: 1, onnotice: () => {} });
+const sql = postgres(process.env.MELETE_FAULT_DATABASE_URL ?? '', { max: 1, onnotice: () => {} });
 const phase = process.argv[2];
 const spaceId = process.argv[3] ?? '';
 const [space] = await sql`select owner_id from memory_spaces where space_id = ${spaceId}`;

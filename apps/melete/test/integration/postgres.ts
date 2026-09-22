@@ -18,7 +18,7 @@ export async function createTestDatabase(
   const baseUrl = databaseUrl ?? shared?.url;
   if (!baseUrl) return null;
   const admin = postgres(baseUrl, { max: 1, onnotice: () => {} });
-  const name = `w7_${newId('test').toLowerCase()}`;
+  const name = `melete_test_${newId('test').toLowerCase()}`;
   await admin.unsafe(
     `create database "${name}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
   );

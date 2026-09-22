@@ -107,7 +107,7 @@ withDb('principal and shared-space authority', () => {
 
   test('additive migration preserves the setup guard, login and an issued personal-space capability', async () => {
     if (!handle || !queue) throw new Error('Postgres unavailable');
-    const name = `melete_w14_upgrade_${randomBytes(8).toString('hex')}`;
+    const name = `melete_upgrade_${randomBytes(8).toString('hex')}`;
     await handle.sql`create database ${handle.sql(name)}`;
     const url = new URL(handle.url);
     url.pathname = `/${name}`;
@@ -180,7 +180,7 @@ withDb('principal and shared-space authority', () => {
 
   test('production migration upgrades the integration schema with MCP setup and procedure promotion', async () => {
     if (!handle) throw new Error('Postgres unavailable');
-    const name = `melete_w14_upgrade_${randomBytes(8).toString('hex')}`;
+    const name = `melete_upgrade_${randomBytes(8).toString('hex')}`;
     await handle.sql`create database ${handle.sql(name)}`;
     const url = new URL(handle.url);
     url.pathname = `/${name}`;

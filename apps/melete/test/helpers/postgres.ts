@@ -26,7 +26,7 @@ export async function createPostgresFixture(
   // The committed journal with a real pg-boss schema is the shared template;
   // only a fixture that supplies its own journal or extra SQL builds its own.
   if (!options.migrationsFolder && !options.migrations?.length) return testDatabase();
-  const databaseName = `melete_w2_${randomUUID().replaceAll('-', '')}`;
+  const databaseName = `melete_fixture_${randomUUID().replaceAll('-', '')}`;
   const configuredUrl = process.env.DATABASE_URL;
   const shared = await acquireTestServer();
   if (!shared) return null;

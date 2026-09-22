@@ -35,10 +35,16 @@ const PATH_TRACE = /melete-oss-/;
  * temporary directory names, queue names and fixture strings.
  *
  * The token has to stand alone, which is what keeps ordinary text out of it:
- * `W3C` and `switch1` keep a word character against the token, and the trailing
- * exception lets a link to `w3.org` through.
+ * `W3C` and `switch1` keep a letter or digit against the token, and the trailing
+ * exception lets a link to `w3.org` through. An underscore is a separator here,
+ * not part of a word, so `melete_w2_` and `W7_FAULT_DATABASE_URL` are refused;
+ * a code run into a camelCase name (`w7Probe`) still passes.
+ *
+ * A few ordinary things are refused on purpose, as the price of catching every
+ * code: an ISO week (`2026-W38`), a short maths variable (`w1`), `W10` or `W11`
+ * as shorthand for Windows. Spell these out rather than widening the exceptions.
  */
-const WORK_CODE = /(?<![A-Za-z0-9_])[Ww]\d{1,2}[a-z]?(?![A-Za-z0-9_])(?!\.(?:org|com|net))/;
+const WORK_CODE = /(?<![A-Za-z0-9])[Ww]\d{1,2}[a-z]?(?![A-Za-z0-9])(?!\.(?:org|com|net))/;
 
 /** What a contributor should do about each rule, printed only when it fires. */
 const GUIDANCE: Record<string, string> = {

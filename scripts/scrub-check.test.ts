@@ -38,6 +38,13 @@ describe('the check refuses an internal work code', () => {
     expect(violation(source, "email: 'w6@example.test',")).toBe('work code');
   });
 
+  test('a code joined to a name by an underscore', () => {
+    expect(violation(source, 'const n = `melete_w14_upgrade_${x}`;')).toBe('work code');
+    expect(violation(source, 'process.env.W7_FAULT_DATABASE_URL')).toBe('work code');
+    expect(violation(source, 'const name = `w7_${id}`;')).toBe('work code');
+    expect(pathViolation('apps/melete/test/fixtures/w7_fixture.json')).toBe('work code');
+  });
+
   test('an ignore rule, which every contributor reads first', () => {
     expect(violation('.gitignore', '.agents/w2-tests.log')).toBe('work code');
     expect(violation('.gitignore', '.agents/w10b-measurements.json')).toBe('work code');
