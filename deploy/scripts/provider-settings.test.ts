@@ -107,4 +107,12 @@ describe('reading deploy/.env the way Compose does', () => {
     );
     expect(values).toEqual({ A: 'value # kept', B: 'single # kept', C: 'say "hi"', D: '' });
   });
+
+  test('$$ is one $ unquoted and in double quotes, and two in single quotes', () => {
+    // Redaction replaces the value Compose hands the service, so it has to be that value.
+    const values = parseEnvFile(
+      ['A=pa$$word', 'B="pa$$word"', "C='pa$$word'", 'D=pa$$$$word # two'].join('\n'),
+    );
+    expect(values).toEqual({ A: 'pa$word', B: 'pa$word', C: 'pa$$word', D: 'pa$$word' });
+  });
 });
