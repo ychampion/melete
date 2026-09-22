@@ -283,27 +283,26 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
     return id;
   };
 
-  /** One authenticated request; the key is in hand only while it runs. */
-  function send(
+  /** One request with the key the caller was lent. */
+  async function send(
+    key: string,
     url: string,
     init: { method: string; headers?: Record<string, string>; body?: Uint8Array | string },
     signal: AbortSignal,
     what: string,
   ): Promise<Response> {
-    return options.credential(async (key) => {
-      try {
-        return await fetchImpl(url, {
-          method: init.method,
-          headers: { Authorization: `Bearer ${key}`, ...init.headers },
-          ...(init.body === undefined ? {} : { body: init.body }),
-          signal,
-        });
-      } catch (error) {
-        throw new SandboxTransportError(
-          scrub(`Daytona did not answer ${what}: ${describeError(error)}`, [key]),
-        );
-      }
-    });
+    try {
+      return await fetchImpl(url, {
+        method: init.method,
+        headers: { Authorization: `Bearer ${key}`, ...init.headers },
+        ...(init.body === undefined ? {} : { body: init.body }),
+        signal,
+      });
+    } catch (error) {
+      throw new SandboxTransportError(
+        scrub(`Daytona did not answer ${what}: ${describeError(error)}`, [key]),
+      );
+    }
   }
 
   async function errorText(response: Response): Promise<string> {
@@ -328,6 +327,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
     return options.credential(async (key) => {
       const what = `${method} ${path.split('?')[0]}`;
       const response = await send(
+        key,
         `${apiUrl}${path}`,
         {
           method,
@@ -439,6 +439,7 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
     const started = performance.now();
     return options.credential(async (key) => {
       const response = await send(
+        key,
         `${proxyUrl}/${toolbox.id}/process/execute`,
         {
           method: 'POST',
@@ -580,8 +581,8 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
         if (!PLAIN.test(key) || !PLAIN.test(value))
           throw new SandboxAdapterRefusal('a label is not plain enough to filter by');
       signal.throwIfAborted();
-      // Not raced against the caller's signal alone: a create abandoned
-      // mid-flight could still leave a sandbox that nothing knows to stop.
+      // A create abandoned mid-flight can leave a sandbox behind; it carries
+      // this installation's labels, so reconciliation finds it.
       const { json } = await rest(
         'POST',
         '/sandbox',
@@ -793,21 +794,24 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
     async getFile(handle, path, maxBytes, signal): Promise<Uint8Array> {
       const toolbox = await toolboxOf(handle, signal);
       const query = new URLSearchParams({ path });
-      const response = await send(
-        `${proxyUrl}/${toolbox.id}/files/download?${query}`,
-        { method: 'GET' },
-        AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-        'a download',
-      );
-      if (response.status === 404) {
-        await response.body?.cancel().catch(() => {});
-        throw new SandboxFileNotFound(`no such file: ${path}`);
-      }
-      if (response.status !== 200) {
-        await response.body?.cancel().catch(() => {});
-        throw new SandboxTransportError(`the toolbox refused a download with ${response.status}`);
-      }
-      return readPrefix(response, maxBytes);
+      return options.credential(async (key) => {
+        const response = await send(
+          key,
+          `${proxyUrl}/${toolbox.id}/files/download?${query}`,
+          { method: 'GET' },
+          AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+          'a download',
+        );
+        if (response.status === 404) {
+          await response.body?.cancel().catch(() => {});
+          throw new SandboxFileNotFound(`no such file: ${path}`);
+        }
+        if (response.status !== 200) {
+          await response.body?.cancel().catch(() => {});
+          throw new SandboxTransportError(`the toolbox refused a download with ${response.status}`);
+        }
+        return readPrefix(response, maxBytes);
+      });
     },
 
     async pause(handle, signal): Promise<{ resumeRef: string }> {
@@ -918,15 +922,18 @@ export function createDaytonaProvider(options: DaytonaOptions): SandboxProvider 
   ): Promise<void> {
     const { body, type } = multipart(path.slice(path.lastIndexOf('/') + 1), bytes);
     const query = new URLSearchParams({ path });
-    const response = await send(
-      `${proxyUrl}/${toolbox.id}/files/upload?${query}`,
-      { method: 'POST', headers: { 'Content-Type': type }, body },
-      AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-      'an upload',
-    );
-    await readLimited(response, MiB).catch(() => new Uint8Array());
-    if (response.status !== 200)
-      throw new SandboxTransportError(`the toolbox refused an upload with ${response.status}`);
+    await options.credential(async (key) => {
+      const response = await send(
+        key,
+        `${proxyUrl}/${toolbox.id}/files/upload?${query}`,
+        { method: 'POST', headers: { 'Content-Type': type }, body },
+        AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+        'an upload',
+      );
+      await readLimited(response, MiB).catch(() => new Uint8Array());
+      if (response.status !== 200)
+        throw new SandboxTransportError(`the toolbox refused an upload with ${response.status}`);
+    });
   }
 
   return provider;
