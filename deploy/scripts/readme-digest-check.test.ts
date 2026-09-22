@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   checkReadmeDigests,
@@ -7,6 +9,7 @@ import {
   pinnedImages,
   quotedImages,
   removalSection,
+  unreadablePins,
 } from './readme-digest-check.ts';
 
 const root = join(import.meta.dir, '..', '..');
@@ -52,17 +55,67 @@ describe('the repository', () => {
 
 describe('reading the pins', () => {
   test('a tagged or bare digest pin counts; a local tag or a build does not', () => {
-    expect(pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`))).toEqual([
+    expect(pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`)).pins).toEqual([
       {
         repository: 'postgres',
         digest: PINNED,
         source: 'deploy/docker-compose.yml service postgres',
       },
     ]);
-    expect(pinnedImages(compose(`tailscale/tailscale@sha256:${PINNED}`))[0]?.repository).toBe(
+    expect(pinnedImages(compose(`tailscale/tailscale@sha256:${PINNED}`)).pins[0]?.repository).toBe(
       'tailscale/tailscale',
     );
-    expect(pinnedImages(compose('postgres:17-alpine'))).toEqual([]);
+    expect(pinnedImages(compose('postgres:17-alpine')).pins).toEqual([]);
+  });
+
+  test('an image that mentions a digest but cannot be read fails, interpolation included', () => {
+    const interpolated = `\${PG_IMAGE:-postgres@sha256:${PINNED}}`;
+    const read = pinnedImages(compose(`"${interpolated}"`));
+    expect(read.pins).toEqual([]);
+    expect(read.unreadable).toEqual([
+      { image: interpolated, source: 'deploy/docker-compose.yml service postgres' },
+    ]);
+    expect(pinnedImages(compose(`postgres@sha256:${'A'.repeat(64)}`)).unreadable).toHaveLength(1);
+    // An image with no digest at all is not a pin, so it is not unreadable either.
+    expect(pinnedImages(compose(`"\${PG_IMAGE}"`)).unreadable).toEqual([]);
+    const results = unreadablePins(read.unreadable);
+    expect(results.map((result) => result.ok)).toEqual([false]);
+    expect(results[0]?.name).toContain('service postgres');
+    expect(results[0]?.detail).toContain(interpolated);
+  });
+
+  test('the check over a tree reports an unreadable pin beside the README comparison', () => {
+    const tree = mkdtempSync(join(tmpdir(), 'melete-readme-digest-'));
+    try {
+      mkdirSync(join(tree, 'deploy'));
+      writeFileSync(
+        join(tree, 'deploy', 'docker-compose.yml'),
+        compose(`"\${PG_IMAGE:-postgres@sha256:${PINNED}}"`)[0]?.text ?? '',
+      );
+      writeFileSync(join(tree, 'README.md'), readme('docker image rm melete-web:local'));
+      const failed = checkReadmeDigests(tree).filter((result) => !result.ok);
+      expect(failed.map((result) => result.name)).toEqual([
+        'deploy/docker-compose.yml service postgres pins its image in a form the README check can read',
+      ]);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  test('an image a service inherits through a merge key is its own pin', () => {
+    const merged = [
+      {
+        file: 'deploy/docker-compose.yml',
+        text: `x-base: &base\n  image: postgres:17-alpine@sha256:${PINNED}\nservices:\n  postgres:\n    <<: *base\n`,
+      },
+    ];
+    expect(pinnedImages(merged).pins).toEqual([
+      {
+        repository: 'postgres',
+        digest: PINNED,
+        source: 'deploy/docker-compose.yml service postgres',
+      },
+    ]);
   });
 
   test('the section ends at the next heading, not at a shell comment', () => {
@@ -120,7 +173,7 @@ describe('reading the pins', () => {
     const section = removalSection(lines('```bash', `docker image rm postgres@sha256:${PINNED}`));
     expect(section?.unclosedFence).toBe(true);
     const results = compareDigests(
-      pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`)),
+      pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`)).pins,
       section,
     );
     expect(results.map((result) => result.ok)).toEqual([false]);
@@ -170,7 +223,7 @@ describe('reading the pins', () => {
 });
 
 describe('comparing them', () => {
-  const pins = pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`));
+  const pins = pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`)).pins;
 
   test('the quoted digest matches the pin', () => {
     const results = compareDigests(
@@ -189,7 +242,7 @@ describe('comparing them', () => {
   });
 
   test('a registry with a port matches only the pin with the same registry', () => {
-    const local = pinnedImages(compose(`localhost:5000/pg@sha256:${PINNED}`));
+    const local = pinnedImages(compose(`localhost:5000/pg@sha256:${PINNED}`)).pins;
     expect(local[0]?.repository).toBe('localhost:5000/pg');
     const ok = compareDigests(
       local,
@@ -215,7 +268,7 @@ describe('comparing them', () => {
   });
 
   test('a pin bumped in Compose and not in README fails twice, naming both digests', () => {
-    const bumped = pinnedImages(compose(`postgres:17-alpine@sha256:${BUMPED}`));
+    const bumped = pinnedImages(compose(`postgres:17-alpine@sha256:${BUMPED}`)).pins;
     const results = compareDigests(
       bumped,
       removalSection(readme(`docker image rm postgres@sha256:${PINNED}`)),

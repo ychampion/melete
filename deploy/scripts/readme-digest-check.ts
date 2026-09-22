@@ -23,22 +23,43 @@ export const REMOVAL_HEADING = '### Remove it completely';
  */
 const DIGEST_REFERENCE = /^([^@\s]+?)(?::[^@/\s]+)?@sha256:([0-9a-f]{64})$/;
 
-/** Every service image in the given Compose files that is pinned by digest. */
-export function pinnedImages(files: { file: string; text: string }[]): PinnedImage[] {
+/** A service image that mentions a digest but does not read as a reference. */
+export type UnreadablePin = { image: string; source: string };
+
+/**
+ * Every service image in the given Compose files that is pinned by digest, and
+ * every one that mentions `@sha256` without reading as `repository[:tag]@sha256:
+ * digest`, such as a `${VARIABLE}` Compose would interpolate: this check cannot
+ * know what that becomes, so it is reported rather than passed over. Merge keys
+ * are read as Compose reads them, so an image a service inherits through
+ * `<<: *anchor` is seen as that service's own.
+ */
+export function pinnedImages(files: { file: string; text: string }[]): {
+  pins: PinnedImage[];
+  unreadable: UnreadablePin[];
+} {
   const pins: PinnedImage[] = [];
+  const unreadable: UnreadablePin[] = [];
   for (const { file, text } of files) {
-    const compose = (parse(text) ?? {}) as ComposeFile;
+    const compose = (parse(text, { merge: true }) ?? {}) as ComposeFile;
     for (const [service, definition] of Object.entries(compose.services ?? {})) {
-      const match = DIGEST_REFERENCE.exec(definition?.image ?? '');
-      if (match)
-        pins.push({
-          repository: match[1] as string,
-          digest: match[2] as string,
-          source: `${file} service ${service}`,
-        });
+      const image = definition?.image ?? '';
+      const source = `${file} service ${service}`;
+      const match = DIGEST_REFERENCE.exec(image);
+      if (match) pins.push({ repository: match[1] as string, digest: match[2] as string, source });
+      else if (image.includes('@sha256')) unreadable.push({ image, source });
     }
   }
-  return pins;
+  return { pins, unreadable };
+}
+
+/** One failure for each Compose image whose digest pin the check cannot read. */
+export function unreadablePins(unreadable: UnreadablePin[]): CheckResult[] {
+  return unreadable.map(({ image, source }) => ({
+    name: `${source} pins its image in a form the README check can read`,
+    ok: false,
+    detail: `${image} is not repository[:tag]@sha256:<64 lower-case hex digits>`,
+  }));
 }
 
 /** The section's text, and whether a code fence opened in it never closes. */
@@ -191,8 +212,9 @@ export function composeFiles(root: string): { file: string; text: string }[] {
 
 /** Whether README's removal commands still name the images the Compose files pull. */
 export function checkReadmeDigests(root: string): CheckResult[] {
-  return compareDigests(
-    pinnedImages(composeFiles(root)),
-    removalSection(readFileSync(join(root, README), 'utf8')),
-  );
+  const { pins, unreadable } = pinnedImages(composeFiles(root));
+  return [
+    ...unreadablePins(unreadable),
+    ...compareDigests(pins, removalSection(readFileSync(join(root, README), 'utf8'))),
+  ];
 }
