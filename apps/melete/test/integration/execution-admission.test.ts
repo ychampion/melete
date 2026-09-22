@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { signCapability } from '../../src/broker/capability.ts';
 import { createBrokerApp } from '../../src/broker/http.ts';
+import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
+import { grantedToolCatalog } from '../../src/connectors/catalog.ts';
 import { createExecConnector } from '../../src/connectors/exec.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { resolvePython } from '../../src/runtime/python.ts';
@@ -196,6 +198,56 @@ databaseTest(
     expect(action.receipt?.late).toBe(true);
     expect(action.canonical_payload).toEqual(request.payload);
     expect(await readFile(join(ctx.work, '.keep'), 'utf8')).toBe('');
+  },
+  30_000,
+);
+
+databaseTest(
+  "a space with a sandbox connection is neither offered nor admitted the cell's exec",
+  async () => {
+    const ctx = await setup();
+    const registry = new ConnectorRegistry().register(ctx.connectionId, ctx.connector);
+    const granted = async () =>
+      grantedToolCatalog(
+        (
+          await ctx.sql`select id, provider, scopes from connection
+            where space_id = ${ctx.claims.space_id} and status = 'active'`
+        ).map((row) => ({
+          id: String(row.id),
+          provider: String(row.provider),
+          scopes: row.scopes as string[],
+        })),
+        registry,
+      ).map((tool) => tool.name);
+    const offered = async () => (await ctx.broker.catalog(ctx.claims)).map((tool) => tool.name);
+    const request = (client_ref: string) => ({
+      kind: 'exec.python',
+      connection_id: ctx.connectionId,
+      payload: { intent: { code: "open('marker','w').write('ran')" } },
+      client_ref,
+    });
+    // While the cell is the space's only backend, it is offered and admits.
+    expect(await granted()).toContain('exec.python');
+    expect(await offered()).toContain('exec.python');
+    const early = await ctx.broker.propose(ctx.claims, request('before-the-sandbox'));
+    expect(early.status).toBe('admitted');
+
+    await ctx.sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${recordId('conn')}, ${ctx.claims.space_id}, 'sandbox', 'Remote sandbox',
+        ${JSON.stringify(['terminal.run'])}::jsonb)`;
+    // Now the space runs its commands in the sandbox: the attempt's bundle and
+    // the broker's catalog both leave the cell's exec out,
+    expect(await granted()).not.toContain('exec.python');
+    expect(await offered()).not.toContain('exec.python');
+    // the broker refuses a new proposal,
+    expect(
+      await rejectionOf(ctx.broker.propose(ctx.claims, request('after-the-sandbox'))),
+    ).toMatchObject({ code: 'connector_unavailable' });
+    // and the one admitted before is refused at the start of execution.
+    expect((await ctx.broker.startExecution(ctx.claims, early.action_id)).execute).toBe(false);
+    const [action] = await ctx.sql`select status from action where id = ${early.action_id}`;
+    expect(action?.status).toBe('failed');
+    expect(await Bun.file(join(ctx.work, 'marker')).exists()).toBe(false);
   },
   30_000,
 );

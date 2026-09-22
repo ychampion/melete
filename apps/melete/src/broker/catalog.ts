@@ -12,6 +12,7 @@ import {
 import { estimateTokens } from '@melete/skills';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { supersededExecution } from '../connectors/catalog.ts';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
@@ -412,10 +413,12 @@ export class ToolCatalog {
         return false;
       }
     };
+    const providers = connections.map((row) => String(row.provider));
     for (const row of connections) {
       // A conversation's persona bounds which connections and verbs are offered.
       if ((access.chat && !access.agentId) || (access.allowed && !access.allowed.includes(row.id)))
         continue;
+      if (supersededExecution(row.provider, providers)) continue;
       const connector = this.options.connectors.get(row.id);
       if (!connector || connector.manifest.provider !== row.provider) continue;
       // A capability whose provider is not configured has nothing to offer yet.

@@ -35,7 +35,7 @@ import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { PgBoss } from 'pg-boss';
 import type { ParameterOrJSON, Sql, TransactionSql } from 'postgres';
-import { REACT_TOOL } from '../connectors/catalog.ts';
+import { REACT_TOOL, supersededExecution } from '../connectors/catalog.ts';
 import {
   asConnectorFault,
   type ConnectorDescription,
@@ -282,6 +282,7 @@ export class BrokerService implements BrokerOperations {
       join space s on s.id = c.space_id
       where c.id = ${connectionId} and c.space_id = ${job.space_id} for share`;
     if (connection?.status !== 'active') throw new BrokerFault('unknown_connection');
+    await this.checkExecutionBackend(tx, job.space_id, String(connection.provider));
     const connector = this.options.connectors.get(connectionId);
     if (
       !connector ||
@@ -974,6 +975,23 @@ export class BrokerService implements BrokerOperations {
    * asks it again before every further execution, because a revocation during a
    * backoff is exactly the case a retry must not out-run.
    */
+  /** The cell's exec connection, refused in a space that runs its commands in a sandbox. */
+  private async checkExecutionBackend(tx: Query, spaceId: string, provider: string) {
+    if (provider !== 'exec') return;
+    const active = await tx`select provider from connection
+      where space_id = ${spaceId} and status = 'active'`;
+    if (
+      supersededExecution(
+        provider,
+        active.map((row) => String(row.provider)),
+      )
+    )
+      throw new BrokerFault(
+        'connector_unavailable',
+        'This space runs its commands in its sandbox connection.',
+      );
+  }
+
   private async checkAuthority(tx: Query, job: LockedJob, action: Action): Promise<string | null> {
     // The experience lane's agent binding: a paused conversation, a persona
     // whose allowed connections exclude this one, a missing persona, or a chat
@@ -990,6 +1008,9 @@ export class BrokerService implements BrokerOperations {
       await tx`select c.status, c.provider, c.scopes, s.audience from connection c
       join space s on s.id = c.space_id
       where c.id = ${action.connection_id} and c.space_id = ${job.space_id} for share`;
+    // Admitted before the space had a sandbox connection is not enough: the
+    // command still runs where the space runs commands now.
+    if (connection) await this.checkExecutionBackend(tx, job.space_id, String(connection.provider));
     const stored = await loadBinding(tx, action);
     const authority = await resolveEffectAuthority(
       tx,
