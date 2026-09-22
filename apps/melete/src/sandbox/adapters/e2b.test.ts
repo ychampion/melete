@@ -149,7 +149,10 @@ test('deny-all egress is sent on create', async () => {
     ).toBeUndefined();
   }
   expect(creates).toBeGreaterThanOrEqual(8);
-  // And the adapter builds that body itself, whatever the fixtures say.
+  // And the adapter builds that body itself, whatever the fixtures say. What
+  // is checked is the request as the adapter sent it, captured before the
+  // stand-in sees it, and the network block must match exactly: a missing
+  // deny rule or an extra allow rule both fail here.
   const standin = createE2bStandin();
   const sent: Record<string, unknown>[] = [];
   const provider = createE2bProvider({
@@ -160,13 +163,38 @@ test('deny-all egress is sent on create', async () => {
       return standin.fetch(input, init);
     },
   });
-  const handle = await openSandbox(provider, spec(), signal());
-  await provider.destroy(handle, signal());
-  expect(sent).toHaveLength(1);
-  expect(sent[0]).toMatchObject({
-    allow_internet_access: false,
-    network: { allowPublicTraffic: false },
-  });
+  const policies: [EgressPolicy, { allow_internet_access: boolean; network: unknown }][] = [
+    [
+      { kind: 'deny_all' },
+      { allow_internet_access: false, network: { allowPublicTraffic: false } },
+    ],
+    [
+      { kind: 'cidr_allowlist', cidrs: ['1.1.1.1/32'] },
+      {
+        allow_internet_access: true,
+        network: {
+          allowPublicTraffic: false,
+          allowOut: ['1.1.1.1/32'],
+          denyOut: ['0.0.0.0/0', '::/0'],
+        },
+      },
+    ],
+  ];
+  for (const [egress, expected] of policies) {
+    sent.length = 0;
+    // The stand-in refuses a body it considers unsafe. The body sent is what
+    // is judged here, so a refusal is kept rather than thrown.
+    const opened = await openSandbox(provider, spec(egress), signal()).catch(() => null);
+    if (opened) await provider.destroy(opened, signal());
+    expect(sent).toHaveLength(1);
+    const body = sent[0] ?? {};
+    expect([egress.kind, body.secure, body.allow_internet_access, body.network]).toEqual([
+      egress.kind,
+      true,
+      expected.allow_internet_access,
+      expected.network,
+    ]);
+  }
 });
 
 test('the API key never appears in a fixture or an error message', async () => {
