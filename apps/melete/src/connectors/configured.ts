@@ -71,7 +71,24 @@ export type ConfiguredConnection = z.infer<typeof configuredConnection>;
 
 /** This owner-controlled file contains endpoints, never passwords or runtime-provided settings. */
 export async function readConnectionConfig(path?: string): Promise<ConfiguredConnection[]> {
-  return path ? z.array(configuredConnection).parse(JSON.parse(await readFile(path, 'utf8'))) : [];
+  if (!path) return [];
+  // The owner edits this file by hand, so a mistake in it is named with the
+  // file and the entry, rather than as a bare parser error at start-up.
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new Error(`${path} (MELETE_CONNECTIONS_FILE) is not valid JSON: ${error.message}`);
+  }
+  const parsed = z.array(configuredConnection).safeParse(value);
+  if (!parsed.success)
+    throw new Error(
+      `${path} (MELETE_CONNECTIONS_FILE) is not a list of connections: ${parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+        .join('; ')}`,
+    );
+  return parsed.data;
 }
 
 /** Worker addresses are owner configuration and credentials remain on the service side. */
