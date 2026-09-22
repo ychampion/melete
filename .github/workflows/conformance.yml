@@ -15,7 +15,9 @@ on:
     branches: [main]
     paths:
       - 'deploy/**'
-      - 'apps/melete/src/runtime/**'
+      - 'apps/melete/src/**'
+      - 'packages/**'
+      - 'bun.lock'
       - 'conformance/**'
   # A change to this workflow is proved before it lands.
   pull_request:
@@ -114,7 +116,8 @@ jobs:
       # layout and whose images build, and this tree becomes a local release tag for the upgrade
       # to move to. The script is this tree's upgrade.ts in one file, placed where it reads the
       # older tree as its own and excluded from git, so the older tree stays clean for the
-      # upgrade's preflight.
+      # upgrade's preflight. docs/UPGRADING.md has an operator run the target release's script
+      # the same way, so this is the path an installation takes.
       - name: Check out, configure and build the release to upgrade from
         id: start
         run: |
@@ -151,7 +154,7 @@ jobs:
         run: |
           docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
           docker compose -f deploy/docker-compose.yml ps
-      - name: Record the internal network the previous release made
+      - name: Record the service and the internal network the previous release runs
         id: before
         run: |
           set -euo pipefail
@@ -159,6 +162,11 @@ jobs:
           docker network inspect "$name" --format '{{.Name}} {{.Id}} {{json .Labels}}'
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "id=$(docker network inspect "$name" --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+          service=$(docker compose -f deploy/docker-compose.yml ps -q melete)
+          echo "container=$service" >> "$GITHUB_OUTPUT"
+          echo "image=$(docker inspect --format '{{.Image}}' "$service")" >> "$GITHUB_OUTPUT"
+          # The name upgrade.ts keeps the running images under for a rollback.
+          echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
       # Everything this job writes goes outside the tree: the upgrade refuses a tree with
       # untracked files in it.
       - name: Upgrade to this tree
@@ -174,12 +182,28 @@ jobs:
           TARGET: ${{ steps.start.outputs.target }}
           BEFORE_NAME: ${{ steps.before.outputs.name }}
           BEFORE_ID: ${{ steps.before.outputs.id }}
+          BEFORE_CONTAINER: ${{ steps.before.outputs.container }}
+          BEFORE_IMAGE: ${{ steps.before.outputs.image }}
+          BEFORE_VERSION: ${{ steps.before.outputs.version }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$(git rev-parse "$TARGET^{commit}")"
           service=$(docker compose -f deploy/docker-compose.yml ps -q melete)
+          built=$(docker image inspect --format '{{.Id}}' "melete-service:$TARGET")
           # The container that answers runs the image this tree built, not the release's.
-          test "$(docker inspect --format '{{.Image}}' "$service")" = "$(docker image inspect --format '{{.Id}}' "melete-service:$TARGET")"
+          test "$(docker inspect --format '{{.Image}}' "$service")" = "$built"
+          # The image that ran before is kept for a rollback, under the version it was.
+          test "$(docker image inspect --format '{{.Id}}' "melete-service:$BEFORE_VERSION")" = "$BEFORE_IMAGE"
+          # A new image must mean a new container. The image only holds the workspaces, so a
+          # change to deploy/ alone builds the same one, and Compose rightly keeps the container.
+          if [ "$built" != "$BEFORE_IMAGE" ]; then
+            if [ "$service" = "$BEFORE_CONTAINER" ]; then
+              echo "::error::the service image changed but the upgrade left the old melete container running"
+              exit 1
+            fi
+          else
+            echo "::notice::this tree builds the same service image as $BEFORE_VERSION, so the container was not replaced and the switch was not exercised"
+          fi
           curl -fsS "http://$(docker compose -f deploy/docker-compose.yml port melete 8787)/health" | tee "$RUNNER_TEMP/health.json"
           jq -e '.database == "ok"' "$RUNNER_TEMP/health.json"
           curl -fsS -o /dev/null "http://$(docker compose -f deploy/docker-compose.yml port web 3000)/"

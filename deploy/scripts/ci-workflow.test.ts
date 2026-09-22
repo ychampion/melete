@@ -234,7 +234,9 @@ describe('the conformance workflow', () => {
     expect(conformance.workflow.on?.push?.branches).toEqual(['main']);
     expect(conformance.workflow.on?.push?.paths).toEqual([
       'deploy/**',
-      'apps/melete/src/runtime/**',
+      'apps/melete/src/**',
+      'packages/**',
+      'bun.lock',
       'conformance/**',
     ]);
   });
@@ -440,5 +442,28 @@ describe('the upgrade proof', () => {
     expect(run).toContain('melete-service:$TARGET');
     expect(run).toContain('port melete 8787)/health');
     expect(run).toContain(`jq -e '.database == "ok"'`);
+  });
+
+  test('a new service image means a new container, and the old image is kept', () => {
+    const before = jobSteps.find((step) => step.id === 'before')?.run ?? '';
+    expect(before).toContain('echo "container=$service" >> "$GITHUB_OUTPUT"');
+    expect(before).toMatch(
+      /echo "image=\$\(docker inspect --format '\{\{\.Image\}\}' "\$service"\)"/,
+    );
+    // The same command upgrade.ts names the preserved images by.
+    expect(before).toContain('echo "version=$(git describe --tags --always)"');
+    expect(verify?.env?.BEFORE_CONTAINER).toMatch(/steps\.before\.outputs\.container/);
+    const run = verify?.run ?? '';
+    expect(run).toContain(
+      `test "$(docker image inspect --format '{{.Id}}' "melete-service:$BEFORE_VERSION")" = "$BEFORE_IMAGE"`,
+    );
+    const changed = /if \[ "\$built" != "\$BEFORE_IMAGE" \]; then([\s\S]*?)else([\s\S]*?)fi\n/.exec(
+      run,
+    );
+    expect(changed?.[1]).toContain('if [ "$service" = "$BEFORE_CONTAINER" ]; then');
+    expect(changed?.[1]).toContain('::error::');
+    expect(changed?.[1]).toContain('exit 1');
+    // An unchanged image is said out loud rather than passed as a switch.
+    expect(changed?.[2]).toContain('::notice::');
   });
 });
