@@ -661,23 +661,37 @@ describe.if(handle !== null)('removing a space', () => {
     const connector = { manifest: emailManifest } as never;
     for (const row of rows) registry.register(row.id, connector);
 
-    const removals = await service({ connectors: registry });
-    await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
-
-    // A request landing mid-sweep, and the pass over every space at startup,
-    // both refuse to furnish a space that is being removed.
-    expect(await ensureBuiltinConnections(sql, environment, seeded.spaceId)).toEqual([]);
-    expect(await ensureBuiltinConnections(sql, environment)).toEqual(
-      expect.not.arrayContaining([expect.objectContaining({ spaceId: seeded.spaceId })]),
-    );
-
-    const finished = await removals.run((await removals.current(seeded.spaceId))?.id ?? '');
-    expect(outcome(finished)).toBe('complete');
-    // Nothing is left to serve, and nothing in this process is still serving.
+    // Stop the sweep in the window the guard exists for: the connections have
+    // gone and the space row has not. A removal that ends blocked sits here for
+    // as long as it takes someone to fix what blocked it, and every boot in
+    // between runs the pass that furnishes every space.
+    const halting = new AbortController();
+    const removals = await service({
+      connectors: registry,
+      onPhase: (_id, phase) => {
+        if (phase === 'memory') halting.abort();
+      },
+    });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const halted = await removals.run(fenced.id, halting.signal);
+    expect(halted.state).not.toBe('complete');
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
     expect(await countOf(sql, 'connection', sql`space_id = ${seeded.spaceId}`)).toBe(0);
     expect(await countOf(sql, 'secret', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+
+    // A request landing now, and the pass over every space at the next boot,
+    // both refuse to furnish a space that carries a removal stamp.
+    expect(await ensureBuiltinConnections(sql, environment, seeded.spaceId)).toEqual([]);
+    const everySpace = await ensureBuiltinConnections(sql, environment);
+    expect(everySpace.filter((made) => made.spaceId === seeded.spaceId)).toEqual([]);
+    expect(await countOf(sql, 'connection', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+
+    // And nothing in this process is still answering for the ones that went.
     for (const row of [...rows, ...furnished.map((made) => ({ id: made.id }))])
       expect(registry.get(row.id)).toBeUndefined();
+
+    const finished = await removals.run(fenced.id);
+    expect(outcome(finished)).toBe('complete');
     expect(finished.counts).toMatchObject({ providers: { connectors_served: 0 } });
   });
 
