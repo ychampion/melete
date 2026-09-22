@@ -10,7 +10,11 @@ and the receipt all happen on the broker side, where they can be recorded.
 
 It imports nothing from Hermes beyond the `ctx` object it is handed. That is not
 tidiness: the internal compatibility import paths are removed on 2026-09-14, and
-a plugin that reaches past `ctx` stops loading on that date.
+a plugin that reaches past `ctx` stops loading on that date. The one exception is
+the sandbox terminal (`terminal_backend.py`): the engine's registrar checks a
+terminal backend's type, so when an attempt has a sandbox that module subclasses
+the engine's published provider and environment base classes. Neither is a
+compatibility path.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
 from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
+from .terminal_backend import register_terminal_backend
 
 logger = logging.getLogger("melete.plugin")
 
@@ -348,6 +353,11 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
 
     for tool in catalog:
         register_one(tool)
+
+    # A space with a sandbox runs the engine's own terminal there. Selecting it
+    # is the rendered configuration's job (TERMINAL_ENV); this only makes the
+    # backend exist, and only when the broker offered its tool.
+    register_terminal_backend(ctx, client, catalog)
 
     if not registered:
         logger.warning("melete: the broker served no tools; this attempt has no way to act")
