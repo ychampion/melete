@@ -120,6 +120,18 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   ) select id from affected`;
   for (const descendant of descendants) affected.add(descendant.id);
   await tx`update memory_claims set hidden = true where space_id = ${record.space_id} and id = any(${[...affected]})`;
+  // Anything else that quotes a removed value goes with it: a repair brief would
+  // hand the old and new values to the next attempt, and a dispute's question
+  // names both alternatives in the owner's queue.
+  const removed = [...affected];
+  await tx`delete from memory_repair_briefs where space_id = ${record.space_id} and (${record.all}
+    or split_part(changed_handle, '@', 1) = any(${removed})
+    or split_part(coalesce(replacement_handle, ''), '@', 1) = any(${removed}))`;
+  const disputed = await tx`delete from memory_contradictions where space_id = ${record.space_id}
+    and (${record.all} or claim_id = any(${removed})) returning key`;
+  const keys = [...new Set(disputed.map((row) => row.key as string))];
+  await tx`delete from memory_questions where space_id = ${record.space_id} and (${record.all} or key = any(${keys}))`;
+  await tx`delete from question where source = 'memory' and space_id = ${record.space_id} and (${record.all} or key = any(${keys}))`;
   const dataRevision = await bumpRevision(tx, record.space_id);
   const [next] =
     await tx`update memory_spaces set eligibility_generation = greatest(eligibility_generation, ${record.eligibility_cutoff + 1}),
@@ -210,7 +222,24 @@ export async function cleanupMemory(
       await tx`delete from memory_index_entries where space_id = ${spaceId} and claim_id = any(${ids})`;
       await tx`delete from memory_dense_entries where space_id = ${spaceId} and claim_id = any(${ids})`;
       await tx`delete from memory_revision_content where claim_id = any(${ids})`;
-      await tx`delete from memory_source_content where source_id in (select id from memory_sources where space_id = ${spaceId} and state in ('deleted','revoked'))`;
+      // Forgotten text is removed, not only hidden: a source removed whole loses its
+      // content, and a span forgotten out of a longer source is blanked in place,
+      // which keeps the offsets other claims cite.
+      await tx`delete from memory_source_content where source_id in (select id from memory_sources where space_id = ${spaceId} and state <> 'active')`;
+      const partial = await tx`select b.source_id, b.content from memory_source_content b
+        join memory_sources s on s.id = b.source_id
+        where s.space_id = ${spaceId} and exists (select 1 from memory_suppressions sup
+          where sup.space_id = s.space_id and sup.source_id = s.id and sup.start is not null)`;
+      for (const row of partial) {
+        const text = row.content as string;
+        const spans = await tx`select start, "end" from memory_suppressions
+          where space_id = ${spaceId} and source_id = ${row.source_id} and start is not null`;
+        const characters = text.split('');
+        for (const span of spans) characters.fill(' ', span.start as number, span.end as number);
+        const blanked = characters.join('');
+        if (blanked !== text)
+          await tx`update memory_source_content set content = ${blanked} where source_id = ${row.source_id}`;
+      }
       await tx`update memory_prepared set content = null where space_id = ${spaceId} and stale`;
       await tx`update memory_profile set items = '[]'::jsonb where space_id = ${spaceId} and stale`;
       const discarded =

@@ -70,8 +70,13 @@ export async function persistEvidence(
     if (old.state === 'active') {
       const [content] =
         await tx`select content from memory_source_content where source_id = ${old.id}`;
+      // A forgotten span is blanked in the stored copy, so a replay of the same
+      // bytes matches it once the same spans are blanked in the replay.
+      const same =
+        content?.content === input.text ||
+        content?.content === (await visibleSourceText(tx, toSource(old), input.text));
       if (
-        content?.content !== input.text ||
+        !same ||
         iso(old.event_at) !== iso(input.event_at) ||
         old.source_type !== (ownerEdit ? 'owner_edit' : input.source_type) ||
         old.author !== (ownerEdit ? 'owner' : input.author)
