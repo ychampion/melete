@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../apps/melete/src/runtime/docker-engine.ts';
@@ -8,6 +8,7 @@ import {
   judgePreflight,
   type PreflightFacts,
   parseArguments,
+  readEnvironment,
   renderCommand,
   rollbackSteps,
   runUpgrade,
@@ -586,6 +587,27 @@ describe('the real command runner', () => {
       expect((await run(['melete-no-such-command'])).code).toBe(127);
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the installation settings the upgrade reads', () => {
+  test('an inline comment is not part of a value, so the project and each key are exact', async () => {
+    // Redaction replaces each key's value; `key # team` would never match, and
+    // the key would be printed. A commented project name would not be a project.
+    const root = await mkdtemp(join(tmpdir(), 'melete-upgrade-env-'));
+    try {
+      await mkdir(join(root, 'deploy'));
+      await writeFile(
+        join(root, 'deploy/.env'),
+        'COMPOSE_PROJECT_NAME=assistant # second install\nOPENAI_API_KEY=sk-live-value-1234 # team\n',
+      );
+      const values = await readEnvironment(root);
+      expect(values?.COMPOSE_PROJECT_NAME).toBe('assistant');
+      expect(values?.OPENAI_API_KEY).toBe('sk-live-value-1234');
+      expect(await readEnvironment(join(root, 'missing'))).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

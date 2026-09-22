@@ -26,6 +26,7 @@ import {
   type HostDockerOutputs,
   judgeHostDocker,
 } from '../../apps/melete/src/runtime/docker-engine.ts';
+import { parseEnvFile } from './provider-settings.ts';
 
 export const USAGE =
   'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds]';
@@ -651,6 +652,18 @@ export async function runUpgrade(
   return { status: 'upgraded', context };
 }
 
+/**
+ * deploy/.env as Compose reads it, or null when there is none. The values name
+ * the project and are redacted from output, so an inline comment must not
+ * become part of a key: redacting `key # note` would leave `key` printed.
+ */
+export async function readEnvironment(
+  repositoryRoot: string,
+): Promise<Record<string, string> | null> {
+  const source = await readFile(join(repositoryRoot, 'deploy/.env'), 'utf8').catch(() => null);
+  return source === null ? null : parseEnvFile(source);
+}
+
 /** Binary-safe: a dump or an archive goes straight to its file, never through a string. */
 export const spawnRunner =
   (cwd: string): CommandRunner =>
@@ -702,16 +715,7 @@ if (import.meta.main) {
           await readFile(join(repositoryRoot, 'apps/melete/drizzle/meta/_journal.json'), 'utf8'),
         ) as { entries: unknown[] }
       ).entries.length,
-    environment: async () => {
-      const source = await readFile(join(repositoryRoot, 'deploy/.env'), 'utf8').catch(() => null);
-      if (source === null) return null;
-      return Object.fromEntries(
-        source.split('\n').flatMap((line) => {
-          const match = /^([A-Z_][A-Z_0-9]*)=(.*)$/.exec(line.trim());
-          return match?.[1] ? [[match[1], (match[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')]] : [];
-        }),
-      );
-    },
+    environment: () => readEnvironment(repositoryRoot),
   });
   process.exit(result.status === 'planned' || result.status === 'upgraded' ? 0 : 1);
 }

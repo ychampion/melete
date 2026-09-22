@@ -77,3 +77,34 @@ describe('what configure.ts tells an operator about the provider it wrote', () =
     ).toEqual({ A: '1', B: 'spaced', C: 'quoted value', D: '', E: '5' });
   });
 });
+
+describe('reading deploy/.env the way Compose does', () => {
+  test('an inline comment on an unquoted value is not part of it', () => {
+    const values = parseEnvFile(
+      [
+        'OPENAI_API_KEY=sk-live-value # the team key',
+        'POSTGRES_PASSWORD=pa#ss # a hash inside a word stays',
+        'TS_HOSTNAME=#melete',
+        'MELETE_DEFAULT_PROVIDER=openai   ',
+        'export ANTHROPIC_API_KEY=ak-value',
+        '# FIREWORKS_API_KEY=commented-out',
+      ].join('\n'),
+    );
+    expect(values).toEqual({
+      OPENAI_API_KEY: 'sk-live-value',
+      POSTGRES_PASSWORD: 'pa#ss',
+      TS_HOSTNAME: '#melete',
+      MELETE_DEFAULT_PROVIDER: 'openai',
+      ANTHROPIC_API_KEY: 'ak-value',
+    });
+  });
+
+  test('a quoted value ends at its closing quote, comment or not', () => {
+    const values = parseEnvFile(
+      ['A="value # kept" # dropped', "B='single # kept' # dropped", 'C="say \\"hi\\""', 'D='].join(
+        '\r\n',
+      ),
+    );
+    expect(values).toEqual({ A: 'value # kept', B: 'single # kept', C: 'say "hi"', D: '' });
+  });
+});

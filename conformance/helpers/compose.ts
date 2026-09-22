@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import postgres from 'postgres';
 import { newId } from '../../apps/melete/src/ids.ts';
+import { parseEnvFile } from '../../deploy/scripts/provider-settings.ts';
 
 export const composeEnabled = process.env.MELETE_CONFORMANCE_COMPOSE === '1';
 export const repositoryRoot = resolve(import.meta.dir, '../..');
@@ -44,14 +45,7 @@ export const serviceId = async (name: string) => {
 };
 
 export async function composeEnv(): Promise<Record<string, string>> {
-  const source = await readFile(resolve(repositoryRoot, 'deploy/.env'), 'utf8');
-  return Object.fromEntries(
-    source.split('\n').flatMap((line) => {
-      const match = /^([A-Z_][A-Z_0-9]*)=(.*)$/.exec(line.trim());
-      if (!match?.[1] || match[2] === undefined) return [];
-      return [[match[1], match[2].replace(/^(['"])(.*)\1$/, '$2')]];
-    }),
-  );
+  return parseEnvFile(await readFile(resolve(repositoryRoot, 'deploy/.env'), 'utf8'));
 }
 
 /** Host tests use the unpublished database's Linux bridge IP, never a host port. */

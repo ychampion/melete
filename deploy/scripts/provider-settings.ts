@@ -10,14 +10,24 @@ import {
   providerKeyVariables,
 } from '../../apps/melete/src/gateway/providers.ts';
 
-/** NAME=value lines, as Compose reads them for plain and double-quoted values. */
+/**
+ * NAME=value lines, as Compose reads deploy/.env. A quoted value ends at its
+ * closing quote, and anything after it is ignored. An unquoted value ends at
+ * the first ` #`, a space and a hash, which starts a comment; any other `#`, as
+ * in a password, is part of the value.
+ */
 export function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
     if (!match?.[1]) continue;
-    const value = match[2] ?? '';
-    values[match[1]] = /^"(.*)"$/.exec(value)?.[1] ?? /^'(.*)'$/.exec(value)?.[1] ?? value;
+    const raw = match[2] ?? '';
+    const quoted = /^"((?:[^"\\]|\\.)*)"/.exec(raw) ?? /^'([^']*)'/.exec(raw);
+    values[match[1]] = quoted
+      ? raw.startsWith('"')
+        ? (quoted[1] ?? '').replace(/\\(["\\])/g, '$1')
+        : (quoted[1] ?? '')
+      : (raw.split(' #')[0] ?? '').trimEnd();
   }
   return values;
 }
