@@ -209,19 +209,13 @@ shell command, if one ever appears, surfaces rather than silently denying.
 
 ## Measured: the thin scaffolding
 
-`.agents/probe/measure_thin.py` builds a temporary `HERMES_HOME` with a
-six-tool stub plugin and the thin config, then calls the release's own
+The figures below came from a one-off measurement script, kept outside the
+repository. It built a temporary `HERMES_HOME` with a six-tool stub plugin and
+this configuration, then called the release's own
 `hermes_cli.tools_config._get_platform_tools`,
 `model_tools.get_tool_definitions`, and
 `agent.system_prompt.build_system_prompt` on a real `AIAgent`. Tokens are
 chars/4, the same estimator the gateway's metering uses.
-
-```
-uv venv .hermes-venv --python 3.12
-uv pip install --python .hermes-venv/Scripts/python.exe -e ./.hermes-src
-.hermes-venv/Scripts/python.exe .agents/probe/measure_thin.py \
-    .hermes-src packages/skills/builtin/identity.md
-```
 
 | | tools | tool schemas | system prompt | total |
 |---|---|---|---|---|
@@ -237,7 +231,7 @@ definition as `{**entry.schema, "name": entry.name}`, so what is passed there is
 the OpenAI function body, and a bare schema produces a definition with no
 `parameters` key at all. That understated the thin figure by 28 tokens and the
 default by 29. The table is from the corrected run, and
-`melete_plugin.tool_schema` produces the shape the probe now uses.
+`melete_plugin.tool_schema` produces the shape the corrected run used.
 
 Two things the numbers say that the plan did not.
 

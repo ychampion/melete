@@ -19,6 +19,7 @@
     "typecheck": "tsc -b && tsc -p apps/web/tsconfig.json --noEmit",
     "lint": "biome check . && bun run scrub:check",
     "scrub:check": "bun run scripts/scrub-check.ts",
+    "release:check": "MELETE_RELEASE=1 bun run lint",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "bun test --max-concurrency=2 --timeout=30000",
