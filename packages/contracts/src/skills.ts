@@ -39,11 +39,14 @@ export type SkillMatch<T extends SkillCandidate = SkillCandidate> = {
   matched: string[];
 };
 
-/** Lowercase, collapse whitespace, strip punctuation that splits phrases. */
+/**
+ * Lowercase, collapse whitespace, strip punctuation that splits phrases. A
+ * hyphen reads as a space, so "follow-up" and "follow up" are the same words.
+ */
 export const normalizeForMatch = (text: string): string =>
   text
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -51,7 +54,14 @@ export const normalizeForMatch = (text: string): string =>
 const OBJECTIVE_WEIGHT = 1;
 const MESSAGE_WEIGHT = 2;
 
-/** Non-overlapping occurrences of an already normalised needle. */
+const WORD = /[\p{L}\p{N}]/u;
+const isWord = (char: string | undefined) => char !== undefined && WORD.test(char);
+
+/**
+ * Whole words only: "chase" is not in "purchase" and "plan" is not in
+ * "planet". A plural of the last word still counts, so "plans" is a plan.
+ * The needle is already normalised; occurrences do not overlap.
+ */
 export const countMatches = (haystack: string, needle: string): number => {
   if (!needle) return 0;
   let count = 0;
@@ -59,7 +69,9 @@ export const countMatches = (haystack: string, needle: string): number => {
   for (;;) {
     const at = haystack.indexOf(needle, from);
     if (at === -1) return count;
-    count += 1;
+    let end = at + needle.length;
+    if (haystack[end] === 's' && !isWord(haystack[end + 1])) end += 1;
+    if (!isWord(haystack[at - 1]) && !isWord(haystack[end])) count += 1;
     from = at + needle.length;
   }
 };
