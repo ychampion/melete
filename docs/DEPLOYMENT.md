@@ -299,8 +299,8 @@ docker compose -f deploy/docker-compose.yml \
 **Signing in is refused with `origin_rejected` and status 403.**
 `MELETE_WEB_ORIGIN` does not match the address in the browser's address bar.
 Run `tailscale-origin.ts` and recreate the web service with the command it
-prints. A trailing slash, `http://` instead of `https://`, or a short name
-instead of the full tailnet name are all mismatches. On `http://localhost:3101`
+prints. `http://` instead of `https://`, or a short name instead of the full
+tailnet name, is a mismatch; a trailing slash on the setting is not. On `http://localhost:3101`
 this is the expected answer once `MELETE_WEB_ORIGIN` holds the tailnet address:
 the setting names one address, and that one is now the tailnet's.
 
