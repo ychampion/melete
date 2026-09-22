@@ -9,7 +9,11 @@ import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { ConnectorFactory } from '../../src/connectors/configured.ts';
 import { readEnv } from '../../src/env.ts';
 import { AUTHORING_KEY, createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
-import { createSandboxProvider, modalEnvironmentRefusal } from '../../src/sandbox/connection.ts';
+import {
+  createSandboxProvider,
+  modalEnvironmentRefusal,
+  sandboxTeardownProviders,
+} from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { sandboxLabels } from '../../src/sandbox/manifest.ts';
 import { seedSessionScope, sessionSpec } from '../../src/sandbox/session-fixtures.ts';
@@ -138,13 +142,7 @@ withDb('the sandbox wiring', () => {
       workspaceRetentionSeconds: 3_600,
     });
     const { provider } = createSandboxProvider(
-      {
-        adapter: 'e2b',
-        image: 'base',
-        egress: 'deny_all',
-        persistence: 'ephemeral',
-        lifetime_seconds: 600,
-      },
+      { adapter: 'e2b' },
       {
         credential: (use) => use({ api_key: AUTHORING_KEY }),
         project: PROJECT,
@@ -377,5 +375,106 @@ withDb('the sandbox wiring', () => {
       `now holds the e2b adapter, and this session's sandbox was created by ${opened.adapter}`,
     );
     wiring.stop();
+  }, 60_000);
+  test('a space nothing serves is torn down through providers built from its rows', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { sql } = handle;
+    const scope = await seedSessionScope(sql);
+    const sessions = new SandboxSessions(sql, {
+      leaseSeconds: 900,
+      workspaceRetentionSeconds: 3_600,
+    });
+    // The in-memory provider, under the adapter name the row selects.
+    const provider = new FakeSandboxProvider({ capabilities: { adapter: 'e2b' } });
+    const factory = new ConnectorFactory({
+      sql,
+      workRoot: 'unused',
+      spacesRoot: 'unused',
+      masterKey: MASTER_KEY,
+    });
+    const secretRef = await factory.secrets.put(
+      scope.spaceId,
+      JSON.stringify({ api_key: AUTHORING_KEY }),
+    );
+    const configured = (adapter: string) =>
+      JSON.stringify({
+        kind: 'sandbox',
+        sandbox: {
+          adapter,
+          image: 'base',
+          egress: 'deny_all',
+          persistence: 'pause',
+          lifetime_seconds: 600,
+        },
+      });
+    await sql`update connection set provider = 'sandbox', secret_ref = ${secretRef},
+        configuration = ${configured('e2b')}::jsonb
+      where id = ${scope.connectionId}`;
+    const spec = sessionSpec(PROJECT, scope.spaceId, scope.connectionId);
+    const ephemeral = await sessions.open(
+      {
+        connectionId: scope.connectionId,
+        spaceId: scope.spaceId,
+        jobId: scope.jobId,
+        attemptId: await scope.attempt(),
+        agentId: null,
+      },
+      provider,
+      spec,
+      signal(),
+    );
+    const workspace = await sessions.openWorkspace(
+      {
+        connectionId: scope.connectionId,
+        spaceId: scope.spaceId,
+        jobId: scope.jobId,
+        attemptId: await scope.attempt(),
+        agentId: scope.agentId,
+        persistence: 'pause',
+      },
+      provider,
+      spec,
+      signal(),
+    );
+    await sessions.suspendWorkspace(workspace.id, provider, signal());
+
+    // This process serves no connector for the space, as for one under
+    // removal; the providers come from the connection row alone.
+    const teardown = sandboxTeardownProviders({
+      sql,
+      secrets: factory.secrets,
+      project: PROJECT,
+      open: () => ({ provider, close: async () => {} }),
+    });
+    const listed = () =>
+      sessions.listWorkspacesForSpace(scope.spaceId, teardown.providerFor, signal());
+    expect((await listed()).sessions.sort()).toEqual([ephemeral.id, workspace.id].sort());
+    const destroyed = await sessions.destroyWorkspacesForSpace(
+      scope.spaceId,
+      teardown.providerFor,
+      signal(),
+    );
+    expect(destroyed.closed.sort()).toEqual([ephemeral.id, workspace.id].sort());
+    expect(await listed()).toEqual({ sessions: [], snapshots: [] });
+
+    // A row that no longer selects this adapter is refused before anything is
+    // sent, and so is one that no longer holds a key.
+    const probe = await provider.create(spec('sbx_PROBE000000000000000000000'), signal());
+    await sql`update connection set configuration = ${configured('modal')}::jsonb
+      where id = ${scope.connectionId}`;
+    const moved = await teardown
+      .providerFor('e2b', scope.connectionId)
+      .destroy(probe, signal())
+      .catch((error: unknown) => String(error));
+    expect(moved).toContain('holds the modal adapter, not e2b');
+    await sql`update connection set configuration = ${configured('e2b')}::jsonb, secret_ref = null
+      where id = ${scope.connectionId}`;
+    const keyless = await teardown
+      .providerFor('e2b', scope.connectionId)
+      .destroy(probe, signal())
+      .catch((error: unknown) => String(error));
+    expect(keyless).toContain('no longer holds a provider key');
+    expect(await provider.inspect(probe, signal())).toBe('running');
+    await teardown.close();
   }, 60_000);
 });

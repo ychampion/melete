@@ -15,10 +15,13 @@ import {
   modalTokenParts,
   type SandboxAdapter,
   type SandboxConnectionConfig,
+  sandboxAdapter,
   sandboxConnectionConfig,
   sandboxCredentials,
 } from '@melete/contracts';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
+import type { SecretAccess } from '../connectors/secrets.ts';
 import { createE2bProvider, e2bCapabilities } from './adapters/e2b.ts';
 import { createModalProvider, modalCapabilities } from './adapters/modal.ts';
 import { createModalSdkTransport } from './adapters/modal-sdk.ts';
@@ -130,7 +133,7 @@ export type OpenedSandboxProvider = { provider: SandboxProvider; close(): Promis
 
 /** Build the provider a sandbox connection selects. The key stays in the callback. */
 export function createSandboxProvider(
-  config: SandboxConnectionConfig,
+  config: Pick<SandboxConnectionConfig, 'adapter'>,
   options: SandboxProviderOptions,
 ): OpenedSandboxProvider {
   if (config.adapter === 'e2b') {
@@ -162,6 +165,89 @@ export function createSandboxProvider(
       : { snapshotTtlSeconds: options.snapshotTtlSeconds }),
   });
   return { provider, close: async () => provider.close() };
+}
+
+export type SandboxTeardownOptions = Omit<SandboxProviderOptions, 'credential'> & {
+  sql: Sql;
+  secrets: SecretAccess;
+  /** Set when this environment could redirect Modal's traffic; then Modal is refused. */
+  modalRefusal?: string | null;
+  /** Builds the provider for an adapter. Only a test replaces it. */
+  open?: typeof createSandboxProvider;
+};
+
+/**
+ * Providers for tearing down a connection's sandboxes, built from its row when
+ * they are asked for rather than taken from the connectors this process
+ * serves. A space under removal serves no connectors, and its sandboxes and
+ * snapshots still have to go.
+ *
+ * Nothing reaches a provider until the row has been read again and still names
+ * a sandbox connection with that adapter and a key, so an identifier that no
+ * longer means what it did is refused rather than handed to whichever provider
+ * it resembles.
+ */
+export function sandboxTeardownProviders(options: SandboxTeardownOptions): {
+  providerFor(adapter: string, connectionId: string): SandboxProvider;
+  close(): Promise<void>;
+} {
+  const opened = new Map<string, OpenedSandboxProvider>();
+  const holding = async (adapter: SandboxAdapter, connectionId: string) => {
+    const [row] = await options.sql`select space_id, provider, secret_ref, configuration
+      from connection where id = ${connectionId}`;
+    const stored = storedSandboxConnection.safeParse(row?.configuration);
+    if (row?.provider !== 'sandbox' || !stored.success)
+      throw new Error(`connection ${connectionId} is not a sandbox connection`);
+    if (stored.data.sandbox.adapter !== adapter)
+      throw new Error(
+        `connection ${connectionId} holds the ${stored.data.sandbox.adapter} adapter, not ${adapter}`,
+      );
+    if (!row.secret_ref)
+      throw new Error(`connection ${connectionId} no longer holds a provider key`);
+    return { spaceId: String(row.space_id), secretRef: String(row.secret_ref) };
+  };
+  return {
+    providerFor(name, connectionId) {
+      const adapter = sandboxAdapter.parse(name);
+      if (adapter === 'modal' && options.modalRefusal) throw new Error(options.modalRefusal);
+      const key = `${connectionId}:${adapter}`;
+      let entry = opened.get(key);
+      if (!entry) {
+        const { sql: _sql, secrets, modalRefusal: _refusal, open, ...settings } = options;
+        entry = (open ?? createSandboxProvider)(
+          { adapter },
+          {
+            ...settings,
+            credential: async (use) => {
+              const held = await holding(adapter, connectionId);
+              return secrets.withSecret(held.secretRef, held.spaceId, (sealed) =>
+                use(sandboxCredentialValue(adapter, sealed)),
+              );
+            },
+          },
+        );
+        opened.set(key, entry);
+      }
+      const inner = entry.provider;
+      // Every call waits on the row check first, the ones that never read a
+      // key included.
+      return new Proxy(inner, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver);
+          if (typeof value !== 'function') return value;
+          return async (...args: unknown[]) => {
+            await holding(adapter, connectionId);
+            return value.apply(target, args);
+          };
+        },
+      });
+    },
+    async close() {
+      const all = [...opened.values()];
+      opened.clear();
+      await Promise.all(all.map((entry) => entry.close()));
+    },
+  };
 }
 
 /** The sealed credential, read as the adapter that needs it. Never logged. */

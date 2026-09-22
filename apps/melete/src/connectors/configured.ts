@@ -8,6 +8,7 @@ import {
   createSandboxProvider,
   modalEnvironmentRefusal,
   sandboxCredentialValue,
+  sandboxTeardownProviders,
   storedSandboxConnection,
 } from '../sandbox/connection.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
@@ -239,6 +240,24 @@ export class ConnectorFactory {
   /** Each sandbox connection's provider, so boot reconciliation and the sweep use it too. */
   readonly sandboxProviders = new Map<string, { adapter: string; provider: SandboxProvider }>();
   private readonly overrides: Map<string, ConfiguredConnection>;
+
+  /**
+   * Providers for tearing down the sandboxes of any connection, a space under
+   * removal included, or undefined when this installation owns no sandboxes.
+   */
+  sandboxTeardownProviders() {
+    const sandbox = this.options.sandbox;
+    if (!sandbox) return undefined;
+    return sandboxTeardownProviders({
+      sql: this.options.sql,
+      secrets: this.secrets,
+      project: sandbox.project,
+      e2bPlan: sandbox.e2bPlan,
+      snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
+      modalRefusal: sandbox.modalRefusal,
+      ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+    });
+  }
 
   constructor(readonly options: ConnectorOptions) {
     this.secrets = new SealedSecretStore(
