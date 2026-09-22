@@ -291,6 +291,7 @@ describe.if(handle !== null)('removing a space', () => {
       'blocked_reason',
       'connection_ids',
       'counts',
+      'epoch',
       'finished_at',
       'git_path',
       'id',
@@ -746,9 +747,11 @@ describe.if(handle !== null)('removing a space', () => {
         values (${id}, ${seeded.spaceId}, 'New work', ${seeded.principalId}, 'After emptying', 'queued')`;
       return id;
     };
+    // What a restart resumes for this space. The database holds other
+    // tests' removals too, and a restart resumes those as well.
     const restart = async () => {
       await restoreMemory(sql, journal);
-      return removals.resume();
+      return (await removals.resume()).filter((row) => row.spaceId === seeded.spaceId);
     };
     await provisionMemorySpace(sql, seeded.ownerId, seeded.spaceId);
     const made = await makeWork();
@@ -971,10 +974,12 @@ describe.if(handle !== null)('removing a space', () => {
     // Well past the lease, the phase is still going. Another process finds it
     // held, and this one leaves it to the run it already has.
     const other = await service({ leaseMs: 500 });
-    const rival = await other.resume();
-    expect(rival.map((row) => row.id)).toEqual([fenced.id]);
-    expect(rival[0]?.state).toBe('running');
-    expect(await first.resume()).toEqual([]);
+    const mine = (rows: { id: string }[]) => rows.filter((row) => row.id === fenced.id);
+    expect(mine(await other.resume())).toEqual([]);
+    expect(mine(await first.resume())).toEqual([]);
+    const held = await other.byId(fenced.id);
+    expect(held?.state).toBe('running');
+    expect(held?.leaseOwner).not.toBeNull();
 
     const finished = await running;
     expect(outcome(finished)).toBe('complete');
@@ -986,7 +991,7 @@ describe.if(handle !== null)('removing a space', () => {
     await sql`insert into job (id, space_id, title, principal_id, objective, state)
       values (${kept}, ${seeded.spaceId}, 'New work', ${seeded.principalId}, 'After emptying', 'queued')`;
     await Bun.sleep(600);
-    expect(await other.resume()).toEqual([]);
+    expect(mine(await other.resume())).toEqual([]);
     expect(await countOf(sql, 'job', sql`id = ${kept}`)).toBe(1);
   });
 
