@@ -14,45 +14,53 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
+import type { GatewayOptions } from '../gateway/index.ts';
+import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
-import type { CompanyExtractor } from './extract.ts';
+import type { CompanyExtractor, ScanExtractor } from './extract.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
 import { playbookHandler } from './handler.ts';
-import { connectorMailbox, type ScanMailbox } from './mailbox.ts';
+import { connectorMailbox, MAILBOX_READ_LIMIT, type ScanMailbox } from './mailbox.ts';
 import { type Owner, PostgresCompanyStore } from './repository.ts';
 import type { CompaniesDeps } from './routes.ts';
 import { scriptedExtractor } from './scripted.ts';
 
-/** Calls one process will admit before it must be restarted. A scan reads at most fifty messages. */
-const GATEWAY_CALL_CEILING = 5_000;
+/** Calls one scan's gateway admits: one per message, and a scan reads at most this many. */
+export const SCAN_CALL_CEILING = MAILBOX_READ_LIMIT;
 
 /**
- * The live extractor, opened on the first call and kept for the process. A
- * gateway is a loopback listener; opening one per scan would be a listener per
- * click, and closing one mid-scan would fail the call in flight.
+ * The live extractor. Each scan opens a gateway of its own with its own call
+ * budget and closes it when the scan ends, as `openExtractionGateway` is built
+ * to be used, so one person's scans can never spend another's. A call made
+ * outside a scan gets a gateway for that call alone.
  */
-function lazyGatewayExtractor(options: {
+export function gatewayExtractor(options: {
   provider: string;
   model: string;
-  env: Env;
-  sql?: Sql;
+  providers: GatewayProvider[];
+  fetch?: GatewayOptions['fetch'];
 }): CompanyExtractor {
-  let opened: Promise<{ extractor: CompanyExtractor }> | undefined;
+  const open = async (): Promise<ScanExtractor> => {
+    const gateway = await openExtractionGateway({
+      provider: options.provider,
+      model: options.model,
+      providers: options.providers,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      maxCalls: SCAN_CALL_CEILING,
+    });
+    return { extract: (request) => gateway.extractor.extract(request), close: gateway.close };
+  };
   return {
     async extract(request) {
-      opened ??= openExtractionGateway({
-        provider: options.provider,
-        model: options.model,
-        providers: configuredProviders(
-          options.env,
-          () => {},
-          options.sql ? providerSignIn(options.sql, options.env) : undefined,
-        ),
-        maxCalls: GATEWAY_CALL_CEILING,
-      });
-      return (await opened).extractor.extract(request);
+      const once = await open();
+      try {
+        return await once.extract(request);
+      } finally {
+        await once.close();
+      }
     },
+    forScan: open,
   };
 }
 
@@ -65,11 +73,10 @@ export function configuredExtractor(env: Env, sql?: Sql): CompanyExtractor {
   const model = process.env.MELETE_COMPANIES_MODEL?.trim();
   if (!model) return scriptedExtractor();
   const provider = process.env.MELETE_COMPANIES_PROVIDER?.trim() ?? env.MELETE_DEFAULT_PROVIDER;
-  return lazyGatewayExtractor({
+  return gatewayExtractor({
     provider,
     model: model === 'default' ? DEFAULT_EXTRACTION_MODEL : model,
-    env,
-    sql,
+    providers: configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined),
   });
 }
 

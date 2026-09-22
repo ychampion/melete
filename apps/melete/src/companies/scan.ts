@@ -12,7 +12,7 @@
  */
 
 import type { LedgerItem } from '@melete/contracts';
-import type { CompanyExtractor } from './extract.ts';
+import type { CompanyExtractor, ScanExtractor } from './extract.ts';
 import type { ScanMailbox } from './mailbox.ts';
 import { messageText, type ScanMessage } from './messages.ts';
 import { prefilter } from './prefilter.ts';
@@ -58,6 +58,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   let seen = 0;
   let found = 0;
   let reason: ScanFailure = 'mailbox_unavailable';
+  let session: ScanExtractor | undefined;
   try {
     const messages = await options.mailbox.recent(options.readLimit ?? 50);
     reason = 'scan_failed';
@@ -87,6 +88,10 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     }
     await options.store.saveMessages(options.owner, record.id, stored);
 
+    // A live extractor spends against a budget; this scan gets one of its own,
+    // so no other scan, and no other person's, can use it up.
+    session = await options.extractor.forScan?.();
+    const extractor = session ?? options.extractor;
     const admitted: LedgerItem[] = [];
     for (const group of grouped.companies) {
       if (!group.candidates.length) continue;
@@ -112,7 +117,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         // an error where a map should be.
         let items: Awaited<ReturnType<CompanyExtractor['extract']>> = [];
         try {
-          items = await options.extractor.extract({
+          items = await extractor.extract({
             messageId: message.messageId,
             companyName: group.name,
             domain: group.domain,
@@ -198,6 +203,8 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       counts,
       error: reason,
     };
+  } finally {
+    await session?.close().catch(() => undefined);
   }
 }
 
