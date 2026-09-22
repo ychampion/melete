@@ -3,7 +3,7 @@ import * as contracts from '@melete/contracts';
 import { z } from 'zod';
 import {
   hostOf,
-  LIVE_FOLLOW_SITES_PER_ACTION,
+  LIVE_FOLLOW_SITES_PER_BURST,
   LIVE_FOLLOW_WINDOW_MS,
   LIVE_LIMITS,
   LIVE_VIEWPORT,
@@ -81,13 +81,23 @@ describe('live site scope', () => {
   });
 
   test('additions stop at twelve sites and the floor is never dropped', () => {
-    const scope = new LiveSiteScope(['start-example.com'], 'https://start-example.com/');
+    const time = clock();
+    const scope = new LiveSiteScope(
+      ['start-example.com'],
+      'https://start-example.com/',
+      12,
+      time.now,
+    );
     for (let index = 1; index < 12; index++) {
-      if ((index - 1) % LIVE_FOLLOW_SITES_PER_ACTION === 0) scope.acted();
+      if ((index - 1) % LIVE_FOLLOW_SITES_PER_BURST === 0) {
+        time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
+        scope.acted();
+      }
       expect(scope.follow(`https://site${index}-example.com/`, 'https://start-example.com/')).toBe(
         'admitted',
       );
     }
+    time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
     scope.acted();
     expect(scope.list()).toHaveLength(12);
     expect(scope.follow('https://site12-example.com/', 'https://start-example.com/')).toBe(
@@ -127,14 +137,15 @@ describe('live site scope', () => {
       walked.push(to);
       from = to;
     }
-    expect(walked).toHaveLength(LIVE_FOLLOW_SITES_PER_ACTION);
-    expect(scope.list()).toHaveLength(1 + LIVE_FOLLOW_SITES_PER_ACTION);
+    expect(walked).toHaveLength(LIVE_FOLLOW_SITES_PER_BURST);
+    expect(scope.list()).toHaveLength(1 + LIVE_FOLLOW_SITES_PER_BURST);
 
     // Sites already reached, and the person's own allow, are unaffected.
     expect(scope.follow('https://bank-example.com/home', from)).toBe('in_scope');
     expect(scope.allow('chosen-example.com')).toBe('admitted');
 
     // An action's reach runs out with time, whatever it had left.
+    time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
     scope.acted();
     time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
     expect(scope.follow('https://late-example.com/', 'https://bank-example.com/')).toBe(
@@ -142,6 +153,38 @@ describe('live site scope', () => {
     );
     scope.acted();
     expect(scope.follow('https://late-example.com/', 'https://bank-example.com/')).toBe('admitted');
+  });
+
+  test('typing keeps the window open but does not hand a page more sites with every key', () => {
+    const time = clock();
+    const scope = new LiveSiteScope([], 'https://bank-example.com/', 12, time.now);
+    // A person types a long password, a key a second, and the page leads off each time.
+    for (let key = 0; key < 30; key++) {
+      scope.acted();
+      time.advance(1000);
+      scope.follow(`https://typed${key}-example.com/`, 'https://bank-example.com/');
+    }
+    expect(scope.list()).toHaveLength(1 + LIVE_FOLLOW_SITES_PER_BURST);
+    // Pressing Enter after thirty seconds of typing is still inside the window: the sign-in's
+    // own hand-off would have been admitted had the burst not spent its sites already.
+    scope.acted();
+    expect(scope.follow('https://idp-example.com/', 'https://bank-example.com/')).toBe('off_scope');
+    // A new burst, once the window has lapsed, may lead on again.
+    time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
+    scope.acted();
+    expect(scope.follow('https://idp-example.com/', 'https://bank-example.com/')).toBe('admitted');
+  });
+
+  test('a long pause before Enter still reaches the identity provider', () => {
+    const time = clock();
+    const scope = new LiveSiteScope([], 'https://bank-example.com/', 12, time.now);
+    for (let key = 0; key < 40; key++) {
+      scope.acted();
+      time.advance(700);
+    }
+    scope.acted();
+    time.advance(2000);
+    expect(scope.follow('https://idp-example.com/', 'https://bank-example.com/')).toBe('admitted');
   });
 
   test('pressing, touching and typing are actions; pointing and scrolling are not', () => {

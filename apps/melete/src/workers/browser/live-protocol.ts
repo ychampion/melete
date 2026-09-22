@@ -156,10 +156,13 @@ const LOCAL_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan
 
 export type LiveScopeDecision = 'in_scope' | 'admitted' | 'off_scope' | 'scope_full';
 
-/** How long after the person presses, touches or types a page may take them to a new site. */
+/** How long after the person last pressed, touched or typed a page may take them to a new site. */
 export const LIVE_FOLLOW_WINDOW_MS = 15_000;
-/** New sites one action of the person's may lead to: a sign-in and a provider it hands off to. */
-export const LIVE_FOLLOW_SITES_PER_ACTION = 3;
+/**
+ * New sites one burst of the person's activity may lead to: a sign-in and a provider it hands
+ * off to. A burst runs while each action comes within the window of the one before.
+ */
+export const LIVE_FOLLOW_SITES_PER_BURST = 3;
 
 /** An input that is the person acting on the page, as opposed to pointing or scrolling. */
 export function liveAction(event: LiveInput): boolean {
@@ -175,7 +178,8 @@ export function liveAction(event: LiveInput): boolean {
  * One takeover's site scope, held in memory only. It starts from the job's allowed domains and
  * the site of the page at takeover, and the person can allow a host. A redirect or top-level
  * navigation initiated by an in-scope document adds its target's site only just after the person
- * acts, and only a few sites per action, so a page cannot walk them across sites on its own.
+ * acts, and only a few sites for each burst of activity, so a page cannot walk them across sites
+ * on its own, nor while they type.
  * Additions stop at the cap.
  */
 export class LiveSiteScope {
@@ -218,10 +222,16 @@ export class LiveSiteScope {
     return decision;
   }
 
-  /** The person acted on the page: what it does next may take them to a few new sites. */
+  /**
+   * The person acted on the page: what it does next may take them to a few new sites. Acting
+   * again keeps the window open, so a long password typed before Enter still reaches its
+   * identity provider, but only an action after the window has lapsed earns new sites: typing
+   * does not hand a page three more with every key.
+   */
   acted(): void {
-    this.actedAt = this.now();
-    this.follows = LIVE_FOLLOW_SITES_PER_ACTION;
+    const now = this.now();
+    if (now - this.actedAt > LIVE_FOLLOW_WINDOW_MS) this.follows = LIVE_FOLLOW_SITES_PER_BURST;
+    this.actedAt = now;
   }
 
   allow(host: string): LiveScopeDecision {
