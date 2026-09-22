@@ -66,7 +66,6 @@ export const CHATGPT = {
   /** The only redirect addresses registered for that client are loopback ones. */
   redirectUri: 'http://localhost:1455/auth/callback',
   scopes: 'openid profile email offline_access',
-  baseUrl: 'https://chatgpt.com/backend-api/codex/',
 } as const;
 
 /** True for an address a credential may travel to: HTTPS, or HTTP on loopback. */
@@ -105,9 +104,7 @@ export function chatgptAccountId(tokens: OAuthTokens): string | undefined {
   return typeof id === 'string' && id ? id : undefined;
 }
 
-export function chatgptIssuer(
-  overrides: { issuer?: string; clientId?: string; baseUrl?: string } = {},
-): OAuthIssuer {
+export function chatgptIssuer(overrides: { issuer?: string; clientId?: string } = {}): OAuthIssuer {
   const issuer = (overrides.issuer ?? CHATGPT.issuer).replace(/\/+$/, '');
   return {
     provider: 'chatgpt',

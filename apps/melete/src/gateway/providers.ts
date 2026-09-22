@@ -1,4 +1,3 @@
-import { CHATGPT } from './oauth.ts';
 import { GatewayError, type GatewayProtocol, type GatewayProvider } from './types.ts';
 
 export const PROVIDER_HOSTS = [
@@ -13,6 +12,13 @@ export const OPENAI_COMPATIBLE = 'openai-compatible';
 
 /** The provider served through the owner's ChatGPT sign-in rather than a key. */
 export const CHATGPT_PROVIDER = 'chatgpt';
+
+/**
+ * Where a ChatGPT plan is served, as the Codex CLI reaches it. Kept here rather
+ * than beside the sign-in, so the release scripts that read this table need no
+ * package beyond Bun's own.
+ */
+export const CHATGPT_BASE_URL = 'https://chatgpt.com/backend-api/codex/';
 
 /** The protocols each upstream is served over. Routing and runtime API modes both read this. */
 const PROVIDER_PROTOCOLS = {
@@ -90,7 +96,7 @@ export function providersFromEnv(
       // Its credential is the owner's sign-in, attached where the service
       // builds its providers; without one every call is refused.
       name: CHATGPT_PROVIDER,
-      baseUrl: CHATGPT.baseUrl,
+      baseUrl: CHATGPT_BASE_URL,
       protocols: [...PROVIDER_PROTOCOLS[CHATGPT_PROVIDER]],
     },
   ];
