@@ -15,6 +15,7 @@
  * host has no file to read, so the group is measured from a container.
  */
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -67,13 +68,19 @@ export type SocketAccess = {
 export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAccess) {
   if (host.platform === 'linux' && !engineElsewhere(host)) {
     const socket = await access.statHost();
-    if (!socket.isSocket()) throw new Error('/var/run/docker.sock is not a Docker socket');
+    if (!socket.isSocket())
+      throw new ConfigureRefusal('/var/run/docker.sock is not a Docker socket');
     return socket.gid;
   }
   const probe = judgeSocketProbe(access.runProbe(socketProbeCommand(await access.probeImage())));
-  if ('problem' in probe) throw new Error(probe.problem);
+  if ('problem' in probe) throw new ConfigureRefusal(probe.problem);
   return probe.gid;
 }
+
+/** A reason to stop that the operator acts on; printed as one line, without a stack. */
+export class ConfigureRefusal extends Error {}
+
+const ENV_EXISTS = 'deploy/.env already exists. Keep it; edit its settings to change providers.';
 
 /** What was written. Windows applies no owner-only mode, so the file keeps its folder's. */
 export function createdMessage(platform: NodeJS.Platform, fake: boolean): string {
@@ -83,14 +90,27 @@ export function createdMessage(platform: NodeJS.Platform, fake: boolean): string
     : `Created deploy/.env with private permissions${fakeProvider}.`;
 }
 
-if (import.meta.main) {
-  const root = resolve(import.meta.dir, '../..');
+/** The line and exit code for a failed run: a refusal is its message alone. */
+export function failureReport(error: unknown): { text: string; code: number } | null {
+  return error instanceof ConfigureRefusal ? { text: `${error.message}\n`, code: 1 } : null;
+}
+
+async function configure(root: string) {
   const target = resolve(root, 'deploy/.env');
-  const { fake, nodeName } = configureOptions(process.argv.slice(2));
+  let options: ReturnType<typeof configureOptions>;
+  try {
+    options = configureOptions(process.argv.slice(2));
+  } catch (error) {
+    throw new ConfigureRefusal(error instanceof Error ? error.message : String(error));
+  }
+  const { fake, nodeName } = options;
+  // Checked first so a second run is refused before it asks Docker anything;
+  // the exclusive write below still settles a race.
+  if (existsSync(target)) throw new ConfigureRefusal(ENV_EXISTS);
   // An unsupported engine, Compose or host is named now, not as a failed `up` later.
   const host = readDockerHost(spawnCommand, root);
   const unsupported = judgeDockerMachine(readHostDocker(), host);
-  if (unsupported.length > 0) throw new Error(unsupported.join(' '));
+  if (unsupported.length > 0) throw new ConfigureRefusal(unsupported.join(' '));
   for (const note of describeDockerHost(host)) process.stdout.write(`${note}\n`);
   const dockerGid = await dockerSocketGroup(host, {
     statHost: () => stat('/var/run/docker.sock'),
@@ -129,9 +149,7 @@ if (import.meta.main) {
     await writeFile(target, content, { flag: 'wx', mode: 0o600 });
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
-      throw new Error(
-        'deploy/.env already exists. Keep it; edit its settings to change providers.',
-      );
+      throw new ConfigureRefusal(ENV_EXISTS);
     }
     throw error;
   }
@@ -141,4 +159,15 @@ if (import.meta.main) {
   // A real provider is selected with its key still empty. Say so now, not at the first job.
   for (const warning of providerWarnings(parseEnvFile(content)))
     process.stderr.write(`WARNING: ${warning}\n`);
+}
+
+if (import.meta.main) {
+  try {
+    await configure(resolve(import.meta.dir, '../..'));
+  } catch (error) {
+    const report = failureReport(error);
+    if (!report) throw error;
+    process.stderr.write(report.text);
+    process.exit(report.code);
+  }
 }

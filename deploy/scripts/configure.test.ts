@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
-import { configureOptions, createdMessage, dockerSocketGroup } from './configure.ts';
+import {
+  ConfigureRefusal,
+  configureOptions,
+  createdMessage,
+  dockerSocketGroup,
+  failureReport,
+} from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
 describe('the configuration generator options', () => {
@@ -97,14 +103,43 @@ describe('the Docker socket group written as DOCKER_GID', () => {
   });
 });
 
-test('the created line says what was done on each system', () => {
-  expect(createdMessage('linux', true)).toBe(
-    'Created deploy/.env with private permissions and the explicit fake provider.',
-  );
-  expect(createdMessage('darwin', false)).toBe('Created deploy/.env with private permissions.');
-  const windows = createdMessage('win32', true);
-  expect(windows).not.toContain('private permissions');
-  expect(windows).toBe(
-    'Created deploy/.env and the explicit fake provider. On Windows it has the permissions of its folder.',
-  );
+describe('what configure prints', () => {
+  test('the created line says what was done on each system', () => {
+    expect(createdMessage('linux', true)).toBe(
+      'Created deploy/.env with private permissions and the explicit fake provider.',
+    );
+    expect(createdMessage('darwin', false)).toBe('Created deploy/.env with private permissions.');
+    const windows = createdMessage('win32', true);
+    expect(windows).not.toContain('private permissions');
+    expect(windows).toBe(
+      'Created deploy/.env and the explicit fake provider. On Windows it has the permissions of its folder.',
+    );
+  });
+
+  test('a refusal, such as a second run, is its message alone, with no stack', () => {
+    const refusal = new ConfigureRefusal(
+      'deploy/.env already exists. Keep it; edit its settings to change providers.',
+    );
+    expect(failureReport(refusal)).toEqual({
+      text: 'deploy/.env already exists. Keep it; edit its settings to change providers.\n',
+      code: 1,
+    });
+    // Anything unexpected keeps its stack, so a bug is not reported as advice.
+    expect(failureReport(new Error('EACCES'))).toBeNull();
+  });
+
+  test('a socket the service could not use is a refusal', async () => {
+    const facts: DockerHostFacts = {
+      platform: 'win32',
+      endpoint: null,
+      pipePresent: null,
+      info: null,
+    };
+    const failure = await dockerSocketGroup(facts, {
+      statHost: async () => ({ isSocket: () => true, gid: 0 }),
+      runProbe: () => ({ code: 0, stdout: '0 755 socket', stderr: '' }),
+      probeImage: async () => 'postgres:17-alpine@sha256:pinned',
+    }).catch((error: unknown) => error);
+    expect(failureReport(failure)?.text).toContain('mode 755');
+  });
 });
