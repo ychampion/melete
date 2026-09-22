@@ -61,6 +61,7 @@ import {
   RECOVERY_SCAN_SECONDS,
 } from './queue.ts';
 import type { JobRow, JobService } from './service.ts';
+import { SKILL_TRACE_KIND, skillTraceCall } from './skill-trace.ts';
 
 export const HEARTBEAT_MS = 15_000;
 export const LEASE_MS = 45_000;
@@ -282,6 +283,16 @@ export class AttemptRunner {
         payload: { epoch, revision: row.revision },
         dedupKey: `${attemptId}:started`,
       });
+      // The skills went into the instructions, where no tool call shows them.
+      const followed = skillTraceCall(attemptId, bundle.skills, await databaseNow(tx));
+      if (followed)
+        await appendEvent(tx, {
+          jobId: row.id,
+          attemptId,
+          type: 'notice',
+          payload: { kind: SKILL_TRACE_KIND, call: followed },
+          dedupKey: `tool:${followed.id}:${followed.status}`,
+        });
       if (row.currentTurnId)
         await tx
           .update(experienceTurn)

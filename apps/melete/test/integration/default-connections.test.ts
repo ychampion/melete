@@ -424,9 +424,24 @@ const skilled = late ? await database() : null;
         claimed.bundle.skills.map((skill) => skill.name);
 
       // The default tools are enough for research, so the built-in skill arrives.
-      expect(
-        skillNames(await claimIn(running, space.id, 'Research standing desks and cite sources')),
-      ).toEqual(['research-with-sources']);
+      const researching = await claimIn(
+        running,
+        space.id,
+        'Research standing desks and cite sources',
+      );
+      expect(skillNames(researching)).toEqual(['research-with-sources']);
+      // The conversation is told, as a tool entry, which skill the attempt follows.
+      const traced = await fixture.sql`select payload from event
+        where attempt_id = ${researching.claims.attempt_id} and type = 'notice'
+          and payload->>'kind' = 'tool_trace'`;
+      expect(traced.map((row) => row.payload.call)).toEqual([
+        expect.objectContaining({
+          id: `skills:${researching.claims.attempt_id}`,
+          kind: 'skill',
+          title: 'Followed the skill: Research with sources',
+          status: 'done',
+        }),
+      ]);
 
       // A skill that waits on a trigger is usable: the lifecycle wait is the broker's own tool.
       const skills = join(space.git_path, 'skills');
