@@ -515,6 +515,16 @@ describe('what the counter is told about a visitor', () => {
     expect(await keyFor('::ffff:203.0.113.8', at)).not.toBe(plain);
   });
 
+  // A 6to4 prefix, 2002:WWXX:YYZZ::/48, belongs to whoever holds the IPv4
+  // address inside it, which would otherwise hand them 65,536 /64s.
+  test('a 6to4 address is the IPv4 address it was built from', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    const plain = await keyFor('203.0.113.7', at);
+    expect(await keyFor('2002:cb00:7107::1', at)).toBe(plain);
+    expect(await keyFor('2002:cb00:7107:ffff:1:2:3:4', at)).toBe(plain);
+    expect(await keyFor('2002:cb00:7108::1', at)).not.toBe(plain);
+  });
+
   test('a /64 gets one allowance, however many addresses it rotates through', async () => {
     const use = deps();
     const statuses: number[] = [];

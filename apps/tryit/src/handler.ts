@@ -159,8 +159,9 @@ export function clientIp(request: Request): string {
  * An IPv6 connection is handed a /64 at the least, and every address in it
  * belongs to whoever holds it, so counting each one separately would give
  * them a fresh allowance per address. An IPv6 address is therefore cut to its
- * /64, and one that only carries an IPv4 address (`::ffff:a.b.c.d`) is that
- * IPv4 address. Anything that does not parse is kept as it came.
+ * /64, and one that only carries an IPv4 address (`::ffff:a.b.c.d`, or a
+ * 6to4 `2002:` prefix) is that IPv4 address. Anything that does not parse is
+ * kept as it came.
  *
  * An IPv6 visitor also gets the /48 around them as `block`, which is counted
  * too: a household handed a /56 or a /48 holds hundreds of /64s or more.
@@ -174,10 +175,12 @@ export function visitorOf(address: string): { key: string; block?: string } {
   if (!bare.includes(':')) return { key: bare };
   const groups = hextets(bare);
   if (groups === null) return { key: bare };
-  const [, , , , , , high = 0, low = 0] = groups;
+  const dotted = (high = 0, low = 0) => [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-    return { key: [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.') };
+    return { key: dotted(groups[6], groups[7]) };
   }
+  // 6to4: 2002:WWXX:YYZZ::/48 belongs to whoever holds IPv4 WW.XX.YY.ZZ.
+  if (groups[0] === 0x2002) return { key: dotted(groups[1], groups[2]) };
   const prefix = (count: number) =>
     groups
       .slice(0, count)
