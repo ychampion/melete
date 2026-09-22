@@ -152,8 +152,15 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   const factory = factoryFor(deps);
   const secrets = factory.secrets;
 
+  // A kind this service cannot run is not offered: stdio servers need an isolating launcher.
   app.get('/connection-kinds', (c) =>
-    c.json(connectionKindListResponse.parse({ kinds: CONNECTION_KIND_DESCRIPTORS })),
+    c.json(
+      connectionKindListResponse.parse({
+        kinds: CONNECTION_KIND_DESCRIPTORS.filter(
+          (kind) => kind.kind !== 'mcp_stdio' || factory.options.stdioLauncher,
+        ),
+      }),
+    ),
   );
   app.get('/connections', async (c) => {
     const rows = await deps.db
@@ -231,8 +238,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
     const installation = resolved.value;
-    // Everything but an MCP server without a token has something to seal.
-    if ((installation.kind !== 'mcp' || installation.credentials) && !factory.options.masterKey)
+    // Everything but an MCP server without a token or secret variables has something to seal.
+    const seals =
+      installation.kind === 'mcp'
+        ? Boolean(installation.credentials)
+        : installation.kind === 'mcp_stdio'
+          ? installation.config.secret_env.length > 0
+          : true;
+    if (seals && !factory.options.masterKey)
       throw new ServiceError(
         'sealing_unavailable',
         'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
@@ -248,7 +261,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       await requireInstaller(tx, spaceId, actor, installation.kind, true);
-      if (installation.kind === 'mcp') {
+      if (installation.kind === 'mcp' || installation.kind === 'mcp_stdio') {
         // A removed installation keeps its row for the ledger but not its short
         // name, so the same server can be installed again with a new credential.
         const existing = await tx
@@ -299,7 +312,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       worker = await factory.open(source(installed));
       // An MCP worker proved itself by completing its handshake; every other kind is asked once.
       outcome =
-        installation.kind === 'mcp' && worker
+        (installation.kind === 'mcp' || installation.kind === 'mcp_stdio') && worker
           ? result('ok', 'ok')
           : await check(worker, 'disabled');
       if (outcome.status === 'failing' || !worker) throw new Error('Connection test failed');
@@ -359,7 +372,7 @@ async function requireInstaller(
   if (access.role !== 'owner' || access.space.audience !== 'owner')
     throw new ServiceError(
       'scope_denied',
-      kind === 'mcp'
+      kind === 'mcp' || kind === 'mcp_stdio'
         ? 'MCP installation requires its owner and matching audience.'
         : 'Installing a connection requires the owner of an owner-audience space.',
       403,
@@ -442,12 +455,51 @@ async function storedShape(
       );
     }
   }
-  if (installation.kind === 'mcp_stdio')
-    throw new ServiceError(
-      'invalid_request',
-      'This service cannot launch a stdio MCP server.',
-      400,
-    );
+  if (installation.kind === 'mcp_stdio') {
+    const { runner, source, command, args, egress, secret_env, ...policy } = installation.config;
+    const config = mcpServerConfig.parse({
+      ...policy,
+      endpoint: {
+        transport: 'container',
+        launch: {
+          runner,
+          source,
+          ...(command ? { command } : {}),
+          args,
+          egress,
+          secret_env_names: secret_env.map((entry) => entry.name),
+        },
+      },
+    });
+    if (
+      !config.tools.every((tool) =>
+        config.allowed_scopes.includes(`mcp_${config.id}.${tool.alias}`),
+      )
+    )
+      throw new ServiceError(
+        'invalid_request',
+        'Allowed scopes must include each named MCP tool.',
+        400,
+      );
+    const launcher = factory.options.stdioLauncher;
+    if (!launcher)
+      throw new ServiceError(
+        'invalid_request',
+        'This service runs stdio MCP servers only when it supervises containers.',
+        400,
+      );
+    if (config.endpoint.transport !== 'container') throw new Error('Unexpected MCP endpoint');
+    const refusal = launcher.refuses(config.endpoint.launch);
+    if (refusal) throw new ServiceError('invalid_request', refusal, 400);
+    // Values are sealed together; the row keeps only their names.
+    return {
+      scopes: config.allowed_scopes,
+      secret: secret_env.length
+        ? JSON.stringify(Object.fromEntries(secret_env.map((entry) => [entry.name, entry.value])))
+        : null,
+      configuration: { server: config },
+    };
+  }
   const shape =
     installation.kind === 'mail'
       ? {

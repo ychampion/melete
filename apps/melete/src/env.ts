@@ -182,6 +182,12 @@ const variables = z.object({
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/)
     .default('melete_work'),
   MELETE_RUNTIME_START_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  /** Stdio MCP servers run in containers beside the attempts; these are the runners' images. */
+  MELETE_MCP_NODE_IMAGE: z.string().min(1).default('node:22-alpine'),
+  MELETE_MCP_PYTHON_IMAGE: z.string().min(1).default('ghcr.io/astral-sh/uv:python3.12-alpine'),
+  /** The port a server with named destinations uses as its proxy, inside the service container. */
+  MELETE_MCP_EGRESS_PORT: z.coerce.number().int().min(1).max(65535).default(8789),
+  MELETE_MCP_IDLE_MS: z.coerce.number().int().positive().default(600_000),
   /** Browser credentials and endpoint are service-owned; neither is sent to the runtime cell. */
   MELETE_BROWSER_URL: z.url().optional(),
   MELETE_BROWSER_SPACE: z
