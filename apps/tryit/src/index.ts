@@ -34,6 +34,11 @@ export type Env = {
   REASONING_EFFORT?: 'low' | 'medium' | 'high';
   /** Optional secret. See `counterKey` in handler.ts. */
   TRYIT_COUNTER_SALT?: string;
+  /**
+   * Set by `bun run dev`. Lets `x-forwarded-for` stand in for Cloudflare's
+   * address header, which a deployed Worker never does. See `clientIp`.
+   */
+  TRYIT_LOCAL?: string;
 };
 
 const DEFAULT_LANDING = 'https://melete.axcelner.com';
@@ -104,6 +109,7 @@ export default {
         limits,
         log,
         heartbeatMs: 10_000,
+        local: env.TRYIT_LOCAL === '1',
         // Optional. Without it the counter's key still rotates daily and keeps
         // the address out of storage; with it, an address cannot be searched
         // for at all. See `counterKey`.

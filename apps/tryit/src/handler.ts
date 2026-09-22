@@ -53,6 +53,8 @@ export type Deps = {
   log?: (line: LogLine) => void;
   /** Mixed into the counter's key, so an address cannot be searched for. */
   salt?: string;
+  /** A local run, where `x-forwarded-for` may stand in for Cloudflare's header. */
+  local?: boolean;
   /** Sent between stages so a long wait keeps the connection warm. */
   heartbeatMs?: number;
 };
@@ -144,10 +146,18 @@ export async function counterKey(ip: string, day: string, salt = ''): Promise<st
     .join('');
 }
 
-/** Cloudflare puts the caller's address here. The rest are fallbacks for local runs. */
-export function clientIp(request: Request): string {
+/**
+ * Cloudflare puts the caller's address in `cf-connecting-ip`, overwriting
+ * whatever the caller sent, and every request through its edge carries one.
+ * `x-forwarded-for` is written by the caller, so believing it would let them
+ * choose their own counter; it is read only on a local run. Anywhere else a
+ * request without Cloudflare's header came in some other way, there is no
+ * address to count it by, and the answer is null.
+ */
+export function clientIp(request: Request, local = false): string | null {
   const direct = request.headers.get('cf-connecting-ip');
   if (direct) return direct;
+  if (!local) return null;
   const forwarded = request.headers.get('x-forwarded-for');
   const first = forwarded?.split(',')[0]?.trim();
   return first && first !== '' ? first : 'unknown';
@@ -273,7 +283,14 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
 
   // The address is turned into a key here and goes no further, so neither the
   // counter nor its storage ever sees one.
-  const visitor = visitorOf(clientIp(request));
+  // Refused rather than counted as one shared stranger: that would still spend
+  // the day's budget through a path nothing identifies, and pool whoever uses it.
+  const address = clientIp(request, deps.local ?? false);
+  if (address === null) {
+    record({ ...bare, chars, outcome: 'bad_request' });
+    return refuse('bad_request', 400);
+  }
+  const visitor = visitorOf(address);
   const ip = await counterKey(visitor.key, today(started), deps.salt ?? '');
   const block =
     visitor.block === undefined

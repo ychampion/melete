@@ -123,3 +123,24 @@ describe('a real key', () => {
     expect(await response.json()).toMatchObject({ ok: false, code: 'busy' });
   });
 });
+
+describe('where a visitor’s address comes from', () => {
+  const forwarded = (address: string): Request =>
+    new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': address },
+      body: JSON.stringify({ text: SAMPLES[0]?.text ?? '' }),
+    });
+
+  test('a proxy header alone is refused on a deployed Worker', async () => {
+    const response = await call(forwarded('7.7.7.7'));
+    expect(response.status).toBe(400);
+    if (response.body) await response.text();
+  });
+
+  test('and believed when the run says it is local', async () => {
+    const response = await call(forwarded('7.7.7.8'), { TRYIT_LOCAL: '1' });
+    expect(response.status).toBe(200);
+    if (response.body) await response.text();
+  });
+});

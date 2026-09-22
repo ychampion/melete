@@ -188,7 +188,7 @@ describe('the ways it ends badly', () => {
     let at = 0;
     const request = new Request('https://tryit.example/api/case-file', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4', ...headers },
       body: new ReadableStream<Uint8Array>({
         pull(controller) {
           if (at >= body.byteLength) {
@@ -262,7 +262,7 @@ describe('the ways it ends badly', () => {
   test('a charset or spacing on the json type is still json', async () => {
     const request = new Request('https://tryit.example/api/case-file', {
       method: 'POST',
-      headers: { 'content-type': 'application/json; charset=utf-8' },
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cf-connecting-ip': '1.2.3.4' },
       body: JSON.stringify({ text: REFUND }),
     });
     const { done } = await readStream(await caseFileRoute(request, deps()));
@@ -563,12 +563,69 @@ describe('what the counter is told about a visitor', () => {
 });
 
 describe('the caller’s address', () => {
-  test('comes from Cloudflare first, then a proxy header, then nothing', () => {
-    const at = (headers: Record<string, string>) =>
-      clientIp(new Request('https://tryit.example/', { headers }));
+  const at = (headers: Record<string, string>, local = false) =>
+    clientIp(new Request('https://tryit.example/', { headers }), local);
+
+  test('comes from Cloudflare, whatever else the request says', () => {
     expect(at({ 'cf-connecting-ip': '1.1.1.1', 'x-forwarded-for': '2.2.2.2' })).toBe('1.1.1.1');
-    expect(at({ 'x-forwarded-for': '2.2.2.2, 3.3.3.3' })).toBe('2.2.2.2');
-    expect(at({})).toBe('unknown');
+    expect(at({ 'cf-connecting-ip': '1.1.1.1', 'x-forwarded-for': '2.2.2.2' }, true)).toBe(
+      '1.1.1.1',
+    );
+  });
+
+  // Anyone can write x-forwarded-for, so trusting it lets the caller choose
+  // their own counter. Cloudflare's edge always sets cf-connecting-ip, so a
+  // request without it came some other way and has no address to count.
+  test('without Cloudflare, a proxy header is believed only on a local run', () => {
+    expect(at({ 'x-forwarded-for': '2.2.2.2, 3.3.3.3' })).toBeNull();
+    expect(at({})).toBeNull();
+    expect(at({ 'x-forwarded-for': '2.2.2.2, 3.3.3.3' }, true)).toBe('2.2.2.2');
+    expect(at({}, true)).toBe('unknown');
+  });
+
+  const forwarded = (address: string) =>
+    new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': address },
+      body: JSON.stringify({ text: REFUND }),
+    });
+
+  test('a request with no Cloudflare address is refused before a turn is spent', async () => {
+    const taken: string[] = [];
+    const use = deps(
+      {},
+      {
+        limiter: {
+          take: async (ip) => {
+            taken.push(ip);
+            return { allowed: true, remaining: 4 };
+          },
+          giveBack: async () => {},
+        },
+      },
+    );
+    for (let host = 1; host <= 3; host += 1) {
+      const response = await caseFileRoute(forwarded(`198.51.100.${host}`), use);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ ok: false, code: 'bad_request' });
+    }
+    expect(taken).toEqual([]);
+    expect(use.lines.map((line) => line.outcome)).toEqual([
+      'bad_request',
+      'bad_request',
+      'bad_request',
+    ]);
+  });
+
+  test('a local run counts by the proxy header', async () => {
+    const use = deps({}, { local: true });
+    const statuses: number[] = [];
+    for (const address of ['198.51.100.1', '198.51.100.1', '198.51.100.1', '198.51.100.2']) {
+      const response = await caseFileRoute(forwarded(address), use);
+      if (response.status === 200) await readStream(response);
+      statuses.push(response.status);
+    }
+    expect(statuses).toEqual([200, 200, 429, 200]);
   });
 });
 

@@ -23,6 +23,11 @@ the pasted text, works out which situation it is, and quotes real sentences
 back. It never searches, so it never cites a page. `/healthz` says which
 provider and which counter are running.
 
+`bun run dev` marks the run as local (`TRYIT_LOCAL=1`), so `x-forwarded-for`
+can stand in for the address Cloudflare supplies. A deployed Worker counts
+visitors by Cloudflare's `cf-connecting-ip` alone and turns away a request
+that arrives without it.
+
 ## What is guaranteed, in code
 
 The model's answer is checked before anyone sees it. The rules are in
