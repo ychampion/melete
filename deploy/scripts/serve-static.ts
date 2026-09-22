@@ -80,7 +80,12 @@ export function forwardedAddress(header: string | null): string | null {
   return plainAddress(header);
 }
 
-function parseOrigin(value: string): string {
+/** `setting` names where the value came from, so a refusal says what to change. */
+function parseOrigin(value: string, setting: string): string {
+  const refused = new Error(
+    `${setting} must be an http:// or https:// origin without a path or credentials, for example https://assistant.example.net.`,
+  );
+  if (!URL.canParse(value)) throw refused;
   const url = new URL(value);
   if (
     !['http:', 'https:'].includes(url.protocol) ||
@@ -90,7 +95,7 @@ function parseOrigin(value: string): string {
     url.search ||
     url.hash
   ) {
-    throw new Error('The web server requires an HTTP(S) origin without a path or credentials.');
+    throw refused;
   }
   return url.origin;
 }
@@ -235,8 +240,10 @@ const isFile = async (path: string): Promise<boolean> => {
 export function createStaticServer(options: StaticServerOptions) {
   const root = resolve(options.root);
   const indexPath = resolve(root, 'index.html');
-  const apiOrigin = parseOrigin(options.apiOrigin ?? API_ORIGIN);
-  const publicOrigin = options.publicOrigin ? parseOrigin(options.publicOrigin) : undefined;
+  const apiOrigin = parseOrigin(options.apiOrigin ?? API_ORIGIN, 'The API origin');
+  const publicOrigin = options.publicOrigin
+    ? parseOrigin(options.publicOrigin, 'MELETE_WEB_ORIGIN')
+    : undefined;
   const upstream = trustedPeer(options.trustedUpstream);
 
   const index = () =>

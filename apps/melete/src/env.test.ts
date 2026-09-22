@@ -9,7 +9,7 @@ import {
   DEFAULT_ENGINE_MAX_TURNS,
 } from '@melete/runtime-hermes';
 import { parse } from 'yaml';
-import { brokerUrlForBind, loadEnv, readEnv } from './env.ts';
+import { brokerUrlForBind, envSchema, loadEnv, readEnv } from './env.ts';
 
 const bundle: AttemptBundle = {
   attempt: {
@@ -50,6 +50,9 @@ const unusedPort = () =>
     });
   });
 
+/** The shape deploy/scripts/configure.ts writes. */
+const GENERATED_DATABASE_URL = `postgres://melete:${'0f'.repeat(24)}@postgres:5432/melete`;
+
 /** The environment Compose would hand the service, with every placeholder filled in. */
 function composeServiceEnvironment(): Record<string, string> {
   const compose = parse(
@@ -59,7 +62,7 @@ function composeServiceEnvironment(): Record<string, string> {
     Object.entries(compose.services.melete.environment).map(([key, value]) => [
       key,
       String(value).replace(/\$\{[A-Z_]+:([-?])([^}]*)\}/g, (_match, kind, fallback) =>
-        kind === '-' ? fallback : 'x'.repeat(64),
+        kind === '-' ? fallback : key === 'DATABASE_URL' ? GENERATED_DATABASE_URL : 'x'.repeat(64),
       ),
     ]),
   );
@@ -92,8 +95,40 @@ describe('the model defaults', () => {
       expect(readEnv({ MELETE_DEFAULT_MAX_OUTPUT_TOKENS: value }).ok).toBe(false);
   });
 
+  test('Compose falls back to the same provider and model as the service and the example', () => {
+    // Only a deploy/.env without these lines meets the fallback; it must not
+    // select a provider the service then refuses to start with.
+    const composed = composeServiceEnvironment();
+    const env = loadEnv({});
+    expect(composed.MELETE_DEFAULT_PROVIDER).toBe(env.MELETE_DEFAULT_PROVIDER);
+    expect(composed.MELETE_DEFAULT_MODEL).toBe(env.MELETE_DEFAULT_MODEL);
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain(`\nMELETE_DEFAULT_PROVIDER=${env.MELETE_DEFAULT_PROVIDER}\n`);
+    const runtime = readFileSync(
+      join(import.meta.dir, '../../../deploy/docker-compose.yml'),
+      'utf8',
+    );
+    expect(runtime).toContain(
+      `MELETE_MODEL_PROVIDER: \${MELETE_DEFAULT_PROVIDER:-${env.MELETE_DEFAULT_PROVIDER}}`,
+    );
+    expect(runtime).toContain(
+      `MELETE_MODEL_NAME: \${MELETE_DEFAULT_MODEL:-${env.MELETE_DEFAULT_MODEL}}`,
+    );
+  });
+
   test('Compose passes the output limit through to the service', () => {
     expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
+  });
+
+  test('every service setting the example configuration lists reaches the service', () => {
+    // Compose hands a container only the variables its file names, so a setting
+    // written in deploy/.env and missing there is silently ignored.
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    const listed = [...example.matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '');
+    const read = Object.keys(envSchema.in.shape);
+    const composed = composeServiceEnvironment();
+    expect(listed).toContain('MELETE_ENGINE_MAX_TURNS');
+    expect(listed.filter((name) => read.includes(name) && !(name in composed))).toEqual([]);
   });
 });
 
@@ -114,11 +149,61 @@ describe('the engine limits', () => {
     }
   });
 
+  test('Compose passes each limit through, and an empty one keeps the default', () => {
+    const composed = composeServiceEnvironment();
+    for (const name of [
+      'MELETE_ENGINE_MAX_TURNS',
+      'MELETE_COMPACTION_MAX_TOKENS',
+      'MELETE_MODEL_CONTEXT_WINDOW',
+    ])
+      expect(composed[name]).toBe('');
+    const env = loadEnv(composed);
+    expect(env.MELETE_ENGINE_MAX_TURNS).toBe(DEFAULT_ENGINE_MAX_TURNS);
+    expect(env.MELETE_COMPACTION_MAX_TOKENS).toBe(DEFAULT_COMPACTION_MAX_TOKENS);
+    expect(env.MELETE_MODEL_CONTEXT_WINDOW).toBeUndefined();
+    expect(env.MELETE_PUBLIC_URL).toBeUndefined();
+  });
+
   test('the defaults are the ones the engine configuration renders', () => {
     const env = loadEnv({});
     expect(env.MELETE_ENGINE_MAX_TURNS).toBe(DEFAULT_ENGINE_MAX_TURNS);
     expect(env.MELETE_COMPACTION_MAX_TOKENS).toBe(DEFAULT_COMPACTION_MAX_TOKENS);
     expect(env.MELETE_MODEL_CONTEXT_WINDOW).toBeUndefined();
+  });
+});
+
+describe('the database address', () => {
+  test('one the Postgres client cannot read stops start-up by name, without its password', () => {
+    for (const value of [
+      'postgres://melete:hunter2-secret@postgres:54x2/melete',
+      'postgres://melete:hunter2-secret%zz@postgres:5432/melete',
+      'melete:hunter2-secret@postgres:5432/melete',
+      'mysql://melete:hunter2-secret@postgres/melete',
+      'MongoDB+srv://melete:hunter2-secret@postgres/melete',
+    ]) {
+      const result = readEnv({ DATABASE_URL: value });
+      expect(result.ok).toBe(false);
+      const issues = result.ok ? '' : result.issues.join('\n');
+      expect(issues).toStartWith('DATABASE_URL: ');
+      expect(issues).not.toContain('hunter2');
+    }
+  });
+
+  test('the addresses the client reads are kept as written', () => {
+    for (const value of [
+      GENERATED_DATABASE_URL,
+      'postgres://melete:p%40ss@postgres:5432/melete',
+      'postgresql://melete:secret@db-a:5432,db-b:5433/melete?sslmode=require',
+      'postgres://melete:secret@[::1]:5432/melete',
+      'postgres:///melete?host=/var/run/postgresql',
+      // The client ignores the scheme's name and case, and leading whitespace.
+      'POSTGRES://melete:secret@postgres:5432/melete',
+      'pg://melete:secret@postgres:5432/melete',
+      ' postgres://melete:secret@postgres:5432/melete',
+    ]) {
+      const result = readEnv({ DATABASE_URL: value });
+      expect(result.ok && result.env.DATABASE_URL).toBe(value);
+    }
   });
 });
 

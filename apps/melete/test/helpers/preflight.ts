@@ -1,7 +1,9 @@
 /**
  * Name each missing prerequisite once, before the suite turns it into fifty
- * opaque failures. `bun run doctor` prints the same list on demand, and
- * `bun run doctor --docker` also judges the host's Docker Engine and Compose.
+ * opaque failures. `bun run doctor` prints the same list on demand. On a host
+ * that only runs the stack, `bun run doctor --docker` judges the Docker Engine
+ * and Compose alone; `MELETE_CONFORMANCE_COMPOSE=1` judges both, because the
+ * deployment scenarios run the suite against that stack.
  *
  * The facts are gathered in one place and judged in a pure function so the
  * judgement can be tested on a machine that has everything installed.
@@ -26,6 +28,8 @@ export type PreflightFacts = {
    * deployment scenarios were requested: nothing else in the suite uses Docker.
    */
   docker?: string[];
+  /** `--docker` without the deployment scenarios: the suite's own prerequisites are not judged. */
+  dockerOnly?: boolean;
 };
 
 const LIBPQ_PATHS = [
@@ -41,7 +45,8 @@ export function gatherFacts(
   args: readonly string[] = process.argv.slice(2),
   runDocker?: (command: readonly string[]) => CommandOutput,
 ): PreflightFacts {
-  const wantsDocker = env.MELETE_CONFORMANCE_COMPOSE === '1' || args.includes('--docker');
+  const scenarios = env.MELETE_CONFORMANCE_COMPOSE === '1';
+  const wantsDocker = scenarios || args.includes('--docker');
   let tmpdirWritable = true;
   try {
     accessSync(tmpdir(), constants.W_OK);
@@ -56,11 +61,13 @@ export function gatherFacts(
     libpq: process.platform !== 'linux' || LIBPQ_PATHS.some((path) => existsSync(path)),
     uv: Bun.which('uv') !== null,
     ...(wantsDocker ? { docker: judgeHostDocker(readHostDocker(runDocker)) } : {}),
+    ...(wantsDocker && !scenarios ? { dockerOnly: true } : {}),
   };
 }
 
 /** One line per missing prerequisite; an empty list means the suite can start. */
 export function missingPrerequisites(facts: PreflightFacts): string[] {
+  if (facts.dockerOnly) return [...(facts.docker ?? [])];
   const missing: string[] = [];
   const embedded = !facts.databaseUrl;
   if (!facts.tmpdirWritable)
@@ -85,7 +92,10 @@ export function missingPrerequisites(facts: PreflightFacts): string[] {
 
 export function preflightReport(facts = gatherFacts()): string {
   const missing = missingPrerequisites(facts);
-  if (missing.length === 0) return 'doctor: every test prerequisite is present.\n';
+  if (missing.length === 0)
+    return facts.dockerOnly
+      ? 'doctor: every Docker Engine and Compose requirement is met.\n'
+      : 'doctor: every test prerequisite is present.\n';
   return `doctor: ${missing.length} missing prerequisite(s):\n${missing.map((line) => `  - ${line}`).join('\n')}\n`;
 }
 

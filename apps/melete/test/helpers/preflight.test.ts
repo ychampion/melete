@@ -1,5 +1,10 @@
 import { expect, test } from 'bun:test';
-import { gatherFacts, missingPrerequisites, type PreflightFacts } from './preflight.ts';
+import {
+  gatherFacts,
+  missingPrerequisites,
+  type PreflightFacts,
+  preflightReport,
+} from './preflight.ts';
 
 const complete: PreflightFacts = {
   platform: 'linux',
@@ -65,4 +70,29 @@ test('the Docker host is judged only when the deployment scenarios are requested
   expect(lines[0]).toContain('Docker Engine 27.5.1 (API 1.47) is too old');
   expect(lines[1]).toContain('Docker Compose 2.30.0 is too old');
   expect(missingPrerequisites({ ...complete, docker: [] })).toEqual([]);
+});
+
+test('--docker alone judges only what a host running the stack needs', () => {
+  const current = (command: readonly string[]) => ({
+    code: 0,
+    stdout: command.includes('compose') ? '2.40.3' : '1.51 28.5.1',
+    stderr: '',
+  });
+  const old = (command: readonly string[]) => ({
+    code: 0,
+    stdout: command.includes('compose') ? '2.30.0' : '1.47 27.5.1',
+    stderr: '',
+  });
+  // A deploy-only host: no DATABASE_URL on Linux, no uv. Neither concerns the stack.
+  const host = { databaseUrl: undefined, platform: 'linux' as const, uv: false };
+  const supported = gatherFacts({}, ['--docker'], current);
+  expect(missingPrerequisites({ ...supported, ...host })).toEqual([]);
+  expect(preflightReport({ ...supported, ...host })).toStartWith('doctor: every');
+  const unsupported = gatherFacts({}, ['--docker'], old);
+  expect(missingPrerequisites({ ...unsupported, ...host })).toHaveLength(2);
+  // The deployment scenarios run the suite, so they still judge both.
+  const scenarios = gatherFacts({ MELETE_CONFORMANCE_COMPOSE: '1' }, ['--docker'], current);
+  expect(missingPrerequisites({ ...scenarios, ...host }).map((line) => line.split(' ')[0])).toEqual(
+    ['DATABASE_URL', 'uv'],
+  );
 });

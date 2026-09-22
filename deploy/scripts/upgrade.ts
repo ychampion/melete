@@ -26,6 +26,7 @@ import {
   type HostDockerOutputs,
   judgeHostDocker,
 } from '../../apps/melete/src/runtime/docker-engine.ts';
+import { parseEnvFile } from './provider-settings.ts';
 
 export const USAGE =
   'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds]';
@@ -125,6 +126,24 @@ export function parseArguments(
   };
 }
 
+/**
+ * Each image the stack starts, as the repository a version tag is kept under
+ * and the reference Compose starts. The browser worker's file names no image,
+ * so Compose builds it as `<project>-browser:latest`; without it here a
+ * rollback would start the old service beside the new release's browser.
+ */
+const stackImages = (context: Pick<UpgradeContext, 'browser' | 'project'>) => [
+  ...IMAGES.map((image) => ({ repository: image, running: `${image}:local` })),
+  ...(context.browser
+    ? [
+        {
+          repository: `${context.project}-browser`,
+          running: `${context.project}-browser:latest`,
+        },
+      ]
+    : []),
+];
+
 const composeArguments = (overlays: Overlays) => [
   'docker',
   'compose',
@@ -219,11 +238,11 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
       title: 'Make the backup private',
       command: ['chmod', '600', ...[...archives, 'database.contents', 'SHA256SUMS'].map(backup)],
     },
-    ...IMAGES.map(
-      (image): PlanStep => ({
+    ...stackImages(context).map(
+      ({ repository, running }): PlanStep => ({
         phase: 'backup',
-        title: `Keep the running ${image} image for a rollback without a rebuild`,
-        command: ['docker', 'tag', `${image}:local`, `${image}:${context.fromVersion}`],
+        title: `Keep the running ${repository} image for a rollback without a rebuild`,
+        command: ['docker', 'tag', running, `${repository}:${context.fromVersion}`],
       }),
     ),
     {
@@ -254,11 +273,11 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
       command: [...compose, 'build'],
       timeoutMs: 60 * 60_000,
     },
-    ...IMAGES.map(
-      (image): PlanStep => ({
+    ...stackImages(context).map(
+      ({ repository, running }): PlanStep => ({
         phase: 'build',
-        title: `Tag ${image} with the release version`,
-        command: ['docker', 'tag', `${image}:local`, `${image}:${context.tag}`],
+        title: `Tag ${repository} with the release version`,
+        command: ['docker', 'tag', running, `${repository}:${context.tag}`],
       }),
     ),
     {
@@ -296,7 +315,9 @@ export function rollbackSteps(context: UpgradeContext): string[] {
     `# Return the tree, its dependencies and the preserved images to ${context.fromVersion}.`,
     back,
     'bun install --frozen-lockfile',
-    ...IMAGES.map((image) => `docker tag ${image}:${context.fromVersion} ${image}:local`),
+    ...stackImages(context).map(
+      ({ repository, running }) => `docker tag ${repository}:${context.fromVersion} ${running}`,
+    ),
     `cp -p ${quote(`${context.backupDir}/deploy.env`)} deploy/.env`,
     `# Replace only the database volume. Keep ${context.project}_restrictions and every other`,
     `# volume as they are now: the newer removal journal is replayed at startup, so nothing`,
@@ -328,6 +349,11 @@ export type PreflightFacts = {
   backupFreeBytes: number | null;
   /** Database plus /data plus /work; null when the stopped stack could not be measured. */
   backupEstimateBytes: number | null;
+  /**
+   * With --browser, the worker image the backup keeps for a rollback, and
+   * whether it exists. Unset without --browser.
+   */
+  browserImage?: { name: string; present: boolean };
 };
 
 const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
@@ -370,6 +396,10 @@ export function judgePreflight(facts: PreflightFacts): string[] {
   if (!facts.serviceContainer)
     problems.push(
       'The melete service has no container, so its volumes cannot be archived. Start the stack first.',
+    );
+  if (facts.browserImage && !facts.browserImage.present)
+    problems.push(
+      `--browser was given, but the browser worker image ${facts.browserImage.name} does not exist, so it cannot be kept for a rollback. Leave --browser out if this installation does not run the browser worker; add the worker after the upgrade.`,
     );
   if (facts.dockerRootFreeBytes === null)
     problems.push("The free space on Docker's data filesystem could not be measured.");
@@ -487,6 +517,21 @@ export async function gatherPreflight(
   const fromVersion = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(described ?? '')
     ? (described as string)
     : `g${headCommit.slice(0, 12)}`;
+  const project = /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
+    ? (values?.COMPOSE_PROJECT_NAME as string)
+    : 'melete';
+  // The image the backup phase tags for a rollback; a missing one is named now.
+  const browserImageName = options.browser
+    ? stackImages({ browser: true, project }).at(-1)?.running
+    : undefined;
+  const browserImage = browserImageName
+    ? {
+        name: browserImageName,
+        present:
+          (await run(['docker', 'image', 'inspect', '--format', '{{.Id}}', browserImageName]))
+            .code === 0,
+      }
+    : undefined;
   return {
     facts: {
       tag: options.tag,
@@ -502,12 +547,11 @@ export async function gatherPreflight(
       dockerRootFreeBytes,
       backupFreeBytes,
       backupEstimateBytes,
+      ...(browserImage ? { browserImage } : {}),
     },
     context: {
       ...options,
-      project: /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
-        ? (values?.COMPOSE_PROJECT_NAME as string)
-        : 'melete',
+      project,
       fromCommit: headCommit,
       fromBranch,
       fromVersion,
@@ -631,6 +675,18 @@ export async function runUpgrade(
   return { status: 'upgraded', context };
 }
 
+/**
+ * deploy/.env as Compose reads it, or null when there is none. The values name
+ * the project and are redacted from output, so an inline comment must not
+ * become part of a key: redacting `key # note` would leave `key` printed.
+ */
+export async function readEnvironment(
+  repositoryRoot: string,
+): Promise<Record<string, string> | null> {
+  const source = await readFile(join(repositoryRoot, 'deploy/.env'), 'utf8').catch(() => null);
+  return source === null ? null : parseEnvFile(source);
+}
+
 /** Binary-safe: a dump or an archive goes straight to its file, never through a string. */
 export const spawnRunner =
   (cwd: string): CommandRunner =>
@@ -682,16 +738,7 @@ if (import.meta.main) {
           await readFile(join(repositoryRoot, 'apps/melete/drizzle/meta/_journal.json'), 'utf8'),
         ) as { entries: unknown[] }
       ).entries.length,
-    environment: async () => {
-      const source = await readFile(join(repositoryRoot, 'deploy/.env'), 'utf8').catch(() => null);
-      if (source === null) return null;
-      return Object.fromEntries(
-        source.split('\n').flatMap((line) => {
-          const match = /^([A-Z_][A-Z_0-9]*)=(.*)$/.exec(line.trim());
-          return match?.[1] ? [[match[1], (match[2] ?? '').replace(/^(['"])(.*)\1$/, '$2')]] : [];
-        }),
-      );
-    },
+    environment: () => readEnvironment(repositoryRoot),
   });
   process.exit(result.status === 'planned' || result.status === 'upgraded' ? 0 : 1);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../apps/melete/src/runtime/docker-engine.ts';
@@ -8,6 +8,7 @@ import {
   judgePreflight,
   type PreflightFacts,
   parseArguments,
+  readEnvironment,
   renderCommand,
   rollbackSteps,
   runUpgrade,
@@ -176,6 +177,20 @@ describe('the rollback steps', () => {
   test('reuse the preserved images instead of rebuilding the old release', () => {
     for (const image of ['melete-service', 'melete-web', 'melete-runtime'])
       expect(steps).toContain(`docker tag ${image}:v0.1.0 ${image}:local`);
+  });
+
+  test('with the browser override, its worker image is kept and restored with the rest', () => {
+    // Compose builds the worker as <project>-browser:latest, since its file names no image.
+    const browser = { ...context, project: 'assistant', browser: true };
+    const plan = lines(upgradePlan(browser));
+    const keep = indexOf(plan, 'docker tag assistant-browser:latest assistant-browser:v0.1.0');
+    const release = indexOf(plan, 'docker tag assistant-browser:latest assistant-browser:v0.2.0');
+    expect(keep).toBeLessThan(indexOf(plan, 'checkout --detach'));
+    expect(release).toBeGreaterThan(indexOf(plan, ' build'));
+    expect(rollbackSteps(browser)).toContain(
+      'docker tag assistant-browser:v0.1.0 assistant-browser:latest',
+    );
+    expect(rollbackSteps(context).join('\n')).not.toContain('browser');
   });
 
   test('a detached start returns to the commit, not to a branch', () => {
@@ -435,6 +450,32 @@ describe('running the upgrade with an injected command runner', () => {
     expect(output.join('\n')).toContain('size of the backup could not be measured');
   });
 
+  test('with --browser, a worker image that was never built is named before anything is touched', async () => {
+    const inspect = 'docker image inspect --format {{.Id}} melete-browser:latest';
+    const missing = host({ 'image inspect': { code: 1, stderr: 'No such image' } });
+    const output: string[] = [];
+    const result = await runUpgrade(
+      { ...options, browser: true, dryRun: false },
+      dependencies(missing.run, output),
+    );
+    expect(result.status).toBe('refused');
+    expect(missing.commands).toContain(inspect);
+    expect(missing.commands.filter((line) => mutating.test(line))).toEqual([]);
+    expect(output.join('\n')).toContain(
+      '--browser was given, but the browser worker image melete-browser:latest does not exist',
+    );
+
+    const built = host();
+    const planned = await runUpgrade(
+      { ...options, browser: true, dryRun: true },
+      dependencies(built.run, []),
+    );
+    expect(planned.status).toBe('planned');
+    const without = host();
+    await runUpgrade({ ...options, dryRun: true }, dependencies(without.run, []));
+    expect(without.commands.join('\n')).not.toContain('image inspect');
+  });
+
   test('a failed preflight stops before anything is touched', async () => {
     const { run, commands } = host({ 'docker version': { stdout: '1.47 27.5.1' } });
     const output: string[] = [];
@@ -572,6 +613,27 @@ describe('the real command runner', () => {
       expect((await run(['melete-no-such-command'])).code).toBe(127);
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the installation settings the upgrade reads', () => {
+  test('an inline comment is not part of a value, so the project and each key are exact', async () => {
+    // Redaction replaces each key's value; `key # team` would never match, and
+    // the key would be printed. A commented project name would not be a project.
+    const root = await mkdtemp(join(tmpdir(), 'melete-upgrade-env-'));
+    try {
+      await mkdir(join(root, 'deploy'));
+      await writeFile(
+        join(root, 'deploy/.env'),
+        'COMPOSE_PROJECT_NAME=assistant # second install\nOPENAI_API_KEY=sk-live-value-1234 # team\n',
+      );
+      const values = await readEnvironment(root);
+      expect(values?.COMPOSE_PROJECT_NAME).toBe('assistant');
+      expect(values?.OPENAI_API_KEY).toBe('sk-live-value-1234');
+      expect(await readEnvironment(join(root, 'missing'))).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

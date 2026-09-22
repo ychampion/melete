@@ -10,14 +10,31 @@ import {
   providerKeyVariables,
 } from '../../apps/melete/src/gateway/providers.ts';
 
-/** NAME=value lines, as Compose reads them for plain and double-quoted values. */
+/**
+ * One-line NAME=value settings in deploy/.env, read the way Compose reads the
+ * forms configure.ts writes and hand edits commonly use:
+ * - an unquoted value ends at the first ` #`, a space and a hash, which starts
+ *   a comment; any other `#`, as in a password, is part of the value;
+ * - a quoted value ends at its closing quote, and the rest of the line is
+ *   ignored; inside double quotes `\"` and `\\` are unescaped;
+ * - `$$` is one `$` in an unquoted or double-quoted value, and kept as written
+ *   inside single quotes.
+ * Compose also expands `$NAME` references and further escapes, and reads values
+ * that span lines; those are kept as written here.
+ */
 export function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
+  const dollars = (value: string) => value.replace(/\$\$/g, () => '$');
   for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
     if (!match?.[1]) continue;
-    const value = match[2] ?? '';
-    values[match[1]] = /^"(.*)"$/.exec(value)?.[1] ?? /^'(.*)'$/.exec(value)?.[1] ?? value;
+    const raw = match[2] ?? '';
+    const quoted = /^"((?:[^"\\]|\\.)*)"/.exec(raw) ?? /^'([^']*)'/.exec(raw);
+    values[match[1]] = quoted
+      ? raw.startsWith('"')
+        ? dollars((quoted[1] ?? '').replace(/\\(["\\])/g, '$1'))
+        : (quoted[1] ?? '')
+      : dollars((raw.split(' #')[0] ?? '').trimEnd());
   }
   return values;
 }
