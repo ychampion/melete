@@ -5,6 +5,7 @@ import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { applyRestriction } from './forget.ts';
+import { lockEventOrder } from './invalidate.ts';
 import { FileRestrictionJournal, restoreMemory } from './restore.ts';
 import type { MemoryRouteOptions } from './routes.ts';
 import { startMemoryService } from './service.ts';
@@ -71,6 +72,7 @@ async function provisionNewSpace(
   scope: MemoryScope,
 ) {
   await sql.begin(async (tx) => {
+    await lockEventOrder(tx);
     await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
     const inserted = await tx`insert into memory_spaces (space_id, owner_id)
       values (${scope.spaceId}, ${scope.ownerId}) on conflict do nothing returning space_id`;

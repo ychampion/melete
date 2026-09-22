@@ -11,7 +11,7 @@ import {
   type MemoryTx,
   newId,
 } from './db.ts';
-import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
+import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import type { RestrictionJournal, RestrictionRecord } from './restore.ts';
 
 type Removal = {
@@ -148,6 +148,7 @@ async function restrict(
   journal: RestrictionJournal,
 ): Promise<MemoryOperationResponse> {
   const result = await sql.begin(async (tx) => {
+    await lockEventOrder(tx);
     // One journal append order across service processes, released automatically on process death.
     await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
     const record = await planRestriction(tx, scope, removal);

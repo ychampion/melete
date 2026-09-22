@@ -1,3 +1,4 @@
+import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
 import { enqueue, type MemoryScope, type MemorySql, type MemoryTx, stableId } from './db.ts';
 
 /** Process-local aborts supplement the durable fence; they are never the authority. */
@@ -23,6 +24,15 @@ export async function notifyInvalidated(sql: MemorySql, spaceId: string) {
   }
 }
 
+/**
+ * Job events carry the sequence stream clients read in order, so a transaction
+ * that may write them takes the service's event order lock, and takes it before
+ * any memory lock: the broker holds it while it reads memory for an admission.
+ */
+export async function lockEventOrder(tx: MemoryTx) {
+  await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+}
+
 /** Exact delivered dependencies, or conservative invalidation where a job has no dependency record. */
 export async function invalidateDependencies(
   tx: MemoryTx,
@@ -31,6 +41,7 @@ export async function invalidateDependencies(
   dataRevision: number,
   all = false,
 ) {
+  await lockEventOrder(tx);
   const contexts = await tx`update memory_contexts c set invalidated_at = clock_timestamp()
     where c.space_id = ${scope.spaceId} and c.invalidated_at is null and (${all} or exists (
       select 1 from jsonb_array_elements(c.items) item where item->>'claim_id' = any(${claimIds}))) returning job_id, attempt_id`;

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { type ContextRecord, recallResult } from '@melete/contracts';
+import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { correctClaim, listClaims } from '../../src/memory/claims.ts';
 import { commitExtraction } from '../../src/memory/commit.ts';
 import { assembleAttemptKnowledge, assertContextCurrent } from '../../src/memory/context.ts';
@@ -103,6 +104,41 @@ export function registerLifecycleTests(db: TestDatabase | null) {
         'context_invalidated',
         'dependencies_invalidated',
       ]);
+    });
+    test('a correction that writes job events takes its turn behind the event order lock', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      const { claimId } = await seed(db, scope);
+      const { jobId } = await createJobAttempt(db, scope);
+      // A service transaction in flight holds the order lock. An event committed
+      // around it with an earlier sequence would be skipped by a stream client
+      // whose cursor already passed the later one.
+      const holder = await db.sql.reserve();
+      let finished = false;
+      let correction: Promise<unknown> | undefined;
+      try {
+        await holder`begin`;
+        await holder`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        correction = correctClaim(db.sql, scope, {
+          claim_id: claimId,
+          expected_revision: 1,
+          content: 'August',
+          text: 'move our trip from July to August',
+          valid_from: '2026-08-01T00:00:00Z',
+          idempotency_key: 'event-order',
+        }).finally(() => {
+          finished = true;
+        });
+        await Bun.sleep(500);
+        expect(finished).toBe(false);
+      } finally {
+        await holder`commit`;
+        holder.release();
+      }
+      await correction;
+      const [invalidated] =
+        await db.sql`select count(*)::int as n from event where job_id = ${jobId} and payload->>'type' = 'dependencies_invalidated'`;
+      expect(invalidated?.n).toBe(1);
     });
     test('a correction leaves waiting jobs that never ran, and owner commands, where they are', async () => {
       if (!db) return;
