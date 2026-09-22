@@ -57,7 +57,9 @@ do on each date if they say no. No account, no inbox, nothing to install.
 ## Run it yourself
 
 Melete is yours to run: your machine, your mailbox, your model provider, your
-keys. Everything below is the whole install.
+keys. Everything below is the whole install. On a Windows machine with Docker
+Desktop, follow [Windows (Docker Desktop)](docs/DEPLOYMENT.md#windows-docker-desktop)
+for the install, then carry on from [first run](#first-run).
 
 ### Install on a Linux Docker host
 

@@ -1,6 +1,7 @@
-# Linux deployment operations
+# Deployment operations
 
-Start with the [README install procedure](../README.md#install-on-a-linux-docker-host).
+Start with the [README install procedure](../README.md#install-on-a-linux-docker-host),
+or on a Windows machine with [Windows (Docker Desktop)](#windows-docker-desktop).
 [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records image
 sizes, build and startup times, conformance results and clean-host timing from a
 measured installation. Timings depend on the host and network; the startup
@@ -31,6 +32,137 @@ versions:
   else, so it suits a host that only runs the stack. `bun run doctor` judges
   the test prerequisites, and adds the Docker judgement whenever
   `MELETE_CONFORMANCE_COMPOSE=1` is set.
+
+The same three places also judge the machine around the engine. An engine
+reached through `DOCKER_HOST` or a context on another machine is refused,
+because Compose mounts `deploy/config` and the Docker socket from the machine
+the engine runs on; so is an engine running Windows containers, and on Docker
+Desktop, a VM with less than 4 GB of memory. On Windows they add the checks in
+[Windows (Docker Desktop)](#windows-docker-desktop).
+
+## Windows (Docker Desktop)
+
+A Windows machine running Docker Desktop hosts Melete with the same Compose
+files, images and commands as a Linux host. You use it from a browser, on that
+machine or, through the [Tailscale](#tailscale) override, from your other
+devices. macOS runs Docker Desktop the same way, so the Docker Desktop parts of
+this section apply there as well.
+
+### What the machine needs
+
+- **Docker Desktop with the WSL 2 backend**, on a Windows version
+  [Docker supports for it](https://docs.docker.com/desktop/setup/install/windows-install/),
+  bringing Docker Engine 28.0 and Compose 2.33.1 or newer.
+- **Linux containers**, Docker Desktop's default. Melete's images are Linux
+  images; if Docker Desktop was switched to Windows containers, choose
+  **Switch to Linux containers** from its menu.
+- **At least 4 GB of memory for Docker Desktop's VM**, 6 GB with the browser
+  worker: the warm runtime cell and each attempt may each use up to 2 GiB. Under
+  the WSL 2 backend the VM's memory is set in `%UserProfile%\.wslconfig`, not in
+  Docker Desktop:
+
+  ```ini
+  [wsl2]
+  memory=6GB
+  ```
+
+  Run `wsl --shutdown` afterwards and start Docker Desktop again. Under the
+  Hyper-V backend it is **Settings > Resources > Advanced**
+  ([Docker Desktop settings](https://docs.docker.com/desktop/settings-and-maintenance/settings/)).
+- **10 GB free** on the drive that holds Docker Desktop's disk image
+  (**Settings > Resources > Advanced** shows its location), 20 GB for rebuilds.
+- **Git for Windows**, which includes Git Bash, and **Bun**.
+- **A short path for the clone**, such as `C:\melete`. Windows limits a path to
+  260 characters unless long paths are enabled, and the deepest file
+  `bun install` writes sits about 175 characters below the clone's root. If the
+  clone must live deeper, enable long paths from an administrator PowerShell,
+  then sign out and in again:
+
+  ```powershell
+  New-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem `
+    -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+  git config --global core.longpaths true
+  ```
+
+### Install
+
+Run every command on these pages in **Git Bash**. They are Bash, and Git Bash
+runs them unchanged, including the backup, restore and removal commands, and
+provides the `mkdir`, `cp`, `sha256sum`, `chmod` and `df` programs that
+`deploy/scripts/upgrade.ts` runs; started from PowerShell, the upgrade names
+them and stops before changing anything. Install Bun from PowerShell once, then
+open a new Git Bash window:
+
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+```bash
+git clone https://github.com/ychampion/melete.git /c/melete
+cd /c/melete
+bun install --frozen-lockfile
+bun run doctor --docker
+bun run deploy/scripts/configure.ts --fake
+bun run compose:check
+docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
+docker compose -f deploy/docker-compose.yml ps
+```
+
+Then open **http://localhost:3101** on the Windows machine and continue with the
+README's [first run](../README.md#first-run).
+
+`bun run doctor --docker` names anything on the list above that is missing:
+Docker Desktop not running (nothing answers on its named pipe,
+`//./pipe/docker_engine` by default, or the one `DOCKER_HOST` or the current
+context names), Windows containers, too little memory for the VM, and a clone
+too deep for the path limit, with the setting that lifts it. `configure.ts` and
+`upgrade.ts` refuse on the same judgement.
+
+Git Bash rewrites a command-line argument that starts with `/` into a Windows
+path before a Windows program sees it: `/var/lib/x` reaches `docker` as
+`C:/Program Files/Git/var/lib/x`. The commands on these pages pass container
+paths only after a service name (`melete:/data`) or inside quotes, which it
+leaves alone. For a command of your own that passes a container path on its own,
+prefix it with `MSYS_NO_PATHCONV=1`.
+
+### How the stack reaches Docker Desktop
+
+The Compose files are unchanged. The `melete` service mounts
+`/var/run/docker.sock`, and Compose passes that path to the engine as written
+([compose-go](https://github.com/compose-spec/compose-go/blob/main/paths/unix.go)
+keeps an absolute Unix path for a Windows client talking to a Linux engine).
+Docker Desktop resolves it inside its VM, where the socket is
+`srwxrw---- root root`: a process may use it when its user or one of its groups
+is root ([Docker Desktop's socket permissions](https://github.com/docker/for-win/issues/13898#issuecomment-1934625891)).
+The Windows host has no such file, so `configure.ts` starts one container from
+the stack's pinned Postgres image, with no network, reads the socket's group and
+mode as a container sees them, and writes that group as `DOCKER_GID`: `0` on
+current Docker Desktop releases. The service is added to that group and
+otherwise runs as its own unprivileged user. A socket only root may write to is
+refused, because the service could not use it. On Linux with Docker Engine,
+`configure.ts` reads the host's own socket as before.
+
+The other host path in the Compose file, `./config`, is a Windows folder that
+Docker Desktop shares into the VM; the service mounts it read-only. The
+repository's `.gitattributes` keeps every script, Dockerfile and file the images
+run with LF line endings on a Windows checkout, whatever `core.autocrlf` says,
+and the images set the execute bit on their entrypoints when they are built, so
+a Windows file system's modes never reach a container.
+
+On Windows, `deploy/.env` takes the permissions of its folder rather than
+owner-only ones. A clone under `C:\` or your user folder is readable by your
+account and by administrators.
+
+### Upgrade, backup and removal
+
+`bun run deploy/scripts/upgrade.ts <tag> --dry-run` works as described in
+[upgrading](UPGRADING.md). Its `mkdir -p -m 700 ~/melete-backups` creates the
+default backup parent, `C:\Users\<you>\melete-backups`, in Git Bash as on Linux;
+`--backup-dir` also takes a Windows path such as `C:/melete-backups`. Docker Desktop keeps images and
+volumes on its VM's disk, so the upgrade measures the free space there, from
+beside the database volume, rather than on a Windows drive.
+[Backup and restore](#backup-and-restore) and the README's
+[removal](../README.md#remove-it-completely) run as written in Git Bash.
 
 ## Configuration and browser access
 
