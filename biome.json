@@ -19,6 +19,7 @@
       "!**/*.json.lock",
       "!bun.lock",
       "!packages/contracts/openapi.json",
+      "!apps/web/docs/design/preview",
       "!apps/melete/drizzle",
       "!packages/client/src/schema.d.ts",
       "!conformance/memory/report.json",
