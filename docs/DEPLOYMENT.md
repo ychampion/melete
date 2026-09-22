@@ -792,6 +792,10 @@ The space named by `MELETE_BROWSER_SPACE` cannot be removed while the browser
 worker uses it, because the worker mounts that space's directory. Point the
 setting at another space and restart the browser worker first.
 
+The job queue can keep the ids of a removed space's jobs and triggers, with no
+content, until its own retention clears them; trigger schedules are resynced
+within about a minute.
+
 ### A blocked removal
 
 When a phase cannot finish, or the final count finds something left, the removal

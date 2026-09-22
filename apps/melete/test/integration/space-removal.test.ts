@@ -1230,6 +1230,27 @@ describe.if(handle !== null)('removing a space', () => {
     expect(Number(after?.count)).toBeLessThanOrEqual(Number(before?.count));
   });
 
+  test('resuming_holds_nothing_up — start returns at once, and a shutdown waits for what it started', async () => {
+    const seeded = await seed('shared');
+    const fencing = await service();
+    const fenced = await fencing.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+
+    // A process starting while that removal is pending, with a provider slow
+    // to answer. Starting does not wait for the sweep.
+    const removals = await service({ sandboxes: slowSandboxes(1_000) });
+    const began = performance.now();
+    removals.start();
+    expect(performance.now() - began).toBeLessThan(200);
+    try {
+      // A shutdown waits for the sweep the timer started, not only for ones a
+      // request did, so the database is not closed under it.
+      await removals.drain();
+      expect(outcome(await removals.byId(fenced.id))).toBe('complete');
+    } finally {
+      removals.stop();
+    }
+  });
+
   // ------------------------------------------------------------------
   // The route
   // ------------------------------------------------------------------

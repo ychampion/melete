@@ -628,10 +628,9 @@ export async function bootstrap(
           ...(registry ? { connectors: registry } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
         });
-        if (options.workers !== false) {
-          await removals.resume();
-          removals.start();
-        }
+        // Resumed in the background: a removal waiting on a provider or a held
+        // file does not hold up the listener, and a shutdown waits for it.
+        if (options.workers !== false) removals.start();
       }
       if (options.workers !== false) {
         await operations.start();
