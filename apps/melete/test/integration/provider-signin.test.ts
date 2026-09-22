@@ -123,10 +123,12 @@ describeWithDb('model-provider sign-in through the API', () => {
       providers: [
         {
           provider: 'chatgpt',
+          label: 'chatgpt',
           state: 'signed_out',
           account: null,
           expires_at: null,
           reason: null,
+          message: null,
           methods: ['device', 'browser'],
         },
       ],

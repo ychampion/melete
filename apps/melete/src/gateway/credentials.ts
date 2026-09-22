@@ -116,11 +116,30 @@ function rowFrom(row: Record<string, unknown> | undefined): CredentialRow | null
 /** What the owner is shown. It never carries a token. */
 export interface SignInStatus {
   provider: string;
+  /** The provider's name as the person knows it, for a "Sign in with ..." button. */
+  label: string;
   state: 'signed_out' | 'pending' | 'signed_in' | 'sign_in_required';
   account: string | null;
   expires_at: string | null;
   reason: string | null;
+  /** What happened and what to do, in plain words, whenever the person has something to do. */
+  message: string | null;
   methods: ('device' | 'browser')[];
+}
+
+/** Why a sign-in ended, told to the person. Every reason ends in the one thing to do. */
+function endedMessage(label: string, reason: string | null): string {
+  const again = 'Sign in again to keep using it.';
+  switch (reason) {
+    case 'refresh_expired':
+      return `Your ${label} sign-in has expired. ${again}`;
+    case 'refresh_revoked':
+      return `${label} ended this sign-in, for example after a sign-out or a password change there. ${again}`;
+    case 'refresh_reused':
+      return `${label} ended this sign-in to keep the account safe. ${again}`;
+    default:
+      return `${label} asked for a new sign-in. ${again}`;
+  }
 }
 
 export type SignInStart =
@@ -208,6 +227,8 @@ function sealer(masterKey: () => string | undefined) {
 export interface ProviderSignInOptions {
   repository: CredentialRepository;
   issuers: Record<string, IssuerSource>;
+  /** Names shown to the person; a provider left out is shown by its own name. */
+  labels?: Record<string, string>;
   masterKey?: () => string | undefined;
   fetch?: OAuthFetch;
   now?: () => number;
@@ -261,6 +282,7 @@ export class ProviderSignIn {
     const source = this.options.issuers[provider];
     const methods: SignInStatus['methods'] =
       source && typeof source !== 'function' && source.device ? ['device', 'browser'] : ['browser'];
+    const label = this.options.labels?.[provider] ?? provider;
     const row = await this.options.repository.read(provider);
     const waiting = [...this.pending.values()].some(
       (entry) => entry.provider === provider && entry.expiresAt > this.now(),
@@ -268,18 +290,23 @@ export class ProviderSignIn {
     if (!row)
       return {
         provider,
+        label,
         state: waiting ? 'pending' : 'signed_out',
         account: null,
         expires_at: null,
         reason: null,
+        message: waiting ? `Finish signing in to ${label} to start using it.` : null,
         methods,
       };
+    const active = row.status === 'active';
     return {
       provider,
-      state: row.status === 'active' ? 'signed_in' : 'sign_in_required',
+      label,
+      state: active ? 'signed_in' : 'sign_in_required',
       account: row.account,
       expires_at: row.expiresAt?.toISOString() ?? null,
-      reason: row.status === 'active' ? null : row.reason,
+      reason: active ? null : row.reason,
+      message: active ? null : endedMessage(label, row.reason),
       methods,
     };
   }

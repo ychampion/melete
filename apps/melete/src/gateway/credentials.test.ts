@@ -56,6 +56,7 @@ function service() {
   return new ProviderSignIn({
     repository,
     issuers: { chatgpt: chatgptIssuer({ issuer: issuer.url }) },
+    labels: { chatgpt: 'ChatGPT' },
     masterKey: () => masterKey,
     now: () => clock,
     log: (line) => logs.push(line),
@@ -292,6 +293,8 @@ describe('the gateway credential', () => {
     expect(await service().status('chatgpt')).toMatchObject({
       state: 'sign_in_required',
       reason: 'refresh_revoked',
+      message:
+        'ChatGPT ended this sign-in, for example after a sign-out or a password change there. Sign in again to keep using it.',
     });
     expect(logs.at(-1)).toBe('provider sign-in: chatgpt needs a new sign-in (refresh_revoked)');
   });

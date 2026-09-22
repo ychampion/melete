@@ -611,6 +611,7 @@ set:
 | `OPENAI_COMPAT_OAUTH_CLIENT_SECRET` | Only for a confidential client |
 | `OPENAI_COMPAT_OAUTH_SCOPES` | Space-separated, as the provider names them |
 | `OPENAI_COMPAT_OAUTH_REDIRECT_URL` | The registered redirect address |
+| `OPENAI_COMPAT_OAUTH_LABEL` | The provider's name on the sign-in button |
 
 Every sign-in uses PKCE and a one-time state. With these set, the signed-in
 token is sent to `OPENAI_COMPAT_BASE_URL` in place of `OPENAI_COMPAT_API_KEY`.
@@ -621,7 +622,7 @@ setting stops the service at start-up with the name of what is missing.
 
 | Route | What it does |
 | --- | --- |
-| `GET /model-providers/sign-in` | Each provider's state: `signed_out`, `pending`, `signed_in` or `sign_in_required` |
+| `GET /model-providers/sign-in` | Each provider's name, state (`signed_out`, `pending`, `signed_in` or `sign_in_required`) and, when there is something to do, a sentence saying what |
 | `POST /model-providers/{provider}/sign-in` | Starts a sign-in; `{"method": "browser"}` picks the browser method |
 | `POST /model-providers/{provider}/sign-in/complete` | Finishes it: `{"sign_in_id": ...}`, plus `"callback_url"` for the browser method. A device sign-in answers `202` until the code is entered |
 | `DELETE /model-providers/{provider}/sign-in` | Signs out: removes the tokens and asks the provider to revoke them |

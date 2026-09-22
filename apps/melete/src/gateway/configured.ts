@@ -106,6 +106,10 @@ export function providerSignIn(sql: Sql, env: Env): ProviderSignIn | undefined {
   return new ProviderSignIn({
     repository: new PostgresCredentialRepository(sql),
     issuers: signInIssuers(env),
+    labels: {
+      [CHATGPT_PROVIDER]: 'ChatGPT',
+      [OPENAI_COMPATIBLE]: env.OPENAI_COMPAT_OAUTH_LABEL ?? 'your model provider',
+    },
     masterKey: () => masterKey,
   });
 }

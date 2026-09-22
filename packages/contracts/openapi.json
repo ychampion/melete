@@ -20543,6 +20543,10 @@
               "openai-compatible"
             ]
           },
+          "label": {
+            "type": "string",
+            "description": "The provider as the person knows it, for a \"Sign in with\" button"
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -20586,6 +20590,17 @@
             ],
             "description": "Why a new sign-in is needed"
           },
+          "message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema372"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What happened and what to do, in plain words, whenever the person has something to do; null when signed in or signed out."
+          },
           "methods": {
             "type": "array",
             "items": {
@@ -20599,10 +20614,12 @@
         },
         "required": [
           "provider",
+          "label",
           "state",
           "account",
           "expires_at",
           "reason",
+          "message",
           "methods"
         ],
         "additionalProperties": false
@@ -20621,24 +20638,27 @@
         ]
       },
       "__schema372": {
+        "type": "string"
+      },
+      "__schema373": {
         "type": "string",
         "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema373": {
+      "__schema374": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema374": {
+      "__schema375": {
         "type": "string",
         "minLength": 1
       },
-      "__schema375": {
+      "__schema376": {
         "type": "string",
         "minLength": 1,
         "maxLength": 160
       },
-      "__schema376": {
+      "__schema377": {
         "type": "string",
         "enum": [
           "on_session_start",
@@ -20664,7 +20684,7 @@
           "runtime_error"
         ]
       },
-      "__schema377": {
+      "__schema378": {
         "anyOf": [
           {
             "type": "string",
@@ -20675,7 +20695,7 @@
           }
         ]
       },
-      "__schema378": {
+      "__schema379": {
         "type": "object",
         "properties": {
           "captured_at": {
@@ -20700,7 +20720,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema379": {
+      "__schema380": {
         "type": "string",
         "enum": [
           "started",
@@ -20711,7 +20731,7 @@
           "unknown"
         ]
       },
-      "__schema380": {
+      "__schema381": {
         "anyOf": [
           {
             "type": "string",
@@ -20722,7 +20742,7 @@
           }
         ]
       },
-      "__schema381": {
+      "__schema382": {
         "type": "object",
         "properties": {
           "compression_count": {
@@ -20739,7 +20759,7 @@
         },
         "additionalProperties": false
       },
-      "__schema382": {
+      "__schema383": {
         "type": "string",
         "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
@@ -20833,37 +20853,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema375"
-              },
-              "name": {
                 "$ref": "#/components/schemas/__schema376"
               },
-              "tool_name": {
+              "name": {
                 "$ref": "#/components/schemas/__schema377"
               },
-              "timing": {
+              "tool_name": {
                 "$ref": "#/components/schemas/__schema378"
               },
-              "outcome": {
+              "timing": {
                 "$ref": "#/components/schemas/__schema379"
               },
-              "redacted_args_digest": {
+              "outcome": {
                 "$ref": "#/components/schemas/__schema380"
               },
-              "detail": {
+              "redacted_args_digest": {
                 "$ref": "#/components/schemas/__schema381"
+              },
+              "detail": {
+                "$ref": "#/components/schemas/__schema382"
               },
               "type": {
                 "type": "string",
@@ -20889,37 +20909,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema375"
-              },
-              "name": {
                 "$ref": "#/components/schemas/__schema376"
               },
-              "tool_name": {
+              "name": {
                 "$ref": "#/components/schemas/__schema377"
               },
-              "timing": {
+              "tool_name": {
                 "$ref": "#/components/schemas/__schema378"
               },
-              "outcome": {
+              "timing": {
                 "$ref": "#/components/schemas/__schema379"
               },
-              "redacted_args_digest": {
+              "outcome": {
                 "$ref": "#/components/schemas/__schema380"
               },
-              "detail": {
+              "redacted_args_digest": {
                 "$ref": "#/components/schemas/__schema381"
+              },
+              "detail": {
+                "$ref": "#/components/schemas/__schema382"
               },
               "type": {
                 "type": "string",
@@ -20954,13 +20974,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -20989,13 +21009,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -21022,13 +21042,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -21063,13 +21083,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -21104,13 +21124,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -21142,13 +21162,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -21270,7 +21290,7 @@
                         "minItems": 1,
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/__schema382"
+                          "$ref": "#/components/schemas/__schema383"
                         }
                       }
                     },
@@ -21386,13 +21406,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema372"
-              },
-              "local_seq": {
                 "$ref": "#/components/schemas/__schema373"
               },
-              "dedup_key": {
+              "local_seq": {
                 "$ref": "#/components/schemas/__schema374"
+              },
+              "dedup_key": {
+                "$ref": "#/components/schemas/__schema375"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema94"
@@ -21430,25 +21450,25 @@
         "type": "object",
         "properties": {
           "capture_id": {
-            "$ref": "#/components/schemas/__schema375"
-          },
-          "name": {
             "$ref": "#/components/schemas/__schema376"
           },
-          "tool_name": {
+          "name": {
             "$ref": "#/components/schemas/__schema377"
           },
-          "timing": {
+          "tool_name": {
             "$ref": "#/components/schemas/__schema378"
           },
-          "outcome": {
+          "timing": {
             "$ref": "#/components/schemas/__schema379"
           },
-          "redacted_args_digest": {
+          "outcome": {
             "$ref": "#/components/schemas/__schema380"
           },
-          "detail": {
+          "redacted_args_digest": {
             "$ref": "#/components/schemas/__schema381"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/__schema382"
           }
         },
         "required": [

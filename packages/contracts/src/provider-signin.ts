@@ -14,6 +14,9 @@ export const signInMethod = z.enum(['device', 'browser']);
 export const providerSignInStatus = z
   .object({
     provider: signInProvider,
+    label: z.string().meta({
+      description: 'The provider as the person knows it, for a "Sign in with" button',
+    }),
     state: z.enum(['signed_out', 'pending', 'signed_in', 'sign_in_required']).meta({
       description:
         '`sign_in_required` means the provider refused a refresh; model calls to it are refused ' +
@@ -36,6 +39,14 @@ export const providerSignInStatus = z
       ])
       .nullable()
       .meta({ description: 'Why a new sign-in is needed' }),
+    message: z
+      .string()
+      .nullable()
+      .meta({
+        description:
+          'What happened and what to do, in plain words, whenever the person has something to do; ' +
+          'null when signed in or signed out.',
+      }),
     methods: z.array(signInMethod),
   })
   .strict();

@@ -210,6 +210,8 @@ const variables = z.object({
   OPENAI_COMPAT_OAUTH_CLIENT_SECRET: unsetWhenBlank(z.string().optional()),
   OPENAI_COMPAT_OAUTH_SCOPES: unsetWhenBlank(z.string().optional()),
   OPENAI_COMPAT_OAUTH_REDIRECT_URL: unsetWhenBlank(z.string().optional()),
+  /** The provider's name on the sign-in button, for example "Acme Models". */
+  OPENAI_COMPAT_OAUTH_LABEL: unsetWhenBlank(z.string().max(60).optional()),
 
   MELETE_DEFAULT_PROVIDER: z.string().default('fireworks'),
   /** The identifier the provider serves, which for Fireworks is the full account path. */
