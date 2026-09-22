@@ -451,8 +451,10 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete
 ## Engine limits
 
 Three settings bound what one attempt's engine may do. All have working
-defaults; change them only for a reason you can name, and all take effect on the
-next attempt started.
+defaults; change them only for a reason you can name. Set them in `deploy/.env`
+and recreate the service with
+`docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete`;
+each applies from the next attempt started.
 
 `MELETE_ENGINE_MAX_TURNS` (default `150`) is how many iterations one run may
 take before the engine stops it. It is a runaway stop, not a cost control: what

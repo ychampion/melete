@@ -9,7 +9,7 @@ import {
   DEFAULT_ENGINE_MAX_TURNS,
 } from '@melete/runtime-hermes';
 import { parse } from 'yaml';
-import { brokerUrlForBind, loadEnv, readEnv } from './env.ts';
+import { brokerUrlForBind, envSchema, loadEnv, readEnv } from './env.ts';
 
 const bundle: AttemptBundle = {
   attempt: {
@@ -95,6 +95,17 @@ describe('the model defaults', () => {
   test('Compose passes the output limit through to the service', () => {
     expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
   });
+
+  test('every service setting the example configuration lists reaches the service', () => {
+    // Compose hands a container only the variables its file names, so a setting
+    // written in deploy/.env and missing there is silently ignored.
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    const listed = [...example.matchAll(/^([A-Z_][A-Z0-9_]*)=/gm)].map((match) => match[1] ?? '');
+    const read = Object.keys(envSchema.in.shape);
+    const composed = composeServiceEnvironment();
+    expect(listed).toContain('MELETE_ENGINE_MAX_TURNS');
+    expect(listed.filter((name) => read.includes(name) && !(name in composed))).toEqual([]);
+  });
 });
 
 describe('the engine limits', () => {
@@ -112,6 +123,21 @@ describe('the engine limits', () => {
         expect(readEnv({ [name]: value }).ok).toBe(false);
       expect(readEnv({ [name]: '64000' }).ok).toBe(true);
     }
+  });
+
+  test('Compose passes each limit through, and an empty one keeps the default', () => {
+    const composed = composeServiceEnvironment();
+    for (const name of [
+      'MELETE_ENGINE_MAX_TURNS',
+      'MELETE_COMPACTION_MAX_TOKENS',
+      'MELETE_MODEL_CONTEXT_WINDOW',
+    ])
+      expect(composed[name]).toBe('');
+    const env = loadEnv(composed);
+    expect(env.MELETE_ENGINE_MAX_TURNS).toBe(DEFAULT_ENGINE_MAX_TURNS);
+    expect(env.MELETE_COMPACTION_MAX_TOKENS).toBe(DEFAULT_COMPACTION_MAX_TOKENS);
+    expect(env.MELETE_MODEL_CONTEXT_WINDOW).toBeUndefined();
+    expect(env.MELETE_PUBLIC_URL).toBeUndefined();
   });
 
   test('the defaults are the ones the engine configuration renders', () => {

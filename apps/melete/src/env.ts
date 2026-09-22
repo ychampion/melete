@@ -49,6 +49,13 @@ function brokerUrlMismatch(bind: string, url: string): string | null {
   return null;
 }
 
+/**
+ * Compose writes `${NAME:-}` as an empty string, so an optional setting left
+ * blank in deploy/.env arrives as '' and means the same as leaving it out.
+ */
+const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (value === '' ? undefined : value), schema);
+
 const variables = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8787),
@@ -68,15 +75,17 @@ const variables = z.object({
   MELETE_MASTER_KEY: z.string().min(32).optional(),
 
   DATABASE_URL: z.string().min(1).optional(),
-  MELETE_PUBLIC_URL: z
-    .url()
-    .refine((value) => {
-      const address = new URL(value);
-      return (
-        ['http:', 'https:'].includes(address.protocol) && !address.username && !address.password
-      );
-    }, 'Use your public web address.')
-    .optional(),
+  MELETE_PUBLIC_URL: unsetWhenBlank(
+    z
+      .url()
+      .refine((value) => {
+        const address = new URL(value);
+        return (
+          ['http:', 'https:'].includes(address.protocol) && !address.username && !address.password
+        );
+      }, 'Use your public web address.')
+      .optional(),
+  ),
   /** Signs bounded attempt capabilities; this key never enters an AttemptBundle. */
   MELETE_CAPABILITY_KEY: z.string().min(32).optional(),
   /**
@@ -174,13 +183,13 @@ const variables = z.object({
    * failing every attempt one at a time afterwards. `docs/DEPLOYMENT.md` says
    * what each of them buys.
    */
-  MELETE_ENGINE_MAX_TURNS: z.coerce.number().int().positive().default(DEFAULT_ENGINE_MAX_TURNS),
-  MELETE_COMPACTION_MAX_TOKENS: z.coerce
-    .number()
-    .int()
-    .positive()
-    .default(DEFAULT_COMPACTION_MAX_TOKENS),
-  MELETE_MODEL_CONTEXT_WINDOW: z.coerce.number().int().positive().optional(),
+  MELETE_ENGINE_MAX_TURNS: unsetWhenBlank(
+    z.coerce.number().int().positive().default(DEFAULT_ENGINE_MAX_TURNS),
+  ),
+  MELETE_COMPACTION_MAX_TOKENS: unsetWhenBlank(
+    z.coerce.number().int().positive().default(DEFAULT_COMPACTION_MAX_TOKENS),
+  ),
+  MELETE_MODEL_CONTEXT_WINDOW: unsetWhenBlank(z.coerce.number().int().positive().optional()),
 });
 
 /**
