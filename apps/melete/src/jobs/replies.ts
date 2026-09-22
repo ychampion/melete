@@ -10,7 +10,7 @@ import {
   type SubmissionReceipt,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { attempt, event, notification, replyObligation } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -24,6 +24,8 @@ import { canonicalSubmissionInput, type SubmissionService } from './submissions.
 
 type ObligationRow = typeof replyObligation.$inferSelect;
 type NotificationRow = typeof notification.$inferSelect;
+/** How many unserved obligations one recovery scan repairs. */
+const RECOVERY_BATCH = 100;
 const missingContent = 'The response content is unavailable. This reply needs retransmission.';
 const digest = (value: Parameters<typeof canonicalSubmissionInput>[0]) =>
   createHash('sha256').update(canonicalSubmissionInput(value)).digest('hex');
@@ -167,9 +169,13 @@ export class ReplyService {
         this.publish(tx, row, outcome, attemptId, context?.result),
       );
       const previous = runner.afterRecovery;
+      let restarted = false;
       runner.afterRecovery = async () => {
         await previous?.();
-        await this.recover();
+        // Only the first scan after a start may offer an attempted delivery again:
+        // later, one this process is still handing over would reach the person twice.
+        await this.recover({ retransmit: !restarted });
+        restarted = true;
       };
     }
   }
@@ -458,12 +464,27 @@ export class ReplyService {
     });
   }
 
-  async recover(): Promise<void> {
+  /**
+   * Repairs replies that lost their outbox copy. Each scan reads only
+   * obligations that no live notification carries, a bounded batch at a time,
+   * so it does not grow with delivered or already-flagged history.
+   */
+  async recover(options: { retransmit?: boolean } = {}): Promise<void> {
+    const retransmit = options.retransmit ?? true;
     await this.jobs.transaction(async (tx) => {
       const owed = await tx
         .select()
         .from(replyObligation)
-        .where(ne(replyObligation.state, 'fulfilled'));
+        .where(
+          and(
+            ne(replyObligation.state, 'fulfilled'),
+            retransmit ? undefined : ne(replyObligation.state, 'needs_retransmission'),
+            sql`not exists (select 1 from notification n where n.state in ('pending', 'attempted')
+              and n.content is not null and n.obligation_ids @> jsonb_build_array(${replyObligation.id}))`,
+          ),
+        )
+        .orderBy(replyObligation.createdAt)
+        .limit(RECOVERY_BATCH);
       for (const jobId of new Set(owed.flatMap((item) => (item.jobId ? [item.jobId] : [])))) {
         const row = await this.jobs.lock(tx, jobId);
         if (!row) continue;
@@ -494,7 +515,7 @@ export class ReplyService {
             .set({ state: 'needs_retransmission', message: missingContent })
             .where(eq(replyObligation.id, item.id));
       }
-      for (const delivery of pending) {
+      for (const delivery of retransmit ? pending : []) {
         if (delivery.state !== 'attempted' || !replyContent.safeParse(delivery.content).success)
           continue;
         await tx

@@ -210,6 +210,22 @@ withDb('reply obligations and notification outbox', () => {
     expect(await replies.outbox()).toHaveLength(0);
   });
 
+  test('the periodic recovery scan never offers a delivery in flight again', async () => {
+    const { handle } = fixture();
+    // Startup recovery may retransmit what an earlier process attempted.
+    await runner.recover();
+    await run(await direct([answer]));
+    const [first] = await replies.outbox();
+    if (!first) throw new Error('Outbox empty');
+    await replies.beginDelivery(first.id);
+    // A later scan runs while this process may still be delivering it.
+    await runner.recover();
+    expect((await replies.outbox()).map((item) => item.id)).toEqual([first.id]);
+    expect(await handle.db.select().from(notification)).toHaveLength(1);
+    await replies.delivered(first.id, first.contentHash);
+    expect(await replies.list()).toHaveLength(0);
+  });
+
   test('a reply service keeps the acceptance hook it was handed', async () => {
     const { jobs } = fixture();
     const own = new SubmissionService(jobs);
