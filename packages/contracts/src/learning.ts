@@ -355,7 +355,8 @@ export type LearnedSource = z.infer<typeof learnedSource>;
  */
 export const learnedState = z.enum(['proposed', 'trial', 'active', 'paused', 'reverted']);
 export type LearnedState = z.infer<typeof learnedState>;
-export const learnedAction = z.enum(['try', 'pause', 'resume', 'remove']);
+/** `share` appears only on something kept that has sealed evidence, in a shared space. */
+export const learnedAction = z.enum(['try', 'pause', 'resume', 'remove', 'share']);
 export type LearnedAction = z.infer<typeof learnedAction>;
 export const learnedChangeAction = z.enum(['pause', 'resume', 'remove', 'keep', 'decline']);
 export type LearnedChangeAction = z.infer<typeof learnedChangeAction>;

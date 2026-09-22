@@ -8,7 +8,10 @@ import type { ProcedureScope } from './contracts.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import { isGeneralProcedure, verifyDefinition } from './procedures.ts';
 import { episode, learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
-import { type ProcedureReach, triggersMatch } from './triggers.ts';
+import { type ProcedureReach, triggerSpecificity, triggersMatch } from './triggers.ts';
+
+/** How many learned procedures one job may receive. */
+export const MAX_DELIVERED_PROCEDURES = 3;
 
 export const scopeMatches = (left: ProcedureScope, right: ProcedureScope) =>
   left.task_family === right.task_family &&
@@ -159,6 +162,17 @@ export async function selectProcedureSkills(
       ),
     )
     .orderBy(desc(procedureCandidate.createdAt));
+  // Newest first: among equally specific matches, the latest lesson leads.
+  const deliverable: { skill: AttemptBundle['skills'][number]; specificity: number }[] = [];
+  const deliver = (candidate: typeof procedureCandidate.$inferSelect, spaceScoped: boolean) =>
+    deliverable.push({
+      skill: {
+        name: `procedure:${candidate.id}`,
+        body: candidate.body,
+        ...(spaceScoped ? { space_id: row.spaceId } : {}),
+      },
+      specificity: triggerSpecificity(candidate.triggers, row.objective, message),
+    });
   for (const { candidate, source } of candidates) {
     const promotion = procedurePromotion.safeParse(candidate.promotion);
     if (!promotion.success) continue;
@@ -179,7 +193,8 @@ export async function selectProcedureSkills(
         !valid(candidate, source)
       )
         continue;
-      return [{ name: `procedure:${candidate.id}`, body: candidate.body }];
+      deliver(candidate, false);
+      continue;
     }
     if (
       candidate.canarySpaceId !== row.spaceId ||
@@ -201,14 +216,12 @@ export async function selectProcedureSkills(
       .limit(1);
     if (!final || final.evidence.selection_evaluation_id !== candidate.selectedEvaluationId)
       continue;
-    // One applicable procedure avoids contradictory instructions and remains below the three-skill cap.
-    return [
-      {
-        name: `procedure:${candidate.id}`,
-        body: candidate.body,
-        ...(promotion.data.scope === 'space' ? { space_id: row.spaceId } : {}),
-      },
-    ];
+    deliver(candidate, promotion.data.scope === 'space');
   }
-  return [];
+  // The most specific matches first, at most three; the bundle's own skill cap still applies.
+  return deliverable
+    .map((entry, order) => ({ ...entry, order }))
+    .sort((left, right) => right.specificity - left.specificity || left.order - right.order)
+    .slice(0, MAX_DELIVERED_PROCEDURES)
+    .map((entry) => entry.skill);
 }

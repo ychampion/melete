@@ -12,11 +12,14 @@ import {
   learnedChange,
   learningNotice,
   procedureCandidate,
+  procedureEvaluation,
   procedureTransition,
 } from '../../src/learning/schema.ts';
+import { applyLearned } from '../../src/learning/start.ts';
 import { newId } from '../../src/memory/db.ts';
 import { rejectsWith, wake } from './learning-fixtures.ts';
 import {
+  at,
   CORRECTION,
   generalLearningFixture,
   messageProposal,
@@ -106,9 +109,9 @@ async function delivered(spaceId: string, candidateId: string, principal?: strin
 }
 
 /** A job that uses the trial and finishes without a correction. */
-async function usedIt(spaceId: string) {
+async function usedIt(spaceId: string, objective = LATER) {
   if (!fixture) throw new Error('No fixture');
-  const row = await fixture.create(spaceId, LATER);
+  const row = await fixture.create(spaceId, objective);
   await fixture.run(row);
   return row;
 }
@@ -182,6 +185,22 @@ const questionsFor = async (candidateId: string) => {
     expect(announced.map((entry) => entry.payload)).toContainEqual(
       expect.objectContaining({ kind: 'learning_question', procedure_id: candidate.id }),
     );
+    // Using it shows in the trail like any other piece of work.
+    expect(announced.map((entry) => entry.payload)).toContainEqual(
+      expect.objectContaining({
+        kind: 'tool_trace',
+        procedure_id: candidate.id,
+        call: expect.objectContaining({
+          kind: 'skill',
+          title: 'Used what you taught me: Follow-up email',
+          status: 'done',
+          output_summary: {
+            text: '2 steps you taught',
+            quote: { text: 'Use bullet points.', from: 'message' },
+          },
+        }),
+      }),
+    );
     // A second job that uses it adds no second question.
     await usedIt(spaceId);
     expect(await questionsFor(candidate.id)).toHaveLength(1);
@@ -244,8 +263,18 @@ const questionsFor = async (candidateId: string) => {
     // Sharing is the evaluation road's: an owner's yes is not evidence.
     await rejectsWith(
       () => fixture.procedures.activate(fixture.ownerId, spaceId, candidate.id, 'space'),
-      'invalid_procedure_state',
+      'promotion_denied',
     );
+    // Kept, the correction holds only what the steps quote: not the answers around it.
+    const [source] = await fixture.handle.db
+      .select()
+      .from(episode)
+      .where(eq(episode.id, candidate.episodeId));
+    expect(source).toMatchObject({
+      priorOutput: null,
+      correctedOutput: null,
+      intervention: { text: CORRECTION },
+    });
     // The approval named bytes: a changed definition is no longer delivered.
     await fixture.handle.db
       .update(procedureCandidate)
@@ -618,4 +647,192 @@ const questionsFor = async (candidateId: string) => {
     expect(await delivered(spaceId, candidate.id, memberId)).toBe(false);
     expect(await candidateRow(candidate.id)).toMatchObject({ state: 'enabled_canary' });
   }, 180000);
+});
+
+/** A proposal whose only trigger is `phrase`, quoted from the objective it was learned on. */
+async function proposedWith(spaceId: string, key: string, phrase: string) {
+  if (!fixture) throw new Error('No fixture');
+  const { episode: source } = await fixture.corrected(spaceId, key, SOURCE, CORRECTION);
+  fixture.propose({
+    ...messageProposal(),
+    checks: [],
+    triggers: [{ phrase, evidence: at('objective', SOURCE, phrase) }],
+  });
+  return fixture.proposer.generate(fixture.ownerId, spaceId, source.id);
+}
+
+/** Sealed evaluation evidence for the candidate's current definition, as the evaluator writes it. */
+async function sealed(candidateId: string) {
+  if (!fixture) throw new Error('No fixture');
+  const candidate = await candidateRow(candidateId);
+  const validationId = newId('pe');
+  await fixture.handle.db.insert(procedureEvaluation).values([
+    {
+      id: validationId,
+      candidateId,
+      bodyHash: candidate.bodyHash,
+      phase: 'validation',
+      suiteId: 'episode-derived/1',
+      suiteHash: 'a'.repeat(64),
+      evidence: { status: 'complete', selection_evaluation_id: null },
+      budget: {},
+      passed: true,
+      selectedAt: new Date(Date.now() - 1000),
+    },
+    {
+      id: newId('pe'),
+      candidateId,
+      bodyHash: candidate.bodyHash,
+      phase: 'sealed_final',
+      suiteId: 'episode-derived/1',
+      suiteHash: 'b'.repeat(64),
+      evidence: { status: 'complete', selection_evaluation_id: validationId },
+      budget: {},
+      passed: true,
+    },
+  ]);
+  await fixture.handle.db
+    .update(procedureCandidate)
+    .set({ selectedEvaluationId: validationId })
+    .where(eq(procedureCandidate.id, candidateId));
+}
+
+/** The names a job with `objective` is given, in delivery order. */
+async function deliveredFor(spaceId: string, objective: string, principal?: string) {
+  if (!fixture) throw new Error('No fixture');
+  const row = await fixture.create(spaceId, objective, principal ?? fixture.ownerId);
+  const claim = await fixture.runner.claim(wake(row));
+  const names = claim?.bundle.skills.map((skill) => skill.name) ?? [];
+  await fixture.jobs.cancel(row.id);
+  return names;
+}
+
+/** Tried, used on a job, and kept with a yes. */
+async function keptWithYes(spaceId: string, candidateId: string) {
+  if (!fixture) throw new Error('No fixture');
+  const candidate = await candidateRow(candidateId);
+  await fixture.procedures.startTrial(fixture.ownerId, spaceId, candidateId, candidate.bodyHash);
+  await usedIt(spaceId, SOURCE);
+  const [question] = await questionsFor(candidateId);
+  const answered = await app(fixture.ownerId)('POST', `/learning/notices/${question?.id}/answer`, {
+    space_id: spaceId,
+    answer: 'yes',
+  });
+  expect(answered.body.item).toMatchObject({ state: 'active' });
+}
+
+(fixture ? describe : describe.skip)('several lessons at once, and what lasts', () => {
+  test('a job gets up to three matching procedures, the most specific first', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    // All learned before any is tried, so no correction here touches a trial.
+    const widest = await proposedWith(spaceId, 'many-a', 'follow-up email to the recruiter');
+    const wide = await proposedWith(spaceId, 'many-b', 'follow-up email');
+    const older = await proposedWith(spaceId, 'many-c', 'recruiter');
+    const newer = await proposedWith(spaceId, 'many-d', 'interview');
+    for (const candidate of [widest, wide, older, newer])
+      await fixture.procedures.startTrial(
+        fixture.ownerId,
+        spaceId,
+        candidate.id,
+        candidate.bodyHash,
+      );
+    // Equally specific (nine characters each): the newer lesson leads.
+    expect(await deliveredFor(spaceId, SOURCE)).toEqual([
+      `procedure:${widest.id}`,
+      `procedure:${wide.id}`,
+      `procedure:${newer.id}`,
+    ]);
+    // Only what matches: a request about the interview alone gets that one.
+    expect(await deliveredFor(spaceId, 'Prepare notes for the interview')).toEqual([
+      `procedure:${newer.id}`,
+    ]);
+    expect(older.id).not.toBe(newer.id);
+  }, 300000);
+
+  test('activating one replaces only the procedures that could apply to the same request', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    const recruiter = await proposedWith(spaceId, 'overlap-a', 'recruiter');
+    const interview = await proposedWith(spaceId, 'overlap-b', 'interview');
+    const narrower = await proposedWith(spaceId, 'overlap-c', 'the recruiter');
+    for (const candidate of [recruiter, interview]) await fixture.evaluatedCanary(candidate);
+    // One clean job that used both is the canary evidence activation needs.
+    await usedIt(spaceId, SOURCE);
+    await fixture.procedures.activate(fixture.ownerId, spaceId, recruiter.id);
+    await fixture.procedures.activate(fixture.ownerId, spaceId, interview.id);
+    expect((await candidateRow(recruiter.id)).state).toBe('active');
+    expect((await candidateRow(interview.id)).state).toBe('active');
+    await fixture.evaluatedCanary(narrower);
+    await usedIt(spaceId, SOURCE);
+    await fixture.procedures.activate(fixture.ownerId, spaceId, narrower.id);
+    expect((await candidateRow(recruiter.id)).state).toBe('superseded');
+    expect((await candidateRow(interview.id)).state).toBe('active');
+    expect((await candidateRow(narrower.id)).state).toBe('active');
+  }, 300000);
+
+  test('a procedure made active through evaluation never expires either', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    const candidate = await fixture.evaluatedCanary(await proposed(spaceId, 'lasting-active'));
+    await usedIt(spaceId);
+    await fixture.procedures.activate(fixture.ownerId, spaceId, candidate.id);
+    const listed = await app(fixture.ownerId)('GET', `/learned?space_id=${spaceId}`);
+    expect(listed.body.items).toContainEqual(
+      expect.objectContaining({ id: candidate.id, state: 'active', expires_at: null }),
+    );
+    await expireEpisodes(fixture.handle.sql, new Date(Date.now() + 40 * 24 * 60 * 60 * 1000));
+    expect((await candidateRow(candidate.id)).state).toBe('active');
+    expect(await delivered(spaceId, candidate.id)).toBe(true);
+  }, 300000);
+
+  test('something kept can be shared once sealed evidence exists for exactly what was kept', async () => {
+    if (!fixture) return;
+    const memberId = newId('own');
+    const spaceId = await sharedSpace(memberId);
+    const proven = await proposedWith(spaceId, 'share-proven', 'recruiter');
+    const unproven = await proposedWith(spaceId, 'share-unproven', 'interview');
+    await sealed(proven.id);
+    await keptWithYes(spaceId, proven.id);
+    await keptWithYes(spaceId, unproven.id);
+    const call = app(fixture.ownerId);
+    const listed = await call('GET', `/learned?space_id=${spaceId}`);
+    const byId = Object.fromEntries((listed.body.items ?? []).map((item) => [item.id, item]));
+    expect(byId[proven.id]).toMatchObject({ actions: ['pause', 'remove', 'share'] });
+    expect(byId[unproven.id]).toMatchObject({ actions: ['pause', 'remove'] });
+    const memberGets = async () =>
+      (await deliveredFor(spaceId, SOURCE, memberId)).includes(`procedure:${proven.id}`);
+    expect(await memberGets()).toBe(false);
+    const refused = await call('POST', `/learned/${unproven.id}/share`, { space_id: spaceId });
+    expect(refused.body.error?.code).toBe('promotion_denied');
+    const shared = await call('POST', `/learned/${proven.id}/share`, { space_id: spaceId });
+    expect(shared.status).toBe(200);
+    expect(shared.body.item).toMatchObject({ state: 'active', shared: true });
+    expect(await memberGets()).toBe(true);
+  }, 300000);
+
+  test('a correction puts what it taught to work on the owner’s next job, with nothing to tap', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    const { episode: source } = await fixture.corrected(spaceId, 'automatic', SOURCE, CORRECTION);
+    fixture.propose({ ...messageProposal(), checks: [] });
+    const tried = await applyLearned(fixture.proposer, fixture.procedures);
+    const mine = tried.find((candidate) => candidate.episodeId === source.id);
+    expect(mine).toMatchObject({
+      state: 'enabled_canary',
+      canarySpaceId: spaceId,
+      promotion: { scope: 'private', principal_id: fixture.ownerId, basis: 'owner_trial' },
+    });
+    if (!mine) throw new Error('Not tried');
+    const [transition] = await fixture.handle.db
+      .select()
+      .from(procedureTransition)
+      .where(eq(procedureTransition.candidateId, mine.id))
+      .orderBy(desc(procedureTransition.createdAt))
+      .limit(1);
+    expect(transition).toMatchObject({ toState: 'enabled_canary', actor: 'learning' });
+    expect(await delivered(spaceId, mine.id)).toBe(true);
+    // Still the owner's own, in the space it was taught in.
+    expect(await delivered(await fixture.createSpace(), mine.id)).toBe(false);
+  }, 300000);
 });

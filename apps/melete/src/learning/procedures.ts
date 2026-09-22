@@ -8,11 +8,12 @@ import { newId } from '../memory/db.ts';
 import { spaceAuthority, visibleJob } from '../principals/authority.ts';
 import { compileStoredProcedure, verifyStoredEvidence } from './admit.ts';
 import type { ProcedureState } from './contracts.ts';
-import { requireLearningSpace } from './episodes.ts';
+import { KEPT_UNTIL, requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
 import { objectiveIsOwnerText } from './provenance.ts';
 import { episode, procedureCandidate, procedureEvaluation, procedureTransition } from './schema.ts';
 import { unshareableContent } from './share.ts';
+import { triggersOverlap } from './triggers.ts';
 
 export type Candidate = typeof procedureCandidate.$inferSelect;
 
@@ -284,7 +285,14 @@ export class ProcedureService {
    * required: a correction about tone may have nothing a check can read. Evaluation
    * evidence is still required to activate or share.
    */
-  async startTrial(ownerId: string, spaceId: string, id: string, definitionHash: string) {
+  async startTrial(
+    ownerId: string,
+    spaceId: string,
+    id: string,
+    definitionHash: string,
+    /** Started by learning itself, right after the owner's own correction taught it. */
+    automatic = false,
+  ) {
     return this.jobs.transaction(async (tx) => {
       const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
       if (source.actor !== ownerId)
@@ -323,8 +331,10 @@ export class ProcedureService {
         tx,
         candidate,
         'enabled_canary',
-        ownerId,
-        'The owner approved this exact definition for a private trial in its origin space.',
+        automatic ? 'learning' : ownerId,
+        automatic
+          ? "Applied to the owner's own work in its origin space after their correction taught it."
+          : 'The owner approved this exact definition for a private trial in its origin space.',
       );
     });
   }
@@ -344,7 +354,14 @@ export class ProcedureService {
       requireNotRemoved(candidate);
       verifyDefinition(candidate);
       verifyEvidence(candidate, source, objective);
-      if (candidate.state !== 'enabled_canary' || candidate.canarySpaceId !== spaceId)
+      // A procedure its owner kept by saying yes may be shared on the same evidence a
+      // canary needs; nothing else that is already active is activated again.
+      const kept =
+        candidate.state === 'active' &&
+        candidate.promotion.basis === 'owner_confirmed' &&
+        candidate.promotion.definition_hash === candidate.bodyHash &&
+        scope === 'space';
+      if ((candidate.state !== 'enabled_canary' && !kept) || candidate.canarySpaceId !== spaceId)
         throw new ServiceError('invalid_procedure_state', 'Enable the one-space canary first.');
       // An owner trial delivers to its owner; only held-out evidence can make a procedure active.
       if (!(await hasSelectedFinalEvidence(tx, candidate)))
@@ -384,8 +401,10 @@ export class ProcedureService {
           ),
         )
         .for('update');
+      // Only what could apply to the same request is replaced; a lesson about
+      // follow-up emails leaves a lesson about summaries alone.
       for (const old of previous) {
-        if (old.id !== id)
+        if (old.id !== id && triggersOverlap(old.triggers, candidate.triggers))
           await transitionProcedure(
             tx,
             old,
@@ -400,6 +419,8 @@ export class ProcedureService {
         .update(procedureCandidate)
         .set({ promotion: { scope, principal_id: ownerId } })
         .where(eq(procedureCandidate.id, id));
+      // Active on evidence the owner chose to act on: it no longer expires with its correction.
+      await tx.update(episode).set({ expiresAt: KEPT_UNTIL }).where(eq(episode.id, source.id));
       return transitionProcedure(
         tx,
         candidate,

@@ -23,7 +23,7 @@ import {
   type ProcedureScope,
   type VersionEvidence,
 } from './contracts.ts';
-import { askToKeep } from './notices.ts';
+import { askToKeep, traceProcedureUse } from './notices.ts';
 import { OBJECTIVE_ORIGINS, type ObjectiveOrigin } from './provenance.ts';
 import { episode, learningAttempt, learningJob } from './schema.ts';
 import { derivedScope } from './scope.ts';
@@ -92,6 +92,8 @@ export async function captureAttemptVersions(
       },
     })
     .onConflictDoNothing();
+  // What the attempt was given from what the person taught is shown in its trail.
+  await traceProcedureUse(tx, bundle.attempt.job_id, bundle.attempt.id, bundle.skills);
 }
 
 async function evidence(tx: Transaction, row: JobRow) {

@@ -806,6 +806,47 @@
         }
       }
     },
+    "/learned/{id}/share": {
+      "post": {
+        "tags": [
+          "learning"
+        ],
+        "summary": "Share something you kept with your shared space, when sealed evidence exists",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Learned item id"
+            },
+            "required": true,
+            "description": "Learned item id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/__schema7"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Shared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema118"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/learned/{id}/pause": {
       "post": {
         "tags": [
@@ -16454,7 +16495,7 @@
           "expires_at": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema82"
+                "$ref": "#/components/schemas/__schema96"
               },
               {
                 "type": "null"
@@ -16472,7 +16513,8 @@
                 "try",
                 "pause",
                 "resume",
-                "remove"
+                "remove",
+                "share"
               ]
             }
           }

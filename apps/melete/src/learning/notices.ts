@@ -223,3 +223,68 @@ export async function askToKeep(tx: Transaction, row: JobRow, attemptId: string)
   }
   return asked;
 }
+
+/** The notice kind the conversation trail shows as a tool entry. */
+export const TOOL_TRACE = 'tool_trace';
+const TOOL_TITLE_LIMIT = 120;
+const TOOL_SUMMARY_LIMIT = 160;
+const TOOL_QUOTE_LIMIT = 200;
+const clip = (value: string, limit: number) =>
+  value.length <= limit ? value : `${value.slice(0, limit - 1).trimEnd()}…`;
+
+/**
+ * Each learned procedure an attempt was given is shown in the job's trail as a
+ * tool entry, the way every other piece of work is: "Used what you taught me",
+ * with its name, and the first step quoted as the person's own words. Nothing is
+ * asked of the person; this only says what ran.
+ */
+export async function traceProcedureUse(
+  tx: Transaction,
+  jobId: string,
+  attemptId: string,
+  skills: readonly { name: string }[],
+) {
+  const ids = skills
+    .filter((skill) => skill.name.startsWith('procedure:'))
+    .map((skill) => skill.name.slice('procedure:'.length));
+  if (!ids.length) return;
+  const used = await tx
+    .select()
+    .from(procedureCandidate)
+    .where(inArray(procedureCandidate.id, ids));
+  const at = new Date().toISOString();
+  for (const candidate of used) {
+    const name = learnedName(candidate);
+    const steps = learnedSteps(candidate);
+    const first = steps[0]?.replace(/\s+/g, ' ').trim();
+    const id = `procedure:${attemptId}:${candidate.id}`;
+    await appendEvent(tx, {
+      jobId,
+      attemptId,
+      type: 'notice',
+      payload: {
+        kind: TOOL_TRACE,
+        call: {
+          id,
+          kind: 'skill',
+          title: clip(`Used what you taught me: ${name}`, TOOL_TITLE_LIMIT),
+          status: 'done',
+          started_at: at,
+          ended_at: at,
+          input_summary: null,
+          output_summary: {
+            text: clip(
+              `${steps.length} ${steps.length === 1 ? 'step' : 'steps'} you taught`,
+              TOOL_SUMMARY_LIMIT,
+            ),
+            ...(first ? { quote: { text: clip(first, TOOL_QUOTE_LIMIT), from: 'message' } } : {}),
+          },
+          detail: null,
+          parent: null,
+        },
+        procedure_id: candidate.id,
+      },
+      dedupKey: `tool:${id}:done`,
+    });
+  }
+}

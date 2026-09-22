@@ -4836,6 +4836,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/learned/{id}/share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Share something you kept with your shared space, when sealed evidence exists */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Learned item id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["__schema7"];
+                };
+            };
+            responses: {
+                /** @description Shared */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema118"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/learned/{id}/try": {
         parameters: {
             query?: never;
@@ -10421,11 +10464,11 @@ export interface components {
             }[];
         };
         __schema115: {
-            actions: ("try" | "pause" | "resume" | "remove")[];
+            actions: ("try" | "pause" | "resume" | "remove" | "share")[];
             applies_when: string[];
             definition_hash: string;
             does: string[];
-            expires_at: components["schemas"]["__schema82"] | null;
+            expires_at: components["schemas"]["__schema96"] | null;
             expiring_soon: boolean;
             id: string;
             learned_at: components["schemas"]["__schema96"];

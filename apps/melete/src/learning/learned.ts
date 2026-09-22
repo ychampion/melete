@@ -26,6 +26,7 @@ import {
 } from '@melete/contracts';
 import { and, desc, eq, gt, isNull, like, or } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
+import { space as spaceTable } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
@@ -42,6 +43,7 @@ import {
 } from './notices.ts';
 import {
   type Candidate,
+  hasSelectedFinalEvidence,
   type ProcedureService,
   requireNotRemoved,
   transitionProcedure,
@@ -140,6 +142,7 @@ function itemView(
   candidate: Candidate,
   source: { actor: string; expiresAt: Date },
   principalId: string,
+  shareable = false,
 ) {
   const state = learnedState(candidate);
   if (!state || candidate.removedAt) return null;
@@ -162,7 +165,10 @@ function itemView(
     expires_at: expires?.toISOString() ?? null,
     expiring_soon: !!expires && expires.getTime() - Date.now() <= EXPIRING_WITHIN_MS,
     // Only the person who made the correction may try what it taught.
-    actions: ACTIONS[state].filter((action) => action !== 'try' || source.actor === principalId),
+    actions: [
+      ...ACTIONS[state].filter((action) => action !== 'try' || source.actor === principalId),
+      ...(state === 'active' && shareable ? (['share'] as const) : []),
+    ],
   });
 }
 
@@ -197,16 +203,49 @@ export class CorrectionSource implements LearnedSourceProvider {
     );
   }
 
+  /**
+   * Whether the person may share what they kept with their space: a shared space,
+   * and sealed evaluation evidence for the exact definition they kept.
+   */
+  private async shareable(tx: Transaction, spaceId: string, candidate: Candidate) {
+    if (
+      candidate.state !== 'active' ||
+      candidate.pausedAt ||
+      candidate.promotion.basis !== 'owner_confirmed' ||
+      candidate.promotion.definition_hash !== candidate.bodyHash
+    )
+      return false;
+    const [space] = await tx
+      .select({ kind: spaceTable.kind })
+      .from(spaceTable)
+      .where(eq(spaceTable.id, spaceId));
+    return space?.kind === 'shared' && (await hasSelectedFinalEvidence(tx, candidate));
+  }
+
   async list(tx: Transaction, principalId: string, spaceId: string) {
-    return (await this.rows(tx, principalId, spaceId)).flatMap(({ candidate, source }) => {
-      const view = itemView(candidate, source, principalId);
-      return view ? [view] : [];
-    });
+    const items: LearnedItem[] = [];
+    for (const { candidate, source } of await this.rows(tx, principalId, spaceId)) {
+      const view = itemView(
+        candidate,
+        source,
+        principalId,
+        await this.shareable(tx, spaceId, candidate),
+      );
+      if (view) items.push(view);
+    }
+    return items;
   }
 
   async item(tx: Transaction, principalId: string, spaceId: string, id: string) {
     const [row] = await this.rows(tx, principalId, spaceId, id);
-    return row ? itemView(row.candidate, row.source, principalId) : null;
+    return row
+      ? itemView(
+          row.candidate,
+          row.source,
+          principalId,
+          await this.shareable(tx, spaceId, row.candidate),
+        )
+      : null;
   }
 
   /** Locked, and the person's own; anything else reads as absent. */
@@ -404,6 +443,17 @@ export class LearnedService {
       );
       return { item: await source.item(tx, principalId, spaceId, id), change };
     });
+  }
+
+  /** Sharing what the person kept, on the same sealed evidence any sharing needs. */
+  async share(principalId: string, spaceId: string, id: string) {
+    if (this.sourceFor(id).source !== 'correction')
+      throw new ServiceError('not_found', 'Not found.', 404);
+    await this.procedures.activate(principalId, spaceId, id, 'space');
+    return this.jobs.transaction(async (tx) => ({
+      item: await this.sourceFor(id).item(tx, principalId, spaceId, id),
+      change: null,
+    }));
   }
 
   /** Trying approves the definition the person was shown, by its hash. */
@@ -604,10 +654,11 @@ export class LearnedService {
           .returning();
         if (!kept) throw new Error('Procedure update returned no row');
         // What the person said to keep lasts: the correction it quotes stops expiring with it.
-        // Forgetting still reaches it; retention no longer does.
+        // Forgetting still reaches it; retention no longer does. Only what the steps quote
+        // is kept: the answers before and after the correction are no longer needed.
         await tx
           .update(episode)
-          .set({ expiresAt: KEPT_UNTIL })
+          .set({ expiresAt: KEPT_UNTIL, priorOutput: null, correctedOutput: null })
           .where(eq(episode.id, candidate.episodeId));
         const active = await transitionProcedure(
           tx,

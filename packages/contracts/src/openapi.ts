@@ -412,6 +412,15 @@ export function buildOpenApiDocument() {
             responses: { '200': jsonResponse('On trial', learnedItemResponse) },
           },
         },
+        '/learned/{id}/share': {
+          post: {
+            tags: ['learning'],
+            summary: 'Share something you kept with your shared space, when sealed evidence exists',
+            requestParams: idParam('id', 'Learned item id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Shared', learnedItemResponse) },
+          },
+        },
         '/learned/{id}/pause': {
           post: {
             tags: ['learning'],

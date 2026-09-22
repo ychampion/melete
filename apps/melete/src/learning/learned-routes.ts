@@ -30,6 +30,10 @@ export function mountLearned(app: Hono, service: LearnedService) {
       ),
     );
   });
+  app.post('/learned/:id/share', async (c) => {
+    const input = learningSpaceRequest.parse(await c.req.json());
+    return c.json(await service.share(c.get('owner').id, input.space_id, c.req.param('id')));
+  });
   for (const action of ['pause', 'resume', 'remove'] as const)
     app.post(`/learned/:id/${action}`, async (c) => {
       const input = learningSpaceRequest.parse(await c.req.json());

@@ -42,3 +42,39 @@ export function overlapsProcedure(
       ) || learned.some((request) => countMatches(request, trigger) > 0),
   );
 }
+
+/**
+ * How specifically a procedure's triggers match: the length of the longest
+ * matching phrase, after normalisation. A procedure with no triggers applies to
+ * its whole scope and is the least specific; one that does not match scores -1.
+ */
+export function triggerSpecificity(
+  triggers: readonly { phrase: string }[],
+  objective: string,
+  latestMessage = '',
+): number {
+  if (!triggers.length) return 0;
+  const haystacks = [normalizeForMatch(objective), normalizeForMatch(latestMessage)];
+  let best = -1;
+  for (const trigger of triggers) {
+    const needle = normalizeForMatch(trigger.phrase);
+    if (needle && haystacks.some((haystack) => countMatches(haystack, needle) > 0))
+      best = Math.max(best, needle.length);
+  }
+  return best;
+}
+
+/**
+ * Whether two procedures can apply to the same request: a shared phrase, or one
+ * phrase inside the other. A procedure with no triggers applies to its whole
+ * scope, so it overlaps everything in that scope.
+ */
+export function triggersOverlap(
+  left: readonly { phrase: string }[],
+  right: readonly { phrase: string }[],
+): boolean {
+  if (!left.length || !right.length) return true;
+  const ours = left.map((trigger) => normalizeForMatch(trigger.phrase)).filter(Boolean);
+  const theirs = right.map((trigger) => normalizeForMatch(trigger.phrase)).filter(Boolean);
+  return ours.some((one) => theirs.some((two) => one.includes(two) || two.includes(one)));
+}
