@@ -188,6 +188,9 @@ withDb('experience rows and authenticated scope', () => {
     const [child] = await required(handle)
       .sql`select j.* from job j join plan_milestone m on m.child_job_id = j.id where m.plan_id = ${saved.id}`;
     expect(child?.state).toBe('waiting_for_event_or_time');
+    // The plan's title is the person's; a milestone composed from it is not.
+    expect((await required(jobs).get(saved.id)).objectiveOrigin).toBe('owner_request');
+    expect(child?.objective_origin).toBe('derived');
     expect(new Date(child?.next_wake_at).getTime()).toBeGreaterThan(Date.now());
     const linked = conversationResponse.parse(
       await (
@@ -196,6 +199,7 @@ withDb('experience rows and authenticated scope', () => {
     ).conversation;
     expect(linked.plan_id).toBe(saved.id);
     expect((await required(jobs).get(linked.id)).objective).toContain('Plan dinner');
+    expect((await required(jobs).get(linked.id)).objectiveOrigin).toBe('derived');
     expect((await request(`/plans/${saved.id}/share`, 'POST')).status).toBe(200);
     await required(handle)
       .db.update(job)
@@ -224,6 +228,8 @@ withDb('experience rows and authenticated scope', () => {
       .from(trigger)
       .where(eq(trigger.id, routine.id));
     const id = required(registration).jobId;
+    // A routine runs its instruction long after it was written.
+    expect((await required(jobs).get(id)).objectiveOrigin).toBe('derived');
     await required(handle)
       .sql`update job set budget = jsonb_set(jsonb_set(budget, '{max_attempts}', '1'), '{max_output_tokens}', '10') where id = ${id}`;
     const turnIds = [];
@@ -299,6 +305,7 @@ withDb('experience rows and authenticated scope', () => {
     expect(chat.status).toBe('idle');
     const [row] = await required(handle).db.select().from(job).where(eq(job.id, chat.id));
     expect(row?.kind).toBe('chat');
+    expect(row?.objectiveOrigin).toBe('owner_request');
     expect(row?.spaceId).toBe(spaceId);
     expect(row?.nextWakeAt).toBeNull();
     expect(

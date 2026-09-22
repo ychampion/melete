@@ -62,7 +62,10 @@ export async function generalLearningFixture() {
 
   const create = (spaceId: string, objective: string, principal = fixture.ownerId) =>
     principalContext.run(principal, () =>
-      fixture.jobs.create({ space_id: spaceId, title: 'Owner request', objective }),
+      fixture.jobs.create(
+        { space_id: spaceId, title: 'Owner request', objective },
+        'owner_request',
+      ),
     );
 
   return {

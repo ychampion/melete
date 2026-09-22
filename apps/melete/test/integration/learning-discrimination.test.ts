@@ -36,7 +36,10 @@ async function storedCandidate(
 ) {
   if (!fixture) throw new Error('No fixture');
   const row = await principalContext.run(fixture.ownerId, () =>
-    fixture.jobs.create({ space_id: fixture.spaceId, title: 'Follow-up', objective }),
+    fixture.jobs.create(
+      { space_id: fixture.spaceId, title: 'Follow-up', objective },
+      'owner_request',
+    ),
   );
   const first = await fixture.runner.claim(wake(row));
   if (!first) throw new Error('No attempt');

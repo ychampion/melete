@@ -6,7 +6,14 @@
  * that same principal typed.
  *
  * The decision is made once, where the text is written down, and recorded on the
- * job. It is not inferred later from the job's kind, because text travels: a
+ * job. A job is `derived` unless the entry point that creates it is one where the
+ * person types the objective (a submitted request, a chat not started from a
+ * plan, a plan's own title) and says so. A routine runs an instruction long after
+ * it was written, a milestone is composed from plan text, and a job that handles
+ * a company's mail quotes that mail in its objective: none of those is the
+ * person typing now, and a new caller that forgets to say is not either.
+ *
+ * It is not inferred later from the job's kind, because text travels: a
  * corrective job copies its parent's objective verbatim and would otherwise look
  * like a fresh request typed by the owner, and an evaluation arm runs a
  * model-authored variant under the owner's own principal. Each of those carries
@@ -15,25 +22,8 @@
  * existed has no origin and is never quotable.
  */
 
-/** Job kinds whose objective is the text of a request, as typed into it. */
-export const DIRECT_REQUEST_KINDS = ['responsibility', 'chat', 'plan'] as const;
 export const OBJECTIVE_ORIGINS = ['owner_request', 'derived'] as const;
 export type ObjectiveOrigin = (typeof OBJECTIVE_ORIGINS)[number];
-
-/**
- * What to record for a job being created from scratch. A routine runs an
- * instruction on a schedule long after it was written, a milestone objective is
- * composed from plan text, and a chat started from a plan carries that plan's
- * objective: none of those is the person typing now.
- */
-export function recordedObjectiveOrigin(job: {
-  kind?: string | null;
-  planId?: string | null;
-}): ObjectiveOrigin {
-  const kind = job.kind ?? 'responsibility';
-  if (!(DIRECT_REQUEST_KINDS as readonly string[]).includes(kind)) return 'derived';
-  return kind === 'chat' && job.planId ? 'derived' : 'owner_request';
-}
 
 /** The recorded origin, and the person: both, or the objective is not quotable. */
 export function objectiveIsOwnerText(

@@ -70,7 +70,10 @@ export async function learningFixture(runtime: RuntimeAdapter = new StubRuntimeA
     spaceId,
     createSpace,
     async create(templateId = 'training-invoices', objective = 'Arrange the supplied records') {
-      const row = await jobs.create({ space_id: spaceId, title: 'Arrange records', objective });
+      const row = await jobs.create(
+        { space_id: spaceId, title: 'Arrange records', objective },
+        'owner_request',
+      );
       await episodes.setScope(ownerId, row.id, { scope: learningScope, template_id: templateId });
       return row;
     },

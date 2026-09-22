@@ -193,6 +193,8 @@ export class ExperienceService {
         tx,
         { space_id: spaceId, title: value.title, objective: `${value.title}${context}` },
         { kind: 'chat', agentId: value.agent_id, planId: value.plan_id },
+        // Started from a plan, the objective carries that plan's text as well.
+        value.plan_id ? 'derived' : 'owner_request',
       ),
     );
     return { conversation: await this.view(row) };

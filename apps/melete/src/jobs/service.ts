@@ -23,7 +23,7 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import { registerJobLearning } from '../learning/episodes.ts';
-import { type ObjectiveOrigin, recordedObjectiveOrigin } from '../learning/provenance.ts';
+import type { ObjectiveOrigin } from '../learning/provenance.ts';
 import { derivedScope } from '../learning/scope.ts';
 import {
   requestPrincipal,
@@ -127,8 +127,13 @@ export class JobService {
       .limit(filters.limit);
   }
 
-  async create(input: CreateResponsibilityRequest): Promise<JobRow> {
-    return this.transaction((tx) => this.createInTransaction(tx, input));
+  async create(
+    input: CreateResponsibilityRequest,
+    objectiveOrigin?: ObjectiveOrigin,
+  ): Promise<JobRow> {
+    return this.transaction((tx) =>
+      this.createInTransaction(tx, input, undefined, objectiveOrigin),
+    );
   }
 
   /** Submission admission composes its receipt with the same job/wake transaction. */
@@ -143,11 +148,11 @@ export class JobService {
       dormant?: boolean;
     },
     /**
-     * Whose words this objective is, for a job that carries text written
-     * somewhere else: a correction of another job, or an evaluation arm running a
-     * variant. Left out, it is decided from how this job is being made.
+     * Whose words this objective is. Only an entry point where the person types
+     * the objective passes `owner_request`; every other job, including one built
+     * from a company's mail or a copy of another job's objective, is `derived`.
      */
-    objectiveOrigin?: ObjectiveOrigin,
+    objectiveOrigin: ObjectiveOrigin = 'derived',
   ): Promise<JobRow> {
     const value = createResponsibilityRequest.parse(input);
     const [parent] = await tx
@@ -164,7 +169,7 @@ export class JobService {
         principalId: access.principalId,
         title: value.title,
         objective: value.objective,
-        objectiveOrigin: objectiveOrigin ?? recordedObjectiveOrigin(experience ?? {}),
+        objectiveOrigin,
         constraints: jobConstraints.parse(value.constraints ?? {}),
         budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
         nextWakeAt:

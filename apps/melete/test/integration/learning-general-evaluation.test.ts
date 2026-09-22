@@ -75,7 +75,7 @@ async function run(row: JobRow) {
 const create = (spaceId: string, objective: string) => {
   if (!fixture) throw new Error('No fixture');
   return principalContext.run(fixture.ownerId, () =>
-    fixture.jobs.create({ space_id: spaceId, title: 'Owner request', objective }),
+    fixture.jobs.create({ space_id: spaceId, title: 'Owner request', objective }, 'owner_request'),
   );
 };
 
