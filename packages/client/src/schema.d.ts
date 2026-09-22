@@ -10140,7 +10140,7 @@ export interface components {
         /** @enum {string} */
         __schema283: "ok" | "degraded" | "failing";
         /** @enum {string} */
-        __schema284: "ok" | "degraded" | "unavailable" | "not_running" | "revoked";
+        __schema284: "ok" | "degraded" | "unavailable" | "credential_refused" | "not_running" | "revoked";
         __schema285: string;
         __schema286: string;
         /** @enum {string} */

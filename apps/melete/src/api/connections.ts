@@ -98,7 +98,10 @@ async function check(connector: Connector | undefined, status: string): Promise<
     ]);
     if (health.status === 'ok') return result('ok', 'ok');
     if (health.status === 'degraded') return result('degraded', 'degraded');
-    return result('failing', 'unavailable');
+    return result(
+      'failing',
+      health.reason === 'credential_refused' ? 'credential_refused' : 'unavailable',
+    );
   } catch {
     return result('failing', 'unavailable');
   } finally {

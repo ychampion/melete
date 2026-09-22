@@ -230,6 +230,7 @@ export const CONNECTION_CHECK_CODES = [
   'ok',
   'degraded',
   'unavailable',
+  'credential_refused',
   'not_running',
   'revoked',
 ] as const;
@@ -241,6 +242,8 @@ export const CONNECTION_CHECK_DETAIL: Record<ConnectionCheckCode, string> = {
   degraded: 'The connection answered with a warning.',
   unavailable:
     'The destination could not be reached or refused the credential. Check the address, the account and the password.',
+  credential_refused:
+    'The server refused the account name or password. Use an app password where the provider offers one, then test again.',
   not_running:
     'This connection has no running connector. Check the master key and the service log, then test again.',
   revoked: 'This connection was removed and can no longer be used.',

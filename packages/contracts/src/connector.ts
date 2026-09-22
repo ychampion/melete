@@ -67,6 +67,8 @@ export const connectorHealth = z.object({
   status: z.enum(['ok', 'degraded', 'failing']),
   detail: z.string(),
   checked_at: z.string(),
+  /** Why a failing test failed, when the destination said: it refused the credential. */
+  reason: z.enum(['credential_refused']).optional(),
 });
 export type ConnectorHealth = z.infer<typeof connectorHealth>;
 

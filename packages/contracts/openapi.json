@@ -18684,6 +18684,7 @@
           "ok",
           "degraded",
           "unavailable",
+          "credential_refused",
           "not_running",
           "revoked"
         ]

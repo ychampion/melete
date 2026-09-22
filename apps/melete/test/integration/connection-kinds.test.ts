@@ -362,7 +362,8 @@ withDb('installing each kind of connection through the API', () => {
     expect(failed.status).toBe(201);
     const failure = connectionResponse.parse(failed.json);
     expect(failure.connection).toMatchObject({ status: 'error', setup_state: 'error' });
-    expect(failure.check).toMatchObject({ status: 'failing', code: 'unavailable' });
+    // The mailbox answered and turned the password away, and the person is told which.
+    expect(failure.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
     expectNoSecret(failed.text);
     expect((await h.offered()).bundle).not.toContain('email.search');
 

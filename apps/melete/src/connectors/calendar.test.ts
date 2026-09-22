@@ -316,3 +316,16 @@ describe('calendar connector', () => {
     expect(JSON.stringify(result)).not.toContain('caldav-private-password');
   });
 });
+
+describe('a calendar test says why it failed', () => {
+  test('a refused password is told apart from a server that cannot be reached', async () => {
+    expect(await refusingCaldav(401).health()).toMatchObject({
+      status: 'failing',
+      reason: 'credential_refused',
+    });
+    expect(await refusingCaldav(403).health()).toMatchObject({ reason: 'credential_refused' });
+    const broken = await refusingCaldav(500).health();
+    expect(broken.status).toBe('failing');
+    expect(broken.reason).toBeUndefined();
+  });
+});

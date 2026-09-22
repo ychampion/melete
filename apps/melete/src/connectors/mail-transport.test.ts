@@ -254,6 +254,27 @@ describe('IMAP and SMTP wire adapters', () => {
     }
   }, 30_000);
 
+  test('a refused password is told apart from a server that cannot be reached', async () => {
+    const refusing = await mailServers({ smtpRefusesLogin: true });
+    const working = await mailServers();
+    try {
+      const secrets: SecretAccess = { withSecret: async (_id, _space, use) => use('app-password') };
+      expect(await new EmailConnector(refusing.config, secrets).health()).toMatchObject({
+        status: 'failing',
+        reason: 'credential_refused',
+      });
+      const closed = await new EmailConnector(
+        { ...working.config, smtp: { ...working.config.smtp, port: 1 } },
+        secrets,
+      ).health();
+      expect(closed.status).toBe('failing');
+      expect(closed.reason).toBeUndefined();
+    } finally {
+      await refusing.close();
+      await working.close();
+    }
+  }, 30_000);
+
   test('plaintext test exceptions cannot target remote servers', () => {
     const config: EmailConnection = {
       id: 'con_test',

@@ -63,6 +63,16 @@ export interface MailTransport {
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const loopback = (host: string) => ['127.0.0.1', '::1', 'localhost'].includes(host);
 
+/**
+ * Whether a server turned the account name and password away, as opposed to
+ * not answering. IMAP says so on the error it raises; SMTP answers `EAUTH`.
+ */
+export function credentialRefused(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false;
+  const fields = error as { authenticationFailed?: unknown; code?: unknown };
+  return fields.authenticationFailed === true || fields.code === 'EAUTH';
+}
+
 /** TLS verification is always enabled; the test exception cannot target a remote host. */
 export function validateMailConnection(config: EmailConnection): void {
   if (!config.username || /[\r\n]/.test(config.from)) throw new Error('Invalid mail configuration');
