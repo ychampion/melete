@@ -226,6 +226,38 @@ withDb('reply obligations and notification outbox', () => {
     expect(await replies.list()).toHaveLength(0);
   });
 
+  // Ends an attempt with reply content but without the finish hooks, as the
+  // broker's releaseAttempt does on a destination's rate-limit wait.
+  const waiting: StubStep = {
+    type: 'outcome',
+    outcome: {
+      kind: 'waiting_for_event_or_time',
+      wait: { kind: 'timer', wake_at: '2099-01-01T09:00:00.000Z' },
+    },
+  };
+  async function runWithoutHooks(row: JobRow) {
+    const saved = runner.onFinished.splice(0);
+    try {
+      await run(row);
+    } finally {
+      runner.onFinished.push(...saved);
+    }
+  }
+
+  test('every scan repairs a reply flagged for retransmission once its content exists', async () => {
+    const { jobs } = fixture();
+    await runner.recover();
+    const row = await direct([waiting]);
+    // Mid-attempt the obligation has no content yet, so a scan flags it.
+    await runner.recover();
+    expect((await replies.list())[0]?.state).toBe('needs_retransmission');
+    await runWithoutHooks(row);
+    expect((await jobs.get(row.id)).state).toBe('waiting_for_event_or_time');
+    await runner.recover();
+    expect(await replies.outbox()).toHaveLength(1);
+    expect((await replies.list())[0]?.state).toBe('owed');
+  });
+
   test('a reply service keeps the acceptance hook it was handed', async () => {
     const { jobs } = fixture();
     const own = new SubmissionService(jobs);

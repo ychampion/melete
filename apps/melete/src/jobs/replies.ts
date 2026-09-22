@@ -478,7 +478,6 @@ export class ReplyService {
         .where(
           and(
             ne(replyObligation.state, 'fulfilled'),
-            retransmit ? undefined : ne(replyObligation.state, 'needs_retransmission'),
             sql`not exists (select 1 from notification n where n.state in ('pending', 'attempted')
               and n.content is not null and n.obligation_ids @> jsonb_build_array(${replyObligation.id}))`,
           ),
