@@ -44,6 +44,7 @@ function servedRoutes(): string[] {
     evaluator: stub,
     browserSessions: stub,
     memory: stub,
+    removals: stub,
   };
   const routes = createApp(deps)
     .routes.filter((route) => route.method !== 'ALL')
