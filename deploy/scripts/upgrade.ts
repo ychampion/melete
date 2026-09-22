@@ -12,11 +12,18 @@
  *
  *   bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale]
  *     [--backup-dir /absolute/parent] [--wait-timeout seconds]
+ *     [--repository /absolute/installation]
  *
  * Name the same overlay files the installation runs with. An upgrade that
  * forgets one would rebuild the stack without that service.
+ *
+ * The script that runs is the target release's own, taken from the tag into a
+ * directory outside the installation (docs/UPGRADING.md), so an installation
+ * whose tree predates this file upgrades the same way. `--repository` names the
+ * installation it acts on. For that, everything this file imports is Bun and
+ * relative files: the copy runs without installing dependencies.
  */
-import { closeSync, openSync } from 'node:fs';
+import { closeSync, openSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -29,7 +36,7 @@ import {
 import { parseEnvFile } from './provider-settings.ts';
 
 export const USAGE =
-  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds]';
+  'Usage: bun run deploy/scripts/upgrade.ts <tag> [--dry-run] [--browser] [--tailscale] [--backup-dir /absolute/parent] [--wait-timeout seconds] [--repository /absolute/installation]';
 
 const GIB = 1024 ** 3;
 /** The README's floor for the filesystem that holds Docker's data. */
@@ -92,6 +99,7 @@ export function parseArguments(
   let browser = false;
   let tailscale = false;
   let waitTimeoutSeconds = 300;
+  let repository = repositoryRoot;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index] ?? '';
     if (argument === '--dry-run') dryRun = true;
@@ -107,6 +115,11 @@ export function parseArguments(
       const value = argv[index] ?? '';
       if (!/^[1-9]\d{1,4}$/.test(value)) fail();
       waitTimeoutSeconds = Number(value);
+    } else if (argument === '--repository') {
+      index += 1;
+      const value = argv[index];
+      if (!value || !isAbsolute(value)) fail();
+      else repository = value;
     } else if (TAG.test(argument) && tag === undefined) tag = argument;
     else fail();
   }
@@ -121,7 +134,7 @@ export function parseArguments(
     browser,
     tailscale,
     waitTimeoutSeconds,
-    repositoryRoot,
+    repositoryRoot: repository,
     backupDir: join(parent, `upgrade-${tag}-${stamp}`).replaceAll('\\', '/'),
   };
 }
@@ -333,6 +346,9 @@ export function rollbackSteps(context: UpgradeContext): string[] {
 
 export type PreflightFacts = {
   tag: string;
+  /** The installation this run acts on, and the top of the git checkout that holds it. */
+  repositoryRoot: string;
+  repositoryTop: string | null;
   /** `git status --porcelain` of the repository. */
   status: string;
   tagCommit: string | null;
@@ -361,6 +377,13 @@ const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
 /** One line per reason not to start; an empty list means the upgrade may begin. */
 export function judgePreflight(facts: PreflightFacts): string[] {
   const problems: string[] = [];
+  // Every command runs from the installation's root with its relative Compose paths.
+  if (facts.repositoryTop !== facts.repositoryRoot)
+    problems.push(
+      facts.repositoryTop === null
+        ? `${facts.repositoryRoot} is not a git checkout. Give --repository the directory the installation was cloned into.`
+        : `${facts.repositoryRoot} is inside the checkout at ${facts.repositoryTop}. Give --repository the top of the installation's checkout.`,
+    );
   const changed = facts.status
     .split('\n')
     .filter((line) => line.trim())
@@ -475,6 +498,7 @@ export async function gatherPreflight(
     return result.code === 0 ? result.stdout.trim() : null;
   };
   const target = `refs/tags/${options.tag}`;
+  const repositoryTop = await text(['git', 'rev-parse', '--show-toplevel']);
   const status = (await run(['git', 'status', '--porcelain'])).stdout;
   const tagCommit = await text(['git', 'rev-parse', '--verify', '--quiet', `${target}^{commit}`]);
   const headCommit = (await text(['git', 'rev-parse', 'HEAD'])) ?? '';
@@ -535,6 +559,8 @@ export async function gatherPreflight(
   return {
     facts: {
       tag: options.tag,
+      repositoryRoot: options.repositoryRoot,
+      repositoryTop,
       status,
       tagCommit,
       headCommit,
@@ -719,19 +745,16 @@ export const spawnRunner =
     }
   };
 
-if (import.meta.main) {
-  const repositoryRoot = resolve(import.meta.dir, '../..');
-  let options: ReturnType<typeof parseArguments>;
-  try {
-    options = parseArguments(process.argv.slice(2), new Date(), homedir(), repositoryRoot);
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : USAGE}\n`);
-    process.exit(2);
-  }
-  const result = await runUpgrade(options, {
+/**
+ * What the run reads and where its commands run: always the installation named
+ * by --repository, never the directory this script was taken into.
+ */
+export function installationDependencies(
+  repositoryRoot: string,
+): Pick<UpgradeDependencies, 'run' | 'journalEntries' | 'environment'> {
+  return {
     run: spawnRunner(repositoryRoot),
-    log: (line) => process.stdout.write(`${line}\n`),
-    sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+    // Read after the switch, so it is the release's journal in the installation.
     journalEntries: async () =>
       (
         JSON.parse(
@@ -739,6 +762,33 @@ if (import.meta.main) {
         ) as { entries: unknown[] }
       ).entries.length,
     environment: () => readEnvironment(repositoryRoot),
+  };
+}
+
+if (import.meta.main) {
+  let options: ReturnType<typeof parseArguments>;
+  try {
+    options = parseArguments(
+      process.argv.slice(2),
+      new Date(),
+      homedir(),
+      resolve(import.meta.dir, '../..'),
+    );
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : USAGE}\n`);
+    process.exit(2);
+  }
+  try {
+    // Git reports the checkout by its real path, which is what the preflight compares.
+    options.repositoryRoot = realpathSync(options.repositoryRoot).replaceAll('\\', '/');
+  } catch {
+    process.stderr.write(`${options.repositoryRoot} does not exist. ${USAGE}\n`);
+    process.exit(2);
+  }
+  const result = await runUpgrade(options, {
+    ...installationDependencies(options.repositoryRoot),
+    log: (line) => process.stdout.write(`${line}\n`),
+    sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
   });
   process.exit(result.status === 'planned' || result.status === 'upgraded' ? 0 : 1);
 }
