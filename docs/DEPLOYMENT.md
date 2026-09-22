@@ -806,9 +806,11 @@ and the next pass removes it.
 The removal is written to the restriction journal before anything is deleted.
 Restoring a database snapshot from before the removal, with the current journal,
 brings the space's rows back only until startup: the replay closes the space
-again and the removal runs to the end. This is one more reason to keep the
-journal apart from database snapshots, as described in
-[Backup and restore](#backup-and-restore).
+again, cancels the work that came back with it, and the removal runs to the end.
+This holds for every removed space, and for a personal space emptied after the
+snapshot was taken; a personal space emptied before it, and used since, is left
+as it is. This is one more reason to keep the journal apart from database
+snapshots, as described in [Backup and restore](#backup-and-restore).
 
 ### What stays at other services
 
