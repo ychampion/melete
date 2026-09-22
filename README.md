@@ -45,7 +45,7 @@ before the first message goes out, and it never sends the same message twice.
 ## Try it on one email
 
 <!-- TRYIT_URL — REPLACE BEFORE PUBLISHING with the live try-it address.
-     MELETE_RELEASE=1 bun run scrub:check fails until it is replaced. -->
+     bun run release:check fails until it is replaced. -->
 **[Try it on one email](TRYIT_URL)**
 
 Paste any message from a company, or just describe the problem. You get back
@@ -157,17 +157,19 @@ over your own tailnet, with HTTPS and no published port. See
 
 Everything Melete keeps lives in Docker volumes and one configuration file, so
 taking it off the machine is one command, a sweep and one deletion. The first
-command stops the stack and removes its containers, images and named volumes —
-the database, your spaces, artifacts, the work directory and the removal
-journal. The sweep catches the per-attempt containers, networks and volumes the
-service creates while it runs: those carry Melete's own labels rather than
-Compose's, so they are matched by label and by the Compose project name,
-`melete` unless you changed `COMPOSE_PROJECT_NAME`. Delete `deploy/.env` last,
-because it holds the master key that unseals anything you backed up. What is left afterwards is the source
-directory you cloned, and nothing else.
+command stops the stack and removes its containers and named volumes — the
+database, your spaces, artifacts, the work directory and the removal journal.
+The sweep catches the per-attempt containers, networks and volumes the service
+creates while it runs: those carry Melete's own labels rather than Compose's, so
+they are matched by label and by the Compose project name, `melete` unless you
+changed `COMPOSE_PROJECT_NAME`. Delete `deploy/.env` last, because it holds the
+master key that unseals anything you backed up. What is left afterwards is the
+source directory you cloned and the built images. Every installation on a host
+shares those images, so when this is the only one, remove them too with
+`docker image rm melete-service:local melete-runtime:local melete-web:local`.
 
 ```bash
-docker compose -f deploy/docker-compose.yml down -v --rmi all --remove-orphans
+docker compose -f deploy/docker-compose.yml down -v --rmi local --remove-orphans
 # Using the browser worker? Add -f deploy/docker-compose.browser.yml to that line.
 owned=label=com.melete.attempt-supervisor=v1
 project=label=com.melete.project=melete
