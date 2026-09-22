@@ -78,8 +78,9 @@ export type DockerStdioOptions = {
 };
 
 export const DEFAULT_STDIO_IMAGES = {
-  node: 'node:22-alpine',
-  python: 'ghcr.io/astral-sh/uv:python3.12-alpine',
+  node: 'node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85',
+  python:
+    'ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine@sha256:4c7eb663267624fa1f5b0316b3a51b427578bcb1d93459e1b6dfb5e9875beb0f',
 } as const;
 
 /**

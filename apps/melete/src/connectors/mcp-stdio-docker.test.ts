@@ -7,6 +7,7 @@ import { EgressProxy } from './mcp-egress.ts';
 import type { StdioLaunchSpec } from './mcp-stdio.ts';
 import {
   type AttachedStream,
+  DEFAULT_STDIO_IMAGES,
   type DockerStdioApi,
   DockerStdioLauncher,
   DockerStreamDemuxer,
@@ -489,22 +490,22 @@ describe('what runs in a server container', () => {
       ),
     ).toEqual({
       prepare: {
-        image: 'node:22-alpine',
+        image: DEFAULT_STDIO_IMAGES.node,
         entrypoint: ['npx', '--yes', '--package', 'pkg@1.0.0', '--', 'node', '-e', '0'],
       },
       run: {
-        image: 'node:22-alpine',
+        image: DEFAULT_STDIO_IMAGES.node,
         entrypoint: ['npx', '--offline', '--yes', '--package', 'pkg@1.0.0', '--', 'pkg-server'],
         argv: ['a'],
       },
     });
     expect(stdioCommands(launch({ runner: 'uvx', source: 'mcp-server-fetch@2026.1.1' }))).toEqual({
       prepare: {
-        image: 'ghcr.io/astral-sh/uv:python3.12-alpine',
+        image: DEFAULT_STDIO_IMAGES.python,
         entrypoint: ['uv', 'tool', 'install', 'mcp-server-fetch==2026.1.1'],
       },
       run: {
-        image: 'ghcr.io/astral-sh/uv:python3.12-alpine',
+        image: DEFAULT_STDIO_IMAGES.python,
         entrypoint: [
           'uvx',
           '--offline',
