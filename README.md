@@ -44,7 +44,8 @@ before the first message goes out, and it never sends the same message twice.
 
 ## Try it on one email
 
-<!-- TRYIT_URL — REPLACE BEFORE PUBLISHING with the live try-it address. -->
+<!-- TRYIT_URL — REPLACE BEFORE PUBLISHING with the live try-it address.
+     MELETE_RELEASE=1 bun run scrub:check fails until it is replaced. -->
 **[Try it on one email](TRYIT_URL)**
 
 Paste any message from a company, or just describe the problem. You get back

@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathViolation, report, scanText, scrub, violation } from './scrub-check.ts';
+import { pathViolation, releasing, report, scanText, scrub, violation } from './scrub-check.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 /** Any tracked path that is neither this file nor the check itself. */
@@ -121,6 +124,45 @@ describe('the check leaves ordinary text alone', () => {
     test(name, () => {
       expect(violation(source, line)).toBeNull();
     });
+});
+
+describe('a release refuses the placeholder link', () => {
+  const link = '**[Try it on one email](TRYIT_URL)**';
+
+  test('only when a release is being checked', () => {
+    expect(violation('README.md', link)).toBeNull();
+    expect(violation('README.md', link, true)).toBe('release placeholder');
+    expect(
+      violation('README.md', '**[Try it on one email](https://example.test/)**', true),
+    ).toBeNull();
+  });
+
+  test('MELETE_RELEASE=1 selects it, and nothing else does', () => {
+    expect(releasing({ MELETE_RELEASE: '1' })).toBe(true);
+    for (const value of [undefined, '', '0', 'true', 'yes'])
+      expect(releasing({ MELETE_RELEASE: value })).toBe(false);
+  });
+
+  test('a tracked file carrying it fails the scan, and only for a release', async () => {
+    const tree = await mkdtemp(join(tmpdir(), 'melete-release-scan-'));
+    try {
+      await writeFile(join(tree, 'README.md'), `# Melete\n\n${link}\n`);
+      for (const command of [
+        ['init', '-q'],
+        ['add', 'README.md'],
+      ])
+        expect(Bun.spawnSync(['git', ...command], { cwd: tree }).exitCode).toBe(0);
+      const prefix = `${tree}/`;
+      expect((await scrub(prefix)).findings).toEqual([]);
+      const { findings } = await scrub(prefix, true);
+      expect(findings).toEqual([
+        { file: 'README.md', line: 3, text: link, rule: 'release placeholder' },
+      ]);
+      expect(report(findings)).toContain('live address');
+    } finally {
+      await rm(tree, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('the failure tells a contributor what to do', () => {
