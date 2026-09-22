@@ -4,8 +4,9 @@
  * listener does not serve is named below with the reason.
  */
 import { describe, expect, test } from 'bun:test';
-import { buildOpenApiDocument, eventDeliveryRequest } from '@melete/contracts';
+import { buildOpenApiDocument, credentialsRequest, eventDeliveryRequest } from '@melete/contracts';
 import { z } from 'zod';
+import { credentials } from './api/auth.ts';
 import { loadEnv } from './env.ts';
 import { type AppDeps, createApp } from './index.ts';
 import { eventDelivery } from './jobs/triggers.ts';
@@ -80,5 +81,14 @@ describe('the published API document', () => {
 
   test('describes the event delivery body the service parses', () => {
     expect(z.toJSONSchema(eventDeliveryRequest)).toEqual(z.toJSONSchema(eventDelivery));
+  });
+});
+
+describe('the published sign-in body', () => {
+  test('is the one setup and sign-in parse', () => {
+    // The service lower-cases the email after reading it; what it accepts is the same.
+    expect(z.toJSONSchema(credentialsRequest, { io: 'input' }) as unknown).toEqual(
+      z.toJSONSchema(credentials, { io: 'input' }),
+    );
   });
 });
