@@ -27,7 +27,7 @@ export async function killAt(
   const child = Bun.spawn(
     [process.execPath, join(import.meta.dir, 'fault-worker.ts'), phase, scope.spaceId],
     {
-      env: { ...process.env, W7_FAULT_DATABASE_URL: db.url },
+      env: { ...process.env, MELETE_FAULT_DATABASE_URL: db.url },
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',

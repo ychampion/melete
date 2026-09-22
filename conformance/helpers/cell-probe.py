@@ -56,7 +56,7 @@ elif mode == 'sibling':
             reads.append({'path': path, 'readable': True})
         except OSError as error:
             reads.append({'path': path, 'readable': False, 'errno': error.errno})
-    own = Path('/work/w6-own-write')
+    own = Path('/work/sandbox-own-write')
     own.write_text('workspace control')
     own_readable = own.read_text() == 'workspace control'
     own.unlink()
@@ -65,7 +65,7 @@ elif mode == 'hardening':
     status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines()
                   if ':' in line)
     try:
-        Path('/etc/w6-readonly-probe').write_text('must fail')
+        Path('/etc/sandbox-readonly-probe').write_text('must fail')
         root_write = True
     except OSError:
         root_write = False

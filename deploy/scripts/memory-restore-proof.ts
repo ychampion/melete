@@ -40,7 +40,7 @@ async function scopeFor(sql: MemorySql, id: string): Promise<MemoryScope> {
   return {
     ownerId: row.owner_id,
     spaceId: id,
-    publisher: 'w6-restore-proof',
+    publisher: 'memory-restore-proof',
     audience: 'private',
     role: 'owner',
   };
@@ -80,7 +80,7 @@ async function seed(sql: MemorySql, journal: FileRestrictionJournal, runId: stri
     const existing = await tx`select id from space where id = ${id}`;
     requireThat(existing.length === 0, 'This run id already exists; choose a new run id.');
     await tx`insert into space (id, name, git_path)
-      values (${id}, ${`W6 restore proof ${runId}`}, ${`/data/spaces/${id}`})`;
+      values (${id}, ${`Memory restore proof ${runId}`}, ${`/data/spaces/${id}`})`;
     await tx`insert into memory_spaces (space_id, owner_id, restore_ready)
       values (${id}, ${owner.id}, true)`;
     await tx`insert into memory_index_manifest (space_id) values (${id})`;
@@ -135,7 +135,7 @@ export async function runMemoryRestoreProof(
   );
   requireThat(env.DATABASE_URL, 'DATABASE_URL is required.');
   const handle = openDatabase(env.DATABASE_URL, 2);
-  const id = stableEntityId('sp', 'w6-restore-proof', runId);
+  const id = stableEntityId('sp', 'memory-restore-proof', runId);
   const journal = new FileRestrictionJournal(
     join(env.MELETE_RESTRICTIONS_DIR ?? '/data/restrictions', 'restrictions.jsonl'),
   );

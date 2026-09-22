@@ -44,7 +44,7 @@ async function expectMemoryRefusal(operation: Promise<unknown>, code: string) {
 async function fixture() {
   const handle = await testDatabase();
   if (!handle) throw new Error('Postgres unavailable');
-  const root = await mkdtemp(join(tmpdir(), 'melete-w6-context-'));
+  const root = await mkdtemp(join(tmpdir(), 'melete-runtime-context-'));
   const queue = await startQueue(handle.url);
   const memory = await startDeploymentMemory({
     sql: handle.sql,

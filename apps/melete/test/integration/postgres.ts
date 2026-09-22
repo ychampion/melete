@@ -18,7 +18,7 @@ export async function createTestDatabase(
   const baseUrl = databaseUrl ?? shared?.url;
   if (!baseUrl) return null;
   const admin = postgres(baseUrl, { max: 1, onnotice: () => {} });
-  const name = `w7_${newId('test').toLowerCase()}`;
+  const name = `melete_test_${newId('test').toLowerCase()}`;
   await admin.unsafe(
     `create database "${name}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
   );
@@ -45,7 +45,7 @@ export async function createTestDatabase(
 }
 export async function createScope(db: TestDatabase): Promise<MemoryScope> {
   const spaceId = newId('sp');
-  // W1's owner_singleton_idx allows exactly one owner row per database, so
+  // The owner_singleton_idx allows exactly one owner row per database, so
   // scopes share it. A scope is isolated by its space, not by its owner.
   const candidate = newId('own');
   await db.sql`insert into owner (id, email) values (${candidate}, ${`${candidate}@example.test`}) on conflict do nothing`;

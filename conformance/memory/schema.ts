@@ -27,7 +27,7 @@ export const FAMILIES = [
 export type Family = (typeof FAMILIES)[number];
 export const family = z.enum(FAMILIES);
 
-/** The process points W7's failure schedules already kill at. */
+/** The process points the memory core's failure schedules already kill at. */
 export const FAULT_PHASES = [
   'after-input',
   'after-claim',
@@ -142,7 +142,7 @@ export const snapshotStep = z.strictObject({
   name: slug,
 });
 /**
- * Kill a real process at one of W7's named write-protocol boundaries. `resume`
+ * Kill a real process at one of the memory core's named write-protocol boundaries. `resume`
  * re-claims the interrupted work afterwards, which is what proves the next
  * attempt uses authentic state without repeating the effect.
  */

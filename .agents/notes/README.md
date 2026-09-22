@@ -31,6 +31,11 @@ Two rules:
 2. **Evidence or nothing.** If a note has no evidence section worth reading, the
    decision was probably a preference, and preferences do not need notes.
 
+Several notes cite `REPORT.md`, an append-only log that recorded each command
+and its measured result as it was run, kept outside this repository. Where a
+note points at it, the evidence here is the note's own Evidence section and the
+tests it names.
+
 ## Index
 
 | # | Title | Status |

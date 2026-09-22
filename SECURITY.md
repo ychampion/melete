@@ -2,10 +2,15 @@
 
 ## Reporting a vulnerability
 
-Use GitHub's [private security advisory form](https://github.com/ychampion/melete/security/advisories/new)
-for reports about a running installation. Include the code revision,
-reproduction steps and the impact you observed. Reports are triaged as they
-arrive.
+Report a vulnerability privately through GitHub: open the repository's
+Security tab and choose **Report a vulnerability**, or go straight to the
+[advisory form](https://github.com/ychampion/melete/security/advisories/new).
+The report stays between you and the maintainers until a fix is published.
+Include the code revision, reproduction steps and the impact you observed.
+Reports are triaged as they arrive.
+
+Please keep vulnerabilities out of public issues, pull requests and
+discussions.
 
 ## The isolation boundary
 

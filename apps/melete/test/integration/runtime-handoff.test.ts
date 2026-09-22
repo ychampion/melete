@@ -39,7 +39,7 @@ afterAll(async () => {
     });
     const jobs = new JobService(handle.db, queue.boss);
     const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
-      key: 'w15-handoff-key-32-characters-long',
+      key: 'runtime-handoff-key-32-characters-long',
       scopes: ['test.send'],
     });
     new ApprovalService(jobs, runner);

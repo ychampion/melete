@@ -139,8 +139,8 @@ const PENDING_CONTRACT = new Set<string>([]);
 
 /**
  * Knowledge operations the document declares that the memory module serves,
- * not this one. W7 owns proposal apply, proposal removal, and owner edits of a
- * record; this module owns search, listing, reading and retraction.
+ * not this one. The memory module owns proposal apply, proposal removal, and
+ * owner edits of a record; this module owns search, listing, reading and retraction.
  */
 const SERVED_BY_MEMORY = new Set([
   'GET /knowledge/proposals',
@@ -466,7 +466,7 @@ describe('the knowledge module inside the service', () => {
     });
 
   /**
-   * W1 puts everything but /health and /setup|/login behind a single-owner
+   * The service puts everything but /health and /setup|/login behind a single-owner
    * session. These tests ask what the service does for the owner, so they sign
    * in first rather than assert the gate, which auth.test.ts already covers.
    */

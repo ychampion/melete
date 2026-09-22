@@ -17,7 +17,7 @@ export type AuthorityInput = {
   action: Action;
   phase: 'proposal' | 'decision' | 'admission' | 'execution';
 };
-/** W1 can read and lock its generation columns using this same admission transaction. */
+/** The service can read and lock its generation columns using this same admission transaction. */
 export type EffectAuthorityResolver = (
   tx: Query,
   input: AuthorityInput,

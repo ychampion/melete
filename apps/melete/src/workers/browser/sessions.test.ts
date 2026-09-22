@@ -22,7 +22,7 @@ test('worker receives OS essentials without database, vault or provider credenti
 const suite = chromiumAvailable ? describe : describe.skip;
 if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
 suite('browser session lease', () => {
-  const rootPromise = mkdtemp(join(tmpdir(), 'melete-w10b-session-'));
+  const rootPromise = mkdtemp(join(tmpdir(), 'melete-browser-session-'));
   const sessions: BrowserSessions[] = [];
   afterAll(async () => {
     await Promise.all(sessions.map((session) => session.close()));

@@ -31,7 +31,7 @@ afterAll(async () => {
 (handle ? describe : describe.skip)('wired assistant through HTTP and pinned Hermes', () => {
   test('skills, handled recall, delta and correction repair reach the model from bootstrap', async () => {
     if (!handle) return;
-    const root = await mkdtemp(join(tmpdir(), 'melete-w15-wired-'));
+    const root = await mkdtemp(join(tmpdir(), 'melete-wired-assistant-'));
     const spaces = join(root, 'spaces');
     const seedQueue = await startQueue(handle.url);
     const db = { ...handle, boss: seedQueue.boss };
@@ -63,7 +63,7 @@ afterAll(async () => {
     expect(seeded.status).toBe('committed');
     const seat = await head(db, scope, 'pref.travel.seat');
     if (!seat) throw new Error('Missing seeded seat preference');
-    const password = 'w15-local-proof-password';
+    const password = 'wired-local-proof-password';
     const passwordHash = await Bun.password.hash(password, { algorithm: 'argon2id' });
     await handle.sql`update owner set email = 'wired@example.test', password_hash = ${passwordHash}`;
     // Login reads the principal created by the fixture, not the singleton setup record.
@@ -84,8 +84,8 @@ afterAll(async () => {
         PORT: '3170',
         MELETE_RUNTIME_ADAPTER: 'hermes',
         MELETE_RUNTIME_SUPERVISOR: 'process',
-        MELETE_CAPABILITY_KEY: 'w15-capability-key-32-characters-long',
-        MELETE_APPROVAL_KEY: 'w15-approval-key-32-characters-long',
+        MELETE_CAPABILITY_KEY: 'wired-capability-key-32-characters-long',
+        MELETE_APPROVAL_KEY: 'wired-approval-key-32-characters-long',
         MELETE_SPACES_DIR: spaces,
         MELETE_WORK_DIR: join(root, 'work'),
         MELETE_BROKER_BIND: '127.0.0.1:3172',
@@ -146,7 +146,7 @@ afterAll(async () => {
           title: 'Travel plan',
           objective: 'travel',
         },
-        { 'Idempotency-Key': 'w15-wired-job' },
+        { 'Idempotency-Key': 'wired-assistant-job' },
       );
       expect(created.status).toBe(201);
       const body = (await created.json()) as { job: { id: string } };
@@ -205,7 +205,7 @@ afterAll(async () => {
         content: 'window',
         valid_from: '2026-09-05T00:00:00Z',
         valid_until: null,
-        idempotency_key: 'w15-window',
+        idempotency_key: 'wired-assistant-window',
       });
       expect(corrected.status).toBe(200);
       await waitForAttempt(2);
@@ -259,7 +259,7 @@ afterAll(async () => {
       await service.close();
       if (
         resolve(root).startsWith(
-          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-w15-wired-`,
+          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-wired-assistant-`,
         )
       )
         await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

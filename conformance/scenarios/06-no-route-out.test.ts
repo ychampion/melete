@@ -90,7 +90,7 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
       'melete',
       'bun',
       '-e',
-      "const fs=await import('node:fs/promises');const p='/work/'+process.argv[1];await fs.mkdir(p,{mode:0o2770});await fs.writeFile(p+'/secret.txt','w6-sibling-canary');if(await fs.readFile(p+'/secret.txt','utf8')!=='w6-sibling-canary')throw Error('fixture absent')",
+      "const fs=await import('node:fs/promises');const p='/work/'+process.argv[1];await fs.mkdir(p,{mode:0o2770});await fs.writeFile(p+'/secret.txt','sandbox-sibling-canary');if(await fs.readFile(p+'/secret.txt','utf8')!=='sandbox-sibling-canary')throw Error('fixture absent')",
       sibling,
     );
     expect(result).toBe('');
@@ -144,14 +144,14 @@ describe.skipIf(!composeEnabled)('conformance 6: Linux runtime has no route out'
     hostControl = Bun.serve({
       hostname: '0.0.0.0',
       port: 0,
-      fetch: () => new Response('w6-host-control'),
+      fetch: () => new Response('sandbox-host-control'),
     });
     const network = Object.entries(melete.NetworkSettings.Networks).find(([name]) =>
       name.endsWith('_edge'),
     )?.[1];
     expect(network?.Gateway).toBeTruthy();
     expect(await (await fetch(`http://${network?.Gateway}:${hostControl.port}`)).text()).toBe(
-      'w6-host-control',
+      'sandbox-host-control',
     );
     expect(
       (await probe({ mode: 'connect', host: network?.Gateway, port: hostControl.port })).reachable,

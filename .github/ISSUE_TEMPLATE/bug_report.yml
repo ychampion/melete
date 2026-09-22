@@ -1,0 +1,43 @@
+name: Bug report
+description: Something behaves differently from what the docs or tests describe.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report security problems privately through the repository's Security tab, as described in SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that shows it. A failing test or command is ideal.
+      placeholder: |
+        1. bun run ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: The commit you ran, from `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Bun version, and how Postgres was provided (embedded or `DATABASE_URL`). Paste the output of `bun run doctor` if it is relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output, with credentials and personal data removed.
+      render: text

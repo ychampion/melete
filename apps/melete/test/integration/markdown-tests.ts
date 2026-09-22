@@ -37,7 +37,7 @@ const source = (identity = 'first', text = 'our trip is in July') => ({
 });
 async function fixture(db: TestDatabase) {
   const scope = await createScope(db);
-  const root = await mkdtemp(join(tmpdir(), 'melete-w7-spaces-'));
+  const root = await mkdtemp(join(tmpdir(), 'melete-markdown-spaces-'));
   const space = join(root, scope.spaceId);
   await mkdir(space);
   await exec('git', ['-C', space, 'init', '-b', 'memory-view'], { windowsHide: true });
@@ -75,7 +75,7 @@ async function fixture(db: TestDatabase) {
       await journal.close();
       if (
         resolve(root).startsWith(
-          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-w7-spaces-`,
+          `${resolve(tmpdir())}${process.platform === 'win32' ? '\\' : '/'}melete-markdown-spaces-`,
         )
       )
         await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

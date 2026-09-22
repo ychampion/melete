@@ -25,7 +25,7 @@ async function fixture(workers = false) {
   const handle = await testDatabase();
   if (!handle) throw new Error('Postgres unavailable');
   const queue = await startQueue(handle.url);
-  const directory = await mkdtemp(join(tmpdir(), 'melete-w6-memory-'));
+  const directory = await mkdtemp(join(tmpdir(), 'melete-memory-bootstrap-'));
   const options = {
     sql: handle.sql,
     boss: queue.boss,
@@ -51,7 +51,7 @@ async function fixture(workers = false) {
       const setup = await app.request('/setup', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'w6@example.test', password: 'fixture-password' }),
+        body: JSON.stringify({ email: 'bootstrap@example.test', password: 'fixture-password' }),
       });
       expect(setup.status).toBe(201);
       const cookie = setup.headers.get('set-cookie')?.split(';')[0];
@@ -77,7 +77,7 @@ async function fixture(workers = false) {
 }
 
 const observation = (identity: string, slug: string, email: string) => ({
-  stream: 'w6-contact',
+  stream: 'bootstrap-contact',
   source_identity: identity,
   source_version: '1',
   source_type: 'observation',

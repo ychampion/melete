@@ -15,7 +15,7 @@ let server: Promise<TestServer | null> | undefined;
 const templates = new Map<string, Promise<string>>();
 let globalCleanup = false;
 let fixtures = 0;
-const tempPrefix = 'melete-w1-pg-';
+const tempPrefix = 'melete-pg-';
 
 function trace(event: string) {
   if (process.env.MELETE_FIXTURE_TIMINGS === '1') {
@@ -297,7 +297,7 @@ export async function resetTestRows(
   let tables = resetTables.get(sql)?.get(key);
   if (!tables) {
     const [database] = await sql`select current_database() as name`;
-    if (!/^(melete_test_|w7_)/.test(String(database?.name)))
+    if (!/^melete_test_/.test(String(database?.name)))
       throw new Error('Test resets require a disposable database.');
     tables = await sql<ResetTable[]>`with recursive related as (
       select c.oid, array[c.oid] as path, 0 as depth from pg_class c join pg_namespace n on n.oid = c.relnamespace

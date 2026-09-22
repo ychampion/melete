@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { connect } from 'node:net';
 import { connect as connectTls } from 'node:tls';
+import { selfSignedPair } from './fixtures/self-signed.ts';
 import {
   createModelGateway,
   fakeProvider,
@@ -526,8 +526,10 @@ describe('CONNECT is metered TLS termination', () => {
   });
 
   test('allowed TLS CONNECT injects a key, meters each inner request, and rejects a different Host', async () => {
-    const cert = readFileSync(new URL('./fixtures/test-only-cert.pem', import.meta.url));
-    const key = readFileSync(new URL('./fixtures/test-only-key.pem', import.meta.url));
+    // Built here rather than committed: the client below verifies the host name
+    // against this certificate, so it has to name the provider host, and a
+    // committed key for a real host is what every secret scanner looks for.
+    const { cert, key } = selfSignedPair('api.openai.com');
     const { port, budget } = await start({
       connectTls: (host) => (host === 'api.openai.com' ? { cert, key } : undefined),
       fetch: async (request) => {

@@ -10,19 +10,15 @@ work/
 **/.index/
 .gstack/
 .omx/
-.agents/w2-tests.log
+.agents/*.log
 deploy/config/gateway-tls/
-.agents/w7-tests.log
-.agents/w10c-*.log
-.agents/w15-*.log
 .hermes-src/
 .hermes-venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 conformance/memory/report.json
-.agents/w10b-*.log
-.agents/w10b-measurements.json
+.agents/browser-measurements.json
 .eval-state
 
 # wrangler dev writes its local state and bundles here.
