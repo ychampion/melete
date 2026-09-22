@@ -331,3 +331,24 @@ describe('an address that is not a web address', () => {
     }
   });
 });
+
+describe('a mailbox sender', () => {
+  test('is the account name when that is an address, so a person types it once', () => {
+    const { from: _, ...rest } = mail.mail;
+    const resolved = connectionInstallation(createConnectionRequest.parse({ ...mail, mail: rest }));
+    expect(
+      resolved.ok && resolved.value.kind === 'mail' ? resolved.value.config.from : resolved,
+    ).toBe('owner@example.test');
+  });
+
+  test('is asked for when the account name is not an address', () => {
+    const { from: _, ...rest } = mail.mail;
+    const resolved = connectionInstallation(
+      createConnectionRequest.parse({ ...mail, mail: { ...rest, username: 'owner' } }),
+    );
+    expect(resolved).toEqual({
+      ok: false,
+      error: 'Send as is needed when the account name is not an email address.',
+    });
+  });
+});

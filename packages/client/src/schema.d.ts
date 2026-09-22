@@ -1753,7 +1753,7 @@ export interface paths {
                         label: string;
                         mail?: {
                             /** Format: email */
-                            from: string;
+                            from?: string;
                             imap: {
                                 host: string;
                                 port: number;

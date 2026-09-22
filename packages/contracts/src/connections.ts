@@ -72,6 +72,10 @@ export const mailConnectionConfig = z
   })
   .strict();
 export type MailConnectionConfig = z.infer<typeof mailConnectionConfig>;
+/** As installed: the sender may be left out when the account name is an address. */
+const mailConnectionRequest = mailConnectionConfig.extend({
+  from: z.email().max(320).optional(),
+});
 
 export const passwordCredentials = z.object({ password: z.string().min(1).max(1024) }).strict();
 export type PasswordCredentials = z.infer<typeof passwordCredentials>;
@@ -120,7 +124,7 @@ export const createConnectionRequest = z.object({
    */
   credentials: z.record(z.string(), z.string()).optional(),
   mcp: mcpConnectionConfig.optional(),
-  mail: mailConnectionConfig.optional(),
+  mail: mailConnectionRequest.optional(),
   caldav: caldavConnectionConfig.optional(),
   ics: icsConnectionConfig.optional(),
 });
@@ -179,14 +183,18 @@ export function connectionInstallation(
   }
   const credentials = passwordCredentials.safeParse(request.credentials);
   if (!credentials.success) return err(`A ${kind} connection needs credentials.password only.`);
-  if (kind === 'mail' && request.mail)
+  if (kind === 'mail' && request.mail) {
+    const from = request.mail.from ?? request.mail.username;
+    if (!z.email().safeParse(from).success)
+      return err('Send as is needed when the account name is not an email address.');
     return ok({
       kind,
       provider: 'imap',
-      config: request.mail,
+      config: { ...request.mail, from },
       credentials: credentials.data,
       scopes,
     });
+  }
   if (kind === 'caldav' && request.caldav)
     return ok({
       kind,
@@ -335,7 +343,12 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
     fixed: [{ path: 'provider', value: 'imap' }],
     fields: [
       text('mail.username', 'Account name', { placeholder: 'you@example.com' }),
-      text('mail.from', 'Send as', { input: 'email', placeholder: 'you@example.com' }),
+      text('mail.from', 'Send as', {
+        input: 'email',
+        required: false,
+        placeholder: 'you@example.com',
+        help: 'Left empty, the account name, when that is an email address.',
+      }),
       text('credentials.password', 'Password', {
         input: 'password',
         secret: true,

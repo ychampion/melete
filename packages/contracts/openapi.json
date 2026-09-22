@@ -9830,7 +9830,6 @@
                     },
                     "required": [
                       "username",
-                      "from",
                       "imap",
                       "smtp"
                     ],
