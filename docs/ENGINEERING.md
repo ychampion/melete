@@ -1,7 +1,7 @@
 # Engineering evidence
 
-This page maps Melete's core implementation properties to the tests that check
-them, and states the scope of each.
+This page lists what Melete's service guarantees, the code behind each
+guarantee, the tests that check it, and its scope.
 
 ## E1. Declared dependencies and repair briefs
 
@@ -12,10 +12,9 @@ outputs without attribution keep the conservative rule.
 Evidence in `properties-e1-tests.ts`:
 `a correction marks stale exactly the output that cited it and says what to
 repair` and `the next attempt is handed the repair brief in its inputs`.
-The attribution utility matches supported literal values rather than meaning.
-An output whose manifest names no dependency, which is mostly chat prose, is
-recorded as unattributed and invalidated conservatively rather than refused by
-the broker.
+Attribution matches the literal values an output cites. An output whose
+manifest names no dependency, which is mostly chat prose, is accepted, recorded
+as unattributed and invalidated conservatively.
 
 ## E2. Keyed heads and disputes
 
@@ -45,7 +44,7 @@ the head`. Validation is structural: it confirms that a keyed value sits in the
 exact span it cites, while the reading of dates, times and other values rests
 with the extractor and with the owner's corrections.
 
-## E4. Origin reaches the admission gate
+## E4. Origin reaches admission
 
 The effect boundary installs `createMemoryTrustResolver`. It resolves values
 against handles recorded for the job and returns origin to the broker.
@@ -58,9 +57,8 @@ the owner is not` in `properties-e4-tests.ts`;
 `broker-seam-tests.ts`; and `an approval given before the origin was known
 does not count` in `effects.test.ts`.
 The seam test keeps a standing grant in force, so the origin check alone has to
-hold the page's address back. The check covers the recognised field
-vocabulary; a destination in an encoded form or an unrecognised field is not
-identified as a destination.
+hold the page's address back. The check applies to the recognised field
+vocabulary, read in its plain form.
 
 ## E5. Effect identity across attempts
 
@@ -73,20 +71,17 @@ Evidence in `effects.test.ts`:
 `an attempt killed before dispatch is replaced, and the same send happens once`,
 `an attempt killed after dispatch with a lost acknowledgement re-proposes
 into unknown`, and `the database itself refuses a second action for one
-intent key`. These tests replace the attempt through fixture state rather than
-killing a deployed runtime; conformance 1 and 5 kill real child processes on a
-fault schedule. Identity follows the canonical payload, so effects worded
+intent key`. These tests replace the attempt through fixture state;
+conformance scenarios 1 and 5 kill real child processes on a fault schedule. Identity follows the canonical payload, so effects worded
 differently are distinct actions, each with its own approval.
 
 ## E6. Memory scenarios with a withheld-memory arm
 
 The [memory runner](../conformance/memory/README.md) calls the real memory
 functions against disposable Postgres, with scripted extraction and answers
-over local HTTP. It runs the memory service directly rather than the normal
-service entry point or a Compose installation. Ten executable scenarios span
-seven families. An eighth family, procedure transfer, holds one scenario
-recorded as a todo and has no executed case here, because this harness does not
-enable promotion; the [learning](LEARNING.md) tests cover it instead.
+over local HTTP, driving the memory service directly. Ten executable scenarios
+span seven families. An eighth family, procedure transfer, needs promotion, so
+the [learning](LEARNING.md) tests exercise it.
 
 Each executable scenario requiring memory runs again with empty recall; a
 scenario that still passes fails the suite as `memory not exercised`.
@@ -95,9 +90,9 @@ The break tests in `conformance/memory/breaks.test.ts` include
 `accepting a nearby-message citation turns the source-authority family red`,
 and `skipping the restriction replay turns the forgetting family red`.
 
-These measure scripted recall behaviour, obsolete answers, unsupported answers,
-needless questions and local latency, so they characterise the memory service
-rather than a model's output quality or performance on a large corpus.
+These measure scripted recall, obsolete answers, unsupported answers, needless
+questions and local latency: they characterise the memory service itself.
+[Evaluation](EVALS.md) measures answer quality with real models.
 
 ## E7. Questions and notifications
 
