@@ -500,6 +500,10 @@ export async function bootstrap(
             });
           }
         : undefined;
+    // Automatic memory: what a person says in chat is read by the memory model
+    // through the gateway, within a per-person daily budget.
+    if (handle && queue && options.workers !== false)
+      memoryGateway = await configuredMemoryGateway(handle.sql, env, options.fakeProvider);
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
@@ -507,6 +511,7 @@ export async function bootstrap(
         restrictionsDir: env.MELETE_RESTRICTIONS_DIR,
         workers: options.workers,
         onJobRecompute: wakeRecomputedJob,
+        gateway: memoryGateway?.gateway,
       });
     }
     if (jobs) {
@@ -546,12 +551,6 @@ export async function bootstrap(
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
         // Memory is part of every Postgres-backed service, whichever runtime
         // carries the attempt; the deploy lane's docker path starts its own.
-        // Automatic memory: what a person says in chat is read by the memory
-        // model through the gateway, within a per-person daily budget.
-        memoryGateway =
-          options.workers === false
-            ? null
-            : await configuredMemoryGateway(handle.sql, env, options.fakeProvider);
         memory = await startServiceMemory(
           handle.sql,
           queue.boss,

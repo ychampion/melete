@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
+import { startChatCapture } from './capture.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
+import type { ExtractionGateway } from './extract.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
 import { startJobRecompute } from './recompute.ts';
@@ -19,6 +21,8 @@ type DeploymentMemoryOptions = {
   workers?: boolean;
   /** Wakes a job memory invalidated; left out, invalidations wait for the runner's scan. */
   onJobRecompute?: (jobId: string) => Promise<void>;
+  /** Reads what people say in chat; without one, structured observations only. */
+  gateway?: ExtractionGateway;
 };
 
 const spaceId = prefixedId('sp');
@@ -152,8 +156,27 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   await openJournal(options.sql, journal);
   await provisionCatalog(options.sql);
   let service: Awaited<ReturnType<typeof startMemoryService>> | undefined;
+  const scopeForJob = resolveJobScope(options.sql, journal);
+  let stopCapture: (() => Promise<void>) | undefined;
   if (options.workers === false) await restoreMemory(options.sql, journal);
-  else service = await startMemoryService({ sql: options.sql, boss: options.boss, journal });
+  else {
+    const onError = (code: string) => process.stderr.write(`memory: ${code}\n`);
+    service = await startMemoryService({
+      sql: options.sql,
+      boss: options.boss,
+      journal,
+      gateway: options.gateway,
+      onError,
+    });
+    // What a person says in chat is offered to their memory with no step of theirs.
+    stopCapture = startChatCapture({
+      sql: options.sql,
+      boss: options.boss,
+      journal,
+      scopeForJob,
+      onError,
+    });
+  }
   const recompute = options.onJobRecompute
     ? startJobRecompute(options.sql, options.onJobRecompute)
     : undefined;
@@ -164,9 +187,10 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   };
   return {
     routes,
-    scopeForJob: resolveJobScope(options.sql, journal),
+    scopeForJob,
     close: async () => {
       await recompute?.stop();
+      await stopCapture?.();
       await service?.stop();
     },
   };

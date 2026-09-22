@@ -274,9 +274,20 @@ withDb('automatic memory from chat', () => {
       const job = await conversation(db, scope);
       await say(db, job, 'My sister Maya is on +351 912 345 678.');
       await captureChat(capture);
+      // The Compose path resolves every job to the owner's scope; the speaker is
+      // still whoever the job belongs to, and a member's job is not the owner's.
+      const memberId = newId('own');
+      await db.sql`insert into principal (id, email) values (${memberId}, ${`${memberId}@example.test`})`;
+      const theirs = await conversation(db, scope);
+      await db.sql`update job set principal_id = ${memberId} where id = ${theirs}`;
+      await say(db, theirs, 'My sister Maya is on +351 912 345 678.');
+      await captureChat({ ...capture, scopeForJob: scopeFor(db, scope) });
       const [row] =
         await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
       expect(row?.n).toBe(0);
+      const outcomes =
+        await db.sql`select outcome from memory_capture where job_id in (${job}, ${theirs}) order by event_seq`;
+      expect(outcomes.map((entry) => entry.outcome)).toEqual(['skipped:member', 'skipped:member']);
     } finally {
       await journal.close();
     }
@@ -306,9 +317,11 @@ withDb('automatic memory from chat', () => {
           },
           { ownerId, spaceId: 'sp_budget', workId },
         );
-      expect(await ask('w1')).toBe('{"proposals":[]}');
-      expect(await ask('w2')).toBe('{"proposals":[]}');
-      expect(await ask('w3').catch((error: Error) => error.message)).toBe('memory_daily_budget');
+      expect(await ask('first-call')).toBe('{"proposals":[]}');
+      expect(await ask('second-call')).toBe('{"proposals":[]}');
+      expect(await ask('third-call').catch((error: Error) => error.message)).toBe(
+        'memory_daily_budget',
+      );
       // Another person's budget is their own.
       const other = await opened.gateway
         .chat(
@@ -317,7 +330,7 @@ withDb('automatic memory from chat', () => {
             max_tokens: 100,
             signal: AbortSignal.timeout(10_000),
           },
-          { ownerId: newId('own'), spaceId: 'sp_budget', workId: 'w4' },
+          { ownerId: newId('own'), spaceId: 'sp_budget', workId: 'fourth-call' },
         )
         .catch((error: Error) => error.message);
       expect(other).toBe('{"proposals":[]}');

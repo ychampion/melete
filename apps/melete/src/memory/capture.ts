@@ -165,7 +165,17 @@ async function captureOne(
       return { outcome: 'skipped:scope_denied', sourceId: null };
     throw error;
   }
-  if (scope.role !== 'owner' || scope.principalId !== row.principal_id)
+  // Memory in a space is its owner's. The speaker is whoever the job belongs
+  // to, and only the space's owner speaking is kept, whichever runtime path
+  // built the scope.
+  const [space] =
+    await sql`select coalesce(s.owner_principal_id, (select id from owner limit 1)) as owner_id
+      from space s where s.id = ${row.space_id}`;
+  if (
+    scope.role !== 'owner' ||
+    space?.owner_id !== row.principal_id ||
+    (scope.principalId !== undefined && scope.principalId !== row.principal_id)
+  )
     return { outcome: 'skipped:member', sourceId: null };
   const intent = chatIntent(text);
   if (intent.kind === 'skip') return { outcome: 'skipped:asked', sourceId: null };
