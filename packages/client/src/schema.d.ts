@@ -6211,8 +6211,8 @@ export interface paths {
                             /** @enum {string} */
                             status: "complete" | "degraded" | "unavailable";
                             token_budget: {
-                                /** @constant */
-                                counter: "utf8-bytes-upper-bound-v1";
+                                /** @enum {string} */
+                                counter: "utf8-bytes-upper-bound-v1" | "utf8-bytes-quarter-v1";
                                 limit: components["schemas"]["__schema242"];
                                 used: components["schemas"]["__schema244"];
                             };

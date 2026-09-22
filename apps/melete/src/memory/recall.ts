@@ -129,20 +129,52 @@ export function asKnowledge(item: RecallItem): KnowledgeExcerpt {
     },
   };
 }
-/** UTF-8 byte count is a conservative tokenizer-independent bound, including citations and framing. */
+export const TOKEN_COUNTER = 'utf8-bytes-quarter-v1' as const;
+/**
+ * Tokens for a value as delivered, estimated as a quarter of its UTF-8 bytes:
+ * the estimate the model gateway charges input by. Counting every byte as a
+ * token left room for two or three memories in a budget meant for a dozen.
+ */
+export const knowledgeTokens = (value: unknown) =>
+  Math.ceil(Buffer.byteLength(JSON.stringify(value), 'utf8') / 4);
+/** The larger of the delivered excerpt and the recall item, with citations and framing. */
 export function itemTokens(item: RecallItem) {
-  return (
-    Math.max(
-      Buffer.byteLength(JSON.stringify(asKnowledge(item))),
-      Buffer.byteLength(JSON.stringify(item)),
-    ) + 2
-  );
+  return Math.max(knowledgeTokens(asKnowledge(item)), knowledgeTokens(item)) + 2;
 }
 
-/** Use the same word boundaries as the key-bearing lexical index. */
-export function lexicalQuery(query: string): string {
+/** Words that say nothing about which memory a request needs. */
+const STOPWORDS = new Set(
+  (
+    'a an and are as at be but by can could do does for from had has have he her his how i if in ' +
+    'into is it its me my of on or our please she so that the their them then there these they ' +
+    'this to up us was we were what when where which who why will with would you your'
+  ).split(' '),
+);
+const MAX_QUERY_TERMS = 32;
+
+/**
+ * A request is a sentence, not a list of words a memory must all contain. The
+ * lexical query matches any meaningful word of it (ranked by how many match and
+ * how closely), with the same word boundaries as the key-bearing index: a key
+ * or dotted name is split into its parts, and an address stays whole.
+ * Returns a `to_tsquery` expression, or null when nothing is left to match.
+ */
+export function lexicalQuery(query: string): string | null {
+  const terms = lexicalTerms(query);
+  // Terms hold only letters, digits and @._+-, so quoting each one is enough.
+  return terms.length ? terms.map((term) => `'${term}'`).join(' | ') : null;
+}
+/** The meaningful words of a request, lower-cased and split as the index splits them. */
+export function lexicalTerms(query: string): string[] {
   const candidate = query.trim();
-  return memoryKey.safeParse(candidate).success ? candidate.replace(/[.:]/g, ' ') : query;
+  const text = memoryKey.safeParse(candidate).success ? candidate.replace(/[.:]/g, ' ') : query;
+  const terms = new Set<string>();
+  for (const word of text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}@._+-]*/gu) ?? []) {
+    const parts = word.includes('@') ? [word.replace(/[._+-]+$/, '')] : word.split(/[._+-]+/);
+    for (const part of parts)
+      if (part.length > 1 && !STOPWORDS.has(part) && terms.size < MAX_QUERY_TERMS) terms.add(part);
+  }
+  return [...terms];
 }
 
 export async function lexicalCandidates(
@@ -153,11 +185,13 @@ export async function lexicalCandidates(
   audience: ReadAudience,
 ): Promise<Candidate[]> {
   const at = request.at ?? new Date().toISOString();
+  const query = lexicalQuery(request.query);
+  if (!query) return [];
   const rows =
-    await tx`select i.claim_id, i.revision, ts_rank_cd(i.tokens, plainto_tsquery('simple', ${lexicalQuery(request.query)})) as score
+    await tx`select i.claim_id, i.revision, ts_rank_cd(i.tokens, to_tsquery('simple', ${query})) as score
     from memory_index_entries i join memory_claims c on c.id = i.claim_id join memory_revisions r on r.claim_id = i.claim_id and r.revision = i.revision
     where i.space_id = ${scope.spaceId} and i.generation = ${manifestGeneration} and not c.hidden and c.audience = any(${audience.audiences})
-      and r.status <> 'retracted' and i.tokens @@ plainto_tsquery('simple', ${lexicalQuery(request.query)})
+      and r.status <> 'retracted' and i.tokens @@ to_tsquery('simple', ${query})
       and (${request.mode === 'historical'} or (c.head_revision = r.revision and r.status in ('active','disputed') and r.kind <> 'historical' and r.valid_from <= ${at} and (r.valid_until is null or r.valid_until > ${at})))
       and (${request.mode !== 'historical' || !request.at} or (r.valid_from <= ${at} and (r.valid_until is null or r.valid_until > ${at})))
     order by score desc, i.claim_id, i.revision desc limit ${request.path === 'investigative' ? 200 : 100}`;
@@ -175,6 +209,8 @@ async function supplementalCandidates(
   audience: ReadAudience,
 ): Promise<Candidate[]> {
   const at = request.at ?? new Date().toISOString();
+  const query = lexicalQuery(request.query);
+  if (!query) return [];
   const rows = await tx`select c.id as claim_id, r.revision, c.domain_key, b.content
     from memory_claims c join memory_revisions r on r.claim_id = c.id join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${scope.spaceId} and not c.hidden and c.audience = any(${audience.audiences}) and r.status <> 'retracted' and r.data_revision > ${coverage}
@@ -192,7 +228,7 @@ async function supplementalCandidates(
   }
   const matches =
     await tx`select claim_id, revision, 0.5 as score from jsonb_to_recordset(${JSON.stringify(fresh)}::text::jsonb) as fresh(claim_id text, revision integer, text text)
-    where to_tsvector('simple', text) @@ plainto_tsquery('simple', ${lexicalQuery(request.query)})`;
+    where to_tsvector('simple', text) @@ to_tsquery('simple', ${query})`;
   return matches.map((row) => ({
     claim_id: row.claim_id,
     revision: row.revision,
@@ -273,9 +309,42 @@ const empty = (
     reason,
   },
   recipe,
-  token_budget: { limit: request.max_tokens, used: 0, counter: 'utf8-bytes-upper-bound-v1' },
+  token_budget: { limit: request.max_tokens, used: 0, counter: TOKEN_COUNTER },
 });
 
+/**
+ * What an attempt recalls by: the person's newest words first, then the job's
+ * objective. A conversation's objective is its title, so recalling by it alone
+ * would answer every later message with what the first one was about.
+ */
+export function attemptRecallQuery(bundle: {
+  job: { objective: string };
+  inputs: { new_user_messages: { content: string }[] };
+}): string {
+  const said = bundle.inputs.new_user_messages.map((message) => message.content).reverse();
+  return [...said, bundle.job.objective].join('\n').slice(0, 2000);
+}
+export const PROFILE_SIZE = 8;
+/**
+ * The preferences every attempt carries, newest first, read from the claims
+ * themselves. The profile view is rebuilt behind every write, so reading it
+ * would drop every preference from attempts that start before the rebuild, or
+ * for good when a rebuild keeps failing.
+ */
+export async function profileCandidates(
+  tx: MemoryTx,
+  scope: MemoryScope,
+  audiences: readonly string[],
+): Promise<Candidate[]> {
+  if (!audiences.length) return [];
+  const rows = await tx`select c.id as claim_id, r.revision from memory_claims c
+    join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
+    where c.space_id = ${scope.spaceId} and not c.hidden and c.audience = any(${[...audiences]})
+      and r.kind = 'preference' and r.status in ('active','disputed')
+      and r.valid_from <= clock_timestamp() and (r.valid_until is null or r.valid_until > clock_timestamp())
+    order by r.data_revision desc, c.id limit ${PROFILE_SIZE}`;
+  return rows.map((row) => ({ claim_id: row.claim_id, revision: row.revision, score: 1 }));
+}
 /** A bounded read revalidates every item under the same lock that protects corrections. */
 export async function recall(
   sql: MemorySql,
@@ -379,12 +448,9 @@ export async function recall(
           const prior = merged.get(key);
           merged.set(key, { ...candidate, score: (prior?.score ?? 0) + 1 / (60 + rank) });
         });
-      if (options.includeProfile && request.mode === 'current') {
-        const [profile] =
-          await tx`select items from memory_profile where space_id = ${scope.spaceId} and not stale`;
-        for (const item of (profile?.items ?? []) as { claim_id: string; revision: number }[])
+      if (options.includeProfile && request.mode === 'current')
+        for (const item of await profileCandidates(tx, scope, audience.audiences))
           merged.set(`${item.claim_id}:${item.revision}`, { ...item, score: 1 });
-      }
       const items: RecallItem[] = [];
       let used = 0;
       let truncated = supplement.length > (request.path === 'investigative' ? 200 : 100);
@@ -417,7 +483,7 @@ export async function recall(
           reason: lag ? 'index_lag' : truncated ? 'budget' : 'ready',
         },
         recipe,
-        token_budget: { limit: request.max_tokens, used, counter: 'utf8-bytes-upper-bound-v1' },
+        token_budget: { limit: request.max_tokens, used, counter: TOKEN_COUNTER },
       } as RecallResult;
     });
   } catch (error) {
