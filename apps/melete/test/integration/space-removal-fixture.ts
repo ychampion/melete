@@ -214,6 +214,26 @@ export async function seedSpace(
     select ${trialJobId}, ${candidateId}, id, 'bhash', true, now() + interval '1 hour'
     from procedure_evaluation where candidate_id = ${candidateId} limit 1`;
 
+  // The companies map: a scan, the message text it stored, the company it
+  // found and a ledger item quoting that text. `job_id` and `scan_id` on the
+  // item are plain text with no constraint, so nothing but the sweep takes it.
+  const scanId = newId('scn');
+  await sql`insert into company_scan (id, space_id, principal_id, status)
+    values (${scanId}, ${spaceId}, ${principalId}, 'done')`;
+  await sql`insert into company_message
+    (id, space_id, principal_id, message_id, subject, from_address, received_at, body)
+    values (${newId('msg')}, ${spaceId}, ${principalId}, '<m1@example.test>', 'Invoice',
+      'billing@example.test', now(), 'Your invoice for 148.00 is due on the first.')`;
+  const companyId = newId('co');
+  await sql`insert into company (id, space_id, principal_id, name, domain, first_seen_at, last_seen_at)
+    values (${companyId}, ${spaceId}, ${principalId}, 'Example', 'example.test', now(), now())`;
+  await sql`insert into ledger_item
+    (id, space_id, principal_id, company_id, kind, direction, confidence, evidence, job_id,
+     summary, scan_id, dedupe_key)
+    values (${newId('li')}, ${spaceId}, ${principalId}, ${companyId}, 'invoice', 'you_pay', 'high',
+      ${json([{ message_id: '<m1@example.test>', quote: 'Your invoice for 148.00' }])}::text::jsonb,
+      ${jobId}, 'Invoice due', ${scanId}, 'invoice:example.test')`;
+
   await seedMemory(sql, { spaceId, ownerId, jobId, attemptId });
   const claim = await sql<
     { id: string }[]

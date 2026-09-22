@@ -20,6 +20,7 @@ import { eq } from 'drizzle-orm';
 import type { PgBoss } from 'pg-boss';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../../src/api/errors.ts';
+import { PostgresCompanyStore } from '../../src/companies/repository.ts';
 import { artifactsManifest } from '../../src/connectors/artifacts.ts';
 import { browserManifest } from '../../src/connectors/browser.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from '../../src/connectors/builtin.ts';
@@ -175,6 +176,82 @@ async function removeCompletely(seeded: SeededSpace, overrides: Overrides = {}) 
   const finished = await removals.run(fenced.id);
   return { removals, fenced, finished };
 }
+
+/** The phases after the fence, in the order the sweep runs them. */
+const SWEEP_ORDER: readonly RemovalPhase[] = [
+  'sessions',
+  'journal',
+  'sandboxes',
+  'browser',
+  'runtime',
+  'files',
+  'operational',
+  'principals',
+  'memory',
+  'verify',
+  'space',
+];
+
+const MEMORY: readonly string[] = [
+  'memory_claims',
+  'memory_contexts',
+  'memory_contradictions',
+  'memory_dense_entries',
+  'memory_derivations',
+  'memory_index_entries',
+  'memory_index_manifest',
+  'memory_invalidations',
+  'memory_outbox',
+  'memory_outputs',
+  'memory_prepared',
+  'memory_profile',
+  'memory_proposals',
+  'memory_questions',
+  'memory_rejections',
+  'memory_repair_briefs',
+  'memory_sources',
+  'memory_spaces',
+  'memory_streams',
+  'memory_suppressions',
+  'memory_work',
+];
+
+/**
+ * Every table that points at a space, and the phase that empties it for that
+ * space. Checked against the catalog and against what each phase really
+ * removes, by `every_space_table_is_removed_by_its_named_phase`.
+ */
+const REMOVED_BY: Record<string, RemovalPhase> = {
+  // Access ends first: the session loses its selection, the link is deleted.
+  session: 'sessions',
+  magic_link: 'sessions',
+  // Jobs and everything below them, the rows that outlive a job, and what the
+  // space holds apart from its jobs.
+  job: 'operational',
+  artifact: 'operational',
+  browser_recipe_candidate: 'operational',
+  browser_session_binding: 'operational',
+  company: 'operational',
+  company_message: 'operational',
+  company_scan: 'operational',
+  episode: 'operational',
+  experience_profile: 'operational',
+  experience_rule: 'operational',
+  knowledge_record: 'operational',
+  learning_job: 'operational',
+  ledger_item: 'operational',
+  procedure_candidate: 'operational',
+  question: 'operational',
+  skill: 'operational',
+  task: 'operational',
+  // After the jobs and actions that `restrict` them.
+  agent: 'principals',
+  connection: 'principals',
+  secret: 'principals',
+  ...Object.fromEntries(MEMORY.map((table) => [table, 'memory' as const])),
+  // Last, with the space row.
+  space_membership: 'space',
+};
 
 const MANIFESTS: ConnectorManifest[] = [
   artifactsManifest,
@@ -381,6 +458,89 @@ describe.if(handle !== null)('removing a space', () => {
     const { finished } = await removeCompletely(seeded);
     expect(outcome(finished)).toBe('complete');
     expect(finished.blockedReason).toBeNull();
+  });
+
+  test('every_space_table_is_removed_by_its_named_phase — measured one phase at a time, against the catalog', async () => {
+    const seeded = await seed('shared');
+
+    // The inventory is whatever the live database says points at a space: a
+    // foreign key to it, or a `space_id` column with no key behind it. A table
+    // a later migration adds fails here until it is named below.
+    const pointing = await sql<{ name: string }[]>`select distinct conrelid::regclass::text as name
+      from pg_constraint where contype = 'f' and confrelid = 'space'::regclass`;
+    const inventory = new Set([
+      ...pointing.map((row) => row.name),
+      ...(await spaceKeyedTables(sql)),
+    ]);
+    inventory.delete('space_removal');
+    expect([...inventory].sort()).toEqual(Object.keys(REMOVED_BY).sort());
+
+    // And the fixture has something in every one of them, or the measurement
+    // below would prove nothing about it.
+    const before = await rowsLeft(sql, seeded.spaceId);
+    expect(Object.keys(REMOVED_BY).filter((table) => !before[table])).toEqual([]);
+
+    // Halt the sweep after each phase in turn and see what that phase took.
+    const removedBy: Record<string, RemovalPhase> = {};
+    let removalId = '';
+    for (const phase of SWEEP_ORDER) {
+      const halting = new AbortController();
+      const removals = await service({
+        onPhase: (_id, entered) => {
+          if (entered === phase) halting.abort();
+        },
+      });
+      if (!removalId)
+        removalId = (await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger')).id;
+      const halted = await removals.run(removalId, halting.signal);
+      const left = await rowsLeft(sql, seeded.spaceId);
+      for (const table of inventory)
+        if (!left[table] && !removedBy[table]) removedBy[table] = phase;
+      if (phase === 'space') expect(outcome(halted)).toBe('complete');
+    }
+    expect(removedBy).toEqual(REMOVED_BY);
+  });
+
+  test('a_scan_still_reading_cannot_write_into_a_cleared_space — the emptied space stays empty', async () => {
+    const seeded = await seed('personal');
+    const store = new PostgresCompanyStore(db);
+    const owner = { spaceId: seeded.spaceId, principalId: seeded.principalId };
+    const scan = await store.openScan(owner);
+    const message = (id: string) => ({
+      messageId: id,
+      subject: 'Invoice',
+      from: 'billing@example.test',
+      receivedAt: new Date().toISOString(),
+      text: 'Your invoice for 148.00 is due on the first.',
+    });
+    const found = {
+      name: 'Example',
+      domain: 'example.test',
+      monthly_spend_minor: null,
+      currency: null,
+      first_seen_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
+      message_count: 1,
+    };
+    // While the scan is open, it writes.
+    await store.saveMessages(owner, scan.id, [message('<before@example.test>')]);
+
+    // The space is emptied, and keeps its row, so no cascade would help here.
+    const { finished } = await removeCompletely(seeded);
+    expect(outcome(finished)).toBe('complete');
+    expect(finished.kind).toBe('emptied');
+
+    // The scan is still reading in its own time. Nothing it writes now lands.
+    const refusal = (write: Promise<unknown>) =>
+      write.then(
+        () => 'written',
+        (error: unknown) => String(error),
+      );
+    expect(
+      await refusal(store.saveMessages(owner, scan.id, [message('<after@example.test>')])),
+    ).toContain('stopped');
+    expect(await refusal(store.saveCompany(owner, scan.id, found))).toContain('stopped');
+    expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
   });
 
   // ------------------------------------------------------------------

@@ -47,6 +47,10 @@ export async function endSpaceAccess(raw: Sql, spaceId: string, emptied: boolean
  * Phase 7. The four tables whose `job_id` is set to null rather than cascaded
  * go first, by the job ids captured at the fence: left alone they would survive
  * the job that made them, receipts and notification content included.
+ *
+ * Every table that points at the space is named in this phase or a later one
+ * rather than left to the cascade: the verification runs before the space row
+ * goes, and an emptied space keeps its row, so for it the cascade never fires.
  */
 export async function sweepOperational(
   raw: Sql,
@@ -61,6 +65,15 @@ export async function sweepOperational(
       await tx`delete from reply_obligation where job_id = any(${ids})`;
       await tx`delete from notification where job_id = any(${ids})`;
     }
+    // The companies map: the scans, then the ledger items with the quoted
+    // extracts they carry, then the stored message text, then the companies.
+    // A scan still reading the mailbox writes only while it holds its own row,
+    // so deleting the scans first waits out a write in flight and refuses every
+    // one after it.
+    await tx`delete from company_scan where space_id = ${spaceId}`;
+    await tx`delete from ledger_item where space_id = ${spaceId}`;
+    await tx`delete from company_message where space_id = ${spaceId}`;
+    await tx`delete from company where space_id = ${spaceId}`;
     // One statement takes attempts, actions, approvals, events, triggers, the
     // ledger, background operations, repair candidates, tool contexts, turns,
     // milestones, browser bindings and the learning rows below a job.

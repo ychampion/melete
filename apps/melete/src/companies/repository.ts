@@ -12,6 +12,7 @@
 import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
+import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import { company, companyMessage, companyScan, ledgerItem } from './schema.ts';
@@ -62,10 +63,16 @@ export interface CompanyStore {
     },
   ): Promise<void>;
   scan(owner: Owner, scanId: string): Promise<ScanRecord | null>;
-  saveMessages(owner: Owner, messages: readonly StoredMessage[]): Promise<void>;
+  /**
+   * Messages and companies are written for a scan, and only while that scan's
+   * row is there. Removing a space deletes its scans first, so a scan still
+   * reading the mailbox cannot put back what the removal has taken.
+   */
+  saveMessages(owner: Owner, scanId: string, messages: readonly StoredMessage[]): Promise<void>;
   /** Insert or refresh one company and return the id the ledger should cite. */
   saveCompany(
     owner: Owner,
+    scanId: string,
     input: Omit<Company, 'id' | 'space_id'> & { id?: string },
   ): Promise<string>;
   saveItems(owner: Owner, scanId: string, items: readonly LedgerItem[]): Promise<number>;
@@ -221,55 +228,79 @@ export class PostgresCompanyStore implements CompanyStore {
     return row ? scanRecord(row) : null;
   }
 
-  async saveMessages(owner: Owner, messages: readonly StoredMessage[]): Promise<void> {
+  /**
+   * The scan's row, held until the caller's write commits. Deleting the row
+   * waits for that write, and every write after it finds no row and is refused.
+   */
+  private async holdScan(tx: Transaction, owner: Owner, scanId: string): Promise<void> {
+    const [held] = await tx
+      .select({ id: companyScan.id })
+      .from(companyScan)
+      .where(and(ownedScan(owner), eq(companyScan.id, scanId)))
+      .for('share');
+    if (!held) throw new Error('This scan was stopped.');
+  }
+
+  async saveMessages(
+    owner: Owner,
+    scanId: string,
+    messages: readonly StoredMessage[],
+  ): Promise<void> {
     if (!messages.length) return;
-    await this.db
-      .insert(companyMessage)
-      .values(
-        messages.map((message) => ({
-          id: newId('msg'),
-          spaceId: owner.spaceId,
-          principalId: owner.principalId,
-          messageId: message.messageId,
-          subject: message.subject,
-          fromAddress: message.from,
-          receivedAt: new Date(message.receivedAt),
-          body: message.text,
-        })),
-      )
-      // The stored text is what spans were checked against. It is never rewritten.
-      .onConflictDoNothing();
+    await this.db.transaction(async (tx) => {
+      await this.holdScan(tx, owner, scanId);
+      await tx
+        .insert(companyMessage)
+        .values(
+          messages.map((message) => ({
+            id: newId('msg'),
+            spaceId: owner.spaceId,
+            principalId: owner.principalId,
+            messageId: message.messageId,
+            subject: message.subject,
+            fromAddress: message.from,
+            receivedAt: new Date(message.receivedAt),
+            body: message.text,
+          })),
+        )
+        // The stored text is what spans were checked against. It is never rewritten.
+        .onConflictDoNothing();
+    });
   }
 
   async saveCompany(
     owner: Owner,
+    scanId: string,
     input: Omit<Company, 'id' | 'space_id'> & { id?: string },
   ): Promise<string> {
-    const [row] = await this.db
-      .insert(company)
-      .values({
-        id: input.id ?? newId('co'),
-        spaceId: owner.spaceId,
-        principalId: owner.principalId,
-        name: input.name,
-        domain: input.domain,
-        monthlySpendMinor: input.monthly_spend_minor,
-        currency: input.currency,
-        firstSeenAt: new Date(input.first_seen_at),
-        lastSeenAt: new Date(input.last_seen_at),
-        messageCount: input.message_count,
-      })
-      .onConflictDoUpdate({
-        target: [company.spaceId, company.principalId, company.domain],
-        set: {
+    const [row] = await this.db.transaction(async (tx) => {
+      await this.holdScan(tx, owner, scanId);
+      return tx
+        .insert(company)
+        .values({
+          id: input.id ?? newId('co'),
+          spaceId: owner.spaceId,
+          principalId: owner.principalId,
           name: input.name,
+          domain: input.domain,
           monthlySpendMinor: input.monthly_spend_minor,
           currency: input.currency,
+          firstSeenAt: new Date(input.first_seen_at),
           lastSeenAt: new Date(input.last_seen_at),
           messageCount: input.message_count,
-        },
-      })
-      .returning({ id: company.id });
+        })
+        .onConflictDoUpdate({
+          target: [company.spaceId, company.principalId, company.domain],
+          set: {
+            name: input.name,
+            monthlySpendMinor: input.monthly_spend_minor,
+            currency: input.currency,
+            lastSeenAt: new Date(input.last_seen_at),
+            messageCount: input.message_count,
+          },
+        })
+        .returning({ id: company.id });
+    });
     if (!row) throw new Error('company row was not written');
     return row.id;
   }
@@ -465,7 +496,11 @@ export class MemoryCompanyStore implements CompanyStore {
     const row = this.scans.get(scanId);
     return row && this.mine(owner, row) ? row : null;
   }
-  async saveMessages(owner: Owner, messages: readonly StoredMessage[]): Promise<void> {
+  async saveMessages(
+    owner: Owner,
+    _scanId: string,
+    messages: readonly StoredMessage[],
+  ): Promise<void> {
     for (const message of messages) {
       const key = this.key(owner, message.messageId);
       if (!this.messages.has(key)) this.messages.set(key, { ...message, ...owner });
@@ -473,6 +508,7 @@ export class MemoryCompanyStore implements CompanyStore {
   }
   async saveCompany(
     owner: Owner,
+    _scanId: string,
     input: Omit<Company, 'id' | 'space_id'> & { id?: string },
   ): Promise<string> {
     const key = this.key(owner, input.domain);
