@@ -91,6 +91,8 @@ type State = 'stopped' | 'running' | 'crash_loop' | 'closed';
 export class StdioServer {
   private state: State = 'stopped';
   private crashes: number[] = [];
+  /** Every crash ever counted, so one failed start is not counted twice. */
+  private crashTotal = 0;
   private channel?: StdioChannel;
   private idle?: ReturnType<typeof setTimeout>;
   private inflight = 0;
@@ -173,10 +175,12 @@ export class StdioServer {
     this.holdOpen();
     if (this.state === 'crash_loop') return STDIO_REFUSALS.crashLoop;
     if (this.state === 'running' && this.channel) return undefined;
+    const before = this.crashTotal;
     this.starting ??= reopen()
       .catch((error: unknown) => {
-        // A start that never reached a working session counts against the budget too.
-        if (this.state !== 'closed') this.crashed();
+        // A start that never reached a working session counts against the budget too,
+        // once, whether or not the server's own exit was already counted.
+        if (this.current() !== 'closed' && this.crashTotal === before) this.crashed();
         throw error;
       })
       .finally(() => {
@@ -235,6 +239,7 @@ export class StdioServer {
   }
 
   private crashed() {
+    this.crashTotal += 1;
     const now = this.now();
     this.crashes = [...this.crashes.filter((at) => now - at < this.limits.crashWindowMs), now];
     if (this.crashes.length >= this.limits.maxCrashes && this.state !== 'closed') {
