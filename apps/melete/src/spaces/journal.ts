@@ -29,16 +29,21 @@ import type { SpaceRemovalRow } from './schema.ts';
 export async function appendRemovalRecord(
   raw: Sql,
   journal: RestrictionJournal,
-  removal: Pick<SpaceRemovalRow, 'spaceId' | 'epoch'>,
+  removal: Pick<SpaceRemovalRow, 'spaceId' | 'epoch' | 'requestedBy'>,
 ): Promise<RestrictionRecord | null> {
   const spaceId = removal.spaceId;
-  const [space] = await raw<
+  const [memory] = await raw<
     { owner_id: string; eligibility_generation: number; access_generation: number }[]
   >`select owner_id, eligibility_generation, access_generation
     from memory_spaces where space_id = ${spaceId}`;
-  // A space that never held memory has nothing for the replay to re-apply to,
-  // and a record naming a space the replay will never find is dead weight.
-  if (!space) return null;
+  // Written whether or not the space ever held memory: a backup from before the
+  // removal brings back its jobs, receipts and sealed keys either way. Without
+  // a memory row, the owner is the space's own.
+  const [owner] = memory
+    ? [{ id: memory.owner_id }]
+    : await raw<{ id: string | null }[]>`select coalesce(s.owner_principal_id,
+        (select id from owner limit 1)) as id from space s where s.id = ${spaceId}`;
+  if (!owner?.id) return null;
   const written = await journal.read();
   const already = written.find(
     (record) =>
@@ -49,15 +54,16 @@ export async function appendRemovalRecord(
   if (already) return already;
   const record: RestrictionRecord = {
     id: newId('sup'),
-    owner_id: space.owner_id,
+    owner_id: owner.id,
     space_id: spaceId,
     operation: 'remove_space',
     all: true,
     claim_ids: [],
     targets: [],
-    eligibility_cutoff: Number(space.eligibility_generation),
-    access_generation: Number(space.access_generation) + 1,
+    eligibility_cutoff: Number(memory?.eligibility_generation ?? 0),
+    access_generation: Number(memory?.access_generation ?? 0) + 1,
     removal_epoch: removal.epoch,
+    requested_by: removal.requestedBy,
     recorded_at: new Date().toISOString(),
   };
   await journal.append(record);

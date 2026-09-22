@@ -30,19 +30,15 @@ export async function requeueSpaceRemoval(
     where space_id = ${record.space_id}`;
   await tx`update space set removed_at = coalesce(removed_at, now()), removal_epoch = ${epoch}
     where id = ${record.space_id}`;
-  // The restored backup has its jobs and connections again, so they are
-  // captured again rather than read from the record, which carries neither.
-  const jobs = await tx<{ id: string }[]>`select id from job
-    where space_id = ${record.space_id} order by id`;
-  const providers = await tx<{ provider: string; label: string }[]>`select distinct provider, label
-    from connection where space_id = ${record.space_id} order by provider, label`;
+  // Its jobs, triggers and connections came back with the backup. The run
+  // closes the space as the fence does, and captures them then: it starts from
+  // `fence` for exactly that.
   const id = newId('rem');
   const [queued] = await tx<{ id: string }[]>`insert into space_removal
-    (id, space_id, space_name, git_path, kind, requested_by, state, phase, epoch, job_ids, providers)
+    (id, space_id, space_name, git_path, kind, requested_by, state, phase, epoch)
     select ${id}, ${parent.id}, ${parent.name}, ${parent.git_path},
-      ${parent.kind === 'personal' ? 'emptied' : 'removed'}, ${record.owner_id}, 'pending', 'fence',
-      ${epoch}, ${JSON.stringify(jobs.map((row) => row.id))}::text::jsonb,
-      ${JSON.stringify(providers)}::text::jsonb
+      ${parent.kind === 'personal' ? 'emptied' : 'removed'}, ${record.requested_by ?? record.owner_id},
+      'pending', 'fence', ${epoch}
     where not exists (
       select 1 from space_removal where space_id = ${record.space_id} and state <> 'complete')
     returning id`;

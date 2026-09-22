@@ -254,48 +254,7 @@ export class SpaceRemovalService {
           400,
         );
 
-      const generation = parent.policyGeneration + 1;
-      await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
-      // Memory stops serving before anything of it is destroyed, and stays
-      // stopped through a restore: `restore_ready` is what gates serving.
-      await tx.execute(
-        sql`update memory_spaces set revoked = true, restore_ready = false,
-          policy_generation = policy_generation + 1, access_generation = access_generation + 1
-          where space_id = ${spaceId}`,
-      );
-      await tx.execute(
-        sql`update memory_contexts set invalidated_at = now(), items = '[]'::jsonb
-          where space_id = ${spaceId} and invalidated_at is null`,
-      );
-      await tx.execute(
-        sql`update memory_prepared set stale = true, content = null where space_id = ${spaceId}`,
-      );
-      await new PolicyService(jobs).invalidateInTransaction(
-        tx,
-        spaceId,
-        generation,
-        null,
-        'policy_changed',
-      );
-      const cancelled = await cancelEveryJob(tx, jobs, spaceId);
-      // Every job, not only the cancelled ones: the filesystem sweep needs the
-      // ids of jobs whose workspaces are still on disk, and the rows are gone
-      // by the time it runs.
-      const all = await tx.select({ id: job.id }).from(job).where(eq(job.spaceId, spaceId));
-      // Captured here because phase 8 deletes these rows, and the finished
-      // report has to name the services where a key of theirs keeps working.
-      const providers = await tx
-        .selectDistinct({ provider: connection.provider, label: connection.label })
-        .from(connection)
-        .where(eq(connection.spaceId, spaceId))
-        .orderBy(connection.provider, connection.label);
-      // The ids too: the connector registry and a sandbox provider are both
-      // addressed by connection id, and phase 8 deletes the rows that carry it.
-      const connections = await tx
-        .select({ id: connection.id })
-        .from(connection)
-        .where(eq(connection.spaceId, spaceId))
-        .orderBy(connection.id);
+      const closed = await closeSpace(tx, jobs, spaceId);
       const [row] = await tx
         .insert(spaceRemoval)
         .values({
@@ -303,16 +262,19 @@ export class SpaceRemovalService {
           spaceId,
           spaceName: parent.name,
           gitPath: parent.gitPath,
-          providers,
+          providers: closed.providers,
           // A space of one's own is recreated the moment its account asks for
           // one, so it is emptied in place rather than removed.
           kind: parent.kind === 'personal' ? 'emptied' : 'removed',
           requestedBy: actor,
           state: 'pending',
-          phase: 'fence',
+          // The fence is done by the time the row exists; a removal the
+          // startup replay queues again is written at `fence`, and its run
+          // closes the space the same way before anything else.
+          phase: 'sessions',
           epoch: parent.removalEpoch + 1,
-          jobIds: all.map((entry) => entry.id),
-          connectionIds: connections.map((entry) => entry.id),
+          jobIds: closed.jobIds,
+          connectionIds: closed.connectionIds,
           counts: EMPTY_COUNTS,
         })
         .returning();
@@ -324,7 +286,7 @@ export class SpaceRemovalService {
         .update(space)
         .set({ removedAt: new Date(), removalEpoch: parent.removalEpoch + 1 })
         .where(eq(space.id, spaceId));
-      return { row, cancelled };
+      return { row, cancelled: closed.cancelled };
     });
     if ('cancelled' in result) {
       // The fence is committed before a potentially slow runtime is signalled.
@@ -411,6 +373,7 @@ export class SpaceRemovalService {
     signal?: AbortSignal,
   ): Promise<SpaceRemovalRow> {
     let row = claimed;
+    if (row.phase === 'fence') row = await this.closeRequeued(row, token);
     // A removal the verification stopped goes round the whole sweep again
     // rather than asking the same question twice: what it found may be a row
     // written after its phase ran, or a provider that could not answer then and
@@ -437,6 +400,37 @@ export class SpaceRemovalService {
       await this.record(row.id, token, counts);
     }
     return this.finish(row.id, token, counts);
+  }
+
+  /**
+   * A removal the startup replay queued again after a restore. The restored
+   * database has its jobs, triggers and connections back, and its capabilities
+   * were issued under the old generations, so the space is closed exactly as
+   * the fence closes one before anything in it is taken apart.
+   */
+  private async closeRequeued(row: SpaceRemovalRow, token: string): Promise<SpaceRemovalRow> {
+    const jobs = this.deps.jobs;
+    const { closed, updated } = await jobs.transaction(async (tx) => {
+      const held = await tx.execute(
+        sql`select id from space_removal where id = ${row.id} and lease_owner = ${token} for update`,
+      );
+      if (!held.length) throw new LeaseLost();
+      const closed = await closeSpace(tx, jobs, row.spaceId);
+      const [updated] = await tx
+        .update(spaceRemoval)
+        .set({
+          phase: 'sessions',
+          jobIds: [...new Set([...row.jobIds, ...closed.jobIds])],
+          connectionIds: closed.connectionIds,
+          providers: closed.providers,
+        })
+        .where(this.held(row.id, token))
+        .returning();
+      if (!updated) throw new LeaseLost();
+      return { closed, updated };
+    });
+    for (const id of closed.cancelled) jobs.onCancelled?.(id);
+    return updated;
   }
 
   /** One phase. Every branch is safe to run twice. */
@@ -806,6 +800,69 @@ export class SpaceRemovalService {
     clearInterval(this.timer);
     this.timer = undefined;
   }
+}
+
+/**
+ * What closes a space, for the fence and for a removal queued again after a
+ * restore: every capability issued under the old generation is invalidated,
+ * memory stops serving, every job is cancelled and every trigger disabled, and
+ * what the later phases need to find again is captured. The caller holds the
+ * space row for update and stamps it.
+ */
+async function closeSpace(tx: Transaction, jobs: JobService, spaceId: string) {
+  const [parent] = await tx
+    .select({ policyGeneration: space.policyGeneration })
+    .from(space)
+    .where(eq(space.id, spaceId))
+    .for('update');
+  const generation = (parent?.policyGeneration ?? 0) + 1;
+  await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
+  // Memory stops serving before anything of it is destroyed, and stays
+  // stopped through a restore: `restore_ready` is what gates serving.
+  await tx.execute(
+    sql`update memory_spaces set revoked = true, restore_ready = false,
+      policy_generation = policy_generation + 1, access_generation = access_generation + 1
+      where space_id = ${spaceId}`,
+  );
+  await tx.execute(
+    sql`update memory_contexts set invalidated_at = now(), items = '[]'::jsonb
+      where space_id = ${spaceId} and invalidated_at is null`,
+  );
+  await tx.execute(
+    sql`update memory_prepared set stale = true, content = null where space_id = ${spaceId}`,
+  );
+  await new PolicyService(jobs).invalidateInTransaction(
+    tx,
+    spaceId,
+    generation,
+    null,
+    'policy_changed',
+  );
+  const cancelled = await cancelEveryJob(tx, jobs, spaceId);
+  // Every job, not only the cancelled ones: the filesystem sweep needs the
+  // ids of jobs whose workspaces are still on disk, and the rows are gone
+  // by the time it runs.
+  const all = await tx.select({ id: job.id }).from(job).where(eq(job.spaceId, spaceId));
+  // Captured because phase 8 deletes these rows, and the finished report has
+  // to name the services where a key of theirs keeps working.
+  const providers = await tx
+    .selectDistinct({ provider: connection.provider, label: connection.label })
+    .from(connection)
+    .where(eq(connection.spaceId, spaceId))
+    .orderBy(connection.provider, connection.label);
+  // The ids too: the connector registry and a sandbox provider are both
+  // addressed by connection id, and phase 8 deletes the rows that carry it.
+  const connections = await tx
+    .select({ id: connection.id })
+    .from(connection)
+    .where(eq(connection.spaceId, spaceId))
+    .orderBy(connection.id);
+  return {
+    cancelled,
+    jobIds: all.map((entry) => entry.id),
+    connectionIds: connections.map((entry) => entry.id),
+    providers,
+  };
 }
 
 /** Every non-terminal job, cancelled with a named reason, and its triggers disabled. */

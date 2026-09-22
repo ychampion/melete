@@ -33,6 +33,8 @@ export const restrictionRecord = z.strictObject({
   access_generation: z.number().int().positive(),
   /** A `remove_space` record only: the space's removal epoch this removal brought it to. */
   removal_epoch: z.number().int().positive().optional(),
+  /** A `remove_space` record only: who asked, so a replayed removal still answers to them. */
+  requested_by: z.string().min(1).optional(),
   recorded_at: timestamp,
 });
 export type RestrictionRecord = z.infer<typeof restrictionRecord>;
@@ -112,13 +114,17 @@ export async function restoreMemory(sql: MemorySql, journal: RestrictionJournal)
       return 0;
     }
     for (const record of records) {
+      // A removed space is not suppressed span by span; it is taken apart
+      // again, whether or not its memory came back with it. The row this
+      // queues leaves the space unserved until it is.
+      if (record.operation === 'remove_space') {
+        await requeueSpaceRemoval(tx, record);
+        continue;
+      }
       const [space] =
         await tx`select * from memory_spaces where space_id = ${record.space_id} and owner_id = ${record.owner_id} for update`;
       if (!space) continue;
-      // A removed space is not suppressed span by span; it is taken apart
-      // again. The row this queues leaves the space unserved until it is.
-      if (record.operation === 'remove_space') await requeueSpaceRemoval(tx, record);
-      else await applyRestriction(tx, record);
+      await applyRestriction(tx, record);
     }
     await tx`update memory_spaces set restore_ready = true where not revoked`;
     return records.length;

@@ -39,7 +39,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
 import { refusedForRemoval, spaceAuthority } from '../../src/principals/authority.ts';
-import { PathOutsideRoot, removeConfined } from '../../src/spaces/plan.ts';
+import { PathOutsideRoot, removeConfined, sweepMemory } from '../../src/spaces/plan.ts';
 import {
   type BrowserTeardown,
   type RuntimeHomeTeardown,
@@ -758,6 +758,61 @@ describe.if(handle !== null)('removing a space', () => {
     const next = await makeWork();
     for (const _ of [1, 2]) expect(await restart()).toEqual([]);
     expect(await countOf(sql, 'job', sql`id = ${next}`)).toBe(1);
+  });
+
+  test('a_restored_space_is_closed_like_a_fenced_one — memory or not, for the person who asked', async () => {
+    const seeded = await seed('shared');
+    // This space never held memory: nothing of it is in memory_spaces.
+    await sweepMemory(sql, seeded.spaceId);
+    const journal = await newJournal();
+    const backup = await snapshot(sql, seeded.spaceId);
+    await removeCompletely(seeded, { journal });
+    const [record] = (await journal.read()).filter((entry) => entry.space_id === seeded.spaceId);
+    expect(record).toMatchObject({
+      operation: 'remove_space',
+      removal_epoch: 1,
+      requested_by: seeded.principalId,
+    });
+
+    // The backup comes back, and with it live work and a connection.
+    await restore(sql, backup);
+    const [before] = await sql<{ policy_generation: number }[]>`select policy_generation from space
+      where id = ${seeded.spaceId}`;
+    const live = `job_${crypto.randomUUID()}`;
+    await sql`insert into job (id, space_id, title, principal_id, objective, state)
+      values (${live}, ${seeded.spaceId}, 'Restored', ${seeded.principalId}, 'Came back', 'running')`;
+    const restored = `conn_${crypto.randomUUID()}`;
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${restored}, ${seeded.spaceId}, 'web', 'Web', '[]'::jsonb)`;
+
+    await restoreMemory(sql, journal);
+    const [queued] = await sql<{ id: string; requested_by: string; phase: string }[]>`select id,
+      requested_by, phase from space_removal where space_id = ${seeded.spaceId} and state <> 'complete'`;
+    expect(queued).toMatchObject({ requested_by: seeded.principalId, phase: 'fence' });
+
+    // Its run closes the space the way the fence does before anything goes.
+    const halting = new AbortController();
+    const removals = await service({
+      journal,
+      onPhase: (_id, phase) => {
+        if (phase === 'sessions') halting.abort();
+      },
+    });
+    const closed = await removals.run(String(queued?.id), halting.signal);
+    const [job] = await sql<{ state: string; lease_epoch: number }[]>`select state, lease_epoch
+      from job where id = ${live}`;
+    expect(job?.state).toBe('cancelled');
+    expect(job?.lease_epoch).toBeGreaterThan(0);
+    const [after] = await sql<{ policy_generation: number }[]>`select policy_generation from space
+      where id = ${seeded.spaceId}`;
+    expect(after?.policy_generation).toBeGreaterThan(before?.policy_generation ?? 0);
+    expect(closed.jobIds).toContain(live);
+    expect(closed.connectionIds).toContain(restored);
+
+    // And the person who asked still sees it through.
+    expect(outcome(await removals.run(closed.id))).toBe('complete');
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(0);
+    expect(await countOf(sql, 'job', sql`id = ${live}`)).toBe(0);
   });
 
   test('replay_leaves_space_unserved — a queued removal is never restore_ready, even among spaces that are', async () => {
