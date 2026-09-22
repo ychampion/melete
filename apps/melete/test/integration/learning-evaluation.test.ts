@@ -281,6 +281,145 @@ class OriginRecordingRuntime extends ScriptedRecordRuntime {
     ).toEqual([]);
   }, 60000);
 
+  test('a crash in the final phase is closed even when the finished validation row reads first', async () => {
+    if (!fixture || !evaluator) return;
+    const proposed = await candidate('abandoned-final', [
+      'sort-typed-values',
+      'keep-header-and-rows',
+    ]);
+    // Written in the order a real run writes them: validation finished, then the
+    // final phase started and never returned. The validation row was graded under
+    // an earlier definition hash, so it also sorts first by the evaluation index.
+    const validation = newId('pe');
+    const final = newId('pe');
+    await fixture.handle.db.insert(procedureEvaluation).values({
+      id: validation,
+      candidateId: proposed.id,
+      bodyHash: '0'.repeat(64),
+      phase: 'validation',
+      suiteId: 'records-fixtures/1',
+      suiteHash: 'c'.repeat(64),
+      evidence: { status: 'complete', selection_evaluation_id: null },
+      budget: {},
+      passed: true,
+      createdAt: new Date(Date.now() - EVALUATION_LEASE_MS - 5000),
+    });
+    await fixture.handle.db.insert(procedureEvaluation).values({
+      id: final,
+      candidateId: proposed.id,
+      bodyHash: proposed.bodyHash,
+      phase: 'sealed_final',
+      suiteId: 'records-fixtures/1',
+      suiteHash: 'c'.repeat(64),
+      evidence: { status: 'running', selection_evaluation_id: validation },
+      budget: {},
+      passed: false,
+      createdAt: new Date(Date.now() - EVALUATION_LEASE_MS - 1000),
+    });
+    await rejectsWith(
+      () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, proposed.id),
+      'evaluation_abandoned',
+    );
+    const rows = await fixture.handle.db
+      .select()
+      .from(procedureEvaluation)
+      .where(eq(procedureEvaluation.candidateId, proposed.id));
+    expect(rows.find((row) => row.id === final)).toMatchObject({
+      passed: false,
+      evidence: { status: 'failed', reason: 'evaluation_abandoned' },
+    });
+    // The finished validation stays the record it was.
+    expect(rows.find((row) => row.id === validation)).toMatchObject({
+      passed: true,
+      evidence: { status: 'complete' },
+    });
+    const [after] = await fixture.handle.db
+      .select()
+      .from(procedureCandidate)
+      .where(eq(procedureCandidate.id, proposed.id));
+    expect(after?.rejectionReason).toBe('evaluation_abandoned');
+  }, 60000);
+
+  test("a replica refused the lease leaves the running evaluation's arm spaces in place", async () => {
+    if (!fixture) return;
+    const proposed = await candidate('replica-arm-spaces', [
+      'sort-typed-values',
+      'keep-header-and-rows',
+    ]);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    /** Holds the first arm inside its run, after its space and job exist. */
+    class HeldArmRuntime extends ScriptedRecordRuntime {
+      private first = true;
+      override async start(
+        bundle: Parameters<ScriptedRecordRuntime['start']>[0],
+        sink: Parameters<ScriptedRecordRuntime['start']>[1],
+        signal: Parameters<ScriptedRecordRuntime['start']>[2],
+      ) {
+        if (this.first) {
+          this.first = false;
+          entered();
+          await held;
+        }
+        return super.start(bundle, sink, signal);
+      }
+    }
+    const armSpaces = async () =>
+      (
+        await fixture.handle.sql`select count(*)::int as n from space s
+          join job j on j.space_id = s.id
+          join learning_trial t on t.job_id = j.id
+          where t.candidate_id = ${proposed.id}`
+      )[0]?.n as number;
+    const first = new ProcedureEvaluator(
+      fixture.jobs,
+      new HeldArmRuntime(),
+      fixture.runner.options,
+    );
+    const replicaDb = openDatabase(fixture.handle.url, 3);
+    const replica = new ProcedureEvaluator(
+      new JobService(replicaDb.db, fixture.queue.boss),
+      new ScriptedRecordRuntime(),
+      fixture.runner.options,
+    );
+    const pending = first.evaluate(fixture.ownerId, fixture.spaceId, proposed.id).then(
+      (value) => value,
+      (error: unknown) => error,
+    );
+    try {
+      await Promise.race([
+        started,
+        pending.then(() => {
+          throw new Error('First evaluator did not reach its first arm');
+        }),
+      ]);
+      const before = await armSpaces();
+      expect(before).toBeGreaterThan(0);
+      await rejectsWith(
+        () => replica.evaluate(fixture.ownerId, fixture.spaceId, proposed.id),
+        'evaluation_busy',
+      );
+      // The refused call owned nothing, so it removed nothing.
+      expect(await armSpaces()).toBe(before);
+      release();
+      const evaluated = await pending;
+      if (evaluated instanceof Error) throw evaluated;
+      expect(evaluated).toMatchObject({ candidate: { state: 'evaluated', rejectionReason: null } });
+      // The run that held the lease clears its own spaces when it finishes.
+      expect(await armSpaces()).toBe(0);
+    } finally {
+      release();
+      await pending;
+      await replicaDb.close();
+    }
+  }, 120000);
+
   test('validation selects before final; one-space canary and one-call rollback fence delivery', async () => {
     if (!fixture || !evaluator || !procedures) return;
     const proposed = await candidate('evaluation-training-positive', [

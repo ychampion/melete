@@ -113,20 +113,26 @@ export class ProcedureEvaluator {
     // transaction open for the whole run would park a pooled connection idle in
     // transaction while the evaluation drives real jobs through the runner.
     const holder = newId('lease');
+    let leased = false;
     try {
       await this.takeLease(spaceId, id, holder);
+      leased = true;
       return await this.evaluateLocked(ownerId, spaceId, id);
     } finally {
-      await this.removeArmSpaces(id);
-      await this.jobs.db
-        .delete(learningEvaluationLease)
-        .where(
-          and(
-            eq(learningEvaluationLease.spaceId, spaceId),
-            eq(learningEvaluationLease.holder, holder),
-          ),
-        )
-        .catch(() => undefined);
+      // A call refused the lease ran nothing: the arm spaces, and the lease, belong
+      // to the evaluation that holds it and may still be running.
+      if (leased) {
+        await this.removeArmSpaces(id);
+        await this.jobs.db
+          .delete(learningEvaluationLease)
+          .where(
+            and(
+              eq(learningEvaluationLease.spaceId, spaceId),
+              eq(learningEvaluationLease.holder, holder),
+            ),
+          )
+          .catch(() => undefined);
+      }
       this.busy = false;
     }
   }
@@ -193,11 +199,27 @@ export class ProcedureEvaluator {
               `The recorded discrimination no longer follows from the episode: ${recomputed.detail}.`,
             );
         }
-        const [existing] = await tx
+        // A crash in the final phase leaves a finished validation row beside the
+        // running final one, so the running row is asked for by name, newest first.
+        const [running] = await tx
           .select()
           .from(procedureEvaluation)
-          .where(eq(procedureEvaluation.candidateId, id))
+          .where(
+            and(
+              eq(procedureEvaluation.candidateId, id),
+              sql`${procedureEvaluation.evidence}->>'status' = 'running'`,
+            ),
+          )
+          .orderBy(desc(procedureEvaluation.createdAt), desc(procedureEvaluation.id))
           .limit(1);
+        const [existing] = running
+          ? [running]
+          : await tx
+              .select()
+              .from(procedureEvaluation)
+              .where(eq(procedureEvaluation.candidateId, id))
+              .orderBy(desc(procedureEvaluation.createdAt), desc(procedureEvaluation.id))
+              .limit(1);
         if (existing) {
           // A crashed run leaves `running` behind, and nothing else ever closes it:
           // every later call would return this inspection and the candidate could never
