@@ -120,7 +120,29 @@ async function findItem(
   throw new ServiceError('not_found', 'Not found.', 404);
 }
 
+/**
+ * Work that must see the result of the last request for the same thing before
+ * it decides anything. A check followed by a write is only as good as the gap
+ * between them, and a doubled click lands in that gap; queuing the second
+ * request behind the first closes it. The service is one process, so a queue
+ * held here covers every request it answers.
+ */
+function turns() {
+  const tails = new Map<string, Promise<unknown>>();
+  return async <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    const run = (tails.get(key) ?? Promise.resolve()).then(work, work);
+    const tail = run.catch(() => undefined);
+    tails.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (tails.get(key) === tail) tails.delete(key);
+    }
+  };
+}
+
 export function mountCompanies(app: Hono, deps: CompaniesDeps) {
+  const inTurn = turns();
   const handler = deps.handler ?? stubLedgerItemHandler();
   const now = deps.now ?? (() => new Date());
   const schedule =
@@ -196,31 +218,36 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   });
 
   app.post('/ledger/:id/handle', async (c) => {
-    const found = await findItem(deps, c.req.param('id'), c.req.query('space_id'));
-    // Handling an item twice would write to a company twice. An item that
-    // already names a job is already being handled, so the job it names is the
-    // answer and the playbook is not asked again — the same rule the rest of
-    // the product follows about never saying the same thing twice.
-    if (found.item.job_id) return c.json({ job_id: found.item.job_id }, 200);
-    // Which mailbox the message would leave from is the installation's to decide,
-    // not the caller's: it is looked up from the space the item was found in.
-    const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
-    let result: Awaited<ReturnType<LedgerItemHandler['handleLedgerItem']>>;
-    try {
-      result = await handler.handleLedgerItem({
-        item: found.item,
-        company: found.company,
-        messageText: found.message?.text ?? null,
-        principalId: found.owner.principalId,
-        spaceId: found.owner.spaceId,
-        ...(connectionId ? { connectionId } : {}),
-      });
-    } catch (error) {
-      if (error instanceof HandlerUnavailable)
-        throw new ServiceError('not_connected', error.message, 503);
-      throw error;
-    }
-    await deps.store.setJob(found.owner, found.item.id, result.job_id);
-    return c.json({ job_id: result.job_id }, 201);
+    const id = c.req.param('id');
+    // A second press waits for the first, then reads the item it left behind.
+    const answer = await inTurn(`ledger:${id}`, async () => {
+      const found = await findItem(deps, id, c.req.query('space_id'));
+      // Handling an item twice would write to a company twice. An item that
+      // already names a job is already being handled, so the job it names is the
+      // answer and the playbook is not asked again — the same rule the rest of
+      // the product follows about never saying the same thing twice.
+      if (found.item.job_id) return { job_id: found.item.job_id, status: 200 as const };
+      // Which mailbox the message would leave from is the installation's to decide,
+      // not the caller's: it is looked up from the space the item was found in.
+      const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
+      let result: Awaited<ReturnType<LedgerItemHandler['handleLedgerItem']>>;
+      try {
+        result = await handler.handleLedgerItem({
+          item: found.item,
+          company: found.company,
+          messageText: found.message?.text ?? null,
+          principalId: found.owner.principalId,
+          spaceId: found.owner.spaceId,
+          ...(connectionId ? { connectionId } : {}),
+        });
+      } catch (error) {
+        if (error instanceof HandlerUnavailable)
+          throw new ServiceError('not_connected', error.message, 503);
+        throw error;
+      }
+      await deps.store.setJob(found.owner, found.item.id, result.job_id);
+      return { job_id: result.job_id, status: 201 as const };
+    });
+    return c.json({ job_id: answer.job_id }, answer.status);
   });
 }
