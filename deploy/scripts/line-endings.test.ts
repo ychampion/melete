@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test';
-import { resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dir, '../..');
 const git = (...args: string[]) => {
@@ -53,4 +55,22 @@ test('an image added to those directories is still binary, not converted', () =>
   const found = attributes(['packages/runtime-hermes/assets/icon.png', 'deploy/config/logo.jpg']);
   expect(found.size).toBe(2);
   for (const value of found.values()) expect(value.text).toBe('unset');
+});
+
+test('a wheel or other binary added there is left to detection and stored byte for byte', async () => {
+  const wheel = 'packages/runtime-hermes/dist/melete_plugin-0.1.0-py3-none-any.whl';
+  // No binary rule names .whl: it must not be forced to text, only left to Git's detection.
+  const found = attributes([wheel, 'deploy/config/extra.bin']);
+  for (const [path, value] of found) expect(`${path}: ${value.text}`).toBe(`${path}: auto`);
+  // A zip with CRLF pairs and a NUL: filtered as that path, it must hash as unfiltered.
+  const directory = await mkdtemp(join(tmpdir(), 'melete-eol-'));
+  try {
+    const file = join(directory, 'wheel.whl');
+    await writeFile(file, new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x0d, 0x0a, 0x00, 0x0d, 0x0a]));
+    const filtered = git('hash-object', `--path=${wheel}`, file).trim();
+    const raw = git('hash-object', '--no-filters', file).trim();
+    expect(filtered).toBe(raw);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
