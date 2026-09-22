@@ -32,6 +32,12 @@ export const FALLBACK_CONTEXT_WINDOW = 128_000;
  */
 export const GATEWAY_MAX_REQUEST_BYTES = 1024 * 1024;
 
+/**
+ * Tokens the gateway charges every model request for framing, on top of its
+ * estimate of the body. An input limit no larger than this admits no request.
+ */
+export const REQUEST_FRAMING_TOKENS = 256;
+
 export function modelContextWindow(model: string): number {
   const named = hasKnownContextWindow(model) ? CONTEXT_WINDOWS[model] : undefined;
   return typeof named === 'number' ? named : FALLBACK_CONTEXT_WINDOW;

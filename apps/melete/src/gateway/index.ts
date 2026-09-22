@@ -4,7 +4,11 @@ import { createServer as createHttpsServer } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { SecureContextOptions, TLSSocket } from 'node:tls';
-import { GATEWAY_MAX_REQUEST_BYTES, inputTokenAllowance } from '@melete/contracts';
+import {
+  GATEWAY_MAX_REQUEST_BYTES,
+  inputTokenAllowance,
+  REQUEST_FRAMING_TOKENS,
+} from '@melete/contracts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -234,7 +238,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       // Remote media and built-in tools cannot be metered by this text-only gateway.
       const encoded = JSON.stringify(body);
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
-      const inputTokens = estimateInputTokens(encoded) + 256;
+      const inputTokens = estimateInputTokens(encoded) + REQUEST_FRAMING_TOKENS;
       if (
         inputTokens >
         inputTokenAllowance(model, requested, { max_input_tokens: principal.maxInputTokens })

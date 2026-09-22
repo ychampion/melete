@@ -257,4 +257,51 @@ withDb('durable jobs and contract transitions', () => {
     ).toBe(409);
     expect((await app.request('/jobs', { method: 'POST', headers, body: '{}' })).status).toBe(400);
   });
+
+  test('a budget no attempt could run under is refused at creation with the reason', async () => {
+    const { jobs, handle } = fixture();
+    const app = createApp({
+      env: loadEnv({ NODE_ENV: 'test' }),
+      db: handle.db,
+      jobs,
+      checkDatabase: async () => 'ok',
+    });
+    const setup = await app.request('/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'owner@example.test', password: 'test-password' }),
+    });
+    const cookie = setup.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const headers = { cookie, 'content-type': 'application/json' };
+    const submit = (budget: Record<string, number>) =>
+      app.request('/jobs', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ space_id: spaceId, title: 'Budget', objective: 'Work', budget }),
+      });
+
+    // An output budget larger than any one model window is spent across requests.
+    const large = await submit({ max_output_tokens: 250_000 });
+    expect(large.status).toBe(201);
+    expect(jobResponse.parse(await large.json()).job.budget.max_output_tokens).toBe(250_000);
+
+    // Every request carries 256 tokens of framing before any conversation.
+    const noInput = await submit({ max_input_tokens: 256 });
+    expect(noInput.status).toBe(400);
+    const noInputBody = (await noInput.json()) as { error: { code: string; message: string } };
+    expect(noInputBody.error.code).toBe('invalid_budget');
+    expect(noInputBody.error.message).toContain('max_input_tokens');
+    expect((await submit({ max_input_tokens: 257 })).status).toBe(201);
+
+    // A timer cannot hold a longer delay; it would fire at once and end every attempt.
+    const endless = await submit({ max_wall_ms: 2 ** 31 });
+    expect(endless.status).toBe(400);
+    const endlessBody = (await endless.json()) as { error: { code: string; message: string } };
+    expect(endlessBody.error.code).toBe('invalid_budget');
+    expect(endlessBody.error.message).toContain('max_wall_ms');
+    expect((await submit({ max_wall_ms: 2 ** 31 - 1 })).status).toBe(201);
+
+    const titles = await handle.sql`select budget from job where title = 'Budget'`;
+    expect(titles).toHaveLength(3);
+  });
 });
