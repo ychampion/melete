@@ -703,6 +703,25 @@ export class SandboxSessions {
     return closed ? toRow(closed) : row;
   }
 
+  /**
+   * The provider a row's sandbox belongs to, undefined when its connection has
+   * none, or null when resolving it failed. A failure is recorded on the row
+   * and leaves it as it was, so one misconfigured connection neither stops the
+   * sweep nor gets a sandbox destroyed through the wrong provider.
+   */
+  private async providerOf(
+    row: Pick<SessionRow, 'id' | 'adapter' | 'connectionId'>,
+    providerFor: ProviderFor,
+  ): Promise<SandboxProvider | undefined | null> {
+    try {
+      return providerFor(row.adapter, row.connectionId);
+    } catch (error) {
+      await this
+        .sql`update sandbox_session set last_error = ${message(error)} where id = ${row.id}`;
+      return null;
+    }
+  }
+
   /** The provider no longer has the sandbox. Time is charged as last metered. */
   markLost(id: string, reason: string): Promise<boolean> {
     return markSessionLost(this.sql, id, reason);
@@ -722,7 +741,8 @@ export class SandboxSessions {
         order by lease_expires_at limit 100`
     ).map(toRow);
     for (const candidate of expired) {
-      const provider = providerFor(candidate.adapter, candidate.connectionId);
+      const provider = await this.providerOf(candidate, providerFor);
+      if (provider === null) continue;
       const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
       if (workspace && candidate.status === 'ready') {
         // A workspace outlives its attempt: it is suspended, not destroyed.
@@ -760,7 +780,7 @@ export class SandboxSessions {
         const finished = await this.finish(
           row,
           candidate.status as SessionStatus,
-          providerFor(row.adapter, row.connectionId),
+          provider,
           signal,
         );
         if (finished.status === 'closed') swept.push(row.id);
@@ -768,11 +788,20 @@ export class SandboxSessions {
         // Recorded on the row; the next sweep tries again.
       }
     }
-    const stale = await this.sql`select id from sandbox_session
+    const stale = await this.sql`select id, adapter, connection_id from sandbox_session
       where status = 'paused'
         and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
       order by lease_expires_at limit 100`;
     for (const candidate of stale) {
+      const provider = await this.providerOf(
+        {
+          id: candidate.id as string,
+          adapter: candidate.adapter as string,
+          connectionId: candidate.connection_id as string,
+        },
+        providerFor,
+      );
+      if (provider === null) continue;
       const [claimed] = await this.sql`update sandbox_session set status = 'closing'
         where id = ${candidate.id as string} and status = 'paused'
           and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
@@ -780,12 +809,7 @@ export class SandboxSessions {
       if (!claimed) continue;
       const row = toRow(claimed);
       try {
-        const finished = await this.finish(
-          row,
-          'paused',
-          providerFor(row.adapter, row.connectionId),
-          signal,
-        );
+        const finished = await this.finish(row, 'paused', provider, signal);
         if (finished.status === 'closed') swept.push(row.id);
       } catch {
         // Recorded on the row, which is now `closing`; the next sweep retries it.

@@ -13,7 +13,7 @@ import { createSandboxProvider, modalEnvironmentRefusal } from '../../src/sandbo
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { sandboxLabels } from '../../src/sandbox/manifest.ts';
 import { seedSessionScope, sessionSpec } from '../../src/sandbox/session-fixtures.ts';
-import { SandboxSessions } from '../../src/sandbox/sessions.ts';
+import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
 import type { SandboxProvider } from '../../src/sandbox/types.ts';
 import { startSandboxes } from '../../src/sandbox/wiring.ts';
 import { testDatabase } from '../helpers/database.ts';
@@ -339,6 +339,43 @@ withDb('the sandbox wiring', () => {
     });
     expect(await wiring.sweep(signal())).toEqual([expired.id]);
     expect((await sessions.get(expired.id))?.status).toBe('closed');
+    wiring.stop();
+  }, 60_000);
+
+  test("a session is never handed to another adapter's provider", async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const scope = await seedSessionScope(handle.sql);
+    const provider = new FakeSandboxProvider();
+    const sessions = new SandboxSessions(handle.sql, {
+      leaseSeconds: 900,
+      workspaceRetentionSeconds: 3_600,
+    });
+    const attemptId = await scope.attempt();
+    const opened = await sessions.open(
+      {
+        connectionId: scope.connectionId,
+        spaceId: scope.spaceId,
+        jobId: scope.jobId,
+        attemptId,
+        agentId: null,
+      },
+      provider,
+      sessionSpec(PROJECT, scope.spaceId),
+      signal(),
+    );
+    await handle.sql`update sandbox_session set lease_expires_at = now() - interval '1 second'
+      where id = ${opened.id}`;
+    // The connection now holds another adapter. The provider object is the
+    // same fake, so a destroy sent through it would succeed and show here.
+    const wiring = wiringFor(scope.connectionId, 'e2b', provider, sessions);
+    expect(await wiring.sweep(signal())).toEqual([]);
+    await wiring.settleAttempt(attemptId, signal());
+    expect(await provider.inspect(sessionHandle(opened), signal())).toBe('running');
+    const row = await sessions.get(opened.id);
+    expect(row?.status).toBe('ready');
+    expect(row?.lastError).toContain(
+      `now holds the e2b adapter, and this session's sandbox was created by ${opened.adapter}`,
+    );
     wiring.stop();
   }, 60_000);
 });

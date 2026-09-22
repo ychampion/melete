@@ -56,8 +56,17 @@ export type SandboxWiring = {
 export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
   const { sql, sessions } = options;
   const say = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const providerFor = (_adapter: string, connectionId: string) =>
-    options.providers().get(connectionId)?.provider;
+  // A row names the adapter that created its sandbox. A connection that now
+  // holds another adapter cannot reach that sandbox, and handing the other
+  // adapter its id would ask the wrong provider to destroy it.
+  const providerFor = (adapter: string, connectionId: string) => {
+    const held = options.providers().get(connectionId);
+    if (held && held.adapter !== adapter)
+      throw new Error(
+        `connection ${connectionId} now holds the ${held.adapter} adapter, and this session's sandbox was created by ${adapter}`,
+      );
+    return held?.provider;
+  };
   let timer: ReturnType<typeof setInterval> | undefined;
   const pending = new Set<Promise<void>>();
 
@@ -92,10 +101,10 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
         where attempt_id = ${attemptId} and status in ('opening', 'ready')`;
       for (const row of rows) {
         const id = String(row.id);
-        const provider = providerFor(String(row.adapter), String(row.connection_id));
-        if (!provider) continue;
         const workspace = row.agent_id !== null && row.persistence !== 'ephemeral';
         try {
+          const provider = providerFor(String(row.adapter), String(row.connection_id));
+          if (!provider) continue;
           if (workspace) await sessions.suspendWorkspace(id, provider, signal);
           else await sessions.close(id, provider, signal);
         } catch (error) {
