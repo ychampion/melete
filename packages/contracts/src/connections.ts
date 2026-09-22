@@ -804,10 +804,11 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         input: 'select',
         options: [
           { value: 'ephemeral', label: 'Nothing: a fresh sandbox each time' },
-          { value: 'pause', label: 'Files and memory, paused between attempts' },
+          { value: 'pause', label: 'Files kept between attempts' },
           { value: 'snapshot', label: 'Files, snapshotted between attempts' },
         ],
         default: 'ephemeral',
+        help: 'E2B also keeps running processes; on Daytona they end. An unused workspace goes after MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS; Daytona and Modal keep one at most MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS.',
       }),
       text('sandbox.lifetime_seconds', 'How long one sandbox may run, in seconds', {
         input: 'number',
