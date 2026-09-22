@@ -14,9 +14,11 @@ import {
   attemptListResponse,
   attemptResponse,
   cancelJobRequest,
-  createJobRequest,
   createSpaceRequest,
+  credentialsRequest,
   errorResponse,
+  eventDeliveryRequest,
+  eventDeliveryResponse,
   healthResponse,
   jobListQuery,
   jobListResponse,
@@ -26,6 +28,7 @@ import {
   knowledgeRecordResponse,
   knowledgeSearchQuery,
   knowledgeSearchResponse,
+  ownerResponse,
   postMessageRequest,
   proposeKnowledgeRequest,
   proposeKnowledgeResponse,
@@ -33,6 +36,7 @@ import {
   retractKnowledgeRequest,
   skillListResponse,
   spaceListResponse,
+  triggerResponse,
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
 import { browserControlResponse } from './browser.ts';
@@ -44,7 +48,7 @@ import {
   connectionResponse,
   createConnectionRequest,
 } from './connections.ts';
-import { space } from './entities.ts';
+import { space, triggerSpec } from './entities.ts';
 import { eventPage, eventQuery } from './events.ts';
 import { executionSettlement, executionStartResponse } from './execution-admission.ts';
 import { experiencePaths } from './experience-openapi.ts';
@@ -107,7 +111,6 @@ import {
   connectionLifecycle,
   createResponsibilityRequest,
   jobScheduling,
-  jobSubmissionResponse,
   notification,
   notificationDelivery,
   notificationList,
@@ -126,6 +129,7 @@ import {
   responsibilityJob,
   responsibilitySnapshot,
   responsibilitySubmissionResponse,
+  submissionId,
   submissionResponse,
 } from './responsibility.ts';
 import { runtimeEvent } from './runtime.ts';
@@ -143,6 +147,58 @@ const problem = (description: string) => jsonResponse(description, errorResponse
 
 const idParam = (name: string, description: string) => ({
   path: z.object({ [name]: z.string().meta({ description }) }),
+});
+
+/** A refusal that says when to try again. */
+const rateLimited = (description: string) => ({
+  ...problem(description),
+  headers: z.object({
+    'Retry-After': z.string().meta({ description: 'Seconds to wait before the next attempt' }),
+  }),
+});
+
+/**
+ * How a job or an input is admitted. The answer is a durable receipt, and a
+ * request retried with the same Idempotency-Key gets the first answer again
+ * instead of a second job or input.
+ */
+const admission = <T extends z.ZodType>(
+  accepted: '200' | '201',
+  schema: T,
+  missing: string,
+  path?: z.ZodObject,
+) => ({
+  requestParams: {
+    ...(path ? { path } : {}),
+    header: z.object({
+      'Idempotency-Key': submissionId.optional().meta({
+        description:
+          'The submission id. The same key with the same input returns the first answer; with ' +
+          'different input it is refused with 409. Left out, the service chooses one, returned in ' +
+          'the receipt.',
+      }),
+    }),
+  },
+  responses: {
+    [accepted]: jsonResponse('Accepted, or the same key and input submitted again', schema),
+    ...(accepted === '201'
+      ? { '200': jsonResponse('A retried submission whose first status was not recorded', schema) }
+      : {}),
+    '400': jsonResponse(
+      'The input or the Idempotency-Key is invalid; a rejected input still has a receipt',
+      z.union([schema, errorResponse]),
+    ),
+    '403': jsonResponse('Not accessible to this account', schema),
+    '404': jsonResponse(missing, schema),
+    '409': jsonResponse(
+      'The key was used for different input, or the job cannot take this now',
+      schema,
+    ),
+    '503': jsonResponse(
+      'The acceptance history of this key cannot be verified; reusing it admits nothing new',
+      schema,
+    ),
+  },
 });
 
 export const OPENAPI_VERSION = '0.1.0-pre';
@@ -168,6 +224,7 @@ export function buildOpenApiDocument() {
       },
       tags: [
         { name: 'health' },
+        { name: 'account' },
         { name: 'spaces' },
         { name: 'jobs' },
         { name: 'attempts' },
@@ -345,10 +402,7 @@ export function buildOpenApiDocument() {
             tags: ['jobs'],
             summary: 'Accept a responsibility with scheduling and attention preferences',
             requestBody: json(createResponsibilityRequest),
-            responses: {
-              '201': jsonResponse('Accepted responsibility', responsibilitySubmissionResponse),
-              '409': problem('Submission conflict'),
-            },
+            ...admission('201', responsibilitySubmissionResponse, 'No such space'),
           },
         },
         '/jobs/{id}/responsibility': {
@@ -551,15 +605,13 @@ export function buildOpenApiDocument() {
           post: {
             tags: ['jobs'],
             summary: 'Submit an input once and receive its durable receipt',
-            requestParams: idParam('id', 'Job ID'),
             requestBody: json(postMessageRequest),
-            responses: {
-              '200': jsonResponse('Input submission receipt', jobSubmissionResponse),
-              '409': jsonResponse(
-                'Submission conflict or rejected transition',
-                jobSubmissionResponse,
-              ),
-            },
+            ...admission(
+              '200',
+              responsibilitySubmissionResponse,
+              'No such job',
+              idParam('id', 'Job ID').path,
+            ),
           },
         },
         '/memory/sources': {
@@ -747,6 +799,58 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/setup': {
+          post: {
+            tags: ['account'],
+            summary: 'Create the owner, their personal space and a session, once',
+            description:
+              'Sets the melete_session cookie, and the melete_device cookie that marks this browser ' +
+              'as known for sign-in limits. Once an owner exists the answer is 409 before anything ' +
+              'is parsed.',
+            requestBody: json(credentialsRequest),
+            responses: {
+              '201': jsonResponse('The owner, signed in', ownerResponse),
+              '400': problem('An email and a password of 8 to 1024 characters are required'),
+              '403': problem('The request came from another origin'),
+              '409': problem('The owner is already set up'),
+              '429': rateLimited('Too many setup attempts from this address'),
+              '503': problem('No database is configured'),
+            },
+          },
+        },
+
+        '/login': {
+          post: {
+            tags: ['account'],
+            summary: 'Sign in with an email and a password',
+            description:
+              'Sets a new melete_session cookie and the melete_device cookie. Attempts are limited ' +
+              'per client address, per account and per known device; an unknown email gets the ' +
+              'same 401 as a wrong password.',
+            requestBody: json(credentialsRequest),
+            responses: {
+              '200': jsonResponse('Signed in', ownerResponse),
+              '400': problem('An email and a password of 8 to 1024 characters are required'),
+              '401': problem('The email or the password is wrong'),
+              '403': problem('The request came from another origin'),
+              '429': rateLimited('Too many sign-in attempts'),
+              '503': problem('No database is configured'),
+            },
+          },
+        },
+
+        '/me': {
+          get: {
+            tags: ['account'],
+            summary: 'The account this session belongs to',
+            security: [{ session: [] }],
+            responses: {
+              '200': jsonResponse('The signed-in account', ownerResponse),
+              '401': problem('No session, or the session has expired'),
+            },
+          },
+        },
+
         '/spaces': {
           get: {
             tags: ['spaces'],
@@ -774,11 +878,9 @@ export function buildOpenApiDocument() {
           post: {
             tags: ['jobs'],
             summary: 'Delegate a responsibility',
-            requestBody: json(createJobRequest),
-            responses: {
-              '201': jsonResponse('Created', jobResponse),
-              '400': problem('Invalid request'),
-            },
+            description: 'The same admission as POST /responsibilities.',
+            requestBody: json(createResponsibilityRequest),
+            ...admission('201', responsibilitySubmissionResponse, 'No such space'),
           },
         },
 
@@ -790,6 +892,37 @@ export function buildOpenApiDocument() {
             responses: {
               '200': jsonResponse('Job', jobResponse),
               '404': problem('No such job'),
+            },
+          },
+        },
+
+        '/jobs/{id}/triggers': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Wake a job on a schedule, a connection event, or a watched condition',
+            requestParams: idParam('id', 'Job id'),
+            requestBody: json(triggerSpec),
+            responses: {
+              '201': jsonResponse('Created', triggerResponse),
+              '400': problem('Invalid schedule, pattern or connection'),
+              '404': problem('No such job'),
+              '409': problem('The job has finished'),
+            },
+          },
+        },
+
+        '/internal/events/deliver': {
+          post: {
+            tags: ['jobs'],
+            summary: 'Offer one connection event to the triggers that watch it',
+            description:
+              'Recorded once per dedup_key; delivering the same key again returns the first ' +
+              'sequence number with duplicate set.',
+            requestBody: json(eventDeliveryRequest),
+            responses: {
+              '202': jsonResponse('Recorded', eventDeliveryResponse),
+              '400': problem('Invalid request'),
+              '404': problem('The connection is not active'),
             },
           },
         },
@@ -814,12 +947,14 @@ export function buildOpenApiDocument() {
           post: {
             tags: ['jobs'],
             summary: 'Answer a question the job is waiting on',
-            requestParams: idParam('jobId', 'Job id'),
+            description: 'The same admission as POST /jobs/{id}/input.',
             requestBody: json(postMessageRequest),
-            responses: {
-              '202': jsonResponse('Accepted; the job is queued for its next attempt', jobResponse),
-              '409': problem('The job is not waiting for input'),
-            },
+            ...admission(
+              '200',
+              responsibilitySubmissionResponse,
+              'No such job',
+              idParam('jobId', 'Job id').path,
+            ),
           },
         },
 
