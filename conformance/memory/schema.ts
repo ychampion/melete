@@ -79,6 +79,12 @@ export const scriptedClaim = z.strictObject({
   valid_until: instant.nullable().default(null),
   /** True when the service is supposed to reject this proposal and record a reason. */
   expect_rejected: z.boolean().default(false),
+  /**
+   * True when the owner is changing something already recorded. The scripted
+   * extractor then does what a careful model does: it supersedes the claim on
+   * that key when the claims snapshot it was given shows one, and adds otherwise.
+   */
+  update: z.boolean().default(false),
 });
 export type ScriptedClaim = z.infer<typeof scriptedClaim>;
 
@@ -89,12 +95,36 @@ const evidenceFields = {
   text: z.string().min(1).max(20000),
   time_zone: z.string().min(1).max(120).optional(),
   claim: scriptedClaim.optional(),
+  /** Several proposals from one piece of evidence, extracted in one change set. */
+  claims: z.array(scriptedClaim).max(8).optional(),
 };
 
 /** Something the owner said, in their own words, in this space. */
 export const sayStep = z.strictObject({
   step: z.literal('say'),
   ...evidenceFields,
+});
+/**
+ * A message typed into a conversation, taken the way the service takes it: the
+ * chat capture loop reads it off the conversation's stream, decides what it asks
+ * of memory ("forget ...", "don't remember this"), and hands anything to keep to
+ * the extractor. `claim`/`claims` script what the extractor proposes for it.
+ */
+export const chatStep = z.strictObject({
+  step: z.literal('chat'),
+  space,
+  /** Messages with the same conversation name share one conversation. */
+  conversation: slug,
+  text: z.string().min(1).max(20000),
+  claim: scriptedClaim.optional(),
+  claims: z.array(scriptedClaim).max(8).optional(),
+});
+/** The tool entries a conversation shows for memory, in order. */
+export const expectToldStep = z.strictObject({
+  step: z.literal('expect_told'),
+  space,
+  conversation: slug,
+  titles: z.array(z.string().min(1).max(120)),
 });
 /** A document or message that arrives later and carries its own event time. */
 export const importStep = z.strictObject({
@@ -189,6 +219,11 @@ export const askStep = z.strictObject({
   key: z.string().min(1).max(200),
   mode: z.enum(['current', 'historical']).default('current'),
   at: instant.optional(),
+  /**
+   * Recall the way an attempt does: the preference profile included and the
+   * attempt's knowledge budget, with the query phrased as the job would be.
+   */
+  attempt: z.boolean().default(false),
   expect: askExpectation,
 });
 /** How many owner questions should be queued at this point, in total. */
@@ -210,6 +245,25 @@ export const expectNoEffectDuplicateStep = z.strictObject({
   max_sources: z.number().int().positive().optional(),
 });
 
+/** What memory holds for a key right now: its current value, or nothing at all. */
+export const expectStoredStep = z.strictObject({
+  step: z.literal('expect_stored'),
+  space,
+  key: z.string().min(1).max(200),
+  content: z.string().min(1).max(4000).optional(),
+  absent: z.boolean().default(false),
+});
+/**
+ * After a removal, no memory table in the space may still hold this text:
+ * source content, revision content, index entries, repair briefs, questions or
+ * review proposals.
+ */
+export const expectErasedStep = z.strictObject({
+  step: z.literal('expect_erased'),
+  space,
+  text: z.string().min(1).max(4000),
+});
+
 export const step = z.discriminatedUnion('step', [
   sayStep,
   importStep,
@@ -223,6 +277,10 @@ export const step = z.discriminatedUnion('step', [
   askStep,
   expectQuestionStep,
   expectNoEffectDuplicateStep,
+  expectStoredStep,
+  expectErasedStep,
+  chatStep,
+  expectToldStep,
 ]);
 export type Step = z.infer<typeof step>;
 export type AskStep = z.infer<typeof askStep>;

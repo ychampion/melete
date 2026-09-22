@@ -9,7 +9,7 @@
  * items recall delivered, which is what makes "unsupported claim" a thing the
  * runner can count rather than a thing it has to trust.
  */
-import type { ExtractionProposal } from '@melete/contracts';
+import { type ExtractionProposal, isMemoryKey } from '@melete/contracts';
 import { gatewayChatClient } from '../../apps/melete/src/memory/extract.ts';
 
 /** Where a scripted proposal's span is read from. */
@@ -31,7 +31,11 @@ export type ScriptEntry = {
   valid_until: string | null;
   /** `null` means cite the evidence this invocation was given. */
   cite: Citation | null;
+  /** Supersede the claim on this key when the supplied snapshot shows it. */
+  update?: boolean;
 };
+/** The part of the claims snapshot the scripted extractor reads. */
+type SnapshotClaim = { id: string; key: string | null; domain_key: string; head_revision: number };
 
 export type DeliveredItem = {
   handle: string;
@@ -97,6 +101,7 @@ export function scriptedAnswer(request: AskRequest): AskReply {
 function proposalFor(
   entry: ScriptEntry,
   evidence: { source: { source_id: string; source_version: string }; start: number; text: string },
+  snapshot: readonly SnapshotClaim[] = [],
 ): ExtractionProposal | null {
   const citation: Citation = entry.cite ?? {
     source_id: evidence.source.source_id,
@@ -107,11 +112,18 @@ function proposalFor(
   const quote = entry.quote ?? citation.text;
   const index = citation.text.indexOf(quote);
   if (index < 0) return null;
+  // A registry key is proposed as a key; anything else is an unkeyed claim on
+  // that domain, which is the shape most of what a person says takes.
+  const keyed = isMemoryKey(entry.key);
+  const target = entry.update
+    ? snapshot.find((claim) => (keyed ? claim.key : claim.domain_key) === entry.key)
+    : undefined;
   return {
-    op: 'add',
-    expected_revision: null,
+    ...(target
+      ? { op: 'supersede', claim_id: target.id, expected_revision: target.head_revision }
+      : { op: 'add', expected_revision: null }),
     domain_key: entry.key,
-    key: entry.key,
+    ...(keyed ? { key: entry.key } : {}),
     content: entry.content,
     kind: entry.kind,
     factual_status: entry.factual_status,
@@ -133,7 +145,7 @@ export type ScriptedProvider = Awaited<ReturnType<typeof startScriptedProvider>>
 
 export async function startScriptedProvider(port = 3124) {
   const token = 'scripted-memory-conformance';
-  const script = new Map<string, ScriptEntry>();
+  const script = new Map<string, ScriptEntry[]>();
   const calls = { extraction: 0, answer: 0 };
   const server = Bun.serve({
     port,
@@ -156,14 +168,16 @@ export async function startScriptedProvider(port = 3124) {
         });
       }
       calls.extraction++;
-      const entry = user.evidence ? script.get(user.evidence.source.source_id) : undefined;
-      const proposal = entry ? proposalFor(entry, user.evidence) : null;
+      const entries = user.evidence ? (script.get(user.evidence.source.source_id) ?? []) : [];
+      const proposals = entries
+        .map((entry) => proposalFor(entry, user.evidence, user.claims ?? []))
+        .filter((proposal) => proposal !== null);
       return Response.json({
         choices: [
           {
             message: {
               role: 'assistant',
-              content: JSON.stringify({ proposals: proposal ? [proposal] : [] }),
+              content: JSON.stringify({ proposals }),
             },
           },
         ],
@@ -175,7 +189,8 @@ export async function startScriptedProvider(port = 3124) {
   return {
     calls,
     /** Register what the extractor will propose for one source, before it runs. */
-    script: (sourceId: string, entry: ScriptEntry) => script.set(sourceId, entry),
+    script: (sourceId: string, entry: ScriptEntry | ScriptEntry[]) =>
+      script.set(sourceId, Array.isArray(entry) ? entry : [entry]),
     gateway: gatewayChatClient(endpoint, token, 'scripted-memory-conformance-v1'),
     async ask(request: AskRequest): Promise<AskReply> {
       const response = await fetch(endpoint, {

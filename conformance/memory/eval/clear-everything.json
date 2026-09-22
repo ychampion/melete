@@ -1,0 +1,84 @@
+{
+  "id": "clear-everything",
+  "family": "forgetting-and-access",
+  "title": "Clearing memory leaves nothing behind",
+  "narrative": "Several things are saved and then memory is cleared; nothing is recalled and none of the text remains stored.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "home-city",
+      "event_time": "2026-08-01T09:00:00Z",
+      "text": "My home city is Lisbon.",
+      "claim": {
+        "key": "pref.home.city",
+        "content": "Lisbon",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "maya-phone",
+      "event_time": "2026-08-03T09:00:00Z",
+      "text": "My sister Maya's number is +351 912 345 678.",
+      "claim": {
+        "key": "contact.maya.phone",
+        "content": "+351 912 345 678",
+        "kind": "user_statement",
+        "quote": "+351 912 345 678"
+      }
+    },
+    {
+      "step": "say",
+      "name": "atlas-owner",
+      "event_time": "2026-08-05T09:00:00Z",
+      "text": "Priya owns the Atlas project.",
+      "claim": {
+        "key": "project.atlas.owner",
+        "content": "Priya owns the Atlas project",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "forget",
+      "all": true
+    },
+    {
+      "step": "expect_stored",
+      "key": "pref.home.city",
+      "absent": true
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.maya.phone",
+      "absent": true
+    },
+    {
+      "step": "expect_stored",
+      "key": "project.atlas.owner",
+      "absent": true
+    },
+    {
+      "step": "ask",
+      "name": "maya",
+      "query": "Text Maya",
+      "key": "contact.maya.phone",
+      "attempt": true,
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "expect_erased",
+      "text": "Lisbon"
+    },
+    {
+      "step": "expect_erased",
+      "text": "912 345 678"
+    },
+    {
+      "step": "expect_erased",
+      "text": "Priya"
+    }
+  ]
+}

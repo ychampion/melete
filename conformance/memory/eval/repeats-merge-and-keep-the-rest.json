@@ -1,0 +1,97 @@
+{
+  "id": "repeats-merge-and-keep-the-rest",
+  "family": "low-value-memory",
+  "title": "Saying something twice keeps one copy and loses nothing said alongside it",
+  "narrative": "A person repeats a fact in a message that also says something new; memory keeps one copy of the old fact and still records the new one.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "atlas-owner",
+      "event_time": "2026-08-05T09:00:00Z",
+      "text": "Priya owns the Atlas project.",
+      "claim": {
+        "key": "project.atlas.owner",
+        "content": "Priya owns the Atlas project",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "seat",
+      "event_time": "2026-08-06T09:00:00Z",
+      "text": "I prefer an aisle seat.",
+      "claim": {
+        "key": "pref.travel.seat",
+        "content": "aisle seat",
+        "kind": "preference",
+        "quote": "aisle seat"
+      }
+    },
+    {
+      "step": "say",
+      "name": "repeat",
+      "event_time": "2026-08-09T09:00:00Z",
+      "text": "Priya owns the Atlas project. Atlas ships in October.",
+      "claims": [
+        {
+          "key": "project.atlas.owner",
+          "content": "Priya owns the Atlas project",
+          "quote": "Priya owns the Atlas project."
+        },
+        {
+          "key": "project.atlas.ship",
+          "content": "Atlas ships in October",
+          "quote": "Atlas ships in October."
+        }
+      ]
+    },
+    {
+      "step": "say",
+      "name": "seat-again",
+      "event_time": "2026-08-10T09:00:00Z",
+      "text": "Remember, aisle seat for me.",
+      "claim": {
+        "key": "pref.travel.seat",
+        "content": "aisle seat",
+        "kind": "preference",
+        "quote": "aisle seat"
+      }
+    },
+    {
+      "step": "expect_stored",
+      "key": "project.atlas.owner",
+      "content": "Priya owns the Atlas project"
+    },
+    {
+      "step": "expect_stored",
+      "key": "project.atlas.ship",
+      "content": "Atlas ships in October"
+    },
+    {
+      "step": "expect_stored",
+      "key": "pref.travel.seat",
+      "content": "aisle seat"
+    },
+    {
+      "step": "expect_no_effect_duplicate",
+      "key": "pref.travel.seat",
+      "max_sources": 1
+    },
+    {
+      "step": "ask",
+      "name": "ship",
+      "query": "When does Atlas ship?",
+      "key": "project.atlas.ship",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "Atlas ships in October"
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

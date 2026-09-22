@@ -13,11 +13,13 @@
  * `memory_required` that still passes on that arm is not testing memory, and the
  * runner fails the suite rather than reporting a green row nobody earned.
  */
-import type { RecallResult } from '@melete/contracts';
+import { CONTEXT_LIMITS, type RecallResult } from '@melete/contracts';
+import { newId } from '../../apps/melete/src/ids.ts';
+import { captureChat } from '../../apps/melete/src/memory/capture.ts';
 import { claimHistory, correctClaim } from '../../apps/melete/src/memory/claims.ts';
 import { commitExtraction } from '../../apps/melete/src/memory/commit.ts';
 import { listQuestions } from '../../apps/melete/src/memory/contradictions.ts';
-import type { MemoryScope } from '../../apps/melete/src/memory/db.ts';
+import { MemoryError, type MemoryScope } from '../../apps/melete/src/memory/db.ts';
 import { ingest } from '../../apps/melete/src/memory/evidence.ts';
 import {
   cleanupMemory,
@@ -51,7 +53,13 @@ import {
 } from './provider.ts';
 import type { AskStep, Scenario, ScriptedClaim, Step } from './schema.ts';
 
-export type Check = { name: string; ok: boolean; detail: string };
+/**
+ * What a check measures, for the evaluation's counts: a value memory should
+ * hold, a value an attempt should be handed, text a removal should have erased,
+ * or memory that should have stayed out of a recall.
+ */
+export type CheckKind = 'stored' | 'recalled' | 'erased' | 'irrelevant' | 'told';
+export type Check = { name: string; ok: boolean; detail: string; kind?: CheckKind };
 export type ScenarioMetrics = {
   obsolete_fact_used: number;
   unsupported_claim: number;
@@ -176,8 +184,10 @@ async function runScenario(
     gateway: provider.gateway,
   };
   const sources = new Map<string, SourceRecord>();
+  const conversations = new Map<string, string>();
   const snapshots = new Map<string, () => Promise<void>>();
-  const check = (name: string, ok: boolean, detail = '') => checks.push({ name, ok, detail });
+  const check = (name: string, ok: boolean, detail = '', kind?: CheckKind) =>
+    checks.push({ name, ok, detail, ...(kind ? { kind } : {}) });
   const state = (name: string): SpaceState => {
     const found = spaces.get(name);
     if (!found) throw new Error(`unknown space ${name}`);
@@ -236,10 +246,20 @@ async function runScenario(
   async function recallOnce(
     scope: MemoryScope,
     request: { query: string; mode?: 'current' | 'historical'; at?: string },
+    attempt = false,
   ): Promise<RecallResult> {
     if (arm === 'withheld') return emptyRecall();
     const at = performance.now();
-    const result = await recall(sql, scope, request);
+    // An attempt's recall is what buildBundle asks for: the profile, and the
+    // knowledge budget the bundle carries.
+    const result = attempt
+      ? await recall(
+          sql,
+          scope,
+          { ...request, max_tokens: CONTEXT_LIMITS.knowledge_tokens },
+          { includeProfile: true },
+        )
+      : await recall(sql, scope, request);
     metrics.recall_ms.push(performance.now() - at);
     return result;
   }
@@ -257,7 +277,7 @@ async function runScenario(
       time_zone: string;
       text: string;
     },
-    claim: ScriptedClaim | undefined,
+    claims: readonly ScriptedClaim[],
   ) {
     const payload = {
       stream: input.stream,
@@ -271,8 +291,9 @@ async function runScenario(
     };
     const before = {
       rejections: await rejectionCount(space.scope),
-      head: claim ? await headFor(space, claim.key) : null,
+      heads: new Map<string, number | null>(),
     };
+    for (const claim of claims) before.heads.set(claim.key, await headFor(space, claim.key));
     const accepted = await ingest(sql, space.scope, payload);
     space.lastIngest = payload;
     sources.set(name, {
@@ -281,26 +302,32 @@ async function runScenario(
       text: input.text,
       space: space.scope.spaceId,
     });
-    if (claim) {
-      const cited =
-        claim.cite === 'previous_source' ? previousSource(name, space.scope.spaceId) : null;
-      provider.script(accepted.source.source_id, {
-        key: claim.key,
-        content: claim.content,
-        kind: claim.kind,
-        factual_status: claim.factual_status,
-        quote: claim.quote,
-        valid_from: claim.valid_from ?? input.event_at,
-        valid_until: claim.valid_until,
-        cite: cited
-          ? {
-              source_id: cited.source_id,
-              source_version: cited.source_version,
-              text: cited.text,
-              offset: 0,
-            }
-          : null,
-      });
+    if (claims.length) {
+      provider.script(
+        accepted.source.source_id,
+        claims.map((claim) => {
+          const cited =
+            claim.cite === 'previous_source' ? previousSource(name, space.scope.spaceId) : null;
+          return {
+            key: claim.key,
+            content: claim.content,
+            kind: claim.kind,
+            factual_status: claim.factual_status,
+            quote: claim.quote,
+            valid_from: claim.valid_from ?? input.event_at,
+            valid_until: claim.valid_until,
+            update: claim.update,
+            cite: cited
+              ? {
+                  source_id: cited.source_id,
+                  source_version: cited.source_version,
+                  text: cited.text,
+                  offset: 0,
+                }
+              : null,
+          };
+        }),
+      );
     }
     const [work] =
       await sql`select id from memory_work where source_id = ${accepted.source.source_id} and status = 'pending' order by created_at limit 1`;
@@ -309,34 +336,36 @@ async function runScenario(
       await runExtractionWork(service, work.id as string);
     }
     await derive(space);
-    if (!claim) return;
-    const claimId = await claimFor(space, claim.key);
-    if (claim.expect_rejected) {
-      const [row] = space.lastWorkId
-        ? await sql`select status, error_code from memory_work where id = ${space.lastWorkId}`
-        : [];
-      const recorded =
-        (await rejectionCount(space.scope)) > before.rejections || row?.status === 'rejected';
-      check(
-        `${label} the proposal is refused with a reason`,
-        recorded,
-        'nothing durable recorded the refusal',
-      );
-      const after = await headFor(space, claim.key);
-      check(
-        `${label} ${claim.key} is unchanged`,
-        after === before.head,
-        `head went from ${before.head} to ${after}`,
-      );
-      return;
+    for (const claim of claims) {
+      const claimId = await claimFor(space, claim.key);
+      if (claim.expect_rejected) {
+        const [row] = space.lastWorkId
+          ? await sql`select status, error_code from memory_work where id = ${space.lastWorkId}`
+          : [];
+        const recorded =
+          (await rejectionCount(space.scope)) > before.rejections || row?.status === 'rejected';
+        check(
+          `${label} the proposal is refused with a reason`,
+          recorded,
+          'nothing durable recorded the refusal',
+        );
+        const after = await headFor(space, claim.key);
+        const prior = before.heads.get(claim.key) ?? null;
+        check(
+          `${label} ${claim.key} is unchanged`,
+          after === prior,
+          `head went from ${prior} to ${after}`,
+        );
+        continue;
+      }
+      check(`${label} ${claim.key} has a claim`, claimId !== null, 'extraction produced no claim');
     }
-    check(`${label} ${claim.key} has a claim`, claimId !== null, 'extraction produced no claim');
   }
 
   /** The head revision a key currently holds, or null when nothing holds it. */
   async function headFor(space: SpaceState, key: string): Promise<number | null> {
     const [row] =
-      await sql`select head_revision from memory_claims where space_id = ${space.scope.spaceId} and key = ${key} and not hidden limit 1`;
+      await sql`select head_revision from memory_claims where space_id = ${space.scope.spaceId} and (key = ${key} or domain_key = ${key}) and not hidden limit 1`;
     return (row?.head_revision as number | undefined) ?? null;
   }
 
@@ -350,10 +379,10 @@ async function runScenario(
     return previous;
   }
 
-  /** The claim currently occupying a registry key in one space, if any. */
+  /** The claim currently occupying a registry key, or an unkeyed domain, in one space. */
   async function claimFor(space: SpaceState, key: string): Promise<string | null> {
     const [row] =
-      await sql`select id from memory_claims where space_id = ${space.scope.spaceId} and key = ${key} and not hidden limit 1`;
+      await sql`select id from memory_claims where space_id = ${space.scope.spaceId} and (key = ${key} or domain_key = ${key}) and not hidden limit 1`;
     const id = (row?.id as string | undefined) ?? null;
     if (id) space.claims.set(key, id);
     return id;
@@ -375,7 +404,7 @@ async function runScenario(
             time_zone: step.time_zone ?? scenario.time_zone,
             text: step.text,
           },
-          step.claim,
+          [...(step.claim ? [step.claim] : []), ...(step.claims ?? [])],
         );
         return;
       }
@@ -393,7 +422,7 @@ async function runScenario(
             time_zone: step.time_zone ?? scenario.time_zone,
             text: step.text,
           },
-          step.claim,
+          [...(step.claim ? [step.claim] : []), ...(step.claims ?? [])],
         );
         return;
       }
@@ -411,7 +440,7 @@ async function runScenario(
             time_zone: step.time_zone ?? scenario.time_zone,
             text: JSON.stringify(step.observation),
           },
-          undefined,
+          [],
         );
         for (const key of step.expect_keys) {
           const id = await claimFor(space, key);
@@ -545,6 +574,129 @@ async function runScenario(
       case 'ask':
         await askStep(step, label);
         return;
+      case 'chat': {
+        const space = state(step.space);
+        const key = `${step.space}:${step.conversation}`;
+        let jobId = conversations.get(key);
+        if (!jobId) {
+          jobId = newId('job');
+          await sql`insert into job (id, space_id, title, objective, kind, state, revision, lease_epoch)
+            values (${jobId}, ${space.scope.spaceId}, 'New chat', 'New chat', 'chat', 'completed', 1, 1)`;
+          conversations.set(key, jobId);
+        }
+        const [event] = await sql`insert into event (job_id, type, payload, dedup_key)
+          values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text: step.text })}::text::jsonb,
+            ${`${scenario.id}:${label}:${jobId}`}) returning seq`;
+        const owner = { ...space.scope, principalId: space.scope.ownerId };
+        await captureChat({
+          sql,
+          journal: journal.journal,
+          scopeForJob: async (id) => {
+            const [job] = await sql`select space_id from job where id = ${id}`;
+            if (job?.space_id !== owner.spaceId) throw new MemoryError('scope_denied');
+            return owner;
+          },
+        });
+        const [captured] =
+          await sql`select source_id from memory_capture where event_seq = ${event?.seq}`;
+        const claims = [...(step.claim ? [step.claim] : []), ...(step.claims ?? [])];
+        if (captured?.source_id && claims.length)
+          provider.script(
+            captured.source_id as string,
+            claims.map((claim) => ({
+              key: claim.key,
+              content: claim.content,
+              kind: claim.kind,
+              factual_status: claim.factual_status,
+              quote: claim.quote,
+              valid_from: claim.valid_from,
+              valid_until: claim.valid_until,
+              update: claim.update,
+              cite: null,
+            })),
+          );
+        const work = captured?.source_id
+          ? await sql`select id from memory_work where source_id = ${captured.source_id} and status = 'pending'`
+          : [];
+        for (const row of work) {
+          space.lastWorkId = row.id as string;
+          await runExtractionWork(service, row.id as string);
+        }
+        await derive(space);
+        for (const claim of claims)
+          if (!claim.expect_rejected)
+            check(
+              `${label} ${claim.key} has a claim`,
+              (await claimFor(space, claim.key)) !== null,
+              'nothing was kept from the message',
+            );
+        return;
+      }
+      case 'expect_told': {
+        const space = state(step.space);
+        const jobId = conversations.get(`${step.space}:${step.conversation}`);
+        const rows = jobId
+          ? await sql`select payload->'call'->>'title' as title from event where job_id = ${jobId}
+              and type = 'notice' and payload->>'kind' = 'tool_trace' order by seq`
+          : [];
+        const titles = rows.map((row) => row.title as string);
+        check(
+          `${label} the conversation shows ${JSON.stringify(step.titles)}`,
+          JSON.stringify(titles) === JSON.stringify(step.titles),
+          `shows ${JSON.stringify(titles)} in ${space.scope.spaceId}`,
+          'told',
+        );
+        return;
+      }
+      case 'expect_stored': {
+        const space = state(step.space);
+        const claimId = await claimFor(space, step.key);
+        const [head] = claimId
+          ? await sql`select b.content from memory_claims c join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
+              join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
+              where c.id = ${claimId} and r.status in ('active','disputed')`
+          : [];
+        const value = (head?.content as string | undefined) ?? null;
+        if (step.absent)
+          check(`${label} ${step.key} holds nothing`, value === null, `holds ${value}`, 'stored');
+        else
+          check(
+            `${label} ${step.key} holds ${step.content}`,
+            value !== null && value === (step.content ?? value),
+            `holds ${value ?? 'nothing'}`,
+            'stored',
+          );
+        return;
+      }
+      case 'expect_erased': {
+        const space = state(step.space);
+        await derive(space);
+        const pattern = `%${step.text}%`;
+        const spaceId = space.scope.spaceId;
+        const [found] = await sql`select
+          (select count(*)::int from memory_source_content b join memory_sources s on s.id = b.source_id
+            where s.space_id = ${spaceId} and b.content like ${pattern}) as sources,
+          (select count(*)::int from memory_revision_content b join memory_claims c on c.id = b.claim_id
+            where c.space_id = ${spaceId} and b.content like ${pattern}) as revisions,
+          (select count(*)::int from memory_index_entries
+            where space_id = ${spaceId} and tokens @@ plainto_tsquery('simple', ${step.text})) as index,
+          (select count(*)::int from memory_repair_briefs
+            where space_id = ${spaceId} and (old_value like ${pattern} or new_value like ${pattern})) as briefs,
+          (select count(*)::int from memory_questions
+            where space_id = ${spaceId} and question like ${pattern}) as memory_questions,
+          (select count(*)::int from question
+            where space_id = ${spaceId} and text like ${pattern}) as questions,
+          (select count(*)::int from memory_proposals
+            where space_id = ${spaceId} and payload::text like ${pattern}) as proposals`;
+        const left = Object.entries(found ?? {}).filter(([, count]) => Number(count) > 0);
+        check(
+          `${label} "${step.text}" is erased`,
+          left.length === 0,
+          `still in ${left.map(([table, count]) => `${table} (${count})`).join(', ')}`,
+          'erased',
+        );
+        return;
+      }
       case 'expect_question': {
         const space = state(step.space);
         const queued = await sql.begin((tx) => listQuestions(tx, space.scope));
@@ -598,11 +750,15 @@ async function runScenario(
 
   async function askStep(step: AskStep, label: string) {
     const space = state(step.space);
-    const result = await recallOnce(space.scope, {
-      query: step.query,
-      mode: step.mode,
-      ...(step.at ? { at: step.at } : {}),
-    });
+    const result = await recallOnce(
+      space.scope,
+      {
+        query: step.query,
+        mode: step.mode,
+        ...(step.at ? { at: step.at } : {}),
+      },
+      step.attempt,
+    );
     const items: DeliveredItem[] = result.items.map((item) => ({
       handle: item.handle,
       key: item.key,
@@ -659,6 +815,7 @@ async function runScenario(
           `${label} answers ${expected.content}`,
           answer === expected.content,
           `answered ${answer}`,
+          'recalled',
         );
         check(
           `${label} the answer names the handle it used`,
@@ -680,6 +837,7 @@ async function runScenario(
             `${label} ${key} stayed out of the recall`,
             !delivered.has(key),
             'irrelevant memory was delivered',
+            'irrelevant',
           );
         if (expected.dated) {
           const item = items.find((entry) => entry.key === step.key);
@@ -718,6 +876,7 @@ async function runScenario(
           `${label} ${step.key} is absent`,
           !delivered.has(step.key) && reply.answer === null,
           `answered ${answer}`,
+          'recalled',
         );
         return;
     }

@@ -31,6 +31,7 @@
     "tailscale:compose:check": "bun run deploy/scripts/tailscale-compose-check.ts",
     "conformance": "bun run conformance/run.ts",
     "conformance:memory": "bun run conformance/memory/run.ts",
+    "conformance:memory:eval": "bun run conformance/memory/eval.ts",
     "knowledge:lint": "bun run packages/knowledge/src/cli/lint.ts",
     "db:generate": "bun run --cwd apps/melete db:generate",
     "client:generate": "bun run packages/client/scripts/generate.ts",

@@ -1,0 +1,209 @@
+{
+  "id": "many-preferences-and-a-fact",
+  "family": "low-value-memory",
+  "title": "Recent preferences and a needed fact survive a long list of older ones",
+  "narrative": "Twelve preferences are stated over two weeks and then a date; requests must still get the latest preferences and the date they need.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "pref-milk",
+      "event_time": "2026-08-01T09:00:00Z",
+      "text": "I like oat milk in my coffee.",
+      "claim": {
+        "key": "pref.habits.milk",
+        "content": "oat milk",
+        "kind": "preference",
+        "quote": "oat milk"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-music",
+      "event_time": "2026-08-02T09:00:00Z",
+      "text": "I listen to jazz while I work.",
+      "claim": {
+        "key": "pref.habits.music",
+        "content": "jazz",
+        "kind": "preference",
+        "quote": "jazz"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-lamp",
+      "event_time": "2026-08-03T09:00:00Z",
+      "text": "My desk lamp should be warm light.",
+      "claim": {
+        "key": "pref.habits.lamp",
+        "content": "warm light",
+        "kind": "preference",
+        "quote": "warm light"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-commute",
+      "event_time": "2026-08-04T09:00:00Z",
+      "text": "I commute by bicycle.",
+      "claim": {
+        "key": "pref.habits.commute",
+        "content": "bicycle",
+        "kind": "preference",
+        "quote": "bicycle"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-font",
+      "event_time": "2026-08-05T09:00:00Z",
+      "text": "I prefer a serif font.",
+      "claim": {
+        "key": "pref.habits.font",
+        "content": "serif font",
+        "kind": "preference",
+        "quote": "serif font"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-coffee",
+      "event_time": "2026-08-06T09:00:00Z",
+      "text": "I take my coffee strong.",
+      "claim": {
+        "key": "pref.habits.coffee",
+        "content": "strong",
+        "kind": "preference",
+        "quote": "strong"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-signature",
+      "event_time": "2026-08-07T09:00:00Z",
+      "text": "Keep my email signature short.",
+      "claim": {
+        "key": "pref.habits.signature",
+        "content": "short",
+        "kind": "preference",
+        "quote": "short"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-reminder",
+      "event_time": "2026-08-08T09:00:00Z",
+      "text": "Remind me ten minutes ahead.",
+      "claim": {
+        "key": "pref.habits.reminder",
+        "content": "ten minutes ahead",
+        "kind": "preference",
+        "quote": "ten minutes ahead"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-meetings",
+      "event_time": "2026-08-09T09:00:00Z",
+      "text": "No meetings before ten in the morning.",
+      "claim": {
+        "key": "pref.habits.meetings",
+        "content": "No meetings before ten",
+        "kind": "preference",
+        "quote": "No meetings before ten"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-summaries",
+      "event_time": "2026-08-10T09:00:00Z",
+      "text": "I like summaries as three bullet points.",
+      "claim": {
+        "key": "pref.habits.summaries",
+        "content": "three bullet points",
+        "kind": "preference",
+        "quote": "three bullet points"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-language",
+      "event_time": "2026-08-11T09:00:00Z",
+      "text": "Write to me in British English.",
+      "claim": {
+        "key": "pref.habits.language",
+        "content": "British English",
+        "kind": "preference",
+        "quote": "British English"
+      }
+    },
+    {
+      "step": "say",
+      "name": "pref-tone",
+      "event_time": "2026-08-12T09:00:00Z",
+      "text": "Keep replies friendly but brief.",
+      "claim": {
+        "key": "pref.habits.tone",
+        "content": "friendly but brief",
+        "kind": "preference",
+        "quote": "friendly but brief"
+      }
+    },
+    {
+      "step": "say",
+      "name": "review-date",
+      "event_time": "2026-08-20T09:00:00Z",
+      "text": "The policy review is on 9 September 2026.",
+      "claim": {
+        "key": "event.review.date",
+        "content": "9 September 2026",
+        "kind": "user_statement",
+        "quote": "9 September 2026"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "tone",
+      "query": "Draft a reply to the landlord",
+      "key": "pref.habits.tone",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "friendly but brief"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "language",
+      "query": "Draft a reply to the landlord",
+      "key": "pref.habits.language",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "British English"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "meetings",
+      "query": "Schedule a call with the accountant",
+      "key": "pref.habits.meetings",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "No meetings before ten"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "review",
+      "query": "Prepare my notes for the policy review",
+      "key": "event.review.date",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "9 September 2026"
+      }
+    }
+  ]
+}

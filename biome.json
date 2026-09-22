@@ -23,6 +23,7 @@
       "!apps/melete/drizzle",
       "!packages/client/src/schema.d.ts",
       "!conformance/memory/report.json",
+      "!conformance/memory/eval-report.json",
       "!.agents/browser-measurements.json",
       "!**/.eval-state",
       "!evals/results"

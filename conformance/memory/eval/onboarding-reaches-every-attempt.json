@@ -1,0 +1,97 @@
+{
+  "id": "onboarding-reaches-every-attempt",
+  "family": "stable-personalization",
+  "title": "The four setup answers reach an ordinary request",
+  "narrative": "A person answers the four setup questions; a later everyday request must carry all four without being asked about them.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "home-city",
+      "event_time": "2026-08-01T09:00:00Z",
+      "text": "My home city is Lisbon.",
+      "claim": {
+        "key": "pref.home.city",
+        "content": "Lisbon",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "people",
+      "event_time": "2026-08-01T09:01:00Z",
+      "text": "The people I talk about most are Ana and Maya.",
+      "claim": {
+        "key": "pref.people.names",
+        "content": "Ana and Maya",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "focus",
+      "event_time": "2026-08-01T09:02:00Z",
+      "text": "This month I am focused on the Atlas launch.",
+      "claim": {
+        "key": "pref.focus.this-month",
+        "content": "the Atlas launch",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "checkins",
+      "event_time": "2026-08-01T09:03:00Z",
+      "text": "Check in with me briefly each morning.",
+      "claim": {
+        "key": "pref.checkins.style",
+        "content": "briefly each morning",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "city",
+      "query": "Plan my week",
+      "key": "pref.home.city",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "Lisbon"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "people",
+      "query": "Plan my week",
+      "key": "pref.people.names",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "Ana and Maya"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "focus",
+      "query": "Plan my week",
+      "key": "pref.focus.this-month",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "the Atlas launch"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "checkins",
+      "query": "Plan my week",
+      "key": "pref.checkins.style",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "briefly each morning"
+      }
+    }
+  ]
+}

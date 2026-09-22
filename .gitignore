@@ -27,3 +27,4 @@ conformance/memory/report.json
 # The runtime data directories above are matched at any depth, which would
 # also swallow source directories that happen to share their names.
 !apps/melete/src/spaces/
+conformance/memory/eval-report.json
