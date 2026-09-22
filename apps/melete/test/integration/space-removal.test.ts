@@ -501,6 +501,47 @@ describe.if(handle !== null)('removing a space', () => {
     expect(removedBy).toEqual(REMOVED_BY);
   });
 
+  test('removal_goes_round_again_after_a_late_write — a row landing behind its phase is swept on the next pass', async () => {
+    const seeded = await seed('shared');
+    let passes = 0;
+    const browser: BrowserTeardown = {
+      forgetSpace: async (spaceId) => {
+        passes += 1;
+        return { space_id: spaceId, profile: null, rows: passes === 1 ? 2 : 0 };
+      },
+    };
+    const halting = new AbortController();
+    const removals = await service({
+      browser,
+      onPhase: (_id, phase) => {
+        if (phase === 'memory') halting.abort();
+      },
+    });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    await removals.run(fenced.id, halting.signal);
+
+    // A write that was already under way when its table was swept, such as a
+    // mailbox scan finishing a message it had read before the fence.
+    await sql`insert into company_message
+      (id, space_id, principal_id, message_id, subject, from_address, received_at, body)
+      values (${`msg_${crypto.randomUUID()}`}, ${seeded.spaceId}, ${seeded.principalId},
+        '<late@example.test>', 'Late', 'late@example.test', now(), 'Written after the sweep.')`;
+
+    const stopped = await removals.run(fenced.id);
+    expect(stopped.state).toBe('blocked');
+    expect(stopped.blockedReason).toContain('company_message');
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
+
+    // The next pass does not ask the same question again. It goes round the
+    // sweep, the phase that owns the row takes it, and the removal finishes.
+    const finished = await removals.run(fenced.id);
+    expect(outcome(finished)).toBe('complete');
+    expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
+    // What the first pass cleared is still counted after the second.
+    expect(passes).toBe(2);
+    expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 2 } });
+  });
+
   test('a_scan_still_reading_cannot_write_into_a_cleared_space — the emptied space stays empty', async () => {
     const seeded = await seed('personal');
     const store = new PostgresCompanyStore(db);

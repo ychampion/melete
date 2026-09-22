@@ -356,7 +356,13 @@ export class SpaceRemovalService {
       return row;
     }
     let row = claimed;
-    const started = SWEEP.indexOf(row.phase === 'fence' ? 'sessions' : row.phase);
+    // A removal the verification stopped goes round the whole sweep again
+    // rather than asking the same question twice: what it found may be a row
+    // written after its phase ran, or a provider that could not answer then and
+    // can now, and only the phase that owns it can clear it. Every phase is
+    // safe to repeat.
+    const from = row.phase === 'fence' || row.phase === 'verify' ? 'sessions' : row.phase;
+    const started = SWEEP.indexOf(from);
     const remaining = SWEEP.slice(started < 0 ? 0 : started);
     let counts: RemovalCounts = removalCounts.parse(row.counts ?? {});
     for (const phase of remaining) {
@@ -723,9 +729,15 @@ function omit(
   return { ...counts, omitted: { ...counts.omitted, [phase]: reason } };
 }
 
-/** Record what a phase removed. Nothing here can stop a removal finishing. */
+/**
+ * Record what a phase removed, added to what earlier passes removed, so a
+ * removal that went round twice still accounts for the first time. Nothing
+ * here can stop a removal finishing.
+ */
 function cleared(counts: RemovalCounts, went: Record<string, number>): RemovalCounts {
-  return { ...counts, cleared: { ...counts.cleared, ...went } };
+  const total = { ...counts.cleared };
+  for (const [name, count] of Object.entries(went)) total[name] = (total[name] ?? 0) + count;
+  return { ...counts, cleared: total };
 }
 
 async function tableExists(raw: Sql, name: string): Promise<boolean> {
