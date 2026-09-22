@@ -169,12 +169,13 @@ export function registerLifecycleTests(db: TestDatabase | null) {
       });
       const states = Object.fromEntries(
         (
-          await db.sql`select id, state, next_wake_at from job where id in ${db.sql([ran.jobId, chat, routine, command])}`
-        ).map((row) => [row.id, [row.state, row.next_wake_at?.toISOString() ?? null]]),
+          await db.sql`select id, state, to_char(next_wake_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI') as wake
+            from job where id in ${db.sql([ran.jobId, chat, routine, command])}`
+        ).map((row) => [row.id, [row.state, row.wake]]),
       );
       expect(states[ran.jobId]?.[0]).toBe('queued');
       expect(states[chat]).toEqual(['waiting_for_input', null]);
-      expect(states[routine]).toEqual(['waiting_for_event_or_time', '2099-01-01T09:00:00.000Z']);
+      expect(states[routine]).toEqual(['waiting_for_event_or_time', '2099-01-01T09:00']);
       expect(states[command]).toEqual(['running', null]);
     });
     test('approved shared context and public compartments are assembled before delivery', async () => {
