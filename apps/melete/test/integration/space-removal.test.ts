@@ -1207,6 +1207,27 @@ describe.if(handle !== null)('removing a space', () => {
       expect((await spaceAuthority(db, seeded.spaceId, seeded.principalId)).role).toBe('owner');
     });
 
+    test('an_insert_racing_the_fence_waits_for_it_and_is_refused', async () => {
+      const seeded = await seed('shared');
+      const raced = `job_${crypto.randomUUID()}`;
+      // The fence holds the space for update and stamps it; an insert that
+      // arrives while it is open must not pass on the version from before.
+      const fencing = sql.begin(async (tx) => {
+        await tx`select id from space where id = ${seeded.spaceId} for update`;
+        await tx`update space set removed_at = now() where id = ${seeded.spaceId}`;
+        await Bun.sleep(800);
+      });
+      await Bun.sleep(200);
+      const racing = sql`insert into job (id, space_id, title, principal_id, objective, state)
+        values (${raced}, ${seeded.spaceId}, 'Raced', ${seeded.principalId}, 'Slip in', 'running')`.then(
+        () => '',
+        (error: Error) => error.message,
+      );
+      await fencing;
+      expect(await racing).toBe('space_removed');
+      expect(await countOf(sql, 'job', sql`id = ${raced}`)).toBe(0);
+    });
+
     test('the progress of a removal is shown only to the person who asked', async () => {
       const seeded = await seed('shared');
       const removals = await service();

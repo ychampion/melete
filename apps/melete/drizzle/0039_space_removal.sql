@@ -31,9 +31,15 @@ CREATE INDEX "space_removal_ready_idx" ON "space_removal" ("state", "lease_expir
 -- A space under removal takes no new work, connection or mailbox scan, however
 -- the insert is written. The service refuses first where it checks authority;
 -- this is what holds for every path, including a personal space being emptied.
+-- The read takes the key-share lock the foreign key check takes anyway, so an
+-- insert racing the fence waits for it and then sees its stamp, rather than
+-- passing on the version from before it. The stamp is tested after the lock,
+-- not in the locking condition, which an unstamped row would never match.
 CREATE FUNCTION "refuse_work_in_removed_space"() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE stamp timestamptz;
 BEGIN
-  IF EXISTS (SELECT 1 FROM "space" WHERE "id" = NEW."space_id" AND "removed_at" IS NOT NULL) THEN
+  SELECT "removed_at" INTO stamp FROM "space" WHERE "id" = NEW."space_id" FOR KEY SHARE;
+  IF stamp IS NOT NULL THEN
     RAISE EXCEPTION 'space_removed' USING ERRCODE = 'P0001';
   END IF;
   RETURN NEW;
