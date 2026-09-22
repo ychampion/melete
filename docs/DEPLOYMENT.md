@@ -720,6 +720,20 @@ macOS, Windows and rootless Docker hosts are outside them, as is a kernel
 exploit. See the [threat model](THREAT-MODEL.md) for the boundary and what
 rests on it.
 
+Plugins and other stdio MCP servers run in containers the same service starts
+through the same socket, one per connection, with a volume of their own and no
+network unless their owner named a destination; [CONNECTORS](CONNECTORS.md#where-a-server-runs)
+describes each restriction. The service pulls their images on first use, so
+the host needs to reach the registries the catalog names. These settings
+change them; the defaults need none:
+
+| Setting | Default | What it chooses |
+| --- | --- | --- |
+| `MELETE_MCP_NODE_IMAGE` | `node:22-alpine`, pinned by digest | The image `npx` plugins run in |
+| `MELETE_MCP_PYTHON_IMAGE` | `ghcr.io/astral-sh/uv:0.12.17-python3.12-alpine`, pinned by digest | The image `uvx` plugins run in |
+| `MELETE_MCP_EGRESS_PORT` | `8789` | The port, inside the service container, of the proxy a plugin with named destinations uses |
+| `MELETE_MCP_IDLE_MS` | `600000` | How long a plugin may sit unused before it is stopped |
+
 The runtime build asserts that Hermes tag `v2026.9.7` resolves to commit
 `2237be355906fbe6065ce1815711eee52b2d646e`. It also asserts the plugin content
 SHA-256, installs the locked Python dependencies, and records both values in

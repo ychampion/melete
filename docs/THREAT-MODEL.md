@@ -216,8 +216,10 @@ creation. Sign-in limits and their tests are under Attacker 6.
 MCP workers belong outside the runtime cell. A server can lie in its description,
 annotations or results, including calling a write read-only. The exposed tools,
 effect classes, scopes and audience come from the installation, either the row
-an owner installs through `POST /connections` or an entry in the operator's
-connections file, and a server cannot change them. The
+an owner installs through `POST /connections` or `POST /plugins/{id}`, or an
+entry in the operator's connections file, and a server cannot change them. A
+stdio server's tool definitions are recorded when it is installed, and a
+restarted server that describes different ones is refused. The
 default effect is `write_external`; `readOnlyHint` cannot remove an approval.
 The broker still checks every action's scope, intent identity, approval hash and
 trust origin. A server result cannot install a tool, load a schema or approve
@@ -236,14 +238,37 @@ data without a broker client or credentials. Each underlying read has its own
 action and receipt; generated result fields claiming owner origin do not change
 the enclosing inferred provenance or the original evidence handles.
 
-**Production stdio is refused at the launch boundary.** The test MCP launcher filters
-environment variables, redirects profile paths to its temporary directory and
-grants no client roots or sampling capability. That prevents automatic credential
-inheritance; a process under the service's own OS identity could still read
-service-accessible files, inspect other processes where the OS permits it, and
-use the host's network routes. An HTTP MCP endpoint can reach whatever its
-remote host permits. Neither worker is inside the cell's `internal: true`
-network boundary.
+**A stdio server runs in a container of its own.** Whether it is a catalog
+plugin or a package or image the owner named, the service starts it through
+the Docker engine as uid 10001 on a read-only root, with every capability
+dropped, no privilege escalation, Docker's default seccomp profile and bounded
+memory, processes and CPU. Its one mount is its connection's volume: it never
+sees the Docker socket, the service's files, other connections' data or the
+service's environment. It receives only its runner's settings and the
+variables sealed for it, opened from the sealed store just before each start.
+With no destination named it has no network interface but loopback; with some,
+its only peer is the service's proxy, which opens HTTPS tunnels to the named
+hosts alone and refuses any name that resolves to a private, loopback,
+link-local or metadata address. A package is fetched in a separate container
+that holds no secret and may reach only its registry, so an install script
+cannot read the token the server will be given. The service reads the engine's
+record of each container before starting it and removes, unstarted, one
+recorded with less isolation. A server that keeps crashing is left stopped,
+and revocation stops its container and removes its volume. Conformance 9
+observes these from inside real containers on every pull request.
+
+What stays with the server: it can read and change its own volume, use its own
+sealed variables against the destinations it was allowed, and write whatever
+it likes in its answers. Those answers are external content to the broker,
+and each call it is asked to make was admitted, and if it writes outside, was
+approved. A named destination receives whatever the server sends it,
+including its own variables, so a destination is a grant of trust in both
+directions. Docker keeps a container's environment in the engine's own state
+while the container exists; the service removes each container when it stops,
+and host root can read that state, as it can everything under the socket's
+authority described at the top of this document. Tests launch fixture servers
+as child processes; `production stdio cannot launch under the service OS
+identity` shows that path is refused outside tests, before anything is spawned.
 
 Configured HTTP installations register with the `mcp` provider. They receive
 only protocol messages and admitted tool arguments, with no service credentials,
@@ -252,14 +277,7 @@ own host's filesystem and network policy remain the operator's responsibility.
 Owner-only tools are hidden in public compartments and the broker checks the
 persisted audience again at dispatch, including after approval.
 
-A local, untrusted MCP server can run safely only under a separate OS identity
-or sandbox, with no vault or database mounts or credentials, and behind a
-verified network policy. Both the production adapter and the raw stdio
-transport refuse a launch without that isolation, and
-`production stdio cannot launch under the service OS identity` shows the
-refusal happens before anything is spawned, so a production MCP server is an
-HTTP endpoint, installed by the owner or pinned in the operator's connections
-file. Composition likewise needs a cell executor
+Composition needs a cell executor
 to run its script; the default service supplies none, so it does not offer the
 composition tool. The `node:vm` executor exists for deterministic tests, refuses
 to start outside them, and is not an OS or memory boundary.

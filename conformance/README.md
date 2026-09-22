@@ -1,8 +1,9 @@
 # Service conformance
 
-The runner lists eight scenarios, then executes the tests in
+The runner lists nine scenarios, then executes the tests in
 `conformance/scenarios`. Scenarios 1–5 run anywhere with disposable Postgres;
-6–8 run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1` is set.
+6–8 run against the Compose stack when `MELETE_CONFORMANCE_COMPOSE=1` is set;
+9 runs against a Docker engine when `MELETE_CONFORMANCE_DOCKER=1` is set.
 
 ## Run
 
@@ -78,6 +79,28 @@ running services and runtime containers.
 
 Scenario 8's second-provider comparison runs when a second credential is
 configured; without one it reports itself as skipped.
+
+## Stdio MCP servers on a Docker engine (Docker opt-in)
+
+Scenario 9 starts stdio MCP servers through the service's Docker launcher on a
+real engine. It needs no stack and no database, but it runs inside a container
+holding the Docker socket, as the service does, because a server with named
+destinations reaches them through the proxy in that container. CI runs it on
+every pull request; by hand, on a Linux Docker host:
+
+```bash
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/repo -w /repo   -e MELETE_CONFORMANCE_DOCKER=1 oven/bun:$(cat .bun-version)   bun test conformance/scenarios/09-stdio-mcp.test.ts --timeout=300000
+```
+
+| Scenario | What runs | Named assertions |
+| --- | --- | --- |
+| 9: [stdio MCP](scenarios/09-stdio-mcp.test.ts) | A probe MCP server in `node:22-alpine` with no destinations and with one, a server that exits on its own, and `@modelcontextprotocol/server-filesystem` fetched by `npx`; four tests | `with no destination named it is unprivileged, alone with its volume, and reaches nothing`; `with one destination named it reaches that one through the proxy and nothing else`; `a server that exits leaves no container, and removal takes its volume`; `an npm package is fetched through the registry grant, then runs with no network` |
+
+The probe reports from inside its container: its uid, its effective
+capabilities, `NoNewPrivs`, the seccomp mode, whether the root and its volume
+are writable, whether the Docker socket exists, its network interfaces, a TCP
+connection to a public address, its environment and its cgroup limits. The
+test also reads the engine's own record of each container and network.
 
 ## Static configuration checks
 
