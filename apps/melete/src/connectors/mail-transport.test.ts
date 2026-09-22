@@ -6,7 +6,8 @@ import { type EmailConnection, ImapSmtpTransport } from './mail-transport.ts';
 import type { SecretAccess } from './secrets.ts';
 
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
-async function mailServers(options: { smtpRefusesLogin?: boolean } = {}) {
+async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: string } = {}) {
+  const sentName = options.sentName ?? 'Sent';
   const sockets = new Set<Socket>();
   const sent: string[] = [];
   const auth: string[] = [];
@@ -35,10 +36,18 @@ async function mailServers(options: { smtpRefusesLogin?: boolean } = {}) {
         if (upper === 'CAPABILITY') socket.write('* CAPABILITY IMAP4rev1 AUTH=PLAIN SASL-IR\r\n');
         else if (upper.startsWith('AUTHENTICATE PLAIN '))
           auth.push(Buffer.from(command.split(' ')[2] ?? '', 'base64').toString());
+        else if (command === 'LIST "" ""') socket.write('* LIST (\\Noselect) "/" ""\r\n');
         else if (upper.startsWith('LIST '))
-          socket.write('* LIST (\\HasNoChildren) "/" "INBOX"\r\n');
+          socket.write(
+            `* LIST (\\HasNoChildren) "/" "INBOX"\r\n* LIST (\\HasNoChildren \\Sent) "/" "${sentName}"\r\n`,
+          );
         else if (upper.startsWith('SELECT ') || upper.startsWith('EXAMINE ')) {
-          mailbox = /sent/i.test(command) ? 'Sent' : 'INBOX';
+          const name = command.slice(command.indexOf(' ') + 1).replace(/^"|"$/g, '');
+          if (name !== 'INBOX' && name !== sentName) {
+            socket.write(`${tag} NO [NONEXISTENT] No such mailbox\r\n`);
+            continue;
+          }
+          mailbox = name === sentName ? 'Sent' : 'INBOX';
           const messages = mailbox === 'Sent' ? sent : inbox;
           socket.write(
             `* FLAGS (\\Seen)\r\n* ${messages.length} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] Valid\r\n* OK [UIDNEXT ${messages.length + 1}] Next\r\n`,
@@ -225,6 +234,23 @@ describe('IMAP and SMTP wire adapters', () => {
     } finally {
       await working.close();
       await refusing.close();
+    }
+  }, 30_000);
+
+  test('a sent folder named its own way is found by its flag, so a send can be confirmed', async () => {
+    const destination = await mailServers({ sentName: 'Sent Messages' });
+    try {
+      const secrets: SecretAccess = { withSecret: async (_id, _space, use) => use('app-password') };
+      const connector = new EmailConnector(destination.config, secrets);
+      const action = mailAction('email.send', {
+        to: ['friend@example.test'],
+        subject: 'Hello',
+        body: 'See you soon.',
+      });
+      expect((await connector.execute(action, mailContext())).outcome).toBe('succeeded');
+      expect((await connector.verify(action, mailContext())).decision).toBe('succeeded');
+    } finally {
+      await destination.close();
     }
   }, 30_000);
 
