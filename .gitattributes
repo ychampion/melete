@@ -2,3 +2,5 @@
 *.png binary
 *.jpg binary
 *.gif binary
+# git archive writes the archived commit here; the upgrade script checks it.
+deploy/scripts/release-commit.txt export-subst

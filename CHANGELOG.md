@@ -101,7 +101,9 @@ to named tests on the tagged tree; the README's gates table is the summary.
   the restriction journal apart, a checkout of the tag, images tagged with the
   release version as well as `:local`, a wait for health and for every migration
   in the journal, and the exact rollback into an empty database volume with the
-  newer journal retained. `--dry-run` prints the plan.
+  newer journal retained. `--dry-run` prints the plan. The script runs from a
+  copy taken out of the target tag and acts on the installation `--repository`
+  names, so a `v0.1.0` installation upgrades with the same steps.
 - **Accounts act only in their own space.** Every request derives its space from
   the account its session authenticates: that account's own personal space, or a
   space the session stored while the account is still a member of it under the

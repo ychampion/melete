@@ -1,9 +1,9 @@
 # Upgrading between releases
 
 An upgrade moves a running Compose installation from one tagged release to a
-later one. `deploy/scripts/upgrade.ts` carries out the procedure on this page;
-`--dry-run` prints every command it would run, and the rollback, without
-executing any of them.
+later one. The target release's `deploy/scripts/upgrade.ts` carries out the
+procedure on this page; `--dry-run` prints every command it would run, and the
+rollback, without executing any of them.
 
 Read the target release's [changelog](../CHANGELOG.md) entry first. Releases are
 upgraded in order of their tags; moving to an older tag is a
@@ -44,15 +44,26 @@ Docker Engine 28.0 or newer, Docker Compose 2.33.1 or newer, Bun, and an account
 that can use the Docker socket. The stack must be running and healthy, because
 the database is dumped from the running `postgres` service.
 
+The script that runs is always the target release's own, taken out of its tag
+into a temporary directory, so the same steps work from every
+release, `v0.1.0` included, whose tree has no upgrade script of its own. The
+copy needs no `bun install`, and it leaves the installation's tree untouched.
+`--repository` names the installation it acts on.
+
 ```bash
 cd melete
 git fetch --tags origin
 mkdir -p -m 700 ~/melete-backups
-bun run deploy/scripts/upgrade.ts v0.2.0 --dry-run
+release="$(mktemp -d)"
+git archive v0.2.0 | tar -x -C "$release"
+bun run "$release/deploy/scripts/upgrade.ts" v0.2.0 --repository "$PWD" --dry-run
 ```
 
 The backup parent must exist before the first run; the `mkdir` creates the
-default one, `~/melete-backups`, private to you.
+default one, `~/melete-backups`, private to you. Run the same command without
+`--dry-run` to upgrade, and remove the copy afterwards with `rm -rf "$release"`.
+Take the copy from the tag you are upgrading to, and give that same tag to the
+script.
 
 The dry run performs the read-only preflight and prints the plan. It exits
 non-zero when the preflight found a problem; the plan is printed either way.
@@ -64,6 +75,7 @@ non-zero when the preflight found a problem; the plan is printed either way.
 | `--browser` | Include `deploy/docker-compose.browser.yml` in every Compose command and stop the browser worker with the other writers. Use it if you start the stack with that override. |
 | `--tailscale` | Include `deploy/docker-compose.tailscale.yml` in every Compose command and stop the Tailscale node with the other writers. Use it if you start the stack with that override. |
 | `--wait-timeout seconds` | How long `up --wait` may take. Default 300. Image builds are not bounded by it. |
+| `--repository /absolute/path` | The installation to upgrade: the top of the checkout it was cloned into. Default: the checkout the script itself is in. |
 
 Name the overrides the installation actually runs with. An upgrade that leaves
 one out rebuilds and starts the stack without that service, and the address it
@@ -73,6 +85,11 @@ answered on stops answering.
 
 Nothing is stopped or written until every check passes:
 
+- **The installation.** `--repository` is the top of a git checkout, so every
+  command runs from the directory its Compose files are named relative to.
+- **The copy's release.** `git archive` writes the commit it archived into
+  `deploy/scripts/release-commit.txt`, and that commit must be the tag's. A copy
+  taken from another tag is refused, naming both commits.
 - **A clean working tree.** Local edits are refused, except under
   `deploy/config/`, which holds your connection configuration. Edits there are
   refused only when the target release also changes that directory; merge the
@@ -212,6 +229,11 @@ not in the restored database.
   (`apps/melete/test/integration/migration-upgrade.test.ts`).
 - The restore boundary itself, an old database with the newer journal, is the
   [restore proof](DEPLOYMENT.md#backup-and-restore).
+- A copy of the script holding only the files it imports runs with no
+  dependencies installed, reads the installation's `deploy/.env` rather than its
+  own, and runs every command there. A copy archived from one tag is refused
+  when it is given another, and a run from a checkout has nothing to compare
+  (`deploy/scripts/upgrade-copy.test.ts`).
 - The script as a whole has run against the injected runner, not against a
   live Docker host. Its commands are the ones the deployment guide documents,
   so run it with `--dry-run` first and read the plan it prints.

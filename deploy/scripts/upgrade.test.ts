@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../apps/melete/src/runtime/docker-engine.ts';
 import {
   type CommandRunner,
+  installationDependencies,
   judgePreflight,
   type PreflightFacts,
   parseArguments,
@@ -254,6 +255,8 @@ describe('arguments', () => {
 
 const ready: PreflightFacts = {
   tag: 'v0.2.0',
+  repositoryRoot: '/srv/melete',
+  repositoryPrefix: '',
   status: '',
   tagCommit: 'b'.repeat(40),
   headCommit: 'a'.repeat(40),
@@ -270,6 +273,56 @@ const ready: PreflightFacts = {
   backupFreeBytes: 20 * GIB,
   backupEstimateBytes: 1 * GIB,
 };
+
+describe('the installation a copy of the script acts on', () => {
+  const now = new Date('2030-01-02T03:04:05Z');
+  test('--repository names it, and it must be absolute', () => {
+    expect(
+      parseArguments(['v0.2.0', '--repository', '/home/owner/melete'], now, '/home/owner', '/tmp/r')
+        .repositoryRoot,
+    ).toBe('/home/owner/melete');
+    expect(parseArguments(['v0.2.0'], now, '/home/owner', '/srv/melete').repositoryRoot).toBe(
+      '/srv/melete',
+    );
+    expect(() => parseArguments(['v0.2.0', '--repository', 'melete'], now, '/h', '/r')).toThrow(
+      'Usage',
+    );
+    expect(() => parseArguments(['v0.2.0', '--repository'], now, '/h', '/r')).toThrow('Usage');
+  });
+
+  test('one that is not the top of a git checkout is refused by name', () => {
+    expect(judgePreflight({ ...ready, repositoryPrefix: null })[0]).toContain(
+      '/srv/melete is not a git checkout',
+    );
+    expect(
+      judgePreflight({
+        ...ready,
+        repositoryRoot: '/srv/melete/deploy',
+        repositoryPrefix: 'deploy/',
+      })[0],
+    ).toContain('/srv/melete/deploy is deploy inside its git checkout');
+  });
+
+  test('its journal, its settings and every command come from it, not from the copy', async () => {
+    const installation = await mkdtemp(join(tmpdir(), 'fix-ops-installation-'));
+    try {
+      await mkdir(join(installation, 'deploy'));
+      await mkdir(join(installation, 'apps/melete/drizzle/meta'), { recursive: true });
+      await writeFile(join(installation, 'deploy/.env'), 'COMPOSE_PROJECT_NAME=assistant\n');
+      await writeFile(
+        join(installation, 'apps/melete/drizzle/meta/_journal.json'),
+        JSON.stringify({ entries: [{}, {}, {}] }),
+      );
+      const dependencies = installationDependencies(installation);
+      expect(await dependencies.journalEntries()).toBe(3);
+      expect((await dependencies.environment())?.COMPOSE_PROJECT_NAME).toBe('assistant');
+      const cwd = await dependencies.run(['bun', '-e', 'process.stdout.write(process.cwd())']);
+      expect(await realpath(cwd.stdout)).toBe(await realpath(installation));
+    } finally {
+      await rm(installation, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('the preflight', () => {
   test('a clean tree, a known tag, a supported engine and enough disk pass', () => {
