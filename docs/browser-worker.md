@@ -189,8 +189,10 @@ During a takeover the network guard admits the person's navigation within a
 **site scope**: the job's allowed domains and the site of the page they took
 over, compared as registrable domains. A redirect or navigation started by an
 in-scope page adds its target's site within fifteen seconds of the person
-pressing, touching or typing, and at most three sites for each such action,
-which is what a sign-in handing off to an identity provider needs. Any other
+last pressing, touching or typing, and at most three sites for each burst of
+activity, which is what a sign-in handing off to an identity provider needs.
+Typing keeps the window open, and only an action after it has lapsed starts a
+new burst. Any other
 site is refused with an `off_scope` notice naming it, and the person can allow
 it for this takeover with `/live/scope`. The scope holds at most twelve sites.
 A site added during the takeover, by the person or by a page, is a public
@@ -205,11 +207,12 @@ at most eight popups, and a budget of 2,000 requests and 32 MB bounds it.
 Nothing the person types reaches the timeline, a recipe, an episode, a log or an
 artifact. After handback the page still holds what they typed and were shown,
 so until an automation action loads a new top-level document, every observation
-carries no screenshot, no form values, no query string and no form intents. Its
-accessibility tree keeps the page's roles with every value removed; headings,
-cells, list items, options, images and text lose their names too, since those
-are page text, and control names and schema labels lose anything shaped like a
-code, a seed or a token. `browser.read` is refused with `read_after_handback`
+carries no screenshot, no form values, no query string and no form intents, and
+its URL path loses any segment shaped like a code or a token. Its accessibility
+tree keeps the page's roles with every value removed; headings, cells, list
+items, options, images and text lose their names too, since those are page
+text, and control names and schema labels lose anything shaped like a code, a
+seed or a token. `browser.read` is refused with `read_after_handback`
 in that time. An observation still refuses while a password or one-time-code
 field is visible. Opening a page, or a click or submit that loads a new
 document, returns the agent to ordinary observations.

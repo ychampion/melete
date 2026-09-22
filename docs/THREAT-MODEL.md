@@ -410,8 +410,8 @@ broker, and container boundary have separate jobs:
   typed events; frames are written through and never stored. Their navigation
   stays within a site scope: the job's allowed domains, the site they took over,
   sites they allow, and sites an in-scope page leads to within fifteen seconds of
-  their own press, touch or keystroke, at most three per action and twelve in
-  all; a site added this way is a public one. The public-address floor and
+  their own press, touch or keystroke, at most three for each burst of activity
+  and twelve in all; a site added this way is a public one. The public-address floor and
   pinned DNS apply throughout. Nothing they type reaches an event, a recipe, a log or an
   artifact. Until an automation action loads a new document, every observation
   of the handed-back page keeps its roles and control names with no values, no
