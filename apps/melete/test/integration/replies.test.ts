@@ -210,6 +210,19 @@ withDb('reply obligations and notification outbox', () => {
     expect(await replies.outbox()).toHaveLength(0);
   });
 
+  test('a reply service keeps the acceptance hook it was handed', async () => {
+    const { jobs } = fixture();
+    const own = new SubmissionService(jobs);
+    const seen: string[] = [];
+    own.onAccepted = async (_tx, receipt) => {
+      seen.push(receipt.submission_id);
+    };
+    const chained = new ReplyService(jobs, own);
+    await own.create(input([answer]), 'chained-hook');
+    expect(seen).toEqual(['chained-hook']);
+    expect((await chained.list()).map((item) => item.submissionId)).toEqual(['chained-hook']);
+  });
+
   test('coalescing replaces pending content while retaining every direct obligation', async () => {
     const { jobs, handle } = fixture();
     const row = await direct([

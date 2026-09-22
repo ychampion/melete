@@ -157,7 +157,11 @@ export class ReplyService {
     submissions: SubmissionService,
     runner?: AttemptRunner,
   ) {
-    submissions.onAccepted = (tx, receipt, row, kind) => this.register(tx, receipt, row, kind);
+    const accepted = submissions.onAccepted;
+    submissions.onAccepted = async (tx, receipt, row, kind) => {
+      await accepted?.(tx, receipt, row, kind);
+      await this.register(tx, receipt, row, kind);
+    };
     if (runner) {
       runner.onFinished.push((tx, row, outcome, attemptId, context) =>
         this.publish(tx, row, outcome, attemptId, context?.result),
