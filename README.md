@@ -44,8 +44,9 @@ before the first message goes out, and it never sends the same message twice.
 
 ## Try it on one email
 
-<!-- TRYIT_URL — REPLACE BEFORE PUBLISHING with the live try-it address.
-     bun run release:check fails until it is replaced. -->
+<!-- TRYIT_URL — BEFORE PUBLISHING, replace the link with the live try-it
+     address and delete this comment. bun run release:check fails while the
+     link is a placeholder. -->
 **[Try it on one email](TRYIT_URL)**
 
 Paste any message from a company, or just describe the problem. You get back
@@ -156,27 +157,40 @@ over your own tailnet, with HTTPS and no published port. See
 ### Remove it completely
 
 Everything Melete keeps lives in Docker volumes and one configuration file, so
-taking it off the machine is one command, a sweep and one deletion. The first
-command stops the stack and removes its containers and named volumes — the
-database, your spaces, artifacts, the work directory and the removal journal.
-The sweep catches the per-attempt containers, networks and volumes the service
-creates while it runs: those carry Melete's own labels rather than Compose's, so
-they are matched by label and by the Compose project name, `melete` unless you
-changed `COMPOSE_PROJECT_NAME`. Delete `deploy/.env` last, because it holds the
-master key that unseals anything you backed up. What is left afterwards is the
-source directory you cloned and the built images. Every installation on a host
-shares those images, so when this is the only one, remove them too with
-`docker image rm melete-service:local melete-runtime:local melete-web:local`.
+taking it off the machine is one command, a sweep and one deletion. Give the
+first command the same `-f` files you started the stack with, so it reaches the
+browser worker and the Tailscale node when you use them. It stops the stack and
+removes its containers and named volumes: the database, your spaces, artifacts,
+the work directory, the removal journal and, with the Tailscale file, the node
+key. The sweep catches the per-attempt containers, networks and volumes the
+service creates while it runs: those carry Melete's own labels rather than
+Compose's, so they are matched by label and by the Compose project name, which
+the sweep reads from `deploy/.env`. Delete `deploy/.env` last, because it holds
+the master key that unseals anything you backed up.
 
 ```bash
 docker compose -f deploy/docker-compose.yml down -v --rmi local --remove-orphans
-# Using the browser worker? Add -f deploy/docker-compose.browser.yml to that line.
+# Started it with the browser worker or Tailscale? Add the same -f files to that line.
 owned=label=com.melete.attempt-supervisor=v1
-project=label=com.melete.project=melete
+name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' deploy/.env)
+project=label=com.melete.project=${name:-melete}
 docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
 docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
 docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
 rm -f deploy/.env
+```
+
+What is left afterwards is the source directory you cloned and the images:
+`melete-service:local`, `melete-runtime:local` and `melete-web:local`, which
+Docker built, and `postgres:17-alpine`, plus `tailscale/tailscale` with
+Tailscale, which it pulled. Every installation on a host shares these images,
+so remove them only when this was the last one:
+
+```bash
+docker image rm melete-service:local melete-runtime:local melete-web:local \
+  postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+# With Tailscale, also remove:
+#   tailscale/tailscale@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
 ```
 
 ## Everything else it does
@@ -256,11 +270,11 @@ disposable Postgres 17: embedded when `DATABASE_URL` is unset, otherwise
 disposable databases created on the server you supply, which needs
 database-creation permission. On current Linux distributions, set
 `DATABASE_URL`. On Windows, clone to a short path such as `C:\m`: the embedded
-server's `initdb` stops once its data directory passes 260 characters, and says
-`pg_ident.conf.sample` is missing when the file is there. Tests use scripted
-providers. `bun run lint` is Biome over the
-whole tree followed by `bun run scrub:check`, which refuses local paths and
-internal work codes in tracked files. The generators rewrite the
+server's own files sit about 145 characters below the clone, and once a path
+passes Windows' 260-character limit its `initdb` says `pg_ident.conf.sample` is
+missing when the file is there. Tests use scripted providers. `bun run lint` is
+Biome over the whole tree followed by `bun run scrub:check`, which refuses local
+paths and internal work codes in tracked files. The generators rewrite the
 OpenAPI document and the client declarations; inspect the diff. Install Chromium
 with `bunx playwright install chromium` for the browser fixtures, and run the
 suites sequentially on small machines. `budget.max_output_tokens` is a job's
