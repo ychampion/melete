@@ -134,6 +134,7 @@ withDb('extraction keeps what matters once', () => {
       'ana-new',
       'Ana changed jobs, her email is now ana@atlas.example.',
     );
-    expect(update.claims.map((claim) => claim.key)).toContain('contact.ana.email');
+    // The claim the message is about leads the snapshot, ahead of newer ones.
+    expect(update.claims[0]?.key).toBe('contact.ana.email');
   });
 });
