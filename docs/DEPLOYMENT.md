@@ -24,8 +24,9 @@ versions:
   database or anything else. An older engine, an engine that has dropped API
   1.48, or an unreachable socket stops startup; `docker compose logs melete`
   shows the message.
-- `bun run deploy/scripts/configure.ts` and `bun run deploy/scripts/upgrade.ts`
-  run `docker version` and `docker compose version` on the host and refuse an
+- `bun run deploy/scripts/configure.ts`, and the release's `upgrade.ts` run
+  from its copy as [Upgrading](UPGRADING.md#before-you-start) shows, run
+  `docker version` and `docker compose version` on the host and refuse an
   unsupported pair before writing or changing anything.
 - `bun run doctor --docker` reports the same judgement on demand, and nothing
   else, so it suits a host that only runs the stack. `bun run doctor` judges
