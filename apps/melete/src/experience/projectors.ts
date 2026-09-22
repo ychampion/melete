@@ -118,6 +118,7 @@ export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
   'web.fetch': ['Reading a web page', 'Read a web page'],
   'exec.run': ['Running a command', 'Ran a command'],
   'exec.python': ['Running code', 'Ran code'],
+  'terminal.run': ['Running a command', 'Ran a command'],
   'browser.open': ['Opening a page', 'Opened a page'],
   'browser.observe': ['Looking at the page', 'Looked at the page'],
   'browser.fill': ['Filling in a form', 'Filled in a form'],

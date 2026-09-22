@@ -227,14 +227,14 @@ withDb('tool entries in the conversation', () => {
     await raw('action_requested', { action_id: searchId, kind: 'email.search' });
     await raw('notice', { action_id: searchId, phase: 'repair_parked', retry_after_at: null });
     await raw('action_status_changed', { action_id: searchId, from: 'dispatched', to: 'unknown' });
-    // The runtime's own calls: a skill that worked and a command that did not.
+    // The runtime's own calls: a skill that worked and a web search that did not.
     await raw('tool_call_proposed', {
       tool: 'skills.research_with_sources',
       call_id: 'c1',
       arguments: { preview: 'dinner places near Sam' },
     });
     await raw('tool_result', { call_id: 'c1', ok: true, result: {} });
-    await raw('tool_call_proposed', { tool: 'terminal', call_id: 'email.send#2', arguments: {} });
+    await raw('tool_call_proposed', { tool: 'web_search', call_id: 'email.send#2', arguments: {} });
     await raw('tool_result', { call_id: 'email.send#2', ok: false, result: {} });
     // A connector verb the runtime proposed is told by its action, not twice.
     await raw('tool_call_proposed', { tool: 'email.send', call_id: 'c3', arguments: {} });
@@ -296,7 +296,7 @@ withDb('tool entries in the conversation', () => {
       ['running', 'Using the skill: Research with sources'],
       ['done', 'Used the skill: Research with sources'],
     ]);
-    expect(calls.filter((call) => call.kind === 'sandbox').map((call) => call.status)).toEqual([
+    expect(calls.filter((call) => call.kind === 'web').map((call) => call.status)).toEqual([
       'running',
       'failed',
     ]);
@@ -320,7 +320,7 @@ withDb('tool entries in the conversation', () => {
         'Opened the booking page',
         'Remembered: Diet',
         'Used the skill: Research with sources',
-        'Using a tool',
+        'Searching the web',
       ].sort(),
     );
     const json = JSON.stringify(page);

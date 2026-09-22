@@ -113,7 +113,7 @@ export function actionKind(kind: string): ToolKind {
   if (family === 'web') return 'web';
   if (family === 'files') return 'file';
   if (family === 'browser') return 'browser';
-  if (family === 'exec') return 'sandbox';
+  if (family === 'exec' || family === 'terminal') return 'sandbox';
   if (kind === 'artifact.publish' || kind === 'audio.synthesize') return 'artifact';
   return 'connector';
 }
@@ -174,6 +174,7 @@ function actionInput(row: ActionRow): ToolSummary | null {
       return site ? summary(`On ${site}`) : null;
     }
     case 'exec.run':
+    case 'terminal.run':
       return summary('Command', quote(firstLine(payload.command), 'request'));
     case 'exec.python':
       return summary('Python code', quote(firstLine(payload.code), 'request'));
@@ -238,12 +239,15 @@ function actionOutput(row: ActionRow, status: ToolStatus, raw: string): ToolSumm
       return summary('Page read', quote(pageTitle(detail.body), 'page'));
     case 'exec.run':
     case 'exec.python':
+    case 'terminal.run':
       return summary(
         detail.timed_out === true
           ? 'Stopped after running too long'
           : typeof detail.exit_code === 'number' && detail.exit_code !== 0
             ? `Finished with exit code ${detail.exit_code}`
             : 'Finished',
+        // What a command printed is outside text; binary output is never shown.
+        detail.output_binary === true ? undefined : quote(firstLine(detail.output), 'app'),
       );
     case 'artifact.publish':
       return summary('Published');
@@ -320,15 +324,23 @@ export function retryCall(parentId: string, key: string, at: Date): ToolCall {
 // --------------------------------------------------------------------------
 
 /** Plumbing, or already told another way: the model speaking, a glyph, loading a tool. */
-const UNSHOWN = new Set(['say', 'react', 'search_tools', 'load_tool', 'resume_action']);
+const UNSHOWN = new Set([
+  'say',
+  'react',
+  'search_tools',
+  'load_tool',
+  'resume_action',
+  // In a cell every terminal command and poll is one broker `terminal.run` action,
+  // which carries the command and its receipt.
+  'terminal',
+  'process',
+]);
 const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   compose: ['tool', 'Working through several steps', 'Worked through several steps'],
   'job.wait': ['tool', 'Scheduling a follow-up', 'Scheduled a follow-up'],
   web_search: ['web', 'Searching the web', 'Searched the web'],
   web_extract: ['web', 'Reading a web page', 'Read a web page'],
-  terminal: ['sandbox', 'Running a command', 'Ran a command'],
   execute_code: ['sandbox', 'Running code', 'Ran code'],
-  process: ['sandbox', 'Checking a running command', 'Checked a running command'],
   read_file: ['file', 'Reading a file', 'Read a file'],
   write_file: ['file', 'Saving a file', 'Saved a file'],
   patch: ['file', 'Editing a file', 'Edited a file'],

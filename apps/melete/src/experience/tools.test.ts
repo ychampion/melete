@@ -193,6 +193,26 @@ describe('broker actions', () => {
     expectSafe(run);
   });
 
+  test('a terminal command in a cell reads like a command, output quoted, run token unseen', () => {
+    const run = actionCall({
+      action: row('terminal.run', {
+        canonicalPayload: { command: 'ls -la\npwd', run: 'run-token-abc' },
+        receipt: { detail: { exit_code: 0, timed_out: false, output: 'total 8\nfile.txt' } },
+      }),
+      connection: { id: 'conn_5', label: 'Sandbox', provider: 'sandbox' },
+      raw: 'succeeded',
+      at,
+    });
+    expect(run).toMatchObject({
+      kind: 'sandbox',
+      title: 'Ran a command',
+      input_summary: { text: 'Command', quote: { text: 'ls -la', from: 'request' } },
+      output_summary: { text: 'Finished', quote: { text: 'total 8', from: 'app' } },
+    });
+    expect(JSON.stringify(run)).not.toContain('run-token');
+    expectSafe(run);
+  });
+
   test('the grouped trail names verbs it used to call a step', () => {
     const group = projectActionGroup([
       {
@@ -218,7 +238,9 @@ describe('runtime tools, the model and traces', () => {
     for (const name of ['email.send', 'mcp_linear.create_issue', 'say', 'load_tool'])
       expect(runtimeTool(name)).toBeNull();
     expect(runtimeTool('web_search')?.done).toBe('Searched the web');
-    expect(runtimeTool('terminal')?.kind).toBe('sandbox');
+    // A cell's terminal is told by its `terminal.run` action, once.
+    expect(runtimeTool('terminal')).toBeNull();
+    expect(runtimeTool('process')).toBeNull();
     expect(runtimeTool('browser_navigate')?.kind).toBe('browser');
     expect(runtimeTool('some_new_tool')).toEqual({
       kind: 'tool',
