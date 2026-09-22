@@ -161,6 +161,8 @@ export interface SandboxProvider {
   snapshot?(h: SandboxHandle, s: AbortSignal): Promise<{ snapshotRef: string }>;
   /** Idempotent: a snapshot that is already gone is deleted. */
   deleteSnapshot?(snapshotRef: string, s: AbortSignal): Promise<void>;
+  /** Asks the provider whether it still holds a snapshot; false only when it says so. */
+  snapshotHeld?(snapshotRef: string, s: AbortSignal): Promise<boolean>;
   /** Idempotent: a sandbox that is already gone is destroyed. */
   destroy(handle: SandboxHandle, signal: AbortSignal): Promise<void>;
   /** Asks the provider; `gone` is an authoritative answer, never a guess from a failed call. */

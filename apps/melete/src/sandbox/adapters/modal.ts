@@ -304,6 +304,11 @@ export function createModalProvider(options: ModalOptions): ModalSandboxProvider
       }
     },
 
+    snapshotHeld(snapshotRef, signal): Promise<boolean> {
+      if (!SANDBOX_ID.test(snapshotRef)) throw new SandboxAdapterRefusal('not a Modal image id');
+      return transport.imageExists(snapshotRef, signal);
+    },
+
     async connect(handle, signal): Promise<void> {
       if ((await transport.poll(sandboxId(handle), signal)) !== 'running')
         throw new SandboxAdapterRefusal('the sandbox is not running');

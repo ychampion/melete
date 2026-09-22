@@ -156,6 +156,18 @@ const uniqueViolation = (error: unknown): string | null =>
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Every sandbox a session row recorded at its provider: its own, unless it
+ * never got one, and the paused sandbox a pause workspace resumes from.
+ */
+function recordedSandboxes(row: Row): string[] {
+  const own = row.provider_sandbox_id as string;
+  const ids = own.startsWith(PENDING_SANDBOX) ? [] : [own];
+  const paused = row.resume_ref as string | null;
+  if (row.persistence === 'pause' && paused && paused !== own) ids.push(paused);
+  return ids;
+}
+
 const egressKey = (policy: EgressPolicy) =>
   JSON.stringify([
     policy.kind,
@@ -891,9 +903,18 @@ export class SandboxSessions {
   ): Promise<{ closed: string[]; snapshotsDeleted: string[] }> {
     const failures: string[] = [];
     const closed: string[] = [];
-    const live = await this.sql`select id from sandbox_session
+    const live = await this.sql`select id, adapter, connection_id from sandbox_session
       where space_id = ${spaceId} and status in ('opening', 'ready', 'paused', 'closing')`;
     for (const candidate of live) {
+      // Resolved before the row is taken, so a provider that cannot be had
+      // leaves the row as it was rather than `closing`.
+      let provider: SandboxProvider | undefined;
+      try {
+        provider = providerFor(candidate.adapter as string, candidate.connection_id as string);
+      } catch (error) {
+        failures.push(`${candidate.id as string}: ${message(error)}`);
+        continue;
+      }
       const claimed = await this.claim(candidate.id as string, [
         'opening',
         'ready',
@@ -902,16 +923,27 @@ export class SandboxSessions {
       ]);
       if (!claimed) continue;
       try {
-        const finished = await this.finish(
-          claimed.row,
-          claimed.from,
-          providerFor(claimed.row.adapter, claimed.row.connectionId),
-          signal,
-        );
+        const finished = await this.finish(claimed.row, claimed.from, provider, signal);
         if (finished.status === 'closed') closed.push(finished.id);
         else failures.push(`${finished.id}: ${finished.lastError ?? 'not closed'}`);
       } catch (error) {
         failures.push(`${claimed.row.id}: ${message(error)}`);
+      }
+    }
+    // A lost row can still have a sandbox at its provider: one whose
+    // connection was revoked, for example. Destroying is idempotent, so each
+    // is asked for once more.
+    const lost = await this.sql`select id, adapter, connection_id, provider_sandbox_id,
+        persistence, resume_ref
+      from sandbox_session where space_id = ${spaceId} and status = 'lost'`;
+    for (const row of lost) {
+      try {
+        const provider = providerFor(row.adapter as string, row.connection_id as string);
+        if (!provider) throw new Error(`no ${row.adapter as string} provider is available`);
+        for (const sandboxId of recordedSandboxes(row))
+          await provider.destroy(handleOf(sandboxId), signal);
+      } catch (error) {
+        failures.push(`${row.id as string}: ${message(error)}`);
       }
     }
     // A snapshot can outlive its row's lease: a superseded one whose deletion
@@ -935,6 +967,54 @@ export class SandboxSessions {
     if (failures.length)
       throw new Error(`the space's sandboxes were not all destroyed: ${failures.join('; ')}`);
     return { closed, snapshotsDeleted };
+  }
+
+  /**
+   * What the providers still hold for a space, asked of them rather than read
+   * from these rows: every sandbox and every snapshot any of the space's
+   * sessions recorded, whatever its row says became of it. A removal finishes
+   * on this answer, never on what `destroyWorkspacesForSpace` reports it did.
+   * Anything no provider answers for is counted as still held.
+   */
+  async listWorkspacesForSpace(
+    spaceId: string,
+    providerFor: ProviderFor,
+    signal: AbortSignal = AbortSignal.timeout(120_000),
+  ): Promise<{ sessions: string[]; snapshots: string[] }> {
+    const rows = await this.sql`select id, adapter, connection_id, provider_sandbox_id,
+        persistence, resume_ref
+      from sandbox_session where space_id = ${spaceId} order by id`;
+    const sessions = new Set<string>();
+    const snapshots = new Set<string>();
+    // A paused sandbox moves from one row to the next, so each is asked about once.
+    const asked = new Map<string, boolean>();
+    for (const row of rows) {
+      let provider: SandboxProvider | undefined;
+      try {
+        provider = providerFor(row.adapter as string, row.connection_id as string);
+      } catch {
+        provider = undefined;
+      }
+      for (const sandboxId of recordedSandboxes(row)) {
+        const key = `${row.connection_id as string}:${sandboxId}`;
+        let held = asked.get(key);
+        if (held === undefined) {
+          held = provider
+            ? (await provider.inspect(handleOf(sandboxId), signal).catch(() => null)) !== 'gone'
+            : true;
+          asked.set(key, held);
+        }
+        if (held) sessions.add(row.id as string);
+      }
+      const ref = row.resume_ref as string | null;
+      if (row.persistence === 'snapshot' && ref) {
+        const held = provider?.snapshotHeld
+          ? await provider.snapshotHeld(ref, signal).catch(() => true)
+          : true;
+        if (held) snapshots.add(ref);
+      }
+    }
+    return { sessions: [...sessions], snapshots: [...snapshots] };
   }
 
   /**

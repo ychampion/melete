@@ -432,6 +432,62 @@ withDb('sandbox sessions', () => {
     expect(provider.engine.snapshots.size).toBe(0);
   });
 
+  test("what a space still holds is asked of the provider, not taken from the teardown's own report", async () => {
+    const { scope, provider, sessions, spec, base } = await setup();
+    const workspace = await sessions.openWorkspace(
+      {
+        ...base,
+        agentId: scope.agentId,
+        persistence: 'snapshot',
+        attemptId: await scope.attempt(),
+      },
+      provider,
+      spec,
+      signal(),
+    );
+    const snapshot =
+      (await sessions.suspendWorkspace(workspace.id, provider, signal())).resumeRef ?? '';
+    expect(snapshot).not.toBe('');
+    const running = await sessions.open(
+      { ...base, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    // A session recorded lost whose sandbox is in fact still running.
+    const stray = await sessions.open(
+      { ...base, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sessions.markLost(stray.id, 'its connection was revoked');
+    const listed = () => sessions.listWorkspacesForSpace(scope.spaceId, () => provider, signal());
+    expect((await listed()).sessions.sort()).toEqual([running.id, stray.id].sort());
+    expect((await listed()).snapshots).toEqual([snapshot]);
+    // With no provider to ask, everything recorded counts as still held.
+    const unasked = await sessions.listWorkspacesForSpace(scope.spaceId, () => undefined, signal());
+    expect(unasked.sessions.sort()).toEqual([workspace.id, running.id, stray.id].sort());
+
+    // A provider that reports a deletion it did not make: the teardown's own
+    // account says the snapshot went, and the listing says it did not.
+    const deleteSnapshot = provider.deleteSnapshot.bind(provider);
+    provider.deleteSnapshot = async () => {};
+    const claimed = await sessions.destroyWorkspacesForSpace(
+      scope.spaceId,
+      () => provider,
+      signal(),
+    );
+    expect(claimed.snapshotsDeleted).toEqual([snapshot]);
+    expect(await listed()).toEqual({ sessions: [], snapshots: [snapshot] });
+    // The lost row's sandbox went with the rest.
+    expect(await provider.inspect(sessionHandle(stray), signal())).toBe('gone');
+
+    provider.deleteSnapshot = deleteSnapshot;
+    await sessions.destroyWorkspacesForSpace(scope.spaceId, () => provider, signal());
+    expect(await listed()).toEqual({ sessions: [], snapshots: [] });
+  });
+
   test('a workspace whose attempt stopped renewing its lease is suspended, not destroyed', async () => {
     const { sql, scope, provider, sessions, spec, base } = await setup();
     const workspace = {

@@ -286,6 +286,17 @@ export function createModalSdkTransport(options: ModalSdkOptions): ModalTranspor
       }
     },
 
+    async imageExists(imageId: string): Promise<boolean> {
+      const modal = await client();
+      try {
+        await modal.images.fromId(imageId);
+        return true;
+      } catch (error) {
+        if (notFound(error)) return false;
+        throw new ModalUnavailable(scrub(error));
+      }
+    },
+
     async start(sandboxId: string, exec: ModalExec): Promise<ModalRunning> {
       if (exec.argv.reduce((bytes, word) => bytes + Buffer.byteLength(word), 0) > ARGV_LIMIT)
         throw new ModalStartRefused('the command line is longer than Modal accepts');

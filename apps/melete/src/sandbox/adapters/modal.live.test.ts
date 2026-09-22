@@ -90,6 +90,7 @@ function counted(inner: ModalTransport) {
     poll: (id, s) => noted(inner.poll(id, s)),
     snapshot: (id, ttl, s) => noted(inner.snapshot(id, ttl, s)),
     deleteImage: (imageId, s) => noted(inner.deleteImage(imageId, s)),
+    imageExists: (imageId, s) => noted(inner.imageExists(imageId, s)),
     list: (appName, tags, s) => noted(inner.list(appName, tags, s)),
     close: () => inner.close(),
   };

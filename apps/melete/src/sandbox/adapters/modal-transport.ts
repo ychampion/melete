@@ -65,6 +65,8 @@ export interface ModalTransport {
   snapshot(sandboxId: string, ttlSeconds: number | null, signal: AbortSignal): Promise<string>;
   /** Throws `ModalNotFound` when the image is already gone. */
   deleteImage(imageId: string, signal: AbortSignal): Promise<void>;
+  /** Whether Modal still has the image: false only on Modal's own not-found answer. */
+  imageExists(imageId: string, signal: AbortSignal): Promise<boolean>;
   /** Running sandboxes in the app that carry at least these tags, with all of their tags. */
   list(
     appName: string,
@@ -105,6 +107,7 @@ export function modalAcknowledgementControl(inner: ModalTransport) {
     poll: (sandboxId, signal) => inner.poll(sandboxId, signal),
     snapshot: (sandboxId, ttl, signal) => inner.snapshot(sandboxId, ttl, signal),
     deleteImage: (imageId, signal) => inner.deleteImage(imageId, signal),
+    imageExists: (imageId, signal) => inner.imageExists(imageId, signal),
     list: (appName, tags, signal) => inner.list(appName, tags, signal),
     close: () => inner.close(),
     async start(sandboxId, exec, signal) {

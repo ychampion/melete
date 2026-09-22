@@ -1363,6 +1363,11 @@ export class FakeSandboxProvider implements SandboxProvider {
     return { snapshotRef: this.engine.snapshot(this.running(handle)) };
   }
 
+  async snapshotHeld(snapshotRef: string, signal: AbortSignal): Promise<boolean> {
+    signal.throwIfAborted();
+    return this.engine.snapshots.has(snapshotRef);
+  }
+
   async deleteSnapshot(snapshotRef: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     this.engine.snapshots.delete(snapshotRef);

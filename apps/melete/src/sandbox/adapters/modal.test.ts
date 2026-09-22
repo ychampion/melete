@@ -808,6 +808,8 @@ test('the SDK transport snapshots with an explicit expiry, resumes from the imag
     imageId: 'im-double',
   });
   await transport.deleteImage('im-double', signal());
+  // Asking whether Modal still has an image is the same lookup a resume makes.
+  expect(await transport.imageExists('im-double', signal())).toBe(true);
   transport.close();
   const missing = sdkDouble({ missingImage: true });
   const gone = createModalSdkTransport({ credential: (use) => use(TOKEN), load: missing.load });
@@ -815,6 +817,8 @@ test('the SDK transport snapshots with an explicit expiry, resumes from the imag
   expect(created).toBeInstanceOf(ModalNotFound);
   const deleted = await gone.deleteImage('im-double', signal()).catch((error: unknown) => error);
   expect(deleted).toBeInstanceOf(ModalNotFound);
+  // Only Modal's own not-found answer says an image is gone.
+  expect(await gone.imageExists('im-double', signal())).toBe(false);
   expect(missing.calls.some((call) => call.method === 'sandboxes.create')).toBe(false);
   gone.close();
 });

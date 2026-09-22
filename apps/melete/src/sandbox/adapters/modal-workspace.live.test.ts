@@ -118,6 +118,7 @@ function counted(inner: ModalTransport) {
       const entry = snapshots.get(imageId);
       if (entry && entry.deleted === null) entry.deleted = Date.now();
     },
+    imageExists: (imageId, s) => noted(inner.imageExists(imageId, s)),
     list: (appName, tags, s) => noted(inner.list(appName, tags, s)),
     close: () => inner.close(),
   };

@@ -82,6 +82,11 @@ export function createModalStandin(
       return imageId;
     },
 
+    async imageExists(imageId: string, signal: AbortSignal) {
+      signal.throwIfAborted();
+      return engine.snapshots.has(imageId);
+    },
+
     async deleteImage(imageId: string, signal: AbortSignal) {
       signal.throwIfAborted();
       if (!engine.snapshots.delete(imageId))
