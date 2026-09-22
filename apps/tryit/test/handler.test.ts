@@ -390,6 +390,17 @@ describe('what a failure costs', () => {
     expect(await attempts(new ProviderError('upstream', 'could not connect', false), 20)).toBe(20);
   });
 
+  test('...and handed back to the IPv6 block as well as the /64', async () => {
+    const limits: Limits = { ...LIMITS, perIpPerDay: 5, perBlockPerDay: 2, globalPerDay: 50 };
+    const { calls, provider } = billing(new ProviderError('upstream', 'could not connect', false));
+    const use = deps({}, { provider, limiter: memoryLimiter(limits), limits });
+    for (let net = 1; net <= 6; net += 1) {
+      const response = await caseFileRoute(post(REFUND, `2001:db8:1:${net}::1`), use);
+      if (response.body) await response.text();
+    }
+    expect(calls.made).toBe(6);
+  });
+
   test('the whole page runs out too, however the attempts fail', async () => {
     const { calls, provider } = billing(new ProviderError('refused', 'no', true));
     const use = deps({}, { provider });
@@ -514,6 +525,30 @@ describe('what the counter is told about a visitor', () => {
     }
     expect(statuses.filter((status) => status === 200)).toHaveLength(LIMITS.perIpPerDay);
     expect(statuses.slice(LIMITS.perIpPerDay).every((status) => status === 429)).toBe(true);
+  });
+
+  test('a /48 gets one larger allowance, however many /64s it rotates through', async () => {
+    const limits: Limits = { ...LIMITS, perIpPerDay: 2, perBlockPerDay: 3, globalPerDay: 50 };
+    const use = deps({}, { limiter: memoryLimiter(limits), limits });
+    const statusOf = async (address: string) => {
+      const response = await caseFileRoute(post(REFUND, address), use);
+      if (response.status === 200) await readStream(response);
+      return response.status;
+    };
+    const statuses: number[] = [];
+    for (let net = 1; net <= 6; net += 1) statuses.push(await statusOf(`2001:db8:1:${net}::1`));
+    expect(statuses).toEqual([200, 200, 200, 429, 429, 429]);
+    expect(await statusOf('2001:db8:2:1::1')).toBe(200);
+  });
+
+  test('IPv4 addresses are not grouped into blocks', async () => {
+    const limits: Limits = { ...LIMITS, perIpPerDay: 1, perBlockPerDay: 1, globalPerDay: 50 };
+    const use = deps({}, { limiter: memoryLimiter(limits), limits });
+    for (let host = 1; host <= 4; host += 1) {
+      const response = await caseFileRoute(post(REFUND, `203.0.113.${host}`), use);
+      expect(response.status).toBe(200);
+      await readStream(response);
+    }
   });
 });
 

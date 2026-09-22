@@ -161,24 +161,29 @@ export function clientIp(request: Request): string {
  * them a fresh allowance per address. An IPv6 address is therefore cut to its
  * /64, and one that only carries an IPv4 address (`::ffff:a.b.c.d`) is that
  * IPv4 address. Anything that does not parse is kept as it came.
+ *
+ * An IPv6 visitor also gets the /48 around them as `block`, which is counted
+ * too: a household handed a /56 or a /48 holds hundreds of /64s or more.
  */
-export function visitorOf(address: string): string {
+export function visitorOf(address: string): { key: string; block?: string } {
   const bare = address
     .trim()
     .replace(/^\[(.*)\]$/, '$1')
     .replace(/%.*$/, '')
     .toLowerCase();
-  if (!bare.includes(':')) return bare;
+  if (!bare.includes(':')) return { key: bare };
   const groups = hextets(bare);
-  if (groups === null) return bare;
+  if (groups === null) return { key: bare };
   const [, , , , , , high = 0, low = 0] = groups;
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-    return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+    return { key: [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.') };
   }
-  return `${groups
-    .slice(0, 4)
-    .map((group) => group.toString(16))
-    .join(':')}::/64`;
+  const prefix = (count: number) =>
+    groups
+      .slice(0, count)
+      .map((group) => group.toString(16))
+      .join(':');
+  return { key: `${prefix(4)}::/64`, block: `${prefix(3)}::/48` };
 }
 
 /** The eight 16-bit groups of an IPv6 address, or null when it is not one. */
@@ -265,8 +270,13 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
 
   // The address is turned into a key here and goes no further, so neither the
   // counter nor its storage ever sees one.
-  const ip = await counterKey(visitorOf(clientIp(request)), today(started), deps.salt ?? '');
-  const turn = await deps.limiter.take(ip);
+  const visitor = visitorOf(clientIp(request));
+  const ip = await counterKey(visitor.key, today(started), deps.salt ?? '');
+  const block =
+    visitor.block === undefined
+      ? undefined
+      : await counterKey(visitor.block, today(started), deps.salt ?? '');
+  const turn = await deps.limiter.take(ip, block);
   if (!turn.allowed) {
     const outcome = turn.reason === 'ip' ? 'rate_limited' : 'busy';
     record({ ...bare, chars, outcome });
@@ -323,7 +333,7 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
       // for. Anything else — a refusal, a reply that stopped early, a request
       // given up on after it was sent — has already cost tokens, and refunding
       // it would let anyone who can provoke one have the key for nothing.
-      if (!wasBilled(error)) await deps.limiter.giveBack(ip);
+      if (!wasBilled(error)) await deps.limiter.giveBack(ip, block);
       record({ ...bare, chars, outcome: code });
       return { ok: false, code, message: WORDS[code] };
     } finally {

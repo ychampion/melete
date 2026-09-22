@@ -70,7 +70,8 @@ the same wherever a request lands.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `TRYIT_PER_IP_PER_DAY` | 5 | case files one address may have in a day |
+| `TRYIT_PER_IP_PER_DAY` | 5 | case files one address, or one IPv6 /64, may have in a day |
+| `TRYIT_PER_BLOCK_PER_DAY` | 20 | case files one IPv6 /48 may have in a day, across all of its /64s |
 | `TRYIT_GLOBAL_PER_DAY` | 400 | case files the whole page may produce in a day |
 | `TRYIT_MAX_INPUT_CHARS` | 20000 | longest paste accepted |
 | `TRYIT_MIN_INPUT_CHARS` | 40 | shortest paste worth a case file |

@@ -19,9 +19,10 @@ export type Decision =
   | { allowed: true; remaining: number }
   | { allowed: false; reason: 'ip' | 'global' };
 
+/** `block` is the IPv6 /48 a visitor is in, when there is one; see `spend`. */
 export interface Limiter {
-  take(ip: string): Promise<Decision>;
-  giveBack(ip: string): Promise<void>;
+  take(ip: string, block?: string): Promise<Decision>;
+  giveBack(ip: string, block?: string): Promise<void>;
 }
 
 const KEY = 'counters';
@@ -48,14 +49,15 @@ export class TryItLimiter {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const ip = url.searchParams.get('ip') ?? 'unknown';
+    const block = url.searchParams.get('block') ?? undefined;
     const now = Date.now();
     const result = await this.#state.blockConcurrencyWhile(async () => {
       const stored = (await this.#state.storage.get<Counters>(KEY)) ?? emptyCounters(now);
       if (url.pathname === '/give-back') {
-        await this.#state.storage.put(KEY, refund(stored, ip, now));
+        await this.#state.storage.put(KEY, refund(stored, ip, now, block));
         return null;
       }
-      const decision = spend(stored, ip, now, this.#limits);
+      const decision = spend(stored, ip, now, this.#limits, block);
       await this.#state.storage.put(KEY, decision.counters);
       return decision.allowed
         ? ({ allowed: true, remaining: decision.remaining } satisfies Decision)
@@ -69,13 +71,15 @@ export class TryItLimiter {
 
 export function durableLimiter(namespace: DurableObjectNamespace): Limiter {
   const stub = () => namespace.get(namespace.idFromName(OBJECT_NAME));
+  const query = (ip: string, block?: string) =>
+    new URLSearchParams(block === undefined ? { ip } : { ip, block }).toString();
   return {
-    async take(ip) {
-      const response = await stub().fetch(`https://limiter/take?ip=${encodeURIComponent(ip)}`);
+    async take(ip, block) {
+      const response = await stub().fetch(`https://limiter/take?${query(ip, block)}`);
       return (await response.json()) as Decision;
     },
-    async giveBack(ip) {
-      await stub().fetch(`https://limiter/give-back?ip=${encodeURIComponent(ip)}`);
+    async giveBack(ip, block) {
+      await stub().fetch(`https://limiter/give-back?${query(ip, block)}`);
     },
   };
 }
@@ -88,15 +92,15 @@ export function durableLimiter(namespace: DurableObjectNamespace): Limiter {
 export function memoryLimiter(limits: Limits, now: () => number = Date.now): Limiter {
   let counters = emptyCounters(now());
   return {
-    async take(ip) {
-      const decision = spend(counters, ip, now(), limits);
+    async take(ip, block) {
+      const decision = spend(counters, ip, now(), limits, block);
       counters = decision.counters;
       return decision.allowed
         ? { allowed: true, remaining: decision.remaining }
         : { allowed: false, reason: decision.reason };
     },
-    async giveBack(ip) {
-      counters = refund(counters, ip, now());
+    async giveBack(ip, block) {
+      counters = refund(counters, ip, now(), block);
     },
   };
 }
