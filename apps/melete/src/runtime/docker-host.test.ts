@@ -3,7 +3,9 @@ import type { CommandOutput } from './docker-engine.ts';
 import {
   DOCKER_HOST_COMMANDS,
   type DockerHostFacts,
+  describeDockerHost,
   dockerHostFacts,
+  engineElsewhere,
   isDockerDesktop,
   judgeDockerHost,
   judgeDockerMachine,
@@ -14,6 +16,7 @@ import {
   parseDockerInfo,
   pipePath,
   readDockerHost,
+  remoteEngineHost,
   socketProbeCommand,
 } from './docker-host.ts';
 
@@ -196,13 +199,27 @@ describe('the host judgement', () => {
     expect(reachable[0]).toContain('`docker version` did not reach a Docker Engine');
   });
 
-  test('an engine on another machine is refused; a local TCP endpoint is not', () => {
-    const at = (endpoint: string) =>
-      judgeDockerHost({ platform: 'linux', endpoint, pipePresent: null, info: null });
-    for (const endpoint of ['ssh://deploy@build.example.net', 'tcp://10.0.0.5:2376']) {
-      const problems = at(endpoint);
-      expect(problems).toHaveLength(1);
-      expect(problems[0]).toContain(`points at ${endpoint}, another machine`);
+  test('an engine on another machine is supported and named in one line; a local one is not', () => {
+    const facts = (platform: NodeJS.Platform, endpoint: string): DockerHostFacts => ({
+      platform,
+      endpoint,
+      pipePresent: null,
+      info: parseDockerInfo(info({ OperatingSystem: 'Ubuntu 24.04.3 LTS', MemTotal: 2 * GIB })),
+    });
+    for (const [endpoint, host] of [
+      ['ssh://deploy@droplet.example.net', 'droplet.example.net'],
+      ['tcp://10.0.0.5:2376', '10.0.0.5'],
+      ['tcp://[2001:db8::5]:2376', '2001:db8::5'],
+    ] as const) {
+      expect(remoteEngineHost(endpoint)).toBe(host);
+      for (const platform of ['linux', 'win32'] as const) {
+        const remote = facts(platform, endpoint);
+        expect(judgeDockerHost(remote)).toEqual([]);
+        expect(engineElsewhere(remote)).toBe(true);
+        const notes = describeDockerHost(remote);
+        expect(notes).toHaveLength(1);
+        expect(notes[0]).toContain(`The Docker engine is on ${host} (${endpoint})`);
+      }
     }
     for (const endpoint of [
       'tcp://localhost:2375',
@@ -210,8 +227,33 @@ describe('the host judgement', () => {
       'tcp://[::1]:2375',
       'unix:///var/run/docker.sock',
       'npipe:////./pipe/docker_engine',
-    ])
-      expect(at(endpoint)).toEqual([]);
+    ]) {
+      expect(remoteEngineHost(endpoint)).toBeNull();
+      expect(describeDockerHost(facts('linux', endpoint))).toEqual([]);
+      expect(engineElsewhere(facts('linux', endpoint))).toBe(false);
+    }
+    // Docker Desktop keeps its socket and disk in its VM: elsewhere, but not remote.
+    expect(engineElsewhere(desktop())).toBe(true);
+    expect(describeDockerHost(desktop())).toEqual([]);
+  });
+
+  test("a Windows client's long paths are still judged when the engine is remote", () => {
+    const paths = longPathFacts({
+      root: `C:\\${'d'.repeat(120)}`,
+      registry: ok('LongPathsEnabled    REG_DWORD    0x0'),
+      git: ok('true'),
+      tracked: ok('README.md'),
+      installed: ['x'.repeat(162)],
+    });
+    const problems = judgeDockerHost({
+      platform: 'win32',
+      endpoint: 'ssh://deploy@droplet.example.net',
+      pipePresent: null,
+      info: null,
+      paths,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('260-character limit');
   });
 
   test('versions and host problems are reported together', () => {

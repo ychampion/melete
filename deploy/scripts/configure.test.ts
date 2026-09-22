@@ -64,6 +64,19 @@ describe('the Docker socket group written as DOCKER_GID', () => {
     expect(linux.calls).toEqual(['stat']);
   });
 
+  test('an engine on another machine: its socket group, measured from a container there', async () => {
+    for (const platform of ['linux', 'win32'] as const) {
+      const remote = access('998 660 socket\n');
+      const facts = {
+        ...host(platform, 'Ubuntu 24.04 LTS'),
+        endpoint: 'ssh://deploy@droplet.example.net',
+      };
+      expect(await dockerSocketGroup(facts, remote)).toBe(998);
+      expect(remote.calls).toHaveLength(1);
+      expect(remote.calls[0]).toContain('/var/run/docker.sock:/var/run/docker.sock');
+    }
+  });
+
   test('Docker Desktop on Windows, macOS or Linux: the group measured from a container', async () => {
     for (const platform of ['win32', 'darwin', 'linux'] as const) {
       const desktop = access('0 760 socket\n');

@@ -34,11 +34,16 @@ versions:
   `MELETE_CONFORMANCE_COMPOSE=1` is set.
 
 The same three places also judge the machine around the engine. An engine
-reached through `DOCKER_HOST` or a context on another machine is refused,
-because Compose mounts `deploy/config` and the Docker socket from the machine
-the engine runs on; so is an engine running Windows containers, and on Docker
-Desktop, a VM with less than 4 GB of memory. On Windows they add the checks in
+running Windows containers is refused, and so, on Docker Desktop, is a VM with
+less than 4 GB of memory. On Windows they add the checks in
 [Windows (Docker Desktop)](#windows-docker-desktop).
+
+The engine may also be on another machine, such as a rented Linux host reached
+through `DOCKER_HOST` or a Docker context over `ssh://` or `tcp://` with TLS.
+The three places then name that machine in one line. Compose mounts that
+machine's `/var/run/docker.sock` and resolves bind mounts such as
+`deploy/config` on it, so `configure.ts` measures the socket's group from a
+container there, and the upgrade measures free space there.
 
 ## Windows (Docker Desktop)
 

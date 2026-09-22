@@ -31,8 +31,9 @@ import {
 import {
   DOCKER_HOST_COMMANDS,
   type DockerHostFacts,
+  describeDockerHost,
   dockerHostFacts,
-  isDockerDesktop,
+  engineElsewhere,
   judgeDockerMachine,
   localMachine,
   longPathCommands,
@@ -539,9 +540,10 @@ export async function gatherPreflight(
       : {}),
   });
   const missingTools = HOST_TOOLS.filter((tool) => machine.which(tool) === null);
-  // Docker Desktop keeps images and volumes in its VM, which the host's df
-  // cannot see; the database volume is on that disk, so ask from beside it.
-  const dockerRootFreeBytes = isDockerDesktop(host.info)
+  // Docker Desktop keeps images and volumes in its VM, and a remote engine on
+  // its own machine; this host's df sees neither. The database volume is on
+  // that disk, so ask from beside it.
+  const dockerRootFreeBytes = engineElsewhere(host)
     ? availableBytes(
         await run([...compose, 'exec', '-T', 'postgres', 'df', '-Pk', '/var/lib/postgresql/data']),
       )
@@ -645,6 +647,7 @@ export async function runUpgrade(
     secrets.reduce((result, secret) => result.replaceAll(secret, '[redacted]'), message);
   const plan = upgradePlan(context);
   const problems = judgePreflight(facts);
+  for (const note of describeDockerHost(facts.host)) log(note);
   if (problems.length > 0) {
     log(`Preflight found ${problems.length} problem(s); nothing was changed:`);
     for (const problem of problems) log(`  - ${problem}`);

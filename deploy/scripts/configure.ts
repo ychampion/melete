@@ -10,8 +10,9 @@
  *
  * DOCKER_GID is the group of the Docker socket as the service will see it. On
  * a Linux host running Docker Engine that is the host's own socket. Docker
- * Desktop, on Windows, macOS or Linux, serves the socket from its VM, so the
- * host has no file to read and the group is measured from a container.
+ * Desktop, on Windows, macOS or Linux, serves the socket from its VM, and an
+ * engine reached over ssh:// or tcp:// has it on its own machine; in both the
+ * host has no file to read, so the group is measured from a container.
  */
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
@@ -24,7 +25,8 @@ import {
 } from '../../apps/melete/src/runtime/docker-engine.ts';
 import {
   type DockerHostFacts,
-  isDockerDesktop,
+  describeDockerHost,
+  engineElsewhere,
   judgeDockerMachine,
   judgeSocketProbe,
   readDockerHost,
@@ -63,7 +65,7 @@ export type SocketAccess = {
 
 /** The socket's group as the service will see it, or an error that says why there is none. */
 export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAccess) {
-  if (host.platform === 'linux' && !isDockerDesktop(host.info)) {
+  if (host.platform === 'linux' && !engineElsewhere(host)) {
     const socket = await access.statHost();
     if (!socket.isSocket()) throw new Error('/var/run/docker.sock is not a Docker socket');
     return socket.gid;
@@ -81,6 +83,7 @@ if (import.meta.main) {
   const host = readDockerHost(spawnCommand, root);
   const unsupported = judgeDockerMachine(readHostDocker(), host);
   if (unsupported.length > 0) throw new Error(unsupported.join(' '));
+  for (const note of describeDockerHost(host)) process.stdout.write(`${note}\n`);
   const dockerGid = await dockerSocketGroup(host, {
     statHost: () => stat('/var/run/docker.sock'),
     runProbe: (command) => spawnCommand(command, 10 * 60_000),

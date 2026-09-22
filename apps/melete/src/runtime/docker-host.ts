@@ -1,8 +1,8 @@
 /**
  * What the machine running the stack must provide beyond the engine and
- * Compose versions: an engine on this machine, Linux containers, enough memory
- * when the engine runs in Docker Desktop's VM, and on Windows, paths the
- * checkout fits in. The configuration generator, the upgrade script and
+ * Compose versions: Linux containers, enough memory when the engine runs in
+ * Docker Desktop's VM, and on Windows, paths the checkout fits in. An engine
+ * on another machine, reached over ssh:// or tcp://, is supported and named. The configuration generator, the upgrade script and
  * `bun run doctor --docker` all gather these facts and judge them here, so a
  * Windows host running Docker Desktop hears the same thing from each of them.
  *
@@ -120,13 +120,34 @@ export function pipePath(endpoint: string): string | null {
   return name ? `\\\\.\\pipe\\${name}` : null;
 }
 
-/** A tcp:// or ssh:// endpoint on another machine; the local socket and pipe are not. */
-function remoteEndpoint(endpoint: string | null): string | null {
+/**
+ * The machine a tcp:// or ssh:// endpoint names, when it is not this one; null
+ * for the local socket, the named pipe and loopback. A rented Linux host
+ * reached this way is a supported place to run the stack.
+ */
+export function remoteEngineHost(endpoint: string | null): string | null {
   if (!endpoint) return null;
   const match = /^(tcp|ssh|https?):\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^:/]+)/.exec(endpoint);
   if (!match) return null;
   const host = (match[2] ?? '').replace(/^\[|\]$/g, '').toLowerCase();
-  return ['localhost', '127.0.0.1', '::1'].includes(host) ? null : endpoint;
+  return ['localhost', '127.0.0.1', '::1'].includes(host) ? null : host;
+}
+
+/**
+ * Whether the engine keeps its socket and its disk somewhere this machine's
+ * filesystem cannot see: Docker Desktop's VM, or another machine.
+ */
+export const engineElsewhere = (facts: DockerHostFacts) =>
+  isDockerDesktop(facts.info) || remoteEngineHost(facts.endpoint) !== null;
+
+/** Lines worth printing that are not problems: which machine the engine is on. */
+export function describeDockerHost(facts: DockerHostFacts): string[] {
+  const host = remoteEngineHost(facts.endpoint);
+  return host
+    ? [
+        `The Docker engine is on ${host} (${facts.endpoint}). Compose mounts that machine's /var/run/docker.sock, and resolves bind mounts such as deploy/config on it.`,
+      ]
+    : [];
 }
 
 export type DockerHostInputs = {
@@ -209,11 +230,6 @@ function memoryAdvice(info: EngineInfo): string {
 /** One line per problem with the host beyond the engine and Compose versions. */
 export function judgeDockerHost(facts: DockerHostFacts): string[] {
   const problems: string[] = [];
-  const remote = remoteEndpoint(facts.endpoint);
-  if (remote)
-    problems.push(
-      `The Docker client points at ${remote}, another machine. Compose mounts deploy/config and the Docker socket from the machine that runs the engine, so run Melete's scripts there, or unset DOCKER_HOST and select the local context with \`docker context use default\`.`,
-    );
   if (facts.pipePresent === false && facts.endpoint)
     problems.push(
       `Nothing answers on ${facts.endpoint.replace(/^npipe:\/*/, '//')}, so Docker Desktop is not running. Start Docker Desktop, wait until it reports that the engine is running, and run this again.`,

@@ -762,3 +762,25 @@ describe('an installation on Docker Desktop for Windows', () => {
     expect(problems).toEqual(['sha256sum is not on PATH; the backup steps need them.']);
   });
 });
+
+describe('an installation on a remote engine', () => {
+  test('is upgraded from here, with the disk measured on the engine machine', async () => {
+    const vmDisk =
+      'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 100 1 41943040 1% /var/lib/postgresql/data';
+    const { run, commands } = host({
+      'docker context inspect': { stdout: 'ssh://deploy@droplet.example.net' },
+      'exec -T postgres df -Pk /var/lib/postgresql/data': { stdout: vmDisk },
+      'df -Pk /var/lib/docker': { code: 1, stderr: 'df: /var/lib/docker: No such file' },
+    });
+    const output: string[] = [];
+    const result = await runUpgrade({ ...options, dryRun: true }, dependencies(run, output));
+    expect(result.status).toBe('planned');
+    expect(commands).toContain(
+      'docker compose -f deploy/docker-compose.yml exec -T postgres df -Pk /var/lib/postgresql/data',
+    );
+    expect(commands.some((line) => line.startsWith('df -Pk /var/lib/docker'))).toBe(false);
+    const text = output.join('\n');
+    expect(text).toContain('The Docker engine is on droplet.example.net');
+    expect(text).toContain('Preflight passed');
+  });
+});

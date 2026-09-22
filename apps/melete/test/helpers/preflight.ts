@@ -17,6 +17,7 @@ import {
   spawnCommand,
 } from '../../src/runtime/docker-engine.ts';
 import {
+  describeDockerHost,
   judgeDockerMachine,
   localMachine,
   type MachineAccess,
@@ -39,6 +40,8 @@ export type PreflightFacts = {
    * requested: nothing else in the suite uses Docker.
    */
   docker?: string[];
+  /** Informational lines about the Docker host, such as a remote engine's machine. */
+  dockerNotes?: string[];
   /** `--docker` without the deployment scenarios: the suite's own prerequisites are not judged. */
   dockerOnly?: boolean;
 };
@@ -72,15 +75,20 @@ export function gatherFacts(
     tmpdirWritable,
     libpq: process.platform !== 'linux' || LIBPQ_PATHS.some((path) => existsSync(path)),
     uv: Bun.which('uv') !== null,
-    ...(wantsDocker
-      ? {
-          docker: judgeDockerMachine(
-            readHostDocker(runDocker),
-            readDockerHost(runDocker, REPOSITORY_ROOT, machine),
-          ),
-        }
-      : {}),
+    ...(wantsDocker ? judgeDocker(runDocker, machine) : {}),
     ...(wantsDocker && !scenarios ? { dockerOnly: true } : {}),
+  };
+}
+
+function judgeDocker(
+  run: (command: readonly string[]) => CommandOutput,
+  machine: MachineAccess,
+): Pick<PreflightFacts, 'docker' | 'dockerNotes'> {
+  const versions = readHostDocker(run);
+  const host = readDockerHost(run, REPOSITORY_ROOT, machine);
+  return {
+    docker: judgeDockerMachine(versions, host),
+    dockerNotes: describeDockerHost(host),
   };
 }
 
@@ -111,11 +119,14 @@ export function missingPrerequisites(facts: PreflightFacts): string[] {
 
 export function preflightReport(facts = gatherFacts()): string {
   const missing = missingPrerequisites(facts);
+  const notes = (facts.dockerNotes ?? []).map((line) => `doctor: ${line}\n`).join('');
   if (missing.length === 0)
-    return facts.dockerOnly
-      ? 'doctor: every Docker Engine and Compose requirement is met.\n'
-      : 'doctor: every test prerequisite is present.\n';
-  return `doctor: ${missing.length} missing prerequisite(s):\n${missing.map((line) => `  - ${line}`).join('\n')}\n`;
+    return (
+      (facts.dockerOnly
+        ? 'doctor: every Docker Engine and Compose requirement is met.\n'
+        : 'doctor: every test prerequisite is present.\n') + notes
+    );
+  return `doctor: ${missing.length} missing prerequisite(s):\n${missing.map((line) => `  - ${line}`).join('\n')}\n${notes}`;
 }
 
 if (import.meta.main) {

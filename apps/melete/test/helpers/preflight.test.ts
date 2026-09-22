@@ -154,3 +154,22 @@ test('on Windows, --docker judges Docker Desktop: its pipe, its mode, its memory
   expect(report).toContain('doctor: 1 missing prerequisite(s)');
   expect(report).toContain('Docker Desktop is not running');
 });
+
+test('--docker names an engine on another machine and accepts it', () => {
+  const remote = (command: readonly string[]): CommandOutput => {
+    const line = command.join(' ');
+    const stdout = line.startsWith('docker version')
+      ? '1.51 28.5.1'
+      : line.startsWith('docker compose')
+        ? '2.40.3'
+        : line.startsWith('docker info')
+          ? JSON.stringify({ OSType: 'linux', OperatingSystem: 'Ubuntu 24.04.3 LTS', MemTotal: 1 })
+          : line.startsWith('docker context')
+            ? 'ssh://deploy@droplet.example.net'
+            : '';
+    return { code: 0, stdout, stderr: '' };
+  };
+  const report = preflightReport(gatherFacts({}, ['--docker'], remote, linux));
+  expect(report).toStartWith('doctor: every Docker Engine and Compose requirement is met.\n');
+  expect(report).toContain('doctor: The Docker engine is on droplet.example.net');
+});
