@@ -278,6 +278,10 @@ suite('the sites a space is signed in to', () => {
     expect(before.tree).toContain('is remembered');
     // A second site is recorded, to show that signing out of one leaves the others alone.
     await sessions.sites.record(spaceId, 'other.example');
+    // The person takes control and hands back without leaving the page, so the agent's looks at
+    // it are filtered until it moves on. Signing out closes this browser.
+    await control('takeover');
+    await control('handback');
 
     const forgotten = await call('/browser/sites/127.0.0.1', { method: 'DELETE' });
     expect(forgotten.status).toBe(200);
@@ -300,6 +304,9 @@ suite('the sites a space is signed in to', () => {
     sessionId = leased.session.id;
     epoch = leased.session.control_epoch;
     worker = leased.worker;
+    // The browser that opens again starts on a new document, so its first look is an ordinary
+    // one: nothing the person left is on it.
+    expect((await command({ kind: 'observe' })).observation?.screenshot).not.toBe('');
     const after = await whoami();
     expect(after.cookie).not.toContain('session=signed-in');
     expect(after.tree).toContain('signed out');

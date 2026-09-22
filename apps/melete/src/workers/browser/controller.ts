@@ -163,6 +163,8 @@ export class BrowserController {
         await this.network.install(context);
         this.cdp = undefined;
         this.pageId = undefined;
+        // A new context opens on a new document, so nothing a person left behind is on it.
+        this.handback = false;
         // Additional windows cannot become an unobserved channel outside the single-page lease,
         // except one popup at a time that a person in control opens and sees in their live view.
         context.on('page', (page) => {
