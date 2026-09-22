@@ -15,9 +15,10 @@
  *   (`apps/daemon/pkg/toolbox/fs/upload_file.go`, gin v1.10.1), and
  *   `/files/download` answers 404 for a missing path and 400 for a directory.
  * - A sandbox is created `creating` and is `started` when next asked; `stop`
- *   ends its processes and keeps its files; `start` brings it back; stopping a
- *   sandbox that is not started is refused (`apps/api/src/sandbox/services/
- *   sandbox.service.ts`). A deleted sandbox is not found afterwards.
+ *   ends its processes and keeps its files, except that an ephemeral sandbox
+ *   (`autoDeleteInterval: 0`) is deleted instead; `start` brings it back;
+ *   stopping a sandbox that is not started is refused (`apps/api/src/sandbox/
+ *   services/sandbox.service.ts`). A deleted sandbox is not found afterwards.
  * - The daemon's environment carries `DAYTONA_SANDBOX_ID`, `_SNAPSHOT`,
  *   `_USER`, `_ORGANIZATION_ID` and `_REGION_ID`, which commands inherit
  *   (`apps/runner/pkg/docker/container_configs.go`).
@@ -231,6 +232,13 @@ export function createDaytonaStandin(options: { ignoreLabelFilter?: boolean } = 
       }
       if (record.state !== 'started')
         return apiError(400, 'Sandbox is not in a stoppable state', 'Bad Request');
+      if (record.autoDeleteInterval === 0) {
+        // An ephemeral sandbox is deleted, not stopped.
+        engine.destroy(record.sandbox.id);
+        records.delete(record.sandbox.id);
+        record.state = 'destroying';
+        return json(200, dto(record));
+      }
       for (const process of record.sandbox.processes.values()) process.kill();
       record.sandbox.state = 'paused';
       record.state = 'stopping';
