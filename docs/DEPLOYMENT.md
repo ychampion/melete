@@ -27,8 +27,11 @@ versions:
 - `bun run deploy/scripts/configure.ts` and `bun run deploy/scripts/upgrade.ts`
   run `docker version` and `docker compose version` on the host and refuse an
   unsupported pair before writing or changing anything.
-- `bun run doctor --docker` reports the same judgement on demand, and
-  `bun run doctor` includes it whenever `MELETE_CONFORMANCE_COMPOSE=1` is set.
+- `bun run doctor --docker` adds the same judgement to the test prerequisites
+  it lists, and `bun run doctor` includes it whenever
+  `MELETE_CONFORMANCE_COMPOSE=1` is set. On a host that only runs the stack,
+  its other lines (uv, `DATABASE_URL`) concern the test suite and can be left
+  alone.
 
 ## Configuration and browser access
 
