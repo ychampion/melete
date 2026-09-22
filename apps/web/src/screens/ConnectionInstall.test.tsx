@@ -5,6 +5,7 @@ import { ConnectionActions, KindForm } from './ConnectionInstall.tsx';
 
 /** A kind this application has never heard of: the form has only the descriptor to go on. */
 const invented = {
+  id: 'pigeon-post',
   kind: 'mail',
   title: 'Pigeon post',
   description: 'Messages carried by a bird you keep.',

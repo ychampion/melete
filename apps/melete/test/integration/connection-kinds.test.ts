@@ -308,7 +308,13 @@ withDb('installing each kind of connection through the API', () => {
     const kinds = connectionKindListResponse.parse(
       await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
     ).kinds;
-    expect(kinds.map((kind) => kind.kind).sort()).toEqual(['caldav', 'ics', 'mail', 'mcp']);
+    expect([...new Set(kinds.map((kind) => kind.kind))].sort()).toEqual([
+      'caldav',
+      'ics',
+      'mail',
+      'mcp',
+    ]);
+    expect(kinds.map((kind) => kind.id)).toContain('gmail');
     expect((await h.app.request('/connections', h.as('', { provider: 'imap' }))).status).toBe(401);
   });
 

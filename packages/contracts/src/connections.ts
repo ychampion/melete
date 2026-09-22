@@ -308,6 +308,11 @@ export type ConnectionFormField = z.infer<typeof connectionFormField>;
 
 export const connectionKindDescriptor = z
   .object({
+    /**
+     * Names this entry. A kind can appear more than once: a provider's entry
+     * fixes its servers so the person gives only an address and an app password.
+     */
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
     kind: connectionKind,
     title: z.string(),
     description: z.string(),
@@ -349,10 +354,164 @@ const EFFECT_OPTIONS = [
   { value: 'spend', label: 'Spends money (asks first)' },
 ];
 
-export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
+type KindScopes = ConnectionKindDescriptor['scopes'];
+const MAIL_SCOPES: KindScopes = [
   {
+    scope: 'email.search',
+    label: 'Search the mailbox',
+    effect_class: 'read',
+    asks_first: false,
+    default: true,
+  },
+  {
+    scope: 'email.read',
+    label: 'Read a message',
+    effect_class: 'read',
+    asks_first: false,
+    default: true,
+  },
+  {
+    scope: 'email.draft',
+    label: 'Prepare a draft',
+    effect_class: 'write_reversible',
+    asks_first: false,
+    default: true,
+  },
+  {
+    scope: 'email.send',
+    label: 'Send a message',
+    effect_class: 'write_external',
+    asks_first: true,
+    default: true,
+  },
+];
+const CALDAV_SCOPES: KindScopes = [
+  {
+    scope: 'calendar.list',
+    label: 'List events',
+    effect_class: 'read',
+    asks_first: false,
+    default: true,
+  },
+  {
+    scope: 'calendar.create',
+    label: 'Create an event',
+    effect_class: 'write_external',
+    asks_first: true,
+    default: true,
+  },
+  {
+    scope: 'calendar.update',
+    label: 'Change an event',
+    effect_class: 'write_external',
+    asks_first: true,
+    default: true,
+  },
+  {
+    scope: 'calendar.delete',
+    label: 'Remove an event',
+    effect_class: 'write_external',
+    asks_first: true,
+    default: true,
+  },
+];
+const FEED_SCOPES: KindScopes = CALDAV_SCOPES.filter((scope) => scope.scope === 'calendar.list');
+
+/** A mailbox whose servers are known: the person gives the address and an app password. */
+const mailProvider = (
+  id: string,
+  title: string,
+  imap: [host: string, port: number, secure: boolean],
+  smtp: [host: string, port: number, secure: boolean],
+  passwordHelp: string,
+): ConnectionKindDescriptor => ({
+  id,
+  kind: 'mail',
+  title,
+  description: `Read, search and draft in ${title}, and send after you approve each message.`,
+  fixed: [
+    { path: 'provider', value: 'imap' },
+    { path: 'mail.imap.host', value: imap[0] },
+    { path: 'mail.imap.port', value: imap[1] },
+    { path: 'mail.imap.secure', value: imap[2] },
+    { path: 'mail.smtp.host', value: smtp[0] },
+    { path: 'mail.smtp.port', value: smtp[1] },
+    { path: 'mail.smtp.secure', value: smtp[2] },
+  ],
+  fields: [
+    text('mail.username', 'Email address', { input: 'email', placeholder: 'you@example.com' }),
+    text('credentials.password', 'App password', {
+      input: 'password',
+      secret: true,
+      help: passwordHelp,
+    }),
+  ],
+  scopes: MAIL_SCOPES,
+});
+
+/** A calendar service that finds the account's calendar from the address and an app password. */
+const calendarProvider = (
+  id: string,
+  title: string,
+  serverUrl: string,
+  passwordHelp: string,
+): ConnectionKindDescriptor => ({
+  id,
+  kind: 'caldav',
+  title,
+  description: `List the events of your ${title}, and create, change or remove an event after you approve it.`,
+  fixed: [
+    { path: 'provider', value: 'caldav' },
+    { path: 'caldav.server_url', value: serverUrl },
+  ],
+  fields: [
+    text('caldav.username', 'Email address', { input: 'email', placeholder: 'you@example.com' }),
+    text('credentials.password', 'App password', {
+      input: 'password',
+      secret: true,
+      help: passwordHelp,
+    }),
+  ],
+  scopes: CALDAV_SCOPES,
+});
+
+/**
+ * What `GET /connection-kinds` serves, in the order a person reads it: the
+ * providers whose servers are known first, then each kind for any other server.
+ */
+export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
+  mailProvider(
+    'gmail',
+    'Gmail',
+    ['imap.gmail.com', 993, true],
+    ['smtp.gmail.com', 465, true],
+    'Create one at myaccount.google.com/apppasswords. Google asks for 2-Step Verification first.',
+  ),
+  mailProvider(
+    'icloud-mail',
+    'iCloud Mail',
+    ['imap.mail.me.com', 993, true],
+    ['smtp.mail.me.com', 587, false],
+    'Create an app-specific password at account.apple.com, under Sign-In and Security.',
+  ),
+  mailProvider(
+    'fastmail',
+    'Fastmail',
+    ['imap.fastmail.com', 993, true],
+    ['smtp.fastmail.com', 465, true],
+    'Create one in Fastmail under Settings, then Privacy and Security.',
+  ),
+  mailProvider(
+    'yahoo-mail',
+    'Yahoo Mail',
+    ['imap.mail.yahoo.com', 993, true],
+    ['smtp.mail.yahoo.com', 465, true],
+    'Create one in your Yahoo account under Account security.',
+  ),
+  {
+    id: 'mail',
     kind: 'mail',
-    title: 'Mail',
+    title: 'Other mail (IMAP)',
     description:
       'Read and search one mailbox over IMAP, prepare drafts, and send over SMTP after you approve each message.',
     fixed: [{ path: 'provider', value: 'imap' }],
@@ -386,40 +545,41 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       text('mail.inbox', 'Inbox folder', { required: false, placeholder: 'INBOX' }),
       text('mail.sent', 'Sent folder', { required: false, placeholder: 'Sent' }),
     ],
-    scopes: [
-      {
-        scope: 'email.search',
-        label: 'Search the mailbox',
-        effect_class: 'read',
-        asks_first: false,
-        default: true,
-      },
-      {
-        scope: 'email.read',
-        label: 'Read a message',
-        effect_class: 'read',
-        asks_first: false,
-        default: true,
-      },
-      {
-        scope: 'email.draft',
-        label: 'Prepare a draft',
-        effect_class: 'write_reversible',
-        asks_first: false,
-        default: true,
-      },
-      {
-        scope: 'email.send',
-        label: 'Send a message',
-        effect_class: 'write_external',
-        asks_first: true,
-        default: true,
-      },
+    scopes: MAIL_SCOPES,
+  },
+  calendarProvider(
+    'icloud-calendar',
+    'iCloud Calendar',
+    'https://caldav.icloud.com/',
+    'Create an app-specific password at account.apple.com, under Sign-In and Security.',
+  ),
+  calendarProvider(
+    'fastmail-calendar',
+    'Fastmail Calendar',
+    'https://caldav.fastmail.com/',
+    'Create one in Fastmail under Settings, then Privacy and Security.',
+  ),
+  {
+    id: 'google-calendar-feed',
+    kind: 'ics',
+    title: 'Google Calendar (read only)',
+    description:
+      'Read the events of a Google calendar through its private address. A feed can be read but never changed.',
+    fixed: [{ path: 'provider', value: 'caldav' }],
+    fields: [
+      text('ics.url', 'Secret address in iCal format', {
+        input: 'url',
+        secret: true,
+        placeholder: 'https://calendar.google.com/calendar/ical/.../basic.ics',
+        help: 'In Google Calendar settings, open the calendar and copy its secret address in iCal format.',
+      }),
     ],
+    scopes: FEED_SCOPES,
   },
   {
+    id: 'caldav',
     kind: 'caldav',
-    title: 'Calendar (CalDAV)',
+    title: 'Other calendar (CalDAV)',
     description:
       'List the events of one calendar collection, and create, change or remove an event after you approve it.',
     fixed: [{ path: 'provider', value: 'caldav' }],
@@ -432,38 +592,10 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       text('caldav.username', 'Account name'),
       text('credentials.password', 'Password', { input: 'password', secret: true }),
     ],
-    scopes: [
-      {
-        scope: 'calendar.list',
-        label: 'List events',
-        effect_class: 'read',
-        asks_first: false,
-        default: true,
-      },
-      {
-        scope: 'calendar.create',
-        label: 'Create an event',
-        effect_class: 'write_external',
-        asks_first: true,
-        default: true,
-      },
-      {
-        scope: 'calendar.update',
-        label: 'Change an event',
-        effect_class: 'write_external',
-        asks_first: true,
-        default: true,
-      },
-      {
-        scope: 'calendar.delete',
-        label: 'Remove an event',
-        effect_class: 'write_external',
-        asks_first: true,
-        default: true,
-      },
-    ],
+    scopes: CALDAV_SCOPES,
   },
   {
+    id: 'ics',
     kind: 'ics',
     title: 'Calendar feed (ICS)',
     description: 'Read the events of a published calendar feed. A feed can never be changed.',
@@ -476,17 +608,10 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         help: 'Kept like a password, because a private feed address is one.',
       }),
     ],
-    scopes: [
-      {
-        scope: 'calendar.list',
-        label: 'List events',
-        effect_class: 'read',
-        asks_first: false,
-        default: true,
-      },
-    ],
+    scopes: FEED_SCOPES,
   },
   {
+    id: 'mcp',
     kind: 'mcp',
     title: 'MCP server (HTTP)',
     description:
@@ -552,10 +677,12 @@ type RequestIssue = {
   format?: string;
 };
 
+/** The generic entries come last, so their labels win over a provider's. */
 const FIELD_LABELS: ReadonlyMap<string, string> = new Map(
-  CONNECTION_KIND_DESCRIPTORS.flatMap((kind) =>
-    kind.fields.map((field) => [field.path, field.label] as const),
-  ),
+  [
+    ...CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.id !== kind.kind),
+    ...CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.id === kind.kind),
+  ].flatMap((kind) => kind.fields.map((field) => [field.path, field.label] as const)),
 );
 const ITEM_LABELS: ReadonlyMap<string, { label: string; items: Map<string, string> }> = new Map(
   CONNECTION_KIND_DESCRIPTORS.flatMap((kind) =>

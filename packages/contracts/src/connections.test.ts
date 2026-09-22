@@ -187,7 +187,16 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
 describe('connection kind descriptors', () => {
   test('cover every credentialed kind and parse as the served response', () => {
     const parsed = connectionKindListResponse.parse({ kinds: CONNECTION_KIND_DESCRIPTORS });
-    expect(parsed.kinds.map((kind) => kind.kind).sort()).toEqual(['caldav', 'ics', 'mail', 'mcp']);
+    expect([...new Set(parsed.kinds.map((kind) => kind.kind))].sort()).toEqual([
+      'caldav',
+      'ics',
+      'mail',
+      'mcp',
+    ]);
+    const ids = parsed.kinds.map((kind) => kind.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // Every kind keeps an entry for a server no provider entry names.
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp']) expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
       const secrets = kind.fields.filter((field) => field.secret).map((field) => field.path);
       expect(secrets.every((path) => path.startsWith('credentials.') || path === 'ics.url')).toBe(
@@ -370,5 +379,71 @@ describe('a CalDAV calendar', () => {
       caldav: { server_url: 'http://caldav.example.test/', username: 'owner' },
     });
     expect(plain.success).toBe(false);
+  });
+});
+
+describe('providers whose servers are known', () => {
+  const providers = CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.id !== kind.kind);
+
+  test('ask only for an address and an app password, or a feed address', () => {
+    expect(providers.map((kind) => kind.id)).toEqual([
+      'gmail',
+      'icloud-mail',
+      'fastmail',
+      'yahoo-mail',
+      'icloud-calendar',
+      'fastmail-calendar',
+      'google-calendar-feed',
+    ]);
+    for (const kind of providers) {
+      const shown = kind.fields.map((field) => field.path).sort();
+      expect(shown).toEqual(
+        kind.kind === 'ics'
+          ? ['ics.url']
+          : [`${kind.kind}.username`, 'credentials.password'].sort(),
+      );
+      expect(kind.fields.find((field) => field.secret)?.help).toBeTruthy();
+    }
+  });
+
+  test('fill in their servers, so what the person typed becomes a complete installation', () => {
+    const typed = (kind: ConnectionKindDescriptor) =>
+      kind.kind === 'ics'
+        ? { ics: { url: 'https://calendar.google.com/calendar/ical/me/private-x/basic.ics' } }
+        : {
+            [kind.kind]: { username: 'me@example.test' },
+            credentials: { password: 'app-password' },
+          };
+    const installed = Object.fromEntries(
+      providers.map((kind) => {
+        const body: Record<string, unknown> = { label: kind.title };
+        for (const { path, value } of kind.fixed) {
+          const keys = path.split('.');
+          let at = body;
+          for (const key of keys.slice(0, -1)) at = (at[key] ??= {}) as Record<string, unknown>;
+          at[keys.at(-1) as string] = value;
+        }
+        const extra = typed(kind) as Record<string, Record<string, unknown>>;
+        for (const [key, value] of Object.entries(extra))
+          body[key] = { ...((body[key] as object) ?? {}), ...value };
+        const resolved = connectionInstallation(createConnectionRequest.parse(body));
+        if (!resolved.ok) throw new Error(`${kind.id}: ${resolved.error}`);
+        return [kind.id, resolved.value.kind === 'mcp' ? null : resolved.value.config];
+      }),
+    );
+    expect(installed.gmail).toEqual({
+      username: 'me@example.test',
+      from: 'me@example.test',
+      imap: { host: 'imap.gmail.com', port: 993, secure: true },
+      smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
+    });
+    // iCloud sends over STARTTLS on 587, which the connector demands before it signs in.
+    expect(installed['icloud-mail']).toMatchObject({
+      smtp: { host: 'smtp.mail.me.com', port: 587, secure: false },
+    });
+    expect(installed['icloud-calendar']).toEqual({
+      server_url: 'https://caldav.icloud.com/',
+      username: 'me@example.test',
+    });
   });
 });
