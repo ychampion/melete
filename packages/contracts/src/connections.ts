@@ -90,6 +90,20 @@ export const caldavConnectionConfig = z
   })
   .strict();
 export type CaldavConnectionConfig = z.infer<typeof caldavConnectionConfig>;
+/**
+ * As installed: one calendar's own address, or the address of the calendar
+ * service, from which the service finds the account's first calendar of events.
+ */
+const caldavConnectionRequest = caldavConnectionConfig
+  .extend({
+    calendar_url: caldavConnectionConfig.shape.calendar_url.optional(),
+    server_url: secureUrl(['https:']).optional(),
+  })
+  .refine((value) => (value.calendar_url === undefined) !== (value.server_url === undefined), {
+    message: 'Give either the calendar address or the calendar service address.',
+    path: ['calendar_url'],
+  });
+export type CaldavConnectionRequest = z.infer<typeof caldavConnectionRequest>;
 
 /**
  * A read-only calendar feed. The address usually embeds a private token, so
@@ -125,7 +139,7 @@ export const createConnectionRequest = z.object({
   credentials: z.record(z.string(), z.string()).optional(),
   mcp: mcpConnectionConfig.optional(),
   mail: mailConnectionRequest.optional(),
-  caldav: caldavConnectionConfig.optional(),
+  caldav: caldavConnectionRequest.optional(),
   ics: icsConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
@@ -141,7 +155,8 @@ export type ConnectionInstallation =
   | {
       kind: 'caldav';
       provider: 'caldav';
-      config: CaldavConnectionConfig;
+      /** With `server_url`, the calendar is found before anything is stored. */
+      config: CaldavConnectionRequest;
       credentials: PasswordCredentials;
       scopes: string[];
     }

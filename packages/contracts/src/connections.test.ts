@@ -352,3 +352,23 @@ describe('a mailbox sender', () => {
     });
   });
 });
+
+describe('a CalDAV calendar', () => {
+  test('may be named by its calendar service instead of its own address, never both', () => {
+    const service = { server_url: 'https://caldav.example.test/', username: 'owner' };
+    const resolved = resolve({ ...caldav, caldav: service });
+    expect(resolved.ok && resolved.value.config).toEqual(service);
+    const both = createConnectionRequest.safeParse({
+      ...caldav,
+      caldav: { ...caldav.caldav, server_url: service.server_url },
+    });
+    expect(both.success ? 'accepted' : connectionRequestProblem(both.error.issues)).toBe(
+      'Calendar address: Give either the calendar address or the calendar service address.',
+    );
+    const plain = createConnectionRequest.safeParse({
+      ...caldav,
+      caldav: { server_url: 'http://caldav.example.test/', username: 'owner' },
+    });
+    expect(plain.success).toBe(false);
+  });
+});

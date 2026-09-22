@@ -17,6 +17,7 @@ import { and, asc, eq, ne, not, sql as query } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { builtinEnvironment, ensureBuiltinConnections } from '../connectors/builtin.ts';
+import { CalendarDiscoveryError, discoverCalendar } from '../connectors/caldav-discovery.ts';
 import {
   type ConnectionSource,
   type ConnectorFactory,
@@ -415,6 +416,28 @@ async function storedShape(
       secret: credential ? JSON.stringify(credential) : null,
       configuration: { server: config },
     };
+  }
+  // A calendar service's address is enough: the calendar itself is found with
+  // the account's own credential, and only its address is stored.
+  if (installation.kind === 'caldav' && installation.config.server_url) {
+    const { server_url: serverUrl, ...rest } = installation.config;
+    try {
+      const found = await discoverCalendar({
+        serverUrl,
+        username: rest.username,
+        password: installation.credentials.password,
+        allowInsecureLocalForTests: factory.options.insecureLocalFixtures === true,
+      });
+      installation.config = { username: rest.username, calendar_url: found.calendar_url };
+    } catch (error) {
+      throw new ServiceError(
+        'invalid_request',
+        error instanceof CalendarDiscoveryError
+          ? error.message
+          : 'The calendar service could not be reached. Check the address and try again.',
+        400,
+      );
+    }
   }
   const shape =
     installation.kind === 'mail'

@@ -475,6 +475,77 @@ withDb('installing each kind of connection through the API', () => {
     }
   }, 120_000);
 
+  test('CalDAV from the service address alone: the calendar is found, and only its address is stored', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const expected = `Basic ${Buffer.from(`owner:${DAV_PASSWORD}`).toString('base64')}`;
+    const ok = (href: string, prop: string) =>
+      `<d:response><d:href>${href}</d:href><d:propstat><d:prop>${prop}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(request) {
+        if (request.headers.get('authorization') !== expected)
+          return new Response(null, { status: 401 });
+        const path = new URL(request.url).pathname;
+        const body =
+          path === '/'
+            ? ok(
+                '/',
+                '<d:current-user-principal><d:href>/p/owner/</d:href></d:current-user-principal>',
+              )
+            : path === '/p/owner/'
+              ? ok(
+                  '/p/owner/',
+                  '<c:calendar-home-set><d:href>/c/owner/</d:href></c:calendar-home-set>',
+                )
+              : path === '/c/owner/' && request.headers.get('depth') === '1'
+                ? ok(
+                    '/c/owner/work/',
+                    '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>',
+                  )
+                : '';
+        return new Response(
+          `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">${body}</d:multistatus>`,
+          { status: 207 },
+        );
+      },
+    });
+    closers.push(() => server.stop(true));
+    const body = {
+      provider: 'caldav',
+      label: 'Found calendar',
+      credentials: { password: DAV_PASSWORD },
+      caldav: { server_url: server.url.toString(), username: 'owner' },
+    };
+
+    const refused = await h.install({ ...body, credentials: { password: 'not-the-password' } });
+    expect(JSON.parse(refused.text)).toEqual({
+      error: {
+        code: 'invalid_request',
+        message:
+          'The calendar service did not accept the account name and password. Use an app password where the provider offers one.',
+      },
+    });
+    expect(await h.sql`select id from connection where label = 'Found calendar'`).toHaveLength(0);
+    expect(
+      (await h.install({ ...body, caldav: { ...body.caldav, calendar_url: `${server.url}c/` } }))
+        .status,
+    ).toBe(400);
+
+    const created = await h.install(body);
+    expect(created.status).toBe(201);
+    const installed = connectionResponse.parse(created.json);
+    expect(installed.connection).toMatchObject({ status: 'active' });
+    const [row] =
+      await h.sql`select configuration from connection where id = ${installed.connection.id}`;
+    expect(row?.configuration).toEqual({
+      kind: 'caldav',
+      caldav: { username: 'owner', calendar_url: `${server.url}c/owner/work/` },
+    });
+    expectNoSecret(created.text);
+    expect((await h.revoke(installed.connection.id)).status).toBe(200);
+  }, 120_000);
+
   test('calendar feed: the address is the secret, the feed is read through the broker, and revocation removes it', async () => {
     if (!h) throw new Error('Postgres unavailable');
     let served = FEED;
