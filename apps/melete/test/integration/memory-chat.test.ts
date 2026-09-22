@@ -99,17 +99,13 @@ async function say(db: TestDatabase, jobId: string, text: string) {
   await db.sql`insert into event (job_id, type, payload, dedup_key)
     values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text })}::text::jsonb, ${`evt:${newId('turn')}`})`;
 }
+/** The memory notices a conversation holds: what was done, to what, and the words quoted. */
 async function traces(db: TestDatabase, jobId: string) {
   const rows = await db.sql`select payload from event where job_id = ${jobId}
-    and type = 'notice' and payload->>'kind' = 'tool_trace' order by seq`;
+    and type = 'notice' and payload->>'kind' = 'memory_tool' order by seq`;
   return rows.map((row) => {
-    const call = (row.payload as { call: Record<string, unknown> }).call;
-    return {
-      title: call.title as string,
-      kind: call.kind as string,
-      text: (call.output_summary as { text: string; quote?: { text: string } }).text,
-      quote: (call.output_summary as { quote?: { text: string } }).quote?.text ?? null,
-    };
+    const notice = row.payload as { op: string; labels: string[]; value: string | null };
+    return { op: notice.op, labels: notice.labels, value: notice.value };
   });
 }
 
@@ -163,13 +159,8 @@ withDb('automatic memory from chat', () => {
         'pref.travel.seat=aisle seat',
       ]);
       expect(await traces(db, first)).toEqual([
-        {
-          title: 'Remembered',
-          kind: 'memory_write',
-          text: "maya's phone",
-          quote: '+351 912 345 678',
-        },
-        { title: 'Remembered', kind: 'memory_write', text: 'travel: seat', quote: 'aisle seat' },
+        { op: 'write', labels: ["maya's phone"], value: '+351 912 345 678' },
+        { op: 'write', labels: ['travel: seat'], value: 'aisle seat' },
       ]);
 
       // A new conversation, days later, is handed what it needs without asking.
@@ -182,12 +173,7 @@ withDb('automatic memory from chat', () => {
       await say(db, second, "That's wrong, Maya's number is now +351 911 111 111.");
       await settle();
       expect(await traces(db, second)).toEqual([
-        {
-          title: 'Updated what I remember',
-          kind: 'memory_write',
-          text: "maya's phone",
-          quote: '+351 911 111 111',
-        },
+        { op: 'correct', labels: ["maya's phone"], value: '+351 911 111 111' },
       ]);
       const corrected = await handed('Call Maya');
       expect(corrected).toContain('contact.maya.phone=+351 911 111 111');
@@ -196,11 +182,11 @@ withDb('automatic memory from chat', () => {
       // "Forget Maya's number" removes it from recall and from every stored copy.
       await say(db, second, "Forget Maya's number.");
       await settle();
+      // A forget names the detail and never repeats its value.
       expect((await traces(db, second)).at(-1)).toEqual({
-        title: 'Forgot',
-        kind: 'memory_write',
-        text: "No longer kept: maya's phone",
-        quote: null,
+        op: 'forget',
+        labels: ["maya's phone"],
+        value: null,
       });
       expect((await handed('Call Maya')).join()).not.toContain('maya');
       for (const number of ['912 345 678', '911 111 111']) {

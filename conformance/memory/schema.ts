@@ -119,12 +119,12 @@ export const chatStep = z.strictObject({
   claim: scriptedClaim.optional(),
   claims: z.array(scriptedClaim).max(8).optional(),
 });
-/** The tool entries a conversation shows for memory, in order. */
+/** What the conversation was told memory did, in order: write, correct or forget. */
 export const expectToldStep = z.strictObject({
   step: z.literal('expect_told'),
   space,
   conversation: slug,
-  titles: z.array(z.string().min(1).max(120)),
+  ops: z.array(z.enum(['write', 'correct', 'forget'])),
 });
 /** A document or message that arrives later and carries its own event time. */
 export const importStep = z.strictObject({

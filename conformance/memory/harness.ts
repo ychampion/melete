@@ -636,14 +636,14 @@ async function runScenario(
         const space = state(step.space);
         const jobId = conversations.get(`${step.space}:${step.conversation}`);
         const rows = jobId
-          ? await sql`select payload->'call'->>'title' as title from event where job_id = ${jobId}
-              and type = 'notice' and payload->>'kind' = 'tool_trace' order by seq`
+          ? await sql`select payload->>'op' as op from event where job_id = ${jobId}
+              and type = 'notice' and payload->>'kind' = 'memory_tool' order by seq`
           : [];
-        const titles = rows.map((row) => row.title as string);
+        const ops = rows.map((row) => row.op as string);
         check(
-          `${label} the conversation shows ${JSON.stringify(step.titles)}`,
-          JSON.stringify(titles) === JSON.stringify(step.titles),
-          `shows ${JSON.stringify(titles)} in ${space.scope.spaceId}`,
+          `${label} the conversation shows ${JSON.stringify(step.ops)}`,
+          JSON.stringify(ops) === JSON.stringify(step.ops),
+          `shows ${JSON.stringify(ops)} in ${space.scope.spaceId}`,
           'told',
         );
         return;

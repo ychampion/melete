@@ -25,7 +25,7 @@ import { persistEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory } from './forget.ts';
 import { lexicalTerms } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
-import { appendMemoryTraces, type MemoryTrace, memoryTrace } from './trace.ts';
+import { appendMemoryNotices, memoryNotice } from './trace.ts';
 import { MEMORY_EXTRACT_QUEUE } from './work.ts';
 
 export const CHAT_PUBLISHER = 'chat';
@@ -232,8 +232,8 @@ async function forgetFromChat(
   target: string | null,
 ): Promise<boolean> {
   const { sql } = options;
-  const at = new Date();
-  const traces: MemoryTrace[] = [];
+  // The keys of the details removed, for the notice that names them.
+  const removed: (string | null)[] = [];
   if (target === null) {
     const [previous] = await sql`select source_id from memory_capture
       where job_id = ${row.job_id} and event_seq < ${row.seq} and outcome = 'remembered' and source_id is not null
@@ -243,17 +243,7 @@ async function forgetFromChat(
         join memory_claims c on c.id = ref.claim_id
         where ref.source_id = ${previous.source_id} and c.space_id = ${scope.spaceId} and not c.hidden`;
       await deleteMemorySource(sql, scope, previous.source_id as string, options.journal);
-      for (const claim of named.slice(0, 3))
-        traces.push(
-          memoryTrace({
-            change: 'forgot',
-            id: `memory-forget:${row.seq}:${claim.id}`,
-            key: (claim.key as string | null) ?? null,
-            value: null,
-            claimId: null,
-            at,
-          }),
-        );
+      for (const claim of named) removed.push((claim.key as string | null) ?? null);
     }
   } else {
     const terms = lexicalTerms(target);
@@ -271,41 +261,30 @@ async function forgetFromChat(
               @@ to_tsquery('simple', ${query})
           order by r.data_revision desc limit ${FORGET_LIMIT}`
       : [];
+    if (!matches.length) return false;
     for (const claim of matches) {
       await forgetMemory(sql, scope, { claim_id: claim.id }, options.journal);
-      traces.push(
-        memoryTrace({
-          change: 'forgot',
-          id: `memory-forget:${row.seq}:${claim.id}`,
-          key: (claim.key as string | null) ?? null,
-          value: null,
-          claimId: null,
-          at,
-        }),
-      );
+      removed.push((claim.key as string | null) ?? null);
     }
   }
-  if (target !== null && !traces.length) return false;
-  if (!traces.length)
-    traces.push({
-      ...memoryTrace({
-        change: 'forgot',
-        id: `memory-forget:${row.seq}`,
-        key: null,
+  if (removed.length)
+    await appendMemoryNotices(sql, row.job_id, [
+      memoryNotice({
+        op: 'forget',
+        id: `forget:${row.seq}`,
+        keys: removed,
         value: null,
         claimId: null,
-        at,
+        at: new Date(),
       }),
-      output_summary: { text: 'Nothing saved matched that' },
-    });
-  await appendMemoryTraces(sql, row.job_id, traces);
+    ]);
   return true;
 }
 
 /**
  * After extraction commits a chat message, tell its conversation what memory
- * now holds because of it: one entry per saved detail whose current value
- * cites that message.
+ * now holds because of it: one notice per saved detail whose current value
+ * cites that message, "write" for a new one and "correct" for a changed one.
  */
 export async function traceChatExtraction(sql: MemorySql, sourceId: string) {
   const [capture] =
@@ -317,21 +296,22 @@ export async function traceChatExtraction(sql: MemorySql, sourceId: string) {
     join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
     join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where ref.source_id = ${sourceId} and not c.hidden and r.status in ('active','disputed')
-    order by c.id limit 5`;
+    order by c.key, c.id limit 5`;
   const at = new Date();
-  await appendMemoryTraces(
+  await appendMemoryNotices(
     sql,
     capture.job_id as string,
-    claims.map((claim) =>
-      memoryTrace({
-        change: (claim.head_revision as number) > 1 ? 'updated' : 'remembered',
-        id: `memory:${claim.id}@${claim.head_revision}`,
-        key: (claim.key as string | null) ?? null,
+    claims.map((claim) => {
+      const op = (claim.head_revision as number) > 1 ? 'correct' : 'write';
+      return memoryNotice({
+        op,
+        id: `${op}:${claim.id}@${claim.head_revision}`,
+        keys: [(claim.key as string | null) ?? null],
         value: claim.content as string,
         claimId: claim.id as string,
         at,
-      }),
-    ),
+      });
+    }),
   );
 }
 

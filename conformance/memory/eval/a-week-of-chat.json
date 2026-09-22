@@ -31,7 +31,7 @@
     {
       "step": "expect_told",
       "conversation": "weekend",
-      "titles": ["Remembered", "Remembered"]
+      "ops": ["write", "write"]
     },
     {
       "step": "ask",
@@ -58,7 +58,7 @@
     {
       "step": "expect_told",
       "conversation": "errands",
-      "titles": ["Updated what I remember"]
+      "ops": ["correct"]
     },
     {
       "step": "expect_stored",
@@ -110,7 +110,7 @@
     {
       "step": "expect_told",
       "conversation": "errands",
-      "titles": ["Updated what I remember", "Remembered", "Forgot"]
+      "ops": ["correct", "write", "forget"]
     },
     {
       "step": "expect_stored",

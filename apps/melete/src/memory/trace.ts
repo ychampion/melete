@@ -1,107 +1,92 @@
 /**
- * Memory's own work, told as tool entries in the conversation it came from:
- * "Remembered", "Updated" and "Forgot".
+ * Memory's own work, told in the conversation it came from: "Remembered",
+ * "Updated", "Forgot".
  *
- * The entry is a `notice` whose payload is `{ kind: 'tool_trace', call }`, the
- * shape the conversation's tool projection reads. `call` has the tool-call
- * fields (id, kind, title, status, times, summaries, detail, parent). Recall
- * needs no entry here: the tool projection reads it from the context record
- * each attempt leaves.
+ * Each change is a `notice` whose payload is the memory tool notice the
+ * conversation's tool projection reads (`kind: 'memory_tool'`, see
+ * docs/TOOL-CALLS.md): the operation, a count, the plain label of the detail
+ * and the value as the person said it. Recall needs no notice here: the tool
+ * projection reads it from the context record each attempt leaves.
  *
- * An entry goes only on the job the person's own message arrived on, whose
+ * A notice goes only on the job the person's own message arrived on, whose
  * stream already holds that message, so it tells its reader nothing they did
- * not say. The value is a quotation of their message, clipped; the service's
- * own words are the summary.
+ * not say. A forget names the detail and never repeats its value.
  */
 import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
 import { memoryKeyLabel } from '../experience/evidence.ts';
 import type { MemorySql } from './db.ts';
 
-export const TOOL_TRACE = 'tool_trace';
-const TITLE_LIMIT = 120;
-const SUMMARY_LIMIT = 160;
-const QUOTE_LIMIT = 200;
+export const MEMORY_TOOL_NOTICE = 'memory_tool';
+const LABEL_LIMIT = 80;
+const VALUE_LIMIT = 200;
 const ID_LIMIT = 200;
 
-export type MemoryChange = 'remembered' | 'updated' | 'forgot';
-const TITLES: Record<MemoryChange, string> = {
-  remembered: 'Remembered',
-  updated: 'Updated what I remember',
-  forgot: 'Forgot',
-};
+export type MemoryChange = 'write' | 'correct' | 'forget';
 
 const clip = (value: string, limit: number) => {
   const flat = value.replace(/\s+/g, ' ').trim();
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1).trimEnd()}…`;
 };
 
-export type MemoryTrace = {
+export type MemoryToolNotice = {
+  kind: typeof MEMORY_TOOL_NOTICE;
+  op: MemoryChange;
   id: string;
-  kind: 'memory_write';
-  title: string;
   status: 'done';
   started_at: string;
   ended_at: string;
-  input_summary: null;
-  output_summary: {
-    text: string;
-    quote?: { text: string; from: 'message' };
-  };
-  detail: { type: 'memory'; id: string } | null;
+  count: number;
+  labels: string[];
+  value: string | null;
+  memory_item_id: string | null;
   parent: null;
 };
 
-/** One memory change as a finished tool entry. */
-export function memoryTrace(input: {
-  change: MemoryChange;
+/** One finished memory change, for the conversation it came from. */
+export function memoryNotice(input: {
+  op: MemoryChange;
   id: string;
-  key: string | null;
+  /** The keys of the details changed; a key label names each one. */
+  keys: (string | null)[];
   value: string | null;
   claimId: string | null;
   at: Date;
-}): MemoryTrace {
-  const label = clip(memoryKeyLabel(input.key), SUMMARY_LIMIT);
-  const text = input.change === 'forgot' ? `No longer kept: ${label}` : label;
-  const quoted = input.value ? clip(input.value, QUOTE_LIMIT) : '';
+}): MemoryToolNotice {
+  const labels = [...new Set(input.keys.map((key) => clip(memoryKeyLabel(key), LABEL_LIMIT)))];
   return {
+    kind: MEMORY_TOOL_NOTICE,
+    op: input.op,
     id: input.id.slice(0, ID_LIMIT),
-    kind: 'memory_write',
-    title: clip(TITLES[input.change], TITLE_LIMIT),
     status: 'done',
     started_at: input.at.toISOString(),
     ended_at: input.at.toISOString(),
-    input_summary: null,
-    output_summary: {
-      text: clip(text, SUMMARY_LIMIT),
-      // A forgotten value is not repeated back.
-      ...(quoted && input.change !== 'forgot'
-        ? { quote: { text: quoted, from: 'message' as const } }
-        : {}),
-    },
-    detail:
-      input.claimId && input.change !== 'forgot' ? { type: 'memory', id: input.claimId } : null,
+    count: input.keys.length,
+    labels: labels.slice(0, 20),
+    // A forgotten value is not repeated back.
+    value: input.value && input.op !== 'forget' ? clip(input.value, VALUE_LIMIT) : null,
+    memory_item_id: input.op === 'forget' ? null : input.claimId,
     parent: null,
   };
 }
 
 /**
- * Append entries to a job's stream in their own short transaction, after the
+ * Append notices to a job's stream in their own short transaction, after the
  * memory change has committed. It takes the event order lock first, as every
  * event writer does, and never a memory lock, so it cannot deadlock against a
  * job transaction. A retried append lands once.
  */
-export async function appendMemoryTraces(
+export async function appendMemoryNotices(
   sql: MemorySql,
   jobId: string,
-  traces: readonly MemoryTrace[],
+  notices: readonly MemoryToolNotice[],
 ) {
-  if (!traces.length) return;
+  if (!notices.length) return;
   await sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
-    for (const call of traces) {
+    for (const notice of notices) {
       const [row] = await tx`insert into event (job_id, type, payload, dedup_key, epoch)
-        values (${jobId}, 'notice', ${JSON.stringify({ kind: TOOL_TRACE, call })}::text::jsonb,
-          ${`tool:${call.id}:${call.status}`}, (select lease_epoch from job where id = ${jobId}))
+        values (${jobId}, 'notice', ${JSON.stringify(notice)}::text::jsonb,
+          ${`memory-tool:${notice.id}:${notice.status}`}, (select lease_epoch from job where id = ${jobId}))
         on conflict (dedup_key) do nothing returning seq`;
       if (row) await tx`select pg_notify('melete_events', ${String(row.seq)})`;
     }
