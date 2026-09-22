@@ -153,6 +153,55 @@ export function clientIp(request: Request): string {
   return first && first !== '' ? first : 'unknown';
 }
 
+/**
+ * The part of an address that stands for one visitor.
+ *
+ * An IPv6 connection is handed a /64 at the least, and every address in it
+ * belongs to whoever holds it, so counting each one separately would give
+ * them a fresh allowance per address. An IPv6 address is therefore cut to its
+ * /64, and one that only carries an IPv4 address (`::ffff:a.b.c.d`) is that
+ * IPv4 address. Anything that does not parse is kept as it came.
+ */
+export function visitorOf(address: string): string {
+  const bare = address
+    .trim()
+    .replace(/^\[(.*)\]$/, '$1')
+    .replace(/%.*$/, '')
+    .toLowerCase();
+  if (!bare.includes(':')) return bare;
+  const groups = hextets(bare);
+  if (groups === null) return bare;
+  const [, , , , , , high = 0, low = 0] = groups;
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+  }
+  return `${groups
+    .slice(0, 4)
+    .map((group) => group.toString(16))
+    .join(':')}::/64`;
+}
+
+/** The eight 16-bit groups of an IPv6 address, or null when it is not one. */
+function hextets(address: string): number[] | null {
+  let text = address;
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+  if (dotted) {
+    const [a = 0, b = 0, c = 0, d = 0] = dotted.slice(1).map(Number);
+    if ([a, b, c, d].some((byte) => byte > 255)) return null;
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const split = (part: string | undefined) => (part ? part.split(':') : []);
+  const head = split(halves[0]);
+  const tail = split(halves[1]);
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const groups = [...head, ...Array<string>(missing).fill('0'), ...tail];
+  if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups.map((group) => Number.parseInt(group, 16));
+}
+
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
 
 export async function caseFileRoute(request: Request, deps: Deps): Promise<Response> {
@@ -216,7 +265,7 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
 
   // The address is turned into a key here and goes no further, so neither the
   // counter nor its storage ever sees one.
-  const ip = await counterKey(clientIp(request), today(started), deps.salt ?? '');
+  const ip = await counterKey(visitorOf(clientIp(request)), today(started), deps.salt ?? '');
   const turn = await deps.limiter.take(ip);
   if (!turn.allowed) {
     const outcome = turn.reason === 'ip' ? 'rate_limited' : 'busy';

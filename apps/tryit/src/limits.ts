@@ -12,7 +12,7 @@ export type Limits = {
   maxInputChars: number;
   /** Shortest paste worth a case file. */
   minInputChars: number;
-  /** Case files one address may have in a day. */
+  /** Case files one address, or one IPv6 /64, may have in a day. */
   perIpPerDay: number;
   /** Case files the whole page may produce in a day. */
   globalPerDay: number;

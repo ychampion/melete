@@ -476,6 +476,45 @@ describe('what the counter is told about a visitor', () => {
     const tomorrow = await keyFor('203.0.113.7', '2026-09-20T10:00:00Z');
     expect(tomorrow).not.toBe(today);
   });
+
+  // One IPv6 connection is handed a /64 at the least, so every address in it
+  // belongs to the same person, who could otherwise take a fresh allowance
+  // from each of them.
+  test('every address in one IPv6 /64 is the same visitor', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    const one = await keyFor('2001:db8:1:2::1', at);
+    expect(await keyFor('2001:db8:1:2:ffff:ffff:ffff:fffe', at)).toBe(one);
+    expect(await keyFor('2001:0DB8:0001:0002:0:0:0:9', at)).toBe(one);
+    expect(await keyFor('[2001:db8:1:2::7]', at)).toBe(one);
+    expect(await keyFor('fe80::1%eth0', at)).toBe(await keyFor('fe80::2', at));
+  });
+
+  test('the next /64 along is someone else', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    expect(await keyFor('2001:db8:1:3::1', at)).not.toBe(await keyFor('2001:db8:1:2::1', at));
+    expect(await keyFor('2001:db8::1', at)).not.toBe(await keyFor('2001:db8:1::1', at));
+  });
+
+  test('an IPv4 address written as IPv6 is that IPv4 address', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    const plain = await keyFor('203.0.113.7', at);
+    expect(await keyFor('::ffff:203.0.113.7', at)).toBe(plain);
+    expect(await keyFor('::FFFF:cb00:7107', at)).toBe(plain);
+    expect(await keyFor('0:0:0:0:0:ffff:203.0.113.7', at)).toBe(plain);
+    expect(await keyFor('::ffff:203.0.113.8', at)).not.toBe(plain);
+  });
+
+  test('a /64 gets one allowance, however many addresses it rotates through', async () => {
+    const use = deps();
+    const statuses: number[] = [];
+    for (let host = 1; host <= LIMITS.perIpPerDay + 3; host += 1) {
+      const response = await caseFileRoute(post(REFUND, `2001:db8:1:2::${host.toString(16)}`), use);
+      if (response.status === 200) await readStream(response);
+      statuses.push(response.status);
+    }
+    expect(statuses.filter((status) => status === 200)).toHaveLength(LIMITS.perIpPerDay);
+    expect(statuses.slice(LIMITS.perIpPerDay).every((status) => status === 429)).toBe(true);
+  });
 });
 
 describe('the caller’s address', () => {
