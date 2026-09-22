@@ -563,6 +563,33 @@ test('a poll lost after the command started is unknown and the command is never 
   }
 });
 
+test('two commands in one sandbox run side by side, each in a session of its own', async () => {
+  const { provider } = standinProvider();
+  const handle = await openSandbox(provider, spec(), signal());
+  const exec = (marker: string) =>
+    provider.exec(
+      handle,
+      {
+        marker,
+        argv: ['sh', '-c', 'sleep 1'],
+        cwd: '/work',
+        timeoutMs: 5_000,
+        maxOutputBytes: 4096,
+      },
+      signal(),
+    );
+  const started = performance.now();
+  const [first, second] = await Promise.all([
+    exec('act_01J0DAYTONAPARALLEL0001'),
+    exec('act_01J0DAYTONAPARALLEL0002'),
+  ]);
+  expect(first).toMatchObject({ state: 'exited', exitCode: 0 });
+  expect(second).toMatchObject({ state: 'exited', exitCode: 0 });
+  // A session runs its commands one after another; two sessions do not wait on each other.
+  expect(performance.now() - started).toBeLessThan(1_900);
+  await provider.destroy(handle, signal());
+});
+
 test('a command given no stdin reads an empty one, not the session pipe Daytona holds open', async () => {
   const { provider } = standinProvider();
   const handle = await openSandbox(provider, spec(), signal());
