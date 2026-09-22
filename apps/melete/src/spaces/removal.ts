@@ -250,10 +250,7 @@ export class SpaceRemovalService {
         );
 
       const generation = parent.policyGeneration + 1;
-      await tx
-        .update(space)
-        .set({ policyGeneration: generation })
-        .where(eq(space.id, spaceId));
+      await tx.update(space).set({ policyGeneration: generation }).where(eq(space.id, spaceId));
       // Memory stops serving before anything of it is destroyed, and stays
       // stopped through a restore: `restore_ready` is what gates serving.
       await tx.execute(
