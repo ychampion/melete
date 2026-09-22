@@ -403,16 +403,35 @@ broker, and container boundary have separate jobs:
   release, takeover, and handback; it exposes no CDP or arbitrary code endpoint.
   Browser-originated requests are rejected. The owner-facing control routes use
   the service's existing authentication and same-origin protection.
+- **The person's live view.** While a person holds control they drive the
+  worker's page through a live view bound to their principal, the session, the
+  control epoch and the client address it was opened from, all checked again on
+  every request along with their authority over the job. Input is a fixed set of
+  typed events; frames are written through and never stored. Their navigation
+  stays within a site scope: the job's allowed domains, the site they took over,
+  sites they allow, and sites an in-scope page leads to within fifteen seconds of
+  their own press, touch or keystroke, at most three per action and twelve in
+  all. The public-address floor and pinned DNS apply throughout. Nothing they
+  type reaches an event, a recipe, a log or an artifact, and the first
+  observation after handback keeps a page's labels and roles with no values, no
+  screenshot and no query string. `another principal in the same space cannot
+  open, read or drive the live view`, `no persisted event contains the typed
+  secret or the identity-provider host` and `a page cannot walk the person to new
+  sites without them acting` cover these.
 
 The worker can reach the internet by design, for the person's authorised sites.
 The relay policy constrains an intact worker; a compromised Node process can
 use its own outbound sockets and can steal or alter its mounted browser profile.
 It can read whatever the configured uid may read within that one mounted space.
 It has no direct mount of the vault, runtime cell, or another space. The worker
-is a container on the host kernel rather than a virtual machine, and
-Playwright's `chromiumSandbox` default is off, so Chromium runs without its
-renderer sandbox and a compromised renderer has the worker's access; a kernel
-compromise removes the remaining boundaries.
+is a container on the host kernel rather than a virtual machine. Chromium runs
+with its renderer sandbox: each renderer is in user, pid and network namespaces
+of its own under a seccomp filter, so a compromised renderer must also escape
+that sandbox to gain the worker's access. The container's seccomp profile,
+`deploy/config/browser-seccomp.json`, is the engine default with only the
+namespace and `chroot` calls that sandbox needs added, and the renderer sandbox
+is checked in CI by the `browser-sandbox` job. A kernel compromise removes the
+remaining boundaries.
 
 Docker bridge membership is not directional. A compromised worker can reach the
 Melete service ports on `browser-control`, even though it cannot directly join the
@@ -425,19 +444,19 @@ Development on Windows uses a same-user child process with a restricted
 environment, not an OS isolation boundary. Production requires an explicitly
 configured isolated endpoint and never silently starts that development child.
 The endpoint address is trusted operator configuration, not an attestation of
-the remote deployment. Takeover supplies fencing and owner control routes. A
-person may enter credentials on an operator-owned worker display using
-`MELETE_BROWSER_HEADLESS=false`; Melete includes no remote desktop transport or
-login interface for reaching that display. The network guard stays closed to
-unbrokered requests during takeover, so a site sign-in cannot be completed
-interactively through takeover. Recipes and episodes exclude authentication
-factors, while Chromium's private profile may retain the cookies needed for a
-warm signed-in session.
+the remote deployment. Takeover supplies fencing, owner control routes and the
+live view through which a person signs in to a site. Recipes and episodes
+exclude authentication factors, while Chromium's private profile retains the
+cookies of a signed-in site. The space records which sites those are, never the
+cookies, and its owner can sign it out of one, which clears that site's cookies
+and stored data from the profile.
 
-`bun run deploy/scripts/browser-compose-check.ts` checks deployment configuration;
-the browser and integration tests check live controller behaviour on local
-fixtures. Unlike the runtime cell, which scenario 6 probes from inside, the
-worker's network boundary rests on that checked configuration: no conformance
+`bun run deploy/scripts/browser-compose-check.ts` checks deployment
+configuration, including that the seccomp profile is the pinned engine default
+plus exactly its three additions; the browser and integration tests check live
+controller behaviour on local fixtures. Unlike the runtime cell, which scenario
+6 probes from inside, the worker's network boundary rests on that checked
+configuration: no conformance
 scenario builds the browser image, starts the stack with the browser override,
 or probes the worker's network from inside it. Installation and operation are
 described in [browser-worker.md](browser-worker.md).

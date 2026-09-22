@@ -88,6 +88,20 @@ limit, a memory limit, and an init process. The worker receives only its space i
 It receives no database URL, vault key, provider key, runtime token, global
 artifacts mount, or runtime work volume.
 
+Chromium runs with its own renderer sandbox: every launch path sets
+`chromiumSandbox: true`, so each renderer gets a user, pid and network namespace
+of its own under a seccomp filter. The engine's default seccomp profile refuses
+the calls that set that up, so the worker runs under
+`deploy/config/browser-seccomp.json`: the engine default with exactly three
+additions. `clone` and `unshare` are allowed for user, pid and network
+namespaces only, and still refused for mount, cgroup, UTS and IPC; `chroot` is
+allowed because `cap_drop: [ALL]` removes the capability the default ties it to.
+No capability is added and the container is not privileged. That the renderers
+start inside those namespaces under the filter is checked in CI by the
+`browser-sandbox` job, which builds the image and runs
+`apps/melete/test/integration/browser-sandbox.test.ts` against a worker
+container started from it.
+
 `browser-control` is an internal network shared only by Melete and this worker.
 The worker also joins its own `browser-egress` network for internet access. It
 does not join `internal` or `edge`, and it publishes no ports. Docker networking
@@ -141,12 +155,65 @@ Queued inputs keep their original epoch and are refused after the bump. The
 controller checks again after locator waits, adjacent to each dispatched input;
 the model cannot opt out. `POST /browser/sessions/{id}/handback` increments the
 epoch again and requires a fresh observation. The job stays parked until the
-person supplies input. An operator-owned worker display can run headed Chromium
-with `MELETE_BROWSER_HEADLESS=false`; the person can use that display to enter
-credentials while automation is fenced. The supplied Compose worker remains
-headless. The network guard also refuses unbrokered requests during takeover;
-interactive sign-in remains unsupported. Takeover enforces control fencing.
-A remote desktop transport or login UI is not included.
+person supplies input. An operator-owned worker display can also run headed
+Chromium with `MELETE_BROWSER_HEADLESS=false`; the supplied Compose worker is
+headless.
+
+## Signing in yourself
+
+While a person holds control they can drive the worker's own page from the
+browser they are signed in to Melete with, which is how they sign in to a site
+for the agent without the password ever passing through the model:
+
+| Route | Effect |
+| --- | --- |
+| `POST /browser/sessions/{id}/live` | Open the live view for the current takeover. |
+| `GET /browser/sessions/{id}/live/frames` | Server-Sent Events: JPEG frames, where the page is, notices, and the end. |
+| `POST /browser/sessions/{id}/live/input` | Pointer, wheel, touch, key and text events for the page. |
+| `POST /browser/sessions/{id}/live/scope` | Allow one more site for this takeover. |
+| `POST /browser/sessions/{id}/live/close` | Close the view; control stays with the person until handback. |
+
+The live id lives in memory only and is bound to the principal, the session, the
+control epoch and the client address it was opened from. Every request checks
+all four again, together with the same-origin rule and the person's authority
+over the job, so a second viewer, another member of the space, another address
+or a stale epoch is refused. The web proxy replaces any client address a request
+carries with the one it saw. Input is a fixed set of typed events dispatched to
+the page; no request names a browser method. Frames are paced at ten a second,
+at most two are held unacknowledged, and a frame is written through to the
+viewer and never stored. A takeover lasts at most 20 minutes; after 90 seconds
+without input the view asks whether the person is still there, and after five
+minutes it closes.
+
+During a takeover the network guard admits the person's navigation within a
+**site scope**: the job's allowed domains and the site of the page they took
+over, compared as registrable domains. A redirect or navigation started by an
+in-scope page adds its target's site within fifteen seconds of the person
+pressing, touching or typing, and at most three sites for each such action,
+which is what a sign-in handing off to an identity provider needs. Any other
+site is refused with an `off_scope` notice naming it, and the person can allow
+it for this takeover with `/live/scope`. The scope holds at most twelve sites,
+and a person cannot add a private address or a local name to it. Resources and frames an
+in-scope page loads may come from any public address, and carry no cookie for
+another site. The public-address floor and pinned DNS still apply to every
+request. Downloads, file choosers and WebSockets are refused, a takeover opens
+at most eight popups, and a budget of 2,000 requests and 32 MB bounds it.
+
+Nothing the person types reaches the timeline, a recipe, an episode, a log or an
+artifact. The first observation after handback carries no screenshot, no form
+values, no query string and no form intents, and its accessibility tree keeps
+labels and roles with every value removed; it still refuses while a password or
+one-time-code field is visible. The next observation is ordinary.
+
+## Sites and sign-out
+
+When a takeover ends on a site the private profile now holds a cookie for, the
+space records that site: its registrable domain and when it was last used, never
+a cookie or anything typed.
+`GET /browser/sites` lists them for the space's owner. `DELETE
+/browser/sites/{domain}` signs the space out of one site: the worker clears that
+site's cookies and every kind of stored data for its origins from the Chromium
+profile, then the record goes.
 
 Recipes store ordered semantic steps and their visible schema, not filled values.
 A version must be checked before reuse. Reordering controls preserves schema
@@ -187,7 +254,8 @@ modes are measured in [note 0024](../.agents/notes/0024-browser-worker.md), excl
 browser launch and model latency.
 
 The Compose check parses YAML and rejects mutations that broaden networks,
-mounts, credentials, uids, or privileges. It does not prove Linux packet filtering,
-volume ownership, Chromium startup, or container escape resistance. The browser
-image and the combined stack with this override have not been built or run;
-those deployment checks remain for a Linux host.
+mounts, credentials, uids, or privileges. Its 14 checks include the image's
+pinned packages and the renderer sandbox profile, which must be the pinned
+engine default plus exactly the three additions above. It does not prove Linux
+packet filtering, volume ownership, or container escape resistance, and the
+combined stack with this override runs only on a Linux host.
