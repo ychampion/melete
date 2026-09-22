@@ -156,19 +156,3 @@ export function prefilter(
   counts.companies = companies.length;
   return { companies, counts };
 }
-
-/**
- * What a company is likely to cost a month, from receipts alone, before the
- * model says anything. It is a floor rather than a guess: the median of the
- * amounts the ledger admitted for that company in the window, scaled to a
- * month. Callers pass admitted amounts, so an unevidenced figure cannot reach
- * this.
- */
-export function monthlySpendFrom(
-  amountsMinor: readonly number[],
-  windowDays: number,
-): number | null {
-  if (!amountsMinor.length || windowDays <= 0) return null;
-  const total = amountsMinor.reduce((sum, value) => sum + value, 0);
-  return Math.round((total * 30) / windowDays);
-}
