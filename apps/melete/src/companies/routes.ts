@@ -154,13 +154,19 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   app.post('/spaces/:spaceId/companies/scan', async (c) => {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
     // One scan at a time. Asking again while one runs hands back the one that is
-    // running, so a doubled click does not read the mailbox twice.
-    const running = await deps.store.runningScan(owner);
-    if (running) return c.json({ scan_id: running.id, status: 'running' as const }, 200);
-    const mailbox = await deps.mailbox(owner);
-    if (!mailbox)
-      throw new ServiceError('not_connected', 'No mailbox is connected to this space.', 409);
-    const record = await deps.store.openScan(owner);
+    // running, so a doubled click does not read the mailbox twice. The check and
+    // the opening happen in one turn, so a second click cannot land between them.
+    const opened = await inTurn(`scan:${owner.spaceId}:${owner.principalId}`, async () => {
+      const running = await deps.store.runningScan(owner);
+      if (running) return { running, started: null };
+      const mailbox = await deps.mailbox(owner);
+      if (!mailbox)
+        throw new ServiceError('not_connected', 'No mailbox is connected to this space.', 409);
+      return { running: null, started: { mailbox, record: await deps.store.openScan(owner) } };
+    });
+    if (!opened.started)
+      return c.json({ scan_id: opened.running.id, status: 'running' as const }, 200);
+    const { mailbox, record } = opened.started;
     await schedule(async () => {
       await runScan({
         store: deps.store,

@@ -25,6 +25,9 @@ const handle = await testDatabase();
 const root = await mkdtemp(join(tmpdir(), 'melete-companies-races-'));
 const password = 'a-long-enough-password';
 
+/** Scans run to completion unless a test holds them, the way a detached scan would be. */
+let holdScans = false;
+const heldScans: (() => Promise<void>)[] = [];
 let handlerCalls = 0;
 
 /**
@@ -54,6 +57,7 @@ function meeting(ms = 1500) {
     });
 }
 const insideHandler = meeting();
+const betweenCheckAndOpen = meeting();
 
 const app = handle
   ? createApp({
@@ -63,9 +67,17 @@ const app = handle
       checkDatabase: async () => 'ok',
       companies: {
         store: new PostgresCompanyStore(handle.db),
-        mailbox: () => fixtureMailbox(fixtureMessages()),
+        // In the service this is a query for the space's mail connection, so it
+        // takes a moment, between the check for a running scan and the new one.
+        mailbox: async () => {
+          if (holdScans) await betweenCheckAndOpen();
+          return fixtureMailbox(fixtureMessages());
+        },
         extractor: scriptedExtractor(),
-        schedule: (work) => work(),
+        schedule: async (work) => {
+          if (holdScans) heldScans.push(work);
+          else await work();
+        },
         handler: {
           // Creating a job takes a few round trips; a second press that reaches
           // this step while the first is still in it would start a second chase.
@@ -135,5 +147,29 @@ withDb('two presses at once', () => {
     expect(handlerCalls - before).toBe(1);
     expect(answers.map((answer) => answer.status).sort()).toEqual([200, 201]);
     expect(answers[0]?.job).toBe(answers[1]?.job as string);
+  }, 60_000);
+
+  test('starting a scan from two presses at once starts one scan', async () => {
+    holdScans = true;
+    try {
+      const responses = await Promise.all([
+        call(cookie, `/spaces/${spaceId}/companies/scan`, 'POST'),
+        call(cookie, `/spaces/${spaceId}/companies/scan`, 'POST'),
+      ]);
+      const answers = await Promise.all(
+        responses.map(async (response) => ({
+          status: response.status,
+          scan: ((await response.json()) as { scan_id: string }).scan_id,
+        })),
+      );
+      // The second press is handed the scan the first one opened, so the
+      // mailbox is read once.
+      expect(answers.map((answer) => answer.status).sort()).toEqual([200, 202]);
+      expect(answers[0]?.scan).toBe(answers[1]?.scan as string);
+      expect(heldScans.length).toBe(1);
+    } finally {
+      holdScans = false;
+      for (const work of heldScans.splice(0)) await work();
+    }
   }, 60_000);
 });
