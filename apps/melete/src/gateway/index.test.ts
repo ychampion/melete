@@ -620,6 +620,90 @@ describe('provider evidence parsing', () => {
     expect(responses.modelActual).toBe('actual');
   });
 
+  test('a signed-in provider sends its current token and account, redacts it, and refreshes after a refusal', async () => {
+    const rejected: number[] = [];
+    let token = 'signed-in-access-1';
+    const signedIn = {
+      current: async () => ({
+        token,
+        generation: token.endsWith('1') ? 1 : 2,
+        headers: { 'chatgpt-account-id': 'account-fixture' },
+      }),
+      rejected: (generation: number) => {
+        rejected.push(generation);
+        token = 'signed-in-access-2';
+      },
+    };
+    const seen: Headers[] = [];
+    const chatgpt = {
+      ...(providersFromEnv({}).find((provider) => provider.name === 'chatgpt') ?? fakeProvider),
+      signedIn,
+    };
+    const { post, budget } = await start({
+      authenticate: async () => ({
+        ...principal,
+        allowedModels: [{ provider: 'chatgpt', model: 'gpt-5.1-codex' }],
+      }),
+      providers: [chatgpt],
+      fetch: async (request) => {
+        seen.push(request.headers);
+        if (seen.length === 1) return new Response('expired', { status: 401 });
+        return Response.json({
+          model: 'gpt-5.1-codex',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: token }] }],
+          usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+        });
+      },
+    });
+    const call = () =>
+      post('/providers/chatgpt/v1/responses', { model: 'gpt-5.1-codex', input: 'hello' });
+    expect((await call()).status).toBe(502);
+    expect(rejected).toEqual([1]);
+    const answered = await call();
+    expect(answered.status).toBe(200);
+    const text = await answered.text();
+    expect(text).not.toContain('signed-in-access');
+    expect(text).toContain('[redacted]');
+    expect(seen[0]?.get('authorization')).toBe('Bearer signed-in-access-1');
+    expect(seen[1]?.get('authorization')).toBe('Bearer signed-in-access-2');
+    expect(seen[1]?.get('chatgpt-account-id')).toBe('account-fixture');
+    expect(budget.reservations).toHaveLength(2);
+  });
+
+  test('a provider nobody is signed in to refuses the call before anything is reserved', async () => {
+    let transported = false;
+    const chatgpt = {
+      ...(providersFromEnv({}).find((provider) => provider.name === 'chatgpt') ?? fakeProvider),
+      signedIn: {
+        current: async () => {
+          throw new GatewayError(503, 'provider_sign_in_required');
+        },
+        rejected: () => {},
+      },
+    };
+    const { post, budget } = await start({
+      authenticate: async () => ({
+        ...principal,
+        allowedModels: [{ provider: 'chatgpt', model: 'gpt-5.1-codex' }],
+      }),
+      providers: [chatgpt],
+      fetch: async () => {
+        transported = true;
+        return new Response('unreachable');
+      },
+    });
+    const response = await post('/providers/chatgpt/v1/responses', {
+      model: 'gpt-5.1-codex',
+      input: 'hello',
+    });
+    expect(response.status).toBe(503);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      'provider_sign_in_required',
+    );
+    expect(budget.reservations).toHaveLength(0);
+    expect(transported).toBe(false);
+  });
+
   test('redacts a known key even if split between chunks', () => {
     const redactor = new SecretRedactor(['real-key-secret']);
     const a = redactor.feed(new TextEncoder().encode('data: {"echo":"real-key-'));

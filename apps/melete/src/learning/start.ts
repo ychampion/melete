@@ -1,4 +1,6 @@
 import type { Env } from '../env.ts';
+import { withSignIn } from '../gateway/configured.ts';
+import type { ProviderSignIn } from '../gateway/credentials.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import type { JobService } from '../jobs/service.ts';
 import { openProposalGateway } from './proposal-gateway.ts';
@@ -10,6 +12,7 @@ export async function startLearning(
   env: Env,
   workers: boolean,
   fake?: GatewayOptions['fake'],
+  signIn?: ProviderSignIn,
 ) {
   const gateway = await openProposalGateway({
     db: jobs.db,
@@ -19,14 +22,17 @@ export async function startLearning(
     // Real provider credentials still stay inside the existing model gateway.
     fake,
     providers: [
-      ...providersFromEnv({
-        FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
-        OPENAI_API_KEY: env.OPENAI_API_KEY,
-        ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
-        GOOGLE_API_KEY: env.GOOGLE_API_KEY,
-        OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
-        OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
-      }),
+      ...withSignIn(
+        providersFromEnv({
+          FIREWORKS_API_KEY: env.FIREWORKS_API_KEY,
+          OPENAI_API_KEY: env.OPENAI_API_KEY,
+          ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
+          GOOGLE_API_KEY: env.GOOGLE_API_KEY,
+          OPENAI_COMPAT_API_KEY: env.OPENAI_COMPAT_API_KEY,
+          OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,
+        }),
+        signIn,
+      ),
       ...(env.MELETE_ENABLE_FAKE_PROVIDER ? [fakeProvider] : []),
     ],
   });

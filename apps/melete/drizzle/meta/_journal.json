@@ -281,6 +281,13 @@
       "when": 1789232400019,
       "tag": "0039_space_removal",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789232400020,
+      "tag": "0040_provider_credential",
+      "breakpoints": true
     }
   ]
 }

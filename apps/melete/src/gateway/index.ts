@@ -252,8 +252,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       )
         throw new GatewayError(413, 'input_context_exceeded');
       const estimatedTokens = inputTokens + requested;
-      if (!provider.fake && !provider.apiKey)
+      if (!provider.fake && !provider.apiKey && !provider.signedIn)
         throw new GatewayError(503, 'provider_key_unavailable');
+      // Opened before anything is reserved, so a provider nobody is signed in
+      // to refuses the call without charging the job.
+      const signedIn = provider.fake ? undefined : await provider.signedIn?.current();
+      const credential = signedIn?.token ?? provider.apiKey;
       reservation = await options.budget.reserve({
         principal,
         requestId: randomUUID(),
@@ -276,10 +280,11 @@ export function createModelGateway(options: GatewayOptions): Server {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
       });
+      for (const [name, value] of Object.entries(signedIn?.headers ?? {})) headers.set(name, value);
       if (protocol === 'messages') {
-        headers.set('x-api-key', provider.apiKey ?? 'fake');
+        headers.set('x-api-key', credential ?? 'fake');
         headers.set('anthropic-version', '2023-06-01');
-      } else headers.set('authorization', `Bearer ${provider.apiKey ?? 'fake'}`);
+      } else headers.set('authorization', `Bearer ${credential ?? 'fake'}`);
       const result = provider.fake
         ? await fake(body, principal.attemptId, protocol)
         : await transport(
@@ -296,6 +301,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         // Provider errors may contain injected keys or internal request diagnostics.
         await result.body?.cancel();
         settlement.status = 'failed';
+        if (signedIn && result.status === 401) provider.signedIn?.rejected(signedIn.generation);
         throw new GatewayError(result.status === 429 ? 429 : 502, 'provider_rejected_request');
       }
       const streaming = body.stream === true;
@@ -309,7 +315,7 @@ export function createModelGateway(options: GatewayOptions): Server {
         throw new GatewayError(502, 'unexpected_provider_response');
       }
       const collector = new UsageCollector(streaming, options.maxResponseBytes);
-      const redactor = new SecretRedactor(secrets);
+      const redactor = new SecretRedactor(signedIn ? [...secrets, signedIn.token] : secrets);
       const buffered: string[] = [];
       if (streaming) {
         response.writeHead(result.status, {

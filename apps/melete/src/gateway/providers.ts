@@ -1,3 +1,4 @@
+import { CHATGPT } from './oauth.ts';
 import { GatewayError, type GatewayProtocol, type GatewayProvider } from './types.ts';
 
 export const PROVIDER_HOSTS = [
@@ -10,12 +11,16 @@ export const PROVIDER_HOSTS = [
 /** The name an operator-configured OpenAI-compatible endpoint is selected by. */
 export const OPENAI_COMPATIBLE = 'openai-compatible';
 
+/** The provider served through the owner's ChatGPT sign-in rather than a key. */
+export const CHATGPT_PROVIDER = 'chatgpt';
+
 /** The protocols each upstream is served over. Routing and runtime API modes both read this. */
 const PROVIDER_PROTOCOLS = {
   fireworks: ['chat/completions'],
   openai: ['chat/completions', 'responses'],
   anthropic: ['messages'],
   google: ['chat/completions'],
+  [CHATGPT_PROVIDER]: ['responses'],
   [OPENAI_COMPATIBLE]: ['chat/completions', 'responses'],
 } as const satisfies Record<string, readonly GatewayProtocol[]>;
 
@@ -43,6 +48,8 @@ export function modelApiMode(provider: string, model: string): ModelApiMode {
     : ['chat/completions'];
   if (!protocols.includes('chat/completions') && protocols.includes('messages'))
     return 'anthropic_messages';
+  if (!protocols.includes('chat/completions') && protocols.includes('responses'))
+    return 'codex_responses';
   if (
     protocols.includes('responses') &&
     (provider === 'openai' || requiresResponsesProtocol(model))
@@ -78,6 +85,13 @@ export function providersFromEnv(
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
       apiKey: env.GOOGLE_API_KEY,
       protocols: [...PROVIDER_PROTOCOLS.google],
+    },
+    {
+      // Its credential is the owner's sign-in, attached where the service
+      // builds its providers; without one every call is refused.
+      name: CHATGPT_PROVIDER,
+      baseUrl: CHATGPT.baseUrl,
+      protocols: [...PROVIDER_PROTOCOLS[CHATGPT_PROVIDER]],
     },
   ];
   if (env.OPENAI_COMPAT_BASE_URL) {
@@ -122,6 +136,7 @@ export const PROVIDER_KEY_VARIABLES = {
   openai: ['OPENAI_API_KEY'],
   anthropic: ['ANTHROPIC_API_KEY'],
   google: ['GOOGLE_API_KEY'],
+  [CHATGPT_PROVIDER]: [],
   [OPENAI_COMPATIBLE]: ['OPENAI_COMPAT_API_KEY', 'OPENAI_API_KEY'],
 } as const satisfies Record<keyof typeof PROVIDER_PROTOCOLS, readonly string[]>;
 
@@ -187,7 +202,9 @@ export function providerKeyProblem(
   providers: readonly GatewayProvider[],
 ): string | null {
   const provider = providers.find((candidate) => candidate.name === selected);
-  if (!provider || provider.fake || provider.apiKey) return null;
+  if (!provider || provider.fake || provider.apiKey || provider.signedIn) return null;
+  if (selected === CHATGPT_PROVIDER)
+    return `MELETE_DEFAULT_PROVIDER is "${CHATGPT_PROVIDER}", which is used through the owner's ChatGPT sign-in, and signing in needs MELETE_MASTER_KEY. Every model call is refused with provider_key_unavailable until it is set and the owner has signed in.`;
   const variables = providerKeyVariables(selected, provider.baseUrl);
   const plainHttp =
     selected === OPENAI_COMPATIBLE && !isHttpsAddress(provider.baseUrl)
