@@ -7,11 +7,29 @@
  * `--tailscale` settles the node name the tailnet overlay joins under. It
  * writes no credential: the auth key is issued by the Tailscale admin console
  * and is pasted into deploy/.env afterwards.
+ *
+ * DOCKER_GID is the group of the Docker socket as the service will see it. On
+ * a Linux host running Docker Engine that is the host's own socket. Docker
+ * Desktop, on Windows, macOS or Linux, serves the socket from its VM, so the
+ * host has no file to read and the group is measured from a container.
  */
 import { randomBytes } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { judgeHostDocker, readHostDocker } from '../../apps/melete/src/runtime/docker-engine.ts';
+import { parse } from 'yaml';
+import {
+  type CommandOutput,
+  readHostDocker,
+  spawnCommand,
+} from '../../apps/melete/src/runtime/docker-engine.ts';
+import {
+  type DockerHostFacts,
+  isDockerDesktop,
+  judgeDockerMachine,
+  judgeSocketProbe,
+  readDockerHost,
+  socketProbeCommand,
+} from '../../apps/melete/src/runtime/docker-host.ts';
 import { parseEnvFile, providerWarnings } from './provider-settings.ts';
 import { TAILSCALE_USAGE, tailscaleNodeName, tailscaleNotes } from './tailscale-origin.ts';
 
@@ -34,15 +52,43 @@ export function configureOptions(args: readonly string[]): {
   return { fake: args.includes('--fake'), nodeName: tailscaleNodeName(args) };
 }
 
+export type SocketAccess = {
+  /** The host's own socket, as `stat` reports it. */
+  statHost: () => Promise<{ isSocket(): boolean; gid: number }>;
+  /** Runs the probe container; it may pull the image first, so it gets a long timeout. */
+  runProbe: (command: readonly string[]) => CommandOutput;
+  /** The image the probe runs: the stack's own pinned Postgres image. */
+  probeImage: () => Promise<string>;
+};
+
+/** The socket's group as the service will see it, or an error that says why there is none. */
+export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAccess) {
+  if (host.platform === 'linux' && !isDockerDesktop(host.info)) {
+    const socket = await access.statHost();
+    if (!socket.isSocket()) throw new Error('/var/run/docker.sock is not a Docker socket');
+    return socket.gid;
+  }
+  const probe = judgeSocketProbe(access.runProbe(socketProbeCommand(await access.probeImage())));
+  if ('problem' in probe) throw new Error(probe.problem);
+  return probe.gid;
+}
+
 if (import.meta.main) {
   const root = resolve(import.meta.dir, '../..');
   const target = resolve(root, 'deploy/.env');
   const { fake, nodeName } = configureOptions(process.argv.slice(2));
-  const socket = await stat('/var/run/docker.sock');
-  if (!socket.isSocket()) throw new Error('/var/run/docker.sock is not a Docker socket');
-  // An unsupported engine or Compose is named now, not as a failed `up` later.
-  const unsupported = judgeHostDocker(readHostDocker());
+  // An unsupported engine, Compose or host is named now, not as a failed `up` later.
+  const host = readDockerHost(spawnCommand, root);
+  const unsupported = judgeDockerMachine(readHostDocker(), host);
   if (unsupported.length > 0) throw new Error(unsupported.join(' '));
+  const dockerGid = await dockerSocketGroup(host, {
+    statHost: () => stat('/var/run/docker.sock'),
+    runProbe: (command) => spawnCommand(command, 10 * 60_000),
+    probeImage: async () => {
+      const compose = parse(await readFile(resolve(root, 'deploy/docker-compose.yml'), 'utf8'));
+      return String(compose.services.postgres.image);
+    },
+  });
   const template = await readFile(resolve(root, 'deploy/.env.example'), 'utf8');
   const password = randomBytes(24).toString('hex');
   const values: Record<string, string> = {
@@ -52,7 +98,7 @@ if (import.meta.main) {
     MELETE_RUNTIME_KEY: randomBytes(32).toString('hex'),
     POSTGRES_PASSWORD: password,
     DATABASE_URL: `postgres://melete:${password}@postgres:5432/melete`,
-    DOCKER_GID: String(socket.gid),
+    DOCKER_GID: String(dockerGid),
     ...(fake
       ? {
           MELETE_ENABLE_FAKE_PROVIDER: 'true',

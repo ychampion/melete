@@ -10,11 +10,20 @@
  */
 import { accessSync, constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import {
   type CommandOutput,
-  judgeHostDocker,
   readHostDocker,
+  spawnCommand,
 } from '../../src/runtime/docker-engine.ts';
+import {
+  judgeDockerMachine,
+  localMachine,
+  type MachineAccess,
+  readDockerHost,
+} from '../../src/runtime/docker-host.ts';
+
+const REPOSITORY_ROOT = resolve(import.meta.dir, '../../../..');
 
 export type PreflightFacts = {
   platform: NodeJS.Platform;
@@ -24,8 +33,10 @@ export type PreflightFacts = {
   libpq: boolean;
   uv: boolean;
   /**
-   * Problems with the host's Docker Engine and Compose. Unset unless the
-   * deployment scenarios were requested: nothing else in the suite uses Docker.
+   * Problems with the host's Docker Engine and Compose, and with the machine
+   * running them: Linux containers, Docker Desktop's memory, and on Windows the
+   * named pipe and path lengths. Unset unless the deployment scenarios were
+   * requested: nothing else in the suite uses Docker.
    */
   docker?: string[];
   /** `--docker` without the deployment scenarios: the suite's own prerequisites are not judged. */
@@ -43,7 +54,8 @@ const LIBPQ_PATHS = [
 export function gatherFacts(
   env: Record<string, string | undefined> = process.env,
   args: readonly string[] = process.argv.slice(2),
-  runDocker?: (command: readonly string[]) => CommandOutput,
+  runDocker: (command: readonly string[]) => CommandOutput = spawnCommand,
+  machine: MachineAccess = { ...localMachine, env },
 ): PreflightFacts {
   const scenarios = env.MELETE_CONFORMANCE_COMPOSE === '1';
   const wantsDocker = scenarios || args.includes('--docker');
@@ -60,7 +72,14 @@ export function gatherFacts(
     tmpdirWritable,
     libpq: process.platform !== 'linux' || LIBPQ_PATHS.some((path) => existsSync(path)),
     uv: Bun.which('uv') !== null,
-    ...(wantsDocker ? { docker: judgeHostDocker(readHostDocker(runDocker)) } : {}),
+    ...(wantsDocker
+      ? {
+          docker: judgeDockerMachine(
+            readHostDocker(runDocker),
+            readDockerHost(runDocker, REPOSITORY_ROOT, machine),
+          ),
+        }
+      : {}),
     ...(wantsDocker && !scenarios ? { dockerOnly: true } : {}),
   };
 }

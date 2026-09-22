@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { configureOptions } from './configure.ts';
+import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
+import { configureOptions, dockerSocketGroup } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
 describe('the configuration generator options', () => {
@@ -24,5 +25,61 @@ describe('the configuration generator options', () => {
       [['--tailscale', '--tailscale-host', 'desk'], '--tailscale-host'],
     ] as const)
       expect(() => configureOptions(args)).toThrow(`Unknown option ${unknown}.`);
+  });
+});
+
+describe('the Docker socket group written as DOCKER_GID', () => {
+  const GIB = 1024 ** 3;
+  const host = (platform: NodeJS.Platform, operatingSystem: string): DockerHostFacts => ({
+    platform,
+    endpoint: null,
+    pipePresent: null,
+    info: {
+      osType: 'linux',
+      operatingSystem,
+      kernelVersion: '6.8.0',
+      memTotal: 8 * GIB,
+      dockerRootDir: '/var/lib/docker',
+    },
+  });
+  const access = (probe: string, code = 0) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      statHost: async () => {
+        calls.push('stat');
+        return { isSocket: () => true, gid: 988 };
+      },
+      runProbe: (command: readonly string[]) => {
+        calls.push(command.join(' '));
+        return { code, stdout: probe, stderr: code ? 'Cannot connect' : '' };
+      },
+      probeImage: async () => 'postgres:17-alpine@sha256:pinned',
+    };
+  };
+
+  test('Docker Engine on Linux: the host socket group, and no container is run', async () => {
+    const linux = access('');
+    expect(await dockerSocketGroup(host('linux', 'Ubuntu 24.04 LTS'), linux)).toBe(988);
+    expect(linux.calls).toEqual(['stat']);
+  });
+
+  test('Docker Desktop on Windows, macOS or Linux: the group measured from a container', async () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const desktop = access('0 760 socket\n');
+      expect(await dockerSocketGroup(host(platform, 'Docker Desktop'), desktop)).toBe(0);
+      expect(desktop.calls).toHaveLength(1);
+      expect(desktop.calls[0]).toContain('postgres:17-alpine@sha256:pinned');
+      expect(desktop.calls[0]).toContain('/var/run/docker.sock:/var/run/docker.sock');
+    }
+  });
+
+  test('a socket the service could not use is refused before deploy/.env is written', async () => {
+    await expect(
+      dockerSocketGroup(host('win32', 'Docker Desktop'), access('0 755 socket')),
+    ).rejects.toThrow('mode 755');
+    await expect(dockerSocketGroup(host('win32', 'Docker Desktop'), access('', 1))).rejects.toThrow(
+      'could not inspect /var/run/docker.sock (Cannot connect)',
+    );
   });
 });
