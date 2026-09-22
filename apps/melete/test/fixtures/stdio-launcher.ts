@@ -59,11 +59,16 @@ export class FakeStdioLauncher implements StdioLauncher {
     crashOnStart: false,
     failStart: false,
   };
-  private readonly live = new Set<() => void>();
+  private readonly live = new Map<() => void, string>();
 
   /** Servers running now. */
   get running(): number {
     return this.live.size;
+  }
+
+  /** Servers running now for one connection. */
+  runningFor(connectionId: string): number {
+    return [...this.live.values()].filter((id) => id === connectionId).length;
   }
 
   refuses(_launch: McpStdioLaunch): string | null {
@@ -85,7 +90,7 @@ export class FakeStdioLauncher implements StdioLauncher {
       this.live.delete(end);
       closeListener?.();
     };
-    this.live.add(end);
+    this.live.set(end, spec.connectionId);
     const send = (value: unknown) =>
       queueMicrotask(() => {
         if (!ended) data?.(`${JSON.stringify(value)}\n`);
@@ -144,7 +149,7 @@ export class FakeStdioLauncher implements StdioLauncher {
 
   /** Every running server exits on its own. */
   crash(): void {
-    for (const end of [...this.live]) end();
+    for (const end of [...this.live.keys()]) end();
   }
 
   async destroy(connectionId: string): Promise<void> {
