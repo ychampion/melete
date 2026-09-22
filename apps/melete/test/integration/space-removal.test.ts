@@ -40,6 +40,7 @@ import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.
 import { PathOutsideRoot, removeConfined } from '../../src/spaces/plan.ts';
 import {
   type BrowserTeardown,
+  type RuntimeHomeTeardown,
   type SandboxTeardown,
   SpaceRemovalService,
 } from '../../src/spaces/removal.ts';
@@ -72,6 +73,7 @@ type Overrides = {
   journal?: FileRestrictionJournal;
   sandboxes?: SandboxTeardown;
   browser?: BrowserTeardown;
+  runtimeHomes?: RuntimeHomeTeardown;
   onPhase?: (removalId: string, phase: RemovalPhase) => void;
   connectors?: ConnectorRegistry;
 };
@@ -89,6 +91,7 @@ async function service(overrides: Overrides = {}) {
     leaseMs: 5_000,
     ...(overrides.sandboxes ? { sandboxes: overrides.sandboxes } : {}),
     ...(overrides.browser ? { browser: overrides.browser } : {}),
+    ...(overrides.runtimeHomes ? { runtimeHomes: overrides.runtimeHomes } : {}),
     ...(overrides.onPhase ? { onPhase: overrides.onPhase } : {}),
     ...(overrides.connectors ? { connectors: overrides.connectors } : {}),
   });
@@ -868,6 +871,38 @@ describe.if(handle !== null)('removing a space', () => {
     expect(forgot).toEqual([seeded.spaceId]);
     expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 2 } });
     expect(await exists(join(spacesRoot, seeded.spaceId, 'browser'))).toBe(false);
+  });
+
+  test('removal_clears_runtime_homes — by the job ids the fence kept, and listed again afterwards', async () => {
+    const seeded = await seed('shared');
+    const other = `job_${crypto.randomUUID()}`;
+    const homes = new Set([seeded.jobId, other]);
+    const runtimeHomes: RuntimeHomeTeardown = {
+      removeHomesForJobs: async (jobIds) => {
+        const removed = jobIds.filter((id) => homes.delete(id));
+        return { removed };
+      },
+      listHomesForJobs: async (jobIds) => jobIds.filter((id) => homes.has(id)),
+    };
+    const { finished } = await removeCompletely(seeded, { runtimeHomes });
+    expect(outcome(finished)).toBe('complete');
+    expect(finished.counts).toMatchObject({
+      providers: { runtime_homes: 0 },
+      cleared: { runtime_homes_removed: 1 },
+    });
+    // Another job's home, in another space, is not this removal's to take.
+    expect([...homes]).toEqual([other]);
+
+    // A home that is still listed after the removal asked for it is not gone.
+    const stubborn = await seed('shared');
+    const { finished: held } = await removeCompletely(stubborn, {
+      runtimeHomes: {
+        removeHomesForJobs: async () => ({ removed: [] }),
+        listHomesForJobs: async (jobIds) => [...jobIds],
+      },
+    });
+    expect(held.state).toBe('blocked');
+    expect(held.blockedReason).toContain('runtime_homes');
   });
 
   // ------------------------------------------------------------------
