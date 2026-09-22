@@ -220,11 +220,14 @@ suite('the sites a space is signed in to', () => {
         seen += decoder.decode(chunk.value, { stream: true });
       }
     })();
-    const send = (events: LiveInput[]) =>
-      call(`/browser/sessions/${sessionId}/live/input`, {
+    const send = async (events: LiveInput[]) => {
+      const response = await call(`/browser/sessions/${sessionId}/live/input`, {
         method: 'POST',
         body: { live_id: live, ack_through: 0, events },
       });
+      // Every event reached the page: a refused or dropped input would otherwise pass for a slow page.
+      expect([response.status, await response.json()]).toEqual([200, { accepted: events.length }]);
+    };
     const until = async (predicate: () => boolean, ms = 20_000) => {
       const deadline = Date.now() + ms;
       while (Date.now() < deadline && !predicate()) await Bun.sleep(25);
