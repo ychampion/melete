@@ -673,9 +673,14 @@ export class SandboxSessions {
     signal: AbortSignal,
   ): Promise<SessionRow> {
     if (!provider) {
-      const reason = `no ${row.adapter} adapter is configured`;
-      await this.sql`update sandbox_session set last_error = ${reason} where id = ${row.id}`;
-      return { ...row, lastError: reason };
+      // Nothing here can reach this sandbox, so nothing here can close it.
+      // Left `closing`, the sweep would take the row back on every cycle and
+      // never finish it; it is recorded as lost once instead, with the reason.
+      // A sandbox still running is an orphan to its connection's
+      // reconciliation, if that connection gets a provider again.
+      const reason = `no ${row.adapter} provider is configured for this session's connection, so its sandbox could not be destroyed`;
+      await markSessionLost(this.sql, row.id, reason, 'closing');
+      return (await this.get(row.id)) ?? { ...row, lastError: reason };
     }
     try {
       // A snapshotted workspace's sandbox was stopped when it was suspended.
@@ -744,12 +749,13 @@ export class SandboxSessions {
       const provider = await this.providerOf(candidate, providerFor);
       if (provider === null) continue;
       const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
-      if (workspace && candidate.status === 'ready') {
+      if (workspace && candidate.status === 'ready' && provider) {
         // A workspace outlives its attempt: it is suspended, not destroyed.
-        if (provider)
-          await this.suspendWorkspace(candidate.id, provider, signal).catch(() => {
-            // Recorded on the row, which keeps running; the next sweep tries again.
-          });
+        // Without a provider it cannot be suspended either, and goes the way
+        // of any other session below.
+        await this.suspendWorkspace(candidate.id, provider, signal).catch(() => {
+          // Recorded on the row, which keeps running; the next sweep tries again.
+        });
         continue;
       }
       if (workspace && candidate.status === 'opening' && candidate.resumeRef) {

@@ -134,6 +134,46 @@ withDb('sandbox sessions', () => {
     expect(await sessions.sweep(() => provider, signal())).toEqual([]);
   });
 
+  test('a session no provider can reach is recorded lost once, not swept forever', async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const ephemeral = await sessions.open(
+      { ...base, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    const workspace = await sessions.open(
+      {
+        ...base,
+        agentId: scope.agentId,
+        persistence: 'pause',
+        attemptId: await scope.attempt(),
+      },
+      provider,
+      spec,
+      signal(),
+    );
+    await sql`update sandbox_session set lease_expires_at = now() - interval '1 second'
+      where id in ${sql([ephemeral.id, workspace.id])}`;
+    // The connection has no provider any more: nothing here can close either
+    // sandbox, nor suspend the workspace.
+    const none = () => undefined;
+    expect(await sessions.sweep(none, signal())).toEqual([]);
+    for (const opened of [ephemeral, workspace]) {
+      const row = await sessions.get(opened.id);
+      expect([opened.id, row?.status]).toEqual([opened.id, 'lost']);
+      expect(row?.lastError).toContain(`no ${opened.adapter} provider is configured`);
+    }
+    // Once: the next sweep has nothing to take back, and the rows stay as they are.
+    const rows = async () => [
+      ...(await sql`select id, status, last_error, closed_at, seconds_charged
+        from sandbox_session order by id`),
+    ];
+    const recorded = await rows();
+    expect(await sessions.sweep(none, signal())).toEqual([]);
+    expect(await rows()).toEqual(recorded);
+  });
+
   test('metering records seconds with no cap configured', async () => {
     const { sql, scope, provider, sessions, spec, base } = await setup();
     const opened = await sessions.open(
