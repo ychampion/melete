@@ -9,7 +9,7 @@ import {
   createBrowserEgress,
 } from './egress.ts';
 import { BrowserLive, type BrowserLiveOptions } from './live.ts';
-import { withoutValues } from './redact.ts';
+import { handbackLabel, withoutValues } from './redact.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
@@ -141,8 +141,12 @@ export class BrowserController {
   private dialogRevision = 0;
   private pageId?: string;
   private replacingPage = false;
-  /** Set at handback; cleared only by an observation that completes. */
-  private humanJustLeft = false;
+  /**
+   * Set at handback. What a person typed or was shown stays on the page they hand back however
+   * many times it is looked at, so this clears only when an automation action replaces the
+   * top-level document.
+   */
+  private handback = false;
   readonly metrics = { observations: 0, dispatched_inputs: 0, refused_inputs: 0 };
 
   constructor(
@@ -169,7 +173,7 @@ export class BrowserController {
     });
     this.live = new BrowserLive(this, options.live);
     this.sessions.onControl((change) => {
-      if (change === 'handback') this.humanJustLeft = true;
+      if (change === 'handback') this.handback = true;
       return undefined;
     });
   }
@@ -374,10 +378,10 @@ export class BrowserController {
     const session = this.sessions.requireSession(command.session_id, command.job_id);
     if (session.control !== 'automation') throw new BrowserFault('human_control');
     const epoch = session.control_epoch;
-    // What a person typed or was shown can still be on the page they hand back: the first
-    // observation afterwards carries no picture, no form values, and a tree with labels and
-    // roles but no contents at all, and it still refuses below.
-    const handedBack = this.humanJustLeft;
+    // What a person typed or was shown can still be on the page they hand back: until automation
+    // leaves that document, an observation carries no picture, no form values, no form intents,
+    // and a tree and labels with the page's contents taken out, and it still refuses below.
+    const handedBack = this.handback;
     const { page, cdp } = await this.attach();
     const schema = await this.schema(page, cdp);
     // No screenshot, tree, episode, recipe or artifact is recorded while authentication fields are visible.
@@ -404,7 +408,6 @@ export class BrowserController {
       }
     }
     this.sessions.observed(session.id, epoch);
-    if (handedBack) this.humanJustLeft = false;
     this.metrics.observations++;
     return {
       session_id: session.id,
@@ -412,12 +415,20 @@ export class BrowserController {
       observation: {
         id: `obs_${randomUUID()}`,
         url: handedBack ? withoutQuery(page.url()) : page.url(),
-        schema,
+        schema: handedBack
+          ? schema.map((control) => ({ ...control, label: handbackLabel(control.label) }))
+          : schema,
         tree,
         screenshot,
       },
       result: { submit_intents: intents },
     };
+  }
+
+  /** The top-level document: a new page, or a navigation that loads a new document, changes it. */
+  private async documentOf(cdp: CDPSession): Promise<string> {
+    const { frameTree } = await cdp.send('Page.getFrameTree');
+    return `${frameTree.frame.id} ${frameTree.frame.loaderId}`;
   }
 
   private async transition(page: Page, cdp: CDPSession): Promise<string> {
@@ -457,6 +468,9 @@ export class BrowserController {
         if (!this.network) throw new BrowserFault('worker_unavailable');
         if (command.operation.kind === 'read') {
           this.sessions.checkInput(command.session_id, command.control_epoch);
+          // Text read from the page is kept with the receipt, and the page still holds what the
+          // person typed or was shown until automation moves it to another document.
+          if (this.handback) throw new BrowserFault('read_after_handback');
           if ((await this.schema(page, cdp)).some((control) => control.sensitive))
             throw new BrowserFault('sensitive_input_require_takeover');
           const query = command.operation;
@@ -472,6 +486,7 @@ export class BrowserController {
         // Even a caller that skips planning checks reaches this controller gate before it can act.
         this.sessions.checkInput(command.session_id, command.control_epoch);
         const before = await this.transition(page, cdp);
+        const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
         const action = command.operation;
         if (action.kind === 'open') {
           await this.navigate(command, action.url);
@@ -613,6 +628,8 @@ export class BrowserController {
           } else await this.network.run('reversible', click);
         }
         ({ page, cdp } = await this.attach());
+        if (handedBackIn !== undefined && (await this.documentOf(cdp)) !== handedBackIn)
+          this.handback = false;
         const after = await this.transition(page, cdp);
         if (before !== after || action.kind === 'open' || action.kind === 'submit')
           return this.observe(command);

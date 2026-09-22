@@ -244,10 +244,12 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       expect(account?.search).toStartWith('?ticket=');
       expect(account?.cookie).toContain('step=code');
       // The person allows one more host for this takeover, which fills the injected scope.
-      expect(await worker.liveScope(open.live_id, 'allowed.example')).toEqual({
-        site_scope: ['127.0.0.1', '127.0.0.2', 'allowed.example'],
+      expect(await worker.liveScope(open.live_id, 'allowed-example.com')).toEqual({
+        site_scope: ['127.0.0.1', '127.0.0.2', 'allowed-example.com'],
       });
-      expect(await reason(worker.liveScope(open.live_id, 'another.example'))).toBe('scope_full');
+      expect(await reason(worker.liveScope(open.live_id, 'another-example.com'))).toBe(
+        'scope_full',
+      );
       expect(await reason(worker.liveScope(open.live_id, 'evil.example:8080'))).toBe(
         'invalid_host',
       );
@@ -361,38 +363,56 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
         expect(record).not.toContain(secret);
     });
 
-    test('the first observation after handback carries no query string', async () => {
+    test('an observation after handback carries no query string, however many are made', async () => {
       session = await worker.handback(session.id);
       const first = await command({ kind: 'observe' });
       expect(first.observation?.url).toBe(`${fixture.app}/account`);
       const second = await command({ kind: 'observe' });
-      expect(second.observation?.url).toStartWith(`${fixture.app}/account?ticket=`);
+      expect(second.observation?.url).toBe(`${fixture.app}/account`);
       session = await worker.takeover(session.id);
     }, 30_000);
 
-    test('the first observation after handback carries no screenshot and no contents', async () => {
+    test('a handed-back page is looked at without its contents until automation leaves it', async () => {
       session = await worker.handback(session.id);
-      const first = await command({ kind: 'observe' });
-      expect(first.observation?.url).toBe(`${fixture.app}/account`);
-      expect(first.observation?.screenshot).toBe('');
-      expect(first.result).toEqual({ submit_intents: [] });
-      // Labels and roles stay, so the agent can still find its way; no contents do.
-      const structure = first.observation?.tree ?? '';
-      expect(structure).toContain('- heading "Your account"');
-      expect(structure).toContain('- button "Save note"');
-      for (const shown of [
+      const shownOnPage = [
         SIGN_IN.backup_code,
         SIGN_IN.reference,
+        SIGN_IN.shown_code,
+        SIGN_IN.shown_cell,
+        SIGN_IN.shown_seed,
         'over-the-cap',
         'kept-note',
         'Backup code',
-      ])
-        expect([shown, structure.includes(shown)]).toEqual([shown, false]);
-      const second = await command({ kind: 'observe' });
-      expect(second.result?.submit_intents).toMatchObject([{ fields: { note: 'kept-note' } }]);
-      expect(second.observation?.screenshot.length).toBeGreaterThan(1000);
-      expect(second.observation?.tree).toContain(SIGN_IN.backup_code);
-      expect(second.observation?.tree).toContain(SIGN_IN.reference);
+        'Your account',
+      ];
+      // However many times the agent looks, the page it was handed back holds what the person
+      // typed and was shown: no picture, no form intents, and roles with only control names.
+      for (const look of ['first', 'second', 'third']) {
+        const seen = await command({ kind: 'observe' });
+        expect([look, seen.observation?.url]).toEqual([look, `${fixture.app}/account`]);
+        expect([look, seen.observation?.screenshot]).toEqual([look, '']);
+        expect([look, seen.result]).toEqual([look, { submit_intents: [] }]);
+        const structure = seen.observation?.tree ?? '';
+        expect(structure).toContain('- heading [level=1]');
+        expect(structure).toContain('- button "Save note"');
+        const everything = JSON.stringify(seen.observation);
+        for (const shown of shownOnPage)
+          expect([look, shown, everything.includes(shown)]).toEqual([look, shown, false]);
+      }
+      // Reading page text would put it in a durable receipt, so it waits for a new document.
+      expect(await reason(command({ kind: 'read', selector: 'body' }))).toBe('read_after_handback');
+      expect(await reason(command({ kind: 'read', role: 'heading', name: 'Your account' }))).toBe(
+        'read_after_handback',
+      );
+      // An automation action that loads a new document ends it: this is an ordinary look, and
+      // the new page can be read.
+      const left = await command({ kind: 'open', url: `${fixture.app}/whoami` });
+      expect(left.observation?.url).toBe(`${fixture.app}/whoami`);
+      expect(left.observation?.screenshot.length).toBeGreaterThan(1000);
+      expect(left.observation?.tree).toContain('This browser is signed in.');
+      expect((await command({ kind: 'read', selector: 'p:not(#stored)' })).result?.text).toBe(
+        'This browser is signed in.',
+      );
 
       // Handed back with a password field showing, the observation still refuses, and the next
       // one that completes is still the one without a picture.
@@ -415,10 +435,10 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       const afterSecondHandback = await command({ kind: 'observe' });
       expect(afterSecondHandback.observation?.screenshot).toBe('');
       expect(afterSecondHandback.observation?.tree).not.toContain(SIGN_IN.backup_code);
-      expect((await command({ kind: 'observe' })).observation?.screenshot).not.toBe('');
+      expect((await command({ kind: 'observe' })).observation?.screenshot).toBe('');
 
-      // The page clears its own field with no further handback: a refused observation did not
-      // use up the withheld one.
+      // The page clears its own field with no further handback: a refused observation leaves
+      // the page handed back, and so does every look after it.
       const opened = Date.now();
       expect(await reason(command({ kind: 'open', url: `${fixture.app}/verify` }))).toBe(
         'sensitive_input_require_takeover',
@@ -432,7 +452,9 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
       expect(cleared.observation?.url).toBe(`${fixture.app}/verify`);
       expect(cleared.observation?.screenshot).toBe('');
       expect(cleared.observation?.tree).not.toContain(SIGN_IN.backup_code);
-      expect((await command({ kind: 'observe' })).observation?.tree).toContain(SIGN_IN.backup_code);
+      expect((await command({ kind: 'observe' })).observation?.tree).not.toContain(
+        SIGN_IN.backup_code,
+      );
     }, 45_000);
 
     test('the live module writes nothing to stdout or stderr', () => {

@@ -91,11 +91,22 @@ if (!chromiumAvailable) test.todo(chromiumMissingReason, () => {});
     expect(refreshed.observation?.tree).toContain('- textbox "Name"');
     for (const value of ['must-not-enter', 'Before takeover'])
       expect([value, refreshed.observation?.tree.includes(value)]).toEqual([value, false]);
-    // The next look is an ordinary one: the field still holds what was typed before the takeover.
+    // So is every later look, and nothing can be read off the page, until automation leaves it.
     const second = await call({ kind: 'observe' });
-    expect(second.observation?.tree).toContain('Before takeover');
-    expect(second.observation?.tree).not.toContain('must-not-enter');
+    expect(second.observation?.screenshot).toBe('');
+    expect(second.result).toEqual({ submit_intents: [] });
+    expect(second.observation?.tree).not.toContain('Before takeover');
+    await expect(call({ kind: 'read', selector: 'body' })).rejects.toThrow('read_after_handback');
+    // A fill stays on the same document, so the page is still the handed-back one.
     await call({ kind: 'fill', label: 'Email', value: 'after@example.com' });
+    const filled = await call({ kind: 'observe' });
+    expect(filled.observation?.tree).not.toContain('after@example.com');
+    expect(filled.observation?.screenshot).toBe('');
+    // Opening a page loads a new document, and the look that comes with it is ordinary.
+    const reopened = await call({ kind: 'open', url: `${fixture.url}/form/takeover?run=reopened` });
+    expect(reopened.observation?.screenshot).not.toBe('');
+    await call({ kind: 'fill', label: 'Name', value: 'After the page changed' });
+    expect((await call({ kind: 'observe' })).observation?.tree).toContain('After the page changed');
   }, 15_000);
   test('a guarded document redirect uses a new page with the actual final URL', async () => {
     const result = await call({ kind: 'open', url: `${fixture.url}/redirect?run=redirect` });

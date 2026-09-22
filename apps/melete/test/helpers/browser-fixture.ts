@@ -92,6 +92,10 @@ export const SIGN_IN = {
   code: '482913',
   backup_code: 'ABCD-EFGH-IJKL',
   reference: '48291377',
+  /** What the account page shows as page text: a heading, a table cell and a button's name. */
+  shown_code: '48213',
+  shown_cell: '7f3k-9x2m',
+  shown_seed: 'jbswy3dpehpk3pxp',
   /** The verification page removes its field by itself after this long. */
   verify_field_ms: 4000,
 } as const;
@@ -238,7 +242,7 @@ export function startSignInFixture() {
         if (!signedIn) return new Response(null, { status: 303, headers: { location: '/signin' } });
         return page(
           'Your account',
-          `<h1 style="${box(20, 600)}">Your account</h1><form method="post" action="/note"><label for="note" style="${box(80)}">Note</label><input id="note" name="note" style="${box(120)}"><button type="submit" style="${at(440, 120, 120)}">Save note</button></form><input id="upload" type="file" aria-label="Attach a file" style="${box(200)}"><button id="help" type="button" style="${box(280, 160)}">Open help</button><button id="activity" type="button" style="${box(340, 160)}">Show activity</button><button id="socket" type="button" style="${at(600, 120, 160)}">Open socket</button><button id="two" type="button" style="${at(600, 200, 160)}">Open two help windows</button><a href="${otherOrigin}/elsewhere" style="${at(600, 280, 160)}">Elsewhere</a><a href="/away" style="${at(600, 340, 160)}">Away</a><a href="/loop?n=0" style="${at(600, 400, 160)}">Loop</a><p style="${box(420, 400)}">Backup code: ${SIGN_IN.backup_code}</p><p style="${box(470, 400)}">Order reference ${SIGN_IN.reference}</p><div id="bar" style="position:absolute;left:100px;top:540px;width:40px;height:20px;background:#357"></div><img alt="" src="${otherOrigin}/pixel.gif" style="${box(600, 10)}"><img alt="" src="${idp.url.origin}/avatar.png" style="${at(120, 600, 10)}"><iframe title="Challenge" src="${otherOrigin}/frame" style="position:absolute;left:600px;top:600px;width:200px;height:80px"></iframe><script src="${otherOrigin}/widget.js"></script><script>
+          `<h1 style="${box(20, 600)}">Your account</h1><form method="post" action="/note"><label for="note" style="${box(80)}">Note</label><input id="note" name="note" style="${box(120)}"><button type="submit" style="${at(440, 120, 120)}">Save note</button></form><input id="upload" type="file" aria-label="Attach a file" style="${box(200)}"><button id="help" type="button" style="${box(280, 160)}">Open help</button><button id="activity" type="button" style="${box(340, 160)}">Show activity</button><button id="socket" type="button" style="${at(600, 120, 160)}">Open socket</button><button id="two" type="button" style="${at(600, 200, 160)}">Open two help windows</button><a href="${otherOrigin}/elsewhere" style="${at(600, 280, 160)}">Elsewhere</a><a href="/away" style="${at(600, 340, 160)}">Away</a><a href="/loop?n=0" style="${at(600, 400, 160)}">Loop</a><p style="${box(420, 400)}">Backup code: ${SIGN_IN.backup_code}</p><p style="${box(470, 400)}">Order reference ${SIGN_IN.reference}</p><h2 style="${at(20, 700, 260)}">Your code is ${SIGN_IN.shown_code}</h2><table style="${at(300, 700, 160)}"><tr><td>${SIGN_IN.shown_cell}</td></tr></table><button type="button" style="${at(480, 700, 300)}">Copy ${SIGN_IN.shown_seed}</button><div id="bar" style="position:absolute;left:100px;top:540px;width:40px;height:20px;background:#357"></div><img alt="" src="${otherOrigin}/pixel.gif" style="${box(600, 10)}"><img alt="" src="${idp.url.origin}/avatar.png" style="${at(120, 600, 10)}"><iframe title="Challenge" src="${otherOrigin}/frame" style="position:absolute;left:600px;top:600px;width:200px;height:80px"></iframe><script src="${otherOrigin}/widget.js"></script><script>
 const upload = document.getElementById('upload');
 upload.addEventListener('cancel', () => fetch('/chooser?event=cancel'));
 upload.addEventListener('change', () => fetch('/chooser?event=change'));

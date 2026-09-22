@@ -98,30 +98,27 @@ describe('what a takeover leaves behind in the service', () => {
     },
   );
 
-  databaseTest(
-    'the first observation after handback stores its tree and no screenshot',
-    async () => {
-      const { sql } = handle();
-      const { claims } = await seedJob(sql);
-      const spaces = await mkdtemp(join(tmpdir(), 'melete-live-artifacts-'));
-      try {
-        const handles = await browserArtifactSink(sql, spaces)(claims, {
-          id: 'obs_after_handback',
-          url: 'https://example.test/account',
-          tree: '- paragraph: Backup code: [redacted]',
-          screenshot: '',
-          schema: [],
-        });
-        expect(handles.tree).toMatchObject({ mime: 'text/plain', area: 'artifacts' });
-        expect(handles.screenshot).toBeUndefined();
-        const rows = await sql`select mime from artifact where job_id = ${claims.job_id}`;
-        expect(rows.map((row) => row.mime)).toEqual(['text/plain']);
-        const files = await readdir(join(spaces, claims.space_id, 'artifacts', 'browser'));
-        expect(files).toHaveLength(1);
-        expect(files[0]).toEndWith('.txt');
-      } finally {
-        await rm(spaces, { recursive: true, force: true });
-      }
-    },
-  );
+  databaseTest('an observation after handback stores its tree and no screenshot', async () => {
+    const { sql } = handle();
+    const { claims } = await seedJob(sql);
+    const spaces = await mkdtemp(join(tmpdir(), 'melete-live-artifacts-'));
+    try {
+      const handles = await browserArtifactSink(sql, spaces)(claims, {
+        id: 'obs_after_handback',
+        url: 'https://example.test/account',
+        tree: '- paragraph: Backup code: [redacted]',
+        screenshot: '',
+        schema: [],
+      });
+      expect(handles.tree).toMatchObject({ mime: 'text/plain', area: 'artifacts' });
+      expect(handles.screenshot).toBeUndefined();
+      const rows = await sql`select mime from artifact where job_id = ${claims.job_id}`;
+      expect(rows.map((row) => row.mime)).toEqual(['text/plain']);
+      const files = await readdir(join(spaces, claims.space_id, 'artifacts', 'browser'));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toEndWith('.txt');
+    } finally {
+      await rm(spaces, { recursive: true, force: true });
+    }
+  });
 });

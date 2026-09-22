@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { REDACTED, redactSecretText, withoutValues } from './redact.ts';
+import { handbackLabel, REDACTED, redactSecretText, withoutValues } from './redact.ts';
 
 /** How a page shows a person a secret, in the shapes a real sign-in uses. */
 const SHOWN = [
@@ -49,9 +49,7 @@ test('the first look after a handback keeps labels and roles and no contents', (
 });
 
 test('a name that carries a code loses it, and an ordinary page keeps its shape', () => {
-  expect(withoutValues('- heading "Your account" [level=1]')).toBe(
-    '- heading "Your account" [level=1]',
-  );
+  expect(withoutValues('- heading "Your account" [level=1]')).toBe('- heading [level=1]');
   expect(withoutValues('- textbox "Code ABCD-EFGH-IJKL"')).toBe(`- textbox "Code ${REDACTED}"`);
   expect(withoutValues('- link "Open help"')).toBe('- link "Open help"');
   expect(withoutValues('- button "Save note"')).toBe('- button "Save note"');
@@ -118,4 +116,65 @@ test('a later look blanks seeds, tokens and grouped codes in any case', () => {
     '- paragraph: a well-thought-out plan',
   ])
     expect([kept, redactSecretText(kept)]).toEqual([kept, kept]);
+});
+
+test('on a handed-back page only controls keep a name, and it loses any code in it', () => {
+  const tree = [
+    '- heading "Your code is 48213" [level=1]',
+    '- table:',
+    '  - row "7f3k-9x2m zqcell":',
+    '    - cell "7f3k-9x2m"',
+    '    - cell "zqcell"',
+    '- img "zqalt"',
+    '- listbox:',
+    '  - option "zqoption" [selected]',
+    '- list:',
+    '  - listitem "abcd-efgh-ijkl"',
+    '- button "Copy jbswy3dpehpk3pxp"',
+    '- button "Copy 48213"',
+    '- link "zqlinkname-JBSWY3DPEHPK3PXP":',
+    '  - /url: /verify/zqhref',
+    '- \'textbox "Note: private"\': typed during takeover',
+    '- button "Continue"',
+  ].join('\n');
+  const kept = withoutValues(tree);
+  for (const secret of [
+    '48213',
+    '7f3k-9x2m',
+    'zqcell',
+    'zqalt',
+    'zqoption',
+    'abcd-efgh-ijkl',
+    'jbswy3dpehpk3pxp',
+    'JBSWY3DPEHPK3PXP',
+    'zqhref',
+    'typed during takeover',
+  ])
+    expect([secret, kept.includes(secret)]).toEqual([secret, false]);
+  expect(kept.split('\n')).toEqual([
+    '- heading [level=1]',
+    '- table:',
+    '  - row:',
+    '    - cell',
+    '    - cell',
+    '- img',
+    '- listbox:',
+    '  - option [selected]',
+    '- list:',
+    '  - listitem',
+    `- button "Copy ${REDACTED}"`,
+    `- button "Copy ${REDACTED}"`,
+    `- link "zqlinkname-${REDACTED}":`,
+    '  - /url',
+    '- \'textbox "Note: private"\'',
+    '- button "Continue"',
+  ]);
+});
+
+test('a control label on a handed-back page loses seeds, codes and digit runs', () => {
+  expect(handbackLabel('Copy jbswy3dpehpk3pxp')).toBe(`Copy ${REDACTED}`);
+  expect(handbackLabel('Use code 48213')).toBe(`Use code ${REDACTED}`);
+  expect(handbackLabel('Recovery ABCD-EFGH-IJKL')).toBe(`Recovery ${REDACTED}`);
+  for (const kept of ['Continue', 'Sign out', 'Page 2 of 3', 'internationalization settings'])
+    expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
 });

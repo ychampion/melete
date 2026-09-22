@@ -142,8 +142,8 @@ const measurements: Measurement[] = [];
               control_epoch: returned.control_epoch,
               operation: { kind: 'observe' },
             });
-            // The first look after a handback keeps the page's shape and none of its contents:
-            // not what a refused fill tried to enter, and not what was there before either.
+            // A look after a handback keeps the page's shape and none of its contents: not what
+            // a refused fill tried to enter, and not what was there before either.
             expect(observation.observation?.tree).toContain('- textbox "Name"');
             for (const value of ['MUST_NOT_BE_ENTERED', values.name])
               expect([value, observation.observation?.tree.includes(value)]).toEqual([
@@ -156,8 +156,11 @@ const measurements: Measurement[] = [];
               control_epoch: returned.control_epoch,
               operation: { kind: 'observe' },
             });
-            expect(second.observation?.tree).toContain(values.name);
+            // The page is the one handed back until automation loads another, so this look is
+            // filtered too.
+            expect(second.observation?.tree).not.toContain(values.name);
             expect(second.observation?.tree).not.toContain('MUST_NOT_BE_ENTERED');
+            expect(second.observation?.screenshot).toBe('');
             return;
           }
           if (step.action === 'fill') {

@@ -7,6 +7,10 @@ const HYPHENATED_CODE = /\b[A-Za-z0-9]{3,10}(?:-[A-Za-z0-9]{3,10}){2,7}\b/g;
 const STANDALONE_DIGITS = /(?<![\w.,-])\d{6,10}(?![\w-]|[.,]\d)/g;
 /** An authenticator seed as sites print it: base32, upper case, sixteen characters or more. */
 const BASE32_SEED = /\b[A-Z2-7]{16,}={0,6}\b/g;
+/** The same seed in lower or mixed case, told apart from a long word by carrying a digit. */
+const MIXED_SEED = /\b(?=[A-Za-z2-7]*[2-7])(?=[A-Za-z2-7]*[A-Za-z])[A-Za-z2-7]{16,}={0,6}\b/g;
+/** On a handed-back page a run of four digits or more in a control's name may be a code. */
+const DIGIT_RUN = /\d{4,}/g;
 /** A JSON web token, with or without the bearer word in front of it. */
 const TOKEN = /\b(?:Bearer\s+)?eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?/g;
 
@@ -32,6 +36,7 @@ function patterns(line: string): string {
   return line
     .replace(TOKEN, REDACTED)
     .replace(BASE32_SEED, REDACTED)
+    .replace(MIXED_SEED, REDACTED)
     .replace(GROUPED_CODE, REDACTED)
     .replace(HYPHENATED_CODE, (run) => (evenGroups(run) ? REDACTED : run))
     .replace(STANDALONE_DIGITS, REDACTED);
@@ -53,20 +58,48 @@ export function redactSecretText(text: string): string {
     .join('\n');
 }
 
+/** The roles a locator acts on. Their names are what an agent can click or fill by. */
+const CONTROL_ROLES = new Set([
+  'textbox',
+  'combobox',
+  'checkbox',
+  'radio',
+  'button',
+  'link',
+  'spinbutton',
+]);
+
+/** A snapshot entry: its indent and dash, an optional quote, the role, the name, and the rest. */
+const ENTRY = /^(\s*- )('?)([a-z]+)(?: "((?:[^"\\]|\\.)*)")?(.*)$/;
+
 /**
- * The first look after a handback keeps the shape of the page and none of its contents: every
- * label and role stays, every value goes. A secret a person was shown is as likely to be page
+ * A control's name on a handed-back page. Buttons and links are named from what they show, so a
+ * code can sit in one; the secret shapes go, and so does any run of four or more digits.
+ */
+export function handbackLabel(label: string): string {
+  return patterns(label).replace(DIGIT_RUN, REDACTED);
+}
+
+/**
+ * A look at a page a person has handed back keeps the shape of the page and none of its
+ * contents. Every value goes. Headings, cells, list items, options, images and text are named
+ * from what the page shows, so their names go too; only the controls a locator acts on keep a
+ * name, passed through the secret shapes. A secret a person was shown is as likely to be page
  * text — a recovery list, an authenticator seed, "your code is 48213" — as a form control, and
- * no pattern catches every shape of one. What remains is what a locator needs, which is the
- * argument that withholds the picture as well. A name is still passed through the pattern
- * rules, so a code printed inside a label does not survive there either.
+ * no pattern catches every shape of one, which is also why the picture is withheld.
  */
 export function withoutValues(text: string): string {
   return text
     .split('\n')
     .map((line) => {
       const value = valueStart(line);
-      return patterns(value < 0 ? line : line.slice(0, value - 2));
+      const entry = value < 0 ? line : line.slice(0, value - 2);
+      const match = ENTRY.exec(entry);
+      if (!match) return patterns(entry);
+      const [, lead, quote, role = '', name, rest] = match;
+      const kept = name !== undefined && CONTROL_ROLES.has(role) ? ` "${handbackLabel(name)}"` : '';
+      // What follows the name is attributes such as [level=1], and a quoted entry's closing quote.
+      return patterns(`${lead}${quote}${role}${kept}${rest}`);
     })
     .join('\n');
 }
