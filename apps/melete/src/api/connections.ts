@@ -8,6 +8,7 @@ import {
   connectionInstallation,
   connectionKindListResponse,
   connectionListResponse,
+  connectionRequestProblem,
   connectionResponse,
   connectionView,
   createConnectionRequest,
@@ -218,7 +219,11 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   });
 
   app.post('/connections', async (c) => {
-    const request = createConnectionRequest.parse(await c.req.json());
+    const parsed = createConnectionRequest.safeParse(await c.req.json());
+    // The person is told which field to fix, in the words the form uses for it.
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    const request = parsed.data;
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
     const installation = resolved.value;

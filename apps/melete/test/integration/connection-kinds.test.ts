@@ -341,6 +341,14 @@ withDb('installing each kind of connection through the API', () => {
       expect(refused.status).toBe(400);
       expectNoSecret(refused.text);
     }
+    // A refused field is named the way the form names it.
+    const named = await h.install({
+      ...body,
+      mail: { ...body.mail, imap: { ...body.mail.imap, port: 0 } },
+    });
+    expect(JSON.parse(named.text)).toEqual({
+      error: { code: 'invalid_request', message: 'IMAP port is too small.' },
+    });
     expect(await h.sql`select id from connection where provider = 'imap'`).toHaveLength(0);
 
     // The mailbox refuses this password: the row is kept in error and offers nothing.

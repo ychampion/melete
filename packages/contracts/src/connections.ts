@@ -509,3 +509,96 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
     scopes: [],
   },
 ];
+
+// --------------------------------------------------------------------------
+// saying why a request was refused
+// --------------------------------------------------------------------------
+
+type RequestIssue = {
+  code: string;
+  path: readonly PropertyKey[];
+  message: string;
+  origin?: string;
+  format?: string;
+};
+
+const FIELD_LABELS: ReadonlyMap<string, string> = new Map(
+  CONNECTION_KIND_DESCRIPTORS.flatMap((kind) =>
+    kind.fields.map((field) => [field.path, field.label] as const),
+  ),
+);
+const ITEM_LABELS: ReadonlyMap<string, { label: string; items: Map<string, string> }> = new Map(
+  CONNECTION_KIND_DESCRIPTORS.flatMap((kind) =>
+    kind.fields
+      .filter((field) => field.input === 'list')
+      .map(
+        (field) =>
+          [
+            field.path,
+            {
+              label: field.label,
+              items: new Map((field.item_fields ?? []).map((item) => [item.path, item.label])),
+            },
+          ] as const,
+      ),
+  ),
+);
+
+/** The form's own name for a field, so the person can find it; a row in a list by its position. */
+function fieldLabel(path: readonly PropertyKey[]): string {
+  const parts = path.map(String);
+  for (let at = parts.length; at > 0; at--) {
+    const head = parts.slice(0, at).join('.');
+    const list = ITEM_LABELS.get(head);
+    const row = Number(parts[at]);
+    if (list && Number.isInteger(row)) {
+      const item = list.items.get(parts.slice(at + 1).join('.'));
+      return item ? `${list.label}, row ${row + 1}: ${item}` : `${list.label}, row ${row + 1}`;
+    }
+    const label = FIELD_LABELS.get(head);
+    if (label && at === parts.length) return label;
+  }
+  return parts.length ? `The setting ${parts.join('.')}` : 'The request';
+}
+
+function problem(issue: RequestIssue): string {
+  switch (issue.code) {
+    case 'invalid_type':
+      return /received undefined/.test(issue.message) ? 'is needed' : 'has the wrong kind of value';
+    case 'too_big':
+      return issue.origin === 'string'
+        ? 'is too long'
+        : issue.origin === 'array'
+          ? 'has too many entries'
+          : 'is too large';
+    case 'too_small':
+      return issue.origin === 'string'
+        ? 'is needed'
+        : issue.origin === 'array'
+          ? 'needs at least one entry'
+          : 'is too small';
+    case 'invalid_format':
+      return issue.format === 'email'
+        ? 'is not an email address'
+        : issue.format === 'url'
+          ? 'is not a web address'
+          : 'has characters it cannot contain';
+    case 'unrecognized_keys':
+      return 'has a setting this kind does not take';
+    default:
+      return 'is not valid';
+  }
+}
+
+/**
+ * One sentence a person can act on, naming the field as the form labels it.
+ * Only the service's own words are used, never a value from the request, so a
+ * password typed into the wrong box cannot come back in an error.
+ */
+export function connectionRequestProblem(issues: readonly RequestIssue[]): string {
+  const [first] = issues;
+  if (!first) return 'The request could not be read.';
+  const label = fieldLabel(first.path);
+  if (first.code === 'custom') return `${label}: ${first.message.replace(/\.?$/, '.')}`;
+  return `${label} ${problem(first)}.`;
+}

@@ -8,6 +8,7 @@ import {
   connectionCheck,
   connectionInstallation,
   connectionKindListResponse,
+  connectionRequestProblem,
   connectionResponse,
   createConnectionRequest,
 } from './connections.ts';
@@ -248,5 +249,58 @@ describe('connection views and checks', () => {
     expect(connectionCheck.safeParse({ ...check, code: 'ECONNREFUSED 10.0.0.1' }).success).toBe(
       false,
     );
+  });
+});
+
+describe('what a person is told when a request is refused', () => {
+  const told = (body: unknown) => {
+    const parsed = createConnectionRequest.safeParse(body);
+    if (parsed.success) throw new Error('expected a refusal');
+    return connectionRequestProblem(parsed.error.issues);
+  };
+
+  test('names the field by its form label and says what is wrong in plain words', () => {
+    expect(
+      told({ ...mail, mail: { ...mail.mail, imap: { ...mail.mail.imap, port: 70000 } } }),
+    ).toBe('IMAP port is too large.');
+    expect(told({ ...mail, mail: { ...mail.mail, from: 'owner' } })).toBe(
+      'Send as is not an email address.',
+    );
+    expect(told({ ...mail, mail: { ...mail.mail, imap: { port: 993, secure: true } } })).toBe(
+      'IMAP server is needed.',
+    );
+    expect(
+      told({ ...caldav, caldav: { ...caldav.caldav, calendar_url: 'http://dav.example.test/c/' } }),
+    ).toBe('Calendar address: The address must use TLS and carry no credentials or fragment.');
+    expect(told({ ...ics, ics: {} })).toBe('Feed address is needed.');
+  });
+
+  test('a row in a list is named by its position', () => {
+    const mcp = {
+      provider: 'mcp',
+      label: 'Notes',
+      mcp: {
+        id: 'notes',
+        url: 'https://mcp.example.test/mcp',
+        audience: 'owner',
+        allowed_scopes: ['mcp_notes.search'],
+        tools: [{ name: 'search', alias: 'Search Tool', required_scopes: ['mcp_notes.search'] }],
+      },
+    };
+    expect(told(mcp)).toBe('Tools, row 1: Alias has characters it cannot contain.');
+  });
+
+  test('never repeats a value the person typed, so a password cannot come back', () => {
+    const message = told({
+      ...mail,
+      credentials: { password: 42 } as unknown as Record<string, string>,
+    });
+    expect(message).toBe('Password has the wrong kind of value.');
+    expect(
+      told({
+        ...mail,
+        mail: { ...mail.mail, imap: { ...mail.mail.imap, port: 'value-never-echoed' } },
+      }),
+    ).not.toContain('value-never-echoed');
   });
 });
