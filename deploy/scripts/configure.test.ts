@@ -79,7 +79,7 @@ describe('the Docker socket group written as DOCKER_GID', () => {
       };
       expect(await dockerSocketGroup(facts, remote)).toBe(998);
       expect(remote.calls).toHaveLength(1);
-      expect(remote.calls[0]).toContain('/var/run/docker.sock:/var/run/docker.sock');
+      expect(remote.calls[0]).toContain('source=/var/run/docker.sock,target=/var/run/docker.sock');
     }
   });
 
@@ -89,7 +89,7 @@ describe('the Docker socket group written as DOCKER_GID', () => {
       expect(await dockerSocketGroup(host(platform, 'Docker Desktop'), desktop)).toBe(0);
       expect(desktop.calls).toHaveLength(1);
       expect(desktop.calls[0]).toContain('postgres:17-alpine@sha256:pinned');
-      expect(desktop.calls[0]).toContain('/var/run/docker.sock:/var/run/docker.sock');
+      expect(desktop.calls[0]).toContain('source=/var/run/docker.sock,target=/var/run/docker.sock');
     }
   });
 
@@ -98,7 +98,7 @@ describe('the Docker socket group written as DOCKER_GID', () => {
       dockerSocketGroup(host('win32', 'Docker Desktop'), access('0 755 socket')),
     ).rejects.toThrow('mode 755');
     await expect(dockerSocketGroup(host('win32', 'Docker Desktop'), access('', 1))).rejects.toThrow(
-      'could not inspect /var/run/docker.sock (Cannot connect)',
+      'could not inspect /var/run/docker.sock on Docker Desktop (Cannot connect)',
     );
   });
 });

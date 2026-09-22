@@ -369,31 +369,56 @@ describe('gathering', () => {
 });
 
 describe('the socket as a container sees it', () => {
-  test('the probe mounts the socket into the pinned image with no network', () => {
+  const remote: DockerHostFacts = {
+    platform: 'linux',
+    endpoint: 'ssh://deploy@droplet.example.net',
+    pipePresent: null,
+    info: parseDockerInfo(info({ OperatingSystem: 'Ubuntu 24.04.3 LTS' })),
+  };
+
+  test('the probe bind-mounts the socket into the pinned image with no network', () => {
     const command = socketProbeCommand('postgres:17-alpine@sha256:abc');
+    // --mount, unlike --volume, fails when the source is missing rather than creating a directory.
     expect(command.join(' ')).toBe(
-      'docker run --rm --network none --entrypoint stat --volume /var/run/docker.sock:/var/run/docker.sock postgres:17-alpine@sha256:abc -c %g %a %F /var/run/docker.sock',
+      'docker run --rm --network none --entrypoint stat --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock postgres:17-alpine@sha256:abc -c %g %a %F /var/run/docker.sock',
     );
+    expect(command).not.toContain('--volume');
   });
 
   test("Docker Desktop's socket gives its group, root", () => {
-    expect(judgeSocketProbe(ok('0 760 socket\n'))).toEqual({ gid: 0 });
-    expect(judgeSocketProbe(ok('999 660 socket'))).toEqual({ gid: 999 });
-    expect(judgeSocketProbe(ok('0 666 socket'))).toEqual({ gid: 0 });
+    expect(judgeSocketProbe(ok('0 760 socket\n'), desktop())).toEqual({ gid: 0 });
+    expect(judgeSocketProbe(ok('999 660 socket'), remote)).toEqual({ gid: 999 });
+    expect(judgeSocketProbe(ok('0 666 socket'), desktop())).toEqual({ gid: 0 });
   });
 
-  test('a socket only its owner may write to is refused, since the service is not root', () => {
-    const probe = judgeSocketProbe(ok('0 755 socket'));
-    expect('problem' in probe && probe.problem).toContain('mode 755');
-  });
-
-  test('a probe that failed, or found no socket, is refused with the reason', () => {
-    const failedRun = judgeSocketProbe(
-      failed('docker: Error response from daemon: pull access denied'),
+  test('a socket only its owner may write to is refused, naming the engine and its fix', () => {
+    const onDesktop = judgeSocketProbe(ok('0 755 socket'), desktop());
+    expect('problem' in onDesktop && onDesktop.problem).toContain('on Docker Desktop has mode 755');
+    expect('problem' in onDesktop && onDesktop.problem).toContain('Update Docker Desktop');
+    const onRemote = judgeSocketProbe(ok('0 755 socket'), remote);
+    expect('problem' in onRemote && onRemote.problem).toContain(
+      'on the Docker engine on droplet.example.net has mode 755',
     );
-    expect('problem' in failedRun && failedRun.problem).toContain('pull access denied');
-    const directory = judgeSocketProbe(ok('0 755 directory'));
-    expect('problem' in directory && directory.problem).toContain('is a directory, not a socket');
+    expect('problem' in onRemote && onRemote.problem).not.toContain('Docker Desktop');
+  });
+
+  test('a probe that failed, or found no socket, is refused with the reason and the engine', () => {
+    const missing = judgeSocketProbe(
+      failed(
+        'docker: Error response from daemon: invalid mount config for type "bind": bind source path does not exist: /var/run/docker.sock',
+      ),
+      remote,
+    );
+    expect('problem' in missing && missing.problem).toContain('bind source path does not exist');
+    expect('problem' in missing && missing.problem).toContain(
+      'on the Docker engine on droplet.example.net',
+    );
+    const directory = judgeSocketProbe(ok('0 755 directory'), desktop());
+    expect('problem' in directory && directory.problem).toContain(
+      'on Docker Desktop is a directory, not a socket',
+    );
+    const local = judgeSocketProbe(ok('0 755 directory'), { ...remote, endpoint: null });
+    expect('problem' in local && local.problem).toContain('on the Docker engine is a directory');
   });
 });
 

@@ -72,7 +72,10 @@ export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAcc
       throw new ConfigureRefusal('/var/run/docker.sock is not a Docker socket');
     return socket.gid;
   }
-  const probe = judgeSocketProbe(access.runProbe(socketProbeCommand(await access.probeImage())));
+  const probe = judgeSocketProbe(
+    access.runProbe(socketProbeCommand(await access.probeImage())),
+    host,
+  );
   if ('problem' in probe) throw new ConfigureRefusal(probe.problem);
   return probe.gid;
 }

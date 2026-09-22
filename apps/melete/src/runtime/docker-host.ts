@@ -280,34 +280,50 @@ export const socketProbeCommand = (image: string) =>
     'none',
     '--entrypoint',
     'stat',
-    '--volume',
-    '/var/run/docker.sock:/var/run/docker.sock',
+    // A bind mount refuses a missing source instead of creating a directory there.
+    '--mount',
+    'type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock',
     image,
     '-c',
     '%g %a %F',
     '/var/run/docker.sock',
   ] as const;
 
+/** The engine the probe asked, as an operator would name it. */
+function engineName(facts: DockerHostFacts): string {
+  const remote = remoteEngineHost(facts.endpoint);
+  if (remote) return `the Docker engine on ${remote}`;
+  return isDockerDesktop(facts.info) ? 'Docker Desktop' : 'the Docker engine';
+}
+
 /**
  * The group the service must join to use the socket, or why it cannot. The
  * service runs as an unprivileged user, so the socket must be writable by a
  * group it can be given.
  */
-export function judgeSocketProbe(output: CommandOutput): { gid: number } | { problem: string } {
+export function judgeSocketProbe(
+  output: CommandOutput,
+  facts: DockerHostFacts,
+): { gid: number } | { problem: string } {
+  const engine = engineName(facts);
   const match = /^(\d+) ([0-7]{3,4}) (.+)$/.exec(output.stdout.trim());
   if (output.code !== 0 || !match)
     return {
-      problem: `A container could not inspect /var/run/docker.sock (${output.stderr.trim().split('\n').at(-1) || `exit ${output.code}`}). Check that Docker can run a container and mount the socket.`,
+      problem: `A container could not inspect /var/run/docker.sock on ${engine} (${output.stderr.trim().split('\n').at(-1) || `exit ${output.code}`}). Check that it can run a container and that the socket exists at that path on its machine.`,
     };
   const [, gid, mode, type] = match;
   if (!/socket/.test(type ?? ''))
     return {
-      problem: `/var/run/docker.sock inside a container is a ${type}, not a socket. Check that Docker Desktop exposes its socket to containers.`,
+      problem: `/var/run/docker.sock on ${engine} is a ${type}, not a socket. Check where that machine's Docker socket is.`,
     };
   const permissions = Number.parseInt(mode ?? '0', 8);
   if ((permissions & 0o020) === 0 && (permissions & 0o002) === 0)
     return {
-      problem: `/var/run/docker.sock inside a container has mode ${mode}, so only its owner can use it and the service, which is not root, cannot. Update Docker Desktop; releases that serve the socket to its group show mode 760 or 660.`,
+      problem: `/var/run/docker.sock on ${engine} has mode ${mode}, so only its owner can use it and the service, which is not root, cannot. ${
+        isDockerDesktop(facts.info) && !remoteEngineHost(facts.endpoint)
+          ? 'Update Docker Desktop; releases that serve the socket to its group show mode 760 or 660.'
+          : 'Give the socket a group that may write to it, as Docker Engine does with mode 660.'
+      }`,
     };
   return { gid: Number(gid) };
 }
