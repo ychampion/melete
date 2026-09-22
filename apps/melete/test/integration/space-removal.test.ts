@@ -26,6 +26,7 @@ import { browserManifest } from '../../src/connectors/browser.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from '../../src/connectors/builtin.ts';
 import { calendarManifest } from '../../src/connectors/calendar.ts';
 import { grantedToolCatalog, REACT_TOOL } from '../../src/connectors/catalog.ts';
+import { configuredConnectors } from '../../src/connectors/configured.ts';
 import { emailManifest } from '../../src/connectors/email.ts';
 import { execManifest } from '../../src/connectors/exec.ts';
 import { filesManifest } from '../../src/connectors/files.ts';
@@ -582,6 +583,33 @@ describe.if(handle !== null)('removing a space', () => {
     ).toContain('stopped');
     expect(await refusal(store.saveCompany(owner, scan.id, found))).toContain('stopped');
     expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
+  });
+
+  test('connector_not_served_by_a_process_that_starts_mid_removal — only the other space is served', async () => {
+    const going = await seed('shared');
+    const staying = await seed('shared', 'Another');
+    const web = async (spaceId: string) => {
+      const id = `conn_${crypto.randomUUID()}`;
+      await sql`insert into connection (id, space_id, provider, label, scopes)
+        values (${id}, ${spaceId}, 'web', 'Web', ${JSON.stringify(['web.fetch'])}::jsonb)`;
+      return id;
+    };
+    const goingConnection = await web(going.spaceId);
+    const stayingConnection = await web(staying.spaceId);
+
+    // Fenced, and then nothing: a removal that is waiting on something that
+    // blocked it, or one whose process died, looks exactly like this.
+    const removals = await service();
+    const fenced = await removals.fence(going.principalId, going.spaceId, 'The Ledger');
+
+    const registry = await configuredConnectors({ sql, spacesRoot, workRoot, env: {} });
+    try {
+      expect(registry.get(goingConnection)).toBeUndefined();
+      expect(registry.get(stayingConnection)).toBeDefined();
+    } finally {
+      await registry.close();
+    }
+    expect(outcome(await removals.run(fenced.id))).toBe('complete');
   });
 
   // ------------------------------------------------------------------

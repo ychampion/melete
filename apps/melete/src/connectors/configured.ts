@@ -364,8 +364,13 @@ export async function configuredConnectors(options: ConnectorOptions) {
   // artifacts connector is therefore registered after the loop, so the order
   // connections happen to appear in does not decide whether it can mail.
   const pending: Array<() => Promise<void>> = [];
-  const connections =
-    await options.sql`select * from connection where status = 'active' order by id`;
+  // A space under removal is never served again, including by a process that
+  // starts while its removal is still running or is waiting on something that
+  // blocked it. Its connection rows go in a later phase of that removal.
+  const connections = await options.sql`select c.* from connection c
+    join space s on s.id = c.space_id
+    where c.status = 'active' and s.removed_at is null
+    order by c.id`;
   if (options.enableTestConnector) await initializeTestLedger(options.sql);
   try {
     for (const row of connections) {
