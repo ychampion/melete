@@ -351,9 +351,13 @@ export type PreflightFacts = {
    * runs from a checkout, where there is no stamp and nothing to compare.
    */
   scriptCommit?: string | null;
-  /** The installation this run acts on, and the top of the git checkout that holds it. */
+  /**
+   * The installation this run acts on, and where it sits in its git checkout:
+   * '' at the top, the path below the top when inside one, null outside any.
+   * Git answers this itself, so no two spellings of a path are ever compared.
+   */
   repositoryRoot: string;
-  repositoryTop: string | null;
+  repositoryPrefix: string | null;
   /** `git status --porcelain` of the repository. */
   status: string;
   tagCommit: string | null;
@@ -383,11 +387,11 @@ const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
 export function judgePreflight(facts: PreflightFacts): string[] {
   const problems: string[] = [];
   // Every command runs from the installation's root with its relative Compose paths.
-  if (facts.repositoryTop !== facts.repositoryRoot)
+  if (facts.repositoryPrefix !== '')
     problems.push(
-      facts.repositoryTop === null
+      facts.repositoryPrefix === null
         ? `${facts.repositoryRoot} is not a git checkout. Give --repository the directory the installation was cloned into.`
-        : `${facts.repositoryRoot} is inside the checkout at ${facts.repositoryTop}. Give --repository the top of the installation's checkout.`,
+        : `${facts.repositoryRoot} is ${facts.repositoryPrefix.replace(/\/$/, '')} inside its git checkout. Give --repository the top of the installation's checkout.`,
     );
   const changed = facts.status
     .split('\n')
@@ -513,7 +517,7 @@ export async function gatherPreflight(
     return result.code === 0 ? result.stdout.trim() : null;
   };
   const target = `refs/tags/${options.tag}`;
-  const repositoryTop = await text(['git', 'rev-parse', '--show-toplevel']);
+  const repositoryPrefix = await text(['git', 'rev-parse', '--show-prefix']);
   const status = (await run(['git', 'status', '--porcelain'])).stdout;
   const tagCommit = await text(['git', 'rev-parse', '--verify', '--quiet', `${target}^{commit}`]);
   const headCommit = (await text(['git', 'rev-parse', 'HEAD'])) ?? '';
@@ -576,7 +580,7 @@ export async function gatherPreflight(
       tag: options.tag,
       scriptCommit: await releaseCommit(),
       repositoryRoot: options.repositoryRoot,
-      repositoryTop,
+      repositoryPrefix,
       status,
       tagCommit,
       headCommit,
@@ -805,7 +809,7 @@ if (import.meta.main) {
     process.exit(2);
   }
   try {
-    // Git reports the checkout by its real path, which is what the preflight compares.
+    // Only to name a directory that does not exist; git decides whether it is a checkout's top.
     options.repositoryRoot = realpathSync(options.repositoryRoot).replaceAll('\\', '/');
   } catch {
     process.stderr.write(`${options.repositoryRoot} does not exist. ${USAGE}\n`);

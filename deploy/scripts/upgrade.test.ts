@@ -256,7 +256,7 @@ describe('arguments', () => {
 const ready: PreflightFacts = {
   tag: 'v0.2.0',
   repositoryRoot: '/srv/melete',
-  repositoryTop: '/srv/melete',
+  repositoryPrefix: '',
   status: '',
   tagCommit: 'b'.repeat(40),
   headCommit: 'a'.repeat(40),
@@ -291,16 +291,16 @@ describe('the installation a copy of the script acts on', () => {
   });
 
   test('one that is not the top of a git checkout is refused by name', () => {
-    expect(judgePreflight({ ...ready, repositoryTop: null })[0]).toContain(
+    expect(judgePreflight({ ...ready, repositoryPrefix: null })[0]).toContain(
       '/srv/melete is not a git checkout',
     );
     expect(
       judgePreflight({
         ...ready,
         repositoryRoot: '/srv/melete/deploy',
-        repositoryTop: '/srv/melete',
+        repositoryPrefix: 'deploy/',
       })[0],
-    ).toContain('/srv/melete/deploy is inside the checkout at /srv/melete');
+    ).toContain('/srv/melete/deploy is deploy inside its git checkout');
   });
 
   test('its journal, its settings and every command come from it, not from the copy', async () => {
@@ -419,7 +419,6 @@ function host(overrides: Record<string, Partial<CommandOutput>> = {}) {
   const answers: Record<string, string> = {
     'git status --porcelain': '',
     'git rev-parse --verify --quiet refs/tags/v0.2.0^{commit}': 'b'.repeat(40),
-    'git rev-parse --show-toplevel': '/srv/melete',
     'git rev-parse HEAD': 'a'.repeat(40),
     'git symbolic-ref -q --short HEAD': 'main',
     'git describe --tags --always': 'v0.1.0',

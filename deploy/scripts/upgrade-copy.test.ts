@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -158,4 +159,44 @@ describe('the release a copy was taken from', () => {
       await rm(copies, { recursive: true, force: true });
     }
   }, 90_000);
+});
+
+describe('the installation a copy is pointed at', () => {
+  const facts = async (repositoryRoot: string) =>
+    (
+      await gatherPreflight(
+        {
+          tag: 'v1.0.0',
+          backupDir: join(repositoryRoot, 'backup/upgrade'),
+          repositoryRoot,
+          browser: false,
+          tailscale: false,
+          waitTimeoutSeconds: 300,
+        },
+        { run: spawnRunner(repositoryRoot), environment: async () => ({}) },
+      )
+    ).facts;
+  const checkoutProblems = async (repositoryRoot: string) =>
+    judgePreflight(await facts(repositoryRoot)).filter((problem) =>
+      problem.includes('git checkout'),
+    );
+
+  test('git says whether it is the top of a checkout, in whatever case it is spelt', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'fix-ops-checkout-'));
+    const repository = join(parent, 'melete');
+    try {
+      await mkdir(join(repository, 'deploy'), { recursive: true });
+      spawnSync('git', ['init', '-q'], { cwd: repository });
+      expect(await checkoutProblems(repository)).toEqual([]);
+      expect(await checkoutProblems(join(repository, 'deploy'))).toEqual([
+        `${join(repository, 'deploy')} is deploy inside its git checkout. Give --repository the top of the installation's checkout.`,
+      ]);
+      expect((await checkoutProblems(parent))[0]).toContain(`${parent} is not a git checkout`);
+      // On a filesystem that ignores case, the same directory spelt otherwise is the same top.
+      const respelt = join(parent, 'MELETE');
+      if (existsSync(respelt)) expect(await checkoutProblems(respelt)).toEqual([]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
