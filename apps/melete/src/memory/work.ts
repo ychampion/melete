@@ -16,6 +16,7 @@ import {
   type MemoryTx,
 } from './db.ts';
 import { stageSegment, toSource, visibleSourceText } from './evidence.ts';
+import { lexicalQuery } from './recall.ts';
 
 export const EXTRACTION_LIMITS = {
   messages: 1,
@@ -76,8 +77,23 @@ export async function claimWork(
     const text = (
       await visibleSourceText(tx, toSource(evidence), evidence.content as string)
     ).slice(row.segment_start, row.segment_end);
-    const candidates =
+    // The claims this evidence is most likely about come first, so an update to
+    // something said weeks ago can name the claim it replaces; the newest fill
+    // the rest of the snapshot.
+    const query = lexicalQuery(text);
+    const related = query
+      ? await tx`select i.claim_id as id, max(ts_rank_cd(i.tokens, to_tsquery('simple', ${query}))) as score
+          from memory_index_entries i join memory_claims c on c.id = i.claim_id
+          join memory_index_manifest m on m.space_id = i.space_id and m.generation = i.generation
+          where i.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
+            and i.revision = c.head_revision and i.tokens @@ to_tsquery('simple', ${query})
+          group by i.claim_id order by score desc, i.claim_id desc limit ${EXTRACTION_LIMITS.claims - 8}`
+      : [];
+    const newest =
       await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${evidence.audience} and not hidden order by id desc limit ${EXTRACTION_LIMITS.claims}`;
+    const candidates = [...new Set([...related, ...newest].map((row) => row.id as string))]
+      .slice(0, EXTRACTION_LIMITS.claims)
+      .map((id) => ({ id }));
     const claims: ClaimHead[] = [];
     let remaining = EXTRACTION_LIMITS.context_characters - text.length;
     for (const candidate of candidates) {
