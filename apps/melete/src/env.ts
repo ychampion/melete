@@ -61,9 +61,16 @@ const unsetWhenBlank = <T extends z.ZodType>(schema: T) =>
  * way the client reads it (only the first of several hosts goes through the URL
  * parser), because the client's own parse error quotes the whole address,
  * password included, and does not say which setting it came from.
+ *
+ * The client ignores the scheme name, so any `scheme://` address it can parse
+ * is kept, in any case and after leading whitespace. The one exception is an
+ * address that names another database, which cannot be what was meant.
  */
+const OTHER_DATABASE =
+  /^\s*(?:mysql|mariadb|mssql|sqlserver|sqlite|mongodb(?:\+srv)?|rediss?):\/\//i;
+
 export function isPostgresUrl(value: string): boolean {
-  if (!/^postgres(?:ql)?:\/\//.test(value)) return false;
+  if (!/^\s*[a-z][a-z0-9+.-]*:\/\//i.test(value) || OTHER_DATABASE.test(value)) return false;
   const authority = value.slice(value.indexOf('://') + 3).split(/[?/]/)[0] ?? '';
   try {
     const hosts = decodeURIComponent(authority.slice(authority.indexOf('@') + 1));

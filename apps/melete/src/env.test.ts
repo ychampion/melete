@@ -179,6 +179,7 @@ describe('the database address', () => {
       'postgres://melete:hunter2-secret%zz@postgres:5432/melete',
       'melete:hunter2-secret@postgres:5432/melete',
       'mysql://melete:hunter2-secret@postgres/melete',
+      'MongoDB+srv://melete:hunter2-secret@postgres/melete',
     ]) {
       const result = readEnv({ DATABASE_URL: value });
       expect(result.ok).toBe(false);
@@ -194,6 +195,11 @@ describe('the database address', () => {
       'postgres://melete:p%40ss@postgres:5432/melete',
       'postgresql://melete:secret@db-a:5432,db-b:5433/melete?sslmode=require',
       'postgres://melete:secret@[::1]:5432/melete',
+      'postgres:///melete?host=/var/run/postgresql',
+      // The client ignores the scheme's name and case, and leading whitespace.
+      'POSTGRES://melete:secret@postgres:5432/melete',
+      'pg://melete:secret@postgres:5432/melete',
+      ' postgres://melete:secret@postgres:5432/melete',
     ]) {
       const result = readEnv({ DATABASE_URL: value });
       expect(result.ok && result.env.DATABASE_URL).toBe(value);
