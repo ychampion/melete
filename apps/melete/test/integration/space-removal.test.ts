@@ -38,6 +38,7 @@ import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
+import { replayForNewMemory } from '../../src/memory/start.ts';
 import { refusedForRemoval, spaceAuthority } from '../../src/principals/authority.ts';
 import { PathOutsideRoot, removeConfined, sweepMemory } from '../../src/spaces/plan.ts';
 import {
@@ -779,6 +780,23 @@ describe.if(handle !== null)('removing a space', () => {
     const next = await makeWork();
     for (const _ of [1, 2]) expect(await restart()).toEqual([]);
     expect(await countOf(sql, 'job', sql`id = ${next}`)).toBe(1);
+  });
+
+  test('memory_provisioned_after_emptying_is_not_suppressed_by_the_removal_record', async () => {
+    const seeded = await seed('personal');
+    const journal = await newJournal();
+    const { finished } = await removeCompletely(seeded, { journal });
+    expect(outcome(finished)).toBe('complete');
+    expect((await journal.read()).some((entry) => entry.operation === 'remove_space')).toBe(true);
+
+    // The first use of the emptied space provisions its memory and replays the
+    // journal for it, as a new space's memory always does.
+    await provisionMemorySpace(sql, seeded.ownerId, seeded.spaceId);
+    await replayForNewMemory(sql, journal, seeded.ownerId, seeded.spaceId);
+    expect(await countOf(sql, 'memory_suppressions', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    const [memory] = await sql<{ revoked: boolean; restore_ready: boolean }[]>`select revoked,
+      restore_ready from memory_spaces where space_id = ${seeded.spaceId}`;
+    expect(memory).toEqual({ revoked: false, restore_ready: true });
   });
 
   test('a_restored_space_is_closed_like_a_fenced_one — memory or not, for the person who asked', async () => {

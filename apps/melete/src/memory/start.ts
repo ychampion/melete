@@ -10,7 +10,7 @@ import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } f
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
 import { MarkdownViews } from './markdown.ts';
-import { FileRestrictionJournal } from './restore.ts';
+import { FileRestrictionJournal, type RestrictionJournal } from './restore.ts';
 import { startMemoryService } from './service.ts';
 
 /** New HTTP-created spaces need their own repository before views can commit. */
@@ -49,6 +49,33 @@ async function prepareSpaceRepository(spacesRoot: string, spaceId: string) {
 }
 
 /** The retained restriction log is never silently recreated over existing memory. */
+/**
+ * A space's memory, provisioned for the first time, also crosses the restore
+ * gate: a retained restriction on a restored space cannot disappear just
+ * because its memory row was absent.
+ */
+export async function replayForNewMemory(
+  sql: MemorySql,
+  journal: RestrictionJournal,
+  ownerId: string,
+  spaceId: string,
+) {
+  const restrictions = await journal.read();
+  await sql.begin(async (tx) => {
+    await lockEventOrder(tx);
+    await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
+    for (const restriction of restrictions) {
+      // A removal record is the startup replay's to act on, by the space's
+      // epoch. Applied here, it would suppress memory made after it: an emptied
+      // space provisions its memory afresh the first time it is used again.
+      if (restriction.operation === 'remove_space') continue;
+      if (restriction.owner_id === ownerId && restriction.space_id === spaceId)
+        await applyRestriction(tx, restriction);
+    }
+    await tx`update memory_spaces set restore_ready = true where space_id = ${spaceId} and not revoked`;
+  });
+}
+
 export async function startServiceMemory(
   sql: MemorySql,
   boss: PgBoss,
@@ -130,21 +157,7 @@ export async function startServiceMemory(
     const [known] = await sql`select space_id from memory_spaces where space_id = ${spaceId}`;
     if (!known) {
       await provisionMemorySpace(sql, ownerId, spaceId);
-      // A new space also crosses the restore gate. A retained restriction on a
-      // restored space cannot disappear just because its memory row was absent.
-      const restrictions = await journal.read();
-      await sql.begin(async (tx) => {
-        await lockEventOrder(tx);
-        await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
-        for (const restriction of restrictions) {
-          // A removal record is the startup replay's to act on, by the space's
-          // epoch; applied here it would suppress memory made after it.
-          if (restriction.operation === 'remove_space') continue;
-          if (restriction.owner_id === ownerId && restriction.space_id === spaceId)
-            await applyRestriction(tx, restriction);
-        }
-        await tx`update memory_spaces set restore_ready = true where space_id = ${spaceId} and not revoked`;
-      });
+      await replayForNewMemory(sql, journal, ownerId, spaceId);
     }
     return scope;
   }
