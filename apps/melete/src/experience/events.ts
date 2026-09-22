@@ -2,6 +2,7 @@ import { type ExperienceEvent, experienceEvent, type TrailStep } from '@melete/c
 import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import { action, artifact, attempt, connection, event, job } from '../db/schema.ts';
+import { serviceTransaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import {
@@ -50,8 +51,11 @@ export class ExperienceEvents {
           ownJob(job.principalId, principalId),
         ),
       );
+    // Projection appends events, so it takes the event order first like every
+    // other writer; otherwise a slow commit here lands behind a later sequence
+    // number that a live stream has already read past.
     for (const { id } of ids)
-      await this.db.transaction(async (tx) => {
+      await serviceTransaction(this.db, async (tx) => {
         const [row] = await tx
           .select()
           .from(job)
