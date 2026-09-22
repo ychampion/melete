@@ -6186,7 +6186,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema81"];
+                        "application/json": components["schemas"]["__schema82"];
                     };
                 };
             };
@@ -8114,7 +8114,7 @@ export interface components {
              *     }
              */
             promotion: {
-                approved_at?: components["schemas"]["__schema80"];
+                approved_at?: components["schemas"]["__schema81"];
                 /** @enum {string} */
                 basis?: "evaluation" | "owner_trial";
                 definition_hash?: string;
