@@ -4416,11 +4416,18 @@
             }
           },
           "403": {
-            "description": "Not accessible to this account",
+            "description": "The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema135"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema135"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema83"
+                    }
+                  ]
                 }
               }
             }
@@ -5536,11 +5543,18 @@
             }
           },
           "403": {
-            "description": "Not accessible to this account",
+            "description": "The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema135"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema135"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema83"
+                    }
+                  ]
                 }
               }
             }
@@ -7616,11 +7630,18 @@
             }
           },
           "403": {
-            "description": "Not accessible to this account",
+            "description": "The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema135"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema135"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema83"
+                    }
+                  ]
                 }
               }
             }
@@ -8243,11 +8264,18 @@
             }
           },
           "403": {
-            "description": "Not accessible to this account",
+            "description": "The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema135"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/__schema135"
+                    },
+                    {
+                      "$ref": "#/components/schemas/__schema83"
+                    }
+                  ]
                 }
               }
             }

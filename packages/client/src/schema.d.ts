@@ -2652,13 +2652,13 @@ export interface paths {
                         "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
-                /** @description Not accessible to this account */
+                /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
                 403: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema135"];
+                        "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
                 /** @description No such space */
@@ -2743,13 +2743,13 @@ export interface paths {
                         "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
-                /** @description Not accessible to this account */
+                /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
                 403: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema135"];
+                        "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
                 /** @description No such job */
@@ -3589,13 +3589,13 @@ export interface paths {
                         "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
-                /** @description Not accessible to this account */
+                /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
                 403: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema135"];
+                        "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
                 /** @description No such job */
@@ -7041,13 +7041,13 @@ export interface paths {
                         "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
-                /** @description Not accessible to this account */
+                /** @description The space or job is not accessible, recorded as a rejected submission; a retried key whose history belongs to another account answers with an error body alone */
                 403: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema135"];
+                        "application/json": components["schemas"]["__schema135"] | components["schemas"]["__schema83"];
                     };
                 };
                 /** @description No such space */

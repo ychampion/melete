@@ -48,6 +48,31 @@ describe('the OpenAPI document', () => {
     expect(names).toContain('after');
   });
 
+  test('an admission refusal may be a receipt or an error body alone', () => {
+    // A denial inside the admission is recorded with a receipt; a retried key
+    // whose history belongs to another account, or a malformed key, is not.
+    const operations = [
+      ['/jobs', 'post'],
+      ['/responsibilities', 'post'],
+      ['/jobs/{id}/input', 'post'],
+      ['/jobs/{jobId}/messages', 'post'],
+    ] as const;
+    for (const [path, method] of operations) {
+      const responses = (
+        doc.paths[path] as Record<
+          string,
+          { responses: Record<string, { content: Record<string, { schema: unknown }> }> }
+        >
+      )[method]?.responses;
+      for (const status of ['400', '403']) {
+        const schema = responses?.[status]?.content['application/json']?.schema as {
+          anyOf?: unknown[];
+        };
+        expect(schema.anyOf).toHaveLength(2);
+      }
+    }
+  });
+
   test('the committed openapi.json is in sync with the schemas', () => {
     const onDisk = readFileSync(committed, 'utf8');
     expect(onDisk).toBe(openApiJson());

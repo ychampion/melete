@@ -188,7 +188,11 @@ const admission = <T extends z.ZodType>(
       'The input or the Idempotency-Key is invalid; a rejected input still has a receipt',
       z.union([schema, errorResponse]),
     ),
-    '403': jsonResponse('Not accessible to this account', schema),
+    '403': jsonResponse(
+      'The space or job is not accessible, recorded as a rejected submission; a retried key ' +
+        'whose history belongs to another account answers with an error body alone',
+      z.union([schema, errorResponse]),
+    ),
     '404': jsonResponse(missing, schema),
     '409': jsonResponse(
       'The key was used for different input, or the job cannot take this now',
