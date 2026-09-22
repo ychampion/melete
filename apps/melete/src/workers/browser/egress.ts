@@ -706,6 +706,15 @@ export function createBrowserEgress(
   }
 
   return {
+    /** Whether a URL is one of the loopback origins a test fixture was given. */
+    fixture(target: string): boolean {
+      try {
+        return fixtures.has(new URL(target).origin);
+      } catch {
+        return false;
+      }
+    },
+
     get commitDispatched(): boolean {
       return commitDispatched;
     },

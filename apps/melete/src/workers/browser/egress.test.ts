@@ -824,7 +824,7 @@ test('a popup started by an in-scope page may leave the site; one started elsewh
     'human',
     async () => [
       await fixture.dispatch({
-        url: 'https://accounts.provider.example/start',
+        url: 'https://accounts.provider-example.com/start',
         from: 'about:blank',
         opener: 'https://public.example/signin',
       }),
@@ -838,7 +838,7 @@ test('a popup started by an in-scope page may leave the site; one started elsewh
   expect(stray?.aborted).toBe(true);
   expect(notices).toEqual([{ code: 'off_scope', host: 'stray.example' }]);
   expect(fixture.calls.map((call) => call.url)).toEqual([
-    'https://accounts.provider.example/start',
+    'https://accounts.provider-example.com/start',
   ]);
 });
 

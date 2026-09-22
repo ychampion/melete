@@ -81,39 +81,48 @@ describe('live site scope', () => {
   });
 
   test('additions stop at twelve sites and the floor is never dropped', () => {
-    const scope = new LiveSiteScope(['start.example'], 'https://start.example/');
+    const scope = new LiveSiteScope(['start-example.com'], 'https://start-example.com/');
     for (let index = 1; index < 12; index++) {
       if ((index - 1) % LIVE_FOLLOW_SITES_PER_ACTION === 0) scope.acted();
-      expect(scope.follow(`https://site${index}.example/`, 'https://start.example/')).toBe(
+      expect(scope.follow(`https://site${index}-example.com/`, 'https://start-example.com/')).toBe(
         'admitted',
       );
     }
     scope.acted();
     expect(scope.list()).toHaveLength(12);
-    expect(scope.follow('https://site12.example/', 'https://start.example/')).toBe('scope_full');
-    expect(scope.allow('site12.example')).toBe('scope_full');
-    expect(scope.admits('start.example')).toBe(true);
+    expect(scope.follow('https://site12-example.com/', 'https://start-example.com/')).toBe(
+      'scope_full',
+    );
+    expect(scope.allow('site12-example.com')).toBe('scope_full');
+    expect(scope.admits('start-example.com')).toBe(true);
     const wide = new LiveSiteScope(
-      Array.from({ length: 20 }, (_, index) => `allowed${index}.example`),
-      'https://page.example/',
+      Array.from({ length: 20 }, (_, index) => `allowed${index}-example.com`),
+      'https://page-example.com/',
     );
     expect(wide.list()).toHaveLength(21);
-    expect(wide.allow('another.example')).toBe('scope_full');
+    expect(wide.allow('another-example.com')).toBe('scope_full');
   });
 
   test('a page cannot walk the person to new sites without them acting', () => {
     const time = clock();
-    const scope = new LiveSiteScope(['bank.example'], 'https://bank.example/', 12, time.now);
+    const scope = new LiveSiteScope(
+      ['bank-example.com'],
+      'https://bank-example.com/',
+      12,
+      time.now,
+    );
     // Page-initiated navigations with nobody pressing anything add nothing.
-    expect(scope.follow('https://attacker0.example/', 'https://bank.example/')).toBe('off_scope');
-    expect(scope.list()).toEqual(['bank.example']);
+    expect(scope.follow('https://attacker0.example/', 'https://bank-example.com/')).toBe(
+      'off_scope',
+    );
+    expect(scope.list()).toEqual(['bank-example.com']);
 
     // One action lets the page lead on to a few sites, then the chain stops.
     scope.acted();
-    let from = 'https://bank.example/';
+    let from = 'https://bank-example.com/';
     const walked: string[] = [];
     for (let hop = 0; hop < 11; hop++) {
-      const to = `https://attacker${hop}.example/`;
+      const to = `https://attacker${hop}-example.com/`;
       if (scope.follow(to, from) !== 'admitted') break;
       walked.push(to);
       from = to;
@@ -122,15 +131,17 @@ describe('live site scope', () => {
     expect(scope.list()).toHaveLength(1 + LIVE_FOLLOW_SITES_PER_ACTION);
 
     // Sites already reached, and the person's own allow, are unaffected.
-    expect(scope.follow('https://bank.example/home', from)).toBe('in_scope');
-    expect(scope.allow('chosen.example')).toBe('admitted');
+    expect(scope.follow('https://bank-example.com/home', from)).toBe('in_scope');
+    expect(scope.allow('chosen-example.com')).toBe('admitted');
 
     // An action's reach runs out with time, whatever it had left.
     scope.acted();
     time.advance(LIVE_FOLLOW_WINDOW_MS + 1);
-    expect(scope.follow('https://late.example/', 'https://bank.example/')).toBe('off_scope');
+    expect(scope.follow('https://late-example.com/', 'https://bank-example.com/')).toBe(
+      'off_scope',
+    );
     scope.acted();
-    expect(scope.follow('https://late.example/', 'https://bank.example/')).toBe('admitted');
+    expect(scope.follow('https://late-example.com/', 'https://bank-example.com/')).toBe('admitted');
   });
 
   test('pressing, touching and typing are actions; pointing and scrolling are not', () => {
@@ -158,6 +169,38 @@ describe('live site scope', () => {
         ] as LiveInput[]
       ).map(liveAction),
     ).toEqual([false, false, false, false, false, false]);
+  });
+
+  test('a page cannot put the machine or its own network on the list either', () => {
+    const scope = new LiveSiteScope([], 'https://www.example.com/');
+    scope.acted();
+    for (const target of [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://127.0.0.1:8080/',
+      'http://localhost/',
+      'http://[::1]/',
+      'http://intranet/',
+      'http://metadata/computeMetadata/v1/',
+      'https://kubernetes.default.svc/',
+      'http://printer.local/',
+    ])
+      expect([target, scope.follow(target, 'https://www.example.com/')]).toEqual([
+        target,
+        'off_scope',
+      ]);
+    expect(scope.list()).toEqual(['example.com']);
+    // A public site is still followed, and a test's loopback fixture can be let through.
+    expect(scope.follow('https://idp.example.org/', 'https://www.example.com/')).toBe('admitted');
+    const fixtures = new LiveSiteScope(
+      [],
+      'http://127.0.0.1:3130/',
+      12,
+      Date.now,
+      (target) => new URL(target).origin === 'http://127.0.0.2:3131',
+    );
+    fixtures.acted();
+    expect(fixtures.follow('http://127.0.0.2:3131/idp', 'http://127.0.0.1:3130/')).toBe('admitted');
+    expect(fixtures.follow('http://127.0.0.3:3132/', 'http://127.0.0.1:3130/')).toBe('off_scope');
   });
 
   test('an allowed host must be a bare host name', () => {
@@ -193,6 +236,10 @@ describe('live site scope', () => {
       'printer.local',
       'files.home.arpa',
       'nas.lan',
+      'metadata',
+      'intranet',
+      'kubernetes.default.svc',
+      'printer.corp',
     ])
       expect([local, scope.allow(local)]).toEqual([local, 'off_scope']);
     expect(scope.list()).toEqual(['example.com']);

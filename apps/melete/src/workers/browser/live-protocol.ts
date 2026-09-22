@@ -1,6 +1,6 @@
 import { isIP } from 'node:net';
 import type { LiveEndCode, LiveNoticeCode } from '@melete/contracts';
-import { getDomain } from 'tldts';
+import { getDomain, parse } from 'tldts';
 import { z } from 'zod';
 import { isPublicAddress } from '../../connectors/web.ts';
 
@@ -134,18 +134,25 @@ export function siteOf(host: string): string {
   return getDomain(name, { allowPrivateDomains: true }) ?? name;
 }
 
-/** Names that never leave the machine or the local network, whatever DNS is asked. */
-const LOCAL_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan'];
-
-/** A host a person may not add to a takeover's scope: an address that is not public, or a name
- * reserved for the machine or its network. A public name that resolves privately is refused
- * later by the egress guard, which resolves it and pins what it resolved. */
+/**
+ * A host no takeover's scope may hold: an address that is not public, or a name that is not a
+ * site on the public internet. A site has a registrable domain under a suffix on the public
+ * suffix list, which leaves out `localhost`, `metadata`, `intranet`, `default.svc`, `.local`,
+ * `.internal` and every other name reserved for a machine or its own network. A public name
+ * that resolves privately is refused later by the egress guard, which resolves it and pins what
+ * it resolved.
+ */
 export function localName(host: string): boolean {
   const name = normalHost(host);
   const address = name.startsWith('[') ? name.slice(1, -1) : name;
   if (isIP(address)) return !isPublicAddress(address);
-  return name === 'localhost' || LOCAL_SUFFIXES.some((suffix) => name.endsWith(suffix));
+  if (LOCAL_SUFFIXES.some((suffix) => name.endsWith(suffix))) return true;
+  const parsed = parse(name, { allowPrivateDomains: true });
+  return !parsed.domain || !(parsed.isIcann || parsed.isPrivate);
 }
+
+/** Names reserved for a machine or its network, some of them under a listed suffix (`arpa`). */
+const LOCAL_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan'];
 
 export type LiveScopeDecision = 'in_scope' | 'admitted' | 'off_scope' | 'scope_full';
 
@@ -181,6 +188,8 @@ export class LiveSiteScope {
     pageUrl?: string,
     private readonly limit: number = LIVE_LIMITS.site_scope_hosts,
     private readonly now: () => number = Date.now,
+    /** Loopback test origins the egress guard admits, which a test's scope may hold too. */
+    private readonly fixture: (target: string) => boolean = () => false,
   ) {
     for (const domain of allowedDomains) this.sites.add(siteOf(domain));
     const host = pageUrl ? hostOf(pageUrl) : undefined;
@@ -201,6 +210,8 @@ export class LiveSiteScope {
     if (this.admits(host)) return 'in_scope';
     const from = initiator === undefined ? undefined : hostOf(initiator);
     if (!from || !this.admits(from)) return 'off_scope';
+    // A page can send the person anywhere, but the list the person is shown holds only sites.
+    if (localName(host) && !this.fixture(target)) return 'off_scope';
     if (this.follows <= 0 || this.now() - this.actedAt > LIVE_FOLLOW_WINDOW_MS) return 'off_scope';
     const decision = this.add(host);
     if (decision === 'admitted') this.follows--;

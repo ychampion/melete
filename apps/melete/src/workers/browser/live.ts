@@ -179,6 +179,7 @@ export class BrowserLive {
         page.url(),
         this.limits.site_scope_hosts,
         this.now,
+        (target) => guard.fixture(target),
       ),
       limiter: new LiveInputLimiter(this.now),
       main: page,
