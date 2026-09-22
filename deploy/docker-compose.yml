@@ -16,9 +16,9 @@ networks:
     driver: bridge
     internal: true
   # A warm capability/probe cell. Actual attempts get separate networks with
-  # these same settings and only the trusted Melete service as a peer.
+  # these same settings and only the trusted Melete service as a peer. Its
+  # name is <project>_internal, so installations on one host stay apart.
   internal:
-    name: melete_internal
     driver: bridge
     internal: true
     driver_opts:

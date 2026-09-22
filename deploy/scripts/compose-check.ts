@@ -12,7 +12,10 @@ import { checkDockerfileWorkspaces } from './dockerfile-check.ts';
 import { checkRuntimePluginPin } from './plugin-pin-check.ts';
 
 export type ComposeFile = {
-  networks?: Record<string, { internal?: boolean; driver_opts?: Record<string, string> } | null>;
+  networks?: Record<
+    string,
+    { name?: string; internal?: boolean; driver_opts?: Record<string, string> } | null
+  >;
   services?: Record<string, ComposeService>;
   volumes?: Record<string, unknown>;
 };
@@ -103,6 +106,16 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
     internal?.driver_opts?.['com.docker.network.bridge.gateway_mode_ipv4'] === 'isolated' &&
       internal?.driver_opts?.['com.docker.network.bridge.gateway_mode_ipv6'] === 'isolated',
     'internal networks also need isolated gateway mode to prevent access to host listeners',
+  );
+  // A fixed name is shared by every installation on the host, whatever its project.
+  const fixedNames = Object.entries(compose.networks ?? {}).filter(
+    ([, network]) =>
+      network?.name !== undefined && !/^\$\{COMPOSE_PROJECT_NAME[:}]/.test(network.name),
+  );
+  say(
+    'every network belongs to this Compose project',
+    fixedNames.length === 0,
+    `networks with a name outside the project: ${fixedNames.map(([key]) => key).join(', ')}; leave name unset so Compose prefixes the project`,
   );
 
   const unbounded = unboundedServices(compose.services ?? {});

@@ -73,6 +73,19 @@ describe('the check catches the mistakes that would matter', () => {
     expect(failures(broken)).toContain('the internal network has no route out');
   });
 
+  test('a network name shared by every installation on the host', () => {
+    const name = 'every network belongs to this Compose project';
+    expect(compose.networks?.internal?.name).toBeUndefined();
+    const fixed: ComposeFile = structuredClone(compose);
+    if (fixed.networks?.internal) fixed.networks.internal.name = 'melete_internal';
+    expect(failures(fixed)).toContain(name);
+    const scoped: ComposeFile = structuredClone(compose);
+    if (scoped.networks?.internal)
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Compose expands this variable.
+      scoped.networks.internal.name = '${COMPOSE_PROJECT_NAME:-melete}_internal';
+    expect(failures(scoped)).not.toContain(name);
+  });
+
   test('publishing a runtime port', () => {
     const broken: ComposeFile = structuredClone(compose);
     const runtime = broken.services?.runtime;
