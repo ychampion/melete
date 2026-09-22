@@ -94,7 +94,14 @@ capability can read the catalog but not approve, and an altered approval hash is
 refused. Its comparison against a second, real provider runs when the stack has
 that provider's credential and `MELETE_CONFORMANCE_REAL_PROVIDER` and
 `MELETE_CONFORMANCE_REAL_MODEL` select it; no recorded run has. API keys stay
-in the gateway, which forwards them. Configuring provider OAuth inside Hermes
+in the gateway, which forwards them. Tokens from a provider sign-in stay on the
+same side: they are sealed in Postgres, opened in the service when the gateway
+forwards a call, refreshed there, and redacted from what the provider returns,
+as `a signed-in provider sends its current token and account, redacts it, and
+refreshes after a refusal` tests. No API response, event or log line carries
+one; the fake-issuer tests in `credentials.test.ts` and
+`provider-signin.test.ts` search every answer, stored row and log line for each
+token the issuer handed out. Configuring provider OAuth inside Hermes
 would place those credentials in the runtime's auth store, outside this
 boundary: a runtime
 compromise exposes an OAuth token stored there, and it does not expose a
@@ -332,7 +339,15 @@ database boundary.
 
 Connector secrets have tested sealing and scope checks: `stores randomized
 sealed boxes and only decrypts in the owning space` and `rejects a wrong
-master key, changed ciphertext and cross-row swaps`.
+master key, changed ciphertext and cross-row swaps`. Provider sign-in tokens use
+the same sealing, bound to the provider name and the row's generation: `a
+sealed record copied onto another provider does not open`. A refresh runs under
+one lock per provider, because an issuer that rotates refresh tokens revokes
+the grant when an old one is used twice: `two services on one database refresh
+once, under the row lock`. Only the setup owner can start, finish or end a
+sign-in, from the same origin, with PKCE and a one-time state checked: `only
+the setup owner manages sign-in, and only from the same origin` and `a
+returned address with another state, or another path, finishes nothing`.
 The broker, API and connectors share one trusted service process. It holds the
 master key and decrypts credentials in ordinary process memory at dispatch, so a
 compromise of that process, or of the host, exposes them.

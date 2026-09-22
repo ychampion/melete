@@ -4,6 +4,7 @@
  * being edited rather than as a refused model call inside the first job.
  */
 import {
+  CHATGPT_PROVIDER,
   OPENAI_COMPATIBLE,
   PROVIDER_KEY_VARIABLES,
   PROVIDER_NAMES,
@@ -56,6 +57,20 @@ export function providerWarnings(settings: Record<string, string | undefined>): 
     warnings.push(
       `MELETE_DEFAULT_PROVIDER=${OPENAI_COMPATIBLE} needs OPENAI_COMPAT_BASE_URL in deploy/.env, for example https://models.example.net/v1; the service will not start without it.`,
     );
+  // A signed-in provider has no key to set; its tokens are sealed with the master key.
+  const signedIn =
+    provider === CHATGPT_PROVIDER ||
+    (provider === OPENAI_COMPATIBLE &&
+      Object.keys(settings).some(
+        (name) => name.startsWith('OPENAI_COMPAT_OAUTH_') && settings[name],
+      ));
+  if (signedIn) {
+    if (!settings.MELETE_MASTER_KEY)
+      warnings.push(
+        `MELETE_DEFAULT_PROVIDER=${provider} is used through the owner's sign-in, which needs MELETE_MASTER_KEY in deploy/.env to seal what the provider issues.`,
+      );
+    return warnings;
+  }
   const variables = providerKeyVariables(provider, settings.OPENAI_COMPAT_BASE_URL);
   if (!variables.some((name) => settings[name]))
     warnings.push(

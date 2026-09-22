@@ -86,7 +86,7 @@ export class PostgresCredentialRepository implements CredentialRepository {
             generation, status, reason, account, expires_at, refreshed_at)
           values (${next.provider}, ${next.ownerId}, ${next.secretId}, ${next.ciphertext},
             ${next.generation}, ${next.status}, ${next.reason}, ${next.account},
-            ${next.expiresAt}, ${next.refreshedAt})
+            ${next.expiresAt?.toISOString() ?? null}, ${next.refreshedAt?.toISOString() ?? null})
           on conflict (provider) do update set owner_id = excluded.owner_id,
             secret_id = excluded.secret_id, ciphertext = excluded.ciphertext,
             generation = excluded.generation, status = excluded.status,

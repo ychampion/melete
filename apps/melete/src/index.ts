@@ -27,6 +27,7 @@ import { apiFetch, resolveApiNetwork, trustedProxy } from './api/listener.ts';
 import type { LoginThrottle } from './api/login-throttle.ts';
 import { mountOperations } from './api/operations.ts';
 import { mountPolicy } from './api/policy.ts';
+import { mountProviderSignIn } from './api/provider-signin.ts';
 import { mountQuestions } from './api/questions.ts';
 import { mountReactions, type SpaceResolver } from './api/reactions.ts';
 import { mountRepairs, RepairReadService } from './api/repairs.ts';
@@ -54,6 +55,8 @@ import { connection } from './db/schema.ts';
 import { type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
+import { providerSignIn } from './gateway/configured.ts';
+import type { ProviderSignIn } from './gateway/credentials.ts';
 import type { GatewayOptions } from './gateway/index.ts';
 import { ApprovalService } from './jobs/approvals.ts';
 import { AttentionService } from './jobs/attention.ts';
@@ -148,6 +151,8 @@ export type AppDeps = {
   sql?: Sql;
   /** Overrides for the company map: a test's store, extractor or handler. */
   companies?: Partial<CompaniesDeps>;
+  /** The owner's model-provider sign-ins. Left out, built from `sql` and the master key. */
+  providerSignIn?: ProviderSignIn;
 };
 
 export function createApp(deps: AppDeps) {
@@ -191,6 +196,11 @@ export function createApp(deps: AppDeps) {
   if (deps.removals && deps.db && deps.sql)
     mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
+  if (deps.db)
+    mountProviderSignIn(app, {
+      db: deps.db,
+      signIn: deps.providerSignIn ?? (deps.sql ? providerSignIn(deps.sql, deps.env) : undefined),
+    });
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
   const replies =
@@ -372,6 +382,7 @@ export async function bootstrap(
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
+  let signIn: ProviderSignIn | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -415,6 +426,8 @@ export async function bootstrap(
       await migrateDatabase(handle);
       await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
+      // One sign-in service, so the API and the gateway share one refresh per provider.
+      signIn = providerSignIn(handle.sql, env);
       episodeRetention = setInterval(() => {
         void expireEpisodes(handle.sql).catch(() =>
           process.stderr.write('episode retention failed\n'),
@@ -507,6 +520,7 @@ export async function bootstrap(
           browserSessions: browser?.sessions,
           connections,
           registry,
+          signIn,
         });
         const Supervisor =
           env.MELETE_RUNTIME_SUPERVISOR === 'docker'
@@ -586,7 +600,13 @@ export async function bootstrap(
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
         };
-      learning = await startLearning(jobs, env, options.workers !== false, options.fakeProvider);
+      learning = await startLearning(
+        jobs,
+        env,
+        options.workers !== false,
+        options.fakeProvider,
+        signIn,
+      );
       evaluator = new ProcedureEvaluator(jobs, contextualRuntime, runner.options);
       triggers = new TriggerService(jobs, runner);
       approvals = new ApprovalService(jobs, runner);
@@ -614,6 +634,7 @@ export async function bootstrap(
           browserSessions: browser?.sessions,
           connections,
           registry,
+          signIn,
         });
       // A removal outlives the request that asked for it and the process that
       // was running it, so it is resumed at startup and every minute after.
@@ -698,6 +719,7 @@ export async function bootstrap(
     broker: effectBoundary?.broker,
     registry,
     sql: handle?.sql,
+    providerSignIn: signIn,
     checkDatabase: async () => {
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';

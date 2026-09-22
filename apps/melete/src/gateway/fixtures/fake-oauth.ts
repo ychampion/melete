@@ -87,7 +87,7 @@ export async function startFakeIssuer(): Promise<FakeIssuer> {
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
-    fetch: async (request) => {
+    fetch: async (request): Promise<Response> => {
       const url = new URL(request.url);
       if (url.pathname === '/oauth/authorize') {
         // Stands in for the person approving in their browser.
@@ -178,7 +178,7 @@ export async function startFakeIssuer(): Promise<FakeIssuer> {
       return new Response('not found', { status: 404 });
     },
   });
-  const origin = `http://127.0.0.1:${server.port}`;
+  const origin: string = `http://127.0.0.1:${server.port}`;
   const fake = state as FakeIssuer;
   fake.url = origin;
   fake.stop = async () => {

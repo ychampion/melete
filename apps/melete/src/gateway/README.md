@@ -19,6 +19,15 @@ Named tests in `index.test.ts` cover:
 | Response redaction | `redacts a known key even if split between chunks` |
 | Output limit for a request that names none | `a request without an output limit gets the configured default, within what the attempt may spend` |
 | Operator-configured plain HTTP endpoint | `an operator-configured plain HTTP endpoint is forwarded to as written` |
+| Signed-in provider | `a signed-in provider sends its current token and account, redacts it, and refreshes after a refusal` |
+| No sign-in, no reservation | `a provider nobody is signed in to refuses the call before anything is reserved` |
+
+`oauth.ts` speaks OAuth 2.0 with PKCE to ChatGPT's issuer, over the endpoints
+the open-source Codex CLI uses, and to an issuer the operator configures for the
+OpenAI-compatible endpoint. `credentials.ts` seals what it returns, refreshes it
+once per provider under a lock, and hands the gateway the current token.
+`credentials.test.ts` runs every flow against the loopback issuer in
+`fixtures/fake-oauth.ts`.
 
 `providers.ts` holds the one provider table: the protocols each upstream is
 served over, the API mode every launcher hands its runtime (`modelApiMode`), and
