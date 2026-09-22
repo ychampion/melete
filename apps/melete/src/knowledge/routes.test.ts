@@ -304,8 +304,16 @@ describe('reading a space', () => {
 
   test('skills with required tools are hidden when no tool catalog is configured', async () => {
     const res = await app().request('/skills', { headers: headers() });
-    const body = (await res.json()) as { skills: Array<{ space_id: string | null }> };
-    expect(body.skills).toEqual([]);
+    const body = (await res.json()) as {
+      skills: Array<{ frontmatter: { name: string; tools: string[] } }>;
+    };
+    // Only a skill that needs no tool at all is offered without a catalog.
+    expect(body.skills.map((skill) => skill.frontmatter.tools)).toEqual(body.skills.map(() => []));
+    expect(body.skills.map((skill) => skill.frontmatter.name).sort()).toEqual([
+      'plan-a-responsibility',
+      'remember-this',
+      'write-a-draft',
+    ]);
   });
 });
 
