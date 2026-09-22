@@ -389,9 +389,9 @@ not rerun and is incomplete. Typecheck, lint, clean schema/OpenAPI/client
 regeneration, 61 plugin tests and 19 Compose declaration checks pass.
 
 The final evidence path, checksum, focused checks and full-suite command ledger
-are in `REPORT.md`, which is not published. Earlier red evidence in that
-append-only report describes superseded runs. The current capability matrix is
-[docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
+are in `REPORT.md`, an append-only command log kept outside this repository.
+Earlier red evidence in that log describes superseded runs. The current
+capability matrix is [docs/CAPABILITIES.md](../../docs/CAPABILITIES.md).
 
 ## PR 27 verification - 2026-09-12
 

@@ -220,8 +220,9 @@ boundary.
 Superseded attempt rows can retain a missing end timestamp after restart. Nine
 such historical rows existed after the combined checks; their epochs were
 fenced and no supervised cells remained. This is a recorded status limitation.
-Detailed procedures and measured results are in `REPORT.md`, which is not
-published, and in [deployment operations](../../docs/DEPLOYMENT.md).
+Detailed procedures and measured results are in `REPORT.md`, an append-only
+command log kept outside this repository, and in
+[deployment operations](../../docs/DEPLOYMENT.md).
 
 ## 2026-09-12 control-plane boundary correction
 

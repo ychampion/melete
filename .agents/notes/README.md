@@ -32,9 +32,9 @@ Two rules:
    decision was probably a preference, and preferences do not need notes.
 
 Several notes cite `REPORT.md`, an append-only log that recorded each command
-and its measured result as it was run. That log is working material and is not
-published here. Where a note points at it, the evidence that ships is the note's
-own Evidence section and the tests it names.
+and its measured result as it was run, kept outside this repository. Where a
+note points at it, the evidence here is the note's own Evidence section and the
+tests it names.
 
 ## Index
 
