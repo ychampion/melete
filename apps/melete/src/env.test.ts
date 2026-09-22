@@ -95,6 +95,27 @@ describe('the model defaults', () => {
       expect(readEnv({ MELETE_DEFAULT_MAX_OUTPUT_TOKENS: value }).ok).toBe(false);
   });
 
+  test('Compose falls back to the same provider and model as the service and the example', () => {
+    // Only a deploy/.env without these lines meets the fallback; it must not
+    // select a provider the service then refuses to start with.
+    const composed = composeServiceEnvironment();
+    const env = loadEnv({});
+    expect(composed.MELETE_DEFAULT_PROVIDER).toBe(env.MELETE_DEFAULT_PROVIDER);
+    expect(composed.MELETE_DEFAULT_MODEL).toBe(env.MELETE_DEFAULT_MODEL);
+    const example = readFileSync(join(import.meta.dir, '../../../deploy/.env.example'), 'utf8');
+    expect(example).toContain(`\nMELETE_DEFAULT_PROVIDER=${env.MELETE_DEFAULT_PROVIDER}\n`);
+    const runtime = readFileSync(
+      join(import.meta.dir, '../../../deploy/docker-compose.yml'),
+      'utf8',
+    );
+    expect(runtime).toContain(
+      `MELETE_MODEL_PROVIDER: \${MELETE_DEFAULT_PROVIDER:-${env.MELETE_DEFAULT_PROVIDER}}`,
+    );
+    expect(runtime).toContain(
+      `MELETE_MODEL_NAME: \${MELETE_DEFAULT_MODEL:-${env.MELETE_DEFAULT_MODEL}}`,
+    );
+  });
+
   test('Compose passes the output limit through to the service', () => {
     expect(composeServiceEnvironment().MELETE_DEFAULT_MAX_OUTPUT_TOKENS).toBe('4096');
   });

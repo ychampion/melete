@@ -96,8 +96,8 @@ services:
       MELETE_DOCKER_SOCKET: /var/run/docker.sock
       MELETE_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-melete}
       MELETE_WORK_VOLUME: ${COMPOSE_PROJECT_NAME:-melete}_work
-      MELETE_DEFAULT_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fake}
-      MELETE_DEFAULT_MODEL: ${MELETE_DEFAULT_MODEL:-scripted}
+      MELETE_DEFAULT_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fireworks}
+      MELETE_DEFAULT_MODEL: ${MELETE_DEFAULT_MODEL:-accounts/fireworks/models/deepseek-v4p1-flash}
       MELETE_DEFAULT_MAX_OUTPUT_TOKENS: ${MELETE_DEFAULT_MAX_OUTPUT_TOKENS:-4096}
       # Left empty, the service's own defaults apply (docs/DEPLOYMENT.md, "Engine limits").
       MELETE_ENGINE_MAX_TURNS: ${MELETE_ENGINE_MAX_TURNS:-}
@@ -169,8 +169,8 @@ services:
       MELETE_ATTEMPT_TOKEN: probe-without-authority
       MELETE_ATTEMPT_ID: att_probe
       MELETE_JOB_ID: job_probe
-      MELETE_MODEL_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fake}
-      MELETE_MODEL_NAME: ${MELETE_DEFAULT_MODEL:-scripted}
+      MELETE_MODEL_PROVIDER: ${MELETE_DEFAULT_PROVIDER:-fireworks}
+      MELETE_MODEL_NAME: ${MELETE_DEFAULT_MODEL:-accounts/fireworks/models/deepseek-v4p1-flash}
     user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
