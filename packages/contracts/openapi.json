@@ -1067,17 +1067,7 @@
             }
           },
           "403": {
-            "description": "Space owner required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/__schema107"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No such space",
+            "description": "Space owner required, or no such space",
             "content": {
               "application/json": {
                 "schema": {
@@ -1128,17 +1118,7 @@
             }
           },
           "403": {
-            "description": "Space owner required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/__schema107"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No such space",
+            "description": "Space owner required, or no such space",
             "content": {
               "application/json": {
                 "schema": {
@@ -1192,18 +1172,8 @@
               }
             }
           },
-          "403": {
-            "description": "Space owner required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/__schema107"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "This space is not being removed",
+            "description": "This space is not being removed, or not by the person asking",
             "content": {
               "application/json": {
                 "schema": {

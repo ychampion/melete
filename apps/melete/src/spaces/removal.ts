@@ -224,7 +224,9 @@ export class SpaceRemovalService {
     const jobs = this.deps.jobs;
     const result = await jobs.transaction(async (tx) => {
       const [parent] = await tx.select().from(space).where(eq(space.id, spaceId)).for('update');
-      if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
+      // The same answer authority gives for a space the caller cannot see, so
+      // this route tells nobody whether a space id exists.
+      if (!parent) throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
 
       // A second request joins the removal already running rather than starting
       // a rival sweep. The partial unique index backs this up in the database.

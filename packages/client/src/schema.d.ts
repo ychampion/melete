@@ -8391,17 +8391,8 @@ export interface paths {
                         "application/json": components["schemas"]["__schema107"];
                     };
                 };
-                /** @description Space owner required */
+                /** @description Space owner required, or no such space */
                 403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["__schema107"];
-                    };
-                };
-                /** @description No such space */
-                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -8612,16 +8603,7 @@ export interface paths {
                         };
                     };
                 };
-                /** @description Space owner required */
-                403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["__schema107"];
-                    };
-                };
-                /** @description This space is not being removed */
+                /** @description This space is not being removed, or not by the person asking */
                 404: {
                     headers: {
                         [name: string]: unknown;
@@ -8671,17 +8653,8 @@ export interface paths {
                         };
                     };
                 };
-                /** @description Space owner required */
+                /** @description Space owner required, or no such space */
                 403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["__schema107"];
-                    };
-                };
-                /** @description No such space */
-                404: {
                     headers: {
                         [name: string]: unknown;
                     };

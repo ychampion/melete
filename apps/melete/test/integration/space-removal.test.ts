@@ -1418,6 +1418,22 @@ describe.if(handle !== null)('removing a space', () => {
       );
     });
 
+    test('deleting_a_space_tells_nobody_whether_it_exists — the same answer as every other route', async () => {
+      const target = await seed('shared', 'Secret');
+      const outsider = await seed('shared', 'Mine');
+      const remove = (id: string) =>
+        call(outsider.memberSessionToken, `/spaces/${id}`, 'DELETE', { confirm_name: 'Secret' });
+      const existing = await remove(target.spaceId);
+      const missing = await remove(`sp_${crypto.randomUUID().replaceAll('-', '')}`);
+      const other = await call(
+        outsider.memberSessionToken,
+        `/spaces/${target.spaceId}/removal/preview`,
+      );
+      expect([existing.status, missing.status, other.status]).toEqual([403, 403, 403]);
+      expect(await missing.json()).toEqual(await existing.json());
+      expect(await countOf(sql, 'space_removal', sql`space_id = ${target.spaceId}`)).toBe(0);
+    });
+
     test('a mismatched name is refused with 400 and nothing changes', async () => {
       const seeded = await seed('shared');
       const response = await call(seeded.sessionToken, `/spaces/${seeded.spaceId}`, 'DELETE', {
