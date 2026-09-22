@@ -26,6 +26,7 @@ type ObligationRow = typeof replyObligation.$inferSelect;
 type NotificationRow = typeof notification.$inferSelect;
 /** How many unserved obligations one recovery scan repairs. */
 const RECOVERY_BATCH = 100;
+export const DELIVERY_LEASE_MS = 5 * 60_000;
 /** Outcome kinds an ended attempt can carry a reply for; lost, cancelled and superseded carry none. */
 const OUTCOME_KINDS = [
   'completed',
@@ -168,6 +169,8 @@ export class ReplyService {
     readonly jobs: JobService,
     submissions: SubmissionService,
     runner?: AttemptRunner,
+    /** How long a client may hold an attempted delivery before a fresh copy is offered. */
+    readonly deliveryLeaseMs = DELIVERY_LEASE_MS,
   ) {
     const accepted = submissions.onAccepted;
     submissions.onAccepted = async (tx, receipt, row, kind) => {
@@ -179,13 +182,9 @@ export class ReplyService {
         this.publish(tx, row, outcome, attemptId, context?.result),
       );
       const previous = runner.afterRecovery;
-      let restarted = false;
       runner.afterRecovery = async () => {
         await previous?.();
-        // Only the first scan after a start may offer an attempted delivery again:
-        // later, one this process is still handing over would reach the person twice.
-        await this.recover({ retransmit: !restarted });
-        restarted = true;
+        await this.recover();
       };
     }
   }
@@ -476,7 +475,7 @@ export class ReplyService {
 
   /**
    * Repairs replies that lost their outbox copy, flags the ones that cannot be
-   * rebuilt, and on a restart offers attempted deliveries again.
+   * rebuilt, and offers a delivery again once its client's lease has passed.
    *
    * Repair reads a bounded batch, and only obligations that could be rebuilt:
    * no live notification carries them and their job has an ended attempt with
@@ -484,8 +483,7 @@ export class ReplyService {
    * content can never return (no job, or only lost and cancelled attempts)
    * cannot hold a newer one back.
    */
-  async recover(options: { retransmit?: boolean } = {}): Promise<void> {
-    const retransmit = options.retransmit ?? true;
+  async recover(): Promise<void> {
     await this.jobs.transaction(async (tx) => {
       const unserved = sql`not exists (select 1 from notification n where n.state in ('pending', 'attempted')
         and n.content is not null and n.obligation_ids @> jsonb_build_array(${replyObligation.id}))`;
@@ -529,10 +527,18 @@ export class ReplyService {
         .update(replyObligation)
         .set({ state: 'needs_retransmission', message: missingContent })
         .where(and(inArray(replyObligation.state, ['owed', 'acknowledged']), unserved));
-      const attempted = retransmit
-        ? await tx.select().from(notification).where(eq(notification.state, 'attempted'))
-        : [];
-      for (const delivery of attempted) {
+      // The client delivers, not this process: an attempt is offered again only
+      // once its lease has run out, whether or not the service restarted since.
+      const expired = await tx
+        .select()
+        .from(notification)
+        .where(
+          and(
+            eq(notification.state, 'attempted'),
+            sql`${notification.attemptedAt} < now() - ${this.deliveryLeaseMs} * interval '1 millisecond'`,
+          ),
+        );
+      for (const delivery of expired) {
         if (!replyContent.safeParse(delivery.content).success) continue;
         await tx
           .update(notification)

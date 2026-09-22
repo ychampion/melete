@@ -193,6 +193,8 @@ withDb('reply obligations and notification outbox', () => {
     const [first] = await replies.outbox();
     if (!first) throw new Error('Outbox empty');
     await replies.beginDelivery(first.id);
+    // The client took the delivery and went quiet past its lease.
+    await handle.sql`update notification set attempted_at = now() - interval '1 hour' where id = ${first.id}`;
     await replies.recover();
     const [retry] = await replies.outbox();
     expect(retry?.id).not.toBe(first.id);
@@ -210,20 +212,27 @@ withDb('reply obligations and notification outbox', () => {
     expect(await replies.outbox()).toHaveLength(0);
   });
 
-  test('the periodic recovery scan never offers a delivery in flight again', async () => {
-    const { handle } = fixture();
-    // Startup recovery may retransmit what an earlier process attempted.
+  test('an attempted delivery is offered again only once its lease has passed', async () => {
+    const { handle, jobs } = fixture();
     await runner.recover();
     await run(await direct([answer]));
     const [first] = await replies.outbox();
     if (!first) throw new Error('Outbox empty');
     await replies.beginDelivery(first.id);
-    // A later scan runs while this process may still be delivering it.
+    const outbox = async () =>
+      (await replies.outbox()).map((item) => `${item.state}#${item.deliveryAttempt}`);
+    // The client is still inside its lease: neither later scans nor a restarted
+    // service offer the same reply a second time.
+    for (let scan = 0; scan < 3; scan++) await runner.recover();
+    const restarted = new AttemptRunner(jobs, new StubRuntimeAdapter(), { key });
+    new ReplyService(jobs, new SubmissionService(jobs), restarted);
+    await restarted.recover();
+    expect(await outbox()).toEqual(['attempted#1']);
+    // The client crashed mid-delivery; once the lease runs out a fresh copy is due.
+    await handle.sql`update notification set attempted_at = now() - interval '1 hour' where id = ${first.id}`;
     await runner.recover();
-    expect((await replies.outbox()).map((item) => item.id)).toEqual([first.id]);
-    expect(await handle.db.select().from(notification)).toHaveLength(1);
-    await replies.delivered(first.id, first.contentHash);
-    expect(await replies.list()).toHaveLength(0);
+    expect(await outbox()).toEqual(['pending#2']);
+    expect(await handle.db.select().from(notification)).toHaveLength(2);
   });
 
   // Ends an attempt with reply content but without the finish hooks, as the
