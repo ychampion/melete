@@ -6,6 +6,8 @@ triggers:
   - tidy up
   - organise these
   - organize these
+  - organise my
+  - organize my
 tools:
   - files.list
   - files.read

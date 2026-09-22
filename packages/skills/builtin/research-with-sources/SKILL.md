@@ -6,6 +6,8 @@ triggers:
   - find out
   - look up
   - compare options
+  - source
+  - reviews
 tools:
   - web.fetch
   - files.read
