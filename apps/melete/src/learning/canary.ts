@@ -9,6 +9,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import { noticeReverted } from './notices.ts';
 import { procedureCandidate, procedureTransition } from './schema.ts';
 
 export const CANARY_INTERVENTION = 'canary_intervention';
@@ -57,7 +58,16 @@ export async function revertDeliveredCanaries(tx: Transaction, row: JobRow, epis
         ),
       )
       .returning();
-    if (saved) reverted.push(saved);
+    if (!saved) continue;
+    // The person it was delivered to hears that it stopped, and why.
+    await noticeReverted(
+      tx,
+      saved,
+      saved.promotion.principal_id ?? row.principalId,
+      row.id,
+      CANARY_INTERVENTION,
+    );
+    reverted.push(saved);
   }
   return reverted;
 }

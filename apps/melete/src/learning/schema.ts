@@ -118,6 +118,10 @@ export const procedureCandidate = pgTable(
     selectedEvaluationId: text('selected_evaluation_id'),
     canarySpaceId: text('canary_space_id'),
     rejectionReason: text('rejection_reason'),
+    /** Set while the person has paused it: never delivered, and its state is kept to resume. */
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
+    /** Set when the person removed it from their list; kept only so the removal can be undone. */
+    removedAt: timestamp('removed_at', { withTimezone: true }),
     version: integer('version').notNull().default(0),
     createdAt: created(),
   },
@@ -160,4 +164,81 @@ export const procedureEvaluation = pgTable(
     createdAt: created(),
   },
   (t) => [uniqueIndex('procedure_evaluation_once_idx').on(t.candidateId, t.bodyHash, t.phase)],
+);
+
+/**
+ * What learning says to one person: the "keep doing this?" question after a job
+ * used a procedure on trial, and the notice that a procedure stopped. Each row
+ * carries a reason code and ids only; the words shown are rendered by trusted
+ * code when read, and the person's own reason for a "no" lives in the
+ * procedure's transition history, which forgetting removes with the procedure.
+ */
+export const learningNotice = pgTable(
+  'learning_notice',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id').notNull(),
+    candidateId: text('candidate_id')
+      .notNull()
+      .references(() => procedureCandidate.id, { onDelete: 'cascade' }),
+    jobId: text('job_id').references(() => job.id, { onDelete: 'set null' }),
+    kind: text('kind').$type<'keep_question' | 'reverted'>().notNull(),
+    /** The exact definition a question asks about; an answer applies to these bytes only. */
+    definitionHash: text('definition_hash').notNull(),
+    reasonCode: text('reason_code'),
+    state: text('state')
+      .$type<'open' | 'answered' | 'withdrawn' | 'read'>()
+      .notNull()
+      .default('open'),
+    answer: text('answer').$type<'yes' | 'no' | 'change'>(),
+    /** The correction a "change" opened. */
+    episodeId: text('episode_id'),
+    createdAt: created(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('learning_notice_principal_idx').on(t.spaceId, t.principalId, t.state),
+    uniqueIndex('learning_notice_open_question_idx')
+      .on(t.candidateId)
+      .where(sql`${t.kind} = 'keep_question' and ${t.state} = 'open'`),
+    check('learning_notice_kind_check', sql`${t.kind} in ('keep_question', 'reverted')`),
+    check(
+      'learning_notice_state_check',
+      sql`${t.state} in ('open', 'answered', 'withdrawn', 'read')`,
+    ),
+    check(
+      'learning_notice_answer_check',
+      sql`${t.answer} is null or ${t.answer} in ('yes', 'no', 'change')`,
+    ),
+  ],
+);
+
+/**
+ * Every change a person makes to what was learned, with the fields it changed
+ * before and after, so the latest one can be undone exactly. A source other than
+ * corrections adds its own reference column; the change itself is the same shape.
+ */
+export const learnedChange = pgTable(
+  'learned_change',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id').notNull(),
+    source: text('source').notNull(),
+    itemId: text('item_id').notNull(),
+    candidateId: text('candidate_id').references(() => procedureCandidate.id, {
+      onDelete: 'cascade',
+    }),
+    action: text('action').notNull(),
+    before: jsonb('before').$type<Record<string, unknown>>().notNull(),
+    after: jsonb('after').$type<Record<string, unknown>>().notNull(),
+    createdAt: created(),
+    undoneAt: timestamp('undone_at', { withTimezone: true }),
+  },
+  (t) => [index('learned_change_principal_idx').on(t.spaceId, t.principalId, t.createdAt)],
 );

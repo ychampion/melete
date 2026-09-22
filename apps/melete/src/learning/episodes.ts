@@ -23,6 +23,7 @@ import {
   type ProcedureScope,
   type VersionEvidence,
 } from './contracts.ts';
+import { askToKeep } from './notices.ts';
 import { OBJECTIVE_ORIGINS, type ObjectiveOrigin } from './provenance.ts';
 import { episode, learningAttempt, learningJob } from './schema.ts';
 import { derivedScope } from './scope.ts';
@@ -250,6 +251,8 @@ export async function captureCompletedEpisode(
     .where(or(eq(episode.jobId, row.id), eq(episode.correctiveJobId, row.id)))
     .limit(1);
   if (!existing) await createEpisode(tx, row, `completion:${attemptId}`, 'runtime', null, finished);
+  // A job that used something on trial and needed no correction earns the question.
+  if (finished === 'completed') await askToKeep(tx, row, attemptId);
 }
 
 /** Owner authentication is supplied by the API. A requested space is checked, never trusted. */

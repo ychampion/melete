@@ -151,6 +151,9 @@ export async function selectProcedureSkills(
         eq(procedureCandidate.spaceId, row.spaceId),
         inArray(procedureCandidate.state, ['enabled_canary', 'active']),
         isNull(procedureCandidate.rejectionReason),
+        // Paused or removed by the person: kept for resume or undo, never delivered.
+        isNull(procedureCandidate.pausedAt),
+        isNull(procedureCandidate.removedAt),
         eq(episode.restricted, false),
         gt(episode.expiresAt, new Date()),
       ),
@@ -162,10 +165,12 @@ export async function selectProcedureSkills(
     if (promotion.data.scope === 'space') {
       if (access.space.kind !== 'shared' || candidate.state !== 'active') continue;
     } else if ((promotion.data.principal_id ?? source.actor) !== access.principalId) continue;
-    if (promotion.data.basis === 'owner_trial') {
-      // The owner's approval of these exact bytes, for that owner, in the space it came from.
+    if (promotion.data.basis === 'owner_trial' || promotion.data.basis === 'owner_confirmed') {
+      // The owner's approval of these exact bytes, for that owner, in the space it came from:
+      // on trial while they try it, active once they have said to keep it.
       if (
-        candidate.state !== 'enabled_canary' ||
+        candidate.state !==
+          (promotion.data.basis === 'owner_trial' ? 'enabled_canary' : 'active') ||
         promotion.data.scope !== 'private' ||
         promotion.data.principal_id !== access.principalId ||
         source.actor !== access.principalId ||

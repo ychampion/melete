@@ -106,6 +106,12 @@ export async function hasSelectedFinalEvidence(tx: Transaction, candidate: Candi
   );
 }
 
+/** A procedure the person removed stays out of every road back to delivery but undo. */
+export function requireNotRemoved(candidate: Candidate) {
+  if (candidate.removedAt)
+    throw new ServiceError('procedure_removed', 'This was removed; undo the removal first.', 409);
+}
+
 export async function transitionProcedure(
   tx: Transaction,
   candidate: Candidate,
@@ -241,6 +247,7 @@ export class ProcedureService {
   async enableCanary(ownerId: string, spaceId: string, id: string) {
     return this.jobs.transaction(async (tx) => {
       const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
+      requireNotRemoved(candidate);
       verifyDefinition(candidate);
       verifyEvidence(candidate, source, objective);
       if (
@@ -286,6 +293,7 @@ export class ProcedureService {
           'Only the owner who made the correction may try what it taught.',
           403,
         );
+      requireNotRemoved(candidate);
       verifyDefinition(candidate);
       verifyEvidence(candidate, source, objective);
       if (!['candidate', 'evaluated'].includes(candidate.state) || candidate.rejectionReason)
@@ -333,6 +341,7 @@ export class ProcedureService {
       const access = await spaceAuthority(tx, spaceId, ownerId, true);
       if (scope === 'space' && access.space.kind !== 'shared')
         throw new ServiceError('scope_denied', 'Space promotion requires a shared space.', 403);
+      requireNotRemoved(candidate);
       verifyDefinition(candidate);
       verifyEvidence(candidate, source, objective);
       if (candidate.state !== 'enabled_canary' || candidate.canarySpaceId !== spaceId)

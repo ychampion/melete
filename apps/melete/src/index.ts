@@ -76,6 +76,8 @@ import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
 import { attachConversationCorrections } from './learning/conversation.ts';
 import { EpisodeService } from './learning/episodes.ts';
 import { ProcedureEvaluator } from './learning/evaluator.ts';
+import { LearnedService } from './learning/learned.ts';
+import { mountLearned } from './learning/learned-routes.ts';
 import { mountProcedures } from './learning/procedure-routes.ts';
 import { ProcedureService } from './learning/procedures.ts';
 import { mountProposals } from './learning/proposal-routes.ts';
@@ -208,9 +210,14 @@ export function createApp(deps: AppDeps) {
     deps.replies ??
     (deps.jobs && submissions ? new ReplyService(deps.jobs, submissions) : undefined);
   if (deps.jobs) mountJobs(app, deps.jobs, submissions);
-  if (deps.jobs) mountLearning(app, deps.episodes ?? new EpisodeService(deps.jobs));
-  if (deps.proposer) mountProposals(app, deps.proposer);
-  if (deps.jobs) mountProcedures(app, new ProcedureService(deps.jobs), deps.evaluator);
+  if (deps.jobs) {
+    const episodes = deps.episodes ?? new EpisodeService(deps.jobs);
+    const procedures = new ProcedureService(deps.jobs);
+    mountLearning(app, episodes);
+    if (deps.proposer) mountProposals(app, deps.proposer);
+    mountProcedures(app, procedures, deps.evaluator);
+    mountLearned(app, new LearnedService(deps.jobs, procedures, episodes));
+  } else if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
