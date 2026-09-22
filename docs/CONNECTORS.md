@@ -116,13 +116,24 @@ its own tools` in `builtin.test.ts`.
 `GET /connection-kinds` lists the kinds that can be installed and, for each, the
 fields a form needs, where each value goes in the request, which fields are
 secret, and which grants may be chosen. The web application draws its Settings
-form from that response alone. `POST /connections` takes exactly one
-configuration block:
+form from that response alone. Each entry has an `id`, and a kind can appear
+more than once: an entry for a provider whose servers are known carries them in
+`fixed`, so the person gives only an email address and an app password.
+
+| Entry | Kind | What the person types |
+| --- | --- | --- |
+| Gmail, iCloud Mail, Fastmail, Yahoo Mail | `mail` | email address, app password |
+| iCloud Calendar, Fastmail Calendar | `caldav` | email address, app password |
+| Google Calendar (read only) | `ics` | the calendar's secret address in iCal format |
+| Other mail, other calendar, calendar feed, MCP server | each kind | every field the kind takes |
+
+Each provider entry's password field says where that provider issues app
+passwords. `POST /connections` takes exactly one configuration block:
 
 | Kind | `provider` | Block | Credential | Grants |
 | --- | --- | --- | --- | --- |
-| Mail (IMAP and SMTP) | `imap` | `mail`: account name, sender address, IMAP and SMTP host, port and TLS mode, optional folders | `credentials.password` | `email.search`, `email.read`, `email.draft`, `email.send` |
-| CalDAV | `caldav` | `caldav`: one HTTPS calendar collection address and an account name | `credentials.password` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
+| Mail (IMAP and SMTP) | `imap` | `mail`: account name, IMAP and SMTP host, port and TLS mode, optional sender address and folders | `credentials.password` | `email.search`, `email.read`, `email.draft`, `email.send` |
+| CalDAV | `caldav` | `caldav`: an account name and either one HTTPS calendar collection address or the HTTPS address of the calendar service | `credentials.password` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
 
@@ -149,8 +160,11 @@ A mailbox, with the owner's session cookie and from the API's own origin:
 }
 ```
 
-Use an app password where the provider offers one. `inbox` and `sent` name the
-folders when they are not the server's defaults.
+Use an app password where the provider offers one. `from` may be left out when
+the account name is an email address, which is then the sender. `inbox` names
+the inbox when it is not `INBOX`; `sent` names the sent folder, and left out it
+is the folder the server flags as sent, so a provider's own name for it ("Sent
+Messages", "[Gmail]/Sent Mail") needs no setting.
 A CalDAV calendar takes one collection address and an account name instead:
 
 ```json
@@ -164,6 +178,14 @@ A CalDAV calendar takes one collection address and an account name instead:
   "credentials": { "password": "…" }
 }
 ```
+
+In place of `calendar_url`, `server_url` names the calendar service, for example
+`https://caldav.icloud.com/`. The service then asks it, with the account's own
+password, which calendars the account has, and stores the address of the first
+one that holds events; only that address is kept. Every step goes over HTTPS
+and stays inside the service's own domain. A password the service refuses, or
+an account with no calendar of events, is answered with `400` and a sentence
+saying which, and nothing is stored.
 
 A calendar feed carries `ics: { "url": "https://calendar.example.com/feed.ics" }`
 and no `credentials`, because the address is the credential. Each call answers
@@ -180,16 +202,25 @@ demands STARTTLS on IMAP and TLS on SMTP before it authenticates. A mailbox that
 will not upgrade is therefore stored rather than refused, with status `error`
 and check `unavailable`, and its password never crosses a plaintext connection.
 A service started without `MELETE_MASTER_KEY` answers `409 sealing_unavailable`
-to any installation that has a secret to keep.
+to any installation that has a secret to keep. A request the contract refuses is
+answered with `400 invalid_request` and one sentence that names the field the
+way the form labels it, such as "IMAP port is too large." or "Send as is not an
+email address."; it never repeats a value from the request.
 
-The new connection is tested once. `check` in the response is a fixed code
-(`ok`, `degraded`, `unavailable`, `not_running`, `revoked`) with the sentence
+The new connection is tested once. A mailbox's test signs in to both servers:
+it opens the inbox over IMAP and signs in over SMTP without sending anything,
+so a mailbox that reads but cannot send fails its test rather than its first
+approved message. `check` in the response is a fixed code
+(`ok`, `degraded`, `unavailable`, `credential_refused`, `not_running`,
+`revoked`) with the sentence
 that belongs to it; it never carries a transport message, an address or a
 credential. A connection whose test failed is kept with status `error` and
 offers no tools. `POST /connections/{id}/health` runs the test again at any
 time, records the result, and brings a connection in `error` into service once
-the test passes. The connectors do not distinguish a refused password from an
-unreachable server, so both read `unavailable`.
+the test passes. A mailbox or CalDAV server that answers and turns the account
+name or password away reads `credential_refused`, whose sentence asks for an app
+password; a server that cannot be reached, or answers in some other way, reads
+`unavailable`.
 
 `POST /connections/{id}/lifecycle` with `kind: "revoke"` removes a connection.
 The row stays with status `revoked`, its tools leave the catalog of every new
@@ -220,8 +251,14 @@ stored in error; a calendar address without TLS is refused`, and `the
 owner-controlled connections file still works, and wins over what a row stores`.
 That a password never reaches a destination which refuses to upgrade is `a
 mailbox that will not upgrade is unusable, and no password reaches it` in
-`mail-transport.test.ts`. Request validation is in
-`packages/contracts/src/connections.test.ts`. `a form drawn only from the served
+`mail-transport.test.ts`, which also holds `a test reaches both halves: sending
+must work as well as reading` and `a sent folder named its own way is found by
+its flag, so a send can be confirmed`. `CalDAV from the service address alone:
+the calendar is found, and only its address is stored` is in
+connection-kinds.test.ts, and the steps of finding a calendar, including a
+refused password and a service that points elsewhere, are in
+`caldav-discovery.test.ts`. Request validation, the plain-words refusals and the
+provider entries are in `packages/contracts/src/connections.test.ts`. `a form drawn only from the served
 descriptors installs every kind` in `apps/mock-api` runs the web form's logic
 against the contract, and `the form draws exactly what a served descriptor
 carries` renders the Settings form from a descriptor the application has never
@@ -263,7 +300,8 @@ resets and magic links; a sensitive message in any other shape is read like any
 other message.
 
 Mail and CalDAV authenticate with an account name and a password or app
-password; a provider that only accepts OAuth cannot be connected. Tests use
+password; a provider that only accepts OAuth, such as Outlook.com, cannot be
+connected. Tests use
 credentials belonging to local fixtures rather than live accounts.
 
 ### Calendar
@@ -413,7 +451,14 @@ substituted. Every search, load and use rechecks the current job, space, epoch,
 revision and scopes. Loading a schema never grants a scope or changes an effect
 class; ordinary execution still uses `POST /actions`.
 
-Installed skills enter discovery as `skills.<name>` read tools. Their content
+Installed skills enter discovery as `skills.<name>` read tools.
+The skills placed in an attempt's instructions are chosen by whole-word trigger
+matches against the objective and the latest owner message, at most three, and
+only from skills whose every named tool the attempt can reach: its granted
+connections plus the broker's own `job.wait`. A skill the attempt cannot use
+takes no place from one it can. Each attempt that follows skills records one
+`tool_trace` notice naming them, which the conversation shows as a tool entry;
+the notice carries names, never a skill's instructions. Their content
 is read through `POST /tools/call` after loading; their frontmatter tool list
 cannot grant access. Space skills are withheld in the public compartment.
 The existing deterministic initial skill selection remains available.
