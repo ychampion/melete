@@ -9,7 +9,6 @@ triggers:
 tools:
   - calendar.list
   - calendar.create
-  - knowledge.search
 max_tokens: 400
 ---
 

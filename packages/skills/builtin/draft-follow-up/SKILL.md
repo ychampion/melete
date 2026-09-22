@@ -10,7 +10,6 @@ tools:
   - email.search
   - email.read
   - email.draft
-  - knowledge.search
 max_tokens: 400
 ---
 

@@ -8,13 +8,12 @@ triggers:
   - compare options
 tools:
   - web.fetch
-  - knowledge.search
   - files.read
 max_tokens: 400
 ---
 
-Search the space first. The person may have decided this already, and an old
-record may be why the question is being asked again.
+Read what Melete already knows first. The person may have decided this
+already, and an old record may be why the question is being asked again.
 
 Fetch a page before citing it. Never cite from memory of a URL.
 
