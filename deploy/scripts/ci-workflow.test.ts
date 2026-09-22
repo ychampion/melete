@@ -266,13 +266,15 @@ describe('the conformance workflow', () => {
     expect(conformance.source).not.toMatch(/docker (?:login|push)|git push|--push/);
   });
 
-  test('each job judges the host Docker before it starts a stack', () => {
+  test('each job judges the host Docker before it builds or starts a stack', () => {
     for (const [name, job] of conformance.named) {
       const jobSteps = job.steps ?? [];
       const preflight = jobSteps.findIndex((step) =>
         step.run?.includes('deploy/scripts/docker-preflight.ts'),
       );
-      const start = jobSteps.findIndex((step) => step.run?.includes('docker-compose.yml up'));
+      const start = jobSteps.findIndex((step) =>
+        /docker-compose\.yml (?:up|build)/.test(step.run ?? ''),
+      );
       expect([name, preflight > -1 && start > -1 && preflight < start]).toEqual([name, true]);
       // The runner's own versions are printed, so a refusal names the host it refused.
       expect(jobSteps[preflight]?.run).toContain('docker version');
@@ -329,7 +331,7 @@ describe('the conformance workflow', () => {
 
   test('every script, compose file and package script both workflows name exists', () => {
     // The renderer sandbox proof arrives on its own branch; the job guards its absence and
-    // the test below holds that guard to naming this exact path.
+    // the sandbox proof test above holds that guard to naming this exact path.
     for (const line of [...commands, ...conformance.commands])
       for (const file of filesNamed([line]))
         if (file !== SANDBOX_PROOF)
@@ -357,7 +359,7 @@ describe('the upgrade proof', () => {
     expect(checkout?.with?.['fetch-depth']).toBe(0);
   });
 
-  test('starts from the newest release tag with the Compose layout, else the merge base', () => {
+  test('starts from the newest release tag that has the Compose layout and builds', () => {
     const run = start?.run ?? '';
     expect(run).toContain('set -euo pipefail');
     // A release before this tree, never this tree's own tag.
@@ -366,9 +368,24 @@ describe('the upgrade proof', () => {
     );
     expect(run).toContain('git cat-file -e "$start:deploy/docker-compose.yml"');
     expect(run).toContain('git cat-file -e "$start:deploy/scripts/configure.ts"');
-    // Without one, it says where it started rather than proving a different upgrade quietly.
+    // A start point is configured from nothing and its images built before it is chosen.
+    const prepare = /prepare\(\) \{([^}]*)\}/.exec(run)?.[1] ?? '';
+    const chain = prepare.split('&&').map((part) => part.trim());
+    expect(chain[0]).toStartWith('git -c advice.detachedHead=false checkout --detach "$1"');
+    expect(chain).toContain('rm -f deploy/.env');
+    expect(chain).toContain('bun run deploy/scripts/configure.ts --fake');
+    expect(chain.at(-1)).toBe('docker compose -f deploy/docker-compose.yml build');
+    expect(run).toContain('&& prepare "$start"; then');
+  });
+
+  test('falls back to the merge base, and says why, when no release will do', () => {
+    const run = start?.run ?? '';
+    // A tag that does not build is named, so the fallback never hides a broken release.
+    expect(run).toMatch(/::warning::.*\$start do not build/);
     expect(run).toContain('git merge-base origin/main "$head"');
     expect(run).toMatch(/::notice::.*starts from \$start on main/);
+    // The fallback is prepared outside a condition, so a failure there ends the job.
+    expect(run).toMatch(/^ {2}prepare "\$start"$/m);
   });
 
   test('moves to this tree under a tag the upgrade script accepts', () => {
