@@ -378,6 +378,13 @@ export const learnedItem = z.strictObject({
   /** What trying it approves: these exact bytes, and no later version. */
   definition_hash: z.string(),
   learned_at: timestamp,
+  /**
+   * When it leaves the list with the correction it came from. Null once the person
+   * said to keep it: what they kept does not expire.
+   */
+  expires_at: timestamp.nullable(),
+  /** True within a week of `expires_at`, so the list can say it is about to go. */
+  expiring_soon: z.boolean(),
   /** What the person can do with it now. */
   actions: z.array(learnedAction),
 });

@@ -30,7 +30,7 @@ import type { Transaction } from '../db/transaction.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
 import { visibleJob } from '../principals/authority.ts';
-import { type EpisodeService, requireLearningSpace } from './episodes.ts';
+import { type EpisodeService, KEPT_UNTIL, requireLearningSpace } from './episodes.ts';
 import {
   learnedName,
   learnedSteps,
@@ -84,6 +84,8 @@ type Snapshot = {
   paused_at: string | null;
   removed_at: string | null;
   version: number;
+  /** Recorded by "yes": when the correction behind it would have expired, for undo. */
+  episode_expires_at?: string;
 };
 const snapshot = (candidate: Candidate): Snapshot => ({
   state: candidate.state,
@@ -109,8 +111,8 @@ function sameFields(current: Snapshot, recorded: Snapshot) {
             .map(([key, entry]) => [key, canonical(entry)]),
         )
       : value;
-  const { version: _current, ...now } = current;
-  const { version: _recorded, ...then } = recorded;
+  const { version: _current, episode_expires_at: _kept, ...now } = current;
+  const { version: _recorded, episode_expires_at: _keptThen, ...then } = recorded;
   return JSON.stringify(canonical(now)) === JSON.stringify(canonical(then));
 }
 
@@ -131,10 +133,19 @@ const ACTIONS: Record<LearnedState, LearnedItem['actions']> = {
   reverted: ['remove'],
 };
 
-function itemView(candidate: Candidate, source: { actor: string }, principalId: string) {
+/** An item this close to expiring is shown as expiring. */
+const EXPIRING_WITHIN_MS = 7 * 24 * 60 * 60 * 1000;
+
+function itemView(
+  candidate: Candidate,
+  source: { actor: string; expiresAt: Date },
+  principalId: string,
+) {
   const state = learnedState(candidate);
   if (!state || candidate.removedAt) return null;
   const code = state === 'reverted' ? candidate.rejectionReason : null;
+  // Kept by the person's "yes": it lasts. Anything else goes with the correction it came from.
+  const expires = source.expiresAt.getTime() >= KEPT_UNTIL.getTime() ? null : source.expiresAt;
   return learnedItemView.parse({
     id: candidate.id,
     source: 'correction',
@@ -148,6 +159,8 @@ function itemView(candidate: Candidate, source: { actor: string }, principalId: 
     reason_code: code,
     definition_hash: candidate.bodyHash,
     learned_at: candidate.createdAt.toISOString(),
+    expires_at: expires?.toISOString() ?? null,
+    expiring_soon: !!expires && expires.getTime() - Date.now() <= EXPIRING_WITHIN_MS,
     // Only the person who made the correction may try what it taught.
     actions: ACTIONS[state].filter((action) => action !== 'try' || source.actor === principalId),
   });
@@ -271,6 +284,12 @@ export class CorrectionSource implements LearnedSourceProvider {
       .where(eq(procedureCandidate.id, candidate.id))
       .returning();
     if (!saved) throw new ServiceError('procedure_changed', 'The procedure changed during undo.');
+    // Undoing a "yes" gives the correction back the expiry it had.
+    if (before.episode_expires_at)
+      await tx
+        .update(episode)
+        .set({ expiresAt: new Date(before.episode_expires_at) })
+        .where(eq(episode.id, candidate.episodeId));
     await transitionProcedure(
       tx,
       saved,
@@ -584,6 +603,12 @@ export class LearnedService {
           .where(eq(procedureCandidate.id, candidate.id))
           .returning();
         if (!kept) throw new Error('Procedure update returned no row');
+        // What the person said to keep lasts: the correction it quotes stops expiring with it.
+        // Forgetting still reaches it; retention no longer does.
+        await tx
+          .update(episode)
+          .set({ expiresAt: KEPT_UNTIL })
+          .where(eq(episode.id, candidate.episodeId));
         const active = await transitionProcedure(
           tx,
           kept,
@@ -592,7 +617,7 @@ export class LearnedService {
           'The owner said to keep doing this after a job used it.',
         );
         await this.record(tx, principalId, spaceId, 'correction', candidate.id, 'keep', {
-          before: snapshot(candidate),
+          before: { ...snapshot(candidate), episode_expires_at: source.expiresAt.toISOString() },
           after: snapshot(active),
           name: learnedName(candidate),
         });

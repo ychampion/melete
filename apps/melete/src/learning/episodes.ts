@@ -45,6 +45,12 @@ const objectiveOrigin = (row: { objectiveOrigin: string | null }): ObjectiveOrig
 
 export type EpisodeRow = typeof episode.$inferSelect;
 
+/**
+ * The expiry of a correction behind a procedure the person kept by saying yes:
+ * retention never reaches it, while forgetting still removes it like any other.
+ */
+export const KEPT_UNTIL = new Date('9999-12-31T00:00:00.000Z');
+
 /** Admission calls this before enqueueing the first wake; optional metadata never grants authority. */
 export async function registerJobLearning(tx: Transaction, row: JobRow, input: JobLearningScope) {
   await validateReferences(tx, row.spaceId, input);

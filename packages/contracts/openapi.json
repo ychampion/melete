@@ -16451,6 +16451,19 @@
           "learned_at": {
             "$ref": "#/components/schemas/__schema96"
           },
+          "expires_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/__schema82"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiring_soon": {
+            "type": "boolean"
+          },
           "actions": {
             "type": "array",
             "items": {
@@ -16477,6 +16490,8 @@
           "reason_code",
           "definition_hash",
           "learned_at",
+          "expires_at",
+          "expiring_soon",
           "actions"
         ],
         "additionalProperties": false

@@ -10425,6 +10425,8 @@ export interface components {
             applies_when: string[];
             definition_hash: string;
             does: string[];
+            expires_at: components["schemas"]["__schema82"] | null;
+            expiring_soon: boolean;
             id: string;
             learned_at: components["schemas"]["__schema96"];
             name: string;

@@ -6,6 +6,7 @@ import { event } from '../../src/db/schema.ts';
 import { CANARY_INTERVENTION } from '../../src/learning/canary.ts';
 import { LearnedService } from '../../src/learning/learned.ts';
 import { mountLearned } from '../../src/learning/learned-routes.ts';
+import { expireEpisodes } from '../../src/learning/retention.ts';
 import {
   episode,
   learnedChange,
@@ -253,6 +254,84 @@ const questionsFor = async (candidateId: string) => {
     expect(await delivered(spaceId, candidate.id)).toBe(false);
   }, 180000);
 
+  test('what the person kept never expires; what they did not shows when it will', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    // Learned first, so the correction that teaches it touches nothing kept.
+    const waiting = await proposed(spaceId, 'surface-keep-waiting');
+    const kept = await onTrial(spaceId, 'surface-keep-lasts');
+    await usedIt(spaceId);
+    const [question] = await questionsFor(kept.id);
+    const call = app(fixture.ownerId);
+    await call('POST', `/learning/notices/${question?.id}/answer`, {
+      space_id: spaceId,
+      answer: 'yes',
+    });
+    await fixture.handle.db
+      .update(episode)
+      .set({ expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) })
+      .where(eq(episode.id, waiting.episodeId));
+    const before = await call('GET', `/learned?space_id=${spaceId}`);
+    const byId = Object.fromEntries((before.body.items ?? []).map((item) => [item.id, item]));
+    expect(byId[kept.id]).toMatchObject({
+      state: 'active',
+      expires_at: null,
+      expiring_soon: false,
+    });
+    expect(byId[waiting.id]).toMatchObject({ state: 'proposed', expiring_soon: true });
+    expect(byId[waiting.id]?.expires_at).toEqual(expect.any(String));
+    // Retention runs as it would forty days on: the proposal goes, the kept one stays.
+    await expireEpisodes(fixture.handle.sql, new Date(Date.now() + 40 * 24 * 60 * 60 * 1000));
+    const after = await call('GET', `/learned?space_id=${spaceId}`);
+    expect((after.body.items ?? []).map((item) => item.id)).toEqual([kept.id]);
+    expect(await delivered(spaceId, kept.id)).toBe(true);
+    // Kept on the person's word, it stays under the same watch as the trial did.
+    const corrected = await usedIt(spaceId);
+    await fixture.episodes.intervene(fixture.ownerId, corrected.id, {
+      idempotency_key: 'surface-keep-corrected',
+      kind: 'correction',
+      text: 'No, not like that.',
+    });
+    expect(await candidateRow(kept.id)).toMatchObject({
+      state: 'reverted',
+      rejectionReason: CANARY_INTERVENTION,
+    });
+    expect(await delivered(spaceId, kept.id)).toBe(false);
+    const notices = await call('GET', `/learning/notices?space_id=${spaceId}`);
+    expect(notices.body.notices).toContainEqual(
+      expect.objectContaining({ kind: 'reverted', item_id: kept.id }),
+    );
+  }, 240000);
+
+  test('undoing a yes gives the correction back the expiry it had', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    const candidate = await onTrial(spaceId, 'surface-keep-undo');
+    const [original] = await fixture.handle.db
+      .select({ expiresAt: episode.expiresAt })
+      .from(episode)
+      .where(eq(episode.id, candidate.episodeId));
+    await usedIt(spaceId);
+    const [question] = await questionsFor(candidate.id);
+    const call = app(fixture.ownerId);
+    await call('POST', `/learning/notices/${question?.id}/answer`, {
+      space_id: spaceId,
+      answer: 'yes',
+    });
+    const latest = await call('GET', `/learned?space_id=${spaceId}`);
+    expect(latest.body.last_change).toMatchObject({ action: 'keep' });
+    const undone = await call('POST', '/learned/undo', {
+      space_id: spaceId,
+      change_id: latest.body.last_change?.id,
+    });
+    expect(undone.body.item).toMatchObject({ state: 'trial', expires_at: expect.any(String) });
+    const [restored] = await fixture.handle.db
+      .select({ expiresAt: episode.expiresAt })
+      .from(episode)
+      .where(eq(episode.id, candidate.episodeId));
+    expect(restored?.expiresAt.toISOString()).toBe(original?.expiresAt.toISOString());
+  }, 180000);
+
   test('no stops it with the reason recorded, and a notice says why in plain words', async () => {
     if (!fixture) return;
     const spaceId = await fixture.createSpace();
@@ -407,6 +486,8 @@ const questionsFor = async (candidateId: string) => {
       reason_code: null,
       definition_hash: waiting.bodyHash,
       learned_at: waiting.createdAt.toISOString(),
+      expires_at: expect.any(String),
+      expiring_soon: false,
       actions: ['try', 'remove'],
     });
     expect(byId[trying.id]).toMatchObject({ state: 'trial', actions: ['pause', 'remove'] });
