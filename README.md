@@ -57,7 +57,9 @@ do on each date if they say no. No account, no inbox, nothing to install.
 ## Run it yourself
 
 Melete is yours to run: your machine, your mailbox, your model provider, your
-keys. Everything below is the whole install.
+keys. Everything below is the whole install. On a Windows machine with Docker
+Desktop, follow [Windows (Docker Desktop)](docs/DEPLOYMENT.md#windows-docker-desktop)
+for the install, then carry on from [first run](#first-run).
 
 ### Install on a Linux Docker host
 
@@ -172,7 +174,7 @@ the master key that unseals anything you backed up.
 docker compose -f deploy/docker-compose.yml down -v --rmi local --remove-orphans
 # Started it with the browser worker or Tailscale? Add the same -f files to that line.
 owned=label=com.melete.attempt-supervisor=v1
-name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' deploy/.env)
+name=$(tr -d '\r' < deploy/.env | sed -n 's/^COMPOSE_PROJECT_NAME=//p')
 project=label=com.melete.project=${name:-melete}
 docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
 docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm

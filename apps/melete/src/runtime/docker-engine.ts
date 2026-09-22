@@ -128,9 +128,10 @@ export function readHostDocker(
   return { engine: run(HOST_DOCKER_COMMANDS.engine), compose: run(HOST_DOCKER_COMMANDS.compose) };
 }
 
-function spawnCommand(command: readonly string[]): CommandOutput {
+/** Runs one host command synchronously; a missing binary is exit 127. */
+export function spawnCommand(command: readonly string[], timeout = 20_000): CommandOutput {
   try {
-    const result = Bun.spawnSync([...command], { stdout: 'pipe', stderr: 'pipe', timeout: 20_000 });
+    const result = Bun.spawnSync([...command], { stdout: 'pipe', stderr: 'pipe', timeout });
     return {
       code: result.exitCode ?? 1,
       stdout: result.stdout.toString(),

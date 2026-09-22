@@ -4,6 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CommandOutput } from '../../apps/melete/src/runtime/docker-engine.ts';
 import {
+  type DockerHostFacts,
+  type MachineAccess,
+  parseDockerInfo,
+} from '../../apps/melete/src/runtime/docker-host.ts';
+import {
   type CommandRunner,
   installationDependencies,
   judgePreflight,
@@ -253,6 +258,23 @@ describe('arguments', () => {
   });
 });
 
+const engineHost: DockerHostFacts = {
+  platform: 'linux',
+  endpoint: 'unix:///var/run/docker.sock',
+  pipePresent: null,
+  info: parseDockerInfo({
+    code: 0,
+    stdout: JSON.stringify({
+      OSType: 'linux',
+      OperatingSystem: 'Ubuntu 24.04.3 LTS',
+      KernelVersion: '6.8.0-138-generic',
+      MemTotal: 16 * GIB,
+      DockerRootDir: '/var/lib/docker',
+    }),
+    stderr: '',
+  }),
+};
+
 const ready: PreflightFacts = {
   tag: 'v0.2.0',
   repositoryRoot: '/srv/melete',
@@ -267,6 +289,8 @@ const ready: PreflightFacts = {
     engine: { code: 0, stdout: '1.48 28.0.0', stderr: '' },
     compose: { code: 0, stdout: '2.33.1', stderr: '' },
   },
+  host: engineHost,
+  missingTools: [],
   postgresRunning: true,
   serviceContainer: true,
   dockerRootFreeBytes: 20 * GIB,
@@ -424,7 +448,14 @@ function host(overrides: Record<string, Partial<CommandOutput>> = {}) {
     'git describe --tags --always': 'v0.1.0',
     'docker version': '1.48 28.0.0',
     'docker compose version --short': '2.33.1',
-    'docker info': '/var/lib/docker',
+    'docker info': JSON.stringify({
+      OSType: 'linux',
+      OperatingSystem: 'Ubuntu 24.04.3 LTS',
+      KernelVersion: '6.8.0-138-generic',
+      MemTotal: 16 * GIB,
+      DockerRootDir: '/var/lib/docker',
+    }),
+    'docker context inspect': 'unix:///var/run/docker.sock',
     'df -Pk':
       'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 1 41943040 1% /',
     ' ps -q postgres': 'c'.repeat(64),
@@ -456,7 +487,14 @@ const options = {
   tailscale: false,
   waitTimeoutSeconds: 300,
 };
-const dependencies = (run: CommandRunner, output: string[]) => ({
+const linuxHost: MachineAccess & { which: (program: string) => string | null } = {
+  platform: 'linux',
+  env: {},
+  exists: () => false,
+  installed: () => [],
+  which: (program) => `/usr/bin/${program}`,
+};
+const dependencies = (run: CommandRunner, output: string[], machine = linuxHost) => ({
   run,
   log: (line: string) => {
     output.push(line);
@@ -464,6 +502,7 @@ const dependencies = (run: CommandRunner, output: string[]) => ({
   sleep: async () => {},
   journalEntries: async () => 37,
   environment: async () => ({ COMPOSE_PROJECT_NAME: 'melete' }),
+  machine,
 });
 const mutating = /\b(stop|checkout|build|tag|up -d|mkdir|chmod|cp -|install|pg_dump|down)\b/;
 
@@ -688,5 +727,113 @@ describe('the installation settings the upgrade reads', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('an installation on Docker Desktop for Windows', () => {
+  const desktopInfo = (fields: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      OSType: 'linux',
+      OperatingSystem: 'Docker Desktop',
+      KernelVersion: '6.6.87.2-microsoft-standard-WSL2',
+      MemTotal: 8 * GIB,
+      DockerRootDir: '/var/lib/docker',
+      ...fields,
+    });
+  const vmDisk =
+    'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sdd 1055762868 9 41943040 1% /var/lib/postgresql/data';
+  const windows = (tools: boolean) => ({
+    platform: 'win32' as const,
+    env: {},
+    exists: () => true,
+    installed: () => ['.bun/short.js'],
+    which: (program: string) => (tools ? `C:\\Program Files\\Git\\usr\\bin\\${program}.exe` : null),
+  });
+  const desktop = (fields: Record<string, unknown> = {}) =>
+    host({
+      'docker info': { stdout: desktopInfo(fields) },
+      'docker context inspect': { stdout: 'npipe:////./pipe/dockerDesktopLinuxEngine' },
+      'exec -T postgres df -Pk /var/lib/postgresql/data': { stdout: vmDisk },
+      'df -Pk /var/lib/docker': { code: 1, stderr: 'df: /var/lib/docker: No such file' },
+      'reg query': { stdout: 'LongPathsEnabled    REG_DWORD    0x0' },
+      'ls-files': { stdout: 'README.md\n' },
+    });
+
+  test("Docker's free space is measured inside the VM, beside the database volume", async () => {
+    const { run, commands } = desktop();
+    const output: string[] = [];
+    const result = await runUpgrade(
+      { ...options, dryRun: true },
+      dependencies(run, output, windows(true)),
+    );
+    expect(result.status).toBe('planned');
+    expect(commands).toContain(
+      'docker compose -f deploy/docker-compose.yml exec -T postgres df -Pk /var/lib/postgresql/data',
+    );
+    expect(commands.some((line) => line.startsWith('df -Pk /var/lib/docker'))).toBe(false);
+    expect(commands.filter((line) => mutating.test(line) && !line.includes(' df '))).toEqual([]);
+    expect(output.join('\n')).toContain('Preflight passed');
+  });
+
+  test('outside Git Bash the missing programs are named before anything is touched', async () => {
+    const { run, commands } = desktop();
+    const output: string[] = [];
+    const result = await runUpgrade(
+      { ...options, dryRun: false },
+      dependencies(run, output, windows(false)),
+    );
+    expect(result.status).toBe('refused');
+    expect(commands.filter((line) => mutating.test(line) && !line.includes(' df '))).toEqual([]);
+    expect(output.join('\n')).toContain(
+      'mkdir, cp, sha256sum, chmod, df are not on PATH. Run the upgrade from Git Bash',
+    );
+  });
+
+  test('Windows containers mode and a small VM are refused like an old engine', async () => {
+    const mode = desktop({ OSType: 'windows' });
+    const output: string[] = [];
+    expect(
+      (
+        await runUpgrade(
+          { ...options, dryRun: false },
+          dependencies(mode.run, output, windows(true)),
+        )
+      ).status,
+    ).toBe('refused');
+    expect(output.join('\n')).toContain('Switch to Linux containers');
+    const small = desktop({ MemTotal: 2 * GIB });
+    const smallOutput: string[] = [];
+    await runUpgrade(
+      { ...options, dryRun: false },
+      dependencies(small.run, smallOutput, windows(true)),
+    );
+    expect(smallOutput.join('\n')).toContain('.wslconfig');
+  });
+
+  test('a Linux host without the programs is told which ones', () => {
+    const problems = judgePreflight({ ...ready, missingTools: ['sha256sum'] });
+    expect(problems).toEqual(['sha256sum is not on PATH; the backup steps need them.']);
+  });
+});
+
+describe('an installation on a remote engine', () => {
+  test('is upgraded from here, with the disk measured on the engine machine', async () => {
+    const vmDisk =
+      'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 100 1 41943040 1% /var/lib/postgresql/data';
+    const { run, commands } = host({
+      'docker context inspect': { stdout: 'ssh://deploy@droplet.example.net' },
+      'exec -T postgres df -Pk /var/lib/postgresql/data': { stdout: vmDisk },
+      'df -Pk /var/lib/docker': { code: 1, stderr: 'df: /var/lib/docker: No such file' },
+    });
+    const output: string[] = [];
+    const result = await runUpgrade({ ...options, dryRun: true }, dependencies(run, output));
+    expect(result.status).toBe('planned');
+    expect(commands).toContain(
+      'docker compose -f deploy/docker-compose.yml exec -T postgres df -Pk /var/lib/postgresql/data',
+    );
+    expect(commands.some((line) => line.startsWith('df -Pk /var/lib/docker'))).toBe(false);
+    const text = output.join('\n');
+    expect(text).toContain('The Docker engine is on droplet.example.net');
+    expect(text).toContain('Preflight passed');
   });
 });

@@ -22,6 +22,9 @@
  * whose tree predates this file upgrades the same way. `--repository` names the
  * installation it acts on. For that, everything this file imports is Bun and
  * relative files: the copy runs without installing dependencies.
+ *
+ * The host-side steps use mkdir, cp, sha256sum, chmod and df. On Windows,
+ * Git Bash provides them, so the upgrade runs from Git Bash there.
  */
 import { closeSync, openSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -31,8 +34,19 @@ import {
   type CommandOutput,
   HOST_DOCKER_COMMANDS,
   type HostDockerOutputs,
-  judgeHostDocker,
 } from '../../apps/melete/src/runtime/docker-engine.ts';
+import {
+  DOCKER_HOST_COMMANDS,
+  type DockerHostFacts,
+  describeDockerHost,
+  dockerHostFacts,
+  engineElsewhere,
+  judgeDockerMachine,
+  localMachine,
+  longPathCommands,
+  longPathFacts,
+  type MachineAccess,
+} from '../../apps/melete/src/runtime/docker-host.ts';
 import { parseEnvFile } from './provider-settings.ts';
 
 export const USAGE =
@@ -45,6 +59,8 @@ const MIN_BACKUP_FREE_BYTES = 1 * GIB;
 const TAG = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/;
 const IMAGES = ['melete-service', 'melete-web', 'melete-runtime'] as const;
 const OPERATOR_CONFIGURATION = 'deploy/config/';
+/** The programs the plan runs on the host besides git, bun and docker. */
+export const HOST_TOOLS = ['mkdir', 'cp', 'sha256sum', 'chmod', 'df'] as const;
 
 export type UpgradeOptions = {
   tag: string;
@@ -368,6 +384,10 @@ export type PreflightFacts = {
   configChangedInTarget: boolean;
   envFile: boolean;
   docker: HostDockerOutputs;
+  /** The machine running the engine: Docker Desktop's mode and memory, and Windows paths. */
+  host: DockerHostFacts;
+  /** HOST_TOOLS that are not on PATH; on Windows outside Git Bash, all of them. */
+  missingTools: string[];
   postgresRunning: boolean;
   serviceContainer: boolean;
   dockerRootFreeBytes: number | null;
@@ -424,7 +444,13 @@ export function judgePreflight(facts: PreflightFacts): string[] {
     problems.push(
       'deploy/.env is missing. The upgrade keeps an installation; it does not create one.',
     );
-  problems.push(...judgeHostDocker(facts.docker));
+  problems.push(...judgeDockerMachine(facts.docker, facts.host));
+  if (facts.missingTools.length > 0)
+    problems.push(
+      facts.host.platform === 'win32'
+        ? `${facts.missingTools.join(', ')} ${facts.missingTools.length === 1 ? 'is' : 'are'} not on PATH. Run the upgrade from Git Bash, which comes with Git for Windows and provides them.`
+        : `${facts.missingTools.join(', ')} ${facts.missingTools.length === 1 ? 'is' : 'are'} not on PATH; the backup steps need them.`,
+    );
   if (!facts.postgresRunning)
     problems.push(
       'The postgres service is not running, so the database cannot be dumped. Start the stack and wait for it to be healthy.',
@@ -487,6 +513,8 @@ export type UpgradeDependencies = {
   environment: () => Promise<Record<string, string> | null>;
   /** The commit this copy of the script was archived from, or null outside an archive. */
   releaseCommit?: () => Promise<string | null>;
+  /** The machine the upgrade runs on, and where a program would be found on PATH. */
+  machine: MachineAccess & { which: (program: string) => string | null };
 };
 
 export type UpgradeResult = {
@@ -508,8 +536,9 @@ export async function gatherPreflight(
   {
     run,
     environment,
+    machine,
     releaseCommit = async () => null,
-  }: Pick<UpgradeDependencies, 'run' | 'environment' | 'releaseCommit'>,
+  }: Pick<UpgradeDependencies, 'run' | 'environment' | 'machine' | 'releaseCommit'>,
 ): Promise<{ facts: PreflightFacts; context: UpgradeContext; secrets: string[] }> {
   const compose = composeArguments(options);
   const text = async (command: readonly string[]) => {
@@ -535,10 +564,36 @@ export async function gatherPreflight(
     engine: await run(HOST_DOCKER_COMMANDS.engine),
     compose: await run(HOST_DOCKER_COMMANDS.compose),
   };
-  const dockerRoot = await text(['docker', 'info', '--format', '{{.DockerRootDir}}']);
-  const dockerRootFreeBytes = dockerRoot
-    ? availableBytes(await run(['df', '-Pk', dockerRoot]))
-    : null;
+  const pathCommands = longPathCommands(options.repositoryRoot);
+  const host = dockerHostFacts({
+    platform: machine.platform,
+    env: machine.env,
+    info: await run(DOCKER_HOST_COMMANDS.info),
+    context: await run(DOCKER_HOST_COMMANDS.context),
+    exists: machine.exists,
+    ...(machine.platform === 'win32'
+      ? {
+          paths: longPathFacts({
+            root: options.repositoryRoot,
+            registry: await run(pathCommands.registry),
+            git: await run(pathCommands.git),
+            tracked: await run(pathCommands.tracked),
+            installed: machine.installed(options.repositoryRoot),
+          }),
+        }
+      : {}),
+  });
+  const missingTools = HOST_TOOLS.filter((tool) => machine.which(tool) === null);
+  // Docker Desktop keeps images and volumes in its VM, and a remote engine on
+  // its own machine; this host's df sees neither. The database volume is on
+  // that disk, so ask from beside it.
+  const dockerRootFreeBytes = engineElsewhere(host)
+    ? availableBytes(
+        await run([...compose, 'exec', '-T', 'postgres', 'df', '-Pk', '/var/lib/postgresql/data']),
+      )
+    : host.info?.dockerRootDir
+      ? availableBytes(await run(['df', '-Pk', host.info.dockerRootDir]))
+      : null;
   const backupFreeBytes = availableBytes(await run(['df', '-Pk', dirname(options.backupDir)]));
   const postgresRunning = Boolean(await text([...compose, 'ps', '-q', 'postgres']));
   const serviceContainer = Boolean(await text([...compose, 'ps', '-a', '-q', 'melete']));
@@ -588,6 +643,8 @@ export async function gatherPreflight(
       configChangedInTarget,
       envFile: values !== null,
       docker,
+      host,
+      missingTools,
       postgresRunning,
       serviceContainer,
       dockerRootFreeBytes,
@@ -637,6 +694,7 @@ export async function runUpgrade(
     secrets.reduce((result, secret) => result.replaceAll(secret, '[redacted]'), message);
   const plan = upgradePlan(context);
   const problems = judgePreflight(facts);
+  for (const note of describeDockerHost(facts.host)) log(note);
   if (problems.length > 0) {
     log(`Preflight found ${problems.length} problem(s); nothing was changed:`);
     for (const problem of problems) log(`  - ${problem}`);
@@ -820,6 +878,7 @@ if (import.meta.main) {
     releaseCommit: () => readReleaseCommit(import.meta.dir),
     log: (line) => process.stdout.write(`${line}\n`),
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+    machine: { ...localMachine, which: (program) => Bun.which(program) },
   });
   process.exit(result.status === 'planned' || result.status === 'upgraded' ? 0 : 1);
 }

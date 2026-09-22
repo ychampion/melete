@@ -10,7 +10,11 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { localMachine } from '../../apps/melete/src/runtime/docker-host.ts';
 import { gatherPreflight, judgePreflight, readReleaseCommit, spawnRunner } from './upgrade.ts';
+
+/** The machine these tests run on, as the script itself uses it. */
+const thisMachine = { ...localMachine, which: (program: string) => Bun.which(program) };
 
 const root = resolve(import.meta.dir, '../..');
 const SPECIFIER =
@@ -144,6 +148,7 @@ describe('the release a copy was taken from', () => {
           {
             run: spawnRunner(repository),
             environment: async () => ({}),
+            machine: thisMachine,
             releaseCommit: () => (copy ? readReleaseCommit(copy) : Promise.resolve(null)),
           },
         );
@@ -174,7 +179,7 @@ describe('the installation a copy is pointed at', () => {
           tailscale: false,
           waitTimeoutSeconds: 300,
         },
-        { run: spawnRunner(repositoryRoot), environment: async () => ({}) },
+        { run: spawnRunner(repositoryRoot), environment: async () => ({}), machine: thisMachine },
       )
     ).facts;
   const checkoutProblems = async (repositoryRoot: string) =>
