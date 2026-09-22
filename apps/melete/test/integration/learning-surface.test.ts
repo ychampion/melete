@@ -189,6 +189,15 @@ const questionsFor = async (candidateId: string) => {
     expect(await questionsFor(other.id)).toHaveLength(0);
   }, 180000);
 
+  test('a canary earned by evaluation asks nothing: the question is about the person’s own trial', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    const candidate = await fixture.evaluatedCanary(await proposed(spaceId, 'surface-evaluated'));
+    expect(await delivered(spaceId, candidate.id)).toBe(true);
+    await usedIt(spaceId);
+    expect(await questionsFor(candidate.id)).toHaveLength(0);
+  }, 180000);
+
   test('yes keeps it for that person, and sharing it still needs sealed evidence', async () => {
     if (!fixture) return;
     const spaceId = await sharedSpace();
