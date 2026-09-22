@@ -143,7 +143,8 @@ export async function startMemoryService(options: MemoryServiceOptions) {
       stopRecovery();
       // Git projection and cleanup must settle before the caller closes SQL.
       await running;
-      if (options.gateway) await options.boss.offWork(MEMORY_EXTRACT_QUEUE);
+      // The worker runs with or without a gateway; Tier 0 needs none.
+      await options.boss.offWork(MEMORY_EXTRACT_QUEUE);
     },
   };
 }
