@@ -173,6 +173,21 @@ const itemView = (row: ItemRow): LedgerItem => ({
   summary: row.summary,
 });
 
+/**
+ * A scan runs inside the service process that started it, so a scan still
+ * marked running when the service starts was cut off when it last stopped.
+ * Left alone it would be handed back to every later request to scan, and the
+ * person could never scan again.
+ */
+export async function closeInterruptedScans(db: Database): Promise<number> {
+  const closed = await db
+    .update(companyScan)
+    .set({ status: 'failed', error: 'interrupted by a restart', finishedAt: new Date() })
+    .where(eq(companyScan.status, 'running'))
+    .returning({ id: companyScan.id });
+  return closed.length;
+}
+
 export class PostgresCompanyStore implements CompanyStore {
   constructor(private readonly db: Database) {}
 
