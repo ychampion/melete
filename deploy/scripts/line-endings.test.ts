@@ -16,17 +16,30 @@ const inContainers = (path: string) =>
   path.startsWith('deploy/config/') ||
   path === 'deploy/.env.example';
 
+/** Scripts must be text outright; the directories may leave detection to Git. */
+const mustBeText = (path: string) =>
+  /\.(sh|py)$/.test(path) || /(^|\/)Dockerfile[^/]*$/.test(path) || path === 'deploy/.env.example';
+
+/** `git check-attr -z` prints path, attribute, value triples. */
+function attributes(paths: string[]) {
+  const fields = git('check-attr', '-z', 'text', 'eol', '--', ...paths).split('\0');
+  const byPath = new Map<string, Record<string, string>>();
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const [path = '', attribute = '', value = ''] = fields.slice(index, index + 3);
+    byPath.set(path, { ...byPath.get(path), [attribute]: value });
+  }
+  return byPath;
+}
+
 test('what containers execute checks out with LF endings on every system', () => {
   const files = git('ls-files', '-z').split('\0').filter(Boolean).filter(inContainers);
   expect(files).toContain('packages/runtime-hermes/entrypoint.sh');
   expect(files).toContain('deploy/Dockerfile.melete');
-  // `git check-attr -z` prints path, attribute, value triples.
-  const fields = git('check-attr', '-z', 'text', 'eol', '--', ...files).split('\0');
   const loose: string[] = [];
-  for (let index = 0; index + 2 < fields.length; index += 3) {
-    const [path, attribute, value] = fields.slice(index, index + 3);
-    if ((attribute === 'text' && value !== 'set') || (attribute === 'eol' && value !== 'lf'))
-      loose.push(`${path}: ${attribute}=${value}`);
+  for (const [path, value] of attributes(files)) {
+    const text = mustBeText(path) ? ['set'] : ['set', 'auto'];
+    if (!text.includes(value.text ?? '') || value.eol !== 'lf')
+      loose.push(`${path}: text=${value.text} eol=${value.eol}`);
   }
   expect(loose).toEqual([]);
   // And none of them is stored with CRLF, which eol=lf would only hide on checkout.
@@ -34,4 +47,10 @@ test('what containers execute checks out with LF endings on every system', () =>
     .split('\n')
     .filter((line) => /^i\/(crlf|mixed)/.test(line));
   expect(stored).toEqual([]);
+});
+
+test('an image added to those directories is still binary, not converted', () => {
+  const found = attributes(['packages/runtime-hermes/assets/icon.png', 'deploy/config/logo.jpg']);
+  expect(found.size).toBe(2);
+  for (const value of found.values()) expect(value.text).toBe('unset');
 });
