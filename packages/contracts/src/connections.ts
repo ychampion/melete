@@ -700,7 +700,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
   {
     id: 'mcp_stdio',
     kind: 'mcp_stdio',
-    title: 'MCP server (package or image)',
+    title: 'MCP server from a package or image (advanced)',
     description:
       'Run an MCP server from npm, PyPI or a container image in its own container, with no network unless you name a destination. You choose each tool, its grant and how far it may act.',
     fixed: [

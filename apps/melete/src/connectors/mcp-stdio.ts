@@ -12,7 +12,12 @@
  * has been idle for a while, and restarted on the next call. A server that
  * keeps crashing is left stopped until its owner tests the connection again.
  */
-import { type ConnectorHealth, type McpStdioLaunch, mcpStdioLaunch } from '@melete/contracts';
+import {
+  type ConnectorHealth,
+  type McpStdioLaunch,
+  mcpStdioLaunch,
+  pluginEntry,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { ConnectorFaultError } from './faults.ts';
@@ -263,11 +268,75 @@ export class StdioServer {
   }
 }
 
-/** What a stdio connection row keeps: the policy with its launch, and the catalog pinned at install. */
+/**
+ * What a stdio connection row keeps: the policy with its launch, the catalog
+ * recorded at installation, and, for a plugin, which catalog entry and version
+ * it came from.
+ */
 export const storedStdioConnection = z.object({
   server: mcpServerConfig,
   tools: z.array(mcpToolDefinition).max(256).optional(),
+  plugin: z.object({ id: z.string(), version: z.string() }).optional(),
 });
+
+/**
+ * A stored installation's connector. A plugin whose catalog entry now pins
+ * another version is moved to it here: the new version is started once to
+ * record its catalog, and if it will not start the plugin stays on the version
+ * it had. Only the launch moves; the tools, their grants and the person's
+ * values and sites are the ones they installed.
+ */
+export async function openStoredStdioConnector(
+  row: { id: string; spaceId: string; configuration: Record<string, unknown> | null },
+  sql: Sql,
+  secrets: SealedSecretStore,
+  launcher: StdioLauncher,
+  lifecycle: StdioLifecycleOptions = {},
+): Promise<Connector> {
+  const stored = storedStdioConnection.parse(row.configuration);
+  const binding = { connectionId: row.id, spaceId: row.spaceId };
+  const entry = stored.plugin ? pluginEntry(stored.plugin.id) : undefined;
+  if (
+    entry &&
+    stored.plugin &&
+    entry.version !== stored.plugin.version &&
+    stored.server.endpoint.transport === 'container'
+  ) {
+    const { command: _previous, ...kept } = stored.server.endpoint.launch;
+    const server = mcpServerConfig.parse({
+      ...stored.server,
+      endpoint: {
+        transport: 'container',
+        launch: {
+          ...kept,
+          runner: entry.launch.runner,
+          source: entry.launch.source,
+          ...(entry.launch.command ? { command: entry.launch.command } : {}),
+          args: entry.launch.args,
+          egress: [...new Set([...entry.launch.egress, ...kept.egress])],
+        },
+      },
+    });
+    const { tools: _recorded, ...rest } = row.configuration ?? {};
+    const moved = { ...rest, server, plugin: { id: entry.id, version: entry.version } };
+    const before = JSON.stringify(row.configuration);
+    const [changed] =
+      await sql`update connection set configuration = ${JSON.stringify(moved)}::jsonb
+      where id = ${row.id} and configuration = ${before}::jsonb returning id`;
+    if (changed) {
+      try {
+        return await openStdioMcpConnector(server, binding, sql, secrets, launcher, lifecycle);
+      } catch {
+        await sql`update connection set configuration = ${before}::jsonb
+          where id = ${row.id} and configuration = ${JSON.stringify(moved)}::jsonb`;
+      }
+    }
+  }
+  return openStdioMcpConnector(stored.server, binding, sql, secrets, launcher, {
+    ...lifecycle,
+    pinned: stored.tools,
+  });
+}
 
 const sealedEnvironment = z.record(z.string(), z.string());
 

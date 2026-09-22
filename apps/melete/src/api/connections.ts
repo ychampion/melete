@@ -3,6 +3,7 @@ import {
   CONNECTION_KIND_DESCRIPTORS,
   type ConnectionCheck,
   type ConnectionInstallation,
+  type CreateConnectionRequest,
   connectionCheck,
   connectionCheckResponse,
   connectionInstallation,
@@ -12,6 +13,13 @@ import {
   connectionResponse,
   connectionView,
   createConnectionRequest,
+  describePlugin,
+  installPluginRequest,
+  installPluginResponse,
+  PLUGIN_CATALOG,
+  pluginEntry,
+  pluginInstallation,
+  pluginListResponse,
 } from '@melete/contracts';
 import { and, asc, eq, ne, not, sql as query } from 'drizzle-orm';
 import type { Hono } from 'hono';
@@ -229,12 +237,12 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     return c.json(connectionCheckResponse.parse({ connection: view(current), check: outcome }));
   });
 
-  app.post('/connections', async (c) => {
-    const parsed = createConnectionRequest.safeParse(await c.req.json());
-    // The person is told which field to fix, in the words the form uses for it.
-    if (!parsed.success)
-      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
-    const request = parsed.data;
+  /** One installation, whether its request was written out or built from a plugin entry. */
+  const install = async (
+    actor: string,
+    request: CreateConnectionRequest,
+    plugin?: { id: string; version: string },
+  ) => {
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
     const installation = resolved.value;
@@ -251,7 +259,6 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         'This service has no master key, so it cannot keep a credential. Set MELETE_MASTER_KEY and start it again.',
         409,
       );
-    const actor = c.get('owner').id;
     const spaceId = request.space_id ?? (await personalSpace(deps.db, actor));
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
@@ -289,7 +296,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
           label: request.label,
           scopes: stored.scopes,
           secretRef: stored.secret ? await secrets.put(spaceId, stored.secret) : null,
-          configuration: stored.configuration,
+          configuration: plugin ? { ...stored.configuration, plugin } : stored.configuration,
           status: 'disabled',
           setupState: 'connecting',
         })
@@ -352,7 +359,70 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
       throw new ServiceError('not_found', 'Connection was removed during installation.', 404);
     if (row.generation !== generation)
       throw new ServiceError('generation_conflict', 'Connection changed during installation.');
-    return c.json(connectionResponse.parse({ connection: view(row), check: outcome }), 201);
+    return connectionResponse.parse({ connection: view(row), check: outcome });
+  };
+
+  app.post('/connections', async (c) => {
+    const parsed = createConnectionRequest.safeParse(await c.req.json());
+    // The person is told which field to fix, in the words the form uses for it.
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    return c.json(await install(c.get('owner').id, parsed.data), 201);
+  });
+
+  /** Plugins a space already runs, by catalog entry. */
+  const installedPlugins = async (spaceId: string) => {
+    const rows = await deps.db
+      .select({ id: connection.id, configuration: connection.configuration })
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          eq(connection.provider, 'mcp'),
+          ne(connection.status, 'revoked'),
+        ),
+      );
+    const found = new Map<string, string>();
+    for (const row of rows) {
+      const entry = (row.configuration.plugin as { id?: unknown } | undefined)?.id;
+      if (typeof entry === 'string') found.set(entry, row.id);
+    }
+    return found;
+  };
+
+  app.get('/plugins', async (c) => {
+    if (!factory.options.stdioLauncher) return c.json(pluginListResponse.parse({ plugins: [] }));
+    const actor = c.get('owner').id;
+    const spaceId = c.req.query('space_id') ?? (await personalSpace(deps.db, actor));
+    if ((await spaceAuthority(deps.db, spaceId, actor)).role !== 'owner')
+      throw new ServiceError('scope_denied', 'Space owner required.', 403);
+    const installed = await installedPlugins(spaceId);
+    return c.json(
+      pluginListResponse.parse({
+        plugins: PLUGIN_CATALOG.map((entry) =>
+          describePlugin(entry, installed.get(entry.id) ?? null),
+        ),
+      }),
+    );
+  });
+
+  app.post('/plugins/:id', async (c) => {
+    const entry = pluginEntry(c.req.param('id'));
+    if (!entry) throw new ServiceError('not_found', 'No such plugin.', 404);
+    const request = installPluginRequest.parse(await c.req.json());
+    const built = pluginInstallation(entry, request.values);
+    if (!built.ok) throw new ServiceError('invalid_request', built.error, 400);
+    const created = await install(
+      c.get('owner').id,
+      createConnectionRequest.parse({
+        ...(request.space_id ? { space_id: request.space_id } : {}),
+        provider: 'mcp',
+        label: entry.title,
+        mcp_stdio: built.config,
+      }),
+      { id: entry.id, version: entry.version },
+    );
+    return c.json(installPluginResponse.parse(created), 201);
   });
 }
 

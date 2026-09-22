@@ -10745,6 +10745,160 @@
         }
       }
     },
+    "/plugins": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "List the plugins that can be added with one tap",
+        "description": "Each plugin is a tool server Melete runs in a container of its own, at a pinned version. `fields` are the few values a person supplies; `installed` names the connection already running it in the space. Empty when this service does not run plugin containers.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "space_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Plugins",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "plugins": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Plugin"
+                      }
+                    }
+                  },
+                  "required": [
+                    "plugins"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plugins/{pluginId}": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Add a plugin from the catalog",
+        "description": "Builds the installation from the catalog entry and the supplied values, then installs it exactly as `POST /connections` does. Secret values are sealed on arrival and given only to the plugin. The service starts it when a tool is first used, stops it when idle, and moves it to the pinned version of each release.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pluginId",
+            "schema": {
+              "type": "string",
+              "description": "Catalog entry id"
+            },
+            "required": true,
+            "description": "Catalog entry id"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "space_id": {
+                    "type": "string",
+                    "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+                  },
+                  "values": {
+                    "default": {},
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 16384
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "$ref": "#/components/schemas/Connection"
+                    },
+                    "check": {
+                      "$ref": "#/components/schemas/ConnectionCheck"
+                    }
+                  },
+                  "required": [
+                    "connection"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A value is missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Space owner and matching audience required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such plugin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plugin is already added to this space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/connection-kinds": {
       "get": {
         "tags": [
@@ -10916,10 +11070,10 @@
                             "type": "string"
                           },
                           "type": {
-                            "$ref": "#/components/schemas/__schema349"
+                            "$ref": "#/components/schemas/__schema356"
                           },
                           "status": {
-                            "$ref": "#/components/schemas/__schema350"
+                            "$ref": "#/components/schemas/__schema357"
                           },
                           "tags": {
                             "type": "array",
@@ -11037,7 +11191,7 @@
                             "type": "string"
                           },
                           "status": {
-                            "$ref": "#/components/schemas/__schema350"
+                            "$ref": "#/components/schemas/__schema357"
                           },
                           "score": {
                             "type": "number"
@@ -11090,7 +11244,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema351"
+                  "$ref": "#/components/schemas/__schema358"
                 }
               }
             }
@@ -11153,7 +11307,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema351"
+                  "$ref": "#/components/schemas/__schema358"
                 }
               }
             }
@@ -11358,7 +11512,7 @@
                                 "minItems": 1,
                                 "type": "array",
                                 "items": {
-                                  "$ref": "#/components/schemas/__schema366"
+                                  "$ref": "#/components/schemas/__schema373"
                                 }
                               },
                               "tools": {
@@ -12424,23 +12578,23 @@
                     "companies": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema387"
+                        "$ref": "#/components/schemas/__schema394"
                       }
                     },
                     "items": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema390"
+                        "$ref": "#/components/schemas/__schema397"
                       }
                     },
                     "totals": {
                       "type": "object",
                       "properties": {
                         "owed_to_you_minor": {
-                          "$ref": "#/components/schemas/__schema388"
+                          "$ref": "#/components/schemas/__schema395"
                         },
                         "monthly_spend_minor": {
-                          "$ref": "#/components/schemas/__schema388"
+                          "$ref": "#/components/schemas/__schema395"
                         },
                         "renewals_next_30d": {
                           "type": "integer",
@@ -12486,7 +12640,7 @@
                       "additionalProperties": false
                     },
                     "currency": {
-                      "$ref": "#/components/schemas/__schema389"
+                      "$ref": "#/components/schemas/__schema396"
                     }
                   },
                   "required": [
@@ -12549,10 +12703,10 @@
                   "type": "object",
                   "properties": {
                     "item": {
-                      "$ref": "#/components/schemas/__schema390"
+                      "$ref": "#/components/schemas/__schema397"
                     },
                     "company": {
-                      "$ref": "#/components/schemas/__schema387"
+                      "$ref": "#/components/schemas/__schema394"
                     },
                     "message": {
                       "anyOf": [
@@ -12663,7 +12817,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema390"
+                  "$ref": "#/components/schemas/__schema397"
                 }
               }
             }
@@ -12806,7 +12960,7 @@
                     "providers": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/__schema392"
+                        "$ref": "#/components/schemas/__schema399"
                       }
                     }
                   },
@@ -12863,7 +13017,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema392"
+                  "$ref": "#/components/schemas/__schema399"
                 }
               }
             }
@@ -13086,7 +13240,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema392"
+                  "$ref": "#/components/schemas/__schema399"
                 }
               }
             }
@@ -13171,7 +13325,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema392"
+                  "$ref": "#/components/schemas/__schema399"
                 }
               }
             }
@@ -15314,29 +15468,65 @@
         ],
         "additionalProperties": false
       },
-      "ConnectionKind": {
+      "Plugin": {
         "type": "object",
         "properties": {
           "id": {
             "$ref": "#/components/schemas/__schema330"
           },
-          "kind": {
+          "title": {
             "$ref": "#/components/schemas/__schema331"
           },
-          "title": {
+          "description": {
             "$ref": "#/components/schemas/__schema332"
           },
-          "description": {
+          "version": {
             "$ref": "#/components/schemas/__schema333"
           },
-          "fixed": {
+          "fields": {
             "$ref": "#/components/schemas/__schema334"
           },
-          "fields": {
+          "tools": {
+            "$ref": "#/components/schemas/__schema335"
+          },
+          "installed": {
             "$ref": "#/components/schemas/__schema336"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "version",
+          "fields",
+          "tools",
+          "installed"
+        ],
+        "additionalProperties": false
+      },
+      "ConnectionKind": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/__schema337"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/__schema338"
+          },
+          "title": {
+            "$ref": "#/components/schemas/__schema339"
+          },
+          "description": {
+            "$ref": "#/components/schemas/__schema340"
+          },
+          "fixed": {
+            "$ref": "#/components/schemas/__schema341"
+          },
+          "fields": {
+            "$ref": "#/components/schemas/__schema343"
           },
           "scopes": {
-            "$ref": "#/components/schemas/__schema348"
+            "$ref": "#/components/schemas/__schema355"
           }
         },
         "required": [
@@ -15354,34 +15544,34 @@
         "type": "object",
         "properties": {
           "path": {
-            "$ref": "#/components/schemas/__schema337"
-          },
-          "label": {
-            "$ref": "#/components/schemas/__schema338"
-          },
-          "help": {
-            "$ref": "#/components/schemas/__schema339"
-          },
-          "required": {
-            "$ref": "#/components/schemas/__schema340"
-          },
-          "secret": {
-            "$ref": "#/components/schemas/__schema341"
-          },
-          "placeholder": {
-            "$ref": "#/components/schemas/__schema342"
-          },
-          "default": {
-            "$ref": "#/components/schemas/__schema343"
-          },
-          "options": {
             "$ref": "#/components/schemas/__schema344"
           },
-          "input": {
+          "label": {
             "$ref": "#/components/schemas/__schema345"
           },
-          "item_fields": {
+          "help": {
+            "$ref": "#/components/schemas/__schema346"
+          },
+          "required": {
             "$ref": "#/components/schemas/__schema347"
+          },
+          "secret": {
+            "$ref": "#/components/schemas/__schema348"
+          },
+          "placeholder": {
+            "$ref": "#/components/schemas/__schema349"
+          },
+          "default": {
+            "$ref": "#/components/schemas/__schema350"
+          },
+          "options": {
+            "$ref": "#/components/schemas/__schema351"
+          },
+          "input": {
+            "$ref": "#/components/schemas/__schema352"
+          },
+          "item_fields": {
+            "$ref": "#/components/schemas/__schema354"
           }
         },
         "required": [
@@ -15397,16 +15587,16 @@
         "type": "object",
         "properties": {
           "session_id": {
-            "$ref": "#/components/schemas/__schema367"
+            "$ref": "#/components/schemas/__schema374"
           },
           "control_epoch": {
-            "$ref": "#/components/schemas/__schema368"
+            "$ref": "#/components/schemas/__schema375"
           },
           "control": {
-            "$ref": "#/components/schemas/__schema369"
+            "$ref": "#/components/schemas/__schema376"
           },
           "fresh_observation_required": {
-            "$ref": "#/components/schemas/__schema370"
+            "$ref": "#/components/schemas/__schema377"
           }
         },
         "required": [
@@ -15421,7 +15611,7 @@
         "type": "object",
         "properties": {
           "sites": {
-            "$ref": "#/components/schemas/__schema371"
+            "$ref": "#/components/schemas/__schema378"
           }
         },
         "required": [
@@ -15433,13 +15623,13 @@
         "type": "object",
         "properties": {
           "domain": {
-            "$ref": "#/components/schemas/__schema372"
+            "$ref": "#/components/schemas/__schema379"
           },
           "label": {
-            "$ref": "#/components/schemas/__schema373"
+            "$ref": "#/components/schemas/__schema380"
           },
           "last_used": {
-            "$ref": "#/components/schemas/__schema374"
+            "$ref": "#/components/schemas/__schema381"
           }
         },
         "required": [
@@ -15453,10 +15643,10 @@
         "type": "object",
         "properties": {
           "domain": {
-            "$ref": "#/components/schemas/__schema375"
+            "$ref": "#/components/schemas/__schema382"
           },
           "forgotten": {
-            "$ref": "#/components/schemas/__schema376"
+            "$ref": "#/components/schemas/__schema383"
           }
         },
         "required": [
@@ -15469,19 +15659,19 @@
         "type": "object",
         "properties": {
           "live_id": {
-            "$ref": "#/components/schemas/__schema377"
+            "$ref": "#/components/schemas/__schema384"
           },
           "control_epoch": {
-            "$ref": "#/components/schemas/__schema378"
+            "$ref": "#/components/schemas/__schema385"
           },
           "viewport": {
-            "$ref": "#/components/schemas/__schema379"
+            "$ref": "#/components/schemas/__schema386"
           },
           "site_scope": {
-            "$ref": "#/components/schemas/__schema380"
+            "$ref": "#/components/schemas/__schema387"
           },
           "expires_at": {
-            "$ref": "#/components/schemas/__schema382"
+            "$ref": "#/components/schemas/__schema389"
           }
         },
         "required": [
@@ -15497,7 +15687,7 @@
         "type": "object",
         "properties": {
           "accepted": {
-            "$ref": "#/components/schemas/__schema383"
+            "$ref": "#/components/schemas/__schema390"
           }
         },
         "required": [
@@ -15509,7 +15699,7 @@
         "type": "object",
         "properties": {
           "site_scope": {
-            "$ref": "#/components/schemas/__schema384"
+            "$ref": "#/components/schemas/__schema391"
           }
         },
         "required": [
@@ -15521,7 +15711,7 @@
         "type": "object",
         "properties": {
           "closed": {
-            "$ref": "#/components/schemas/__schema386"
+            "$ref": "#/components/schemas/__schema393"
           }
         },
         "required": [
@@ -21043,18 +21233,10 @@
         "maxLength": 240
       },
       "__schema330": {
-        "type": "string",
-        "pattern": "^[a-z][a-z0-9_-]*$"
+        "type": "string"
       },
       "__schema331": {
-        "type": "string",
-        "enum": [
-          "mail",
-          "caldav",
-          "ics",
-          "mcp",
-          "mcp_stdio"
-        ]
+        "type": "string"
       },
       "__schema332": {
         "type": "string"
@@ -21067,11 +21249,102 @@
         "items": {
           "type": "object",
           "properties": {
+            "name": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "help": {
+              "type": "string"
+            },
+            "placeholder": {
+              "type": "string"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "secret": {
+              "type": "boolean"
+            },
+            "list": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "label",
+            "required",
+            "secret",
+            "list"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema335": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "effect_class": {
+              "$ref": "#/components/schemas/EffectClass"
+            },
+            "asks_first": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "label",
+            "effect_class",
+            "asks_first"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "__schema336": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema337": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "__schema338": {
+        "type": "string",
+        "enum": [
+          "mail",
+          "caldav",
+          "ics",
+          "mcp",
+          "mcp_stdio"
+        ]
+      },
+      "__schema339": {
+        "type": "string"
+      },
+      "__schema340": {
+        "type": "string"
+      },
+      "__schema341": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
             "path": {
               "type": "string"
             },
             "value": {
-              "$ref": "#/components/schemas/__schema335"
+              "$ref": "#/components/schemas/__schema342"
             }
           },
           "required": [
@@ -21081,47 +21354,47 @@
           "additionalProperties": false
         }
       },
-      "__schema335": {
+      "__schema342": {
         "type": [
           "string",
           "number",
           "boolean"
         ]
       },
-      "__schema336": {
+      "__schema343": {
         "type": "array",
         "items": {
           "$ref": "#/components/schemas/ConnectionFormField"
         }
       },
-      "__schema337": {
+      "__schema344": {
         "type": "string",
         "minLength": 1,
         "maxLength": 120
       },
-      "__schema338": {
+      "__schema345": {
         "type": "string",
         "minLength": 1,
         "maxLength": 80
       },
-      "__schema339": {
+      "__schema346": {
         "type": "string",
         "maxLength": 240
       },
-      "__schema340": {
+      "__schema347": {
         "type": "boolean"
       },
-      "__schema341": {
+      "__schema348": {
         "type": "boolean"
       },
-      "__schema342": {
+      "__schema349": {
         "type": "string",
         "maxLength": 120
       },
-      "__schema343": {
-        "$ref": "#/components/schemas/__schema335"
+      "__schema350": {
+        "$ref": "#/components/schemas/__schema342"
       },
-      "__schema344": {
+      "__schema351": {
         "type": "array",
         "items": {
           "type": "object",
@@ -21140,10 +21413,10 @@
           "additionalProperties": false
         }
       },
-      "__schema345": {
+      "__schema352": {
         "anyOf": [
           {
-            "$ref": "#/components/schemas/__schema346"
+            "$ref": "#/components/schemas/__schema353"
           },
           {
             "type": "string",
@@ -21151,7 +21424,7 @@
           }
         ]
       },
-      "__schema346": {
+      "__schema353": {
         "type": "string",
         "enum": [
           "text",
@@ -21164,37 +21437,37 @@
           "string_list"
         ]
       },
-      "__schema347": {
+      "__schema354": {
         "type": "array",
         "items": {
           "type": "object",
           "properties": {
             "path": {
-              "$ref": "#/components/schemas/__schema337"
-            },
-            "label": {
-              "$ref": "#/components/schemas/__schema338"
-            },
-            "help": {
-              "$ref": "#/components/schemas/__schema339"
-            },
-            "required": {
-              "$ref": "#/components/schemas/__schema340"
-            },
-            "secret": {
-              "$ref": "#/components/schemas/__schema341"
-            },
-            "placeholder": {
-              "$ref": "#/components/schemas/__schema342"
-            },
-            "default": {
-              "$ref": "#/components/schemas/__schema343"
-            },
-            "options": {
               "$ref": "#/components/schemas/__schema344"
             },
-            "input": {
+            "label": {
+              "$ref": "#/components/schemas/__schema345"
+            },
+            "help": {
               "$ref": "#/components/schemas/__schema346"
+            },
+            "required": {
+              "$ref": "#/components/schemas/__schema347"
+            },
+            "secret": {
+              "$ref": "#/components/schemas/__schema348"
+            },
+            "placeholder": {
+              "$ref": "#/components/schemas/__schema349"
+            },
+            "default": {
+              "$ref": "#/components/schemas/__schema350"
+            },
+            "options": {
+              "$ref": "#/components/schemas/__schema351"
+            },
+            "input": {
+              "$ref": "#/components/schemas/__schema353"
             }
           },
           "required": [
@@ -21207,7 +21480,7 @@
           "additionalProperties": false
         }
       },
-      "__schema348": {
+      "__schema355": {
         "type": "array",
         "items": {
           "type": "object",
@@ -21238,7 +21511,7 @@
           "additionalProperties": false
         }
       },
-      "__schema349": {
+      "__schema356": {
         "type": "string",
         "enum": [
           "fact",
@@ -21249,7 +21522,7 @@
           "event"
         ]
       },
-      "__schema350": {
+      "__schema357": {
         "type": "string",
         "enum": [
           "active",
@@ -21258,7 +21531,7 @@
           "disputed"
         ]
       },
-      "__schema351": {
+      "__schema358": {
         "type": "object",
         "properties": {
           "id": {
@@ -21283,20 +21556,20 @@
         ],
         "additionalProperties": false
       },
-      "__schema352": {
+      "__schema359": {
         "type": "string",
         "pattern": "^k_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema353": {
+      "__schema360": {
         "type": "string",
         "minLength": 1,
         "maxLength": 200
       },
-      "__schema354": {
+      "__schema361": {
         "type": "string",
         "minLength": 1
       },
-      "__schema355": {
+      "__schema362": {
         "type": "string",
         "enum": [
           "private",
@@ -21304,7 +21577,7 @@
           "public"
         ]
       },
-      "__schema356": {
+      "__schema363": {
         "type": "string",
         "enum": [
           "high",
@@ -21312,7 +21585,7 @@
           "low"
         ]
       },
-      "__schema357": {
+      "__schema364": {
         "type": "string",
         "enum": [
           "user",
@@ -21321,7 +21594,7 @@
           "tool"
         ]
       },
-      "__schema358": {
+      "__schema365": {
         "type": "object",
         "properties": {
           "kind": {
@@ -21362,12 +21635,30 @@
         ],
         "additionalProperties": false
       },
-      "__schema359": {
+      "__schema366": {
         "type": "string",
         "format": "date",
         "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
       },
-      "__schema360": {
+      "__schema367": {
+        "default": null,
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/__schema366"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "__schema368": {
+        "default": [],
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/__schema359"
+        }
+      },
+      "__schema369": {
         "default": null,
         "anyOf": [
           {
@@ -21378,105 +21669,87 @@
           }
         ]
       },
-      "__schema361": {
-        "default": [],
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/__schema352"
-        }
-      },
-      "__schema362": {
-        "default": null,
-        "anyOf": [
-          {
-            "$ref": "#/components/schemas/__schema352"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "__schema363": {
+      "__schema370": {
         "default": [],
         "type": "array",
         "items": {
           "type": "string"
         }
       },
-      "__schema364": {
+      "__schema371": {
         "default": [],
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/__schema352"
+          "$ref": "#/components/schemas/__schema359"
         }
       },
-      "__schema365": {
+      "__schema372": {
         "type": "number",
         "const": 1
       },
-      "__schema366": {
+      "__schema373": {
         "type": "string",
         "minLength": 1
       },
-      "__schema367": {
+      "__schema374": {
         "type": "string",
         "minLength": 1
       },
-      "__schema368": {
+      "__schema375": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema369": {
+      "__schema376": {
         "type": "string",
         "enum": [
           "automation",
           "human"
         ]
       },
-      "__schema370": {
+      "__schema377": {
         "type": "boolean",
         "const": true
       },
-      "__schema371": {
+      "__schema378": {
         "maxItems": 100,
         "type": "array",
         "items": {
           "$ref": "#/components/schemas/BrowserSite"
         }
       },
-      "__schema372": {
+      "__schema379": {
         "type": "string",
         "minLength": 1,
         "maxLength": 255
       },
-      "__schema373": {
+      "__schema380": {
         "type": "string",
         "minLength": 1,
         "maxLength": 255
       },
-      "__schema374": {
+      "__schema381": {
         "type": "string"
       },
-      "__schema375": {
+      "__schema382": {
         "type": "string",
         "minLength": 1,
         "maxLength": 255
       },
-      "__schema376": {
+      "__schema383": {
         "type": "boolean",
         "const": true
       },
-      "__schema377": {
+      "__schema384": {
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]{43}$"
       },
-      "__schema378": {
+      "__schema385": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema379": {
+      "__schema386": {
         "type": "object",
         "properties": {
           "width": {
@@ -21494,39 +21767,39 @@
         ],
         "additionalProperties": false
       },
-      "__schema380": {
+      "__schema387": {
         "maxItems": 128,
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/__schema381"
+          "$ref": "#/components/schemas/__schema388"
         }
       },
-      "__schema381": {
+      "__schema388": {
         "type": "string"
       },
-      "__schema382": {
+      "__schema389": {
         "type": "string"
       },
-      "__schema383": {
+      "__schema390": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema384": {
+      "__schema391": {
         "maxItems": 128,
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/__schema385"
+          "$ref": "#/components/schemas/__schema392"
         }
       },
-      "__schema385": {
+      "__schema392": {
         "type": "string"
       },
-      "__schema386": {
+      "__schema393": {
         "type": "boolean",
         "const": true
       },
-      "__schema387": {
+      "__schema394": {
         "type": "object",
         "properties": {
           "id": {
@@ -21551,7 +21824,7 @@
             "default": null,
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema388"
+                "$ref": "#/components/schemas/__schema395"
               },
               {
                 "type": "null"
@@ -21562,7 +21835,7 @@
             "default": null,
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema389"
+                "$ref": "#/components/schemas/__schema396"
               },
               {
                 "type": "null"
@@ -21594,16 +21867,16 @@
         ],
         "additionalProperties": false
       },
-      "__schema388": {
+      "__schema395": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema389": {
+      "__schema396": {
         "type": "string",
         "pattern": "^[A-Z]{3}$"
       },
-      "__schema390": {
+      "__schema397": {
         "type": "object",
         "properties": {
           "id": {
@@ -21652,7 +21925,7 @@
             "default": null,
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema388"
+                "$ref": "#/components/schemas/__schema395"
               },
               {
                 "type": "null"
@@ -21663,7 +21936,7 @@
             "default": null,
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema389"
+                "$ref": "#/components/schemas/__schema396"
               },
               {
                 "type": "null"
@@ -21695,14 +21968,14 @@
             ]
           },
           "confidence": {
-            "$ref": "#/components/schemas/__schema356"
+            "$ref": "#/components/schemas/__schema363"
           },
           "evidence": {
             "minItems": 1,
             "maxItems": 8,
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/__schema391"
+              "$ref": "#/components/schemas/__schema398"
             }
           },
           "suggested_playbook": {
@@ -21755,7 +22028,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema391": {
+      "__schema398": {
         "type": "object",
         "properties": {
           "message_id": {
@@ -21787,7 +22060,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema392": {
+      "__schema399": {
         "type": "object",
         "properties": {
           "provider": {
@@ -21814,7 +22087,7 @@
           "account": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema393"
+                "$ref": "#/components/schemas/__schema400"
               },
               {
                 "type": "null"
@@ -21836,7 +22109,7 @@
           "reason": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema394"
+                "$ref": "#/components/schemas/__schema401"
               },
               {
                 "type": "null"
@@ -21847,7 +22120,7 @@
           "message": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/__schema395"
+                "$ref": "#/components/schemas/__schema402"
               },
               {
                 "type": "null"
@@ -21878,10 +22151,10 @@
         ],
         "additionalProperties": false
       },
-      "__schema393": {
+      "__schema400": {
         "type": "string"
       },
-      "__schema394": {
+      "__schema401": {
         "type": "string",
         "enum": [
           "refresh_expired",
@@ -21891,28 +22164,28 @@
           "access_expired"
         ]
       },
-      "__schema395": {
+      "__schema402": {
         "type": "string"
       },
-      "__schema396": {
+      "__schema403": {
         "type": "string",
         "pattern": "^att_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
-      "__schema397": {
+      "__schema404": {
         "type": "integer",
         "minimum": 0,
         "maximum": 9007199254740991
       },
-      "__schema398": {
+      "__schema405": {
         "type": "string",
         "minLength": 1
       },
-      "__schema399": {
+      "__schema406": {
         "type": "string",
         "minLength": 1,
         "maxLength": 160
       },
-      "__schema400": {
+      "__schema407": {
         "type": "string",
         "enum": [
           "on_session_start",
@@ -21938,7 +22211,7 @@
           "runtime_error"
         ]
       },
-      "__schema401": {
+      "__schema408": {
         "anyOf": [
           {
             "type": "string",
@@ -21949,7 +22222,7 @@
           }
         ]
       },
-      "__schema402": {
+      "__schema409": {
         "type": "object",
         "properties": {
           "captured_at": {
@@ -21974,7 +22247,7 @@
         ],
         "additionalProperties": false
       },
-      "__schema403": {
+      "__schema410": {
         "type": "string",
         "enum": [
           "started",
@@ -21985,7 +22258,7 @@
           "unknown"
         ]
       },
-      "__schema404": {
+      "__schema411": {
         "anyOf": [
           {
             "type": "string",
@@ -21996,7 +22269,7 @@
           }
         ]
       },
-      "__schema405": {
+      "__schema412": {
         "type": "object",
         "properties": {
           "compression_count": {
@@ -22013,7 +22286,7 @@
         },
         "additionalProperties": false
       },
-      "__schema406": {
+      "__schema413": {
         "type": "string",
         "pattern": "^act_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
       },
@@ -22021,61 +22294,61 @@
         "type": "object",
         "properties": {
           "id": {
-            "$ref": "#/components/schemas/__schema352"
+            "$ref": "#/components/schemas/__schema359"
           },
           "title": {
-            "$ref": "#/components/schemas/__schema353"
-          },
-          "space": {
-            "$ref": "#/components/schemas/__schema354"
-          },
-          "audience": {
-            "$ref": "#/components/schemas/__schema355"
-          },
-          "type": {
-            "$ref": "#/components/schemas/__schema349"
-          },
-          "status": {
-            "$ref": "#/components/schemas/__schema350"
-          },
-          "confidence": {
-            "$ref": "#/components/schemas/__schema356"
-          },
-          "asserted_by": {
-            "$ref": "#/components/schemas/__schema357"
-          },
-          "source": {
-            "$ref": "#/components/schemas/__schema358"
-          },
-          "observed_at": {
-            "$ref": "#/components/schemas/__schema359"
-          },
-          "valid_from": {
-            "$ref": "#/components/schemas/__schema359"
-          },
-          "valid_until": {
             "$ref": "#/components/schemas/__schema360"
           },
-          "supersedes": {
+          "space": {
             "$ref": "#/components/schemas/__schema361"
           },
-          "superseded_by": {
+          "audience": {
             "$ref": "#/components/schemas/__schema362"
           },
-          "created": {
-            "$ref": "#/components/schemas/__schema359"
+          "type": {
+            "$ref": "#/components/schemas/__schema356"
           },
-          "updated": {
-            "$ref": "#/components/schemas/__schema359"
+          "status": {
+            "$ref": "#/components/schemas/__schema357"
           },
-          "tags": {
+          "confidence": {
             "$ref": "#/components/schemas/__schema363"
           },
-          "links": {
+          "asserted_by": {
             "$ref": "#/components/schemas/__schema364"
           },
-          "schema_version": {
+          "source": {
             "$ref": "#/components/schemas/__schema365"
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/__schema366"
+          },
+          "valid_from": {
+            "$ref": "#/components/schemas/__schema366"
+          },
+          "valid_until": {
+            "$ref": "#/components/schemas/__schema367"
+          },
+          "supersedes": {
+            "$ref": "#/components/schemas/__schema368"
+          },
+          "superseded_by": {
+            "$ref": "#/components/schemas/__schema369"
+          },
+          "created": {
+            "$ref": "#/components/schemas/__schema366"
+          },
+          "updated": {
+            "$ref": "#/components/schemas/__schema366"
+          },
+          "tags": {
+            "$ref": "#/components/schemas/__schema370"
+          },
+          "links": {
+            "$ref": "#/components/schemas/__schema371"
+          },
+          "schema_version": {
+            "$ref": "#/components/schemas/__schema372"
           }
         },
         "required": [
@@ -22107,37 +22380,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema399"
+                "$ref": "#/components/schemas/__schema406"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema400"
+                "$ref": "#/components/schemas/__schema407"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema401"
+                "$ref": "#/components/schemas/__schema408"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema402"
+                "$ref": "#/components/schemas/__schema409"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema403"
+                "$ref": "#/components/schemas/__schema410"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema404"
+                "$ref": "#/components/schemas/__schema411"
               },
               "detail": {
-                "$ref": "#/components/schemas/__schema405"
+                "$ref": "#/components/schemas/__schema412"
               },
               "type": {
                 "type": "string",
@@ -22163,37 +22436,37 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
               },
               "capture_id": {
-                "$ref": "#/components/schemas/__schema399"
+                "$ref": "#/components/schemas/__schema406"
               },
               "name": {
-                "$ref": "#/components/schemas/__schema400"
+                "$ref": "#/components/schemas/__schema407"
               },
               "tool_name": {
-                "$ref": "#/components/schemas/__schema401"
+                "$ref": "#/components/schemas/__schema408"
               },
               "timing": {
-                "$ref": "#/components/schemas/__schema402"
+                "$ref": "#/components/schemas/__schema409"
               },
               "outcome": {
-                "$ref": "#/components/schemas/__schema403"
+                "$ref": "#/components/schemas/__schema410"
               },
               "redacted_args_digest": {
-                "$ref": "#/components/schemas/__schema404"
+                "$ref": "#/components/schemas/__schema411"
               },
               "detail": {
-                "$ref": "#/components/schemas/__schema405"
+                "$ref": "#/components/schemas/__schema412"
               },
               "type": {
                 "type": "string",
@@ -22228,13 +22501,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22263,13 +22536,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22296,13 +22569,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22337,13 +22610,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22378,13 +22651,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22416,13 +22689,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22544,7 +22817,7 @@
                         "minItems": 1,
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/__schema406"
+                          "$ref": "#/components/schemas/__schema413"
                         }
                       }
                     },
@@ -22660,13 +22933,13 @@
             "type": "object",
             "properties": {
               "attempt_id": {
-                "$ref": "#/components/schemas/__schema396"
+                "$ref": "#/components/schemas/__schema403"
               },
               "local_seq": {
-                "$ref": "#/components/schemas/__schema397"
+                "$ref": "#/components/schemas/__schema404"
               },
               "dedup_key": {
-                "$ref": "#/components/schemas/__schema398"
+                "$ref": "#/components/schemas/__schema405"
               },
               "at": {
                 "$ref": "#/components/schemas/__schema109"
@@ -22704,25 +22977,25 @@
         "type": "object",
         "properties": {
           "capture_id": {
-            "$ref": "#/components/schemas/__schema399"
+            "$ref": "#/components/schemas/__schema406"
           },
           "name": {
-            "$ref": "#/components/schemas/__schema400"
+            "$ref": "#/components/schemas/__schema407"
           },
           "tool_name": {
-            "$ref": "#/components/schemas/__schema401"
+            "$ref": "#/components/schemas/__schema408"
           },
           "timing": {
-            "$ref": "#/components/schemas/__schema402"
+            "$ref": "#/components/schemas/__schema409"
           },
           "outcome": {
-            "$ref": "#/components/schemas/__schema403"
+            "$ref": "#/components/schemas/__schema410"
           },
           "redacted_args_digest": {
-            "$ref": "#/components/schemas/__schema404"
+            "$ref": "#/components/schemas/__schema411"
           },
           "detail": {
-            "$ref": "#/components/schemas/__schema405"
+            "$ref": "#/components/schemas/__schema412"
           }
         },
         "required": [

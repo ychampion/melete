@@ -20,6 +20,7 @@ import { mcpServerConfig } from './mcp.ts';
 import { openConfiguredMcpConnector } from './mcp-connector.ts';
 import {
   openStdioMcpConnector,
+  openStoredStdioConnector,
   type StdioLauncher,
   type StdioLifecycleOptions,
   storedStdioConnection,
@@ -325,16 +326,21 @@ export class ConnectorFactory {
     ) {
       if (!options.stdioLauncher) return undefined;
       // The catalog recorded at installation lets the service start without running the server.
-      const pinned = this.overrides.has(row.id)
-        ? undefined
-        : storedStdioConnection.safeParse(row.configuration).data?.tools;
+      if (!this.overrides.has(row.id) && storedStdioConnection.safeParse(row.configuration).success)
+        return openStoredStdioConnector(
+          row,
+          options.sql,
+          this.secrets,
+          options.stdioLauncher,
+          options.stdioLifecycle,
+        );
       return openStdioMcpConnector(
         setting.server,
         { connectionId: row.id, spaceId: row.spaceId },
         options.sql,
         this.secrets,
         options.stdioLauncher,
-        { ...options.stdioLifecycle, pinned },
+        options.stdioLifecycle,
       );
     }
     if (row.provider === 'mcp' && setting?.kind === 'mcp')
