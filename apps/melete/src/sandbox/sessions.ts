@@ -681,14 +681,13 @@ export class SandboxSessions {
     signal: AbortSignal,
   ): Promise<SessionRow> {
     if (!provider) {
-      // Nothing here can reach this sandbox, so nothing here can close it.
-      // Left `closing`, the sweep would take the row back on every cycle and
-      // never finish it; it is recorded as lost once instead, with the reason.
-      // A sandbox still running is an orphan to its connection's
-      // reconciliation, if that connection gets a provider again.
-      const reason = `no ${row.adapter} provider is configured for this session's connection, so its sandbox could not be destroyed`;
-      await markSessionLost(this.sql, row.id, reason, 'closing');
-      return (await this.get(row.id)) ?? { ...row, lastError: reason };
+      // Nothing here can reach this sandbox now, so nothing here can close it.
+      // The row goes back to what it was, with the reason, rather than being
+      // left `closing` for the sweep to take back on every cycle.
+      const reason = `no ${row.adapter} provider is available for this session's connection`;
+      await this.sql`update sandbox_session set status = ${from}, last_error = ${reason}
+        where id = ${row.id} and status = 'closing'`;
+      throw new Error(reason);
     }
     try {
       // A snapshotted workspace's sandbox was stopped when it was suspended.
@@ -735,6 +734,48 @@ export class SandboxSessions {
     }
   }
 
+  /**
+   * The provider to settle a row through, or null when there is none now.
+   *
+   * Only a connection that was revoked, or that now holds another adapter, can
+   * never reach the sandbox again: the row is recorded lost, once, and a
+   * sandbox still running is left to reconciliation. A connection that stands
+   * but has no provider in this process, such as a connector that failed to
+   * build at boot, is a passing state. The reason goes on the row and the row
+   * is otherwise left exactly as it was, so a person's workspace is never
+   * given up because of it, and reconciliation still counts it as live.
+   */
+  private async reachable(
+    row: Pick<SessionRow, 'id' | 'adapter' | 'connectionId' | 'status'>,
+    providerFor: ProviderFor,
+  ): Promise<SandboxProvider | null> {
+    const [held] = await this.sql`select status, configuration from connection
+      where id = ${row.connectionId}`;
+    const adapter = (held?.configuration as { sandbox?: { adapter?: unknown } } | null)?.sandbox
+      ?.adapter;
+    const gone =
+      !held || held.status === 'revoked'
+        ? 'its connection was revoked'
+        : typeof adapter === 'string' && adapter !== row.adapter
+          ? `its connection now holds the ${adapter} adapter`
+          : null;
+    if (gone) {
+      await markSessionLost(
+        this.sql,
+        row.id,
+        `${gone}, so nothing here can reach its ${row.adapter} sandbox again`,
+        row.status,
+      );
+      return null;
+    }
+    const provider = await this.providerOf(row, providerFor);
+    if (provider === undefined)
+      await this.sql`update sandbox_session
+        set last_error = ${`no ${row.adapter} provider is available for this session's connection right now, so the session is left as it is until one is`}
+        where id = ${row.id}`;
+    return provider ?? null;
+  }
+
   /** The provider no longer has the sandbox. Time is charged as last metered. */
   markLost(id: string, reason: string): Promise<boolean> {
     return markSessionLost(this.sql, id, reason);
@@ -758,13 +799,11 @@ export class SandboxSessions {
         order by lease_expires_at limit 100`
     ).map(toRow);
     for (const candidate of expired) {
-      const provider = await this.providerOf(candidate, providerFor);
-      if (provider === null) continue;
+      const provider = await this.reachable(candidate, providerFor);
+      if (!provider) continue;
       const workspace = candidate.agentId !== null && candidate.persistence !== 'ephemeral';
-      if (workspace && candidate.status === 'ready' && provider) {
+      if (workspace && candidate.status === 'ready') {
         // A workspace outlives its attempt: it is suspended, not destroyed.
-        // Without a provider it cannot be suspended either, and goes the way
-        // of any other session below.
         await this.suspendWorkspace(candidate.id, provider, signal).catch(() => {
           // Recorded on the row, which keeps running; the next sweep tries again.
         });
@@ -806,20 +845,21 @@ export class SandboxSessions {
         // Recorded on the row; the next sweep tries again.
       }
     }
-    const stale = await this.sql`select id, adapter, connection_id from sandbox_session
+    const stale = await this.sql`select id, adapter, connection_id, status from sandbox_session
       where status = 'paused'
         and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})
       order by lease_expires_at limit 100`;
     for (const candidate of stale) {
-      const provider = await this.providerOf(
+      const provider = await this.reachable(
         {
           id: candidate.id as string,
           adapter: candidate.adapter as string,
           connectionId: candidate.connection_id as string,
+          status: candidate.status as SessionStatus,
         },
         providerFor,
       );
-      if (provider === null) continue;
+      if (!provider) continue;
       const [claimed] = await this.sql`update sandbox_session set status = 'closing'
         where id = ${candidate.id as string} and status = 'paused'
           and lease_expires_at < now() - make_interval(secs => ${this.options.workspaceRetentionSeconds})

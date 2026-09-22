@@ -3,6 +3,7 @@ import { testDatabase } from '../../test/helpers/database.ts';
 import { FakeSandboxProvider } from './fake.ts';
 import { SandboxRefusal } from './manifest.ts';
 import { runCommand } from './marker.ts';
+import { reconcileSandboxes } from './reconcile.ts';
 import { seedSessionScope, sessionSpec } from './session-fixtures.ts';
 import {
   NOT_STARTED,
@@ -134,8 +135,11 @@ withDb('sandbox sessions', () => {
     expect(await sessions.sweep(() => provider, signal())).toEqual([]);
   });
 
-  test('a session no provider can reach is recorded lost once, not swept forever', async () => {
-    const { sql, scope, provider, sessions, spec, base } = await setup();
+  test('a missing provider leaves every session as it was, and reconciliation keeps the workspace', async () => {
+    const { sql, scope, provider, sessions, base } = await setup();
+    // Labelled with its connection, so reconciliation could destroy it if it
+    // were ever mistaken for an orphan.
+    const spec = sessionSpec('sessions-test', scope.spaceId, scope.connectionId);
     const ephemeral = await sessions.open(
       { ...base, attemptId: await scope.attempt() },
       provider,
@@ -143,32 +147,82 @@ withDb('sandbox sessions', () => {
       signal(),
     );
     const workspace = await sessions.open(
-      {
-        ...base,
-        agentId: scope.agentId,
-        persistence: 'pause',
-        attemptId: await scope.attempt(),
-      },
+      { ...base, agentId: scope.agentId, persistence: 'pause', attemptId: await scope.attempt() },
       provider,
       spec,
       signal(),
     );
     await sql`update sandbox_session set lease_expires_at = now() - interval '1 second'
       where id in ${sql([ephemeral.id, workspace.id])}`;
-    // The connection has no provider any more: nothing here can close either
-    // sandbox, nor suspend the workspace.
+    // The connection stands, but this process built no provider for it: a
+    // connector that failed at boot. Nothing is given up, however many sweeps.
     const none = () => undefined;
-    expect(await sessions.sweep(none, signal())).toEqual([]);
+    for (const _ of [1, 2]) expect(await sessions.sweep(none, signal())).toEqual([]);
     for (const opened of [ephemeral, workspace]) {
       const row = await sessions.get(opened.id);
-      expect([opened.id, row?.status]).toEqual([opened.id, 'lost']);
-      expect(row?.lastError).toContain(`no ${opened.adapter} provider is configured`);
+      expect([opened.id, row?.status]).toEqual([opened.id, 'ready']);
+      expect(row?.lastError).toContain('left as it is until one is');
+      expect(await provider.inspect(sessionHandle(opened), signal())).toBe('running');
     }
-    // Once: the next sweep has nothing to take back, and the rows stay as they are.
+    // A boot with the provider back reconciles before it sweeps: the workspace
+    // is live, not an orphan, and its sandbox survives.
+    const reconciled = await reconcileSandboxes({
+      sql,
+      provider,
+      project: 'sessions-test',
+      connectionId: scope.connectionId,
+      signal: signal(),
+    });
+    expect(reconciled).toEqual({ destroyed: [], lost: [] });
+    // Then the sweep settles both through the provider: the ephemeral session
+    // closes, and the workspace is suspended with its files kept.
+    expect(await sessions.sweep(() => provider, signal())).toEqual([ephemeral.id]);
+    expect(await provider.inspect(sessionHandle(ephemeral), signal())).toBe('gone');
+    expect((await sessions.get(workspace.id))?.status).toBe('paused');
+    expect(await provider.inspect(sessionHandle(workspace), signal())).toBe('paused');
+  });
+
+  test('a session whose connection was revoked or now holds another adapter is lost once', async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const open = async (agentId: string | null) =>
+      sessions.open(
+        {
+          ...base,
+          agentId,
+          ...(agentId ? { persistence: 'pause' as const } : {}),
+          attemptId: await scope.attempt(),
+        },
+        provider,
+        spec,
+        signal(),
+      );
+    const expire = (id: string) =>
+      sql`update sandbox_session set lease_expires_at = now() - interval '1 second' where id = ${id}`;
     const rows = async () => [
       ...(await sql`select id, status, last_error, closed_at, seconds_charged
         from sandbox_session order by id`),
     ];
+    const none = () => undefined;
+
+    // Another adapter now: this sandbox can never be reached through it.
+    const moved = await open(null);
+    await expire(moved.id);
+    await sql`update connection set configuration = ${JSON.stringify({ kind: 'sandbox', sandbox: { adapter: 'modal' } })}::jsonb
+      where id = ${scope.connectionId}`;
+    expect(await sessions.sweep(none, signal())).toEqual([]);
+    const movedRow = await sessions.get(moved.id);
+    expect(movedRow?.status).toBe('lost');
+    expect(movedRow?.lastError).toContain('now holds the modal adapter');
+
+    // Revoked: its workspace included, recorded once.
+    await sql`update connection set configuration = '{}'::jsonb where id = ${scope.connectionId}`;
+    const workspace = await open(scope.agentId);
+    await expire(workspace.id);
+    await sql`update connection set status = 'revoked' where id = ${scope.connectionId}`;
+    expect(await sessions.sweep(none, signal())).toEqual([]);
+    const revoked = await sessions.get(workspace.id);
+    expect(revoked?.status).toBe('lost');
+    expect(revoked?.lastError).toContain('its connection was revoked');
     const recorded = await rows();
     expect(await sessions.sweep(none, signal())).toEqual([]);
     expect(await rows()).toEqual(recorded);
