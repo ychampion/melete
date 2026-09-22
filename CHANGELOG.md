@@ -97,8 +97,10 @@ to named tests on the tagged tree; the README's gates table is the summary.
   (`POST /browser/sessions/{id}/live` with its `frames`, `input`, `scope` and
   `close` routes). The view is bound to your account, the session, the control
   epoch and the address you opened it from. What you type reaches no event,
-  recipe, log or artifact, and the agent's first look afterwards keeps the
-  page's labels and roles with no values, no screenshot and no query string.
+  recipe, log or artifact. Until the agent moves to a new page, its looks at
+  the page you handed back keep the page's roles and control names with no
+  values, no page text, no screenshot and no query string, and it cannot read
+  text off that page.
   Your navigation stays on the job's sites, the site you took over and the sites
   you allow, plus the few a page leads you to just after you act. The space
   lists the sites it is signed in to at `GET /browser/sites` and signs out of

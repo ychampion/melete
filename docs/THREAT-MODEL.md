@@ -411,13 +411,16 @@ broker, and container boundary have separate jobs:
   stays within a site scope: the job's allowed domains, the site they took over,
   sites they allow, and sites an in-scope page leads to within fifteen seconds of
   their own press, touch or keystroke, at most three per action and twelve in
-  all. The public-address floor and pinned DNS apply throughout. Nothing they
-  type reaches an event, a recipe, a log or an artifact, and the first
-  observation after handback keeps a page's labels and roles with no values, no
-  screenshot and no query string. `another principal in the same space cannot
-  open, read or drive the live view`, `no persisted event contains the typed
-  secret or the identity-provider host` and `a page cannot walk the person to new
-  sites without them acting` cover these.
+  all; a site added this way is a public one. The public-address floor and
+  pinned DNS apply throughout. Nothing they type reaches an event, a recipe, a log or an
+  artifact. Until an automation action loads a new document, every observation
+  of the handed-back page keeps its roles and control names with no values, no
+  page text, no screenshot and no query string, and reading its text is refused.
+  `another principal in the same space cannot open, read or drive the live
+  view`, `no persisted event contains the typed secret or the identity-provider
+  host`, `a handed-back page is looked at without its contents until automation
+  leaves it` and `a page cannot walk the person to new sites without them
+  acting` cover these.
 
 The worker can reach the internet by design, for the person's authorised sites.
 The relay policy constrains an intact worker; a compromised Node process can
