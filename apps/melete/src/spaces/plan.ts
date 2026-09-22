@@ -118,6 +118,8 @@ const SPACE_KEYED_OPERATIONAL = [
   'procedure_candidate',
   'episode',
   'learning_job',
+  // Held while a procedure is evaluated in the space; a removal ends it.
+  'learning_evaluation_lease',
 ] as const;
 
 /**

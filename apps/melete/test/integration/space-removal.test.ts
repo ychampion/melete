@@ -246,6 +246,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   experience_profile: 'operational',
   experience_rule: 'operational',
   knowledge_record: 'operational',
+  learning_evaluation_lease: 'operational',
   learning_job: 'operational',
   ledger_item: 'operational',
   procedure_candidate: 'operational',
