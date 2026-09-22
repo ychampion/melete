@@ -164,6 +164,21 @@ export class ImapSmtpTransport implements MailTransport {
     });
   }
 
+  private smtp() {
+    return nodemailer.createTransport({
+      ...this.config.smtp,
+      auth: { user: this.config.username, pass: this.password },
+      requireTLS: !this.config.allowInsecureLocalForTests,
+      ignoreTLS: this.config.allowInsecureLocalForTests ?? false,
+      logger: false,
+      debug: false,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
+      tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
+    });
+  }
+
   async read(uid: number): Promise<MailMessage | null> {
     return this.imap(this.config.inbox ?? 'INBOX', (client) => this.message(client, uid));
   }
@@ -192,18 +207,7 @@ export class ImapSmtpTransport implements MailTransport {
     });
     if (!Buffer.isBuffer(composed.message))
       throw new Error('Mail composition did not return bytes');
-    const smtp = nodemailer.createTransport({
-      ...this.config.smtp,
-      auth: { user: this.config.username, pass: this.password },
-      requireTLS: !this.config.allowInsecureLocalForTests,
-      ignoreTLS: this.config.allowInsecureLocalForTests ?? false,
-      logger: false,
-      debug: false,
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 15_000,
-      tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
-    });
+    const smtp = this.smtp();
     let accepted: string[];
     let rejected: string[];
     try {
@@ -246,7 +250,18 @@ export class ImapSmtpTransport implements MailTransport {
     });
   }
 
+  /**
+   * Both halves: a mailbox that reads but cannot send would otherwise pass its
+   * test and fail at the first message the person approved. The SMTP check
+   * signs in and sends nothing.
+   */
   async health(): Promise<void> {
     await this.imap(this.config.inbox ?? 'INBOX', async () => {});
+    const smtp = this.smtp();
+    try {
+      await smtp.verify();
+    } finally {
+      smtp.close();
+    }
   }
 }

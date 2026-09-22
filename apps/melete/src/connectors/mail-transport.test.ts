@@ -6,7 +6,7 @@ import { type EmailConnection, ImapSmtpTransport } from './mail-transport.ts';
 import type { SecretAccess } from './secrets.ts';
 
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
-async function mailServers() {
+async function mailServers(options: { smtpRefusesLogin?: boolean } = {}) {
   const sockets = new Set<Socket>();
   const sent: string[] = [];
   const auth: string[] = [];
@@ -103,7 +103,11 @@ async function mailServers() {
           if (/^EHLO /i.test(line)) socket.write('250-localhost\r\n250 AUTH PLAIN\r\n');
           else if (/^AUTH PLAIN /i.test(line)) {
             auth.push(Buffer.from(line.split(' ')[2] ?? '', 'base64').toString());
-            socket.write('235 authenticated\r\n');
+            socket.write(
+              options.smtpRefusesLogin
+                ? '535 5.7.8 Authentication failed\r\n'
+                : '235 authenticated\r\n',
+            );
           } else if (line === 'DATA') {
             dataMode = true;
             socket.write('354 Send message\r\n');
@@ -191,6 +195,38 @@ describe('IMAP and SMTP wire adapters', () => {
       await destination.close();
     }
   }, 20_000);
+
+  test('a test reaches both halves: sending must work as well as reading', async () => {
+    const working = await mailServers();
+    const refusing = await mailServers({ smtpRefusesLogin: true });
+    try {
+      await new ImapSmtpTransport(working.config, 'test-app-password').health();
+      // Reading still works; only the outgoing server refuses the password.
+      const transport = new ImapSmtpTransport(refusing.config, 'test-app-password');
+      await transport.search('', 5);
+      expect(
+        await transport.health().then(
+          () => 'passed',
+          () => 'failed',
+        ),
+      ).toBe('failed');
+      // A closed outgoing port is the same failure, found before anything is sent.
+      const closed = new ImapSmtpTransport(
+        { ...working.config, smtp: { ...working.config.smtp, port: 1 } },
+        'test-app-password',
+      );
+      expect(
+        await closed.health().then(
+          () => 'passed',
+          () => 'failed',
+        ),
+      ).toBe('failed');
+      expect(working.sent).toEqual([]);
+    } finally {
+      await working.close();
+      await refusing.close();
+    }
+  }, 30_000);
 
   test('plaintext test exceptions cannot target remote servers', () => {
     const config: EmailConnection = {

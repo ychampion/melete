@@ -113,6 +113,48 @@ async function imapDouble(accepts: () => string) {
   return (server.address() as AddressInfo).port;
 }
 
+/** A real socket that speaks enough SMTP to sign in, and checks the password. It never takes a message. */
+async function smtpDouble(accepts: () => string) {
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    socket.write('220 localhost ESMTP test double\r\n');
+    let buffer = '';
+    socket.on('data', (data) => {
+      buffer += data.toString();
+      while (buffer.includes('\r\n')) {
+        const at = buffer.indexOf('\r\n');
+        const line = buffer.slice(0, at);
+        buffer = buffer.slice(at + 2);
+        if (/^EHLO /i.test(line)) socket.write('250-localhost\r\n250 AUTH PLAIN\r\n');
+        else if (/^AUTH PLAIN /i.test(line)) {
+          const supplied = Buffer.from(line.split(' ')[2] ?? '', 'base64')
+            .toString()
+            .split('\0')
+            .at(-1);
+          socket.write(
+            supplied === accepts()
+              ? '235 authenticated\r\n'
+              : '535 5.7.8 Authentication failed\r\n',
+          );
+        } else if (/^QUIT/i.test(line)) socket.end('221 Bye\r\n');
+        else socket.write('502 not in this double\r\n');
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  closers.push(
+    () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      }),
+  );
+  return (server.address() as AddressInfo).port;
+}
+
 const FEED = [
   'BEGIN:VCALENDAR',
   'VERSION:2.0',
@@ -274,6 +316,7 @@ withDb('installing each kind of connection through the API', () => {
     if (!h) throw new Error('Postgres unavailable');
     let accepted = 'a-different-password';
     const port = await imapDouble(() => accepted);
+    const smtpPort = await smtpDouble(() => accepted);
     const body = {
       provider: 'imap',
       label: 'Personal mail',
@@ -282,7 +325,7 @@ withDb('installing each kind of connection through the API', () => {
         username: 'owner@example.test',
         from: 'owner@example.test',
         imap: { host: '127.0.0.1', port, secure: false },
-        smtp: { host: '127.0.0.1', port, secure: false },
+        smtp: { host: '127.0.0.1', port: smtpPort, secure: false },
       },
     };
     for (const invalid of [
