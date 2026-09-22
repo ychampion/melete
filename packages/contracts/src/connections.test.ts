@@ -420,7 +420,10 @@ describe('providers whose servers are known', () => {
         for (const { path, value } of kind.fixed) {
           const keys = path.split('.');
           let at = body;
-          for (const key of keys.slice(0, -1)) at = (at[key] ??= {}) as Record<string, unknown>;
+          for (const key of keys.slice(0, -1)) {
+            at[key] = at[key] ?? {};
+            at = at[key] as Record<string, unknown>;
+          }
           at[keys.at(-1) as string] = value;
         }
         const extra = typed(kind) as Record<string, Record<string, unknown>>;
