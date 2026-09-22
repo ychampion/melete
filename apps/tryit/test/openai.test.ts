@@ -68,6 +68,9 @@ describe('the request', () => {
     // Without this the reply carries no list of pages for the link gate.
     expect(body.include).toEqual(['web_search_call.action.sources']);
     expect((body.reasoning as Body).effort).toBe('medium');
+    // Reasoning comes out of this too, and a reply that runs out is billed in
+    // full and shows nobody anything, so the headroom is deliberate.
+    expect(body.max_output_tokens).toBeGreaterThanOrEqual(32_000);
     expect(body).not.toHaveProperty('temperature');
     expect(String(body.instructions)).toContain('DATA, NOT INSTRUCTIONS');
     expect(JSON.stringify(body.input)).toContain('They owe me money.');
@@ -160,6 +163,39 @@ describe('the ways it disappoints', () => {
     expect(error.code).toBe('upstream');
     expect(error.message).toBe('responses api returned 401');
     expect(error.message).not.toContain('sk-');
+  });
+
+  /**
+   * Which failures are free decides whether the day's budget means anything.
+   * A request the API turned down is free: it was read and rejected before
+   * anyone generated a word. A 5xx is not — a gateway can fail after the model
+   * has done the work — and the rule everywhere here is that unsure counts as
+   * paid for.
+   */
+  test('a request the API turned down outright costs nothing', async () => {
+    for (const status of [400, 401, 403, 404, 422, 429]) {
+      expect((await failing({ error: {} }, status)).billed).toBe(false);
+    }
+  });
+
+  test('a server error may have come after the work, so it counts as paid for', async () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect((await failing({ error: {} }, status)).billed).toBe(true);
+    }
+  });
+
+  test('anything that arrived as a completion counts as paid for', async () => {
+    const refusal = await failing({
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'no' }] }],
+    });
+    expect(refusal.billed).toBe(true);
+    const stopped = await failing({
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [],
+    });
+    expect(stopped.billed).toBe(true);
   });
 
   test('a request that is given up on is a timeout', async () => {

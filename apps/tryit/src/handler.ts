@@ -51,6 +51,10 @@ export type Deps = {
   limits: Limits;
   now?: () => number;
   log?: (line: LogLine) => void;
+  /** Mixed into the counter's key, so an address cannot be searched for. */
+  salt?: string;
+  /** A local run, where `x-forwarded-for` may stand in for Cloudflare's header. */
+  local?: boolean;
   /** Sent between stages so a long wait keeps the connection warm. */
   heartbeatMs?: number;
 };
@@ -91,13 +95,129 @@ const json = (body: unknown, status: number): Response =>
 const refuse = (code: Exclude<Outcome, 'ok'>, status: number): Response =>
   json({ ok: false, code, message: WORDS[code] } satisfies Done, status);
 
-/** Cloudflare puts the caller's address here. The rest are fallbacks for local runs. */
-export function clientIp(request: Request): string {
+/**
+ * Read a request body only as far as it is allowed to be, and give up the
+ * moment it is over. Nothing here trusts what the request said about its own
+ * size: the budget holds on the bytes that actually turn up, so a body sent
+ * with no length, or a lying one, costs a few kilobytes rather than however
+ * much someone cares to send.
+ *
+ * Null means it was too big. The rest of the body is never read.
+ */
+export async function readWithin(
+  body: ReadableStream<Uint8Array> | null,
+  budget: number,
+): Promise<string | null> {
+  if (!body) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let seen = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      seen += value.byteLength;
+      if (seen > budget) return null;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return text + decoder.decode();
+}
+
+/**
+ * What the counter is told instead of an address.
+ *
+ * It has to tell one visitor from another for a day, and it does not have to
+ * know who they are. The day goes into the digest, so the same person is a
+ * different value tomorrow and nothing in storage can be lined up against
+ * yesterday. An address is a small space to search, so this alone obscures
+ * rather than conceals: set `TRYIT_COUNTER_SALT` and it becomes one-way in
+ * earnest. Nothing reads the value back — it is only ever compared.
+ */
+export async function counterKey(ip: string, day: string, salt = ''): Promise<string> {
+  const bytes = new TextEncoder().encode(`${salt}:${day}:${ip}`);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest).slice(0, 8))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Cloudflare puts the caller's address in `cf-connecting-ip`, overwriting
+ * whatever the caller sent, and every request through its edge carries one.
+ * `x-forwarded-for` is written by the caller, so believing it would let them
+ * choose their own counter; it is read only on a local run. Anywhere else a
+ * request without Cloudflare's header came in some other way, there is no
+ * address to count it by, and the answer is null.
+ */
+export function clientIp(request: Request, local = false): string | null {
   const direct = request.headers.get('cf-connecting-ip');
   if (direct) return direct;
+  if (!local) return null;
   const forwarded = request.headers.get('x-forwarded-for');
   const first = forwarded?.split(',')[0]?.trim();
   return first && first !== '' ? first : 'unknown';
+}
+
+/**
+ * The part of an address that stands for one visitor.
+ *
+ * An IPv6 connection is handed a /64 at the least, and every address in it
+ * belongs to whoever holds it, so counting each one separately would give
+ * them a fresh allowance per address. An IPv6 address is therefore cut to its
+ * /64, and one that only carries an IPv4 address (`::ffff:a.b.c.d`, or a
+ * 6to4 `2002:` prefix) is that IPv4 address. Anything that does not parse is
+ * kept as it came.
+ *
+ * An IPv6 visitor also gets the /48 around them as `block`, which is counted
+ * too: a household handed a /56 or a /48 holds hundreds of /64s or more.
+ */
+export function visitorOf(address: string): { key: string; block?: string } {
+  const bare = address
+    .trim()
+    .replace(/^\[(.*)\]$/, '$1')
+    .replace(/%.*$/, '')
+    .toLowerCase();
+  if (!bare.includes(':')) return { key: bare };
+  const groups = hextets(bare);
+  if (groups === null) return { key: bare };
+  const dotted = (high = 0, low = 0) => [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return { key: dotted(groups[6], groups[7]) };
+  }
+  // 6to4: 2002:WWXX:YYZZ::/48 belongs to whoever holds IPv4 WW.XX.YY.ZZ.
+  if (groups[0] === 0x2002) return { key: dotted(groups[1], groups[2]) };
+  const prefix = (count: number) =>
+    groups
+      .slice(0, count)
+      .map((group) => group.toString(16))
+      .join(':');
+  return { key: `${prefix(4)}::/64`, block: `${prefix(3)}::/48` };
+}
+
+/** The eight 16-bit groups of an IPv6 address, or null when it is not one. */
+function hextets(address: string): number[] | null {
+  let text = address;
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+  if (dotted) {
+    const [a = 0, b = 0, c = 0, d = 0] = dotted.slice(1).map(Number);
+    if ([a, b, c, d].some((byte) => byte > 255)) return null;
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const split = (part: string | undefined) => (part ? part.split(':') : []);
+  const head = split(halves[0]);
+  const tail = split(halves[1]);
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const groups = [...head, ...Array<string>(missing).fill('0'), ...tail];
+  if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups.map((group) => Number.parseInt(group, 16));
 }
 
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
@@ -116,16 +236,34 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
     return refuse('bad_request', 405);
   }
 
-  // Refuse an oversized body before reading it, so a big paste costs nothing.
-  const declared = Number(request.headers.get('content-length') ?? '0');
-  if (Number.isFinite(declared) && declared > limits.maxInputChars * 4 + 2048) {
+  // A browser will send `text/plain` to another origin without asking first,
+  // so accepting it would let any site spend a visitor's turns, and the day's
+  // budget, from inside their browser with nothing on screen. Insisting on
+  // JSON forces a preflight, and this Worker answers none.
+  if (!(request.headers.get('content-type') ?? '').includes('application/json')) {
+    record({ ...bare, outcome: 'bad_request' });
+    return refuse('bad_request', 415);
+  }
+
+  // The declared length is the cheap check. It is also the one an attacker
+  // omits, so it decides nothing on its own: a body with no length, or a
+  // nonsense one, falls through to the budget below and is stopped there.
+  const budget = limits.maxInputChars * 4 + 2048;
+  const declared = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > budget) {
+    record({ ...bare, outcome: 'too_long' });
+    return refuse('too_long', 413);
+  }
+
+  const raw = await readWithin(request.body, budget);
+  if (raw === null) {
     record({ ...bare, outcome: 'too_long' });
     return refuse('too_long', 413);
   }
 
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw) as unknown;
   } catch {
     record({ ...bare, outcome: 'bad_request' });
     return refuse('bad_request', 400);
@@ -143,8 +281,22 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
   }
   const chars = checked.text.length;
 
-  const ip = clientIp(request);
-  const turn = await deps.limiter.take(ip);
+  // The address is turned into a key here and goes no further, so neither the
+  // counter nor its storage ever sees one.
+  // Refused rather than counted as one shared stranger: that would still spend
+  // the day's budget through a path nothing identifies, and pool whoever uses it.
+  const address = clientIp(request, deps.local ?? false);
+  if (address === null) {
+    record({ ...bare, chars, outcome: 'bad_request' });
+    return refuse('bad_request', 400);
+  }
+  const visitor = visitorOf(address);
+  const ip = await counterKey(visitor.key, today(started), deps.salt ?? '');
+  const block =
+    visitor.block === undefined
+      ? undefined
+      : await counterKey(visitor.block, today(started), deps.salt ?? '');
+  const turn = await deps.limiter.take(ip, block);
   if (!turn.allowed) {
     const outcome = turn.reason === 'ip' ? 'rate_limited' : 'busy';
     record({ ...bare, chars, outcome });
@@ -171,7 +323,8 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
 
       const draft = parseDraft(result.json);
       if (!draft) {
-        await deps.limiter.giveBack(ip);
+        // The model answered, so the call was paid for. The turn is spent even
+        // though there is nothing to show for it.
         record({ ...bare, chars, outcome: 'malformed' });
         return { ok: false, code: 'malformed', message: WORDS.malformed };
       }
@@ -196,7 +349,11 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
       };
     } catch (error) {
       const code = failureOf(error, controller.signal);
-      await deps.limiter.giveBack(ip);
+      // A turn goes back only when the failure proves the model was never paid
+      // for. Anything else — a refusal, a reply that stopped early, a request
+      // given up on after it was sent — has already cost tokens, and refunding
+      // it would let anyone who can provoke one have the key for nothing.
+      if (!wasBilled(error)) await deps.limiter.giveBack(ip, block);
       record({ ...bare, chars, outcome: code });
       return { ok: false, code, message: WORDS[code] };
     } finally {
@@ -205,6 +362,14 @@ export async function caseFileRoute(request: Request, deps: Deps): Promise<Respo
     }
   });
 }
+
+/**
+ * Only a provider that says so proves nothing was paid for. A failure from
+ * anywhere else is unexplained, and an unexplained failure is assumed to have
+ * cost something.
+ */
+const wasBilled = (error: unknown): boolean =>
+  error instanceof ProviderError ? error.billed : true;
 
 const failureOf = (error: unknown, signal: AbortSignal): Exclude<Outcome, 'ok'> => {
   if (signal.aborted) return 'timeout';

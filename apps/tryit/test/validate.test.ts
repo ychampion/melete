@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { DraftCaseFile } from '../src/schema.ts';
-import { canonical, locate, MIN_QUOTE } from '../src/text.ts';
+import { canonical, fold, locate, MIN_QUOTE, SENTINEL } from '../src/text.ts';
 import { gate, normaliseUrl, parseDraft, retrievedIndex } from '../src/validate.ts';
 
 const PASTED = `From: Customer Care <care@northwind-electricals.example>
@@ -39,13 +39,170 @@ describe('canonical text', () => {
   });
 
   test('a quote that spans a line break still matches the paste', () => {
-    const found = locate(canonical(PASTED), 'We have approved a full refund of £249.99');
+    const found = locate(fold(PASTED), 'We have approved a full refund of £249.99');
     expect(found?.quote).toBe('We have approved a full refund of £249.99');
   });
 
   test('a quote shorter than the floor proves nothing and is refused', () => {
     expect('8 August'.length).toBeLessThan(MIN_QUOTE);
-    expect(locate(canonical(PASTED), '8 August')).toBeNull();
+    expect(locate(fold(PASTED), '8 August')).toBeNull();
+  });
+});
+
+/**
+ * A right-to-left override reverses everything after it when a browser draws
+ * it, so a quote really present in the paste can be made to read as its own
+ * opposite on screen. Escaping does not help: the characters are not markup,
+ * they are text, and `<q>` is not an isolate. They carry no meaning in an
+ * email from a company, so they come out with the other invisibles.
+ */
+describe('characters that change what a quote says without changing it', () => {
+  const RLO = '‮';
+  const LRI = '⁦';
+  const PDI = '⁩';
+  const MARK = '‏';
+
+  test('an override is stripped, so the quote reads as it was written', () => {
+    const pasted = `We do not owe you a refund. ${RLO}dnufer a uoy ewo ton od eW`;
+    const folded = canonical(pasted);
+    for (const control of [RLO, LRI, PDI, MARK]) expect(folded).not.toContain(control);
+  });
+
+  test('a quote carrying one still matches the text without it', () => {
+    const pasted = `We have approved a full ${MARK}refund of £249.99 today.`;
+    expect(locate(fold(pasted), 'We have approved a full refund of £249.99')).not.toBeNull();
+  });
+
+  test('every isolate and override is out, not only the one in the probe', () => {
+    const all = '‪‫‬‭‮⁦⁧⁨⁩‎‏';
+    expect(canonical(`a${all}b`)).toBe('ab');
+  });
+});
+
+/**
+ * Folding every run of whitespace made one paragraph of a whole email, so a
+ * "quote" could begin in the company's sentence and end inside the person's
+ * own reply two paragraphs below, under a caption promising it was word for
+ * word. A blank line and a quoted-reply marker are structural: text on either
+ * side of one was never written as a single sentence, and a quote may not
+ * cross one. A single newline is not structural — that is an email wrapping a
+ * sentence — so those still fold to a space.
+ */
+describe('breaks a quote may not cross', () => {
+  const THREAD = `Hello,
+
+We are not able to offer a refund on this occasion.
+
+Kind regards,
+Brightfibre Support
+
+On 2 September you wrote:
+> You told me on the phone that you would refund the £89.00
+> and that the engineer visit would cost me nothing.`;
+
+  test('a hard-wrapped sentence still reads as one sentence', () => {
+    const wrapped = 'We have approved a full refund\nof £249.99 to your account.';
+    expect(locate(fold(wrapped), 'We have approved a full refund of £249.99')).not.toBeNull();
+  });
+
+  test('a span across a blank line does not match', () => {
+    expect(locate(fold(THREAD), 'on this occasion. Kind regards,')).toBeNull();
+  });
+
+  test('a span from the company’s words into the person’s reply does not match', () => {
+    expect(
+      locate(
+        fold(THREAD),
+        'Brightfibre Support On 2 September you wrote: > You told me on the phone',
+      ),
+    ).toBeNull();
+  });
+
+  test('each side of a break is still quotable on its own', () => {
+    const folded = fold(THREAD);
+    expect(locate(folded, 'We are not able to offer a refund on this occasion.')).not.toBeNull();
+    expect(locate(folded, 'You told me on the phone that you would refund')).not.toBeNull();
+  });
+
+  test('a line someone chose to end is a break; a wrapped one is not', () => {
+    const table = 'Refund due:\nno\nReplacement due:\nyes, within 30 days';
+    expect(locate(fold(table), 'no Replacement due: yes')).toBeNull();
+    const asked = 'Was a refund approved?\nNo.\nWill we pay you £249.99?';
+    expect(locate(fold(asked), 'No. Will we pay you £249.99?')).toBeNull();
+    // ...while a sentence wrapped mid-way still reads as one sentence.
+    const wrapped = 'We received your returned item on 8 August and it was\nfaulty on arrival.';
+    expect(locate(fold(wrapped), 'on 8 August and it was faulty on arrival')).not.toBeNull();
+  });
+
+  test('a line ending in no punctuation at all is still joined to the next', () => {
+    // Known and accepted: the only signals available are a blank line, a reply
+    // marker and a sentence ending, and a bare two-column row carries none of
+    // them. Ruling on indentation instead would break every wrapped email,
+    // which is the far commoner case. Recorded here so it is a decision.
+    const bare = 'Refund due: no\nReplacement due: yes';
+    expect(locate(fold(bare), 'no Replacement due: yes')).not.toBeNull();
+  });
+
+  test('the mark for a break can never be smuggled in by the model', () => {
+    const folded = fold(THREAD);
+    expect(folded.text).toContain(SENTINEL);
+    expect(locate(folded, `on this occasion.${SENTINEL}Kind regards,`)).toBeNull();
+  });
+});
+
+/**
+ * The card says the quotes are word for word from what was pasted, so they
+ * have to be exactly that and not a tidied copy. A model retypes typographic
+ * characters as the plain ones, which is why the two sides are compared in a
+ * fold — but what is shown is cut from the paste at the offsets the fold
+ * recorded, so the person reads their own punctuation back.
+ */
+describe('the quote that is shown is the paste’s own text', () => {
+  const said = (quote: string) => draft({ evidence: [{ quote, why: 'w' }] });
+
+  const pairs: Array<[string, string, string]> = [
+    [
+      'curly quotes',
+      'Our agent said “we will refund you in full” yesterday.',
+      'Our agent said "we will refund you in full" yesterday.',
+    ],
+    [
+      'em dashes',
+      'Refund — in full — within five working days.',
+      'Refund - in full - within five working days.',
+    ],
+    [
+      'an ellipsis',
+      'We will pay you… eventually, we promise.',
+      'We will pay you... eventually, we promise.',
+    ],
+    [
+      'primes',
+      'The clearance is 5′ 10″ and a refund is due.',
+      `The clearance is 5' 10" and a refund is due.`,
+    ],
+  ];
+
+  for (const [what, pasted, typed] of pairs) {
+    test(`${what}: matched as the model typed it, shown as it was pasted`, () => {
+      const { file, counts } = gate(said(typed), pasted, []);
+      expect(counts.quotesDropped).toBe(0);
+      const shown = file.evidence[0]?.quote ?? '';
+      expect(pasted).toContain(shown);
+      expect(shown).not.toBe(typed);
+    });
+  }
+
+  test('a wrapped sentence comes back with its own line break, still literal', () => {
+    const pasted = 'We have approved a full refund of £249.99\nto your original payment method.';
+    const { file } = gate(
+      said('We have approved a full refund of £249.99 to your original payment method.'),
+      pasted,
+      [],
+    );
+    const shown = file.evidence[0]?.quote ?? '';
+    expect(pasted).toContain(shown);
+    expect(shown).toContain('\n');
   });
 });
 
@@ -81,7 +238,8 @@ describe('the quote gate', () => {
     );
     expect(counts.quotesDropped).toBe(0);
     expect(file.evidence).toHaveLength(1);
-    expect(PASTED.includes('approved a full refund of £249.99')).toBe(true);
+    // The shown text is cut from the paste, so the paste contains it exactly.
+    expect(PASTED).toContain(file.evidence[0]?.quote ?? '__nothing__');
     expect(file.noEvidenceNote).toBeNull();
   });
 

@@ -11,7 +11,7 @@
  */
 import type { Basis, CaseFile, DraftCaseFile, Evidence, LadderStep } from './schema.ts';
 import { MAX_BASIS, MAX_EVIDENCE, MAX_LADDER } from './schema.ts';
-import { canonical, locate } from './text.ts';
+import { fold, locate } from './text.ts';
 
 /* ---------- shape ---------- */
 
@@ -148,10 +148,10 @@ const LOWER: Record<CaseFile['odds']['level'], CaseFile['odds']['level']> = {
 
 /**
  * Run every gate and build the case file the page renders. `pasted` is the raw
- * text the person typed; it is canonicalised here and never leaves this call.
+ * text the person typed; it is folded here and never leaves this call.
  */
 export function gate(draft: DraftCaseFile, pasted: string, sources: SearchSource[]): Gated {
-  const haystack = canonical(pasted);
+  const haystack = fold(pasted);
   const retrieved = retrievedIndex(sources);
   const counts: GateCounts = { quotesDropped: 0, urlsDropped: 0, basisDropped: 0 };
 
@@ -204,7 +204,10 @@ export function gate(draft: DraftCaseFile, pasted: string, sources: SearchSource
     }
     basis.push({
       claim: entry.claim,
-      source: { kind: 'url', url: source.url, title: entry.title ?? source.title },
+      // The search's own title, not the model's: the address is verified, and
+      // a verified address under a label like "Official Refund Law" is worse
+      // than no link at all.
+      source: { kind: 'url', url: source.url, title: source.title ?? entry.title },
     });
   }
 

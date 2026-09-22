@@ -12,8 +12,10 @@ export type Limits = {
   maxInputChars: number;
   /** Shortest paste worth a case file. */
   minInputChars: number;
-  /** Case files one address may have in a day. */
+  /** Case files one address, or one IPv6 /64, may have in a day. */
   perIpPerDay: number;
+  /** Case files one IPv6 /48 may have in a day, across all of its /64s. */
+  perBlockPerDay: number;
   /** Case files the whole page may produce in a day. */
   globalPerDay: number;
   /** How long one request may take before it is given up on. */
@@ -24,8 +26,15 @@ export const DEFAULT_LIMITS: Limits = {
   maxInputChars: 20_000,
   minInputChars: 40,
   perIpPerDay: 5,
+  // A household is often handed a /56 or a /48, which is hundreds or thousands
+  // of /64s, and a /48 is free from a tunnel broker. Twenty is four /64s' worth,
+  // enough for a family or an office on one connection, and a twentieth of the
+  // day, so no single holder can spend the page out from under everyone else.
+  perBlockPerDay: 20,
   globalPerDay: 400,
-  requestTimeoutMs: 110_000,
+  // The same number as wrangler.toml and the README. Three copies drifting
+  // apart is how a timeout turns into a mystery.
+  requestTimeoutMs: 100_000,
 };
 
 const camelToScreaming = (key: string): string =>
@@ -43,6 +52,7 @@ export function limitsFrom(env: Record<string, unknown>): Limits {
     maxInputChars: number('maxInputChars'),
     minInputChars: number('minInputChars'),
     perIpPerDay: number('perIpPerDay'),
+    perBlockPerDay: number('perBlockPerDay'),
     globalPerDay: number('globalPerDay'),
     requestTimeoutMs: number('requestTimeoutMs'),
   };
@@ -74,6 +84,8 @@ export type Counters = {
   day: string;
   global: number;
   perIp: Record<string, number>;
+  /** Per IPv6 /48. Absent from counters stored before blocks were counted. */
+  perBlock?: Record<string, number>;
 };
 
 export type Spend =
@@ -86,21 +98,34 @@ export const emptyCounters = (now: number): Counters => ({
   day: dayKey(now),
   global: 0,
   perIp: {},
+  perBlock: {},
 });
 
 /**
  * Take one case file from the day's budget. The global cap is checked first:
  * when the page as a whole is out, every address hears the same thing, and an
  * address that still had room keeps it for tomorrow.
+ *
+ * An IPv6 visitor also names the /48 they are in, and the turn needs room
+ * there as well. To them it reads the same as their own allowance running out:
+ * this connection has had its turns for the day.
  */
-export function spend(counters: Counters, ip: string, now: number, limits: Limits): Spend {
+export function spend(
+  counters: Counters,
+  ip: string,
+  now: number,
+  limits: Limits,
+  block?: string,
+): Spend {
   const today = dayKey(now);
   const current: Counters = counters.day === today ? counters : emptyCounters(now);
   const used = current.perIp[ip] ?? 0;
+  const blocks = current.perBlock ?? {};
+  const usedByBlock = block === undefined ? 0 : (blocks[block] ?? 0);
 
   if (current.global >= limits.globalPerDay)
     return { allowed: false, reason: 'global', counters: current, remaining: 0 };
-  if (used >= limits.perIpPerDay)
+  if (used >= limits.perIpPerDay || usedByBlock >= limits.perBlockPerDay)
     return { allowed: false, reason: 'ip', counters: current, remaining: 0 };
 
   const taken = used + 1;
@@ -108,21 +133,27 @@ export function spend(counters: Counters, ip: string, now: number, limits: Limit
     day: today,
     global: current.global + 1,
     perIp: { ...current.perIp, [ip]: taken },
+    perBlock: block === undefined ? blocks : { ...blocks, [block]: usedByBlock + 1 },
   };
-  return { allowed: true, counters: next, remaining: limits.perIpPerDay - taken };
+  const left = limits.perIpPerDay - taken;
+  const leftInBlock = block === undefined ? left : limits.perBlockPerDay - usedByBlock - 1;
+  return { allowed: true, counters: next, remaining: Math.min(left, leftInBlock) };
 }
 
 /**
  * Give a case file back when it was never produced. An attempt that died
  * upstream should not cost someone one of their five.
  */
-export function refund(counters: Counters, ip: string, now: number): Counters {
+export function refund(counters: Counters, ip: string, now: number, block?: string): Counters {
   if (counters.day !== dayKey(now)) return counters;
   const used = counters.perIp[ip] ?? 0;
   if (used === 0) return counters;
+  const blocks = counters.perBlock ?? {};
+  const usedByBlock = block === undefined ? 0 : (blocks[block] ?? 0);
   return {
     day: counters.day,
     global: Math.max(0, counters.global - 1),
     perIp: { ...counters.perIp, [ip]: used - 1 },
+    perBlock: block === undefined ? blocks : { ...blocks, [block]: Math.max(0, usedByBlock - 1) },
   };
 }

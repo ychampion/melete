@@ -216,6 +216,10 @@ textarea::placeholder { color: var(--muted); }
 .amount .figure.words { font-size: 22px; line-height: 30px; letter-spacing: -.01em; text-wrap: pretty; }
 .amount .summary { margin-top: 8px; font-size: 15px; line-height: 23px; color: var(--text); text-wrap: pretty; }
 .amount .odds-why { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.amount .caveat {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 12px; line-height: 18px; color: var(--muted);
+}
 
 section.block { padding: 18px 20px; border-bottom: 1px solid var(--line); }
 section.block:last-child { border-bottom: 0; }
@@ -227,7 +231,13 @@ section.block:last-child { border-bottom: 0; }
 .src { font-size: 12.5px; color: var(--muted); }
 .src a { word-break: break-word; }
 .src.verbatim { margin-top: 10px; }
-.srcq { border-left: 2px solid var(--blue-line); padding-left: 10px; color: var(--muted); font-size: 13px; }
+.srcq {
+  border-left: 2px solid var(--blue-line); padding-left: 10px;
+  color: var(--muted); font-size: 13px;
+  /* A quote is cut from the paste and keeps its line breaks; folding them
+     into spaces would lay the words out differently from the thing quoted. */
+  white-space: pre-wrap;
+}
 
 blockquote {
   margin: 0; padding: 10px 0 10px 14px; border-left: 3px solid var(--blue-line);
@@ -235,6 +245,7 @@ blockquote {
 }
 blockquote q {
   font-size: 14.5px; line-height: 23px; color: var(--blue-ink);
+  white-space: pre-wrap;
   quotes: "\\201C" "\\201D" "\\2018" "\\2019";
 }
 blockquote .why { display: block; margin-top: 5px; font-size: 12px; color: var(--muted); }
@@ -538,7 +549,10 @@ const SCRIPT = String.raw`
   function render(file, meta) {
     var h = '';
     var WORDS = { high: 'Good odds', medium: 'Fair odds', low: 'Long shot' };
-    var level = WORDS[file.odds.level] ? file.odds.level : 'low';
+    /* hasOwn, not truthiness: constructor and toString are truthy on any
+       object literal, and this value becomes a class name. */
+    var level = Object.prototype.hasOwnProperty.call(WORDS, file.odds.level)
+      ? file.odds.level : 'low';
     var days = Math.max(1, Math.round(Number(file.odds.expectedDays) || 1));
 
     h += '<div class="case-top">';
@@ -558,10 +572,17 @@ const SCRIPT = String.raw`
       h += '<div class="figure words">' + esc(file.entitlement.summary) + '</div>';
     }
     h += '<div class="odds-why">' + esc(file.odds.why) + '</div>';
+    /* The card is what gets screenshotted and passed around, so the line that
+       says what this is travels with it instead of sitting in a page footer
+       below the fold, where the figure and the odds pill go without it. */
+    h += '<div class="caveat">Melete writes the message. You read it and send it yourself. ' +
+      'This is not legal advice.</div>';
     h += '</div>';
 
     if (file.entitlement.basis.length) {
-      h += '<section class="block"><div class="h">Why you are owed it</div><div class="list">';
+      /* Not "why you are owed it": nothing here has adjudicated anything, and
+         after a refusal that heading would be plainly untrue. */
+      h += '<section class="block"><div class="h">What this rests on</div><div class="list">';
       for (var b = 0; b < file.entitlement.basis.length; b++) {
         var item = file.entitlement.basis[b];
         h += '<div class="basis"><div class="claim">' + esc(item.claim) + '</div>';
@@ -587,7 +608,7 @@ const SCRIPT = String.raw`
       }
       h += '</div>';
       h +=
-        '<div class="src verbatim">Every sentence above is word for word from what you pasted.</div>';
+        '<div class="src verbatim">Each quote above is word for word from what you pasted.</div>';
     } else {
       h += '<div class="list"><div class="notice"><span>' + esc(file.noEvidenceNote || '') + '</span></div></div>';
     }

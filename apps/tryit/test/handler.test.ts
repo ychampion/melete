@@ -10,11 +10,11 @@ import { caseFileRoute, clientIp, readStream } from '../src/handler.ts';
 import { memoryLimiter } from '../src/limiter.ts';
 import type { Limits } from '../src/limits.ts';
 import { DEFAULT_LIMITS } from '../src/limits.ts';
+import type { CaseFileProvider } from '../src/provider.ts';
 import { ProviderError } from '../src/provider.ts';
 import { SAMPLES } from '../src/samples.ts';
 import type { Script } from '../src/scripted.ts';
 import { scriptedProvider } from '../src/scripted.ts';
-import { canonical } from '../src/text.ts';
 
 const REFUND = SAMPLES[0]?.text ?? '';
 
@@ -60,8 +60,10 @@ describe('the happy path', () => {
     expect(file.ladder.length).toBeGreaterThanOrEqual(3);
     expect(file.message.body).toContain('Northwind Electricals');
 
-    // Every quote shown is really in what was pasted.
-    for (const entry of file.evidence) expect(canonical(REFUND)).toContain(entry.quote);
+    // Every quote shown is really in what was pasted. Asserted against the
+    // paste itself, not against the fold the gate computes: comparing with
+    // the gate's own working restates it and cannot catch it being wrong.
+    for (const entry of file.evidence) expect(REFUND).toContain(entry.quote);
   });
 
   test('records sizes, timings and an outcome, and never the text', async () => {
@@ -171,10 +173,100 @@ describe('the ways it ends badly', () => {
     expect((await caseFileRoute(request, use)).status).toBe(413);
   });
 
+  /**
+   * The declared length is the cheap check, and it is the one an attacker
+   * simply omits: a streamed body sends no `content-length` at all, and a
+   * garbage one parses to `NaN`. Either way the guard was skipped and the
+   * whole body was read and parsed before the character cap saw it. The cap
+   * has to hold on what actually arrives.
+   */
+  /** A body that reports how much of itself was actually asked for. */
+  const streamed = (text: string, headers: Record<string, string> = {}) => {
+    const body = new TextEncoder().encode(JSON.stringify({ text }));
+    const size = 64 * 1024;
+    const sent = { bytes: 0 };
+    let at = 0;
+    const request = new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4', ...headers },
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (at >= body.byteLength) {
+            controller.close();
+            return;
+          }
+          const chunk = body.slice(at, at + size);
+          at += chunk.byteLength;
+          sent.bytes += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+      }),
+      duplex: 'half',
+    });
+    return { request, sent, total: body.byteLength };
+  };
+
+  test('a huge body with no declared length is dropped part-way, not read whole', async () => {
+    const { request, sent, total } = streamed('A'.repeat(5_000_000));
+    expect(request.headers.get('content-length')).toBeNull();
+    const response = await caseFileRoute(request, deps());
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ ok: false, code: 'too_long' });
+    // Stopped once it was clearly over, rather than reading five megabytes.
+    expect(sent.bytes).toBeLessThan(total / 10);
+  });
+
+  test('a lie about the length does not buy a full read either', async () => {
+    const { request, sent, total } = streamed('A'.repeat(5_000_000), {
+      'content-length': 'not-a-number',
+    });
+    expect((await caseFileRoute(request, deps())).status).toBe(413);
+    expect(sent.bytes).toBeLessThan(total / 10);
+  });
+
+  test('a body inside the cap still arrives, streamed or not', async () => {
+    const { request } = streamed(REFUND);
+    const { done } = await readStream(await caseFileRoute(request, deps()));
+    expect(done?.ok).toBe(true);
+  });
+
   test('a few words is not a case', async () => {
     const response = await caseFileRoute(post('they owe me'), deps());
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ ok: false, code: 'empty_input' });
+  });
+
+  /**
+   * `text/plain` is one of the three content types a browser will send
+   * cross-origin without asking permission first. Accepting it let any website
+   * spend a visitor's five, and a slot of the day's budget, from inside their
+   * browser with no preflight and nothing on screen. Insisting on JSON forces
+   * a preflight, and this Worker answers none.
+   */
+  test('only json is accepted, so no other site can spend a visitor’s turns', async () => {
+    const use = deps();
+    for (const type of ['text/plain;charset=UTF-8', 'application/x-www-form-urlencoded', '']) {
+      const request = new Request('https://tryit.example/api/case-file', {
+        method: 'POST',
+        headers: type ? { 'content-type': type } : {},
+        body: JSON.stringify({ text: REFUND }),
+      });
+      const response = await caseFileRoute(request, use);
+      expect(response.status).toBe(415);
+      if (response.body) await response.text();
+    }
+    // ...and no turn was spent finding that out.
+    expect(await use.limiter.take('1.2.3.4')).toMatchObject({ allowed: true });
+  });
+
+  test('a charset or spacing on the json type is still json', async () => {
+    const request = new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8', 'cf-connecting-ip': '1.2.3.4' },
+      body: JSON.stringify({ text: REFUND }),
+    });
+    const { done } = await readStream(await caseFileRoute(request, deps()));
+    expect(done?.ok).toBe(true);
   });
 
   test('a body that is not json, and the wrong method', async () => {
@@ -204,13 +296,11 @@ describe('the ways it ends badly', () => {
     expect(await everyone.json()).toMatchObject({ ok: false, code: 'busy' });
   });
 
-  test('a model that never answers is given up on, and the turn is handed back', async () => {
+  test('a model that never answers is given up on', async () => {
     const use = deps({ delayMs: 5_000 });
     const { done } = await readStream(await caseFileRoute(post(REFUND), use));
     expect(done).toMatchObject({ ok: false, code: 'timeout' });
     expect(use.lines[0]?.outcome).toBe('timeout');
-    // The attempt produced nothing, so it did not cost one of the day's turns.
-    expect(await use.limiter.take('1.2.3.4')).toMatchObject({ allowed: true });
   });
 
   test('an upstream failure is reported as one', async () => {
@@ -227,13 +317,315 @@ describe('the ways it ends badly', () => {
   });
 });
 
+/**
+ * A cap that hands the turn back after the model has been paid for is not a
+ * cap: anyone who can make the model refuse, overrun or run slow gets as many
+ * calls as they like. So the question each test asks is not "was there an
+ * error" but "how many times could the model be called", and the counter is
+ * spent down to the cap first — a test with room left over passes whether or
+ * not the rule holds, which is how this went unnoticed.
+ */
+describe('what a failure costs', () => {
+  /** Count the calls that would really have been billed, and fail after them. */
+  const billing = (error: ProviderError) => {
+    const calls = { made: 0 };
+    const provider: CaseFileProvider = {
+      name: 'billing',
+      async run() {
+        calls.made += 1; // the tokens are spent here
+        throw error; // ...and the failure happens after
+      },
+    };
+    return { calls, provider };
+  };
+
+  const attempts = async (error: ProviderError, tries: number) => {
+    const { calls, provider } = billing(error);
+    const use = deps({}, { provider });
+    for (let turn = 0; turn < tries; turn += 1) {
+      const response = await caseFileRoute(post(REFUND, '1.1.1.1'), use);
+      if (response.body) await response.text();
+    }
+    return calls.made;
+  };
+
+  test('a refusal costs a turn: the paid-for call is counted', async () => {
+    // Twenty tries against a cap of two may buy two calls, and no more.
+    expect(await attempts(new ProviderError('refused', 'no', true), 20)).toBe(LIMITS.perIpPerDay);
+  });
+
+  test('so does a reply that stopped early', async () => {
+    expect(await attempts(new ProviderError('malformed', 'stopped early', true), 20)).toBe(
+      LIMITS.perIpPerDay,
+    );
+  });
+
+  test('so does a reply that answered, but in the wrong shape', async () => {
+    // This one returns rather than throws, so it is the handler's own
+    // `malformed` branch that must not hand the turn back.
+    let calls = 0;
+    const nonsense: CaseFileProvider = {
+      name: 'nonsense',
+      async run() {
+        calls += 1;
+        return { json: { not: 'a case file' }, sources: [], searches: 0 };
+      },
+    };
+    const use = deps({}, { provider: nonsense });
+    for (let turn = 0; turn < 20; turn += 1) {
+      const response = await caseFileRoute(post(REFUND, '2.2.2.2'), use);
+      if (response.body) await response.text();
+    }
+    expect(calls).toBe(LIMITS.perIpPerDay);
+  });
+
+  test('so does a request given up on after it was sent', async () => {
+    expect(await attempts(new ProviderError('timeout', 'too slow', true), 20)).toBe(
+      LIMITS.perIpPerDay,
+    );
+  });
+
+  test('a failure that never reached the model is handed back', async () => {
+    // Nothing was sent, so nothing was paid for, and the turn is still theirs.
+    expect(await attempts(new ProviderError('upstream', 'could not connect', false), 20)).toBe(20);
+  });
+
+  test('...and handed back to the IPv6 block as well as the /64', async () => {
+    const limits: Limits = { ...LIMITS, perIpPerDay: 5, perBlockPerDay: 2, globalPerDay: 50 };
+    const { calls, provider } = billing(new ProviderError('upstream', 'could not connect', false));
+    const use = deps({}, { provider, limiter: memoryLimiter(limits), limits });
+    for (let net = 1; net <= 6; net += 1) {
+      const response = await caseFileRoute(post(REFUND, `2001:db8:1:${net}::1`), use);
+      if (response.body) await response.text();
+    }
+    expect(calls.made).toBe(6);
+  });
+
+  test('the whole page runs out too, however the attempts fail', async () => {
+    const { calls, provider } = billing(new ProviderError('refused', 'no', true));
+    const use = deps({}, { provider });
+    for (let turn = 0; turn < 20; turn += 1) {
+      const response = await caseFileRoute(post(REFUND, `9.9.9.${turn}`), use);
+      if (response.body) await response.text();
+    }
+    expect(calls.made).toBe(LIMITS.globalPerDay);
+  });
+
+  test('a case file that arrives is never handed back', async () => {
+    const handed: string[] = [];
+    const use = deps(
+      {},
+      {
+        limiter: {
+          take: async () => ({ allowed: true, remaining: 4 }),
+          giveBack: async (ip) => {
+            handed.push(ip);
+          },
+        },
+      },
+    );
+    await readStream(await caseFileRoute(post(REFUND), use));
+    expect(handed).toEqual([]);
+  });
+});
+
+/**
+ * The counter has to tell one visitor from another for a day. It does not have
+ * to know who they are, and the page promises it keeps nothing but the day's
+ * counters — which was not quite true while up to four hundred raw addresses
+ * sat in the object until the next day overwrote them.
+ */
+describe('what the counter is told about a visitor', () => {
+  const watching = () => {
+    const keys: string[] = [];
+    const limiter = {
+      take: async (key: string) => {
+        keys.push(key);
+        return { allowed: true as const, remaining: 4 };
+      },
+      giveBack: async (key: string) => {
+        keys.push(key);
+      },
+    };
+    return { keys, limiter };
+  };
+
+  const keyFor = async (ip: string, at: string) => {
+    const { keys, limiter } = watching();
+    const request = new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
+      body: JSON.stringify({ text: REFUND }),
+    });
+    await readStream(
+      await caseFileRoute(request, deps({}, { limiter, now: () => Date.parse(at) })),
+    );
+    return keys[0] ?? '';
+  };
+
+  test('the address itself is never handed over', async () => {
+    const key = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    expect(key).not.toContain('203.0.113.7');
+    expect(key).not.toContain('203');
+    expect(key).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test('the same visitor on the same day is the same one', async () => {
+    const first = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    const later = await keyFor('203.0.113.7', '2026-09-19T23:00:00Z');
+    expect(later).toBe(first);
+  });
+
+  test('two visitors are two', async () => {
+    const one = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    const other = await keyFor('203.0.113.8', '2026-09-19T10:00:00Z');
+    expect(other).not.toBe(one);
+  });
+
+  test('tomorrow they are someone else again', async () => {
+    const today = await keyFor('203.0.113.7', '2026-09-19T10:00:00Z');
+    const tomorrow = await keyFor('203.0.113.7', '2026-09-20T10:00:00Z');
+    expect(tomorrow).not.toBe(today);
+  });
+
+  // One IPv6 connection is handed a /64 at the least, so every address in it
+  // belongs to the same person, who could otherwise take a fresh allowance
+  // from each of them.
+  test('every address in one IPv6 /64 is the same visitor', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    const one = await keyFor('2001:db8:1:2::1', at);
+    expect(await keyFor('2001:db8:1:2:ffff:ffff:ffff:fffe', at)).toBe(one);
+    expect(await keyFor('2001:0DB8:0001:0002:0:0:0:9', at)).toBe(one);
+    expect(await keyFor('[2001:db8:1:2::7]', at)).toBe(one);
+    expect(await keyFor('fe80::1%eth0', at)).toBe(await keyFor('fe80::2', at));
+  });
+
+  test('the next /64 along is someone else', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    expect(await keyFor('2001:db8:1:3::1', at)).not.toBe(await keyFor('2001:db8:1:2::1', at));
+    expect(await keyFor('2001:db8::1', at)).not.toBe(await keyFor('2001:db8:1::1', at));
+  });
+
+  test('an IPv4 address written as IPv6 is that IPv4 address', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    const plain = await keyFor('203.0.113.7', at);
+    expect(await keyFor('::ffff:203.0.113.7', at)).toBe(plain);
+    expect(await keyFor('::FFFF:cb00:7107', at)).toBe(plain);
+    expect(await keyFor('0:0:0:0:0:ffff:203.0.113.7', at)).toBe(plain);
+    expect(await keyFor('::ffff:203.0.113.8', at)).not.toBe(plain);
+  });
+
+  // A 6to4 prefix, 2002:WWXX:YYZZ::/48, belongs to whoever holds the IPv4
+  // address inside it, which would otherwise hand them 65,536 /64s.
+  test('a 6to4 address is the IPv4 address it was built from', async () => {
+    const at = '2026-09-19T10:00:00Z';
+    const plain = await keyFor('203.0.113.7', at);
+    expect(await keyFor('2002:cb00:7107::1', at)).toBe(plain);
+    expect(await keyFor('2002:cb00:7107:ffff:1:2:3:4', at)).toBe(plain);
+    expect(await keyFor('2002:cb00:7108::1', at)).not.toBe(plain);
+  });
+
+  test('a /64 gets one allowance, however many addresses it rotates through', async () => {
+    const use = deps();
+    const statuses: number[] = [];
+    for (let host = 1; host <= LIMITS.perIpPerDay + 3; host += 1) {
+      const response = await caseFileRoute(post(REFUND, `2001:db8:1:2::${host.toString(16)}`), use);
+      if (response.status === 200) await readStream(response);
+      statuses.push(response.status);
+    }
+    expect(statuses.filter((status) => status === 200)).toHaveLength(LIMITS.perIpPerDay);
+    expect(statuses.slice(LIMITS.perIpPerDay).every((status) => status === 429)).toBe(true);
+  });
+
+  test('a /48 gets one larger allowance, however many /64s it rotates through', async () => {
+    const limits: Limits = { ...LIMITS, perIpPerDay: 2, perBlockPerDay: 3, globalPerDay: 50 };
+    const use = deps({}, { limiter: memoryLimiter(limits), limits });
+    const statusOf = async (address: string) => {
+      const response = await caseFileRoute(post(REFUND, address), use);
+      if (response.status === 200) await readStream(response);
+      return response.status;
+    };
+    const statuses: number[] = [];
+    for (let net = 1; net <= 6; net += 1) statuses.push(await statusOf(`2001:db8:1:${net}::1`));
+    expect(statuses).toEqual([200, 200, 200, 429, 429, 429]);
+    expect(await statusOf('2001:db8:2:1::1')).toBe(200);
+  });
+
+  test('IPv4 addresses are not grouped into blocks', async () => {
+    const limits: Limits = { ...LIMITS, perIpPerDay: 1, perBlockPerDay: 1, globalPerDay: 50 };
+    const use = deps({}, { limiter: memoryLimiter(limits), limits });
+    for (let host = 1; host <= 4; host += 1) {
+      const response = await caseFileRoute(post(REFUND, `203.0.113.${host}`), use);
+      expect(response.status).toBe(200);
+      await readStream(response);
+    }
+  });
+});
+
 describe('the caller’s address', () => {
-  test('comes from Cloudflare first, then a proxy header, then nothing', () => {
-    const at = (headers: Record<string, string>) =>
-      clientIp(new Request('https://tryit.example/', { headers }));
+  const at = (headers: Record<string, string>, local = false) =>
+    clientIp(new Request('https://tryit.example/', { headers }), local);
+
+  test('comes from Cloudflare, whatever else the request says', () => {
     expect(at({ 'cf-connecting-ip': '1.1.1.1', 'x-forwarded-for': '2.2.2.2' })).toBe('1.1.1.1');
-    expect(at({ 'x-forwarded-for': '2.2.2.2, 3.3.3.3' })).toBe('2.2.2.2');
-    expect(at({})).toBe('unknown');
+    expect(at({ 'cf-connecting-ip': '1.1.1.1', 'x-forwarded-for': '2.2.2.2' }, true)).toBe(
+      '1.1.1.1',
+    );
+  });
+
+  // Anyone can write x-forwarded-for, so trusting it lets the caller choose
+  // their own counter. Cloudflare's edge always sets cf-connecting-ip, so a
+  // request without it came some other way and has no address to count.
+  test('without Cloudflare, a proxy header is believed only on a local run', () => {
+    expect(at({ 'x-forwarded-for': '2.2.2.2, 3.3.3.3' })).toBeNull();
+    expect(at({})).toBeNull();
+    expect(at({ 'x-forwarded-for': '2.2.2.2, 3.3.3.3' }, true)).toBe('2.2.2.2');
+    expect(at({}, true)).toBe('unknown');
+  });
+
+  const forwarded = (address: string) =>
+    new Request('https://tryit.example/api/case-file', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': address },
+      body: JSON.stringify({ text: REFUND }),
+    });
+
+  test('a request with no Cloudflare address is refused before a turn is spent', async () => {
+    const taken: string[] = [];
+    const use = deps(
+      {},
+      {
+        limiter: {
+          take: async (ip) => {
+            taken.push(ip);
+            return { allowed: true, remaining: 4 };
+          },
+          giveBack: async () => {},
+        },
+      },
+    );
+    for (let host = 1; host <= 3; host += 1) {
+      const response = await caseFileRoute(forwarded(`198.51.100.${host}`), use);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ ok: false, code: 'bad_request' });
+    }
+    expect(taken).toEqual([]);
+    expect(use.lines.map((line) => line.outcome)).toEqual([
+      'bad_request',
+      'bad_request',
+      'bad_request',
+    ]);
+  });
+
+  test('a local run counts by the proxy header', async () => {
+    const use = deps({}, { local: true });
+    const statuses: number[] = [];
+    for (const address of ['198.51.100.1', '198.51.100.1', '198.51.100.1', '198.51.100.2']) {
+      const response = await caseFileRoute(forwarded(address), use);
+      if (response.status === 200) await readStream(response);
+      statuses.push(response.status);
+    }
+    expect(statuses).toEqual([200, 200, 429, 200]);
   });
 });
 
@@ -243,8 +635,8 @@ describe('the three samples', () => {
       const { done } = await readStream(await caseFileRoute(post(sample.text, sample.id), deps()));
       if (!done?.ok) throw new Error(`${sample.id} did not produce a case file`);
       expect(done.caseFile.evidence.length).toBeGreaterThan(0);
-      const folded = canonical(sample.text);
-      for (const entry of done.caseFile.evidence) expect(folded).toContain(entry.quote);
+      // Against the paste, not against the gate's own fold of it.
+      for (const entry of done.caseFile.evidence) expect(sample.text).toContain(entry.quote);
     }
   });
 });
