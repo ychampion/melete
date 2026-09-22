@@ -45,8 +45,12 @@ export async function invalidateDependencies(
         .filter((id): id is string => typeof id === 'string'),
     ),
   ];
+  // A job that has never run an attempt was handed no memory, and an owner
+  // command is never claimed by a runtime; waking either would start work
+  // nobody asked for, or strand the command in a queue nothing reads.
   const jobs =
-    await tx`select j.id from job j where j.space_id = ${scope.spaceId} and j.state not in ('completed','failed','cancelled') and (
+    await tx`select j.id from job j where j.space_id = ${scope.spaceId} and j.state not in ('completed','failed','cancelled')
+    and j.kind <> 'command' and exists (select 1 from attempt a where a.job_id = j.id) and (
     ${all} or j.id = any(${knownJobs}) or (not exists (select 1 from memory_contexts c where c.job_id = j.id)
       and not exists (select 1 from memory_prepared p where p.job_id = j.id))) for update`;
   for (const job of jobs) {

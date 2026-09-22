@@ -104,6 +104,43 @@ export function registerLifecycleTests(db: TestDatabase | null) {
         'dependencies_invalidated',
       ]);
     });
+    test('a correction leaves waiting jobs that never ran, and owner commands, where they are', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      const { claimId } = await seed(db, scope);
+      // A job that ran without a context record is still invalidated conservatively.
+      const ran = await createJobAttempt(db, scope);
+      const chat = newId('job');
+      await db.sql`insert into job (id, space_id, title, objective, kind, state, wait)
+        values (${chat}, ${scope.spaceId}, 'New chat', 'chat', 'chat', 'waiting_for_input',
+          ${JSON.stringify({ kind: 'user_input', question: 'What would you like to do next?' })}::text::jsonb)`;
+      const routine = newId('job');
+      await db.sql`insert into job (id, space_id, title, objective, kind, state, wait, next_wake_at)
+        values (${routine}, ${scope.spaceId}, 'Tomorrow', 'routine', 'routine', 'waiting_for_event_or_time',
+          ${JSON.stringify({ kind: 'timer', wake_at: '2099-01-01T09:00:00.000Z' })}::text::jsonb, '2099-01-01T09:00:00Z')`;
+      const command = newId('job');
+      await db.sql`insert into job (id, space_id, title, objective, kind, state, lease_epoch)
+        values (${command}, ${scope.spaceId}, 'Read upcoming events', 'read', 'command', 'running', 1)`;
+      await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at)
+        values (${newId('att')}, ${command}, 1, 'experience-v1', 'owner', 'explicit-command', now() + interval '5 minutes')`;
+      await correctClaim(db.sql, scope, {
+        claim_id: claimId,
+        expected_revision: 1,
+        content: 'August',
+        text: 'move our trip from July to August',
+        valid_from: '2026-08-01T00:00:00Z',
+        idempotency_key: 'untouched-jobs',
+      });
+      const states = Object.fromEntries(
+        (
+          await db.sql`select id, state, next_wake_at from job where id in ${db.sql([ran.jobId, chat, routine, command])}`
+        ).map((row) => [row.id, [row.state, row.next_wake_at?.toISOString() ?? null]]),
+      );
+      expect(states[ran.jobId]?.[0]).toBe('queued');
+      expect(states[chat]).toEqual(['waiting_for_input', null]);
+      expect(states[routine]).toEqual(['waiting_for_event_or_time', '2099-01-01T09:00:00.000Z']);
+      expect(states[command]).toEqual(['running', null]);
+    });
     test('approved shared context and public compartments are assembled before delivery', async () => {
       if (!db) return;
       const scope = await createScope(db);
