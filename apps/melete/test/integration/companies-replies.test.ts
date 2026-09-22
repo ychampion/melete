@@ -309,6 +309,29 @@ withDb('noticing that a company wrote back', () => {
     expect((await jobs.get(other.jobId)).state).toBe('queued');
   });
 
+  test('one mailbox that cannot take a reply does not stop the others being read', async () => {
+    const { jobs, handle } = fixture();
+    const broken = newId('conn');
+    await handle.db.insert(connection).values({
+      id: broken,
+      spaceId,
+      provider: 'test',
+      label: 'Second mailbox',
+      scopes,
+    });
+    // The broken mailbox's chase is older, so a pass reaches it first.
+    await waitingChase('acme.test', broken);
+    const other = await waitingChase('other.test');
+    // A failed health check marks the connection, while its reads still work.
+    await handle.sql`update connection set status = 'error' where id = ${broken}`;
+    const messages = [
+      reply(),
+      reply({ messageId: '<o1@other.test>', from: 'Other Ltd <help@other.test>' }),
+    ];
+    expect(await poller(messages).runOnce()).toBe(1);
+    expect((await jobs.get(other.jobId)).state).toBe('queued');
+  });
+
   test('a subdomain of the company is still the company', async () => {
     const { jobs } = fixture();
     const chase = await waitingChase();

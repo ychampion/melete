@@ -355,7 +355,15 @@ export class CompanyReplyPoller {
   async runOnce(): Promise<number> {
     let delivered = 0;
     for (const candidate of await readCandidates(this.deps.sql)) {
-      delivered += await deliverReplies(this.deps, candidate);
+      // One chase whose mailbox cannot take a reply right now must not stop
+      // every chase after it from being read. Its reply is still in the
+      // mailbox, and delivery is keyed by message id, so the next pass that
+      // succeeds delivers it once.
+      try {
+        delivered += await deliverReplies(this.deps, candidate);
+      } catch {
+        process.stderr.write(`company replies: delivery_failed ${candidate.jobId}\n`);
+      }
     }
     return delivered;
   }
