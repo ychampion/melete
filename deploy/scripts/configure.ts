@@ -75,6 +75,14 @@ export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAcc
   return probe.gid;
 }
 
+/** What was written. Windows applies no owner-only mode, so the file keeps its folder's. */
+export function createdMessage(platform: NodeJS.Platform, fake: boolean): string {
+  const fakeProvider = fake ? ' and the explicit fake provider' : '';
+  return platform === 'win32'
+    ? `Created deploy/.env${fakeProvider}. On Windows it has the permissions of its folder.`
+    : `Created deploy/.env with private permissions${fakeProvider}.`;
+}
+
 if (import.meta.main) {
   const root = resolve(import.meta.dir, '../..');
   const target = resolve(root, 'deploy/.env');
@@ -127,9 +135,7 @@ if (import.meta.main) {
     }
     throw error;
   }
-  process.stdout.write(
-    `Created deploy/.env with private permissions${fake ? ' and the explicit fake provider' : ''}.\n`,
-  );
+  process.stdout.write(`${createdMessage(process.platform, fake)}\n`);
   if (nodeName !== null)
     for (const note of tailscaleNotes(nodeName)) process.stdout.write(`${note}\n`);
   // A real provider is selected with its key still empty. Say so now, not at the first job.

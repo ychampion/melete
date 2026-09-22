@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { DockerHostFacts } from '../../apps/melete/src/runtime/docker-host.ts';
-import { configureOptions, dockerSocketGroup } from './configure.ts';
+import { configureOptions, createdMessage, dockerSocketGroup } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
 describe('the configuration generator options', () => {
@@ -95,4 +95,16 @@ describe('the Docker socket group written as DOCKER_GID', () => {
       'could not inspect /var/run/docker.sock (Cannot connect)',
     );
   });
+});
+
+test('the created line says what was done on each system', () => {
+  expect(createdMessage('linux', true)).toBe(
+    'Created deploy/.env with private permissions and the explicit fake provider.',
+  );
+  expect(createdMessage('darwin', false)).toBe('Created deploy/.env with private permissions.');
+  const windows = createdMessage('win32', true);
+  expect(windows).not.toContain('private permissions');
+  expect(windows).toBe(
+    'Created deploy/.env and the explicit fake provider. On Windows it has the permissions of its folder.',
+  );
 });
