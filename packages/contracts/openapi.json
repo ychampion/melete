@@ -11461,6 +11461,7 @@
                         "type": "string",
                         "enum": [
                           "e2b",
+                          "daytona",
                           "modal"
                         ]
                       },
