@@ -234,9 +234,16 @@ export function judgeDockerHost(facts: DockerHostFacts): string[] {
 /**
  * The engine and Compose judgement together with this host's. When the named
  * pipe is missing it says why the engine did not answer, so the generic line
- * about an unreachable engine is left out.
+ * about an unreachable engine is left out; when there is no `docker` program
+ * at all, that is the one thing worth saying.
  */
 export function judgeDockerMachine(outputs: HostDockerOutputs, facts: DockerHostFacts): string[] {
+  if (outputs.engine.code === 127 && outputs.compose.code === 127)
+    return [
+      facts.platform === 'linux'
+        ? 'The `docker` command was not found. Install Docker Engine with the Compose plugin: https://docs.docker.com/engine/install/'
+        : 'The `docker` command was not found. Install Docker Desktop (https://docs.docker.com/desktop/), start it, and open a new terminal so its programs are on PATH.',
+    ];
   const host = judgeDockerHost(facts);
   const versions = judgeHostDocker(outputs).filter(
     (line) => facts.pipePresent !== false || !line.startsWith('`docker version` did not reach'),

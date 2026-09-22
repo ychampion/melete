@@ -354,3 +354,25 @@ describe('the socket as a container sees it', () => {
     expect('problem' in directory && directory.problem).toContain('is a directory, not a socket');
   });
 });
+
+describe('no docker program at all', () => {
+  test('is said once, with where to get Docker for that system', () => {
+    const missing = { code: 127, stdout: '', stderr: 'Executable not found in $PATH: "docker"' };
+    const windows = dockerHostFacts({
+      platform: 'win32',
+      env: {},
+      info: missing,
+      context: missing,
+      exists: () => false,
+    });
+    const problems = judgeDockerMachine({ engine: missing, compose: missing }, windows);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('Install Docker Desktop');
+    const linux = judgeDockerMachine(
+      { engine: missing, compose: missing },
+      { platform: 'linux', endpoint: null, pipePresent: null, info: null },
+    );
+    expect(linux).toHaveLength(1);
+    expect(linux[0]).toContain('Install Docker Engine');
+  });
+});
