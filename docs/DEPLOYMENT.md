@@ -757,3 +757,57 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
+
+## Removing a space
+
+The owner of a space removes it over the API, with the owner's session cookie.
+The request carries the space's name, typed exactly as it is shown, and a
+member of the space receives `403`. The request and response types are in
+`openapi.json` and the typed client.
+
+| Request | Answer |
+|---|---|
+| `GET /spaces/{id}/removal/preview` | What the space holds, the services whose keys it uses, and the sentence to confirm |
+| `DELETE /spaces/{id}` with `{"confirm_name": "<name>"}` | `202` and the removal; `400` when the name does not match |
+| `GET /spaces/{id}/removal` | How far the removal has got, while the space is there |
+| `GET /removals/{id}` | The removal and its account, including after the space is gone, for the person who asked |
+
+The space closes inside the request: its work is cancelled, its triggers stop
+and its memory stops serving. The rest runs in the background, one phase at a
+time: access for every member ends, the removal is written to the restriction
+journal, then the space's files go (the space directory with its repository and
+history, and each job's workspace), then its rows (work, artifacts, knowledge
+records, skills, the companies map, connections and their sealed keys, and
+memory). A final count then checks every table, every path and every provider
+the space used. The removal reads `complete` only when that count finds nothing
+left, and only then is the space row deleted.
+
+A personal space is emptied rather than removed. It keeps its id, its owner
+stays signed in, and it comes back with a fresh, empty repository.
+
+Asking again while a removal runs returns the same removal.
+
+### A blocked removal
+
+When a phase cannot finish, or the final count finds something left, the removal
+reads `blocked`, and `blocked_reason` names the provider, path or table. The space
+stays closed. Melete retries at startup and every minute after, going through the
+whole sweep again, so a removal finishes by itself once its cause is gone. A path
+named in the reason is usually held open by another process; stop that process
+and the next pass removes it.
+
+### Removal and backups
+
+The removal is written to the restriction journal before anything is deleted.
+Restoring a database snapshot from before the removal, with the current journal,
+brings the space's rows back only until startup: the replay closes the space
+again and the removal runs to the end. This is one more reason to keep the
+journal apart from database snapshots, as described in
+[Backup and restore](#backup-and-restore).
+
+### What stays at other services
+
+Messages that were sent, files copied elsewhere and pages published to another
+service stay where they went. App passwords and connection keys keep working at
+the service that issued them until they are revoked there; the preview names
+each of those services.
