@@ -231,7 +231,7 @@ definition as `{**entry.schema, "name": entry.name}`, so what is passed there is
 the OpenAI function body, and a bare schema produces a definition with no
 `parameters` key at all. That understated the thin figure by 28 tokens and the
 default by 29. The table is from the corrected run, and
-`melete_plugin.tool_schema` produces the shape the probe now uses.
+`melete_plugin.tool_schema` produces the shape the corrected run used.
 
 Two things the numbers say that the plan did not.
 
