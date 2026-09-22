@@ -158,6 +158,49 @@ withDb('responsibility protocol', () => {
     ).toMatchObject({ code: 'operation_conflict' });
   });
 
+  test('an operation wake is judged by the database clock, not by a process clock 50 ms off', async () => {
+    const { handle, jobs } = fixture();
+    const row = await createJob();
+    const service = new OperationService(jobs);
+    const realNow = Date.now;
+    const shift = (ms: number) => {
+      Date.now = () => realNow() + ms;
+    };
+    const databaseNow = async (offsetMs = 0) => {
+      const [value] =
+        await handle.sql`select now() + ${offsetMs} * interval '1 millisecond' as due`;
+      return new Date(value?.due as Date).toISOString();
+    };
+    try {
+      // Due by the database clock, which is the clock pg-boss delivered it by. A
+      // process clock 50 ms behind would call it early and drop the wake.
+      const due = await service.register(row.id, {
+        operation_key: 'due-now',
+        kind: 'timer',
+        due_at: await databaseNow(),
+      });
+      shift(-50);
+      await service.handleWake({ id: due.id, version: due.version });
+      expect((await service.get(due.id)).state).toBe('settled');
+      // Not yet due by the database clock. A process clock 50 ms ahead would
+      // have fired it before its time.
+      shift(0);
+      const early = await service.register(row.id, {
+        operation_key: 'due-soon',
+        kind: 'timer',
+        due_at: await databaseNow(30),
+      });
+      shift(50);
+      await service.handleWake({ id: early.id, version: early.version });
+      expect((await service.get(early.id)).state).toBe('registered');
+      await Bun.sleep(60);
+      await service.handleWake({ id: early.id, version: early.version });
+      expect((await service.get(early.id)).state).toBe('settled');
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   test('operation settlement before wait registration wakes once from the persisted event', async () => {
     const { jobs } = fixture();
     const row = await createJob();

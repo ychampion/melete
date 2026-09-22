@@ -10,6 +10,7 @@ import {
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { ServiceError } from '../api/errors.ts';
+import { databaseNow } from '../db/clock.ts';
 import { backgroundOperation, space, trigger } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
@@ -205,10 +206,11 @@ export class OperationService {
   async claim(id: string, version: number): Promise<OperationRow | null> {
     return this.jobs.transaction(async (tx) => {
       const row = await this.lock(tx, id);
+      // pg-boss delivered this wake by the database clock; judge it by the same one.
       if (
         row.version !== version ||
         !['registered', 'ready'].includes(row.state) ||
-        row.dueAt.getTime() > Date.now()
+        row.dueAt.getTime() > (await databaseNow(tx)).getTime()
       )
         return null;
       const job = await this.jobs.lock(tx, row.jobId);
