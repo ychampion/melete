@@ -8,6 +8,10 @@
  * readily as a line — more readily, because it is read before the file is
  * opened — and a name is checked even when the bytes are binary.
  *
+ * With `MELETE_RELEASE=1`, which `bun run release:check` sets, it also refuses
+ * a placeholder that must be replaced before a release goes out: the
+ * `(TRYIT_URL)` link target in README.
+ *
  * The patterns are deliberately literal. This file and its test are the two
  * tracked files that have to spell them out, so they are exempt.
  */
@@ -46,12 +50,24 @@ const PATH_TRACE = /melete-oss-/;
  */
 const WORK_CODE = /(?<![A-Za-z0-9])[Ww]\d{1,2}[a-z]?(?![A-Za-z0-9])(?!\.(?:org|com|net))/;
 
+/**
+ * A link target left for a release to fill in. It is legal while the page it
+ * points at does not exist yet, and refused once a release is being cut, so the
+ * front page cannot ship with a link to nowhere.
+ */
+const RELEASE_PLACEHOLDER = /\(TRYIT_URL\)/;
+
+/** Whether this run is checking a release, which `MELETE_RELEASE=1` selects. */
+export const releasing = (env: Record<string, string | undefined>): boolean =>
+  env.MELETE_RELEASE === '1';
+
 /** What a contributor should do about each rule, printed only when it fires. */
 const GUIDANCE: Record<string, string> = {
   'session trace':
     'A local path or session phrase belongs to one machine or one run. Describe the repository instead.',
   'work code':
     'A work code named a piece of work while the project was being built and means nothing to a reader. Say what the thing is — the service, the broker, the memory core — not the item it came from.',
+  'release placeholder': 'Replace the placeholder link with the live address before releasing.',
 };
 
 /**
@@ -82,11 +98,12 @@ const DECISION_NOTE = /^\.agents\/notes\/(?:README\.md|\d{4}-[a-z0-9-]+\.md)$/;
 export type Finding = { file: string; line: number | null; text: string; rule: string };
 
 /** The rule a line breaks, or null when it carries nothing that must be scrubbed. */
-export function violation(file: string, line: string): string | null {
+export function violation(file: string, line: string, release = false): string | null {
   if (SPELLS_THE_PATTERNS.has(file)) return null;
   if (ALLOWED[file]?.test(line)) return null;
   if (SESSION_TRACE.test(line)) return 'session trace';
   if (!DECISION_NOTE.test(file) && WORK_CODE.test(line)) return 'work code';
+  if (release && RELEASE_PLACEHOLDER.test(line)) return 'release placeholder';
   return null;
 }
 
@@ -103,12 +120,12 @@ export function pathViolation(file: string): string | null {
 }
 
 /** Every line of one tracked file that must not be committed as written. */
-export function scanText(file: string, text: string): Finding[] {
+export function scanText(file: string, text: string, release = false): Finding[] {
   const findings: Finding[] = [];
   const lines = text.split('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
-    const rule = violation(file, line);
+    const rule = violation(file, line, release);
     if (rule) findings.push({ file, line: index + 1, text: line.trim(), rule });
   }
   return findings;
@@ -140,7 +157,10 @@ export function trackedFiles(root: string): string[] {
  * out, whose bytes match by accident. Its name is still checked, because a
  * screenshot can be named after a piece of work as easily as a note can.
  */
-export async function scrub(root: string): Promise<{ files: string[]; findings: Finding[] }> {
+export async function scrub(
+  root: string,
+  release = false,
+): Promise<{ files: string[]; findings: Finding[] }> {
   const files = trackedFiles(root);
   const findings: Finding[] = [];
   for (const file of files) {
@@ -148,13 +168,16 @@ export async function scrub(root: string): Promise<{ files: string[]; findings: 
     if (named) findings.push({ file, line: null, text: 'the file name itself', rule: named });
     const bytes = await Bun.file(`${root}${file}`).arrayBuffer();
     if (new Uint8Array(bytes.slice(0, 8192)).includes(0)) continue;
-    findings.push(...scanText(file, new TextDecoder().decode(bytes)));
+    findings.push(...scanText(file, new TextDecoder().decode(bytes), release));
   }
   return { files, findings };
 }
 
 if (import.meta.main) {
-  const { files, findings } = await scrub(fileURLToPath(new URL('..', import.meta.url)));
+  const { files, findings } = await scrub(
+    fileURLToPath(new URL('..', import.meta.url)),
+    releasing(process.env),
+  );
   if (findings.length > 0) {
     process.stderr.write(report(findings));
     process.exit(1);

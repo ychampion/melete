@@ -27,7 +27,8 @@ const BANNER = `/**
 /** The exact bytes schema.d.ts should hold for the current openapi.json. */
 export async function generateSchemaTypes(): Promise<string> {
   const document = JSON.parse(readFileSync(openApiPath(), 'utf8'));
-  const ast = await openapiTS(document, { alphabetize: true });
+  // A request property with a default may be left out, so its type stays optional.
+  const ast = await openapiTS(document, { alphabetize: true, defaultNonNullable: false });
   return `${BANNER}${astToString(ast)}`;
 }
 

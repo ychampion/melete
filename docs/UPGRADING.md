@@ -14,7 +14,9 @@ upgraded in order of their tags; moving to an older tag is a
 - **The source tree** is checked out at the tag.
 - **The images** are rebuilt from it. Each is tagged with the release version
   as well as `:local`, which is the name Compose starts. The images that were
-  running are kept under the previous version's name.
+  running are kept under the previous version's name. With `--browser`, the
+  browser worker's image, `<project>-browser:latest`, is kept and tagged the
+  same way.
 - **The database schema** is migrated by the service itself. At every boot,
   before the API listens, the service takes a Postgres advisory lock and applies
   whatever its migration journal has that the database has not recorded. A
@@ -45,8 +47,12 @@ the database is dumped from the running `postgres` service.
 ```bash
 cd melete
 git fetch --tags origin
+mkdir -p -m 700 ~/melete-backups
 bun run deploy/scripts/upgrade.ts v0.2.0 --dry-run
 ```
+
+The backup parent must exist before the first run; the `mkdir` creates the
+default one, `~/melete-backups`, private to you.
 
 The dry run performs the read-only preflight and prints the plan. It exits
 non-zero when the preflight found a problem; the plan is printed either way.
@@ -78,6 +84,8 @@ Nothing is stopped or written until every check passes:
   the configuration generator judge them.
 - **The stack**: the `postgres` service is running and the `melete` service has
   a container to archive from.
+- **The browser worker image**, with `--browser`: `<project>-browser:latest`
+  exists, so the backup can keep it for a rollback.
 - **Disk space**: at least 8 GiB free on Docker's data filesystem for the
   rebuild, and room in the backup directory for the measured size of the
   database, `/data` and `/work` plus a fifth. The archives are not compressed.
@@ -158,6 +166,8 @@ bun install --frozen-lockfile
 docker tag melete-service:<old version> melete-service:local
 docker tag melete-web:<old version> melete-web:local
 docker tag melete-runtime:<old version> melete-runtime:local
+# With the browser override:
+docker tag <project>-browser:<old version> <project>-browser:latest
 cp -p <backup>/deploy.env deploy/.env
 # Replace only the database volume.
 docker volume rm <project>_pgdata

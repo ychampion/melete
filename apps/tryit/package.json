@@ -7,7 +7,7 @@
   "description": "Paste an email from a company, get a case file. A standalone page with no account behind it.",
   "main": "./src/index.ts",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var TRYIT_LOCAL:1",
     "deploy": "wrangler deploy",
     "test": "bun test"
   },

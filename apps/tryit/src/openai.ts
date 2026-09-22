@@ -36,6 +36,8 @@ export type OpenAiOptions = {
   endpoint?: string;
   /** Passed straight through, so a slow day can be traded for a cheaper one. */
   effort?: 'low' | 'medium' | 'high';
+  /** Reasoning comes out of this too. Only what is used is charged for. */
+  maxOutputTokens?: number;
   fetch?: Transport;
 };
 
@@ -89,6 +91,7 @@ function readMessage(output: unknown[]): string {
     for (const part of item.content) {
       const piece = record(part);
       if (!piece) continue;
+      // A refusal comes back inside a completed reply: the work was done.
       if (piece.type === 'refusal' && typeof piece.refusal === 'string')
         throw new ProviderError('refused', piece.refusal);
       if (piece.type === 'output_text' && typeof piece.text === 'string') text += piece.text;
@@ -121,13 +124,17 @@ export function openAiProvider(options: OpenAiOptions): CaseFileProvider {
           },
         },
         reasoning: { effort: options.effort ?? 'medium' },
-        // Reasoning is spent out of this budget too, so it is set well above
-        // what the case file itself needs: a reply that stops early is a
-        // wasted call and a person left waiting for nothing.
-        max_output_tokens: 16_000,
+        // Reasoning is spent out of this budget as well as the case file, and
+        // a reply that runs out is billed in full and shows nobody anything —
+        // so it is set far above what the sixteen fields could need. The cost
+        // of the headroom is nothing: only what is used is charged for.
+        max_output_tokens: options.maxOutputTokens ?? 48_000,
         store: false,
       };
 
+      // From the moment the request is in flight the model may have started
+      // work, so everything after this point is treated as paid for. Only the
+      // two failures above it are free.
       let response: Response;
       try {
         response = await call(endpoint, {
@@ -140,31 +147,43 @@ export function openAiProvider(options: OpenAiOptions): CaseFileProvider {
           signal,
         });
       } catch (error) {
+        // Given up on mid-flight: the request was sent, so assume it was work.
         if (signal.aborted) throw new ProviderError('timeout', 'the model took too long');
-        throw new ProviderError('upstream', describe(error));
+        // The connection never opened, so nobody generated anything.
+        throw new ProviderError('upstream', describe(error), false);
       }
 
       if (!response.ok) {
         // An error body can echo the request back, key included, so only the status travels.
         await response.body?.cancel();
-        throw new ProviderError('upstream', `responses api returned ${response.status}`);
+        // A request the API turned down was read and rejected before anyone
+        // generated a word, so it costs nothing. A server error is different:
+        // a gateway can fail after the model has already done the work, and
+        // the rule here is that unsure counts as paid for.
+        const turnedDown = response.status < 500;
+        throw new ProviderError(
+          'upstream',
+          `responses api returned ${response.status}`,
+          !turnedDown,
+        );
       }
 
+      const billed = (message: string) => new ProviderError('malformed', message);
       const payload = record(await response.json());
-      if (!payload) throw new ProviderError('malformed', 'the reply was not an object');
+      if (!payload) throw billed('the reply was not an object');
       if (payload.status === 'incomplete') {
         const reason = record(payload.incomplete_details)?.reason;
-        throw new ProviderError('malformed', `the reply stopped early: ${String(reason)}`);
+        throw billed(`the reply stopped early: ${String(reason)}`);
       }
       const output = Array.isArray(payload.output) ? payload.output : [];
       const text = readMessage(output);
-      if (!text) throw new ProviderError('malformed', 'the reply had no case file in it');
+      if (!text) throw billed('the reply had no case file in it');
 
       let json: unknown;
       try {
         json = JSON.parse(text);
       } catch {
-        throw new ProviderError('malformed', 'the case file was not valid json');
+        throw billed('the case file was not valid json');
       }
 
       return { json, sources: collectSources(output), searches: countSearches(output) };

@@ -6,8 +6,9 @@ and what to do if they go quiet. No account, nothing kept.
 
 One page and one endpoint, on a Cloudflare Worker. It stands on its own: it
 shares the design tokens and the mark with `apps/web`, and nothing else. It
-does not talk to the Melete API, it has no database, and it holds no state
-except the day's counters.
+does not talk to the Melete API and it has no database. The only thing it
+keeps is the day's counters, and those are keyed by a daily digest rather than
+by an address, so no visitor's address is written down anywhere.
 
 ## Run it
 
@@ -21,6 +22,11 @@ With no `OPENAI_API_KEY` the page answers from the scripted provider: it reads
 the pasted text, works out which situation it is, and quotes real sentences
 back. It never searches, so it never cites a page. `/healthz` says which
 provider and which counter are running.
+
+`bun run dev` marks the run as local (`TRYIT_LOCAL=1`), so `x-forwarded-for`
+can stand in for the address Cloudflare supplies. A deployed Worker counts
+visitors by Cloudflare's `cf-connecting-ip` alone and turns away a request
+that arrives without it.
 
 ## What is guaranteed, in code
 
@@ -40,6 +46,11 @@ The model's answer is checked before anyone sees it. The rules are in
 - **Nothing pasted is stored.** No database, no session, `store: false` on the
   API call. The log line carries character counts, timings and an outcome code,
   never content.
+- **No address is stored either.** The counter is keyed by a digest of the
+  address and the day, worked out in the Worker, so the address never reaches
+  the counter or its storage and the key changes at midnight. Set
+  `TRYIT_COUNTER_SALT` to make that digest one-way in earnest rather than
+  merely daily.
 - **The paste is data.** The system prompt says so, the model gets web search
   and no other tool, and the fence around the text cannot be closed from inside
   it.
@@ -64,7 +75,8 @@ the same wherever a request lands.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `TRYIT_PER_IP_PER_DAY` | 5 | case files one address may have in a day |
+| `TRYIT_PER_IP_PER_DAY` | 5 | case files one address, or one IPv6 /64, may have in a day |
+| `TRYIT_PER_BLOCK_PER_DAY` | 20 | case files one IPv6 /48 may have in a day, across all of its /64s |
 | `TRYIT_GLOBAL_PER_DAY` | 400 | case files the whole page may produce in a day |
 | `TRYIT_MAX_INPUT_CHARS` | 20000 | longest paste accepted |
 | `TRYIT_MIN_INPUT_CHARS` | 40 | shortest paste worth a case file |

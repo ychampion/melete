@@ -30,7 +30,7 @@ export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** Browsers that have not signed in to an account before share this many attempts on it. */
 const ACCOUNT_BURST = 10;
-const credentials = z.object({
+export const credentials = z.object({
   email: z
     .email()
     .max(254)

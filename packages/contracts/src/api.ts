@@ -5,9 +5,9 @@
  */
 import { z } from 'zod';
 import { actionStatus, approvalRequestView, effectClass, payloadHash } from './broker.ts';
-import { ID_PREFIXES, prefixedId, timestamp } from './common.ts';
+import { ID_PREFIXES, jsonObject, prefixedId, timestamp } from './common.ts';
 import { originWarnings } from './effects.ts';
-import { action, attempt, job, jobBudget, jobConstraints, space } from './entities.ts';
+import { action, attempt, job, jobBudget, jobConstraints, space, trigger } from './entities.ts';
 import {
   knowledgeFrontmatter,
   knowledgeRecordStatus,
@@ -36,6 +36,41 @@ export const errorResponse = z.object({
   }),
 });
 export type ErrorResponse = z.infer<typeof errorResponse>;
+
+// --------------------------------------------------------------------------
+// the account: setup, sign-in and the signed-in owner
+// --------------------------------------------------------------------------
+
+/** Setup and sign-in take the same body. The email is compared in lower case. */
+export const credentialsRequest = z.object({
+  email: z.email().max(254),
+  password: z.string().min(8).max(1024),
+});
+export const signedInOwner = z.object({
+  id: z.string(),
+  email: z.email(),
+  created_at: timestamp,
+});
+export const ownerResponse = z.object({ owner: signedInOwner });
+
+// --------------------------------------------------------------------------
+// triggers
+// --------------------------------------------------------------------------
+
+export const triggerResponse = z.object({ trigger });
+/** One observation from a connection, offered to every event trigger that watches it. */
+export const eventDeliveryRequest = z.object({
+  connection_id: prefixedId(ID_PREFIXES.connection),
+  event_name: z.string().min(1).max(200),
+  cursor: z.string().min(1).max(1000),
+  dedup_key: z.string().min(1).max(1000),
+  payload: jsonObject,
+});
+export const eventDeliveryResponse = z.object({
+  seq: z.number().int().nonnegative(),
+  /** True when this dedup key was delivered before, so nothing new was recorded. */
+  duplicate: z.boolean(),
+});
 
 // --------------------------------------------------------------------------
 // spaces

@@ -27,8 +27,10 @@ versions:
 - `bun run deploy/scripts/configure.ts` and `bun run deploy/scripts/upgrade.ts`
   run `docker version` and `docker compose version` on the host and refuse an
   unsupported pair before writing or changing anything.
-- `bun run doctor --docker` reports the same judgement on demand, and
-  `bun run doctor` includes it whenever `MELETE_CONFORMANCE_COMPOSE=1` is set.
+- `bun run doctor --docker` reports the same judgement on demand, and nothing
+  else, so it suits a host that only runs the stack. `bun run doctor` judges
+  the test prerequisites, and adds the Docker judgement whenever
+  `MELETE_CONFORMANCE_COMPOSE=1` is set.
 
 ## Configuration and browser access
 
@@ -296,8 +298,8 @@ docker compose -f deploy/docker-compose.yml \
 **Signing in is refused with `origin_rejected` and status 403.**
 `MELETE_WEB_ORIGIN` does not match the address in the browser's address bar.
 Run `tailscale-origin.ts` and recreate the web service with the command it
-prints. A trailing slash, `http://` instead of `https://`, or a short name
-instead of the full tailnet name are all mismatches. On `http://localhost:3101`
+prints. `http://` instead of `https://`, or a short name instead of the full
+tailnet name, is a mismatch; a trailing slash on the setting is not. On `http://localhost:3101`
 this is the expected answer once `MELETE_WEB_ORIGIN` holds the tailnet address:
 the setting names one address, and that one is now the tailnet's.
 
@@ -451,8 +453,10 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete
 ## Engine limits
 
 Three settings bound what one attempt's engine may do. All have working
-defaults; change them only for a reason you can name, and all take effect on the
-next attempt started.
+defaults; change them only for a reason you can name. Set them in `deploy/.env`
+and recreate the service with
+`docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete`;
+each applies from the next attempt started.
 
 `MELETE_ENGINE_MAX_TURNS` (default `150`) is how many iterations one run may
 take before the engine stops it. It is a runaway stop, not a cost control: what
@@ -554,7 +558,10 @@ must outlive rotation belong in a log collector you run beside the stack.
 Back up `deploy/.env`, Postgres, and the named volumes containing knowledge,
 artifacts, workspaces, and restrictions. Preserve ownership and permissions.
 Stop Melete and runtime work before taking the database and volume snapshot so
-their durable state is consistent. From the repository root:
+their durable state is consistent. An installation started with an override
+names the same files on each Compose command below, and one running the browser
+worker stops `browser` with the others, since it writes into a space. From the
+repository root:
 
 ```bash
 backup_dir="$HOME/melete-backup-$(date -u +%Y%m%dT%H%M%SZ)"

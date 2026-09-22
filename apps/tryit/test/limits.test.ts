@@ -50,8 +50,10 @@ describe('reading the caps from the Worker’s variables', () => {
       TRYIT_PER_IP_PER_DAY: '9',
       TRYIT_GLOBAL_PER_DAY: 'not a number',
       TRYIT_MAX_INPUT_CHARS: '-4',
+      TRYIT_PER_BLOCK_PER_DAY: '31',
     });
     expect(limits.perIpPerDay).toBe(9);
+    expect(limits.perBlockPerDay).toBe(31);
     expect(limits.globalPerDay).toBe(DEFAULT_LIMITS.globalPerDay);
     expect(limits.maxInputChars).toBe(DEFAULT_LIMITS.maxInputChars);
   });
@@ -98,6 +100,79 @@ describe('the whole page', () => {
       counters = spend(counters, `10.0.0.${turn}`, NOON, LIMITS).counters;
     const blocked = spend(counters, 'fresh', NOON, LIMITS);
     expect(blocked.counters.perIp.fresh).toBeUndefined();
+  });
+});
+
+/**
+ * An ISP often hands one household a /56 or a /48, which is hundreds or
+ * thousands of /64s, each with its own allowance. The block is counted as
+ * well, and a turn needs room in both.
+ */
+describe('one IPv6 block', () => {
+  const BLOCKS: Limits = { ...LIMITS, perBlockPerDay: 4, globalPerDay: 50 };
+  const BLOCK = '2001:db8:1::/48';
+
+  test('runs out however many of its /64s ask', () => {
+    let counters = emptyCounters(NOON);
+    const verdicts: boolean[] = [];
+    for (let net = 0; net < 8; net += 1) {
+      const result = spend(counters, `net-${net}`, NOON, BLOCKS, BLOCK);
+      verdicts.push(result.allowed);
+      counters = result.counters;
+    }
+    expect(verdicts.filter(Boolean)).toHaveLength(BLOCKS.perBlockPerDay);
+    expect(spend(counters, 'net-99', NOON, BLOCKS, BLOCK)).toMatchObject({
+      allowed: false,
+      reason: 'ip',
+    });
+    expect(spend(counters, 'net-99', NOON, BLOCKS, '2001:db8:2::/48').allowed).toBe(true);
+  });
+
+  test('a /64 still has its own, smaller allowance inside the block', () => {
+    let counters = emptyCounters(NOON);
+    for (let turn = 0; turn < BLOCKS.perIpPerDay; turn += 1)
+      counters = spend(counters, 'net-1', NOON, BLOCKS, BLOCK).counters;
+    expect(spend(counters, 'net-1', NOON, BLOCKS, BLOCK)).toMatchObject({ allowed: false });
+    expect(spend(counters, 'net-2', NOON, BLOCKS, BLOCK).allowed).toBe(true);
+  });
+
+  test('a refusal spends nothing from either count', () => {
+    let counters = emptyCounters(NOON);
+    for (let net = 0; net < BLOCKS.perBlockPerDay; net += 1)
+      counters = spend(counters, `net-${net}`, NOON, BLOCKS, BLOCK).counters;
+    const refused = spend(counters, 'net-99', NOON, BLOCKS, BLOCK);
+    expect(refused.counters).toEqual(counters);
+  });
+
+  test('a turn given back is given back to the block too', () => {
+    const taken = spend(emptyCounters(NOON), 'net-1', NOON, BLOCKS, BLOCK).counters;
+    const back = refund(taken, 'net-1', NOON, BLOCK);
+    expect(back.perBlock?.[BLOCK]).toBe(0);
+    expect(back.perIp['net-1']).toBe(0);
+    expect(back.global).toBe(0);
+  });
+
+  test('counters stored before blocks were counted still work', () => {
+    const old = { day: '2026-09-18', global: 2, perIp: { 'net-1': 1 } };
+    const result = spend(old, 'net-1', NOON, BLOCKS, BLOCK);
+    expect(result.allowed).toBe(true);
+    expect(result.counters.perBlock?.[BLOCK]).toBe(1);
+    expect(refund(old, 'net-1', NOON, BLOCK).perIp['net-1']).toBe(0);
+  });
+
+  test('by default one block is a small share of the day', () => {
+    const { perIpPerDay, perBlockPerDay, globalPerDay } = DEFAULT_LIMITS;
+    expect(perBlockPerDay).toBeGreaterThan(perIpPerDay);
+    expect(perBlockPerDay * 20).toBeLessThanOrEqual(globalPerDay);
+  });
+
+  test('the in-isolate counter counts blocks too', async () => {
+    const limiter = memoryLimiter(BLOCKS, () => NOON);
+    for (let net = 0; net < BLOCKS.perBlockPerDay; net += 1)
+      expect((await limiter.take(`net-${net}`, BLOCK)).allowed).toBe(true);
+    expect(await limiter.take('net-99', BLOCK)).toMatchObject({ allowed: false });
+    await limiter.giveBack('net-0', BLOCK);
+    expect((await limiter.take('net-99', BLOCK)).allowed).toBe(true);
   });
 });
 

@@ -692,3 +692,26 @@ describe('a trusted upstream in front of the web server', () => {
     },
   );
 });
+
+describe('the configured public origin', () => {
+  test('one that is not an origin stops the server naming MELETE_WEB_ORIGIN', () => {
+    for (const publicOrigin of [
+      'assistant.example.net',
+      'localhost:3101',
+      'https://assistant.example.net/melete',
+      'ftp://assistant.example.net',
+    ])
+      expect(() => createStaticServer({ root: base, port: 0, publicOrigin })).toThrow(
+        'MELETE_WEB_ORIGIN must be an http:// or https:// origin',
+      );
+  });
+
+  test('a trailing slash is the same origin', () => {
+    const web = createStaticServer({
+      root: base,
+      port: 0,
+      publicOrigin: 'https://assistant.example.net/',
+    });
+    web.stop(true);
+  });
+});
