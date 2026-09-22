@@ -313,6 +313,27 @@ describe('Docker attempt supervision', () => {
     }
   });
 
+  test("a space's sandbox pins the cell's terminal to it, and no sandbox means no terminal", async () => {
+    const f = await setup();
+    const terminal = {
+      name: 'terminal.run',
+      description: 'Run a command in the sandbox.',
+      input_schema: { type: 'object' },
+      effect_class: 'write_reversible' as const,
+      connection_id: 'conn_01J0SANDBOX0000000000000A',
+    };
+    await f.runtime.start(
+      { ...bundle(0), tools: [terminal] },
+      f.sink,
+      new AbortController().signal,
+    );
+    await f.runtime.start(bundle(1), f.sink, new AbortController().signal);
+    expect(f.daemon.created[0]?.Env).toContain('TERMINAL_ENV=melete_sandbox');
+    expect(
+      (f.daemon.created[1]?.Env ?? []).some((entry) => entry.startsWith('TERMINAL_ENV=')),
+    ).toBe(false);
+  });
+
   test('a window the operator states reaches the container it was stated for', async () => {
     // Without this a model whose real window is smaller than the fallback is
     // told to compact at a figure it can never reach, and every request past its

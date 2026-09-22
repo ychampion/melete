@@ -330,6 +330,9 @@ describe('the engine configuration the attempt image carries', () => {
     ['compression', { enabled: false, in_place: true, threshold_tokens: 200000 }],
     ['compression', { enabled: true, in_place: true }],
     ['checkpoints', { enabled: true }],
+    // A terminal the image selects would run in every cell, sandbox or not.
+    ['terminal', { backend: 'local', cwd: '/work' }],
+    ['platform_toolsets', { api_server: ['melete', 'terminal'] }],
   ])('catches %s set to %o', (section, replacement) => {
     const directory = mkdtempSync(join(tmpdir(), 'melete-cell-config-'));
     const config = parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>;

@@ -22,6 +22,31 @@ import {
 /** Where in-cell commands run, once the native terminal toolset is turned on. */
 export type TerminalBackend = 'local' | 'melete_sandbox';
 
+/** The brokered tool a sandbox connection serves; its presence is what selects the sandbox. */
+export const SANDBOX_TERMINAL_TOOL = 'terminal.run';
+
+/**
+ * The engine features an attempt's catalog calls for. A space with one active
+ * sandbox connection is offered exactly one `terminal.run`, and then the
+ * engine's own terminal is built and pinned to the sandbox backend, which
+ * forwards every command to the broker. Anything else keeps today's
+ * configuration: no terminal at all, and never a local one.
+ */
+export function attemptEngineFeatures(
+  tools: readonly { name: string; connection_id: string | null }[],
+): Partial<EngineFeatures> {
+  const connections = new Set(
+    tools
+      .filter((tool) => tool.name === SANDBOX_TERMINAL_TOOL && tool.connection_id)
+      .map((tool) => tool.connection_id),
+  );
+  if (connections.size !== 1) return {};
+  return {
+    toolsets: [...DEFAULT_FEATURES.toolsets, 'terminal'],
+    terminalBackend: 'melete_sandbox',
+  };
+}
+
 /**
  * Engine capabilities that are switched on one at a time, each by its own
  * change. Every default here is what the runtime does today, so rendering with
@@ -268,7 +293,11 @@ export const IMAGE_ENGINE_OPTIONS: EngineConfigOptions = {
 export function engineConfigEnvironment(options: EngineConfigOptions): Record<string, string> {
   const contextWindow =
     options.contextWindow ?? engineContextWindow(options.model, options.contextWindowLimit);
+  const terminal = options.features?.terminalBackend;
   return {
+    // The engine reads its backend from here as well as from the file; the
+    // boot script writes the terminal section from it and refuses any other.
+    ...(terminal ? { TERMINAL_ENV: terminal } : {}),
     MELETE_ENGINE_MAX_TURNS: String(options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS),
     MELETE_ENGINE_CONTEXT_LENGTH: String(contextWindow),
     MELETE_ENGINE_COMPACTION_THRESHOLD: String(

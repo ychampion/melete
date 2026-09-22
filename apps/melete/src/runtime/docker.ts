@@ -11,6 +11,7 @@ import {
   type RuntimeCapabilities,
 } from '@melete/contracts';
 import {
+  attemptEngineFeatures,
   type CatalogState,
   engineConfigEnvironment,
   engineSettingsFromEnvironment,
@@ -359,6 +360,9 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
                 model: bundle.model.model,
                 brokerUrl: broker,
                 ...engineSettingsFromEnvironment(),
+                // TERMINAL_ENV, when the space has a sandbox; the boot script
+                // writes the terminal section from it and refuses any other.
+                features: attemptEngineFeatures(bundle.tools),
               }),
             ).map(([key, value]) => `${key}=${value}`),
           ],

@@ -37,6 +37,7 @@ def boot(tmp_path, monkeypatch, template_config, environment):
         "MELETE_ENGINE_COMPACTION_THRESHOLD",
         "MELETE_ENGINE_MAX_TURNS",
         "MELETE_MODEL_API_MODE",
+        "TERMINAL_ENV",
     ):
         monkeypatch.delenv(variable, raising=False)
     for key, value in environment.items():
@@ -135,3 +136,24 @@ def test_boot_refuses_a_number_it_cannot_read(tmp_path, monkeypatch, variable):
             "MELETE_MODEL_NAME": "accounts/fireworks/models/deepseek-v4p1-flash",
             variable: "many",
         })
+
+
+def test_a_sandbox_space_gets_the_engine_terminal_pinned_to_the_sandbox(tmp_path, monkeypatch):
+    template = {**TEMPLATE, "platform_toolsets": {"api_server": ["melete"]}}
+    written = boot(tmp_path, monkeypatch, template, {**BASE_ENVIRONMENT, "TERMINAL_ENV": "melete_sandbox"})
+    assert written["terminal"] == {"backend": "melete_sandbox", "cwd": "/work"}
+    assert written["platform_toolsets"]["api_server"] == ["melete", "terminal"]
+
+
+def test_without_a_sandbox_there_is_no_terminal_at_all(tmp_path, monkeypatch):
+    # An image copy that somehow carried a terminal section loses it at boot.
+    template = {**TEMPLATE, "platform_toolsets": {"api_server": ["melete"]}, "terminal": {"backend": "local"}}
+    written = boot(tmp_path, monkeypatch, template, BASE_ENVIRONMENT)
+    assert "terminal" not in written
+    assert written["platform_toolsets"]["api_server"] == ["melete"]
+
+
+@pytest.mark.parametrize("backend", ["local", "docker", "modal", "MELETE_SANDBOX"])
+def test_no_other_terminal_backend_is_accepted(tmp_path, monkeypatch, backend):
+    with pytest.raises(SystemExit):
+        boot(tmp_path, monkeypatch, TEMPLATE, {**BASE_ENVIRONMENT, "TERMINAL_ENV": backend})
