@@ -1,4 +1,4 @@
-import { type CapabilityClaims, inputTokenAllowance } from '@melete/contracts';
+import { type CapabilityClaims, inputTokenAllowance, inputTokenCeiling } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import {
   type GatewayBudget,
@@ -54,8 +54,8 @@ export class PostgresGatewayBudget implements GatewayBudget {
           maxTokens: Math.min(job.budget.max_output_tokens, claims.budget.max_output_tokens),
           remainingTokens: await remainingOutputTokensLocked(tx, job, claims),
           maxInputTokens: Math.min(
-            inputTokenAllowance(attempt.model, job.budget),
-            inputTokenAllowance(attempt.model, claims.budget),
+            inputTokenCeiling(attempt.model, job.budget),
+            inputTokenCeiling(attempt.model, claims.budget),
           ),
           allowedModels,
         };
@@ -108,9 +108,11 @@ export class PostgresGatewayBudget implements GatewayBudget {
           }
         }
         const inputTokens = request.estimatedTokens - request.maxOutputTokens;
+        // The window less this request's own output. The job's output budget
+        // is spent across its requests and is checked by the reservation below.
         const inputLimit = Math.min(
-          inputTokenAllowance(request.model, job.budget),
-          inputTokenAllowance(request.model, claims.budget),
+          inputTokenAllowance(request.model, request.maxOutputTokens, job.budget),
+          inputTokenAllowance(request.model, request.maxOutputTokens, claims.budget),
         );
         if (inputTokens > inputLimit) throw new GatewayError(413, 'input_context_exceeded');
         const reservations = await reserveLocked(tx, job, claims, null, [

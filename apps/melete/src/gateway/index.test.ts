@@ -125,6 +125,28 @@ describe('model gateway effect boundary', () => {
     expect(response.status).toBe(200);
     await response.body?.cancel();
   });
+  test("a job's output budget above the window does not take a request's input room", async () => {
+    // fake-scripted has no catalog entry, so its window is the 128,000-token
+    // fallback. The job may spend 250,000 output tokens in all; this request
+    // asks for 4,096 of them, and only those are set aside from its window.
+    const { post, budget } = await start({
+      authenticate: async () => ({ ...principal, maxTokens: 250_000 }),
+    });
+    const response = await post('/v1/chat/completions', {
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'prompt context '.repeat(20_000) }],
+    });
+    expect(response.status).toBe(200);
+    await response.body?.cancel();
+    expect(budget.reservations).toHaveLength(1);
+    // The request's own output still counts against its window.
+    const crowded = await post('/v1/chat/completions', {
+      max_tokens: 100_000,
+      messages: [{ role: 'user', content: 'prompt context '.repeat(20_000) }],
+    });
+    expect(crowded.status).toBe(413);
+    expect(budget.reservations).toHaveLength(1);
+  });
   test('streams the fake tool conversation end to end and records actual model and usage', async () => {
     const { post, budget } = await start();
     const first = await post('/v1/chat/completions', {

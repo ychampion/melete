@@ -237,8 +237,7 @@ export function createModelGateway(options: GatewayOptions): Server {
       const inputTokens = estimateInputTokens(encoded) + 256;
       if (
         inputTokens >
-        (principal.maxInputTokens ??
-          inputTokenAllowance(model, { max_output_tokens: principal.maxTokens }))
+        inputTokenAllowance(model, requested, { max_input_tokens: principal.maxInputTokens })
       )
         throw new GatewayError(413, 'input_context_exceeded');
       const estimatedTokens = inputTokens + requested;

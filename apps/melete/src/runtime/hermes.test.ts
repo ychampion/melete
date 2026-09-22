@@ -145,3 +145,46 @@ test('an engine that fails to stop after completing keeps the completed outcome'
     server.stop(true);
   }
 });
+
+test("a job's output budget above the window does not stop an ordinary prompt from launching", async () => {
+  // The whole budget is spent across the job's requests; none of them sets it
+  // aside from the window, so a short prompt reaches the engine.
+  const runtime = new SupervisedHermesRuntime(
+    {
+      kind: 'process',
+      launch: async () => {
+        throw new Error('launched');
+      },
+      close: async () => {},
+    },
+    (() => {
+      throw new Error('must not query');
+    }) as unknown as MemorySql,
+  );
+  const bundle = {
+    job: {
+      title: 'Long job',
+      objective: 'Write the report.',
+      constraints: {},
+      progress_summary: '',
+      unresolved_questions: [],
+    },
+    since_last: EMPTY_SINCE_LAST,
+    inputs: { new_user_messages: [], approval_results: [], trigger_events: [], repair_briefs: [] },
+    transcript: [],
+    skills: [],
+    knowledge: [],
+    tools: [],
+    workspace: { mount: '/work' },
+    model: { model: 'scripted' },
+    budget: { max_output_tokens: 250_000, max_turns: 8, max_actions: 3 },
+  } as unknown as AttemptBundle;
+  let failure: unknown;
+  try {
+    await runtime.start(bundle, { emit: async () => {} }, new AbortController().signal);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toBe('launched');
+});

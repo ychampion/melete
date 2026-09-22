@@ -12,6 +12,10 @@ export interface GatewayPrincipal {
    * names none; the reservation itself is still checked under the job lock.
    */
   remainingTokens?: number;
+  /**
+   * The most input one request may carry before its own output is set aside.
+   * Each request is further held to its model's window less the output it asks for.
+   */
   maxInputTokens?: number;
   /** Include the explicitly authorized fallback here; the proxy never chooses one. */
   allowedModels: { provider: string; model: string }[];

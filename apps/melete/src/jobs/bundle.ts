@@ -8,7 +8,7 @@ import {
   type ContextGenerations,
   type Deliverable,
   describeTrigger,
-  inputTokenAllowance,
+  inputTokenCeiling,
   jobBudget,
   jobConstraints,
   jsonObject,
@@ -524,7 +524,7 @@ export async function buildAttemptSkeleton(
     },
     budget: {
       ...jobBudget.parse(row.budget),
-      max_input_tokens: inputTokenAllowance(model.model, jobBudget.parse(row.budget)),
+      max_input_tokens: inputTokenCeiling(model.model, jobBudget.parse(row.budget)),
     },
     model,
   });

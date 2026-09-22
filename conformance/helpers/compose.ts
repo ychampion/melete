@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { JobBudget } from '@melete/contracts';
 import postgres from 'postgres';
 import { newId } from '../../apps/melete/src/ids.ts';
 import { parseEnvFile } from '../../deploy/scripts/provider-settings.ts';
@@ -210,12 +211,12 @@ export async function job(jobId: string): Promise<StackJob> {
 
 /**
  * The budget every stack job is submitted with. Output is a ceiling across the
- * whole job, and each model request may carry only the model's context window
- * less that ceiling as input, so a ceiling at or above the window refuses every
- * request before it is sent. The scripted model has no catalog entry and gets
- * the 128,000-token fallback window; this leaves half of it for input.
+ * whole job; each model request sets aside only its own output cap from the
+ * model's context window, so this ceiling does not narrow any request's input.
+ * The scripted model has no catalog entry and gets the 128,000-token fallback
+ * window.
  */
-export const STACK_JOB_BUDGET = {
+export const STACK_JOB_BUDGET: Partial<JobBudget> = {
   max_attempts: 4,
   max_turns: 4,
   max_wall_ms: 180_000,
