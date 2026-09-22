@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 3,
+        "atMs": 4,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox",
         "path": "/api/sandbox",
@@ -146,7 +146,7 @@
     },
     {
       "request": {
-        "atMs": 36,
+        "atMs": 33,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -165,7 +165,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 36,
+        "atMs": 33,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -204,7 +204,7 @@
     },
     {
       "request": {
-        "atMs": 37,
+        "atMs": 34,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -229,7 +229,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 37,
+        "atMs": 34,
         "body": {
           "exitCode": 0,
           "result": "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/user\nUSER=user\nLOGNAME=user\nLANG=C.UTF-8\nDAYTONA_SANDBOX_ID=fake-sbx-0001\nDAYTONA_SANDBOX_SNAPSHOT=daytona-small\nDAYTONA_SANDBOX_USER=daytona\nDAYTONA_ORGANIZATION_ID=org_authoring\nDAYTONA_REGION_ID=us\n"
@@ -238,7 +238,7 @@
     },
     {
       "request": {
-        "atMs": 38,
+        "atMs": 35,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session",
         "path": "/toolbox/fake-sbx-0001/process/session",
@@ -255,12 +255,12 @@
         "headers": {},
         "chunks": [],
         "end": "complete",
-        "atMs": 38
+        "atMs": 35
       }
     },
     {
       "request": {
-        "atMs": 38,
+        "atMs": 35,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/exec",
         "path": "/toolbox/fake-sbx-0001/process/session/melete-act_01J0CONFORMANCE00000000/exec",
@@ -285,7 +285,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 39,
+        "atMs": 36,
         "body": {
           "cmdId": "cmd-0001"
         }
@@ -293,7 +293,7 @@
     },
     {
       "request": {
-        "atMs": 1052,
+        "atMs": 1051,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -318,7 +318,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 1052,
+        "atMs": 1051,
         "body": {
           "exitCode": 0,
           "result": "f 0 644 out\u0000"
@@ -327,7 +327,7 @@
     },
     {
       "request": {
-        "atMs": 4581,
+        "atMs": 4562,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -352,7 +352,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4582,
+        "atMs": 4563,
         "body": {
           "exitCode": 0,
           "result": "f 1 644 exit\u0000f 4 644 out\u0000"
@@ -361,7 +361,7 @@
     },
     {
       "request": {
-        "atMs": 4584,
+        "atMs": 4564,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fexit",
@@ -380,7 +380,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4584,
+        "atMs": 4564,
         "body": {
           "bytes": 1
         }
@@ -388,7 +388,7 @@
     },
     {
       "request": {
-        "atMs": 4584,
+        "atMs": 4565,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -413,7 +413,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4585,
+        "atMs": 4566,
         "body": {
           "exitCode": 0,
           "result": "f 1 644 exit\u0000f 4 644 out\u0000"
@@ -422,7 +422,7 @@
     },
     {
       "request": {
-        "atMs": 4586,
+        "atMs": 4566,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fout",
@@ -441,7 +441,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4586,
+        "atMs": 4566,
         "body": {
           "bytes": 4
         }
@@ -449,7 +449,7 @@
     },
     {
       "request": {
-        "atMs": 4589,
+        "atMs": 4569,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/session",
         "path": "/toolbox/fake-sbx-0001/process/session",
@@ -473,7 +473,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4589,
+        "atMs": 4569,
         "body": {
           "statusCode": 409,
           "message": "session already exists",
@@ -483,7 +483,7 @@
     },
     {
       "request": {
-        "atMs": 4590,
+        "atMs": 4570,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -508,7 +508,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4591,
+        "atMs": 4571,
         "body": {
           "exitCode": 0,
           "result": "f 1 644 exit\u0000f 4 644 out\u0000"
@@ -517,7 +517,7 @@
     },
     {
       "request": {
-        "atMs": 4592,
+        "atMs": 4571,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fexit",
@@ -536,7 +536,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4592,
+        "atMs": 4572,
         "body": {
           "bytes": 1
         }
@@ -544,7 +544,7 @@
     },
     {
       "request": {
-        "atMs": 4593,
+        "atMs": 4572,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -569,7 +569,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4593,
+        "atMs": 4573,
         "body": {
           "exitCode": 0,
           "result": "f 1 644 exit\u0000f 4 644 out\u0000"
@@ -578,7 +578,7 @@
     },
     {
       "request": {
-        "atMs": 4593,
+        "atMs": 4573,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fvar%2Ftmp%2F.melete-exec%2Fact_01J0CONFORMANCE00000000%2Fout",
@@ -597,7 +597,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4593,
+        "atMs": 4573,
         "body": {
           "bytes": 4
         }
@@ -605,7 +605,7 @@
     },
     {
       "request": {
-        "atMs": 4595,
+        "atMs": 4575,
         "method": "GET",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/files/download",
         "path": "/toolbox/fake-sbx-0001/files/download?path=%2Fwork%2Fcounter",
@@ -624,7 +624,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4595,
+        "atMs": 4575,
         "body": {
           "bytes": 4
         }
@@ -632,7 +632,7 @@
     },
     {
       "request": {
-        "atMs": 4595,
+        "atMs": 4575,
         "method": "DELETE",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -651,7 +651,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4595,
+        "atMs": 4575,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",

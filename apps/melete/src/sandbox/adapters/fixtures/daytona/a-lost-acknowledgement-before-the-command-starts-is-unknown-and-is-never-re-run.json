@@ -10,7 +10,7 @@
   "exchanges": [
     {
       "request": {
-        "atMs": 3,
+        "atMs": 2,
         "method": "POST",
         "url": "https://app.daytona.io/api/sandbox",
         "path": "/api/sandbox",
@@ -107,7 +107,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 4,
+        "atMs": 5,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
@@ -146,7 +146,7 @@
     },
     {
       "request": {
-        "atMs": 39,
+        "atMs": 38,
         "method": "GET",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -260,7 +260,7 @@
     },
     {
       "request": {
-        "atMs": 40,
+        "atMs": 41,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -294,7 +294,7 @@
     },
     {
       "request": {
-        "atMs": 41,
+        "atMs": 42,
         "method": "POST",
         "url": "https://proxy.app.daytona.io/toolbox/fake-sbx-0001/process/execute",
         "path": "/toolbox/fake-sbx-0001/process/execute",
@@ -347,7 +347,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 42,
+        "atMs": 43,
         "body": {
           "statusCode": 404,
           "message": "stat /work/counter: no such file or directory",
@@ -357,7 +357,7 @@
     },
     {
       "request": {
-        "atMs": 42,
+        "atMs": 43,
         "method": "DELETE",
         "url": "https://app.daytona.io/api/sandbox/fake-sbx-0001",
         "path": "/api/sandbox/fake-sbx-0001",
@@ -376,7 +376,7 @@
           }
         ],
         "end": "complete",
-        "atMs": 42,
+        "atMs": 43,
         "body": {
           "id": "fake-sbx-0001",
           "organizationId": "org_authoring",
