@@ -1,5 +1,6 @@
 import type { PgBoss } from 'pg-boss';
-import { commitExtraction } from './commit.ts';
+import { CHAT_PUBLISHER, traceChatExtraction } from './capture.ts';
+import { type CommitResult, commitExtraction } from './commit.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { type ExtractionGateway, proposeExtraction } from './extract.ts';
 import { cleanupMemory, type DerivedCleanup } from './forget.ts';
@@ -48,6 +49,14 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
   if (!scope) return;
   const batch = await claimWork(options.sql, scope, { workId });
   if (!batch) return;
+  // A chat message's conversation hears what memory kept from it. The entry is
+  // a courtesy: failing to write it never undoes or retries the extraction.
+  const traced = async (result: CommitResult) => {
+    if (result.status !== 'committed' || batch.source.publisher !== CHAT_PUBLISHER) return;
+    await traceChatExtraction(options.sql, batch.source.source_id).catch(() =>
+      options.onError?.('memory_trace_failed'),
+    );
+  };
   try {
     // E3 Tier 0 runs first and, for a structured connector observation, runs
     // alone: a calendar entry, a contact record or a receipt becomes a checked
@@ -57,7 +66,7 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
       offset: batch.work.segment_start,
     });
     if (tier0.length) {
-      await commitExtraction(options.sql, scope, batch, { proposals: tier0 });
+      await traced(await commitExtraction(options.sql, scope, batch, { proposals: tier0 }));
       return;
     }
     // The durable fence counts claims, including recovery after a crashed worker.
@@ -73,10 +82,12 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
       return;
     }
     const proposals = await proposeExtraction(options.sql, scope, batch, options.gateway);
-    await commitExtraction(options.sql, scope, batch, { proposals });
+    await traced(await commitExtraction(options.sql, scope, batch, { proposals }));
   } catch (error) {
     const code = error instanceof MemoryError ? error.code : 'extraction_failed';
-    if (code === 'extraction_budget') {
+    // Out of calls for this work or for the day: the message is left unread
+    // rather than retried into the same refusal.
+    if (['extraction_budget', 'memory_daily_budget'].includes(code)) {
       await options.sql.begin(async (tx) => {
         await lockSpace(tx, scope);
         await checkLease(tx, scope, batch);

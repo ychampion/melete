@@ -243,6 +243,15 @@ const variables = z.object({
    */
   MELETE_DEFAULT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MELETE_SPEECH_MODEL: z.string().optional(),
+  /**
+   * Automatic memory reads what a person says in chat with this model, through
+   * the model gateway. Unset, it uses the default provider and model; `off`
+   * keeps structured observations only and makes no model call.
+   */
+  MELETE_MEMORY_MODEL: z.string().optional(),
+  MELETE_MEMORY_PROVIDER: z.string().optional(),
+  /** Extraction calls one person's memory may make in a day. */
+  MELETE_MEMORY_DAILY_CALLS: z.coerce.number().int().nonnegative().default(200),
 
   /**
    * What the engine in an attempt's cell is bounded by. Each is read again from

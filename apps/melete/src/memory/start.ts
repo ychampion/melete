@@ -6,7 +6,9 @@ import { promisify } from 'node:util';
 import { prefixedId } from '@melete/contracts';
 import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
+import { startChatCapture } from './capture.ts';
 import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } from './db.ts';
+import type { ExtractionGateway } from './extract.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
 import { MarkdownViews } from './markdown.ts';
@@ -82,6 +84,7 @@ export async function startServiceMemory(
   boss: PgBoss,
   spacesRoot: string,
   onJobRecompute?: (jobId: string) => Promise<void>,
+  automatic: { gateway?: ExtractionGateway; captureChat?: boolean } = {},
 ) {
   const journal = new FileRestrictionJournal(join(spacesRoot, '.memory', 'restrictions.jsonl'));
   try {
@@ -102,12 +105,14 @@ export async function startServiceMemory(
   const existingSpaces = await sql`select space_id from memory_spaces where not revoked`;
   for (const row of existingSpaces)
     await prepareSpaceRepository(spacesRoot, row.space_id as string);
+  const onError = (code: string) => process.stderr.write(`memory: ${code}\n`);
   const service = await startMemoryService({
     sql,
     boss,
     journal,
     markdown,
-    onError: (code) => process.stderr.write(`memory: ${code}\n`),
+    gateway: automatic.gateway,
+    onError,
   });
   const recompute = onJobRecompute ? startJobRecompute(sql, onJobRecompute) : undefined;
 
@@ -140,21 +145,27 @@ export async function startServiceMemory(
     }
     return scope;
   }
+  async function scopeForJob(jobId: string): Promise<MemoryScope> {
+    const [row] =
+      await sql`select j.space_id, coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
+        from job j where j.id = ${jobId}`;
+    if (!row) throw new MemoryError('scope_denied');
+    return scopeForSpace(row.principal_id as string, row.space_id as string);
+  }
+  // What a person says in chat is offered to their memory with no step of theirs.
+  const stopCapture = automatic.captureChat
+    ? startChatCapture({ sql, boss, journal, scopeForJob, onError })
+    : undefined;
   return {
     async stop() {
       await recompute?.stop();
+      await stopCapture?.();
       await service.stop();
     },
     sql,
     journal,
     markdown,
-    async scopeForJob(jobId: string): Promise<MemoryScope> {
-      const [row] =
-        await sql`select j.space_id, coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
-          from job j where j.id = ${jobId}`;
-      if (!row) throw new MemoryError('scope_denied');
-      return scopeForSpace(row.principal_id as string, row.space_id as string);
-    },
+    scopeForJob,
     async resolveScope(request: Request): Promise<MemoryScope | null> {
       const cookies = request.headers.get('cookie') ?? '';
       const token = cookies

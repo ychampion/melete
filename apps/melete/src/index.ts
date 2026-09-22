@@ -90,6 +90,7 @@ import { startDeploymentMemory } from './memory/bootstrap.ts';
 import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
+import { configuredMemoryGateway } from './memory/gateway.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
 import {
@@ -389,6 +390,7 @@ export async function bootstrap(
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
   let removals: SpaceRemovalService | undefined;
+  let memoryGateway: Awaited<ReturnType<typeof configuredMemoryGateway>> | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
   let stdioLauncher: DockerStdioLauncher | undefined;
@@ -418,6 +420,7 @@ export async function bootstrap(
         return removals?.drain();
       },
       () => memory?.stop(),
+      () => memoryGateway?.close(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
       // After the registry: each server's container is removed by its connector first.
@@ -543,11 +546,18 @@ export async function bootstrap(
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
         // Memory is part of every Postgres-backed service, whichever runtime
         // carries the attempt; the deploy lane's docker path starts its own.
+        // Automatic memory: what a person says in chat is read by the memory
+        // model through the gateway, within a per-person daily budget.
+        memoryGateway =
+          options.workers === false
+            ? null
+            : await configuredMemoryGateway(handle.sql, env, options.fakeProvider);
         memory = await startServiceMemory(
           handle.sql,
           queue.boss,
           env.MELETE_SPACES_DIR,
           wakeRecomputedJob,
+          { gateway: memoryGateway?.gateway, captureChat: options.workers !== false },
         );
       }
       if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime && handle && queue) {

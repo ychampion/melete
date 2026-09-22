@@ -4,6 +4,7 @@ import {
   memoryItemCreate,
   memoryItemEdit,
   memoryKeyValue,
+  memorySettings,
   unavailable,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
@@ -200,6 +201,19 @@ export class ExperienceMemory {
       return unavailable('Forgetting is not connected to the saved deletion history yet.');
     await forgetMemory(this.sql, scope, { claim_id: id }, this.journal);
     return { status: 'ok' };
+  }
+  /** Whether new things this person says in chat are kept. On until they say otherwise. */
+  async settings(principalId: string) {
+    const [row] = await this
+      .sql`select capture from memory_settings where principal_id = ${principalId}`;
+    return memorySettings.parse({ capture: row ? Boolean(row.capture) : true });
+  }
+  async saveSettings(principalId: string, raw: unknown) {
+    const input = memorySettings.parse(raw);
+    await this
+      .sql`insert into memory_settings (principal_id, capture) values (${principalId}, ${input.capture})
+      on conflict (principal_id) do update set capture = excluded.capture, updated_at = now()`;
+    return input;
   }
   async why(spaceId: string, ownerId: string, id: string) {
     const scope = await this.scope(spaceId, ownerId);

@@ -419,6 +419,11 @@ export const memoryItemCreate = z.strictObject({
 });
 export const memoryItemResponse = z.strictObject({ item: memoryItem });
 export const memoryItemList = z.strictObject({ items: z.array(memoryItem) });
+/**
+ * A person's own memory settings. Memory is on unless they turn it off; off,
+ * nothing new they say in chat is kept, and "forget ..." still works.
+ */
+export const memorySettings = z.strictObject({ capture: z.boolean() });
 export const memoryExplanation = z.strictObject({
   reasons: z.array(text),
   output: z.string().nullable(),
@@ -624,6 +629,8 @@ export const experienceOperations = {
   'PATCH /memory/items/{id}': { request: memoryItemEdit, response: experienceOk },
   'DELETE /memory/items/{id}': { response: experienceOk },
   'GET /memory/items/{id}/why': { response: memoryExplanation },
+  'GET /memory/settings': { response: memorySettings },
+  'PUT /memory/settings': { request: memorySettings, response: memorySettings },
   'GET /plans': { response: planList },
   'POST /plans': { request: planCreate, response: planResponse },
   'GET /plans/{id}': { response: planResponse },
