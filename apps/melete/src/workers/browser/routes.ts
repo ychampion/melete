@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../../api/errors.ts';
 import { appendEvent } from '../../broker/records.ts';
 import type { ConnectorContext } from '../../connectors/types.ts';
+import { EVENT_ORDER_LOCK } from '../../db/transaction.ts';
 import type { BrowserWorkerClient } from './client.ts';
 import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
 import { BrowserFault, type BrowserSession } from './sessions.ts';
@@ -90,6 +91,8 @@ export class BrowserSessionService {
   ) {
     await this.authorize(sessionId, scope);
     const fenced = await this.sql.begin(async (tx) => {
+      // Before the job lock, as every event writer does: event order is commit order.
+      await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
       const [job] =
         await tx`select id, space_id, state, lease_epoch, wait from job where id = ${scope.job_id} for update`;
       if (
@@ -205,11 +208,14 @@ export class BrowserSessionService {
     this.live.ended(sessionId);
     if (operation === 'takeover') await this.park(scope, sessionId, 'human_control');
     else {
-      await appendEvent(this.sql, scope.job_id, null, 'notice', {
-        kind: 'browser_handback',
-        session_id: sessionId,
-        control_epoch: session.control_epoch,
-        fresh_observation_required: true,
+      await this.sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        await appendEvent(tx, scope.job_id, null, 'notice', {
+          kind: 'browser_handback',
+          session_id: sessionId,
+          control_epoch: session.control_epoch,
+          fresh_observation_required: true,
+        });
       });
       // The takeover ended on a site whose cookies the profile now holds: the space is signed in.
       if (session.site) await this.sites.record(binding.space_id, session.site);
