@@ -125,6 +125,24 @@ export function parseArguments(
   };
 }
 
+/**
+ * Each image the stack starts, as the repository a version tag is kept under
+ * and the reference Compose starts. The browser worker's file names no image,
+ * so Compose builds it as `<project>-browser:latest`; without it here a
+ * rollback would start the old service beside the new release's browser.
+ */
+const stackImages = (context: Pick<UpgradeContext, 'browser' | 'project'>) => [
+  ...IMAGES.map((image) => ({ repository: image, running: `${image}:local` })),
+  ...(context.browser
+    ? [
+        {
+          repository: `${context.project}-browser`,
+          running: `${context.project}-browser:latest`,
+        },
+      ]
+    : []),
+];
+
 const composeArguments = (overlays: Overlays) => [
   'docker',
   'compose',
@@ -219,11 +237,11 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
       title: 'Make the backup private',
       command: ['chmod', '600', ...[...archives, 'database.contents', 'SHA256SUMS'].map(backup)],
     },
-    ...IMAGES.map(
-      (image): PlanStep => ({
+    ...stackImages(context).map(
+      ({ repository, running }): PlanStep => ({
         phase: 'backup',
-        title: `Keep the running ${image} image for a rollback without a rebuild`,
-        command: ['docker', 'tag', `${image}:local`, `${image}:${context.fromVersion}`],
+        title: `Keep the running ${repository} image for a rollback without a rebuild`,
+        command: ['docker', 'tag', running, `${repository}:${context.fromVersion}`],
       }),
     ),
     {
@@ -254,11 +272,11 @@ export function upgradePlan(context: UpgradeContext): PlanStep[] {
       command: [...compose, 'build'],
       timeoutMs: 60 * 60_000,
     },
-    ...IMAGES.map(
-      (image): PlanStep => ({
+    ...stackImages(context).map(
+      ({ repository, running }): PlanStep => ({
         phase: 'build',
-        title: `Tag ${image} with the release version`,
-        command: ['docker', 'tag', `${image}:local`, `${image}:${context.tag}`],
+        title: `Tag ${repository} with the release version`,
+        command: ['docker', 'tag', running, `${repository}:${context.tag}`],
       }),
     ),
     {
@@ -296,7 +314,9 @@ export function rollbackSteps(context: UpgradeContext): string[] {
     `# Return the tree, its dependencies and the preserved images to ${context.fromVersion}.`,
     back,
     'bun install --frozen-lockfile',
-    ...IMAGES.map((image) => `docker tag ${image}:${context.fromVersion} ${image}:local`),
+    ...stackImages(context).map(
+      ({ repository, running }) => `docker tag ${repository}:${context.fromVersion} ${running}`,
+    ),
     `cp -p ${quote(`${context.backupDir}/deploy.env`)} deploy/.env`,
     `# Replace only the database volume. Keep ${context.project}_restrictions and every other`,
     `# volume as they are now: the newer removal journal is replayed at startup, so nothing`,

@@ -178,6 +178,20 @@ describe('the rollback steps', () => {
       expect(steps).toContain(`docker tag ${image}:v0.1.0 ${image}:local`);
   });
 
+  test('with the browser override, its worker image is kept and restored with the rest', () => {
+    // Compose builds the worker as <project>-browser:latest, since its file names no image.
+    const browser = { ...context, project: 'assistant', browser: true };
+    const plan = lines(upgradePlan(browser));
+    const keep = indexOf(plan, 'docker tag assistant-browser:latest assistant-browser:v0.1.0');
+    const release = indexOf(plan, 'docker tag assistant-browser:latest assistant-browser:v0.2.0');
+    expect(keep).toBeLessThan(indexOf(plan, 'checkout --detach'));
+    expect(release).toBeGreaterThan(indexOf(plan, ' build'));
+    expect(rollbackSteps(browser)).toContain(
+      'docker tag assistant-browser:v0.1.0 assistant-browser:latest',
+    );
+    expect(rollbackSteps(context).join('\n')).not.toContain('browser');
+  });
+
   test('a detached start returns to the commit, not to a branch', () => {
     const detached = rollbackSteps({ ...context, fromBranch: null });
     expect(detached).toContain(`git checkout --detach ${'a'.repeat(40)}`);

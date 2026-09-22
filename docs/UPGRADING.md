@@ -14,7 +14,9 @@ upgraded in order of their tags; moving to an older tag is a
 - **The source tree** is checked out at the tag.
 - **The images** are rebuilt from it. Each is tagged with the release version
   as well as `:local`, which is the name Compose starts. The images that were
-  running are kept under the previous version's name.
+  running are kept under the previous version's name. With `--browser`, the
+  browser worker's image, `<project>-browser:latest`, is kept and tagged the
+  same way.
 - **The database schema** is migrated by the service itself. At every boot,
   before the API listens, the service takes a Postgres advisory lock and applies
   whatever its migration journal has that the database has not recorded. A
@@ -158,6 +160,8 @@ bun install --frozen-lockfile
 docker tag melete-service:<old version> melete-service:local
 docker tag melete-web:<old version> melete-web:local
 docker tag melete-runtime:<old version> melete-runtime:local
+# With the browser override:
+docker tag <project>-browser:<old version> <project>-browser:latest
 cp -p <backup>/deploy.env deploy/.env
 # Replace only the database volume.
 docker volume rm <project>_pgdata
