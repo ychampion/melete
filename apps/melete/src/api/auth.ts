@@ -9,6 +9,7 @@ import {
 } from '@melete/contracts';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
@@ -28,6 +29,17 @@ import { LoginThrottle } from './login-throttle.ts';
 
 export const SESSION_COOKIE = 'melete_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+/**
+ * The most a request body may carry. Before a session: a sign-in form, which
+ * is a few hundred bytes. After one: the largest contract field, a million
+ * characters of memory text, with room for JSON escaping.
+ */
+const PUBLIC_BODY_BYTES = 16 * 1024;
+const SESSION_BODY_BYTES = 8 * 1024 * 1024;
+const tooLarge = (c: Context) =>
+  c.json({ error: { code: 'request_too_large', message: 'The request is too large.' } }, 413);
+const publicBody = bodyLimit({ maxSize: PUBLIC_BODY_BYTES, onError: tooLarge });
+const sessionBody = bodyLimit({ maxSize: SESSION_BODY_BYTES, onError: tooLarge });
 /** Browsers that have not signed in to an account before share this many attempts on it. */
 const ACCOUNT_BURST = 10;
 export const credentials = z.object({
@@ -193,7 +205,9 @@ export function mountAuth(
           '/signin/google',
           '/signin/apple',
         ].includes(c.req.path));
-    if (publicRoute) return next();
+    // A body is counted as it arrives, so one sent without a length, or with a
+    // false one, is dropped at the limit rather than read and parsed whole.
+    if (publicRoute) return publicBody(c, next);
 
     const token = getCookie(c, SESSION_COOKIE);
     if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
@@ -232,7 +246,7 @@ export function mountAuth(
     if (resolved.created) await furnish?.(resolved.spaceId);
     c.set('sessionSpace', resolved);
     c.set('experienceSpaceId', resolved.spaceId);
-    return principalContext.run(active.owner.id, next);
+    return principalContext.run(active.owner.id, () => sessionBody(c, next));
   });
 
   const signIn =
