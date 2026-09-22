@@ -2,3 +2,12 @@
 *.png binary
 *.jpg binary
 *.gif binary
+
+# What a container executes or reads stays LF on a Windows checkout, whatever
+# core.autocrlf says: a shell script with CRLF endings fails inside Linux.
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile* text eol=lf
+deploy/config/** text eol=lf
+deploy/.env.example text eol=lf
+packages/runtime-hermes/** text eol=lf
