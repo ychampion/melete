@@ -258,6 +258,19 @@ withDb('reply obligations and notification outbox', () => {
     expect((await replies.list())[0]?.state).toBe('owed');
   });
 
+  test('obligations that can never be repaired do not keep recovery from a newer one', async () => {
+    const { handle } = fixture();
+    await runner.recover();
+    const row = await direct([waiting]);
+    await runner.recover();
+    await runWithoutHooks(row);
+    for (let i = 0; i < 150; i++)
+      await handle.sql`insert into reply_obligation (id, submission_id, job_id, kind, state, coalesce_key, event_cursor, created_at)
+        values (${newId('obl')}, ${`dead-${i}`}, null, 'direct', 'needs_retransmission', 'none', 0, now() - interval '1 day')`;
+    await runner.recover();
+    expect(await replies.outbox()).toHaveLength(1);
+  });
+
   test('a reply service keeps the acceptance hook it was handed', async () => {
     const { jobs } = fixture();
     const own = new SubmissionService(jobs);

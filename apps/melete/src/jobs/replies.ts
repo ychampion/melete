@@ -26,6 +26,16 @@ type ObligationRow = typeof replyObligation.$inferSelect;
 type NotificationRow = typeof notification.$inferSelect;
 /** How many unserved obligations one recovery scan repairs. */
 const RECOVERY_BATCH = 100;
+/** Outcome kinds an ended attempt can carry a reply for; lost, cancelled and superseded carry none. */
+const OUTCOME_KINDS = [
+  'completed',
+  'waiting_for_input',
+  'waiting_for_approval',
+  'waiting_for_event_or_time',
+  'budget_exhausted',
+  'unknown_check',
+  'failed',
+];
 const missingContent = 'The response content is unavailable. This reply needs retransmission.';
 const digest = (value: Parameters<typeof canonicalSubmissionInput>[0]) =>
   createHash('sha256').update(canonicalSubmissionInput(value)).digest('hex');
@@ -465,24 +475,39 @@ export class ReplyService {
   }
 
   /**
-   * Repairs replies that lost their outbox copy. Each scan reads only
-   * obligations that no live notification carries, a bounded batch at a time,
-   * so it does not grow with delivered or already-flagged history.
+   * Repairs replies that lost their outbox copy, flags the ones that cannot be
+   * rebuilt, and on a restart offers attempted deliveries again.
+   *
+   * Repair reads a bounded batch, and only obligations that could be rebuilt:
+   * no live notification carries them and their job has an ended attempt with
+   * an outcome. The most recently ended jobs come first, so obligations whose
+   * content can never return (no job, or only lost and cancelled attempts)
+   * cannot hold a newer one back.
    */
   async recover(options: { retransmit?: boolean } = {}): Promise<void> {
     const retransmit = options.retransmit ?? true;
     await this.jobs.transaction(async (tx) => {
+      const unserved = sql`not exists (select 1 from notification n where n.state in ('pending', 'attempted')
+        and n.content is not null and n.obligation_ids @> jsonb_build_array(${replyObligation.id}))`;
       const owed = await tx
         .select()
         .from(replyObligation)
         .where(
           and(
             ne(replyObligation.state, 'fulfilled'),
-            sql`not exists (select 1 from notification n where n.state in ('pending', 'attempted')
-              and n.content is not null and n.obligation_ids @> jsonb_build_array(${replyObligation.id}))`,
+            unserved,
+            sql`exists (select 1 from attempt a where a.job_id = ${replyObligation.jobId}
+              and a.ended_at is not null and a.outcome_detail->>'kind' in (${sql.join(
+                OUTCOME_KINDS.map((kind) => sql`${kind}`),
+                sql`, `,
+              )}))`,
           ),
         )
-        .orderBy(replyObligation.createdAt)
+        .orderBy(
+          sql`(select max(a.ended_at) from attempt a where a.job_id = ${replyObligation.jobId}) desc`,
+          replyObligation.createdAt,
+          replyObligation.id,
+        )
         .limit(RECOVERY_BATCH);
       for (const jobId of new Set(owed.flatMap((item) => (item.jobId ? [item.jobId] : [])))) {
         const row = await this.jobs.lock(tx, jobId);
@@ -499,24 +524,16 @@ export class ReplyService {
           break;
         }
       }
-      const pending = await tx
-        .select()
-        .from(notification)
-        .where(inArray(notification.state, ['pending', 'attempted']));
-      for (const item of owed) {
-        const available = pending.some(
-          (message) =>
-            idsFor(message).includes(item.id) && replyContent.safeParse(message.content).success,
-        );
-        if (!available)
-          await tx
-            .update(replyObligation)
-            .set({ state: 'needs_retransmission', message: missingContent })
-            .where(eq(replyObligation.id, item.id));
-      }
-      for (const delivery of retransmit ? pending : []) {
-        if (delivery.state !== 'attempted' || !replyContent.safeParse(delivery.content).success)
-          continue;
+      // Anything still owed with no live copy says so; one statement, whatever the history.
+      await tx
+        .update(replyObligation)
+        .set({ state: 'needs_retransmission', message: missingContent })
+        .where(and(inArray(replyObligation.state, ['owed', 'acknowledged']), unserved));
+      const attempted = retransmit
+        ? await tx.select().from(notification).where(eq(notification.state, 'attempted'))
+        : [];
+      for (const delivery of attempted) {
+        if (!replyContent.safeParse(delivery.content).success) continue;
         await tx
           .update(notification)
           .set({ state: 'superseded' })
