@@ -42,6 +42,9 @@ export type ScanOptions = {
 
 export type ScanOutcome = ScanRecord & { counts: Record<string, number> };
 
+/** Why a scan failed: the mailbox could not be read, or something after it went wrong. */
+export type ScanFailure = 'mailbox_unavailable' | 'scan_failed';
+
 /**
  * Run the scan. Failures are recorded on the scan row rather than thrown at the
  * caller: a scan that could not read the mailbox is a scan that failed, and the
@@ -54,8 +57,10 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   const counts: Record<string, number> = { ...noDrops() };
   let seen = 0;
   let found = 0;
+  let reason: ScanFailure = 'mailbox_unavailable';
   try {
     const messages = await options.mailbox.recent(options.readLimit ?? 50);
+    reason = 'scan_failed';
     const grouped = prefilter(messages, {
       now,
       windowDays,
@@ -174,10 +179,10 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       counts,
     });
     return { ...record, status: 'done', messagesSeen: seen, itemsFound: found, counts };
-  } catch (error) {
-    // The reason is a short phrase for the person, never a stack or a sentence
-    // out of somebody's mail.
-    const reason = error instanceof Error ? error.message.slice(0, 200) : 'scan failed';
+  } catch {
+    // The reason is a fixed code. What a transport or a store threw can carry a
+    // server's reply, an account name or a sentence out of somebody's mail, and
+    // none of that is kept on the scan or shown to anyone.
     await options.store.closeScan(options.owner, record.id, {
       status: 'failed',
       messagesSeen: seen,

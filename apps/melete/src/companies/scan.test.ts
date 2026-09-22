@@ -332,9 +332,41 @@ describe('a scan whose mailbox will not answer', () => {
       now,
     });
     expect(outcome.status).toBe('failed');
-    expect(outcome.error).toBe('mail connection unavailable');
+    expect(outcome.error).toBe('mailbox_unavailable');
     expect((await store.map(owner, now)).items).toEqual([]);
     expect((await store.scan(owner, outcome.id))?.status).toBe('failed');
+  });
+
+  test('keeps a fixed reason, never the words the failure carried', async () => {
+    const store = new MemoryCompanyStore();
+    // What a transport or a store throws can carry a server's reply, an account
+    // name or a line of somebody's mail. None of it belongs on the scan.
+    const said = 'IMAP said: login failed for billing@acme.test (Subject: your code is 482913)';
+    const failing = await runScan({
+      store: {
+        ...store,
+        runningScan: store.runningScan.bind(store),
+        openScan: store.openScan.bind(store),
+        closeScan: store.closeScan.bind(store),
+        scan: store.scan.bind(store),
+        saveMessages: store.saveMessages.bind(store),
+        saveCompany: async () => {
+          throw new Error(said);
+        },
+        saveItems: store.saveItems.bind(store),
+        map: store.map.bind(store),
+        item: store.item.bind(store),
+        setStatus: store.setStatus.bind(store),
+        setJob: store.setJob.bind(store),
+      },
+      mailbox: fixtureMailbox(fixtureMessages()),
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+    expect(failing.status).toBe('failed');
+    expect(failing.error).toBe('scan_failed');
+    expect(JSON.stringify(await store.scan(owner, failing.id))).not.toContain('IMAP');
   });
 });
 
