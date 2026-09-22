@@ -36,6 +36,7 @@ import { job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
 import { refusedForRemoval, spaceAuthority } from '../../src/principals/authority.ts';
 import { PathOutsideRoot, removeConfined } from '../../src/spaces/plan.ts';
@@ -705,6 +706,58 @@ describe.if(handle !== null)('removing a space', () => {
     expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
     expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(0);
     expect(await exists(join(spacesRoot, seeded.spaceId))).toBe(false);
+  });
+
+  test('an_emptied_space_is_emptied_once — what is made afterwards survives restarts, and an older backup is emptied again', async () => {
+    const seeded = await seed('personal');
+    const journal = await newJournal();
+    const backup = await snapshot(sql, seeded.spaceId);
+    const removals = await service({ journal });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    expect(outcome(await removals.run(fenced.id))).toBe('complete');
+
+    // The person uses the space again: its memory is provisioned afresh, as
+    // the first use of it does, and new work begins.
+    const makeWork = async () => {
+      const id = `job_${crypto.randomUUID()}`;
+      await sql`insert into job (id, space_id, title, principal_id, objective, state)
+        values (${id}, ${seeded.spaceId}, 'New work', ${seeded.principalId}, 'After emptying', 'queued')`;
+      return id;
+    };
+    const restart = async () => {
+      await restoreMemory(sql, journal);
+      return removals.resume();
+    };
+    await provisionMemorySpace(sql, seeded.ownerId, seeded.spaceId);
+    const made = await makeWork();
+
+    // Two restarts, each replaying the journal and resuming what is queued.
+    // Neither empties the space again.
+    for (const _ of [1, 2]) expect(await restart()).toEqual([]);
+    const [open] = await sql<{ removed_at: Date | null }[]>`select removed_at from space
+      where id = ${seeded.spaceId}`;
+    expect(open?.removed_at).toBeNull();
+    expect(await countOf(sql, 'job', sql`id = ${made}`)).toBe(1);
+    const [memory] = await sql<{ revoked: boolean; restore_ready: boolean }[]>`select revoked,
+      restore_ready from memory_spaces where space_id = ${seeded.spaceId}`;
+    expect(memory).toEqual({ revoked: false, restore_ready: true });
+
+    // A backup from before the emptying is put back. It is the whole database,
+    // so the space is as it was then, removal epoch included, and the work
+    // made since is not in it.
+    await sql`delete from job where id = ${made}`;
+    await restore(sql, backup);
+    await sql`update space set removal_epoch = 0 where id = ${seeded.spaceId}`;
+    expect(Object.keys(await rowsLeft(sql, seeded.spaceId)).length).toBeGreaterThan(0);
+    const again = await restart();
+    expect(again.map(outcome)).toEqual(['complete']);
+    expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
+
+    // And that is the last of it: what is made next survives the next restarts.
+    await provisionMemorySpace(sql, seeded.ownerId, seeded.spaceId);
+    const next = await makeWork();
+    for (const _ of [1, 2]) expect(await restart()).toEqual([]);
+    expect(await countOf(sql, 'job', sql`id = ${next}`)).toBe(1);
   });
 
   test('replay_leaves_space_unserved — a queued removal is never restore_ready, even among spaces that are', async () => {

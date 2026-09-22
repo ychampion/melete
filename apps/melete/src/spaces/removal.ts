@@ -310,6 +310,7 @@ export class SpaceRemovalService {
           requestedBy: actor,
           state: 'pending',
           phase: 'fence',
+          epoch: parent.removalEpoch + 1,
           jobIds: all.map((entry) => entry.id),
           connectionIds: connections.map((entry) => entry.id),
           counts: EMPTY_COUNTS,
@@ -319,7 +320,10 @@ export class SpaceRemovalService {
       // Stamped last. The row has been held for update since the top, so
       // nothing could be admitted in between, and the work above still runs
       // under the authority that the stamp withdraws from everyone.
-      await tx.update(space).set({ removedAt: new Date() }).where(eq(space.id, spaceId));
+      await tx
+        .update(space)
+        .set({ removedAt: new Date(), removalEpoch: parent.removalEpoch + 1 })
+        .where(eq(space.id, spaceId));
       return { row, cancelled };
     });
     if ('cancelled' in result) {
@@ -457,7 +461,7 @@ export class SpaceRemovalService {
       case 'journal':
         // Before any data goes, and retained apart from database snapshots, so
         // restoring a backup from before the removal does not undo it.
-        await appendRemovalRecord(raw, this.deps.journal, row.spaceId);
+        await appendRemovalRecord(raw, this.deps.journal, row);
         return counts;
       case 'sandboxes':
         return this.tearDownSandboxes(row, counts, signal);

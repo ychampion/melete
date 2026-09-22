@@ -31,6 +31,8 @@ export const restrictionRecord = z.strictObject({
   targets: z.array(target),
   eligibility_cutoff: z.number().int().nonnegative(),
   access_generation: z.number().int().positive(),
+  /** A `remove_space` record only: the space's removal epoch this removal brought it to. */
+  removal_epoch: z.number().int().positive().optional(),
   recorded_at: timestamp,
 });
 export type RestrictionRecord = z.infer<typeof restrictionRecord>;

@@ -11,6 +11,7 @@
 import type { Sql } from 'postgres';
 import { newId } from '../memory/db.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../memory/restore.ts';
+import type { SpaceRemovalRow } from './schema.ts';
 
 /**
  * Phase 3, before any data goes. A removal record carries no targets and no
@@ -18,14 +19,19 @@ import type { RestrictionJournal, RestrictionRecord } from '../memory/restore.ts
  * away entirely. It carries the generations at the moment of the fence, so a
  * replay knows what it is re-applying to.
  *
- * One record per space. A repeated phase finds the one already written and
- * appends nothing, and space ids are never reused.
+ * It carries the space's removal epoch, so the replay can tell the state it
+ * is about from state made after it: an emptied space goes on being used, and
+ * only a database from before this removal is behind it.
+ *
+ * One record per removal. A repeated phase finds the one already written and
+ * appends nothing.
  */
 export async function appendRemovalRecord(
   raw: Sql,
   journal: RestrictionJournal,
-  spaceId: string,
+  removal: Pick<SpaceRemovalRow, 'spaceId' | 'epoch'>,
 ): Promise<RestrictionRecord | null> {
+  const spaceId = removal.spaceId;
   const [space] = await raw<
     { owner_id: string; eligibility_generation: number; access_generation: number }[]
   >`select owner_id, eligibility_generation, access_generation
@@ -35,7 +41,10 @@ export async function appendRemovalRecord(
   if (!space) return null;
   const written = await journal.read();
   const already = written.find(
-    (record) => record.space_id === spaceId && record.operation === 'remove_space',
+    (record) =>
+      record.space_id === spaceId &&
+      record.operation === 'remove_space' &&
+      record.removal_epoch === removal.epoch,
   );
   if (already) return already;
   const record: RestrictionRecord = {
@@ -48,6 +57,7 @@ export async function appendRemovalRecord(
     targets: [],
     eligibility_cutoff: Number(space.eligibility_generation),
     access_generation: Number(space.access_generation) + 1,
+    removal_epoch: removal.epoch,
     recorded_at: new Date().toISOString(),
   };
   await journal.append(record);

@@ -137,6 +137,9 @@ export async function startServiceMemory(
         await lockEventOrder(tx);
         await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
         for (const restriction of restrictions) {
+          // A removal record is the startup replay's to act on, by the space's
+          // epoch; applied here it would suppress memory made after it.
+          if (restriction.operation === 'remove_space') continue;
           if (restriction.owner_id === ownerId && restriction.space_id === spaceId)
             await applyRestriction(tx, restriction);
         }

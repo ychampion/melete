@@ -47,6 +47,8 @@ export const spaceRemoval = pgTable(
      * keeps working until the person revokes it there.
      */
     providers: jsonb('providers').$type<RemovalProvider[]>().notNull().default([]),
+    /** The space's removal epoch this removal brings it to. */
+    epoch: integer('epoch').notNull().default(0),
     counts: jsonb('counts').$type<RemovalCounts | Record<string, never>>().notNull().default({}),
     blockedReason: text('blocked_reason'),
     attempts: integer('attempts').notNull().default(0),
@@ -60,7 +62,7 @@ export const spaceRemoval = pgTable(
     check('space_removal_state', sql`${t.state} in ('pending','running','blocked','complete')`),
     check(
       'space_removal_phase',
-      sql`${t.phase} in ('fence','sessions','journal','sandboxes','browser','files','operational','principals','memory','verify','space')`,
+      sql`${t.phase} in ('fence','sessions','journal','sandboxes','browser','runtime','files','operational','principals','memory','verify','space')`,
     ),
     // One live removal per space, so a second request joins the sweep already
     // running instead of starting a rival one.

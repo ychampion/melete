@@ -54,6 +54,13 @@ export const space = pgTable('space', {
   gitPath: text('git_path').notNull(),
   /** Stamped by the fence that begins a removal. A stamped space serves nothing. */
   removedAt: timestamp('removed_at', { withTimezone: true }),
+  /**
+   * How many removals this space has been through, counting from the one the
+   * fence starts. A backup from before a removal carries a smaller number,
+   * which is how the startup replay tells the state a removal record is about
+   * from state made after it.
+   */
+  removalEpoch: integer('removal_epoch').notNull().default(0),
   createdAt: created(),
 });
 

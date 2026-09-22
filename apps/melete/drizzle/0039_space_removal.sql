@@ -1,5 +1,7 @@
 ALTER TABLE "space" ADD COLUMN "removed_at" timestamptz;
 --> statement-breakpoint
+ALTER TABLE "space" ADD COLUMN "removal_epoch" integer DEFAULT 0 NOT NULL;
+--> statement-breakpoint
 CREATE TABLE "space_removal" (
   "id" text PRIMARY KEY NOT NULL,
   "space_id" text NOT NULL,
@@ -14,6 +16,7 @@ CREATE TABLE "space_removal" (
   "providers" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "counts" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "blocked_reason" text,
+  "epoch" integer NOT NULL DEFAULT 0,
   "attempts" integer NOT NULL DEFAULT 0,
   "lease_owner" text,
   "lease_expires_at" timestamptz,
