@@ -230,14 +230,19 @@ suite('the sites a space is signed in to', () => {
       while (Date.now() < deadline && !predicate()) await Bun.sleep(25);
       return predicate();
     };
+    // The person acts on what they see: a page is ready once the view has said it is there and
+    // then painted it. The fixture receiving the request comes earlier, and on a loaded machine
+    // a click sent then still lands on the page before.
+    const painted = (url: string) => {
+      const at = seen.lastIndexOf(`"type":"where","url":"${url}"`);
+      return at >= 0 && seen.indexOf('"type":"frame"', at) >= 0;
+    };
     try {
       expect(await until(() => seen.includes('"type":"frame"'))).toBe(true);
       await send(point(SIGN_IN_POINTS.first_field));
       await send([{ k: 'text', text: SIGN_IN.password }]);
       await send(ENTER);
-      expect(await until(() => fixture.requests.some((request) => request.path === '/otp'))).toBe(
-        true,
-      );
+      expect(await until(() => painted(`${fixture.app}/otp`))).toBe(true);
       await send(point(SIGN_IN_POINTS.first_field));
       await send([{ k: 'text', text: SIGN_IN.code }]);
       await send(ENTER);
