@@ -67,7 +67,80 @@ describe('reading the pins', () => {
 
   test('the section ends at the next heading, not at a shell comment', () => {
     const section = removalSection(readme(`docker image rm postgres@sha256:${PINNED}`));
-    expect(quotedImages(section ?? '').references).toEqual([
+    expect(quotedImages(section?.text ?? '').references).toEqual([
+      { repository: 'postgres', digest: PINNED },
+    ]);
+  });
+
+  const lines = (...body: string[]) =>
+    [
+      '### Remove it completely',
+      '',
+      ...body,
+      '',
+      `postgres@sha256:${BUMPED} is past the end.`,
+    ].join('\n');
+  const read = (text: string) => quotedImages(removalSection(text)?.text ?? '').references;
+
+  test('a fence closes only on the marker that opened it', () => {
+    const section = removalSection(
+      lines(
+        '```bash',
+        '~~~~',
+        '## still inside the fence',
+        `docker image rm postgres@sha256:${PINNED}`,
+        '```',
+        '## Next',
+      ),
+    );
+    expect(section?.unclosedFence).toBe(false);
+    expect(quotedImages(section?.text ?? '').references).toEqual([
+      { repository: 'postgres', digest: PINNED },
+    ]);
+  });
+
+  test('a fence closes only on a marker at least as long as the one that opened it', () => {
+    const section = removalSection(
+      lines(
+        '````bash',
+        '```',
+        '## still inside the fence',
+        `docker image rm postgres@sha256:${PINNED}`,
+        '````',
+        '## Next',
+      ),
+    );
+    expect(section?.unclosedFence).toBe(false);
+    expect(quotedImages(section?.text ?? '').references).toEqual([
+      { repository: 'postgres', digest: PINNED },
+    ]);
+  });
+
+  test('a fence left open is reported, not read to the end of the file', () => {
+    const section = removalSection(lines('```bash', `docker image rm postgres@sha256:${PINNED}`));
+    expect(section?.unclosedFence).toBe(true);
+    const results = compareDigests(
+      pinnedImages(compose(`postgres:17-alpine@sha256:${PINNED}`)),
+      section,
+    );
+    expect(results.map((result) => result.ok)).toEqual([false]);
+    expect(results[0]?.detail).toContain('never closes');
+  });
+
+  test('an underlined heading ends the section at its own text', () => {
+    expect(
+      read(lines(`postgres@sha256:${PINNED}`, '', `Next postgres@sha256:${BUMPED}`, '-----')),
+    ).toEqual([{ repository: 'postgres', digest: PINNED }]);
+    expect(
+      read(lines(`postgres@sha256:${PINNED}`, '', `Next postgres@sha256:${BUMPED}`, '=====')),
+    ).toEqual([{ repository: 'postgres', digest: PINNED }]);
+  });
+
+  test('a rule after a blank line, or under a fence, is not a heading', () => {
+    expect(read(lines('```', 'x', '```', '---', `postgres@sha256:${PINNED}`, '## Next'))).toEqual([
+      { repository: 'postgres', digest: PINNED },
+    ]);
+    expect(read(lines('Text.', '', '---', `postgres@sha256:${PINNED}`, '## Next'))).toEqual([
       { repository: 'postgres', digest: PINNED },
     ]);
   });

@@ -41,25 +41,61 @@ export function pinnedImages(files: { file: string; text: string }[]): PinnedIma
   return pins;
 }
 
+/** The section's text, and whether a code fence opened in it never closes. */
+export type Section = { text: string; unclosedFence: boolean };
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+const ATX_HEADING = /^ {0,3}#{1,3}(?:\s|$)/;
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)\s*$/;
+
 /**
  * The removal section of README, from its heading to the next heading of its
- * rank or above. A `#` inside a fenced block is a shell comment, not a heading.
+ * rank or above, read as Markdown reads it. A fence closes only on the marker
+ * that opened it, at least as long, so a `~~~` line inside a backtick block is
+ * content; a `#` inside a fence is a shell comment, not a heading. Outside a
+ * fence, an `=` or `-` line under a paragraph line makes that line a heading,
+ * which ends the section. A fence still open at the end of the file swallows
+ * everything after it, so it is reported rather than read.
  */
-export function removalSection(readme: string): string | undefined {
+export function removalSection(readme: string): Section | undefined {
   const lines = readme.split('\n');
   const start = lines.findIndex((line) => line.trim() === REMOVAL_HEADING);
   if (start === -1) return undefined;
-  let fenced = false;
+  let fence: string | undefined;
+  let paragraph = false;
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    else if (!fenced && /^#{1,3}\s/.test(line)) {
+    const marker = FENCE.exec(line)?.[1];
+    if (fence !== undefined) {
+      if (
+        marker !== undefined &&
+        marker[0] === fence[0] &&
+        marker.length >= fence.length &&
+        line.trim() === marker
+      )
+        fence = undefined;
+      continue;
+    }
+    if (marker !== undefined) {
+      fence = marker;
+      paragraph = false;
+      continue;
+    }
+    if (ATX_HEADING.test(line)) {
       end = index;
       break;
     }
+    if (paragraph && SETEXT_UNDERLINE.test(line)) {
+      end = index - 1;
+      break;
+    }
+    paragraph = line.trim() !== '';
   }
-  return lines.slice(start, end).join('\n');
+  return {
+    text: lines.slice(start, end).join('\n'),
+    unclosedFence: fence !== undefined,
+  };
 }
 
 /**
@@ -92,7 +128,7 @@ export function quotedImages(text: string): {
  */
 export function compareDigests(
   pins: PinnedImage[],
-  section: string | undefined,
+  section: Section | undefined,
   readme = README,
 ): CheckResult[] {
   if (section === undefined)
@@ -103,7 +139,15 @@ export function compareDigests(
         detail: `no "${REMOVAL_HEADING}" heading`,
       },
     ];
-  const { references: quoted, unreadable } = quotedImages(section);
+  if (section.unclosedFence)
+    return [
+      {
+        name: `${readme} closes every code fence in the section that removes pulled images`,
+        ok: false,
+        detail: `a fence opened after "${REMOVAL_HEADING}" never closes, so the rest of the file reads as code`,
+      },
+    ];
+  const { references: quoted, unreadable } = quotedImages(section.text);
   const results: CheckResult[] = pins.map((pin) => {
     const seen = quoted.filter((reference) => reference.repository === pin.repository);
     return {
