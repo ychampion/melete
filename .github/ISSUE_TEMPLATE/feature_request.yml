@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose a change in behaviour or a new capability.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and why.
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Intended behaviour
+      description: What should happen, and how a test could show it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

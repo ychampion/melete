@@ -3,6 +3,9 @@
 For substantial changes, describe the problem and the intended behaviour in an
 issue or pull request. Keep claims tied to code and to executable evidence.
 
+Report a security problem privately, as described in [SECURITY](SECURITY.md),
+rather than in an issue.
+
 ## Set up and verify
 
 Use the commands in [README](README.md#develop-and-verify), from the repository
