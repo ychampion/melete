@@ -45,7 +45,7 @@ that can use the Docker socket. The stack must be running and healthy, because
 the database is dumped from the running `postgres` service.
 
 The script that runs is always the target release's own, taken out of its tag
-into a directory beside the installation, so the same steps work from every
+into a temporary directory, so the same steps work from every
 release, `v0.1.0` included, whose tree has no upgrade script of its own. The
 copy needs no `bun install`, and it leaves the installation's tree untouched.
 `--repository` names the installation it acts on.
