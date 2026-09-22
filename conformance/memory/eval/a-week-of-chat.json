@@ -1,0 +1,163 @@
+{
+  "id": "a-week-of-chat",
+  "family": "continuing-work",
+  "title": "A week of conversations: kept, used, corrected and forgotten in plain words",
+  "narrative": "Things said in passing across three conversations are kept with no step of the person's, reach later requests, are replaced by a plain correction, and are gone everywhere after \"forget\", with each change shown in the conversation.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "chat",
+      "conversation": "weekend",
+      "text": "Hi, can you help me plan the weekend?"
+    },
+    {
+      "step": "chat",
+      "conversation": "weekend",
+      "text": "My sister Maya's number is +351 912 345 678 and I prefer an aisle seat.",
+      "claims": [
+        {
+          "key": "contact.maya.phone",
+          "content": "+351 912 345 678",
+          "quote": "+351 912 345 678"
+        },
+        {
+          "key": "pref.travel.seat",
+          "content": "aisle seat",
+          "kind": "preference",
+          "quote": "aisle seat"
+        }
+      ]
+    },
+    {
+      "step": "expect_told",
+      "conversation": "weekend",
+      "titles": ["Remembered", "Remembered"]
+    },
+    {
+      "step": "ask",
+      "name": "text-maya",
+      "query": "Text Maya that I am running late",
+      "key": "contact.maya.phone",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "+351 912 345 678"
+      }
+    },
+    {
+      "step": "chat",
+      "conversation": "errands",
+      "text": "That's wrong, Maya's number is now +351 911 111 111.",
+      "claim": {
+        "key": "contact.maya.phone",
+        "content": "+351 911 111 111",
+        "quote": "+351 911 111 111",
+        "update": true
+      }
+    },
+    {
+      "step": "expect_told",
+      "conversation": "errands",
+      "titles": ["Updated what I remember"]
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.maya.phone",
+      "content": "+351 911 111 111"
+    },
+    {
+      "step": "ask",
+      "name": "call-maya",
+      "query": "Call Maya",
+      "key": "contact.maya.phone",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "+351 911 111 111"
+      }
+    },
+    {
+      "step": "chat",
+      "conversation": "errands",
+      "text": "Remember that the Atlas launch is on 25 September 2026.",
+      "claim": {
+        "key": "event.atlas-launch.date",
+        "content": "25 September 2026",
+        "quote": "25 September 2026"
+      }
+    },
+    {
+      "step": "expect_stored",
+      "key": "event.atlas-launch.date",
+      "content": "25 September 2026"
+    },
+    {
+      "step": "ask",
+      "name": "launch",
+      "query": "Prepare my notes for the Atlas launch",
+      "key": "event.atlas-launch.date",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "25 September 2026"
+      }
+    },
+    {
+      "step": "chat",
+      "conversation": "errands",
+      "text": "Forget Maya's number."
+    },
+    {
+      "step": "expect_told",
+      "conversation": "errands",
+      "titles": ["Updated what I remember", "Remembered", "Forgot"]
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.maya.phone",
+      "absent": true
+    },
+    {
+      "step": "ask",
+      "name": "call-maya-again",
+      "query": "Call Maya",
+      "key": "contact.maya.phone",
+      "attempt": true,
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "expect_erased",
+      "text": "912 345 678"
+    },
+    {
+      "step": "expect_erased",
+      "text": "911 111 111"
+    },
+    {
+      "step": "ask",
+      "name": "seat",
+      "query": "Book my flight to Porto",
+      "key": "pref.travel.seat",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "aisle seat"
+      }
+    },
+    {
+      "step": "chat",
+      "conversation": "private",
+      "text": "Don't remember this: my PIN is 4921."
+    },
+    {
+      "step": "expect_erased",
+      "text": "4921"
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

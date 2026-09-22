@@ -761,7 +761,8 @@ async function runScenario(
     );
     const items: DeliveredItem[] = result.items.map((item) => ({
       handle: item.handle,
-      key: item.key,
+      // An unkeyed claim is known by its domain, which is what a reader sees.
+      key: item.key ?? item.domain_key,
       content: item.content,
       origin_trust: item.origin_trust,
       disputed: item.disputed,
