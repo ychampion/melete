@@ -103,8 +103,8 @@ docker compose -f deploy/docker-compose.yml ps
 `configure.ts --fake` writes `deploy/.env` from `deploy/.env.example` with
 private permissions, generates independent local secrets, records the Docker
 socket group, and turns on the scripted provider and test connector; it refuses
-to replace an existing `.env`. Compose reads `deploy/.env`, not a file beside
-this README. Keep it and retain it with your backups.
+to replace an existing `.env`. Compose reads `deploy/.env`; keep it with your
+backups.
 
 All four services — `postgres`, `melete`, `runtime` and `web` — come up healthy.
 If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
@@ -133,7 +133,9 @@ docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete
 Connected accounts — mail, calendars, MCP servers, the browser worker — are
 described in [connectors](docs/CONNECTORS.md),
 [mail and calendars](docs/mail-calendar.md) and
-[the browser worker](docs/browser-worker.md).
+[the browser worker](docs/browser-worker.md). Mail and calendars connect with an
+account name and a password or app password, so a provider that accepts only
+OAuth sign-in cannot be connected.
 
 On a remote Linux host, tunnel from your own computer and use the same address
 there:
@@ -142,10 +144,9 @@ there:
 ssh -N -L 3101:127.0.0.1:3101 user@your-linux-host
 ```
 
-Session cookies keep `Secure`, `HttpOnly` and `SameSite=Lax`, which browsers
-allow on localhost. For a public hostname, serve HTTPS through a reverse proxy,
-set `MELETE_WEB_ORIGIN=https://your-hostname` in `deploy/.env` and recreate the
-web service. [Deployment](docs/DEPLOYMENT.md) covers TLS, provider
+For a public hostname, serve HTTPS through a reverse proxy, since session
+cookies are `Secure`; set `MELETE_WEB_ORIGIN=https://your-hostname` in
+`deploy/.env` and recreate the web service. [Deployment](docs/DEPLOYMENT.md) covers TLS, provider
 configuration, image provenance and backup restoration.
 
 An optional override reaches the installation from your phone and your laptop
@@ -160,16 +161,19 @@ command stops the stack and removes its containers, images and named volumes —
 the database, your spaces, artifacts, the work directory and the removal
 journal. The sweep catches the per-attempt containers, networks and volumes the
 service creates while it runs: those carry Melete's own labels rather than
-Compose's, so they are matched by label. Delete `deploy/.env` last, because it
-holds the master key that unseals anything you backed up. What is left
-afterwards is the source directory you cloned, and nothing else.
+Compose's, so they are matched by label and by the Compose project name,
+`melete` unless you changed `COMPOSE_PROJECT_NAME`. Delete `deploy/.env` last,
+because it holds the master key that unseals anything you backed up. What is left afterwards is the source
+directory you cloned, and nothing else.
 
 ```bash
 docker compose -f deploy/docker-compose.yml down -v --rmi all --remove-orphans
 # Using the browser worker? Add -f deploy/docker-compose.browser.yml to that line.
-docker ps -aq --filter label=com.melete.attempt-supervisor=v1 | xargs -r docker rm -f
-docker network ls -q --filter label=com.melete.attempt-supervisor=v1 | xargs -r docker network rm
-docker volume ls -q --filter label=com.melete.attempt-supervisor=v1 | xargs -r docker volume rm
+owned=label=com.melete.attempt-supervisor=v1
+project=label=com.melete.project=melete
+docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
+docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
+docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
 rm -f deploy/.env
 ```
 
@@ -253,8 +257,8 @@ database-creation permission. On current Linux distributions, set
 server's `initdb` stops once its data directory passes 260 characters, and says
 `pg_ident.conf.sample` is missing when the file is there. Tests use scripted
 providers. `bun run lint` is Biome over the
-whole tree followed by `bun run scrub:check`, which fails the build when a local
-path or a working note leaks into the repository. The generators rewrite the
+whole tree followed by `bun run scrub:check`, which refuses local paths and
+internal work codes in tracked files. The generators rewrite the
 OpenAPI document and the client declarations; inspect the diff. Install Chromium
 with `bunx playwright install chromium` for the browser fixtures, and run the
 suites sequentially on small machines. `budget.max_output_tokens` is a job's
