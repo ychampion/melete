@@ -623,6 +623,10 @@ export async function bootstrap(
           jobs,
           journal,
           roots: { spacesRoot: env.MELETE_SPACES_DIR, workRoot: env.MELETE_WORK_DIR },
+          // The registry stops answering for a space's connections before
+          // their rows go, and the verification counts what it still holds.
+          ...(registry ? { connectors: registry } : {}),
+          ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
         });
         if (options.workers !== false) {
           await removals.resume();

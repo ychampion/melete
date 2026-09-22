@@ -8400,6 +8400,15 @@ export interface paths {
                         "application/json": components["schemas"]["__schema107"];
                     };
                 };
+                /** @description The browser worker uses this space */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema83"];
+                    };
+                };
             };
         };
         options?: never;

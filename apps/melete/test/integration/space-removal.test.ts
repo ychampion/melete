@@ -397,6 +397,27 @@ describe.if(handle !== null)('removing a space', () => {
     expect(row?.state).toBe('waiting_for_event_or_time');
   });
 
+  test('the_browser_workers_space_is_not_removed — refused plainly, and nothing changes', async () => {
+    const seeded = await seed('shared');
+    const removals = new SpaceRemovalService({
+      db,
+      sql,
+      jobs: new JobService(db, {} as PgBoss),
+      journal: await newJournal(),
+      roots: { spacesRoot, workRoot },
+      browserSpace: seeded.spaceId,
+    });
+    const refusal = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger').then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(refusal).toBeInstanceOf(ServiceError);
+    expect((refusal as ServiceError).code).toBe('space_in_use');
+    expect((refusal as ServiceError).message).toContain('MELETE_BROWSER_SPACE');
+    expect(await countOf(sql, 'space_removal', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId} and removed_at is null`)).toBe(1);
+  });
+
   test('member_cannot_delete_space — the service refuses a member as well as the route does', async () => {
     const seeded = await seed('shared');
     const removals = await service();

@@ -441,6 +441,7 @@ export function buildOpenApiDocument() {
               '202': jsonResponse('Removal started', z.object({ removal: spaceRemoval })),
               '400': problem('The name does not match the space'),
               '403': problem('Space owner required, or no such space'),
+              '409': problem('The browser worker uses this space'),
             },
           },
         },

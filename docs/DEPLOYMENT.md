@@ -768,7 +768,7 @@ member of the space receives `403`. The request and response types are in
 | Request | Answer |
 |---|---|
 | `GET /spaces/{id}/removal/preview` | What the space holds, the services whose keys it uses, and the sentence to confirm |
-| `DELETE /spaces/{id}` with `{"confirm_name": "<name>"}` | `202` and the removal; `400` when the name does not match |
+| `DELETE /spaces/{id}` with `{"confirm_name": "<name>"}` | `202` and the removal; `400` when the name does not match; `409` for the browser worker's space |
 | `GET /spaces/{id}/removal` | How far the removal has got, while the space is there |
 | `GET /removals/{id}` | The removal and its account, including after the space is gone, for the person who asked |
 
@@ -780,12 +780,17 @@ history, and each job's workspace), then its rows (work, artifacts, knowledge
 records, skills, the companies map, connections and their sealed keys, and
 memory). A final count then checks every table, every path and every provider
 the space used. The removal reads `complete` only when that count finds nothing
-left, and only then is the space row deleted.
+left, and only then is the space row deleted. The runtime removes each attempt's
+home volume when the attempt ends, so a removal finds none of those to clear.
 
 A personal space is emptied rather than removed. It keeps its id, its owner
 stays signed in, and it comes back with a fresh, empty repository.
 
 Asking again while a removal runs returns the same removal.
+
+The space named by `MELETE_BROWSER_SPACE` cannot be removed while the browser
+worker uses it, because the worker mounts that space's directory. Point the
+setting at another space and restart the browser worker first.
 
 ### A blocked removal
 

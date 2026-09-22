@@ -1075,6 +1075,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "The browser worker uses this space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema83"
+                }
+              }
+            }
           }
         }
       }

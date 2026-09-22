@@ -22,11 +22,11 @@ export const REMOVAL_PHASES = [
   'sandboxes',
   'browser',
   /**
-   * The engine session volume a job's runtime keeps, labelled by job. Nothing
-   * makes one yet, so the phase clears nothing and says so; it is named here in
-   * the order it has to run — after the worker that could still write into one,
-   * and before the directories that hold them — so the work that adds them
-   * slots into the sweep instead of rearranging it.
+   * Engine session volumes kept past an attempt, labelled by job. The runtime
+   * removes each attempt's home volume when the attempt ends, so today the
+   * phase finds none and says so; it is named here in the order it has to run
+   * — after the worker that could still write into one, and before the
+   * directories that hold them.
    *
    * It clears volumes labelled by job, and only those. The deployment's single
    * `runtime-home` volume is shared by every space and is not one of them.

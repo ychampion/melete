@@ -92,8 +92,11 @@ export type BrowserTeardown = {
 };
 
 /**
- * Per-job engine session volumes, labelled by job. Nothing makes one yet; this
- * is the shape the work that does will be wired into.
+ * Engine session volumes kept past the attempt that made them, labelled by
+ * job. The runtime already removes the home volume it makes for each attempt
+ * when the attempt ends, and sweeps any it finds orphaned, so there are none
+ * today and the phase records that. This is the shape a runtime that keeps a
+ * home across attempts is wired into.
  *
  * Both calls take job ids and address volumes labelled by them. The
  * deployment's `runtime-home` volume is one volume shared by every space and
@@ -130,6 +133,11 @@ export type RemovalDeps = {
   runtimeHomes?: RuntimeHomeTeardown;
   /** Left out, nothing is serving connectors in this process and none is released. */
   connectors?: ConnectorReleases;
+  /**
+   * The space a running browser worker mounts as its own, which cannot be
+   * taken out from under it. Set from the deployment's browser configuration.
+   */
+  browserSpace?: string;
   /** How long a claimed removal holds its lease before another run may take it. */
   leaseMs?: number;
   /** Named so tests can watch a phase boundary without timing it. */
@@ -248,6 +256,16 @@ export class SpaceRemovalService {
       const access = await spaceAuthority(tx, spaceId, actor, true);
       if (access.role !== 'owner')
         throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);
+
+      // The browser worker mounts this space's directory and keeps its profile
+      // there; removing it would take the directory out from under a running
+      // browser, and the worker could not start again without it.
+      if (this.deps.browserSpace === spaceId)
+        throw new ServiceError(
+          'space_in_use',
+          'The browser worker uses this space. Point MELETE_BROWSER_SPACE at another space and restart the browser worker before removing it.',
+          409,
+        );
 
       if (confirmName !== parent.name)
         throw new ServiceError(
