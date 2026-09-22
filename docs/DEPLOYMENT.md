@@ -50,8 +50,7 @@ container there, and the upgrade measures free space there.
 A Windows machine running Docker Desktop hosts Melete with the same Compose
 files, images and commands as a Linux host. You use it from a browser, on that
 machine or, through the [Tailscale](#tailscale) override, from your other
-devices. macOS runs Docker Desktop the same way, so the Docker Desktop parts of
-this section apply there as well.
+devices.
 
 ### What the machine needs
 
