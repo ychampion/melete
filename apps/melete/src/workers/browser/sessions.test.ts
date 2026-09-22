@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { chromiumAvailable, chromiumMissingReason } from './available.ts';
 import { BrowserWorkerPool, browserWorkerEnvironment } from './client.ts';
 import { startBrowserServer } from './server.ts';
-import { BrowserSessions } from './sessions.ts';
+import { BrowserSessions, browserLaunchOptions } from './sessions.ts';
 
 test('worker receives OS essentials without database, vault or provider credentials', () => {
   expect(
@@ -17,6 +17,24 @@ test('worker receives OS essentials without database, vault or provider credenti
       MELETE_CAPABILITY_KEY: 'cap',
     }),
   ).toEqual({ PATH: 'bin' });
+});
+
+test('going back never brings a document out of a back-forward cache', async () => {
+  // A handed-back page stays filtered until automation loads a new document. Going back must
+  // fetch again, through the network guard, rather than restore a cached one. Playwright turns
+  // the back-forward cache off in the switches it launches Chromium with, and the worker keeps
+  // those defaults.
+  expect('ignoreDefaultArgs' in browserLaunchOptions()).toBe(false);
+  expect(browserLaunchOptions().args.join(' ')).not.toContain('back-forward-cache');
+  const core = dirname(
+    Bun.resolveSync(
+      'playwright-core/package.json',
+      dirname(Bun.resolveSync('playwright', import.meta.dir)),
+    ),
+  );
+  expect(await readFile(join(core, 'lib', 'coreBundle.js'), 'utf8')).toContain(
+    '"--disable-back-forward-cache"',
+  );
 });
 
 const suite = chromiumAvailable ? describe : describe.skip;
