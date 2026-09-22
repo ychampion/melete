@@ -84,6 +84,8 @@ Nothing is stopped or written until every check passes:
   the configuration generator judge them.
 - **The stack**: the `postgres` service is running and the `melete` service has
   a container to archive from.
+- **The browser worker image**, with `--browser`: `<project>-browser:latest`
+  exists, so the backup can keep it for a rollback.
 - **Disk space**: at least 8 GiB free on Docker's data filesystem for the
   rebuild, and room in the backup directory for the measured size of the
   database, `/data` and `/work` plus a fifth. The archives are not compressed.

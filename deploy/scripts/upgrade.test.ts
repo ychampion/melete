@@ -450,6 +450,32 @@ describe('running the upgrade with an injected command runner', () => {
     expect(output.join('\n')).toContain('size of the backup could not be measured');
   });
 
+  test('with --browser, a worker image that was never built is named before anything is touched', async () => {
+    const inspect = 'docker image inspect --format {{.Id}} melete-browser:latest';
+    const missing = host({ 'image inspect': { code: 1, stderr: 'No such image' } });
+    const output: string[] = [];
+    const result = await runUpgrade(
+      { ...options, browser: true, dryRun: false },
+      dependencies(missing.run, output),
+    );
+    expect(result.status).toBe('refused');
+    expect(missing.commands).toContain(inspect);
+    expect(missing.commands.filter((line) => mutating.test(line))).toEqual([]);
+    expect(output.join('\n')).toContain(
+      '--browser was given, but the browser worker image melete-browser:latest does not exist',
+    );
+
+    const built = host();
+    const planned = await runUpgrade(
+      { ...options, browser: true, dryRun: true },
+      dependencies(built.run, []),
+    );
+    expect(planned.status).toBe('planned');
+    const without = host();
+    await runUpgrade({ ...options, dryRun: true }, dependencies(without.run, []));
+    expect(without.commands.join('\n')).not.toContain('image inspect');
+  });
+
   test('a failed preflight stops before anything is touched', async () => {
     const { run, commands } = host({ 'docker version': { stdout: '1.47 27.5.1' } });
     const output: string[] = [];

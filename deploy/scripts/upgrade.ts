@@ -349,6 +349,11 @@ export type PreflightFacts = {
   backupFreeBytes: number | null;
   /** Database plus /data plus /work; null when the stopped stack could not be measured. */
   backupEstimateBytes: number | null;
+  /**
+   * With --browser, the worker image the backup keeps for a rollback, and
+   * whether it exists. Unset without --browser.
+   */
+  browserImage?: { name: string; present: boolean };
 };
 
 const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
@@ -391,6 +396,10 @@ export function judgePreflight(facts: PreflightFacts): string[] {
   if (!facts.serviceContainer)
     problems.push(
       'The melete service has no container, so its volumes cannot be archived. Start the stack first.',
+    );
+  if (facts.browserImage && !facts.browserImage.present)
+    problems.push(
+      `--browser was given, but the browser worker image ${facts.browserImage.name} does not exist, so it cannot be kept for a rollback. Leave --browser out if this installation does not run the browser worker; add the worker after the upgrade.`,
     );
   if (facts.dockerRootFreeBytes === null)
     problems.push("The free space on Docker's data filesystem could not be measured.");
@@ -508,6 +517,21 @@ export async function gatherPreflight(
   const fromVersion = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(described ?? '')
     ? (described as string)
     : `g${headCommit.slice(0, 12)}`;
+  const project = /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
+    ? (values?.COMPOSE_PROJECT_NAME as string)
+    : 'melete';
+  // The image the backup phase tags for a rollback; a missing one is named now.
+  const browserImageName = options.browser
+    ? stackImages({ browser: true, project }).at(-1)?.running
+    : undefined;
+  const browserImage = browserImageName
+    ? {
+        name: browserImageName,
+        present:
+          (await run(['docker', 'image', 'inspect', '--format', '{{.Id}}', browserImageName]))
+            .code === 0,
+      }
+    : undefined;
   return {
     facts: {
       tag: options.tag,
@@ -523,12 +547,11 @@ export async function gatherPreflight(
       dockerRootFreeBytes,
       backupFreeBytes,
       backupEstimateBytes,
+      ...(browserImage ? { browserImage } : {}),
     },
     context: {
       ...options,
-      project: /^[a-z0-9][a-z0-9_-]*$/.test(values?.COMPOSE_PROJECT_NAME ?? '')
-        ? (values?.COMPOSE_PROJECT_NAME as string)
-        : 'melete',
+      project,
       fromCommit: headCommit,
       fromBranch,
       fromVersion,
