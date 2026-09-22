@@ -14,7 +14,11 @@ import {
   revokeMemorySource,
   revokeMemorySpace,
 } from '../../src/memory/forget.ts';
-import { registerMemoryAttempt } from '../../src/memory/invalidate.ts';
+import {
+  invalidateDependencies,
+  lockEventOrder,
+  registerMemoryAttempt,
+} from '../../src/memory/invalidate.ts';
 import { recall } from '../../src/memory/recall.ts';
 import { restoreMemory } from '../../src/memory/restore.ts';
 import { buildViews } from '../../src/memory/views.ts';
@@ -104,6 +108,20 @@ export function registerLifecycleTests(db: TestDatabase | null) {
         'context_invalidated',
         'dependencies_invalidated',
       ]);
+    });
+    test('dependency invalidation refuses to run without the event order lock', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      // A caller that took the space lock first would invert the order the broker uses.
+      const refused = await db.sql
+        .begin((tx) => invalidateDependencies(tx, scope, [], 1))
+        .catch((error: Error) => error.message);
+      expect(refused).toBe('event_order_lock_required');
+      const allowed = await db.sql.begin(async (tx) => {
+        await lockEventOrder(tx);
+        return invalidateDependencies(tx, scope, [], 1);
+      });
+      expect(allowed).toEqual([]);
     });
     test('a correction that writes job events takes its turn behind the event order lock', async () => {
       if (!db) return;

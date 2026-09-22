@@ -19,6 +19,7 @@ import { assembleAttemptKnowledge } from '../../src/memory/context.ts';
 import { lockSpace, newId } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import { applyRestriction, forgetMemory } from '../../src/memory/forget.ts';
+import { lockEventOrder } from '../../src/memory/invalidate.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
@@ -477,7 +478,10 @@ afterAll(async () => fixture?.close(), 15000);
       access_generation: Number(generation?.access_generation) + 1,
       recorded_at: new Date().toISOString(),
     };
-    await fixture.handle.sql.begin((tx) => applyRestriction(tx, record));
+    await fixture.handle.sql.begin(async (tx) => {
+      await lockEventOrder(tx);
+      await applyRestriction(tx, record);
+    });
     const [source] = await fixture.handle
       .sql`select state from memory_sources where id = ${accepted.source.source_id}`;
     expect(source?.state).toBe('active');
@@ -748,7 +752,10 @@ afterAll(async () => fixture?.close(), 15000);
         correctedOutput: 'CORRECTED-OUTPUT-forget-by-memory',
       })
       .where(eq(episode.id, forgotten));
-    await handle.sql.begin((tx) => applyRestriction(tx, replayed));
+    await handle.sql.begin(async (tx) => {
+      await lockEventOrder(tx);
+      await applyRestriction(tx, replayed);
+    });
     await erased(forgotten, 'forget-by-memory');
   }, 30000);
 

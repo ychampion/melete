@@ -1,5 +1,12 @@
 import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
-import { enqueue, type MemoryScope, type MemorySql, type MemoryTx, stableId } from './db.ts';
+import {
+  enqueue,
+  MemoryError,
+  type MemoryScope,
+  type MemorySql,
+  type MemoryTx,
+  stableId,
+} from './db.ts';
 
 /** Process-local aborts supplement the durable fence; they are never the authority. */
 const liveAttempts = new Map<string, { controller: AbortController; discard: () => void }>();
@@ -41,7 +48,12 @@ export async function invalidateDependencies(
   dataRevision: number,
   all = false,
 ) {
-  await lockEventOrder(tx);
+  // Taking the lock here would hide a caller that locked the space first, the
+  // order the broker's admissions invert; the caller takes it before any memory lock.
+  const [held] = await tx`select exists (select 1 from pg_locks where locktype = 'advisory'
+    and pid = pg_backend_pid() and granted and classid = 0 and objid = ${EVENT_ORDER_LOCK}
+    and objsubid = 1) as held`;
+  if (!held?.held) throw new MemoryError('event_order_lock_required');
   const contexts = await tx`update memory_contexts c set invalidated_at = clock_timestamp()
     where c.space_id = ${scope.spaceId} and c.invalidated_at is null and (${all} or exists (
       select 1 from jsonb_array_elements(c.items) item where item->>'claim_id' = any(${claimIds}))) returning job_id, attempt_id`;
