@@ -174,6 +174,25 @@ withDb('sandbox sessions', () => {
     expect(await rows()).toEqual(recorded);
   });
 
+  test('a session whose job was removed cannot renew, and the next sweep ends it', async () => {
+    const { sql, scope, provider, sessions, spec, base } = await setup();
+    const opened = await sessions.open(
+      { ...base, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sql`delete from job where id = ${scope.jobId}`;
+    const orphaned = await sessions.get(opened.id);
+    expect(orphaned).toMatchObject({ status: 'ready', jobId: null, attemptId: null });
+    // Most of its lease is left, and nothing may extend it now.
+    expect(orphaned?.leaseExpiresAt.getTime() ?? 0).toBeGreaterThan(Date.now());
+    expect(await sessions.renew(opened.id)).toBeNull();
+    expect(await sessions.sweep(() => provider, signal())).toEqual([opened.id]);
+    expect((await sessions.get(opened.id))?.status).toBe('closed');
+    expect(await provider.inspect(sessionHandle(opened), signal())).toBe('gone');
+  });
+
   test('metering records seconds with no cap configured', async () => {
     const { sql, scope, provider, sessions, spec, base } = await setup();
     const opened = await sessions.open(

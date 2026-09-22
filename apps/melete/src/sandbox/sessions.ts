@@ -65,7 +65,12 @@ export type SessionRow = {
 export type OpenSession = {
   connectionId: string;
   spaceId: string;
-  jobId: string | null;
+  /**
+   * Every session is opened for a job. The column empties only when that job
+   * is removed, and a session whose job is gone is bounded by the sweep rather
+   * than by any renewal.
+   */
+  jobId: string;
   attemptId: string | null;
   agentId: string | null;
   persistence?: SessionPersistence;
@@ -239,7 +244,6 @@ export class SandboxSessions {
 
   private async checkCap(tx: TransactionSql, input: OpenSession, cap: number | null) {
     if (cap === null) return;
-    if (!input.jobId) throw new Error('a sandbox-time cap is a job budget and needs a job');
     await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-job:${input.jobId}`}))`;
     const used = await usedSeconds(tx, input.jobId);
     if (used >= cap)
@@ -621,12 +625,16 @@ export class SandboxSessions {
     throw new Error('the workspace session ended while it was being suspended');
   }
 
-  /** Extend the lease and meter the time so far. Time used never refuses a renewal. */
+  /**
+   * Extend the lease and meter the time so far. Time used never refuses a
+   * renewal; a job that is gone does, since nothing is left to charge the time
+   * to or to end the session when it finishes.
+   */
   async renew(id: string): Promise<SessionRow | null> {
     const [row] = await this.sql`update sandbox_session
       set lease_expires_at = now() + make_interval(secs => ${this.options.leaseSeconds}),
         seconds_charged = extract(epoch from now() - opened_at)
-      where id = ${id} and status in ('opening', 'ready')
+      where id = ${id} and status in ('opening', 'ready') and job_id is not null
       returning *`;
     return row ? toRow(row) : null;
   }
@@ -740,9 +748,13 @@ export class SandboxSessions {
    */
   async sweep(providerFor: ProviderFor, signal: AbortSignal): Promise<string[]> {
     const swept: string[] = [];
+    // A session whose job was removed is taken now rather than when its lease
+    // runs out: no attempt is left to use it, and its time counts against no
+    // job's cap.
     const expired = (
       await this.sql`select * from sandbox_session
-        where status in ('opening', 'ready', 'closing') and lease_expires_at < now()
+        where status in ('opening', 'ready', 'closing')
+          and (lease_expires_at < now() or job_id is null)
         order by lease_expires_at limit 100`
     ).map(toRow);
     for (const candidate of expired) {
@@ -778,7 +790,7 @@ export class SandboxSessions {
       }
       const [claimed] = await this.sql`update sandbox_session set status = 'closing'
         where id = ${candidate.id as string} and status = ${candidate.status as string}
-          and lease_expires_at < now()
+          and (lease_expires_at < now() or job_id is null)
         returning *`;
       if (!claimed) continue;
       const row = toRow(claimed);
