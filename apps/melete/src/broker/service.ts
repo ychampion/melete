@@ -161,6 +161,8 @@ type Admissibility = {
 
 const question =
   'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+/** The longest a connector may ask one dispatch to take. */
+const MAX_DISPATCH_BUDGET_MS = 10 * 60_000;
 const needsApproval = (tool: ConnectorTool) =>
   tool.requires_approval || tool.effect_class === 'write_external' || tool.effect_class === 'spend';
 
@@ -1168,6 +1170,7 @@ export class BrokerService implements BrokerOperations {
         reason: 'Connector disappeared after dispatch admission',
       });
     const controller = new AbortController();
+    const budgetMs = this.dispatchBudget(connector, prepared.action);
     const execution = Promise.resolve().then(() =>
       runRepair(
         prepared.action.canonical_payload,
@@ -1180,13 +1183,13 @@ export class BrokerService implements BrokerOperations {
           operation: prepared.action.kind,
           // The dispatch timeout is the repair budget too: a retry that cannot
           // finish inside it is not attempted at all.
-          deadlineAt: Date.now() + this.dispatchTimeoutMs,
+          deadlineAt: Date.now() + budgetMs,
         },
       ),
     );
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), this.dispatchTimeoutMs);
+      timer = setTimeout(() => resolve('timeout'), budgetMs);
     });
     const result = await Promise.race([execution, timeout]);
     clearTimeout(timer);
@@ -1660,14 +1663,38 @@ export class BrokerService implements BrokerOperations {
   /** Only uncertain dispositions are recovered. This path never invokes execute(). */
   async recoverDispatched(now = Date.now()): Promise<number> {
     const cutoff = new Date(now - this.dispatchTimeoutMs).toISOString();
-    const rows = await this
-      .sql`select id from action where status = 'dispatched' and dispatched_at <= ${cutoff}`;
-    for (const row of rows)
+    const rows = await this.sql`select id, connection_id, kind, canonical_payload, dispatched_at
+      from action where status = 'dispatched' and dispatched_at <= ${cutoff}`;
+    let recovered = 0;
+    for (const row of rows) {
+      // A dispatch its connector gave longer than the default is still inside
+      // its own budget, and calling it unknown now would be a guess.
+      const connector = this.options.connectors.get(row.connection_id);
+      const budgetMs = connector
+        ? this.dispatchBudget(connector, {
+            kind: row.kind,
+            canonical_payload: row.canonical_payload,
+          })
+        : this.dispatchTimeoutMs;
+      if (new Date(row.dispatched_at).getTime() > now - budgetMs) continue;
       await this.recordResult(row.id, {
         outcome: 'unknown',
         reason: 'Dispatch ended without a durable receipt',
       });
-    return rows.length;
+      recovered += 1;
+    }
+    return recovered;
+  }
+
+  /** The broker's own timeout, or longer where the connector says this action needs it. */
+  private dispatchBudget(
+    connector: Connector,
+    action: Pick<Action, 'kind' | 'canonical_payload'>,
+  ): number {
+    const asked = connector.dispatchBudgetMs?.(action);
+    return typeof asked === 'number' && Number.isFinite(asked)
+      ? Math.max(this.dispatchTimeoutMs, Math.min(asked, MAX_DISPATCH_BUDGET_MS))
+      : this.dispatchTimeoutMs;
   }
 
   /** The service layer may use its own cancel transaction; both serialize on the same job row. */

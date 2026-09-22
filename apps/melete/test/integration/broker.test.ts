@@ -319,6 +319,59 @@ describe('durable action lifecycle', () => {
     expect(job?.state).toBe('needs_reconciliation');
   });
 
+  databaseTest('a dispatch its connector gave longer finishes inside that budget', async () => {
+    const s = await setup(
+      async (action) => {
+        // Longer than the broker's own timeout below, shorter than the connector's.
+        await Bun.sleep(600);
+        return {
+          outcome: 'succeeded',
+          receipt: {
+            action_id: action.id,
+            connection_id: action.connection_id,
+            external_ref: 'slow',
+            received_at: new Date().toISOString(),
+            late: false,
+            detail: {},
+          },
+        };
+      },
+      { dispatchTimeoutMs: 200 },
+    );
+    s.connector.dispatchBudgetMs = () => 5_000;
+    const proposal = await s.broker.propose(s.claims, {
+      kind: 'test.read',
+      connection_id: s.connectionId,
+      payload: { q: 'slow' },
+    });
+    expect(proposal.status).toBe('succeeded');
+    const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('running');
+  });
+
+  databaseTest('the recovery sweep leaves a dispatch inside its own budget alone', async () => {
+    const s = await setup();
+    s.connector.dispatchBudgetMs = () => 5 * 60_000;
+    const proposal = await s.broker.propose(s.claims, {
+      kind: 'test.send',
+      connection_id: s.connectionId,
+      payload: {},
+    });
+    await s.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+    // Past the broker's own thirty seconds, inside the connector's five minutes.
+    await s.sql`update action set status = 'dispatched', dispatched_at = now() - interval '1 minute' where id = ${proposal.action_id}`;
+    expect(await s.broker.recoverDispatched()).toBe(0);
+    expect((await loadAction(s.sql, proposal.action_id)).status).toBe('dispatched');
+    await s.sql`update action set dispatched_at = now() - interval '6 minutes' where id = ${proposal.action_id}`;
+    expect(await s.broker.recoverDispatched()).toBe(1);
+    expect((await loadAction(s.sql, proposal.action_id)).status).toBe('unknown');
+    expect(s.calls()).toBe(0);
+  });
+
   databaseTest('the runtime can answer a message with a glyph instead of prose', async () => {
     const s = await setup();
     const [message] = await s.sql`insert into event (job_id, type, payload, dedup_key)

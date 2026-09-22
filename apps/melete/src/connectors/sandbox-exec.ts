@@ -88,6 +88,9 @@ const STORED_OUTPUT: ArtifactExpectation = {
   template: null,
 };
 
+/** A run name: what the engine's terminal sets on every command it forwards. */
+const RUN_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
 const runSchema = {
   type: 'object',
   additionalProperties: false,
@@ -96,6 +99,12 @@ const runSchema = {
     command: { type: 'string', minLength: 1, maxLength: 20000 },
     cwd: { type: 'string', minLength: 1, maxLength: 1024 },
     timeout_ms: { type: 'integer', minimum: 100, maximum: EXEC_LIMITS.max_timeout_ms },
+    run: {
+      type: 'string',
+      pattern: RUN_PATTERN.source,
+      description:
+        'Names this run, so running the same command again later is a new run rather than a repeat of the first.',
+    },
   },
 };
 
@@ -122,9 +131,9 @@ export const sandboxExecManifest: ConnectorManifest = {
   ],
 };
 
-type Payload = { command: string; cwd?: string; timeout_ms?: number };
+type Payload = { command: string; cwd?: string; timeout_ms?: number; run?: string };
 
-function payloadOf(action: Action): Payload {
+function payloadOf(action: Pick<Action, 'canonical_payload'>): Payload {
   const payload = action.canonical_payload as Record<string, unknown>;
   const command = payload.command;
   if (typeof command !== 'string' || !command.length || command.length > 20_000)
@@ -141,11 +150,46 @@ function payloadOf(action: Action): Payload {
       timeout > EXEC_LIMITS.max_timeout_ms)
   )
     throw new Error('a timeout must be a whole number of milliseconds within the cap');
+  const run = payload.run;
+  if (run !== undefined && (typeof run !== 'string' || !RUN_PATTERN.test(run)))
+    throw new Error('a run name is 8 to 64 letters, digits, dashes or underscores');
   return {
     command,
     ...(typeof cwd === 'string' ? { cwd } : {}),
     ...(typeof timeout === 'number' ? { timeout_ms: timeout } : {}),
+    ...(typeof run === 'string' ? { run } : {}),
   };
+}
+
+/** How long one dispatch of this payload may take before its outcome is unknown. */
+export function sandboxDispatchBudgetMs(action: Pick<Action, 'canonical_payload'>): number {
+  let timeout: number = EXEC_LIMITS.max_timeout_ms;
+  try {
+    timeout = payloadOf(action).timeout_ms ?? timeout;
+  } catch {
+    // A payload this connector refuses is refused at once; the default serves.
+  }
+  // Opening the session and syncing the workspace both ways, around the command.
+  return timeout + SANDBOX_SYNC_ALLOWANCE_MS;
+}
+
+/**
+ * The captured output as text a receipt can hold, and whether it was text.
+ * Output that is not UTF-8, or that carries a NUL, is marked binary and shown
+ * with the undecodable bytes replaced; the digest still names the real bytes.
+ * A preview cut at the cap may end inside a character, which is not binary.
+ */
+export function outputText(preview: Uint8Array, cut: boolean): { text: string; binary: boolean } {
+  let binary = preview.includes(0);
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(preview, { stream: cut });
+  } catch {
+    binary = true;
+    text = new TextDecoder('utf-8').decode(preview);
+  }
+  // Postgres cannot keep a NUL inside a JSON string.
+  return { text: text.replaceAll('\0', '�'), binary };
 }
 
 /** A path inside the sandbox's own workspace; the marker runner refuses the rest. */
@@ -265,10 +309,15 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     session: SessionRow,
     stored: Uint8Array | null,
   ): Promise<Record<string, JsonValue>> => {
+    // The receipt is the only way the result travels back to the engine that
+    // asked, so the preview the service kept goes on it, capped as it was.
+    const shown = outputText(record.preview, record.truncated);
     const detail: Record<string, JsonValue> = {
       language: 'shell',
       command: payload.command,
       cwd: payload.cwd ?? '.',
+      output: shown.text,
+      output_binary: shown.binary,
       exit_code: record.exitCode,
       signal: record.signal,
       timed_out: record.timedOut,
@@ -342,11 +391,12 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     manifest: sandboxExecManifest,
     catalog: { audience: 'owner' },
 
+    dispatchBudgetMs: sandboxDispatchBudgetMs,
+
     async execute(action, ctx) {
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();
-      const signal =
-        ctx.signal ?? AbortSignal.timeout(EXEC_LIMITS.max_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS);
+      const signal = ctx.signal ?? AbortSignal.timeout(sandboxDispatchBudgetMs(action));
       let payload: Payload;
       let session: SessionRow;
       try {

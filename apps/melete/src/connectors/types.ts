@@ -42,6 +42,13 @@ export interface Connector {
   catalog?: CatalogMetadata;
   execute(action: Action, ctx: ConnectorContext): Promise<DispatchResult>;
   verify(action: Action, ctx: ConnectorContext): Promise<VerifyResult>;
+  /**
+   * How long one dispatch of this action may take before its outcome is
+   * unknown, for a connector whose work may outlast the broker's own dispatch
+   * timeout: a command the admitted payload gives two minutes. The broker
+   * never waits less than its own timeout, whatever this says.
+   */
+  dispatchBudgetMs?(action: Pick<Action, 'kind' | 'canonical_payload'>): number;
   health(): Promise<ConnectorHealth>;
   /**
    * The shape the destination wants now. Answered after a `schema_drift` fault
