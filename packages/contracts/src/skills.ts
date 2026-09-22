@@ -122,6 +122,9 @@ export const BUILT_IN_SKILLS = [
   'research-with-sources',
   'schedule-a-check-in',
   'remember-this',
+  'summarize-a-source',
+  'triage-the-inbox',
+  'write-a-draft',
   /** Offered only where a speech capability is configured. */
   'make-a-podcast',
   /**
