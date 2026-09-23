@@ -1,7 +1,7 @@
 import { basename, dirname, join } from 'node:path';
 import { type KnowledgeExcerpt, normalizeAudience, type SkillPayload } from '@melete/contracts';
 import { loadSpace, spacePaths } from '@melete/knowledge';
-import { chooseSkills, loadSkills } from '@melete/skills';
+import { chooseSkills, type LoadedSkill, loadSkills } from '@melete/skills';
 import type { Transaction } from '../db/transaction.ts';
 import { overlapsProcedure, type ProcedureReach } from '../learning/triggers.ts';
 import { spaceAuthority } from './authority.ts';
@@ -17,10 +17,44 @@ export function audienceVisible(audience: string | undefined, spaceId: string, i
 }
 
 /**
- * At most three skills for the objective and latest message, from those the
- * principal may read. `offered` says whether the attempt could use a skill
- * naming these tools; one it cannot is never chosen, so it takes no place.
+ * Every skill this attempt may read: built-ins, and the space's own skills the
+ * principal's audience admits, that the attempt could use. `offered` says
+ * whether it could use a skill naming these tools. A built-in covering the
+ * same work as a delivered learned procedure gives way to it.
  */
+export async function usableSkills(
+  tx: Transaction,
+  spaceId: string,
+  principalId: string | null,
+  publicCompartment = false,
+  offered: (tools: readonly string[]) => boolean = () => true,
+  beside?: ProcedureReach,
+): Promise<LoadedSkill[]> {
+  const access = await spaceAuthority(tx, spaceId, principalId, true);
+  const loaded = loadSkills(
+    publicCompartment ? {} : { spaceSkillsDirectory: join(access.space.gitPath, 'skills') },
+  );
+  return loaded.skills.filter(
+    (skill) =>
+      (skill.source === 'builtin' ||
+        audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
+      offered(skill.frontmatter.tools) &&
+      !(
+        skill.source === 'builtin' &&
+        beside &&
+        overlapsProcedure(skill.frontmatter.triggers, beside)
+      ),
+  );
+}
+
+/** A skill as an attempt is given it in full. */
+export const skillPayloadOf = (skill: LoadedSkill, spaceId: string): SkillPayload => ({
+  name: skill.frontmatter.name,
+  body: skill.body,
+  ...(skill.source === 'space' ? { space_id: spaceId } : {}),
+});
+
+/** At most three skills for the objective and latest message, from the usable ones. */
 export async function selectedSkills(
   tx: Transaction,
   spaceId: string,
@@ -32,26 +66,10 @@ export async function selectedSkills(
   /** What a delivered learned procedure covers; a built-in covering the same work gives way to it. */
   beside?: ProcedureReach,
 ): Promise<SkillPayload[]> {
-  const access = await spaceAuthority(tx, spaceId, principalId, true);
-  const loaded = loadSkills(
-    publicCompartment ? {} : { spaceSkillsDirectory: join(access.space.gitPath, 'skills') },
+  const eligible = await usableSkills(tx, spaceId, principalId, publicCompartment, offered, beside);
+  return chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) =>
+    skillPayloadOf(skill, spaceId),
   );
-  const eligible = loaded.skills.filter(
-    (skill) =>
-      (skill.source === 'builtin' ||
-        audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
-      offered(skill.frontmatter.tools) &&
-      !(
-        skill.source === 'builtin' &&
-        beside &&
-        overlapsProcedure(skill.frontmatter.triggers, beside)
-      ),
-  );
-  return chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) => ({
-    name: skill.frontmatter.name,
-    body: skill.body,
-    ...(skill.source === 'space' ? { space_id: spaceId } : {}),
-  }));
 }
 
 /** No cross-space scan: the selected space is checked before its bytes are opened. */

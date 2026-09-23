@@ -430,6 +430,14 @@ const skilled = late ? await database() : null;
         'Research standing desks and cite sources',
       );
       expect(skillNames(researching)).toEqual(['research-with-sources']);
+      // Every other skill the attempt can use is named in its index, one line each and no body.
+      const indexed = (researching.bundle.skill_index ?? []).map((entry) => entry.name);
+      expect(indexed).toEqual(
+        expect.arrayContaining(['summarize-a-source', 'write-a-draft', 'plan-a-responsibility']),
+      );
+      expect(indexed).not.toContain('research-with-sources');
+      // A skill needing a mailbox this space lacks is not offered at all.
+      expect(indexed).not.toContain('triage-the-inbox');
       // The conversation is told, as a tool entry, which skill the attempt follows.
       const traced = await fixture.sql`select payload from event
         where attempt_id = ${researching.claims.attempt_id} and type = 'notice'

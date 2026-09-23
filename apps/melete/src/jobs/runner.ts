@@ -80,7 +80,7 @@ export type RunnerOptions = {
     tx: Transaction,
     claims: CapabilityClaims,
     bundle: ResponsibilityAttemptBundle,
-  ) => Promise<Pick<ResponsibilityAttemptBundle, 'tools' | 'skills'>>;
+  ) => Promise<Pick<ResponsibilityAttemptBundle, 'tools' | 'skills' | 'skill_index'>>;
 };
 export type ClaimedAttempt = { bundle: ResponsibilityAttemptBundle; claims: CapabilityClaims };
 /** What the attempt raised besides its outcome, handed to every finish handler. */
