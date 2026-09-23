@@ -25,8 +25,10 @@ export type ProcedureReach = { phrases: readonly string[]; learnedFrom: readonly
  * Whether a built-in skill covers the same work as a delivered procedure, and
  * so would dilute the way the person taught it. It does when one of its
  * triggers and one of the procedure's phrases are the same words or one holds
- * the other, or when it would have been chosen for a request the procedure was
- * learned on: it was in play when the person corrected the work.
+ * the other, or when any of its triggers occurs in a request the procedure was
+ * learned on. That is wider than "would have been chosen there", which also
+ * needs a place among the three: any such skill was in play when the person
+ * corrected the work.
  */
 export function overlapsProcedure(
   skillTriggers: readonly string[],
