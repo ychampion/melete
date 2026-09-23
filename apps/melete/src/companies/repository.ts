@@ -81,6 +81,12 @@ export interface CompanyStore {
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
   setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
+  /**
+   * Run `work` as the only holder of `key` across every process that shares
+   * this store, with a store bound to that exclusive section. A check followed
+   * by a write inside it cannot be interleaved with the same check elsewhere.
+   */
+  exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T>;
 }
 
 const iso = (value: Date | string): string =>
@@ -198,6 +204,14 @@ export async function closeInterruptedScans(db: Database): Promise<number> {
 
 export class PostgresCompanyStore implements CompanyStore {
   constructor(private readonly db: Database) {}
+
+  /** A transaction-scoped advisory lock on the key, released when the work commits or fails. */
+  async exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`companies:${key}`}))`);
+      return work(new PostgresCompanyStore(tx as unknown as Database));
+    });
+  }
 
   async runningScan(owner: Owner): Promise<ScanRecord | null> {
     const [row] = await this.db
@@ -467,6 +481,21 @@ export class MemoryCompanyStore implements CompanyStore {
 
   private key(owner: Owner, suffix: string) {
     return `${owner.spaceId}|${owner.principalId}|${suffix}`;
+  }
+  private readonly held = new Map<string, Promise<unknown>>();
+  /** One process holds all of this store, so a queue per key is the whole of exclusivity. */
+  async exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T> {
+    const run = (this.held.get(key) ?? Promise.resolve()).then(
+      () => work(this),
+      () => work(this),
+    );
+    const tail = run.catch(() => undefined);
+    this.held.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.held.get(key) === tail) this.held.delete(key);
+    }
   }
   private mine(owner: Owner, row: Owner) {
     return row.spaceId === owner.spaceId && row.principalId === owner.principalId;

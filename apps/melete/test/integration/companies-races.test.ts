@@ -16,6 +16,7 @@ import { fixtureMessages } from '../../src/companies/fixtures.ts';
 import { fixtureMailbox } from '../../src/companies/mailbox.ts';
 import { PostgresCompanyStore } from '../../src/companies/repository.ts';
 import { scriptedExtractor } from '../../src/companies/scripted.ts';
+import { type DatabaseHandle, openDatabase } from '../../src/db/client.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
@@ -59,42 +60,49 @@ function meeting(ms = 1500) {
 const insideHandler = meeting();
 const betweenCheckAndOpen = meeting();
 
-const app = handle
-  ? createApp({
-      db: handle.db,
-      env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root }),
-      sql: handle.sql,
-      checkDatabase: async () => 'ok',
-      companies: {
-        store: new PostgresCompanyStore(handle.db),
-        // In the service this is a query for the space's mail connection, so it
-        // takes a moment, between the check for a running scan and the new one.
-        mailbox: async () => {
-          if (holdScans) await betweenCheckAndOpen();
-          return fixtureMailbox(fixtureMessages());
-        },
-        extractor: scriptedExtractor(),
-        schedule: async (work) => {
-          if (holdScans) heldScans.push(work);
-          else await work();
-        },
-        handler: {
-          // Creating a job takes a few round trips; a second press that reaches
-          // this step while the first is still in it would start a second chase.
-          async handleLedgerItem() {
-            handlerCalls += 1;
-            await insideHandler();
-            return { job_id: newId('job') };
-          },
+/**
+ * The same service twice over one database, each with its own connection pool:
+ * what two processes of the service look like to Postgres. What keeps two
+ * presses apart has to hold between these as well as within one.
+ */
+const serviceOver = (db: DatabaseHandle) =>
+  createApp({
+    db: db.db,
+    env: loadEnv({ NODE_ENV: 'test', MELETE_SPACES_DIR: root }),
+    sql: db.sql,
+    checkDatabase: async () => 'ok',
+    companies: {
+      store: new PostgresCompanyStore(db.db),
+      // In the service this is a query for the space's mail connection, so it
+      // takes a moment, between the check for a running scan and the new one.
+      mailbox: async () => {
+        if (holdScans) await betweenCheckAndOpen();
+        return fixtureMailbox(fixtureMessages());
+      },
+      extractor: scriptedExtractor(),
+      schedule: async (work) => {
+        if (holdScans) heldScans.push(work);
+        else await work();
+      },
+      handler: {
+        // Creating a job takes a few round trips; a second press that reaches
+        // this step while the first is still in it would start a second chase.
+        async handleLedgerItem() {
+          handlerCalls += 1;
+          await insideHandler();
+          return { job_id: newId('job') };
         },
       },
-    })
-  : null;
+    },
+  });
+const app = handle ? serviceOver(handle) : null;
+const otherPool = handle ? openDatabase(handle.url) : null;
+const other = otherPool ? serviceOver(otherPool) : null;
 const withDb = app ? describe : describe.skip;
 
-async function call(cookie: string, path: string, method = 'GET') {
-  if (!app) throw new Error('Postgres unavailable');
-  return app.request(path, { method, headers: { Cookie: cookie } });
+async function call(cookie: string, path: string, method = 'GET', through = app) {
+  if (!through) throw new Error('Postgres unavailable');
+  return through.request(path, { method, headers: { Cookie: cookie } });
 }
 
 let cookie = '';
@@ -102,6 +110,7 @@ let spaceId = '';
 
 withDb('two presses at once', () => {
   afterAll(async () => {
+    await otherPool?.close();
     await handle?.close();
     await rm(root, { recursive: true, force: true });
   }, 30_000);
@@ -166,6 +175,43 @@ withDb('two presses at once', () => {
       // mailbox is read once.
       expect(answers.map((answer) => answer.status).sort()).toEqual([200, 202]);
       expect(answers[0]?.scan).toBe(answers[1]?.scan as string);
+      expect(heldScans.length).toBe(1);
+    } finally {
+      holdScans = false;
+      for (const work of heldScans.splice(0)) await work();
+    }
+  }, 60_000);
+
+  test('two processes pressing “Handle it” on one item start one chase', async () => {
+    const map = companyMap.parse(await (await call(cookie, `/spaces/${spaceId}/companies`)).json());
+    const item = map.items.find((entry) => entry.status === 'found' && entry.job_id === null);
+    expect(item).toBeDefined();
+    if (!item) return;
+    const before = handlerCalls;
+    const responses = await Promise.all([
+      call(cookie, `/ledger/${item.id}/handle`, 'POST', app),
+      call(cookie, `/ledger/${item.id}/handle`, 'POST', other),
+    ]);
+    const jobs = await Promise.all(
+      responses.map(async (response) => ((await response.json()) as { job_id: string }).job_id),
+    );
+    expect(handlerCalls - before).toBe(1);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(jobs[0]).toBe(jobs[1] as string);
+  }, 60_000);
+
+  test('two processes starting a scan at once start one scan', async () => {
+    holdScans = true;
+    try {
+      const responses = await Promise.all([
+        call(cookie, `/spaces/${spaceId}/companies/scan`, 'POST', app),
+        call(cookie, `/spaces/${spaceId}/companies/scan`, 'POST', other),
+      ]);
+      const scans = await Promise.all(
+        responses.map(async (response) => ((await response.json()) as { scan_id: string }).scan_id),
+      );
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 202]);
+      expect(scans[0]).toBe(scans[1] as string);
       expect(heldScans.length).toBe(1);
     } finally {
       holdScans = false;

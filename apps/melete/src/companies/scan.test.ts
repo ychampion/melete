@@ -358,6 +358,7 @@ describe('a scan whose mailbox will not answer', () => {
         item: store.item.bind(store),
         setStatus: store.setStatus.bind(store),
         setJob: store.setJob.bind(store),
+        exclusive: store.exclusive.bind(store),
       },
       mailbox: fixtureMailbox(fixtureMessages()),
       extractor: scriptedExtractor(),
