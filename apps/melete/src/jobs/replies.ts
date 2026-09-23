@@ -494,7 +494,10 @@ export class ReplyService {
           and(
             ne(replyObligation.state, 'fulfilled'),
             unserved,
+            // publish answers only obligations the attempt had read, so one that
+            // arrived after its job's last attempt waits for the next attempt.
             sql`exists (select 1 from attempt a where a.job_id = ${replyObligation.jobId}
+              and a.input_cursor >= ${replyObligation.eventCursor}
               and a.ended_at is not null and a.outcome_detail->>'kind' in (${sql.join(
                 OUTCOME_KINDS.map((kind) => sql`${kind}`),
                 sql`, `,

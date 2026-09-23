@@ -280,6 +280,23 @@ withDb('reply obligations and notification outbox', () => {
     expect(await replies.outbox()).toHaveLength(1);
   });
 
+  test('replies that arrived after their job last ran do not hold back a repairable one', async () => {
+    const { handle } = fixture();
+    await runner.recover();
+    const repairable = await direct([waiting]);
+    await runner.recover();
+    await runWithoutHooks(repairable);
+    // A job that ended more recently, owing replies its last attempt never saw
+    // and that nothing will run again to answer.
+    const finished = await direct([answer]);
+    await run(finished);
+    for (let i = 0; i < 100; i++)
+      await handle.sql`insert into reply_obligation (id, submission_id, job_id, kind, state, coalesce_key, event_cursor)
+        values (${newId('obl')}, ${`late-${i}`}, ${finished.id}, 'direct', 'needs_retransmission', ${finished.id}, 999999999)`;
+    await runner.recover();
+    expect((await replies.outbox()).some((item) => item.jobId === repairable.id)).toBe(true);
+  });
+
   test('a reply service keeps the acceptance hook it was handed', async () => {
     const { jobs } = fixture();
     const own = new SubmissionService(jobs);

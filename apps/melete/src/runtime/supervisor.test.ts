@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
 import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
 import { parse } from 'yaml';
+import { EngineRegistry, type ProcessTable, systemProcesses } from './engines.ts';
 import { resolvePython } from './python.ts';
 import {
   attemptEnvironment,
@@ -293,6 +294,78 @@ server.serve_forever()
       await rm(root, { recursive: true, force: true });
     }
   });
+  test('startup ends the engines a crashed service left, and each launch is recorded until it stops', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'melete-process-sweep-'));
+    const runtimePackage = join(root, 'runtime');
+    const workRoot = join(root, 'work');
+    // What a crashed service left: a record of an engine still running as the
+    // same process, found through a fake process table.
+    const left = await mkdtemp(join(await realpath(tmpdir()), 'melete-runtime-'));
+    const killed: number[] = [];
+    const orphaned: ProcessTable = {
+      startedAt: async (pid) =>
+        pid === 4200
+          ? killed.includes(pid)
+            ? null
+            : { stamp: 'boot-1:900', atMs: null }
+          : systemProcesses.startedAt(pid),
+      isEngine: async (pid, home) => pid === 4200 || systemProcesses.isEngine(pid, home),
+      killTree: async (pid) => {
+        if (pid === 4200) killed.push(pid);
+        else await systemProcesses.killTree(pid);
+      },
+    };
+    await new EngineRegistry(workRoot, orphaned).record(
+      'att_01J00000000000000000000042',
+      { pid: 4200, exitCode: null, signalCode: null },
+      left,
+      Date.now(),
+    );
+    const supervisor = new ProcessRuntimeSupervisor({
+      ...options,
+      engineRoot: join(root, 'engine'),
+      runtimePackage,
+      workRoot,
+      python: resolvePython(),
+      startupTimeoutMs: 5000,
+      processes: orphaned,
+    });
+    try {
+      await supervisor.initialize();
+      expect(killed).toEqual([4200]);
+      expect(await lstat(left).catch(() => null)).toBeNull();
+      const records = join(workRoot, '.melete-engines');
+      expect(await readdir(records)).toEqual([]);
+      await mkdir(join(root, 'engine', '.git'), { recursive: true });
+      await writeFile(join(root, 'engine', '.git', 'HEAD'), HERMES_PINNED_COMMIT);
+      await mkdir(join(runtimePackage, 'patches'), { recursive: true });
+      await mkdir(join(runtimePackage, 'melete_plugin'));
+      await writeFile(join(runtimePackage, 'patches', 'observer_bridge.py'), '# Fixture only.\n');
+      await writeFile(
+        join(runtimePackage, 'process_launcher.py'),
+        `import http.server, json, os, pathlib
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'port': server.server_port}))
+server.serve_forever()
+`,
+      );
+      const instance = await supervisor.launch(bundle, new AbortController().signal);
+      expect(await readdir(records)).toEqual([`${bundle.attempt.id}.json`]);
+      await instance.stop();
+      expect(await readdir(records)).toEqual([]);
+    } finally {
+      await supervisor.close();
+      await rm(left, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
   test('stopping an owned process also stops its live child', async () => {
     const parent = spawn(
       process.execPath,

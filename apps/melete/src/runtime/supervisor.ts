@@ -23,6 +23,7 @@ import {
 import { stringify } from 'yaml';
 import { modelApiMode } from '../gateway/providers.ts';
 import { ATTEMPT_LOG_CONFIG } from './docker.ts';
+import { EngineRegistry, type ProcessTable } from './engines.ts';
 import { resolvePython } from './python.ts';
 
 const exec = promisify(execFile);
@@ -35,6 +36,8 @@ export type RuntimeInstance = {
 export interface RuntimeSupervisor {
   readonly kind: 'process' | 'docker';
   launch(bundle: AttemptBundle, signal: AbortSignal): Promise<RuntimeInstance>;
+  /** Called once at startup, before any launch. */
+  initialize?(): Promise<void>;
   close(): Promise<void>;
 }
 export type SupervisorOptions = {
@@ -47,6 +50,8 @@ export type SupervisorOptions = {
   dockerImage: string;
   dockerNetwork: string;
   dockerWorkVolume: string;
+  /** How engines are found and ended; the host's own process table unless a test supplies one. */
+  processes?: ProcessTable;
 };
 
 /** Only platform plumbing crosses into the runtime; service secrets never do. */
@@ -208,10 +213,25 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   private readonly deferredHomes = new Set<string>();
   private readonly shutdown = new AbortController();
   private observerBridge?: Promise<unknown>;
+  private readonly engines: EngineRegistry;
+  private swept?: Promise<void>;
   constructor(
     readonly options: SupervisorOptions,
     private readonly stopTree: (child: ChildProcess) => Promise<void> = stopProcessTree,
-  ) {}
+  ) {
+    this.engines = new EngineRegistry(options.workRoot, options.processes);
+  }
+  /**
+   * Engines outlive a service that crashes: they are detached, and nothing else
+   * ends them. The next start ends the ones this installation recorded.
+   */
+  initialize(): Promise<void> {
+    this.swept ??= this.engines.sweep().then(({ stopped }) => {
+      if (stopped.length)
+        process.stderr.write(`Stopped ${stopped.length} engine(s) left by an earlier run\n`);
+    });
+    return this.swept;
+  }
   launch(bundle: AttemptBundle, outerSignal: AbortSignal): Promise<RuntimeInstance> {
     const pending = this.launchOwned(bundle, outerSignal).finally(() =>
       this.starting.delete(pending),
@@ -283,6 +303,9 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
           await removeHome().catch(() => {});
           throw error;
         }
+        // Only a stopped engine loses its record; one that would not stop is
+        // still found and ended by the next start.
+        await this.engines.forget(bundle.attempt.id);
         await removeHome();
         this.active.delete(stop);
       })());
@@ -308,6 +331,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       });
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
       signal.throwIfAborted();
+      const spawnedAt = Date.now();
       child = spawn(
         resolvePython(this.options.python),
         [join(this.options.runtimePackage, 'process_launcher.py')],
@@ -333,6 +357,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       child.once('error', (error) => {
         startupError = error;
       });
+      await this.engines.record(bundle.attempt.id, child, home, spawnedAt);
       let log = '';
       const collect = (data: Buffer) => {
         log = (log + data.toString()).slice(-16_000);

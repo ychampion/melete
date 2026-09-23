@@ -6,6 +6,7 @@ import { SESSION_COOKIE } from '../api/auth.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
+import { startJobRecompute } from './recompute.ts';
 import { FileRestrictionJournal, restoreMemory } from './restore.ts';
 import type { MemoryRouteOptions } from './routes.ts';
 import { startMemoryService } from './service.ts';
@@ -16,6 +17,8 @@ type DeploymentMemoryOptions = {
   /** Retain this directory independently of Postgres backups. */
   restrictionsDir: string;
   workers?: boolean;
+  /** Wakes a job memory invalidated; left out, invalidations wait for the runner's scan. */
+  onJobRecompute?: (jobId: string) => Promise<void>;
 };
 
 const spaceId = prefixedId('sp');
@@ -151,6 +154,9 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   let service: Awaited<ReturnType<typeof startMemoryService>> | undefined;
   if (options.workers === false) await restoreMemory(options.sql, journal);
   else service = await startMemoryService({ sql: options.sql, boss: options.boss, journal });
+  const recompute = options.onJobRecompute
+    ? startJobRecompute(options.sql, options.onJobRecompute)
+    : undefined;
   const routes: MemoryRouteOptions = {
     sql: options.sql,
     journal,
@@ -160,6 +166,7 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
     routes,
     scopeForJob: resolveJobScope(options.sql, journal),
     close: async () => {
+      await recompute?.stop();
       await service?.stop();
     },
   };

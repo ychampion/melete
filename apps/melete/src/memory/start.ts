@@ -10,6 +10,7 @@ import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } f
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
 import { MarkdownViews } from './markdown.ts';
+import { startJobRecompute } from './recompute.ts';
 import { FileRestrictionJournal, type RestrictionJournal } from './restore.ts';
 import { startMemoryService } from './service.ts';
 
@@ -108,29 +109,7 @@ export async function startServiceMemory(
     markdown,
     onError: (code) => process.stderr.write(`memory: ${code}\n`),
   });
-  let pending: Promise<void> | undefined;
-  const timer = onJobRecompute
-    ? setInterval(() => {
-        if (pending) return;
-        pending = (async () => {
-          const rows = await sql`select id, target_id from memory_outbox
-        where kind = 'job_recompute' and completed_at is null order by created_at, id limit 20`;
-          for (const row of rows) {
-            // Enqueue commits before acknowledging the outbox. A crash can repeat
-            // a wake, which the job's epoch/version gate already deduplicates.
-            await onJobRecompute(row.target_id as string);
-            await sql`update memory_outbox set completed_at = clock_timestamp() where id = ${row.id}`;
-          }
-        })()
-          .catch(() => {
-            process.stderr.write('memory: job_recompute_delivery_failed\n');
-          })
-          .finally(() => {
-            pending = undefined;
-          });
-      }, 250)
-    : undefined;
-  timer?.unref();
+  const recompute = onJobRecompute ? startJobRecompute(sql, onJobRecompute) : undefined;
 
   async function scopeForSpace(principalId: string, spaceId: string): Promise<MemoryScope> {
     const [authorized] = await sql`select s.kind,
@@ -163,8 +142,7 @@ export async function startServiceMemory(
   }
   return {
     async stop() {
-      if (timer) clearInterval(timer);
-      await pending;
+      await recompute?.stop();
       await service.stop();
     },
     sql,
