@@ -114,7 +114,8 @@ export function ownedDirectories(paths: readonly string[], uid = 10001, gid = 10
   const blocks: Buffer[] = [];
   const octal = (value: number, width: number) => `${value.toString(8).padStart(width - 1, '0')}\0`;
   for (const path of paths) {
-    if (!/^[a-z0-9/]+\/$/.test(path) || path.length > 99) throw new Error('Invalid tar path');
+    if (!/^(?:\.|[a-z0-9]+(?:\/[a-z0-9]+)*)\/$/.test(path) || path.length > 99)
+      throw new Error('Invalid tar path');
     const header = Buffer.alloc(512);
     header.write(path, 0, 'utf8');
     header.write(octal(0o700, 8), 100);
@@ -135,8 +136,12 @@ export function ownedDirectories(paths: readonly string[], uid = 10001, gid = 10
   return Buffer.concat(blocks);
 }
 
-/** The directories a server's environment points into, created inside its volume. */
-const DATA_DIRECTORIES = ['data/', 'data/home/', 'data/npm/', 'data/uv/'];
+/**
+ * The volume's root and the directories a server's environment points into.
+ * They are written into the volume itself: Docker refuses an archive for a
+ * read-only root filesystem anywhere outside a volume.
+ */
+const DATA_DIRECTORIES = ['./', 'home/', 'npm/', 'uv/'];
 
 /** The package name alone, for a runner that wants a command named after it. */
 function pythonName(source: string): string {
@@ -523,7 +528,7 @@ export class DockerStdioLauncher implements StdioLauncher {
       await this.remove('DELETE', `/containers/${created.Id}?force=true`);
       throw new Error('The server container was not created with its restrictions');
     }
-    await this.docker.putArchive(created.Id, '/', ownedDirectories(DATA_DIRECTORIES));
+    await this.docker.putArchive(created.Id, '/data', ownedDirectories(DATA_DIRECTORIES));
     return created.Id;
   }
 

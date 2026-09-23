@@ -284,6 +284,8 @@ describe('the Docker stdio launcher', () => {
       '/containers/ID/start',
     ]);
     expect(order[2]?.startsWith('ARCHIVE')).toBe(true);
+    // Written into the volume, the one writable place Docker accepts an archive for.
+    expect(engine.archives[0]?.endsWith(' /data')).toBe(true);
     expect(order[3]?.startsWith('ATTACH')).toBe(true);
 
     await transport.close();
@@ -532,10 +534,10 @@ describe('what runs in a server container', () => {
   });
 
   test('the volume directories are a valid archive owned by the server user', () => {
-    const tar = Buffer.from(ownedDirectories(['data/', 'data/home/']));
+    const tar = Buffer.from(ownedDirectories(['./', 'home/']));
     expect(tar.length).toBe(512 * 4);
     const header = tar.subarray(512, 1024);
-    expect(header.subarray(0, 10).toString()).toBe('data/home/');
+    expect(header.subarray(0, 5).toString()).toBe('home/');
     expect(header.subarray(108, 115).toString()).toBe('0023421');
     expect(String.fromCharCode(header[156] ?? 0)).toBe('5');
     let sum = 0;
@@ -543,5 +545,6 @@ describe('what runs in a server container', () => {
       sum += index >= 148 && index < 156 ? 32 : (header[index] ?? 0);
     expect(Number.parseInt(header.subarray(148, 154).toString(), 8)).toBe(sum);
     expect(() => ownedDirectories(['../etc/'])).toThrow();
+    expect(() => ownedDirectories(['/etc/'])).toThrow();
   });
 });
