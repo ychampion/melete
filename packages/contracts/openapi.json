@@ -3515,7 +3515,15 @@
         ],
         "summary": "GET /memory/items",
         "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
-        "parameters": [],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "$ref": "#/components/schemas/__schema12"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Outcome or unavailable capability",
@@ -3531,6 +3539,16 @@
                           "items": {
                             "$ref": "#/components/schemas/__schema197"
                           }
+                        },
+                        "next": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/components/schemas/__schema162"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [

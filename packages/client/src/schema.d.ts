@@ -5779,7 +5779,9 @@ export interface paths {
          */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    after?: components["schemas"]["__schema12"];
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -5794,6 +5796,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             items: components["schemas"]["__schema197"][];
+                            next?: components["schemas"]["__schema162"] | null;
                         } | components["schemas"]["__schema168"];
                     };
                 };

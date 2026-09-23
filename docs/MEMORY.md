@@ -64,7 +64,9 @@ is on by default; turned off, "forget ..." still works.
 Evidence: `say, recall later, correct in plain words, and forget, each told as a
 tool entry`, `a person who turns memory off is not remembered, and can still say
 forget`, `a message from someone who does not own the space is never kept in its
-memory` and `the memory gateway holds each person to a daily number of calls`
+memory`, `the memory gateway holds each person to a daily number of calls` and
+`a message waits out a provider outage unread, costs no reads, and is kept once
+it recovers`
 in [memory-chat.test.ts](../apps/melete/test/integration/memory-chat.test.ts).
 
 ## Evidence, claims and correction
@@ -79,7 +81,12 @@ The web app's final setup step saves four owner-stated answers through
 the owner and space. `persistEvidence` records the statement on the `onboarding`
 stream in the same evidence journal used by corrections; `publishRevision`
 creates a protected claim with owner origin trust. No extraction is needed for
-these statements. `GET /memory/items` lists their source as `onboarding`.
+these statements. `GET /memory/items` lists their source as `onboarding`. It
+lists every current detail, one whose question is still open included, 200 at a
+time: `next`, when set, is the `after` value for the following page
+(`a disputed detail is listed, since it is still what memory uses` and
+`details past the first page are reached by following next` in
+[memory-settings.test.ts](../apps/melete/test/integration/memory-settings.test.ts)).
 
 Stating the same key again supersedes its previous revision and leaves one
 active head. The replacement uses the correction path's invalidation and

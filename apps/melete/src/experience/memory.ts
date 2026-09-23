@@ -9,7 +9,13 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
-import { correctClaim, getHead, listClaims, publishRevision } from '../memory/claims.ts';
+import {
+  type ClaimHead,
+  correctClaim,
+  getHead,
+  listClaims,
+  publishRevision,
+} from '../memory/claims.ts';
 import { resolveContradictions } from '../memory/contradictions.ts';
 import { enqueue, lockSpace, type MemoryScope } from '../memory/db.ts';
 import { persistEvidence } from '../memory/evidence.ts';
@@ -22,6 +28,10 @@ import { explainHandles, memoryKeyLabel } from './evidence.ts';
 import { plainText } from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
+/** A detail Settings shows: a current value, including one whose question is still open. */
+const listed = (head: ClaimHead) =>
+  (head.current.status === 'active' || head.current.status === 'disputed') &&
+  head.current.content !== null;
 const version = (id: string, revision: number) =>
   createHash('sha256').update(`${id}:${revision}`).digest('hex');
 export class ExperienceMemory {
@@ -36,37 +46,38 @@ export class ExperienceMemory {
       ? { spaceId, ownerId, publisher: 'experience', audience: 'private', role: 'owner' }
       : null;
   }
-  async list(spaceId: string, ownerId: string) {
+  /**
+   * One page of what the person can see and change. A disputed detail is listed
+   * too: it is still what Melete uses while the question about it is open.
+   */
+  async list(spaceId: string, ownerId: string, after: string | null = null) {
     const scope = await this.scope(spaceId, ownerId);
     if (!scope) return unavailable('Your saved details are not connected yet.');
-    const { claims } = await listClaims(this.sql, scope);
+    const { claims, next } = await listClaims(this.sql, scope, { after });
     const items = [];
-    for (const head of claims.filter(
-      (row) => row.current.status === 'active' && row.current.content !== null,
-    )) {
-      const [source] = await this
-        .sql`select bool_or(s.stream = 'onboarding') as onboarding from memory_references r
+    for (const head of claims.filter(listed)) items.push(await this.item(spaceId, head));
+    return { items, next };
+  }
+  private async item(spaceId: string, head: ClaimHead) {
+    const [source] = await this
+      .sql`select bool_or(s.stream = 'onboarding') as onboarding from memory_references r
         join memory_sources s on s.id = r.source_id where r.claim_id = ${head.id} and r.revision = ${head.head_revision}`;
-      const [used] = await this.sql`select max(o.created_at) as last_used from memory_output_uses u
+    const [used] = await this.sql`select max(o.created_at) as last_used from memory_output_uses u
         join memory_outputs o on o.id = u.output_row_id where u.claim_id = ${head.id} and o.space_id = ${spaceId}`;
-      items.push(
-        memoryItem.parse({
-          id: head.id,
-          key: memoryKeyLabel(head.key),
-          value: plainText(head.current.content, 'Saved detail', 16000),
-          source: source?.onboarding
-            ? 'onboarding'
-            : head.current.origin_trust === 'owner'
-              ? 'conversation'
-              : 'inferred',
-          created: head.current.recorded_at,
-          last_used: used?.last_used ? new Date(String(used.last_used)).toISOString() : null,
-          editable: true,
-          version: version(head.id, head.head_revision),
-        }),
-      );
-    }
-    return { items };
+    return memoryItem.parse({
+      id: head.id,
+      key: memoryKeyLabel(head.key),
+      value: plainText(head.current.content, 'Saved detail', 16000),
+      source: source?.onboarding
+        ? 'onboarding'
+        : head.current.origin_trust === 'owner'
+          ? 'conversation'
+          : 'inferred',
+      created: head.current.recorded_at,
+      last_used: used?.last_used ? new Date(String(used.last_used)).toISOString() : null,
+      editable: true,
+      version: version(head.id, head.head_revision),
+    });
   }
   /**
    * A detail the person states outright, during setup or later. It takes the
@@ -162,10 +173,12 @@ export class ExperienceMemory {
       return revision.claim_id;
     });
     await notifyInvalidated(this.sql, scope.spaceId);
-    const listed = await this.list(spaceId, ownerId);
-    const item = 'items' in listed ? listed.items.find((entry) => entry.id === claimId) : undefined;
-    if (!item) throw experienceMissing();
-    return { item };
+    const head = await this.sql.begin(async (tx) => {
+      await lockSpace(tx, scope, false);
+      return getHead(tx, scope, claimId);
+    });
+    if (!head || !listed(head)) throw experienceMissing();
+    return { item: await this.item(spaceId, head) };
   }
   async edit(spaceId: string, ownerId: string, id: string, raw: unknown) {
     const scope = await this.scope(spaceId, ownerId);
