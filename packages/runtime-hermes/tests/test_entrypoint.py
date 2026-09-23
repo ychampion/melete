@@ -142,7 +142,7 @@ def test_a_sandbox_space_gets_the_engine_terminal_pinned_to_the_sandbox(tmp_path
     template = {**TEMPLATE, "platform_toolsets": {"api_server": ["melete"]}}
     written = boot(tmp_path, monkeypatch, template, {**BASE_ENVIRONMENT, "TERMINAL_ENV": "melete_sandbox"})
     assert written["terminal"] == {"backend": "melete_sandbox", "cwd": "/work"}
-    assert written["platform_toolsets"]["api_server"] == ["melete", "terminal"]
+    assert written["platform_toolsets"]["api_server"] == ["melete", "terminal_tools"]
 
 
 def test_without_a_sandbox_there_is_no_terminal_at_all(tmp_path, monkeypatch):

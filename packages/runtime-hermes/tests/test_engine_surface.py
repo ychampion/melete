@@ -982,3 +982,29 @@ def test_the_engines_terminal_tool_sends_a_lost_command_once(hermes_home, monkey
         assert len(server.proposals) == 1
         assert "[outcome unknown]" in answer["output"]
         assert answer["exit_code"] != 0
+
+
+def test_the_sandbox_toolset_gives_the_terminal_and_no_background_processes(hermes_home, monkeypatch):
+    """`terminal_tools` is what the boot script and engine-config.ts add for a
+    sandbox space (SANDBOX_TERMINAL_TOOLSET). The `terminal` toolset would also
+    select process_manage, whose background polls each become a broker action."""
+    import model_tools
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    monkeypatch.setenv("TERMINAL_ENV", "melete_sandbox")
+    monkeypatch.setenv("TERMINAL_CWD", "/work")
+    ok = (201, {"action_id": "act_probe", "status": "succeeded", "message": "ran"})
+    with _sandbox_backend(ok):
+        config = {"platform_toolsets": {"api_server": ["melete", "terminal_tools"]},
+                  "tools": {"tool_search": {"enabled": "off"}}}
+        write_config(hermes_home, config)
+        enabled = sorted(_get_platform_tools(config, "api_server"))
+        names = {d["function"]["name"] for d in
+                 model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)}
+        assert "terminal" in names
+        assert "process_manage" not in names
+        assert "process_manage" not in model_tools._select_tool_names(enabled, None, True)
+        # The spelling not used would have asked for it.
+        assert "process_manage" in model_tools._select_tool_names(["terminal"], None, True)

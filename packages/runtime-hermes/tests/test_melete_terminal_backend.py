@@ -9,6 +9,7 @@ engine's own factory by `tests/test_engine_surface.py`.
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from pathlib import Path
@@ -200,6 +201,38 @@ def test_the_plugin_registers_the_backend_beside_its_tools(monkeypatch):
     ctx = RecordingContext()
     register(ctx, Client())  # type: ignore[arg-type]
     assert [provider.name for provider in ctx.providers] == [BACKEND_NAME]
+
+
+def test_with_the_backend_active_the_model_sees_one_terminal(monkeypatch):
+    """The engine's terminal forwards to the broker, so the broker's own
+    terminal.run is not registered beside it, from the catalog or load_tool."""
+    import melete_plugin.terminal_backend as backend
+
+    real = backend.engine_classes
+    monkeypatch.setattr(
+        backend, "engine_classes", lambda *_a, **_k: real(StandInProvider, StandInEnvironment)
+    )
+    search = {"name": "search_tools", "description": "Find a tool.", "connection_id": None}
+    load = {"name": "load_tool", "description": "Load a tool.", "connection_id": None}
+
+    class Client(ScriptedBroker):
+        base_url = "http://broker"
+        token = "cap"
+
+        def tools(self) -> List[Dict[str, Any]]:
+            return [TERMINAL_ENTRY, search, load]
+
+        def load_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+            return {"tool": dict(TERMINAL_ENTRY), "schema_fingerprint": "f"}
+
+    ctx = RecordingContext()
+    names = register(ctx, Client())  # type: ignore[arg-type]
+    assert TERMINAL_TOOL not in names and names == ["search_tools", "load_tool"]
+    load_handler = next(tool["handler"] for tool in ctx.tools if tool["name"] == "load_tool")
+    result = json.loads(load_handler({"name": TERMINAL_TOOL}))
+    assert result["status"] == "failed" and result["error"]["code"] == "unknown_tool"
+    assert "use the terminal tool" in result["error"]["message"]
+    assert [tool["name"] for tool in ctx.tools] == ["search_tools", "load_tool"]
 
 
 def test_the_plugins_child_environment_never_carries_terminal_env(monkeypatch):

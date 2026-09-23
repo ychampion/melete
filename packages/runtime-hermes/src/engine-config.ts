@@ -26,6 +26,14 @@ export type TerminalBackend = 'local' | 'melete_sandbox';
 export const SANDBOX_TERMINAL_TOOL = 'terminal.run';
 
 /**
+ * The engine's toolset holding its terminal and nothing else. The `terminal`
+ * toolset also carries `process_manage`, whose background polls would each
+ * become a broker action; background processes in a remote sandbox are not
+ * offered.
+ */
+export const SANDBOX_TERMINAL_TOOLSET = 'terminal_tools';
+
+/**
  * The engine features an attempt's catalog calls for. A space with one active
  * sandbox connection is offered exactly one `terminal.run`, and then the
  * engine's own terminal is built and pinned to the sandbox backend, which
@@ -42,7 +50,7 @@ export function attemptEngineFeatures(
   );
   if (connections.size !== 1) return {};
   return {
-    toolsets: [...DEFAULT_FEATURES.toolsets, 'terminal'],
+    toolsets: [...DEFAULT_FEATURES.toolsets, SANDBOX_TERMINAL_TOOLSET],
     terminalBackend: 'melete_sandbox',
   };
 }

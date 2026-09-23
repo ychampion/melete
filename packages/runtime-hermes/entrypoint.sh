@@ -87,8 +87,10 @@ if terminal:
     if terminal != "melete_sandbox":
         raise SystemExit("TERMINAL_ENV may only name the sandbox backend")
     toolsets = config.setdefault("platform_toolsets", {}).setdefault("api_server", [])
-    if "terminal" not in toolsets:
-        toolsets.append("terminal")
+    # The terminal alone: the `terminal` toolset would add process_manage,
+    # and background processes in a remote sandbox are not offered.
+    if "terminal_tools" not in toolsets:
+        toolsets.append("terminal_tools")
     config["terminal"] = {"backend": terminal, "cwd": "/work"}
 provider["default_model"] = model
 provider["base_url"] = os.environ["MELETE_BROKER_URL"].rstrip("/") + "/providers/" + name + "/v1"

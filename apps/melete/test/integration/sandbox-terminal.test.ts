@@ -150,7 +150,7 @@ databaseTest(
       expect(names).not.toContain('exec.run');
       // The launcher selects the engine's terminal from this very catalog.
       expect(attemptEngineFeatures(catalog)).toEqual({
-        toolsets: ['melete', 'terminal'],
+        toolsets: ['melete', 'terminal_tools'],
         terminalBackend: 'melete_sandbox',
       });
 

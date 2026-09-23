@@ -273,12 +273,15 @@ test('nothing that starts an engine spells its configuration by hand', () => {
 test('a catalog with one sandbox terminal pins the engine terminal to the sandbox', () => {
   const sandbox = { name: 'terminal.run', connection_id: 'conn_sandbox' };
   const features = attemptEngineFeatures([{ name: 'react', connection_id: null }, sandbox]);
-  expect(features).toEqual({ toolsets: ['melete', 'terminal'], terminalBackend: 'melete_sandbox' });
+  expect(features).toEqual({
+    toolsets: ['melete', 'terminal_tools'],
+    terminalBackend: 'melete_sandbox',
+  });
   const config = renderEngineConfig({ ...base, features }) as Record<
     string,
     Record<string, unknown>
   >;
-  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'terminal'] });
+  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'terminal_tools'] });
   expect(config.terminal).toEqual({ backend: 'melete_sandbox', cwd: '/work' });
   expect(engineConfigEnvironment({ ...base, features }).TERMINAL_ENV).toBe('melete_sandbox');
 });

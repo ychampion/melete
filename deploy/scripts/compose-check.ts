@@ -425,7 +425,9 @@ export function checkCellConfig(root: string): CheckResult[] {
       ok:
         config.terminal === undefined &&
         Array.isArray(config.platform_toolsets?.api_server) &&
-        !config.platform_toolsets.api_server.includes('terminal'),
+        !config.platform_toolsets.api_server.some((name) =>
+          ['terminal', 'terminal_tools'].includes(String(name)),
+        ),
       detail:
         'the image copy must carry no terminal section and no terminal toolset; the boot script pins TERMINAL_ENV to the sandbox backend when a space has one',
     },

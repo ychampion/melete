@@ -28,7 +28,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .broker import ATTEMPT_TOKEN_ENV, BROKER_URL_ENV, BrokerClient, BrokerError
 from .execution import ExecRefused, run_in_cell
 from .results import SUCCEEDED, from_error, from_response, needs_approval
-from .terminal_backend import register_terminal_backend
+from .terminal_backend import TERMINAL_TOOL, register_terminal_backend
 
 logger = logging.getLogger("melete.plugin")
 
@@ -78,7 +78,7 @@ IN_CELL_LANGUAGES = {"exec.run": "shell", "exec.python": "python"}
 def build_handler(
     client: BrokerClient,
     tool: Dict[str, Any],
-    register_loaded: Optional[Callable[[Dict[str, Any]], None]] = None,
+    register_loaded: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Callable[..., Dict[str, Any]]:
     """Build the forwarder for one catalog entry.
 
@@ -149,7 +149,13 @@ def build_handler(
                     return from_error("invalid_catalog", "The broker returned no tool schema.")
                 if register_loaded is None:
                     return from_error("registration_unavailable", "The runtime cannot register tools.")
-                register_loaded(schema)
+                if register_loaded(schema) is False:
+                    # The engine's own terminal already runs commands in the
+                    # sandbox; a second copy of the same tool is not offered.
+                    return from_error(
+                        "unknown_tool",
+                        f"{schema['name']} is not loaded here: use the terminal tool, which runs in the sandbox.",
+                    )
                 # AIAgent snapshots its tools at creation. The adapter observes
                 # the broker's new catalog, stops this run, and starts a fresh
                 # run in the same attempt. Model text never controls that gate.
@@ -329,10 +335,21 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
 
     registered: List[str] = []
 
-    def register_one(tool: Dict[str, Any]) -> None:
+    # A space with a sandbox runs the engine's own terminal there. Selecting it
+    # is the rendered configuration's job (TERMINAL_ENV); this only makes the
+    # backend exist, and only when the broker offered its tool. Once it exists
+    # the model sees one terminal, the engine's, which forwards to the broker;
+    # the broker's own terminal.run entry is not registered beside it, whether
+    # it arrives in the catalog or later through load_tool.
+    sandbox_terminal = register_terminal_backend(ctx, client, catalog) is not None
+
+    def register_one(tool: Dict[str, Any]) -> bool:
+        """Register one entry; False when it is deliberately not offered."""
         name = tool.get("name")
         if not isinstance(name, str) or not name or name in registered:
-            return
+            return True
+        if sandbox_terminal and name == TERMINAL_TOOL:
+            return False
         forward = build_handler(client, tool, register_one)
 
         def wire_handler(args: Optional[Dict[str, Any]] = None, **_metadata: Any) -> str:
@@ -350,14 +367,10 @@ def register(ctx: Any, client: Optional[BrokerClient] = None) -> List[str]:
             emoji="",
         )
         registered.append(name)
+        return True
 
     for tool in catalog:
         register_one(tool)
-
-    # A space with a sandbox runs the engine's own terminal there. Selecting it
-    # is the rendered configuration's job (TERMINAL_ENV); this only makes the
-    # backend exist, and only when the broker offered its tool.
-    register_terminal_backend(ctx, client, catalog)
 
     if not registered:
         logger.warning("melete: the broker served no tools; this attempt has no way to act")
