@@ -527,6 +527,8 @@ export async function bootstrap(
           dockerNetwork: env.MELETE_RUNTIME_NETWORK,
           dockerWorkVolume: env.MELETE_RUNTIME_WORK_VOLUME,
         });
+        // Before any worker can claim a job and launch a replacement engine.
+        await supervisor.initialize?.();
         hermesRuntime = new SupervisedHermesRuntime(
           supervisor,
           handle.sql,
