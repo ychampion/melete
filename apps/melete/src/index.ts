@@ -609,9 +609,6 @@ export async function bootstrap(
                 registry: connectors,
                 connectionId: candidate.connectionId,
                 spaceId: candidate.spaceId,
-                // A message the connector could not date is treated as having
-                // arrived when the chase started, so it is read, not discarded.
-                undatedAt: candidate.since,
               }),
           });
           await companyReplies.start();
