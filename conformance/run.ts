@@ -26,7 +26,8 @@ for (const scenario of SCENARIOS) {
 }
 
 const deferred = SCENARIOS.filter((scenario) =>
-  scenario.id === 10 ? !dockerEnabled : scenario.id >= 6 && !composeEnabled,
+  // 6–8 need the Compose stack and 10 a Docker engine; 9, like 1–5, needs only Postgres.
+  scenario.id === 10 ? !dockerEnabled : scenario.id >= 6 && scenario.id <= 8 && !composeEnabled,
 ).length;
 const enabled = SCENARIOS.length - deferred;
 out(

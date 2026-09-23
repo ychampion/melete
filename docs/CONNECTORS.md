@@ -696,7 +696,7 @@ catalog, with only the values it asks for` and `revoking the connection stops
 its server and removes what it kept` in
 [mcp-stdio.test.ts](../apps/melete/test/integration/mcp-stdio.test.ts). The
 same restrictions are observed from inside real containers by
-[conformance 9](../conformance/README.md), which CI runs on every pull request.
+[conformance 10](../conformance/README.md), which CI runs on every pull request.
 
 ## Composing read results
 

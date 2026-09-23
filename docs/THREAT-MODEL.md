@@ -267,7 +267,7 @@ limits, network, mounts) and of each network it creates, and removes, unstarted,
 anything recorded with less isolation than asked. At most sixteen servers run at
 once across a deployment. A server that keeps crashing is left stopped, and a
 connection that goes, whether revoked or removed with its space, has its
-container stopped and its volumes removed at once. Conformance 9 observes these
+container stopped and its volumes removed at once. Conformance 10 observes these
 from inside real containers on every pull request.
 
 What stays with the server: it can read and change its own volume, use its own
