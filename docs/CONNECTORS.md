@@ -182,8 +182,13 @@ A CalDAV calendar takes one collection address and an account name instead:
 In place of `calendar_url`, `server_url` names the calendar service, for example
 `https://caldav.icloud.com/`. The service then asks it, with the account's own
 password, which calendars the account has, and stores the address of the first
-one that holds events; only that address is kept. Every step goes over HTTPS
-and stays inside the service's own domain. A password the service refuses, or
+one that holds events; only that address is kept. When the address given does
+not answer, the service's well-known address (`/.well-known/caldav`) is asked
+instead. Every step goes over HTTPS and stays on the host given, except that
+iCloud and Fastmail may move it to another host inside their own domain. An
+address written as an IP matches only itself, and a service answering from
+public addresses never passes the password to a private one. A password the
+service refuses, or
 an account with no calendar of events, is answered with `400` and a sentence
 saying which, and nothing is stored.
 
@@ -456,7 +461,12 @@ The skills placed in an attempt's instructions are chosen by whole-word trigger
 matches against the objective and the latest owner message, at most three, and
 only from skills whose every named tool the attempt can reach: its granted
 connections plus the broker's own `job.wait`. A skill the attempt cannot use
-takes no place from one it can. Each attempt that follows skills records one
+takes no place from one it can. The last word of a trigger may carry an ending,
+so "booked" and "replies" match "book" and "reply". A learned procedure the
+person taught comes first, and a built-in skill covering the same work is left
+out beside it: one whose trigger and the procedure's trigger are the same words
+or one holds the other, or one that would have been chosen for the request the
+procedure was learned on. A built-in covering other work may fill a free place. Each attempt that follows skills records one
 `tool_trace` notice naming them, which the conversation shows as a tool entry;
 the notice carries names, never a skill's instructions. Their content
 is read through `POST /tools/call` after loading; their frontmatter tool list

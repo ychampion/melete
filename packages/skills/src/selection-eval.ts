@@ -201,3 +201,67 @@ export function scoreSelection(
     wrong,
   };
 }
+
+/**
+ * Requests written after the triggers were last changed and never used to
+ * change them. The score on this set is the one to quote as a measure of how
+ * selection does on phrasings it was not fitted to.
+ */
+export const HELD_OUT_REQUESTS: readonly EvalRequest[] = [
+  {
+    text: 'Can you dig into whether solar panels pay off in Leeds?',
+    expect: ['research-with-sources'],
+  },
+  {
+    text: 'I need evidence on the best baby car seats, with links',
+    expect: ['research-with-sources'],
+  },
+  {
+    text: 'Look into flights to Porto in May and tell me what is cheapest',
+    expect: ['research-with-sources'],
+  },
+  { text: 'Help me put together a thank-you note for my neighbour', expect: ['write-a-draft'] },
+  { text: 'Polish this LinkedIn post before I share it', expect: ['write-a-draft'] },
+  { text: 'Could you tighten up my personal statement?', expect: ['write-a-draft'] },
+  { text: 'Did anything come in from the bank today?', expect: ['triage-the-inbox'] },
+  { text: 'Clear out my inbox and flag what matters', expect: ['triage-the-inbox'] },
+  {
+    text: 'Which emails do I still owe a reply to?',
+    expect: ['triage-the-inbox'],
+    tolerate: ['draft-follow-up'],
+  },
+  { text: 'Answer Maria and say Thursday works', expect: ['draft-follow-up'] },
+  {
+    text: 'Write back to the school about the trip form',
+    expect: ['draft-follow-up'],
+    tolerate: ['write-a-draft'],
+  },
+  { text: 'Ping the accountant again about my tax return', expect: ['draft-follow-up'] },
+  { text: 'Book me in for a haircut next Wednesday afternoon', expect: ['schedule-a-check-in'] },
+  { text: 'Am I free on Saturday morning?', expect: ['schedule-a-check-in'] },
+  { text: 'Nudge me tomorrow at nine to pay the council tax', expect: ['schedule-a-check-in'] },
+  { text: 'What are the main points of this contract?', expect: ['summarize-a-source'] },
+  { text: 'Boil this report down to a paragraph', expect: ['summarize-a-source'] },
+  { text: 'Break down the renovation into steps for me', expect: ['plan-a-responsibility'] },
+  {
+    text: 'Get the house ready for selling, one step at a time',
+    expect: ['plan-a-responsibility'],
+  },
+  { text: 'Put my tax documents into folders', expect: ['organize-documents'] },
+  { text: "Don't forget that my daughter is allergic to nuts", expect: ['remember-this'] },
+  { text: 'My energy supplier still has not paid back the credit', expect: ['refund-owed'] },
+  { text: 'I was billed for a delivery that never came', expect: ['wrong-charge'] },
+  { text: 'Get me out of the magazine subscription', expect: ['cancel-subscription'] },
+  { text: 'Insurance renewal came in way higher than last year', expect: ['price-rise'] },
+  { text: 'Find me a cheaper quote for boiler cover', expect: ['get-quotes'] },
+  {
+    text: 'Chase up payment for the logo job from last month',
+    expect: ['unpaid-invoice'],
+    tolerate: ['draft-follow-up'],
+  },
+  { text: 'Turn this article into something I can listen to', expect: ['make-a-podcast'] },
+  { text: 'Good morning!', expect: [] },
+  { text: 'How many ounces are in a pound?', expect: [] },
+  { text: 'Who won the match last night?', expect: [] },
+  { text: 'Suggest a name for my cat', expect: [] },
+];

@@ -5,7 +5,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { loadBuiltInSkills } from './loader.ts';
-import { DAY_ONE_TOOLS, SELECTION_REQUESTS, scoreSelection } from './selection-eval.ts';
+import {
+  DAY_ONE_TOOLS,
+  HELD_OUT_REQUESTS,
+  SELECTION_REQUESTS,
+  scoreSelection,
+} from './selection-eval.ts';
 
 const { skills } = loadBuiltInSkills();
 
@@ -23,5 +28,13 @@ describe('the first-week request set', () => {
     ).toBeGreaterThanOrEqual(10);
     const covered = new Set(SELECTION_REQUESTS.flatMap((request) => request.expect));
     expect([...covered].sort()).toEqual(skills.map((skill) => skill.frontmatter.name).sort());
+  });
+
+  test('the held-out set is scored separately and never used to change a trigger', () => {
+    // Recorded, not tuned: this number says how trigger phrases fare on wording they were not
+    // written for. A drop below it means a change made selection worse on unseen requests.
+    const score = scoreSelection(skills, HELD_OUT_REQUESTS, DAY_ONE_TOOLS);
+    expect(score.truePositives).toBeGreaterThanOrEqual(1);
+    expect(HELD_OUT_REQUESTS.length).toBeGreaterThanOrEqual(30);
   });
 });
