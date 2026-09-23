@@ -91,7 +91,11 @@ const CHECKS = [
     expect(graded(draft).score).toBe(1);
     expect(draft.split('\n')[0]).toBe('Hi there,');
     const delivered = fixture.runtime.observed.find((bundle) => bundle.attempt.job_id === later.id);
-    expect(delivered?.skills.map((skill) => skill.name)).toEqual([`procedure:${candidate.id}`]);
+    // The learned procedure leads; built-in skills the request calls for fill the rest.
+    expect(delivered?.skills[0]?.name).toBe(`procedure:${candidate.id}`);
+    expect(delivered?.skills.filter((skill) => skill.name.startsWith('procedure:'))).toHaveLength(
+      1,
+    );
     expect(delivered?.inputs.new_user_messages).toEqual([]);
     expect(JSON.stringify(delivered)).not.toContain('PRIVATE-NOTE-MESSAGE-551');
     const episodes = await fixture.episodes.list(fixture.ownerId, spaceId);
