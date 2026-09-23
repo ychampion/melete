@@ -350,7 +350,7 @@ export class EpisodeService {
         await appendEvent(tx, {
           jobId: corrective.id,
           type: 'notice',
-          payload: { kind: 'user_message', text: change.text },
+          payload: { kind: 'user_message', text: change.text, principal_id: ownerId },
           dedupKey: `${saved.id}:input`,
         });
         await appendEvent(tx, {
@@ -400,7 +400,7 @@ export class EpisodeService {
         await appendEvent(tx, {
           jobId,
           type: 'notice',
-          payload: { kind: 'user_message', text: change.text },
+          payload: { kind: 'user_message', text: change.text, principal_id: ownerId },
           dedupKey: `${saved.id}:input`,
         });
       }
