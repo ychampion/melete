@@ -872,10 +872,16 @@ within about a minute.
 
 When a phase cannot finish, or the final count finds something left, the removal
 reads `blocked`, and `blocked_reason` names the provider, path or table. The space
-stays closed. Melete retries at startup and every minute after, going through the
-whole sweep again, so a removal finishes by itself once its cause is gone. A path
-named in the reason is usually held open by another process; stop that process
-and the next pass removes it.
+stays closed. Melete tries again a few seconds later, then at growing intervals of
+up to a few minutes, going through the whole sweep again, so a removal finishes by
+itself once its cause is gone. Before it removes a job's workspace it stops that
+job and waits for it to let go. A path named in the reason is usually held open by
+another process; stop that process and the next pass removes it.
+
+A personal space opens again as soon as everything in it has gone, even while a
+job that was running still holds its workspace open. The removal then reads
+`cleaning`, names that workspace, and removes it once the job lets go; it touches
+nothing else, so the space can be used in the meantime.
 
 ### Removal and backups
 
