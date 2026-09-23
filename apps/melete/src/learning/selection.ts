@@ -10,8 +10,15 @@ import { isGeneralProcedure, verifyDefinition } from './procedures.ts';
 import { episode, learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
 import { type ProcedureReach, triggerSpecificity, triggersMatch } from './triggers.ts';
 
+/** Never more than three skills in one bundle, whoever wrote them. */
+export const MAX_DELIVERED_SKILLS = 3;
+/**
+ * What learning never takes: a job whose own words name a catalog skill still gets
+ * it, however many procedures were learned for this space.
+ */
+export const RESERVED_CATALOG_SLOTS = 1;
 /** How many learned procedures one job may receive. */
-export const MAX_DELIVERED_PROCEDURES = 3;
+export const MAX_DELIVERED_PROCEDURES = MAX_DELIVERED_SKILLS - RESERVED_CATALOG_SLOTS;
 
 export const scopeMatches = (left: ProcedureScope, right: ProcedureScope) =>
   left.task_family === right.task_family &&

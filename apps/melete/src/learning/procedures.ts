@@ -419,8 +419,12 @@ export class ProcedureService {
         .update(procedureCandidate)
         .set({ promotion: { scope, principal_id: ownerId } })
         .where(eq(procedureCandidate.id, id));
-      // Active on evidence the owner chose to act on: it no longer expires with its correction.
-      await tx.update(episode).set({ expiresAt: KEPT_UNTIL }).where(eq(episode.id, source.id));
+      // Active on evidence the owner chose to act on: it no longer expires with its correction,
+      // and, as when a person keeps one, only what the steps quote is kept from that correction.
+      await tx
+        .update(episode)
+        .set({ expiresAt: KEPT_UNTIL, priorOutput: null, correctedOutput: null })
+        .where(eq(episode.id, source.id));
       return transitionProcedure(
         tx,
         candidate,

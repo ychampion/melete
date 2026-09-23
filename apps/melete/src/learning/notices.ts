@@ -242,8 +242,12 @@ export async function traceProcedureUse(
   tx: Transaction,
   jobId: string,
   attemptId: string,
-  skills: readonly { name: string }[],
+  skills: readonly { name: string; space_id?: string }[],
 ) {
+  // Delivered through the space's sharing rather than to the person who taught it.
+  const shared = new Set(
+    skills.filter((skill) => skill.space_id).map((skill) => skill.name.slice('procedure:'.length)),
+  );
   const ids = skills
     .filter((skill) => skill.name.startsWith('procedure:'))
     .map((skill) => skill.name.slice('procedure:'.length));
@@ -256,7 +260,9 @@ export async function traceProcedureUse(
   for (const candidate of used) {
     const name = learnedName(candidate);
     const steps = learnedSteps(candidate);
-    const first = steps[0]?.replace(/\s+/g, ' ').trim();
+    // Shared, it is the space's way of working: not this person's words to quote back.
+    const fromSpace = shared.has(candidate.id);
+    const first = fromSpace ? undefined : steps[0]?.replace(/\s+/g, ' ').trim();
     const id = `procedure:${attemptId}:${candidate.id}`;
     await appendEvent(tx, {
       jobId,
@@ -267,14 +273,19 @@ export async function traceProcedureUse(
         call: {
           id,
           kind: 'skill',
-          title: clip(`Used what you taught me: ${name}`, TOOL_TITLE_LIMIT),
+          title: clip(
+            fromSpace
+              ? `Used a way of working shared in this space: ${name}`
+              : `Used what you taught me: ${name}`,
+            TOOL_TITLE_LIMIT,
+          ),
           status: 'done',
           started_at: at,
           ended_at: at,
           input_summary: null,
           output_summary: {
             text: clip(
-              `${steps.length} ${steps.length === 1 ? 'step' : 'steps'} you taught`,
+              `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}${fromSpace ? '' : ' you taught'}`,
               TOOL_SUMMARY_LIMIT,
             ),
             ...(first ? { quote: { text: clip(first, TOOL_QUOTE_LIMIT), from: 'message' } } : {}),

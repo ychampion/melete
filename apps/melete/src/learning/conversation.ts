@@ -7,7 +7,8 @@
  * correction. Those two shapes, and only those, are read here as a correction
  * and handed to the same episode path the route uses:
  *
- * - a thumbs-down on the latest answer, then the next message the person sends;
+ * - a thumbs-down on the latest answer, then the next message the person sends in
+ *   the same sitting (within `PAIRING_WINDOW_MS`, 30 minutes);
  * - a message the person sent as a correction of the latest answer (`corrects`).
  *
  * Every rule below is decided from recorded events: which glyph was left on
@@ -31,6 +32,9 @@ import type { SubmissionService } from '../jobs/submissions.ts';
 import { requestPrincipal } from '../principals/authority.ts';
 import type { EpisodeService } from './episodes.ts';
 import { learningJob } from './schema.ts';
+
+/** How long after a thumbs-down the next message still answers it: one sitting. */
+export const PAIRING_WINDOW_MS = 30 * 60 * 1000;
 
 /** The longest correction the intervention contract will take. */
 const MAX_CORRECTION_CHARS = 8000;
@@ -78,7 +82,7 @@ export async function conversationCorrection(
   const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));
   if (!registration) return null;
   const [message] = await tx
-    .select({ seq: event.seq, payload: event.payload })
+    .select({ seq: event.seq, payload: event.payload, at: event.createdAt })
     .from(event)
     .where(
       and(
@@ -101,7 +105,7 @@ export async function conversationCorrection(
       : null;
   // The newest thumbs-down the person left on this job, before that message.
   const [reaction] = await tx
-    .select({ seq: event.seq, payload: event.payload })
+    .select({ seq: event.seq, payload: event.payload, at: event.createdAt })
     .from(event)
     .where(
       and(
@@ -115,6 +119,9 @@ export async function conversationCorrection(
     .orderBy(desc(event.seq))
     .limit(1);
   if (!reaction) return null;
+  // The same sitting: a message long after the thumbs-down is a new request, not
+  // the answer to "what should I change?".
+  if (message.at.getTime() - reaction.at.getTime() > PAIRING_WINDOW_MS) return null;
   // "The message that follows it": another message in between means this one
   // answers that, not the thumbs-down, and the pair has already been spent.
   const [between] = await tx

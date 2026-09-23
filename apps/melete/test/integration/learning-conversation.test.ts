@@ -6,7 +6,10 @@ import { ReactionService } from '../../src/jobs/reactions.ts';
 import { ReplyService } from '../../src/jobs/replies.ts';
 import type { JobRow } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
-import { attachConversationCorrections } from '../../src/learning/conversation.ts';
+import {
+  attachConversationCorrections,
+  PAIRING_WINDOW_MS,
+} from '../../src/learning/conversation.ts';
 import { episode } from '../../src/learning/schema.ts';
 import { newId } from '../../src/memory/db.ts';
 import { principalContext } from '../../src/principals/authority.ts';
@@ -230,6 +233,39 @@ const corrections = async (jobId: string) => {
     await react(spaceId, answer, THUMBS_DOWN, memberId);
     const receipt = await say(row.id, CORRECTION, { principal: memberId });
     expect(receipt.receipt.state).toBe('accepted');
+    expect(await corrections(row.id)).toHaveLength(0);
+  }, 120000);
+
+  test('a member replying to the owner’s latest answer as a correction corrects nothing', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    await fixture.handle
+      .sql`update space set kind = 'shared', audience = 'space', owner_principal_id = ${fixture.ownerId} where id = ${spaceId}`;
+    await fixture.handle
+      .sql`insert into space_membership (space_id, principal_id, role) values (${spaceId}, ${fixture.ownerId}, 'owner')`;
+    const memberId = newId('own');
+    await fixture.handle
+      .sql`insert into principal (id, email) values (${memberId}, ${`${memberId}@example.test`})`;
+    await fixture.handle
+      .sql`insert into space_membership (space_id, principal_id, role) values (${spaceId}, ${memberId}, 'member')`;
+    // The owner's own conversation: the speaker, not the job's owner, decides whose words these are.
+    const row = await conversation(spaceId);
+    const answer = await turn(row);
+    await say(row.id, CORRECTION, { principal: memberId, corrects: answer });
+    expect(await corrections(row.id)).toHaveLength(0);
+  }, 120000);
+
+  test('a message long after the thumbs-down is a new request, not its answer', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    const row = await conversation(spaceId);
+    const answer = await turn(row);
+    await react(spaceId, answer, THUMBS_DOWN);
+    // The thumbs-down was left in an earlier sitting.
+    await fixture.handle
+      .sql`update event set created_at = created_at - ${`${PAIRING_WINDOW_MS + 60_000} milliseconds`}::interval
+        where job_id = ${row.id} and type = 'reaction'`;
+    await say(row.id, CORRECTION);
     expect(await corrections(row.id)).toHaveLength(0);
   }, 120000);
 

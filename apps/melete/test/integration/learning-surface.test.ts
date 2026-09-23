@@ -15,6 +15,7 @@ import {
   procedureEvaluation,
   procedureTransition,
 } from '../../src/learning/schema.ts';
+import { MAX_DELIVERED_SKILLS, RESERVED_CATALOG_SLOTS } from '../../src/learning/selection.ts';
 import { applyLearned } from '../../src/learning/start.ts';
 import { newId } from '../../src/memory/db.ts';
 import { rejectsWith, wake } from './learning-fixtures.ts';
@@ -728,7 +729,7 @@ async function keptWithYes(spaceId: string, candidateId: string) {
 }
 
 (fixture ? describe : describe.skip)('several lessons at once, and what lasts', () => {
-  test('a job gets up to three matching procedures, the most specific first', async () => {
+  test('a job gets up to two matching procedures, the most specific first, leaving a catalog slot', async () => {
     if (!fixture) return;
     const spaceId = await fixture.createSpace();
     // All learned before any is tried, so no correction here touches a trial.
@@ -743,17 +744,20 @@ async function keptWithYes(spaceId: string, candidateId: string) {
         candidate.id,
         candidate.bodyHash,
       );
-    // Equally specific (nine characters each): the newer lesson leads.
+    // Four match; the two most specific are delivered and one bundle slot stays the catalog's.
+    expect(MAX_DELIVERED_SKILLS - RESERVED_CATALOG_SLOTS).toBe(2);
     expect(await deliveredFor(spaceId, SOURCE)).toEqual([
       `procedure:${widest.id}`,
       `procedure:${wide.id}`,
-      `procedure:${newer.id}`,
     ]);
+    // Equally specific (nine characters each): the newer lesson leads.
+    expect(await deliveredFor(spaceId, 'Prepare notes on the interview for the recruiter')).toEqual(
+      [`procedure:${newer.id}`, `procedure:${older.id}`],
+    );
     // Only what matches: a request about the interview alone gets that one.
     expect(await deliveredFor(spaceId, 'Prepare notes for the interview')).toEqual([
       `procedure:${newer.id}`,
     ]);
-    expect(older.id).not.toBe(newer.id);
   }, 300000);
 
   test('activating one replaces only the procedures that could apply to the same request', async () => {
@@ -783,6 +787,16 @@ async function keptWithYes(spaceId: string, candidateId: string) {
     const candidate = await fixture.evaluatedCanary(await proposed(spaceId, 'lasting-active'));
     await usedIt(spaceId);
     await fixture.procedures.activate(fixture.ownerId, spaceId, candidate.id);
+    // Active, the correction holds only what the steps quote.
+    const [source] = await fixture.handle.db
+      .select()
+      .from(episode)
+      .where(eq(episode.id, candidate.episodeId));
+    expect(source).toMatchObject({
+      priorOutput: null,
+      correctedOutput: null,
+      intervention: { text: CORRECTION },
+    });
     const listed = await app(fixture.ownerId)('GET', `/learned?space_id=${spaceId}`);
     expect(listed.body.items).toContainEqual(
       expect.objectContaining({ id: candidate.id, state: 'active', expires_at: null }),
@@ -815,6 +829,22 @@ async function keptWithYes(spaceId: string, candidateId: string) {
     expect(shared.status).toBe(200);
     expect(shared.body.item).toMatchObject({ state: 'active', shared: true });
     expect(await memberGets()).toBe(true);
+    // In a member's job it is the space's way of working, not the owner's words quoted back.
+    const theirs = await fixture.create(spaceId, SOURCE, memberId);
+    await fixture.runner.claim(wake(theirs));
+    const trail = await fixture.handle.db
+      .select({ payload: event.payload })
+      .from(event)
+      .where(eq(event.jobId, theirs.id));
+    await fixture.jobs.cancel(theirs.id);
+    expect(trail.map((entry) => entry.payload)).toContainEqual({
+      kind: 'tool_trace',
+      call: expect.objectContaining({
+        id: expect.stringContaining(proven.id),
+        title: 'Used a way of working shared in this space: Recruiter',
+        output_summary: { text: '2 steps' },
+      }),
+    });
   }, 300000);
 
   test('a correction puts what it taught to work on the owner’s next job, with nothing to tap', async () => {
