@@ -53,6 +53,19 @@ export const skillPayload = z.object({
 });
 export type SkillPayload = z.infer<typeof skillPayload>;
 
+/**
+ * One line of the skill index an attempt carries: a skill it may read but was
+ * not given in full. The body is read on demand with `skills.read`.
+ */
+export const skillIndexEntry = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+});
+export type SkillIndexEntry = z.infer<typeof skillIndexEntry>;
+
+/** The broker-owned tool an attempt reads a skill's body with, by the name its index gives. */
+export const SKILL_READ_TOOL_NAME = 'skills.read';
+
 export const knowledgeExcerpt = z.object({
   path: z.string().min(1),
   excerpt: z.string(),
@@ -283,6 +296,11 @@ export const attemptBundle = z.object({
   transcript: z.array(canonicalMessage),
   tools: z.array(toolSpec),
   skills: z.array(skillPayload),
+  /**
+   * Every other skill this attempt may read, by name and one line, within its
+   * own token allowance. Additive: a producer that omits it offers none.
+   */
+  skill_index: z.array(skillIndexEntry).optional(),
   knowledge: z.array(knowledgeExcerpt),
   workspace: z.object({
     mount: z.literal('/work'),
@@ -461,4 +479,6 @@ export const CONTEXT_LIMITS = {
   core_catalog_tokens: 750,
   /** The names-only listing of tools left outside that catalog. */
   catalog_index_tokens: 250,
+  /** The skill index: names and one-line descriptions of the skills not given in full. */
+  skill_index_tokens: 500,
 } as const;

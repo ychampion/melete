@@ -202,3 +202,36 @@ export const chooseSkills = (
 /** The chosen skills as they reach the model: a heading and the instructions. */
 export const renderSkills = (matches: readonly SkillMatch<LoadedSkill>[]): string =>
   matches.map((m) => `## ${m.skill.frontmatter.name}\n\n${m.skill.body}`).join('\n\n');
+
+/** How one index line reads to the model: the name to pass to `skills.read`, and what it is for. */
+export const indexLine = (entry: { name: string; description: string }): string =>
+  `- ${entry.name}: ${entry.description}`;
+
+/**
+ * The skills an attempt may read but was not given in full, by name and one
+ * line, within `budget` estimated tokens. Those whose triggers the request
+ * matches come first, so a tight budget keeps the likeliest; the rest follow in
+ * the order they were supplied. Nothing is dropped silently: whatever does not
+ * fit is left to tool search, which reads the same skills.
+ */
+export function indexSkills(
+  objective: string,
+  latestMessage: string,
+  skills: readonly LoadedSkill[],
+  budget: number,
+): { name: string; description: string }[] {
+  const ranked = selectSkills(objective, latestMessage, skills, skills.length).map(
+    (match) => match.skill,
+  );
+  const ordered = [...ranked, ...skills.filter((skill) => !ranked.includes(skill))];
+  const index: { name: string; description: string }[] = [];
+  let used = 0;
+  for (const skill of ordered) {
+    const entry = { name: skill.frontmatter.name, description: skill.frontmatter.description };
+    const cost = estimateTokens(`${indexLine(entry)}\n`);
+    if (used + cost > budget) continue;
+    used += cost;
+    index.push(entry);
+  }
+  return index;
+}

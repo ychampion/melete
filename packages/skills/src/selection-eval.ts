@@ -9,6 +9,7 @@
  * model actually reads.
  */
 import { type SkillCandidate, selectSkills } from '@melete/contracts';
+import { indexSkills, type LoadedSkill } from './loader.ts';
 
 export type EvalRequest = {
   /** What the person typed. It is the latest message; the objective is the same words. */
@@ -265,3 +266,56 @@ export const HELD_OUT_REQUESTS: readonly EvalRequest[] = [
   { text: 'Who won the match last night?', expect: [] },
   { text: 'Suggest a name for my cat', expect: [] },
 ];
+
+export type IndexScore = {
+  /** Expected skills given in full because a trigger matched. */
+  preloaded: number;
+  /** Expected skills the attempt can see: given in full, or named in its index. */
+  visible: number;
+  expected: number;
+  preloadRecall: number;
+  coverage: number;
+};
+
+/**
+ * What the skill index changes: an expected skill no trigger matched can still
+ * be named in the index for the model to read. This counts what the attempt can
+ * see, not what a model then chooses to read.
+ */
+export function scoreIndex(
+  skills: readonly LoadedSkill[],
+  requests: readonly EvalRequest[],
+  tools: readonly string[],
+  budget: number,
+): IndexScore {
+  const available = new Set(tools);
+  const usable = skills.filter((skill) =>
+    skill.frontmatter.tools.every((tool) => available.has(tool)),
+  );
+  let preloaded = 0;
+  let visible = 0;
+  let expected = 0;
+  for (const request of requests) {
+    const given = selectSkills(request.text, request.text, usable).map(
+      (match) => match.skill.frontmatter.name,
+    );
+    const index = indexSkills(
+      request.text,
+      request.text,
+      usable.filter((skill) => !given.includes(skill.frontmatter.name)),
+      budget,
+    ).map((entry) => entry.name);
+    for (const name of request.expect) {
+      expected += 1;
+      if (given.includes(name)) preloaded += 1;
+      if (given.includes(name) || index.includes(name)) visible += 1;
+    }
+  }
+  return {
+    preloaded,
+    visible,
+    expected,
+    preloadRecall: expected ? preloaded / expected : 1,
+    coverage: expected ? visible / expected : 1,
+  };
+}
