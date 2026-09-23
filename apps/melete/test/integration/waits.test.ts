@@ -14,7 +14,7 @@ import { AttemptRunner, type ClaimedAttempt } from '../../src/jobs/runner.ts';
 import { type JobRow, JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
-import { invalidateDependencies } from '../../src/memory/invalidate.ts';
+import { invalidateDependencies, lockEventOrder } from '../../src/memory/invalidate.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { resetTestRows, testDatabase } from '../helpers/database.ts';
 
@@ -262,8 +262,9 @@ withDb('durable waits, triggers and approval inputs', () => {
     async function correct(row: JobRow) {
       const { handle, jobs } = fixture();
       await provisionMemorySpace(handle.sql, ownerId, spaceId);
-      await handle.sql.begin((tx) =>
-        invalidateDependencies(
+      await handle.sql.begin(async (tx) => {
+        await lockEventOrder(tx);
+        await invalidateDependencies(
           tx,
           {
             ownerId,
@@ -275,8 +276,8 @@ withDb('durable waits, triggers and approval inputs', () => {
           [],
           ++corrections,
           true,
-        ),
-      );
+        );
+      });
       return jobs.get(row.id);
     }
     const completed = (claimed: ClaimedAttempt) =>

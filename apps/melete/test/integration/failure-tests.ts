@@ -438,6 +438,74 @@ export function registerFailureTests(db: TestDatabase | null) {
       expect(record?.items).toHaveLength(1);
       expect(record?.token_budget.used).toBeLessThanOrEqual(record?.token_budget.limit);
     });
+    test('a slow invalidation check is not stacked by the next tick', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      await seed(db, scope);
+      await buildViews(db.sql, scope);
+      const job = await createJobAttempt(db, scope);
+      // The check runs every 100 ms. Against a database answering it in 350 ms,
+      // each tick would otherwise open another query beside the ones in flight.
+      let inFlight = 0;
+      let peak = 0;
+      const slow = new Proxy(db.sql, {
+        apply(target, self, args: Parameters<typeof db.sql>) {
+          const [strings] = args as unknown as [TemplateStringsArray];
+          if (!strings.join('').includes('invalidated_at is not null'))
+            return Reflect.apply(target, self, args);
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          return Bun.sleep(350)
+            .then(() => Reflect.apply(target, self, args))
+            .finally(() => {
+              inFlight--;
+            });
+        },
+      });
+      const runtime: RuntimeAdapter = {
+        async capabilities() {
+          return { version: 'scripted-v1', tools: false, streaming: true, interrupt: true };
+        },
+        async start() {
+          await Bun.sleep(900);
+          return { kind: 'completed', summary: 'done', evidence: [] };
+        },
+      };
+      const adapter = withMemoryRuntime(runtime, slow, async () => scope);
+      const bundle = attemptBundle.parse({
+        attempt: {
+          id: job.attemptId,
+          job_id: job.jobId,
+          epoch: 1,
+          revision: 1,
+          token: 'fixture-only',
+        },
+        job: {
+          title: 'Trip',
+          objective: 'trip',
+          constraints: {},
+          progress_summary: '',
+          unresolved_questions: [],
+          deliverable: {},
+        },
+        inputs: { new_user_messages: [], approval_results: [], trigger_events: [] },
+        transcript: [],
+        tools: [],
+        skills: [],
+        knowledge: [],
+        workspace: { mount: '/work', files: [] },
+        budget: { max_turns: 1, max_output_tokens: 100, max_wall_ms: 5000, max_actions: 0 },
+        model: { provider: 'fake', model: 'scripted-memory-v1', fallback: null },
+      });
+      const outcome = await adapter.start(
+        bundle,
+        { async emit() {} },
+        new AbortController().signal,
+      );
+      expect(outcome.kind).toBe('completed');
+      expect(peak).toBe(1);
+      while (inFlight) await Bun.sleep(50);
+    });
     test('automatic retraction invalidates attempts that already received its text', async () => {
       if (!db) return;
       const scope = await createScope(db);

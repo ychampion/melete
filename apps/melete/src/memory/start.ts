@@ -8,6 +8,7 @@ import type { PgBoss } from 'pg-boss';
 import { SESSION_COOKIE } from '../api/auth.ts';
 import { MemoryError, type MemoryScope, type MemorySql, provisionMemorySpace } from './db.ts';
 import { applyRestriction } from './forget.ts';
+import { lockEventOrder } from './invalidate.ts';
 import { MarkdownViews } from './markdown.ts';
 import { FileRestrictionJournal } from './restore.ts';
 import { startMemoryService } from './service.ts';
@@ -133,6 +134,7 @@ export async function startServiceMemory(
       // restored space cannot disappear just because its memory row was absent.
       const restrictions = await journal.read();
       await sql.begin(async (tx) => {
+        await lockEventOrder(tx);
         await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
         for (const restriction of restrictions) {
           if (restriction.owner_id === ownerId && restriction.space_id === spaceId)

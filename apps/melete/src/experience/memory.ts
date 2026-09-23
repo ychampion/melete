@@ -13,7 +13,7 @@ import { resolveContradictions } from '../memory/contradictions.ts';
 import { enqueue, lockSpace, type MemoryScope } from '../memory/db.ts';
 import { persistEvidence } from '../memory/evidence.ts';
 import { forgetMemory } from '../memory/forget.ts';
-import { invalidateDependencies, notifyInvalidated } from '../memory/invalidate.ts';
+import { invalidateDependencies, lockEventOrder, notifyInvalidated } from '../memory/invalidate.ts';
 import { writeRepairBriefs } from '../memory/outputs.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { ownJobClause } from '../principals/authority.ts';
@@ -91,6 +91,7 @@ export class ExperienceMemory {
       .update(JSON.stringify([input.key, statement, input.value]))
       .digest('hex');
     const claimId = await this.sql.begin(async (tx) => {
+      await lockEventOrder(tx);
       await lockSpace(tx, scope);
       const [current] = await tx`select c.id from memory_claims c
         join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision

@@ -11,6 +11,7 @@ import { loadSpace, openIndex } from '@melete/knowledge';
 import type { SpaceResolver } from '../knowledge/spaces.ts';
 import { withMemoryRuntime } from '../memory/context.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from '../memory/db.ts';
+import { lockEventOrder } from '../memory/invalidate.ts';
 
 type ContextOptions = {
   sql: MemorySql;
@@ -93,6 +94,7 @@ async function recordSelection(
   selected: KnowledgeExcerpt[],
 ) {
   await sql.begin(async (tx) => {
+    await lockEventOrder(tx);
     await lockSpace(tx, scope, false);
     const [current] = await tx`select a.context_snapshot_ref from attempt a
       join job j on j.id = a.job_id join memory_contexts c on c.id = a.context_snapshot_ref

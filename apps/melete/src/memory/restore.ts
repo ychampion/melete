@@ -5,6 +5,7 @@ import { prefixedId, timestamp } from '@melete/contracts';
 import { z } from 'zod';
 import { MemoryError, type MemorySql } from './db.ts';
 import { applyRestriction } from './forget.ts';
+import { lockEventOrder } from './invalidate.ts';
 import { memorySeams } from './seams.ts';
 
 const target = z.strictObject({
@@ -95,6 +96,7 @@ export async function restoreMemory(sql: MemorySql, journal: RestrictionJournal)
     await tx`update memory_spaces set restore_ready = false`;
   });
   return sql.begin(async (tx) => {
+    await lockEventOrder(tx);
     await tx`select pg_advisory_xact_lock(hashtext('melete-memory-restrictions'))`;
     const records = await journal.read();
     // Test-only: the conformance runner's deliberate break skips the replay to

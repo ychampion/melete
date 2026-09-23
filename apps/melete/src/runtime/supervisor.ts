@@ -208,7 +208,10 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   private readonly deferredHomes = new Set<string>();
   private readonly shutdown = new AbortController();
   private observerBridge?: Promise<unknown>;
-  constructor(readonly options: SupervisorOptions) {}
+  constructor(
+    readonly options: SupervisorOptions,
+    private readonly stopTree: (child: ChildProcess) => Promise<void> = stopProcessTree,
+  ) {}
   launch(bundle: AttemptBundle, outerSignal: AbortSignal): Promise<RuntimeInstance> {
     const pending = this.launchOwned(bundle, outerSignal).finally(() =>
       this.starting.delete(pending),
@@ -240,33 +243,47 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
     const addressFile = join(home, 'runtime-address.json');
     let child: ChildProcess | undefined;
     let stopPromise: Promise<void> | undefined;
+    let homeRemoved = false;
+    const removeHome = async () => {
+      if (homeRemoved) return;
+      // Only the exact temporary home created here is eligible for cleanup.
+      const absolute = resolve(home);
+      if (
+        dirname(absolute) !== (await realpath(tmpdir())) ||
+        (await realpath(home)) !== absolute ||
+        (await lstat(home)).isSymbolicLink()
+      )
+        throw new Error('Unverified runtime temporary home');
+      try {
+        await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch (error) {
+        if (
+          !(
+            error instanceof Error &&
+            'code' in error &&
+            ['EBUSY', 'EPERM'].includes(String(error.code))
+          )
+        )
+          throw error;
+        // Windows may retain a file handle briefly after the process exits.
+        // Cleanup must not replace a completed engine outcome with a crash.
+        this.deferredHomes.add(home);
+        process.stderr.write(`Runtime stopped; temporary home cleanup deferred: ${home}\n`);
+      }
+      homeRemoved = true;
+    };
     const stop = () =>
       (stopPromise ??= (async () => {
-        if (child) await stopProcessTree(child);
-        // Only the exact temporary home created here is eligible for cleanup.
-        const absolute = resolve(home);
-        if (
-          dirname(absolute) !== (await realpath(tmpdir())) ||
-          (await realpath(home)) !== absolute ||
-          (await lstat(home)).isSymbolicLink()
-        )
-          throw new Error('Unverified runtime temporary home');
         try {
-          await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+          if (child) await this.stopTree(child);
         } catch (error) {
-          if (
-            !(
-              error instanceof Error &&
-              'code' in error &&
-              ['EBUSY', 'EPERM'].includes(String(error.code))
-            )
-          )
-            throw error;
-          // Windows may retain a file handle briefly after the process exits.
-          // Cleanup must not replace a completed engine outcome with a crash.
-          this.deferredHomes.add(home);
-          process.stderr.write(`Runtime stopped; temporary home cleanup deferred: ${home}\n`);
+          // The home holds the attempt's capability, so it goes even when the
+          // kill did not. A later stop, or close(), tries the kill again.
+          stopPromise = undefined;
+          await removeHome().catch(() => {});
+          throw error;
         }
+        await removeHome();
         this.active.delete(stop);
       })());
     this.active.add(stop);
@@ -363,7 +380,8 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
   async close() {
     this.shutdown.abort(new Error('Service stopping'));
     await Promise.allSettled([...this.starting]);
-    await Promise.all([...this.active].map((stop) => stop()));
+    // Retained homes are cleaned even when an engine still refuses to stop.
+    const stopped = await Promise.allSettled([...this.active].map((stop) => stop()));
     for (const home of this.deferredHomes) {
       if (
         dirname(resolve(home)) !== (await realpath(tmpdir())) ||
@@ -378,6 +396,8 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
         process.stderr.write(`Runtime temporary home retained for later cleanup: ${home}\n`);
       }
     }
+    const failed = stopped.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
   }
 }
 

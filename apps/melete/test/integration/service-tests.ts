@@ -105,5 +105,29 @@ export function registerServiceTests(parent: TestDatabase | null) {
         await db.close();
       }
     }, 20000);
+
+    test('stopping without an extraction gateway stops taking extraction work', async () => {
+      if (!parent) return;
+      const db = await createTestDatabase(parent.url);
+      if (!db) throw new Error('existing Postgres unavailable');
+      const journal = await createJournal();
+      try {
+        const service = await startMemoryService({
+          sql: db.sql,
+          boss: db.boss,
+          journal: journal.journal,
+        });
+        await service.stop();
+        // The database closes after this; a worker still polling would take
+        // this job and run it against a closed pool.
+        const id = await db.boss.send(MEMORY_EXTRACT_QUEUE, { work_id: 'work-after-stop' });
+        await Bun.sleep(3000);
+        const [row] = await db.sql`select state from pgboss.job where id = ${id}`;
+        expect(row?.state).toBe('created');
+      } finally {
+        await journal.close();
+        await db.close();
+      }
+    }, 20000);
   });
 }

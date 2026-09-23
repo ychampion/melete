@@ -10,7 +10,7 @@ import {
   type SubmissionReceipt,
   waitSpec,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import { attempt, event, notification, replyObligation } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
@@ -24,6 +24,19 @@ import { canonicalSubmissionInput, type SubmissionService } from './submissions.
 
 type ObligationRow = typeof replyObligation.$inferSelect;
 type NotificationRow = typeof notification.$inferSelect;
+/** How many unserved obligations one recovery scan repairs. */
+const RECOVERY_BATCH = 100;
+export const DELIVERY_LEASE_MS = 5 * 60_000;
+/** Outcome kinds an ended attempt can carry a reply for; lost, cancelled and superseded carry none. */
+const OUTCOME_KINDS = [
+  'completed',
+  'waiting_for_input',
+  'waiting_for_approval',
+  'waiting_for_event_or_time',
+  'budget_exhausted',
+  'unknown_check',
+  'failed',
+];
 const missingContent = 'The response content is unavailable. This reply needs retransmission.';
 const digest = (value: Parameters<typeof canonicalSubmissionInput>[0]) =>
   createHash('sha256').update(canonicalSubmissionInput(value)).digest('hex');
@@ -156,8 +169,14 @@ export class ReplyService {
     readonly jobs: JobService,
     submissions: SubmissionService,
     runner?: AttemptRunner,
+    /** How long a client may hold an attempted delivery before a fresh copy is offered. */
+    readonly deliveryLeaseMs = DELIVERY_LEASE_MS,
   ) {
-    submissions.onAccepted = (tx, receipt, row, kind) => this.register(tx, receipt, row, kind);
+    const accepted = submissions.onAccepted;
+    submissions.onAccepted = async (tx, receipt, row, kind) => {
+      await accepted?.(tx, receipt, row, kind);
+      await this.register(tx, receipt, row, kind);
+    };
     if (runner) {
       runner.onFinished.push((tx, row, outcome, attemptId, context) =>
         this.publish(tx, row, outcome, attemptId, context?.result),
@@ -454,12 +473,40 @@ export class ReplyService {
     });
   }
 
+  /**
+   * Repairs replies that lost their outbox copy, flags the ones that cannot be
+   * rebuilt, and offers a delivery again once its client's lease has passed.
+   *
+   * Repair reads a bounded batch, and only obligations that could be rebuilt:
+   * no live notification carries them and their job has an ended attempt with
+   * an outcome. The most recently ended jobs come first, so obligations whose
+   * content can never return (no job, or only lost and cancelled attempts)
+   * cannot hold a newer one back.
+   */
   async recover(): Promise<void> {
     await this.jobs.transaction(async (tx) => {
+      const unserved = sql`not exists (select 1 from notification n where n.state in ('pending', 'attempted')
+        and n.content is not null and n.obligation_ids @> jsonb_build_array(${replyObligation.id}))`;
       const owed = await tx
         .select()
         .from(replyObligation)
-        .where(ne(replyObligation.state, 'fulfilled'));
+        .where(
+          and(
+            ne(replyObligation.state, 'fulfilled'),
+            unserved,
+            sql`exists (select 1 from attempt a where a.job_id = ${replyObligation.jobId}
+              and a.ended_at is not null and a.outcome_detail->>'kind' in (${sql.join(
+                OUTCOME_KINDS.map((kind) => sql`${kind}`),
+                sql`, `,
+              )}))`,
+          ),
+        )
+        .orderBy(
+          sql`(select max(a.ended_at) from attempt a where a.job_id = ${replyObligation.jobId}) desc`,
+          replyObligation.createdAt,
+          replyObligation.id,
+        )
+        .limit(RECOVERY_BATCH);
       for (const jobId of new Set(owed.flatMap((item) => (item.jobId ? [item.jobId] : [])))) {
         const row = await this.jobs.lock(tx, jobId);
         if (!row) continue;
@@ -475,24 +522,24 @@ export class ReplyService {
           break;
         }
       }
-      const pending = await tx
+      // Anything still owed with no live copy says so; one statement, whatever the history.
+      await tx
+        .update(replyObligation)
+        .set({ state: 'needs_retransmission', message: missingContent })
+        .where(and(inArray(replyObligation.state, ['owed', 'acknowledged']), unserved));
+      // The client delivers, not this process: an attempt is offered again only
+      // once its lease has run out, whether or not the service restarted since.
+      const expired = await tx
         .select()
         .from(notification)
-        .where(inArray(notification.state, ['pending', 'attempted']));
-      for (const item of owed) {
-        const available = pending.some(
-          (message) =>
-            idsFor(message).includes(item.id) && replyContent.safeParse(message.content).success,
+        .where(
+          and(
+            eq(notification.state, 'attempted'),
+            sql`${notification.attemptedAt} < now() - ${this.deliveryLeaseMs} * interval '1 millisecond'`,
+          ),
         );
-        if (!available)
-          await tx
-            .update(replyObligation)
-            .set({ state: 'needs_retransmission', message: missingContent })
-            .where(eq(replyObligation.id, item.id));
-      }
-      for (const delivery of pending) {
-        if (delivery.state !== 'attempted' || !replyContent.safeParse(delivery.content).success)
-          continue;
+      for (const delivery of expired) {
+        if (!replyContent.safeParse(delivery.content).success) continue;
         await tx
           .update(notification)
           .set({ state: 'superseded' })

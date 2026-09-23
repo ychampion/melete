@@ -193,6 +193,8 @@ withDb('reply obligations and notification outbox', () => {
     const [first] = await replies.outbox();
     if (!first) throw new Error('Outbox empty');
     await replies.beginDelivery(first.id);
+    // The client took the delivery and went quiet past its lease.
+    await handle.sql`update notification set attempted_at = now() - interval '1 hour' where id = ${first.id}`;
     await replies.recover();
     const [retry] = await replies.outbox();
     expect(retry?.id).not.toBe(first.id);
@@ -208,6 +210,87 @@ withDb('reply obligations and notification outbox', () => {
     expect(await replies.delivered(first.id, first.contentHash)).toEqual(delivered);
     expect(await replies.list()).toHaveLength(0);
     expect(await replies.outbox()).toHaveLength(0);
+  });
+
+  test('an attempted delivery is offered again only once its lease has passed', async () => {
+    const { handle, jobs } = fixture();
+    await runner.recover();
+    await run(await direct([answer]));
+    const [first] = await replies.outbox();
+    if (!first) throw new Error('Outbox empty');
+    await replies.beginDelivery(first.id);
+    const outbox = async () =>
+      (await replies.outbox()).map((item) => `${item.state}#${item.deliveryAttempt}`);
+    // The client is still inside its lease: neither later scans nor a restarted
+    // service offer the same reply a second time.
+    for (let scan = 0; scan < 3; scan++) await runner.recover();
+    const restarted = new AttemptRunner(jobs, new StubRuntimeAdapter(), { key });
+    new ReplyService(jobs, new SubmissionService(jobs), restarted);
+    await restarted.recover();
+    expect(await outbox()).toEqual(['attempted#1']);
+    // The client crashed mid-delivery; once the lease runs out a fresh copy is due.
+    await handle.sql`update notification set attempted_at = now() - interval '1 hour' where id = ${first.id}`;
+    await runner.recover();
+    expect(await outbox()).toEqual(['pending#2']);
+    expect(await handle.db.select().from(notification)).toHaveLength(2);
+  });
+
+  // Ends an attempt with reply content but without the finish hooks, as the
+  // broker's releaseAttempt does on a destination's rate-limit wait.
+  const waiting: StubStep = {
+    type: 'outcome',
+    outcome: {
+      kind: 'waiting_for_event_or_time',
+      wait: { kind: 'timer', wake_at: '2099-01-01T09:00:00.000Z' },
+    },
+  };
+  async function runWithoutHooks(row: JobRow) {
+    const saved = runner.onFinished.splice(0);
+    try {
+      await run(row);
+    } finally {
+      runner.onFinished.push(...saved);
+    }
+  }
+
+  test('every scan repairs a reply flagged for retransmission once its content exists', async () => {
+    const { jobs } = fixture();
+    await runner.recover();
+    const row = await direct([waiting]);
+    // Mid-attempt the obligation has no content yet, so a scan flags it.
+    await runner.recover();
+    expect((await replies.list())[0]?.state).toBe('needs_retransmission');
+    await runWithoutHooks(row);
+    expect((await jobs.get(row.id)).state).toBe('waiting_for_event_or_time');
+    await runner.recover();
+    expect(await replies.outbox()).toHaveLength(1);
+    expect((await replies.list())[0]?.state).toBe('owed');
+  });
+
+  test('obligations that can never be repaired do not keep recovery from a newer one', async () => {
+    const { handle } = fixture();
+    await runner.recover();
+    const row = await direct([waiting]);
+    await runner.recover();
+    await runWithoutHooks(row);
+    for (let i = 0; i < 150; i++)
+      await handle.sql`insert into reply_obligation (id, submission_id, job_id, kind, state, coalesce_key, event_cursor, created_at)
+        values (${newId('obl')}, ${`dead-${i}`}, null, 'direct', 'needs_retransmission', 'none', 0, now() - interval '1 day')`;
+    await runner.recover();
+    expect(await replies.outbox()).toHaveLength(1);
+  });
+
+  test('a reply service keeps the acceptance hook it was handed', async () => {
+    const { jobs } = fixture();
+    const own = new SubmissionService(jobs);
+    const seen: string[] = [];
+    own.onAccepted = async (_tx, receipt) => {
+      seen.push(receipt.submission_id);
+    };
+    const chained = new ReplyService(jobs, own);
+    await own.create(input([answer]), 'chained-hook');
+    expect(seen).toEqual(['chained-hook']);
+    expect((await chained.list()).map((item) => item.submissionId)).toEqual(['chained-hook']);
   });
 
   test('coalescing replaces pending content while retaining every direct obligation', async () => {

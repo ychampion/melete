@@ -19,6 +19,7 @@ import { assembleAttemptKnowledge } from '../../src/memory/context.ts';
 import { lockSpace, newId } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import { applyRestriction, forgetMemory } from '../../src/memory/forget.ts';
+import { lockEventOrder } from '../../src/memory/invalidate.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { learningFixture, learningScope, rejectsWith, wake } from './learning-fixtures.ts';
@@ -357,15 +358,11 @@ afterAll(async () => fixture?.close(), 15000);
     if (!claimed) throw new Error('No attempt');
     let release!: () => void;
     let reached!: () => void;
-    let planned!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
     const captured = new Promise<void>((resolve) => {
       reached = resolve;
-    });
-    const plannedRemoval = new Promise<void>((resolve) => {
-      planned = resolve;
     });
     const holdCompletion = async () => {
       reached();
@@ -390,20 +387,16 @@ afterAll(async () => fixture?.close(), 15000);
           role: 'owner',
         },
         { all: true },
-        {
-          read: async () => [],
-          append: async () => {
-            planned();
-          },
-        },
+        { read: async () => [], append: async () => {} },
       );
-      await plannedRemoval;
+      // The removal takes the event order lock before any memory lock, so it
+      // waits there, behind the completing job's transaction, before planning.
       let waiting = false;
       const deadline = Date.now() + 5000;
       while (!waiting && Date.now() < deadline) {
         const blocked = await fixture.handle.sql`select 1 from pg_stat_activity
           where datname = current_database() and wait_event_type = 'Lock'
-            and query like '%select j.id from job j%'`;
+            and query like '%pg_advisory_xact_lock%'`;
         waiting = blocked.length > 0;
         if (!waiting) await Bun.sleep(10);
       }
@@ -477,7 +470,10 @@ afterAll(async () => fixture?.close(), 15000);
       access_generation: Number(generation?.access_generation) + 1,
       recorded_at: new Date().toISOString(),
     };
-    await fixture.handle.sql.begin((tx) => applyRestriction(tx, record));
+    await fixture.handle.sql.begin(async (tx) => {
+      await lockEventOrder(tx);
+      await applyRestriction(tx, record);
+    });
     const [source] = await fixture.handle
       .sql`select state from memory_sources where id = ${accepted.source.source_id}`;
     expect(source?.state).toBe('active');
@@ -748,7 +744,10 @@ afterAll(async () => fixture?.close(), 15000);
         correctedOutput: 'CORRECTED-OUTPUT-forget-by-memory',
       })
       .where(eq(episode.id, forgotten));
-    await handle.sql.begin((tx) => applyRestriction(tx, replayed));
+    await handle.sql.begin(async (tx) => {
+      await lockEventOrder(tx);
+      await applyRestriction(tx, replayed);
+    });
     await erased(forgotten, 'forget-by-memory');
   }, 30000);
 

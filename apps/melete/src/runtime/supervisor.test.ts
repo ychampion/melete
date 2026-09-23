@@ -123,6 +123,64 @@ server.serve_forever()
       await rm(root, { recursive: true, force: true });
     }
   }, 15_000);
+  test('a stop that fails is retried by close and still removes the engine home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'melete-process-stop-'));
+    const runtimePackage = join(root, 'runtime');
+    let kills = 0;
+    const supervisor = new ProcessRuntimeSupervisor(
+      {
+        ...options,
+        engineRoot: join(root, 'engine'),
+        runtimePackage,
+        workRoot: join(root, 'work'),
+        python: resolvePython(),
+        startupTimeoutMs: 5000,
+      },
+      async (child) => {
+        kills++;
+        if (kills === 1) throw new Error('Runtime process tree did not stop');
+        await stopProcessTree(child);
+      },
+    );
+    try {
+      await mkdir(join(root, 'engine', '.git'), { recursive: true });
+      await writeFile(join(root, 'engine', '.git', 'HEAD'), HERMES_PINNED_COMMIT);
+      await mkdir(join(runtimePackage, 'patches'), { recursive: true });
+      await mkdir(join(runtimePackage, 'melete_plugin'));
+      await writeFile(join(runtimePackage, 'patches', 'observer_bridge.py'), '# Fixture only.\n');
+      // A loopback-only stand-in that reports the home it was given.
+      await writeFile(
+        join(runtimePackage, 'process_launcher.py'),
+        `import http.server, json, os, pathlib
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        data = os.environ['HERMES_HOME'].encode()
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'port': server.server_port}))
+server.serve_forever()
+`,
+      );
+      const instance = await supervisor.launch(bundle, new AbortController().signal);
+      const home = await (await fetch(`${instance.baseUrl}/home`)).text();
+      expect(await instance.stop().catch((error: Error) => error.message)).toBe(
+        'Runtime process tree did not stop',
+      );
+      // The home carries the attempt's capability in its engine configuration.
+      expect(await lstat(home).catch(() => null)).toBeNull();
+      // Shutdown tries the kill again instead of reporting the first failure.
+      await supervisor.close();
+      expect(kills).toBe(2);
+    } finally {
+      await supervisor.close().catch(() => {});
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
   test('service credentials and inherited home never enter the child environment', () => {
     expect(
       platformEnvironment({

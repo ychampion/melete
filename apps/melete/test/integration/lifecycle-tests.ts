@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { type ContextRecord, recallResult } from '@melete/contracts';
+import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { correctClaim, listClaims } from '../../src/memory/claims.ts';
 import { commitExtraction } from '../../src/memory/commit.ts';
 import { assembleAttemptKnowledge, assertContextCurrent } from '../../src/memory/context.ts';
@@ -13,7 +14,11 @@ import {
   revokeMemorySource,
   revokeMemorySpace,
 } from '../../src/memory/forget.ts';
-import { registerMemoryAttempt } from '../../src/memory/invalidate.ts';
+import {
+  invalidateDependencies,
+  lockEventOrder,
+  registerMemoryAttempt,
+} from '../../src/memory/invalidate.ts';
 import { recall } from '../../src/memory/recall.ts';
 import { restoreMemory } from '../../src/memory/restore.ts';
 import { buildViews } from '../../src/memory/views.ts';
@@ -103,6 +108,93 @@ export function registerLifecycleTests(db: TestDatabase | null) {
         'context_invalidated',
         'dependencies_invalidated',
       ]);
+    });
+    test('dependency invalidation refuses to run without the event order lock', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      // A caller that took the space lock first would invert the order the broker uses.
+      const refused = await db.sql
+        .begin((tx) => invalidateDependencies(tx, scope, [], 1))
+        .catch((error: Error) => error.message);
+      expect(refused).toBe('event_order_lock_required');
+      const allowed = await db.sql.begin(async (tx) => {
+        await lockEventOrder(tx);
+        return invalidateDependencies(tx, scope, [], 1);
+      });
+      expect(allowed).toEqual([]);
+    });
+    test('a correction that writes job events takes its turn behind the event order lock', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      const { claimId } = await seed(db, scope);
+      const { jobId } = await createJobAttempt(db, scope);
+      // A service transaction in flight holds the order lock. An event committed
+      // around it with an earlier sequence would be skipped by a stream client
+      // whose cursor already passed the later one.
+      const holder = await db.sql.reserve();
+      let finished = false;
+      let correction: Promise<unknown> | undefined;
+      try {
+        await holder`begin`;
+        await holder`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        correction = correctClaim(db.sql, scope, {
+          claim_id: claimId,
+          expected_revision: 1,
+          content: 'August',
+          text: 'move our trip from July to August',
+          valid_from: '2026-08-01T00:00:00Z',
+          idempotency_key: 'event-order',
+        }).finally(() => {
+          finished = true;
+        });
+        await Bun.sleep(500);
+        expect(finished).toBe(false);
+      } finally {
+        await holder`commit`;
+        holder.release();
+      }
+      await correction;
+      const [invalidated] =
+        await db.sql`select count(*)::int as n from event where job_id = ${jobId} and payload->>'type' = 'dependencies_invalidated'`;
+      expect(invalidated?.n).toBe(1);
+    });
+    test('a correction leaves waiting jobs that never ran, and owner commands, where they are', async () => {
+      if (!db) return;
+      const scope = await createScope(db);
+      const { claimId } = await seed(db, scope);
+      // A job that ran without a context record is still invalidated conservatively.
+      const ran = await createJobAttempt(db, scope);
+      const chat = newId('job');
+      await db.sql`insert into job (id, space_id, title, objective, kind, state, wait)
+        values (${chat}, ${scope.spaceId}, 'New chat', 'chat', 'chat', 'waiting_for_input',
+          ${JSON.stringify({ kind: 'user_input', question: 'What would you like to do next?' })}::text::jsonb)`;
+      const routine = newId('job');
+      await db.sql`insert into job (id, space_id, title, objective, kind, state, wait, next_wake_at)
+        values (${routine}, ${scope.spaceId}, 'Tomorrow', 'routine', 'routine', 'waiting_for_event_or_time',
+          ${JSON.stringify({ kind: 'timer', wake_at: '2099-01-01T09:00:00.000Z' })}::text::jsonb, '2099-01-01T09:00:00Z')`;
+      const command = newId('job');
+      await db.sql`insert into job (id, space_id, title, objective, kind, state, lease_epoch)
+        values (${command}, ${scope.spaceId}, 'Read upcoming events', 'read', 'command', 'running', 1)`;
+      await db.sql`insert into attempt (id, job_id, epoch, runtime_version, provider, model, lease_expires_at)
+        values (${newId('att')}, ${command}, 1, 'experience-v1', 'owner', 'explicit-command', now() + interval '5 minutes')`;
+      await correctClaim(db.sql, scope, {
+        claim_id: claimId,
+        expected_revision: 1,
+        content: 'August',
+        text: 'move our trip from July to August',
+        valid_from: '2026-08-01T00:00:00Z',
+        idempotency_key: 'untouched-jobs',
+      });
+      const states = Object.fromEntries(
+        (
+          await db.sql`select id, state, to_char(next_wake_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI') as wake
+            from job where id in ${db.sql([ran.jobId, chat, routine, command])}`
+        ).map((row) => [row.id, [row.state, row.wake]]),
+      );
+      expect(states[ran.jobId]?.[0]).toBe('queued');
+      expect(states[chat]).toEqual(['waiting_for_input', null]);
+      expect(states[routine]).toEqual(['waiting_for_event_or_time', '2099-01-01T09:00']);
+      expect(states[command]).toEqual(['running', null]);
     });
     test('approved shared context and public compartments are assembled before delivery', async () => {
       if (!db) return;

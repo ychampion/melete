@@ -26,7 +26,7 @@ import {
   stableId,
 } from './db.ts';
 import { toSource } from './evidence.ts';
-import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
+import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import { assertMemoryDomain, eventTime, resolveMeaning, sourceIdentity } from './resolve.ts';
 import { memorySeams } from './seams.ts';
 import { type Tier1Rejection, validateTier1 } from './validate.ts';
@@ -322,6 +322,7 @@ export async function commitExtraction(
     });
     if (rejected.length) await recordRejections(sql, scope, batch, rejected);
     const result = await sql.begin(async (tx) => {
+      await lockEventOrder(tx);
       const space = await lockSpace(tx, scope);
       const [prior] =
         await tx`select status, fence from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}`;

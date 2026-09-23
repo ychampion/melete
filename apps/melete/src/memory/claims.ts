@@ -21,7 +21,7 @@ import {
   newId,
 } from './db.ts';
 import { persistEvidence } from './evidence.ts';
-import { invalidateDependencies, notifyInvalidated } from './invalidate.ts';
+import { invalidateDependencies, lockEventOrder, notifyInvalidated } from './invalidate.ts';
 import { writeRepairBriefs } from './outputs.ts';
 import { assertMemoryDomain } from './resolve.ts';
 import { revisionTrust } from './trust.ts';
@@ -247,6 +247,7 @@ export async function correctClaim(
 ) {
   const input = correctionRequest.parse(raw);
   const result = await sql.begin(async (tx) => {
+    await lockEventOrder(tx);
     await lockSpace(tx, scope);
     const head = await getHead(tx, scope, input.claim_id);
     if (!head) throw new MemoryError('claim_not_found');

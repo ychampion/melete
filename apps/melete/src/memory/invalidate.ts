@@ -1,4 +1,12 @@
-import { enqueue, type MemoryScope, type MemorySql, type MemoryTx, stableId } from './db.ts';
+import { EVENT_ORDER_LOCK } from '../db/transaction.ts';
+import {
+  enqueue,
+  MemoryError,
+  type MemoryScope,
+  type MemorySql,
+  type MemoryTx,
+  stableId,
+} from './db.ts';
 
 /** Process-local aborts supplement the durable fence; they are never the authority. */
 const liveAttempts = new Map<string, { controller: AbortController; discard: () => void }>();
@@ -23,6 +31,15 @@ export async function notifyInvalidated(sql: MemorySql, spaceId: string) {
   }
 }
 
+/**
+ * Job events carry the sequence stream clients read in order, so a transaction
+ * that may write them takes the service's event order lock, and takes it before
+ * any memory lock: the broker holds it while it reads memory for an admission.
+ */
+export async function lockEventOrder(tx: MemoryTx) {
+  await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+}
+
 /** Exact delivered dependencies, or conservative invalidation where a job has no dependency record. */
 export async function invalidateDependencies(
   tx: MemoryTx,
@@ -31,6 +48,12 @@ export async function invalidateDependencies(
   dataRevision: number,
   all = false,
 ) {
+  // Taking the lock here would hide a caller that locked the space first, the
+  // order the broker's admissions invert; the caller takes it before any memory lock.
+  const [held] = await tx`select exists (select 1 from pg_locks where locktype = 'advisory'
+    and pid = pg_backend_pid() and granted and classid = 0 and objid = ${EVENT_ORDER_LOCK}
+    and objsubid = 1) as held`;
+  if (!held?.held) throw new MemoryError('event_order_lock_required');
   const contexts = await tx`update memory_contexts c set invalidated_at = clock_timestamp()
     where c.space_id = ${scope.spaceId} and c.invalidated_at is null and (${all} or exists (
       select 1 from jsonb_array_elements(c.items) item where item->>'claim_id' = any(${claimIds}))) returning job_id, attempt_id`;
@@ -45,8 +68,12 @@ export async function invalidateDependencies(
         .filter((id): id is string => typeof id === 'string'),
     ),
   ];
+  // A job that has never run an attempt was handed no memory, and an owner
+  // command is never claimed by a runtime; waking either would start work
+  // nobody asked for, or strand the command in a queue nothing reads.
   const jobs =
-    await tx`select j.id from job j where j.space_id = ${scope.spaceId} and j.state not in ('completed','failed','cancelled') and (
+    await tx`select j.id from job j where j.space_id = ${scope.spaceId} and j.state not in ('completed','failed','cancelled')
+    and j.kind <> 'command' and exists (select 1 from attempt a where a.job_id = j.id) and (
     ${all} or j.id = any(${knownJobs}) or (not exists (select 1 from memory_contexts c where c.job_id = j.id)
       and not exists (select 1 from memory_prepared p where p.job_id = j.id))) for update`;
   for (const job of jobs) {

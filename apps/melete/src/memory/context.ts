@@ -256,10 +256,16 @@ export function withMemoryRuntime(
       const unregister = registerMemoryAttempt(bundle.attempt.id, controller, () => {
         next.knowledge.length = 0;
       });
+      // One check at a time: a slow database would otherwise gain a query per tick.
+      let checking = false;
       const timer = setInterval(() => {
-        void notifyInvalidated(sql, scope.spaceId).catch(() =>
-          controller.abort('context_check_unavailable'),
-        );
+        if (checking) return;
+        checking = true;
+        void notifyInvalidated(sql, scope.spaceId)
+          .catch(() => controller.abort('context_check_unavailable'))
+          .finally(() => {
+            checking = false;
+          });
       }, 100);
       timer.unref();
       try {

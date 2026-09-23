@@ -69,7 +69,14 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
       signal.throwIfAborted();
       return await adapter.start(bundle, sink, signal);
     } finally {
-      await instance.stop();
+      // The outcome, or the engine's own failure, is what the attempt reports. An
+      // engine that finished but would not stop is recorded, never turned into a
+      // lost attempt that runs again.
+      await instance.stop().catch((error: unknown) => {
+        process.stderr.write(
+          `runtime stop failed for ${bundle.attempt.id}: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
       this.onTiming({
         attemptId: bundle.attempt.id,
         coldStartMs: instance.coldStartMs,
