@@ -212,3 +212,21 @@ test('a handed-back URL keeps its host and path shape and loses what could be a 
     expect([url, handbackUrl(url)]).toEqual([url, seen]);
   expect(handbackUrl('not a url')).toBe('');
 });
+
+test('a handed-back URL loses short mixed tokens, encoded tokens and matrix parameters', () => {
+  const redacted = encodeURIComponent(REDACTED);
+  for (const [url, seen] of [
+    ['https://example.com/verify/zqpath-9f3a/', `https://example.com/verify/${redacted}/`],
+    ['https://example.com/r/7f3k9x', `https://example.com/r/${redacted}`],
+    ['https://example.com/r/abc123/next', `https://example.com/r/${redacted}/next`],
+    // Percent-encoded, the token is judged by what it decodes to.
+    ['https://example.com/r/%61%62%63%31%32%33', `https://example.com/r/${redacted}`],
+    ['https://example.com/login;jsessionid=AB12CD34EF', 'https://example.com/login'],
+    ['https://example.com/a;b=1/c;d=2', 'https://example.com/a/c'],
+    // Readable paths keep their shape.
+    ['https://example.com/v2/users', 'https://example.com/v2/users'],
+    ['https://example.com/orders/page-2', 'https://example.com/orders/page-2'],
+    ['https://example.com/help/getting-started', 'https://example.com/help/getting-started'],
+  ] as const)
+    expect([url, handbackUrl(url)]).toEqual([url, seen]);
+});

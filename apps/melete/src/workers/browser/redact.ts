@@ -14,8 +14,15 @@ const MIXED_SEED = /\b(?=[A-Za-z2-7]*[2-7])(?=[A-Za-z2-7]*[A-Za-z])[A-Za-z2-7]{1
  * spaces them: `48213`, `482 913`, `482-913`, `4 8 2 1 3`.
  */
 const DIGIT_RUN = /\d(?:[\s-]?\d){3,}/g;
-/** A path segment long enough to be a token and mixing letters with digits. */
-const PATH_TOKEN = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9._~-]{16,}$/;
+/**
+ * A path segment that may be a token: its letters and digits, with separators taken out, run to
+ * six or more and mix both. `7f3k9x`, `zqpath-9f3a` and a long hex id qualify; `page-2`, `v2` and
+ * `getting-started` do not.
+ */
+function mixedToken(segment: string): boolean {
+  const run = segment.replace(/[^A-Za-z0-9]/g, '');
+  return run.length >= 6 && /\d/.test(run) && /[A-Za-z]/.test(run);
+}
 /** A JSON web token, with or without the bearer word in front of it. */
 const TOKEN = /\b(?:Bearer\s+)?eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?/g;
 
@@ -99,14 +106,16 @@ export function handbackUrl(value: string): string {
   }
   const path = url.pathname
     .split('/')
-    .map((segment) => {
+    .map((raw) => {
+      // Matrix parameters (`;jsessionid=…`) go the way of the query string.
+      const segment = raw.split(';')[0] ?? '';
       let decoded: string;
       try {
         decoded = decodeURIComponent(segment);
       } catch {
         return encodeURIComponent(REDACTED);
       }
-      const kept = PATH_TOKEN.test(segment) ? REDACTED : handbackLabel(decoded);
+      const kept = mixedToken(decoded) ? REDACTED : handbackLabel(decoded);
       return kept === decoded ? segment : encodeURIComponent(kept);
     })
     .join('/');

@@ -216,6 +216,24 @@ describe('the browser sandbox proof this workflow runs', () => {
       true,
     );
   });
+
+  test('holds each renderer to more seccomp filters than the worker, and to neither off switch', () => {
+    // The proof only runs on a Linux Docker host, so what it demands is held here as well.
+    const proof = readFileSync(join(root, SANDBOX_PROOF), 'utf8');
+    const helper = readFileSync(
+      join(root, 'apps/melete/test/helpers/browser-sandbox-proof.ts'),
+      'utf8',
+    );
+    expect(helper).toContain("field(status, 'Seccomp_filters')");
+    expect(helper).toContain(
+      "field(await readFile('/proc/self/status', 'utf8'), 'Seccomp_filters')",
+    );
+    expect(helper).toContain("command.includes('--no-sandbox')");
+    expect(helper).toContain("command.includes('--disable-seccomp-filter-sandbox')");
+    expect(proof).toContain('renderer.seccomp_filters > seen.worker_seccomp_filters');
+    expect(proof).toContain('asked_for_no_sandbox: false');
+    expect(proof).toContain('asked_for_no_seccomp_filter: false');
+  });
 });
 
 const linesOf = (job?: Job) =>

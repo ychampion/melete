@@ -21,9 +21,11 @@ const proof = join(root, 'apps/melete/test/helpers/browser-sandbox-proof.ts');
 type Renderer = {
   pid: number;
   seccomp: number;
+  seccomp_filters: number;
   no_new_privs: number;
   user_namespace: string;
   asked_for_no_sandbox: boolean;
+  asked_for_no_seccomp_filter: boolean;
 };
 
 async function run(command: string[], timeout: number) {
@@ -61,6 +63,7 @@ test('nothing in the worker or its container turns the sandbox off again', async
   // settings that would make it moot.
   const given = [
     /no-sandbox/,
+    /disable-seccomp-filter-sandbox/,
     /disable-setuid-sandbox/,
     /disable-gpu-sandbox/,
     /disable-namespace-sandbox/,
@@ -119,9 +122,12 @@ if (!asked)
     expect([started.code, started.stderr.slice(-800)]).toEqual([0, expect.any(String)]);
     const seen = JSON.parse(started.stdout) as {
       worker_user_namespace: string;
+      worker_seccomp_filters: number;
       renderers: Renderer[];
     };
     expect(seen.renderers.length).toBeGreaterThan(0);
+    // The worker is under the container's profile, so it carries at least that one filter.
+    expect(seen.worker_seccomp_filters).toBeGreaterThanOrEqual(1);
     for (const renderer of seen.renderers)
       expect([renderer.pid, renderer]).toEqual([
         renderer.pid,
@@ -129,12 +135,20 @@ if (!asked)
           pid: renderer.pid,
           // SECCOMP_MODE_FILTER, no way to gain privileges, and a namespace of its own.
           seccomp: 2,
+          // Checked against the worker's own below.
+          seccomp_filters: expect.any(Number),
           no_new_privs: 1,
           user_namespace: expect.not.stringMatching(
             seen.worker_user_namespace.replace(/[[\]]/g, '\\$&'),
           ),
           asked_for_no_sandbox: false,
+          asked_for_no_seccomp_filter: false,
         },
+      ]);
+    for (const renderer of seen.renderers)
+      expect([renderer.pid, renderer.seccomp_filters > seen.worker_seccomp_filters]).toEqual([
+        renderer.pid,
+        true,
       ]);
   }, 1_200_000);
 });
