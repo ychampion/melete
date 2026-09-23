@@ -340,6 +340,11 @@ export class JobService {
   async inputInTransaction(tx: Transaction, id: string, text: string): Promise<JobRow> {
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
+    // Words in a job are its own principal's. Membership of the job's space lets
+    // a person work there, not speak in somebody else's job, and whatever reads
+    // this message later takes it as said by the principal it records.
+    const speaker = requestPrincipal();
+    if (speaker) await requireJobAccess(tx, id, speaker);
     if (row.kind === 'chat' && (row.state === 'running' || row.state === 'queued' || row.paused))
       throw new ServiceError('turn_in_progress', 'Wait for this turn to finish.', 409);
     // A new conversation turn has its own attempt allowance. Earlier receipts remain durable.
@@ -348,7 +353,7 @@ export class JobService {
     await appendEvent(tx, {
       jobId: id,
       type: 'notice',
-      payload: { kind: 'user_message', text },
+      payload: { kind: 'user_message', text, principal_id: speaker ?? row.principalId ?? null },
       dedupKey: `${id}:input:${updated.stateVersion}`,
     });
     return updated;

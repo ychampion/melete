@@ -38,6 +38,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { TriggerService } from '../../src/jobs/triggers.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
 import type { RestrictionJournal, RestrictionRecord } from '../../src/memory/restore.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import type { BrowserWorkerClient } from '../../src/workers/browser/client.ts';
 import { BrowserSessionService } from '../../src/workers/browser/routes.ts';
@@ -626,5 +627,48 @@ withDb('each account acts only inside its own space', () => {
     const regranted = await grant();
     expect(regranted.membership.generation).toBeGreaterThan(granted.membership.generation);
     expect(await (await call(cookie, '/conversations')).text()).toContain(second.conversationId);
+  }, 60_000);
+
+  test('only the job’s own principal speaks in it, and a message says who spoke', async () => {
+    const { sql } = database();
+    if (!jobs) throw new Error('Postgres unavailable');
+    const club = (
+      await json<{ space: { id: string } }>(
+        await call(first.cookie, '/spaces/shared', 'POST', { name: 'Book club' }),
+      )
+    ).space.id;
+    expect(
+      (
+        await call(first.cookie, `/spaces/${club}/memberships`, 'POST', {
+          principal_id: second.principalId,
+        })
+      ).status,
+    ).toBe(201);
+    const ownersJob = recordId('job');
+    await sql`insert into job (id, space_id, principal_id, title, objective, kind, state, budget)
+      values (${ownersJob}, ${club}, ${first.principalId}, 'Owner book chat', 'Private', 'chat',
+        'waiting_for_input', ${JSON.stringify(defaultBudget)}::jsonb)`;
+    const said = () =>
+      sql`select payload from event where job_id = ${ownersJob}
+        and payload->>'kind' = 'user_message' order by seq`;
+    const member = await login('second@example.test');
+
+    // A member of the space cannot put words in the owner's conversation, by any route.
+    for (const path of [`/jobs/${ownersJob}/input`, `/jobs/${ownersJob}/messages`])
+      expect((await call(member, path, 'POST', { text: 'From a member' })).status).toBe(403);
+    await expect(
+      principalContext.run(second.principalId, () => jobs.input(ownersJob, 'From a member')),
+    ).rejects.toMatchObject({ code: 'scope_denied' });
+    expect(await said()).toHaveLength(0);
+
+    // The owner still can, and the message records who said it.
+    const own = await call(first.cookie, `/jobs/${ownersJob}/input`, 'POST', {
+      text: 'From the owner',
+    });
+    expect(own.status).toBeLessThan(300);
+    const messages = await said();
+    expect(messages.map((row) => row.payload)).toEqual([
+      { kind: 'user_message', text: 'From the owner', principal_id: first.principalId },
+    ]);
   }, 60_000);
 });
