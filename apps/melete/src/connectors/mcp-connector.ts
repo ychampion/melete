@@ -98,16 +98,16 @@ export async function openConfiguredMcpConnector(
   const [row] = await sql`select secret_ref from connection where id = ${binding.connectionId}`;
   if (row?.secret_ref && !secrets) throw new Error('MCP credential store is unavailable');
   if (row?.secret_ref) mcpCredentialUrl.parse(config.endpoint.url);
-  const credentials = secrets
-    ? mcpCredentialAccess(sql, secrets, binding, config.endpoint.url)
-    : undefined;
   // Only the setup owner's spaces may reach a private address. Everyone else's
-  // endpoint is resolved, checked and pinned on every request, so a name that
-  // later answers with an internal address reaches nothing.
-  const publicOnly = !(await setupOwnersSpace(sql, binding.spaceId));
+  // server and token endpoint are resolved, checked and pinned on every request,
+  // so a name that later answers with an internal address reaches nothing.
+  const pinned = (await setupOwnersSpace(sql, binding.spaceId)) ? undefined : publicOnlyFetch();
+  const credentials = secrets
+    ? mcpCredentialAccess(sql, secrets, binding, config.endpoint.url, pinned)
+    : undefined;
   const worker = await openMcpWorker(config, binding, {
     ...credentials,
-    ...(publicOnly ? { fetch: publicOnlyFetch() } : {}),
+    ...(pinned ? { fetch: pinned } : {}),
   });
   return mcpConnector(worker, binding, sql, credentials);
 }

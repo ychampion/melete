@@ -875,6 +875,23 @@ withDb('installing each kind of connection through the API', () => {
     for (const url of [`${server.url}mcp`, `http://localhost:${server.port}/mcp`]) {
       expect((await h.install(body(url), member)).status).toBe(400);
     }
+    // A public server with a token endpoint on this machine is refused too, before
+    // anything is opened: the refresh would otherwise post there.
+    expect(
+      (
+        await h.install(
+          {
+            ...body('https://93.184.216.34/mcp'),
+            credentials: {
+              access_token: 'inside-token',
+              refresh_token: 'inside-refresh',
+              token_url: `${server.url}token`,
+            },
+          },
+          member,
+        )
+      ).status,
+    ).toBe(400);
     expect(hits).toBe(0);
 
     // A row that already points inside, however it got there, is refused at every connection.

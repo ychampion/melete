@@ -247,12 +247,16 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     await requireInstaller(deps.db, spaceId, actor, installation.kind);
     // An MCP server outside the setup owner's own spaces must be a public
     // address; the connector holds it to that again on every request.
-    if (
-      installation.kind === 'mcp' &&
-      !(await setupOwnersSpace(deps.sql, spaceId)) &&
-      !(await isPublicEndpoint(installation.config.url))
-    )
-      throw new ServiceError('invalid_request', 'An MCP server must be at a public address.', 400);
+    if (installation.kind === 'mcp' && !(await setupOwnersSpace(deps.sql, spaceId))) {
+      const tokenUrl = installation.credentials?.token_url;
+      for (const address of [installation.config.url, ...(tokenUrl ? [tokenUrl] : [])])
+        if (!(await isPublicEndpoint(address)))
+          throw new ServiceError(
+            'invalid_request',
+            'An MCP server and its token endpoint must be at public addresses.',
+            400,
+          );
+    }
     const id = newId('conn');
     const stored = await storedShape(installation, id, spaceId, factory);
 
