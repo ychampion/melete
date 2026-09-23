@@ -56,6 +56,8 @@ export interface DockerStdioApi extends DockerApi {
   putArchive(container: string, path: string, tar: Uint8Array): Promise<void>;
   /** The container's multiplexed standard streams, attached before it starts. */
   attach(container: string): Promise<AttachedStream>;
+  /** The last lines a stopped container wrote, for a preparation that failed. */
+  logs?(container: string): Promise<string>;
 }
 
 export type AttachedStream = {
@@ -96,7 +98,11 @@ export const DEFAULT_STDIO_IMAGES = {
 export class DockerStreamDemuxer {
   private pending = Buffer.alloc(0);
 
-  constructor(private readonly stdout: (bytes: Buffer) => void) {}
+  constructor(
+    private readonly stdout: (bytes: Buffer) => void,
+    /** Keep stderr as well, for a log rather than a protocol. */
+    private readonly both = false,
+  ) {}
 
   push(bytes: Uint8Array): void {
     this.pending = Buffer.concat([this.pending, bytes]);
@@ -109,7 +115,7 @@ export class DockerStreamDemuxer {
       if (this.pending.length < 8 + size) return;
       const payload = this.pending.subarray(8, 8 + size);
       this.pending = this.pending.subarray(8 + size);
-      if (kind === 1) this.stdout(Buffer.from(payload));
+      if (kind === 1 || (this.both && kind === 2)) this.stdout(Buffer.from(payload));
     }
   }
 }
@@ -244,7 +250,7 @@ const SERVER_ENV = ['HOME=/data/home', 'TMPDIR=/tmp'];
  * image's own Python rather than one it would fetch.
  */
 const PREPARE_ENV = [
-  'HOME=/tmp/home',
+  'HOME=/tmp',
   'TMPDIR=/tmp',
   'NPM_CONFIG_CACHE=/tmp/npm-cache',
   'NPM_CONFIG_USERCONFIG=/dev/null',
@@ -271,6 +277,8 @@ export function stdioContainerBody(input: {
   interactive: boolean;
   /** Preparation downloads into memory, so it has more of it. */
   tmpfs?: string;
+  /** Preparation holds no secret, so a failed one can say what went wrong. */
+  keepLog?: boolean;
   workdir: string;
 }): Record<string, unknown> {
   return {
@@ -302,7 +310,9 @@ export function stdioContainerBody(input: {
       Tmpfs: { '/tmp': input.tmpfs ?? STDIO_LIMITS.tmpfs },
       RestartPolicy: { Name: 'no' },
       // What a server says may be private; it is read from the attached stream and never kept.
-      LogConfig: { Type: 'none', Config: {} },
+      LogConfig: input.keepLog
+        ? { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } }
+        : { Type: 'none', Config: {} },
       Mounts: input.mounts.map((mount) => ({
         Type: 'volume',
         Source: mount.volume,
@@ -354,6 +364,23 @@ export class DockerStdioSocket extends DockerSocketApi implements DockerStdioApi
     );
     await response.body?.cancel().catch(() => {});
     if (!response.ok) throw new DockerError(response.status, 'POST', '/containers/archive');
+  }
+
+  async logs(container: string): Promise<string> {
+    const response = await fetch(
+      `http://localhost/v${DOCKER_API_VERSION}/containers/${container}/logs?stdout=1&stderr=1&tail=20`,
+      { unix: this.path, signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok) return '';
+    const chunks: string[] = [];
+    // Both streams, in the order they were written.
+    const demuxer = new DockerStreamDemuxer((bytes) => chunks.push(bytes.toString()), true);
+    demuxer.push(new Uint8Array(await response.arrayBuffer()));
+    return chunks
+      .join('')
+      .replace(/[^\x20-\x7e\n]/g, '')
+      .trim()
+      .slice(-2000);
   }
 
   attach(container: string): Promise<AttachedStream> {
@@ -695,6 +722,7 @@ export class DockerStdioLauncher implements StdioLauncher {
           env: [...PREPARE_ENV, ...env],
           interactive: false,
           tmpfs: STDIO_LIMITS.prepareTmpfs,
+          keepLog: true,
           workdir: '/tmp',
         }),
         names.network,
@@ -715,7 +743,10 @@ export class DockerStdioLauncher implements StdioLauncher {
           });
         }),
       ]);
-      if ((await waited).StatusCode !== 0) throw new Error('The package could not be prepared');
+      if ((await waited).StatusCode !== 0) {
+        const said = await this.docker.logs?.(id).catch(() => '');
+        throw new Error(`The package could not be prepared${said ? `: ${said}` : ''}`);
+      }
       this.prepared.add(key);
     } finally {
       grant.revoke();

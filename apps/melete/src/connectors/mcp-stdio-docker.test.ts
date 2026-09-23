@@ -381,7 +381,7 @@ describe('the Docker stdio launcher', () => {
     ]);
     expect(prepare.Env).toEqual(
       expect.arrayContaining([
-        'HOME=/tmp/home',
+        'HOME=/tmp',
         'NPM_CONFIG_USERCONFIG=/dev/null',
         'NPM_CONFIG_GLOBALCONFIG=/dev/null',
         'NPM_CONFIG_CACHE=/tmp/npm-cache',
