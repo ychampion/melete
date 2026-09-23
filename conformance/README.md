@@ -94,12 +94,14 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/repo -w 
 
 | Scenario | What runs | Named assertions |
 | --- | --- | --- |
-| 9: [stdio MCP](scenarios/09-stdio-mcp.test.ts) | A probe MCP server in `node:22-alpine` with no destinations and with one, a server that exits on its own, and `@modelcontextprotocol/server-filesystem` fetched by `npx`; four tests | `with no destination named it is unprivileged, alone with its volume, and reaches nothing`; `with one destination named it reaches that one through the proxy and nothing else`; `a server that exits leaves no container, and removal takes its volume`; `an npm package is fetched through the registry grant, then runs with no network` |
+| 9: [stdio MCP](scenarios/09-stdio-mcp.test.ts) | A probe MCP server in `node:22-alpine` with no destinations and with one, a server that exits on its own, and `@modelcontextprotocol/server-filesystem` fetched by `npx`; four tests | `with no destination named it is unprivileged, alone with its volume, and reaches nothing`; `with one destination named it reaches that one through the proxy, and on the service only the proxy and the broker`; `a server that exits leaves no container, and removal takes its volume`; `an npm package is fetched into a volume the server can only read, then runs with no network` |
 
 The probe reports from inside its container: its uid, its effective
 capabilities, `NoNewPrivs`, the seccomp mode, whether the root and its volume
 are writable, whether the Docker socket exists, its network interfaces, a TCP
-connection to a public address, its environment and its cgroup limits. The
+connection to a public address, whether an outside name resolves, whether it
+has a default route, which ports of the service's container answer, whether the
+host gateway answers, its environment and its cgroup limits. The
 test also reads the engine's own record of each container and network.
 
 ## Static configuration checks

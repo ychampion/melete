@@ -242,21 +242,33 @@ the enclosing inferred provenance or the original evidence handles.
 plugin or a package or image the owner named, the service starts it through
 the Docker engine as uid 10001 on a read-only root, with every capability
 dropped, no privilege escalation, Docker's default seccomp profile and bounded
-memory, processes and CPU. Its one mount is its connection's volume: it never
-sees the Docker socket, the service's files, other connections' data or the
-service's environment. It receives only its runner's settings and the
-variables sealed for it, opened from the sealed store just before each start.
-With no destination named it has no network interface but loopback; with some,
-its only peer is the service's proxy, which opens HTTPS tunnels to the named
-hosts alone and refuses any name that resolves to a private, loopback,
-link-local or metadata address. A package is fetched in a separate container
-that holds no secret and may reach only its registry, so an install script
-cannot read the token the server will be given. The service reads the engine's
-record of each container before starting it and removes, unstarted, one
-recorded with less isolation. A server that keeps crashing is left stopped,
-and a connection that goes, whether revoked or removed with its space, has its
-container stopped and its volume removed at once. Conformance 9
-observes these from inside real containers on every pull request.
+memory, processes and CPU. Its mounts are its connection's volume and, for a
+package, the prepared package read-only: it never sees the Docker socket, the
+service's files, other connections' data or the service's environment. It
+receives only its home, its `/tmp` and the variables sealed for it, opened from
+the sealed store just before each start. With no destination named it has no
+network interface but loopback. With some, it sits on an internal network with
+the service's container, where it can open that container's listeners on the
+network and nothing else: the egress proxy, which needs its start's token and
+opens HTTPS tunnels to the named hosts alone, refusing any name that resolves
+to a private, loopback, link-local or metadata address; and the broker, which
+answers only an attempt's capability. Names outside the network do not
+resolve, and the host is not reachable through it.
+
+A package is fetched in a separate container that holds no secret, may reach
+only its registry, keeps its home and caches in memory, reads no npm or uv
+configuration, and writes only the package volume. It never mounts the
+server's volume, and the server can only read the package, so an install
+script cannot read the token the server will be given, and nothing a server
+writes reaches the next preparation or changes what runs. An image runs only
+if the host holds the content its pinned digest names. The service reads back
+the engine's record of each container (user, root, capabilities, privilege,
+limits, network, mounts) and of each network it creates, and removes, unstarted,
+anything recorded with less isolation than asked. At most sixteen servers run at
+once across a deployment. A server that keeps crashing is left stopped, and a
+connection that goes, whether revoked or removed with its space, has its
+container stopped and its volumes removed at once. Conformance 9 observes these
+from inside real containers on every pull request.
 
 What stays with the server: it can read and change its own volume, use its own
 sealed variables against the destinations it was allowed, and write whatever

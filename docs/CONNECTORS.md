@@ -616,32 +616,53 @@ connection:
   every capability dropped, `no-new-privileges`, Docker's default seccomp
   profile, 512 MiB of memory without swap, 128 processes, one CPU and a 64 MiB
   `/tmp`;
-- one volume, mounted at `/data`, kept between runs and removed with the
-  connection. It is the only mount: no host path, no Docker socket, nothing of
-  the service;
+- its own volume, mounted at `/data`, kept between runs and removed with the
+  connection, and for a package runner the prepared package, mounted read-only
+  at `/pkg`. Those are its only mounts: no host path, no Docker socket, nothing
+  of the service. Any volume the image itself declares is anonymous and is
+  removed with the container;
 - no network at all when `egress` is empty. With destinations named, an
-  internal network whose only other member is the service's container, where
-  the server's proxy settings point at a proxy that opens HTTPS tunnels to the
-  named hosts alone, and only when every address a name resolves to is public;
-- an environment of the runner's own settings and the sealed variables, and no
+  internal network whose only other member is the service's container. There
+  the server can open the service's listeners on that network, and nothing
+  else: the egress proxy, which needs the token its start was given and opens
+  HTTPS tunnels to the named hosts alone, and only when every address a name
+  resolves to is public; and the broker, which answers only a request carrying
+  an attempt's capability. The owner API does not listen there, and names
+  outside the network do not resolve;
+- an environment of its home, its `/tmp` and the sealed variables, and no
   container log: what the server says is read from its attached output and
   kept nowhere else.
 
 The service speaks to the server over the container's attached standard input
-and output, so a server with no network is still reachable. The engine's own
-record of each container is read back before it starts, and a container
-recorded with less isolation than asked is removed unstarted.
+and output, so a server with no network is still reachable. Before a container
+starts, the service reads back what the engine recorded for it (the user, the
+read-only root, the dropped capabilities, `no-new-privileges`, that it is not
+privileged, its process and memory limits, its network and each mount) and
+removes it unstarted if any of these is less than asked. A network the engine
+did not record as internal is removed before anything joins it.
+
+An image names its registry and pins its digest (`ghcr.io/org/server:1.0@sha256:…`),
+and it runs only if the image on the host carries that digest. The runners'
+own images are pinned the same way.
 
 A package runner is prepared in a separate container that holds no secret and
 may reach only its registry (`registry.npmjs.org`, or `pypi.org` and
-`files.pythonhosted.org`); the server then runs offline from what was prepared.
-Preparation happens once per service start. A server with destinations, and
-any package runner, needs the service to run in its Compose container, since
-the proxy lives there. Images are pulled without registry credentials, so an
-image must be public or already on the host. `MELETE_MCP_NODE_IMAGE` and
-`MELETE_MCP_PYTHON_IMAGE` choose the runners' images, `MELETE_MCP_EGRESS_PORT`
-the proxy's port inside the service container, and `MELETE_MCP_IDLE_MS` how
-long a server may sit unused.
+`files.pythonhosted.org`). Preparation writes the package into a volume of its
+own, keeps its home and caches in memory, and reads no user, global or project
+configuration (`NPM_CONFIG_USERCONFIG=/dev/null`, `UV_NO_CONFIG=1`), with uv
+held to the image's own Python. It never sees the server's `/data`, and the
+server can only read what it prepared, so nothing a server writes reaches the
+next preparation or changes what runs. The server then runs offline from the
+package volume. Preparation happens once per service start.
+
+A server with destinations, and any package runner, needs the service to run
+in its Compose container, since the proxy lives there. Images are pulled
+without registry credentials, so an image must be public or already on the
+host. At most sixteen servers run at once across the deployment; a start
+beyond that is refused, in plain words, without counting against the server.
+`MELETE_MCP_NODE_IMAGE` and `MELETE_MCP_PYTHON_IMAGE` choose the runners'
+images, `MELETE_MCP_EGRESS_PORT` the proxy's port inside the service
+container, and `MELETE_MCP_IDLE_MS` how long a server may sit unused.
 
 ### Start, stop and failure
 

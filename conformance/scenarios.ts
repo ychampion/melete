@@ -167,11 +167,13 @@ export const SCENARIOS: readonly Scenario[] = [
     assertions: [
       'the server runs as uid 10001 with no capabilities, no new privileges, a seccomp filter and a read-only root',
       'its only writable place is its own volume, and the Docker socket is absent',
-      'with no destination named it has only a loopback interface and reaches nothing',
+      'with no destination named it has only a loopback interface, no route and no DNS, and reaches nothing',
       'its environment holds its sealed variable and nothing of the service',
       'with one destination named it reaches that destination through the proxy and nothing else',
+      'on the service it can open only the proxy and the broker; external names, the host gateway and other ports fail',
       'a server that exits on its own leaves no container behind, and removal takes its volume',
       'an npm package is fetched once through the registry grant and then runs with no network',
+      'the server can write its own volume but not the package it runs from',
     ],
   },
 ];
