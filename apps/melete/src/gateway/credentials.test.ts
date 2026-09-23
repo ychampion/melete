@@ -10,7 +10,11 @@ import { type FakeIssuer, startFakeIssuer } from './fixtures/fake-oauth.ts';
 import { chatgptIssuer, exchangeCode, OAuthFailure, pkcePair } from './oauth.ts';
 import { GatewayError } from './types.ts';
 
-/** One map and one lock per provider, shared by every service built on it, as Postgres would be. */
+/**
+ * One map and one lock per provider, shared by every service built on it, as
+ * Postgres would be. Writes are staged and kept only when the work returns: a
+ * throw discards them, as a rolled-back transaction does.
+ */
 class MemoryRepository implements CredentialRepository {
   rows = new Map<string, CredentialRow>();
   lockCount = 0;
@@ -31,10 +35,15 @@ class MemoryRepository implements CredentialRepository {
     this.lockCount++;
     const run = (this.tails.get(provider) ?? Promise.resolve()).then(async () => {
       const current = this.rows.get(provider);
-      return work(current ? { ...current } : null, async (next) => {
-        if (next) this.rows.set(provider, { ...next });
-        else this.rows.delete(provider);
+      let staged: { next: CredentialRow | null } | undefined;
+      const result = await work(current ? { ...current } : null, async (next) => {
+        staged = { next: next ? { ...next } : null };
       });
+      if (staged) {
+        if (staged.next) this.rows.set(provider, staged.next);
+        else this.rows.delete(provider);
+      }
+      return result;
     });
     this.tails.set(
       provider,
@@ -353,6 +362,31 @@ describe('signing out', () => {
       .current()
       .catch((error) => error);
     expect((refused as GatewayError).code).toBe('provider_sign_in_required');
+  });
+
+  test('an issuer whose metadata cannot be read still leaves the owner signed out', async () => {
+    await signIn();
+    const unreadable = new ProviderSignIn({
+      repository,
+      issuers: {
+        chatgpt: async () => {
+          throw new OAuthFailure('issuer_discovery_failed', false);
+        },
+      },
+      masterKey: () => masterKey,
+      now: () => clock,
+      log: (line) => logs.push(line),
+    });
+    const refused = await unreadable
+      .credential('chatgpt')
+      .current()
+      .catch((error) => error);
+    expect(refused).toBeInstanceOf(GatewayError);
+    expect((refused as GatewayError).code).toBe('provider_credential_unavailable');
+    expect((await unreadable.signOut('chatgpt')).state).toBe('signed_out');
+    expect(repository.rows.size).toBe(0);
+    expect(issuer.revoked).toHaveLength(0);
+    expect(logs).toContain('provider sign-in: chatgpt revocation was not confirmed');
   });
 
   test('signing in again retires the earlier grant', async () => {

@@ -68,6 +68,17 @@ export const CHATGPT = {
   scopes: 'openid profile email offline_access',
 } as const;
 
+const LOOPBACK_HOSTS = ['127.0.0.1', '[::1]', 'localhost'];
+
+/** True for an address on this machine. */
+export function loopbackAddress(value: string | undefined): boolean {
+  try {
+    return LOOPBACK_HOSTS.includes(new URL(value ?? '').hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** True for an address a credential may travel to: HTTPS, or HTTP on loopback. */
 export function credentialEndpoint(value: string): boolean {
   try {
@@ -75,11 +86,20 @@ export function credentialEndpoint(value: string): boolean {
     if (url.username || url.password || url.hash) return false;
     return (
       url.protocol === 'https:' ||
-      (url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname))
+      (url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname))
     );
   } catch {
     return false;
   }
+}
+
+/**
+ * An endpoint an issuer may send a credential to. Beyond `credentialEndpoint`,
+ * an issuer elsewhere may not point at this machine, where the credential
+ * would reach whatever local service answers.
+ */
+export function issuerEndpoint(value: string, issuer: string): boolean {
+  return credentialEndpoint(value) && (!loopbackAddress(value) || loopbackAddress(issuer));
 }
 
 /** The claims of a JWT, read without verifying it: it came straight from the issuer over TLS. */
@@ -398,12 +418,17 @@ export async function pollDeviceCode(
 }
 
 const discovery = z.object({
+  issuer: z.string(),
   authorization_endpoint: z.string(),
   token_endpoint: z.string(),
   revocation_endpoint: z.string().optional(),
 });
 
-/** RFC 8414 metadata, then OpenID discovery, for an operator who named only the issuer. */
+/**
+ * RFC 8414 metadata, then OpenID discovery, for an operator who named only the
+ * issuer. The document must name the same issuer it was fetched for (RFC 8414
+ * section 3.3), and its endpoints are held to `issuerEndpoint`.
+ */
 export async function discoverIssuer(
   issuer: string,
   fetcher: OAuthFetch,
@@ -427,16 +452,16 @@ export async function discoverIssuer(
         continue;
       }
       const parsed = discovery.safeParse(await response.json());
-      if (!parsed.success) continue;
+      if (!parsed.success || parsed.data.issuer.replace(/\/+$/, '') !== base) continue;
       const found = {
         authorizeUrl: parsed.data.authorization_endpoint,
         tokenUrl: parsed.data.token_endpoint,
         revokeUrl: parsed.data.revocation_endpoint,
       };
       if (
-        credentialEndpoint(found.authorizeUrl) &&
-        credentialEndpoint(found.tokenUrl) &&
-        (!found.revokeUrl || credentialEndpoint(found.revokeUrl))
+        issuerEndpoint(found.authorizeUrl, base) &&
+        issuerEndpoint(found.tokenUrl, base) &&
+        (!found.revokeUrl || issuerEndpoint(found.revokeUrl, base))
       )
         return found;
     } catch {

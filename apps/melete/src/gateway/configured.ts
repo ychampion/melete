@@ -2,7 +2,13 @@ import type { Sql } from 'postgres';
 import type { Env } from '../env.ts';
 import { type IssuerSource, PostgresCredentialRepository, ProviderSignIn } from './credentials.ts';
 import { fakeProvider } from './fake.ts';
-import { chatgptIssuer, credentialEndpoint, discoverIssuer, type OAuthIssuer } from './oauth.ts';
+import {
+  chatgptIssuer,
+  credentialEndpoint,
+  discoverIssuer,
+  issuerEndpoint,
+  type OAuthIssuer,
+} from './oauth.ts';
 import {
   CHATGPT_PROVIDER,
   OPENAI_COMPATIBLE,
@@ -53,6 +59,9 @@ export function signInIssuers(env: Env): Record<string, IssuerSource> {
     throw new Error(
       `OAuth for the OpenAI-compatible endpoint also needs ${missing.join(' and ')}.`,
     );
+  // The issuer, or the authorize address when no issuer is named, decides
+  // whether the other endpoints may be on this machine.
+  const origin = env.OPENAI_COMPAT_OAUTH_ISSUER ?? env.OPENAI_COMPAT_OAUTH_AUTHORIZE_URL ?? '';
   for (const name of [
     'OPENAI_COMPAT_OAUTH_ISSUER',
     'OPENAI_COMPAT_OAUTH_AUTHORIZE_URL',
@@ -63,6 +72,10 @@ export function signInIssuers(env: Env): Record<string, IssuerSource> {
     if (value && !credentialEndpoint(value))
       throw new Error(
         `${name} must be an https:// address without credentials (http:// only on localhost).`,
+      );
+    if (value && !issuerEndpoint(value, origin))
+      throw new Error(
+        `${name} names this machine, but the issuer does not. Give the provider's own address.`,
       );
   }
   let redirect: URL | undefined;

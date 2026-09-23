@@ -265,4 +265,49 @@ describeWithDb('model-provider sign-in through the API', () => {
     const [row] = await database().sql`select generation, status from provider_credential`;
     expect(row).toEqual({ generation: 2, status: 'active' });
   });
+
+  test('a refresh the provider refuses for good is kept as sign_in_required, with no tokens', async () => {
+    const api = app();
+    const cookie = await owner(api);
+    issuer.lifetime = 60;
+    const started = await api.call('/model-providers/chatgpt/sign-in', cookie, {
+      method: 'POST',
+      body: JSON.stringify({ method: 'browser' }),
+    });
+    await api.call('/model-providers/chatgpt/sign-in/complete', cookie, {
+      method: 'POST',
+      body: JSON.stringify({
+        sign_in_id: started.body.sign_in_id,
+        callback_url: await approve(started.body.authorize_url),
+      }),
+    });
+    issuer.revokeAll();
+    const log: string[] = [];
+    const later = Date.now() + 45_000;
+    const refused = await new ProviderSignIn({
+      repository: new PostgresCredentialRepository(database().sql),
+      issuers: { chatgpt: chatgptIssuer({ issuer: issuer.url }) },
+      labels: { chatgpt: 'ChatGPT' },
+      masterKey: () => masterKey,
+      now: () => later,
+      log: (line) => log.push(line),
+    })
+      .credential('chatgpt')
+      .current()
+      .catch((error) => error);
+    expect(refused?.code).toBe('provider_sign_in_required');
+    // Committed, not rolled back with the refusal.
+    const [row] = await database().sql`select status, reason, secret_id, ciphertext
+      from provider_credential`;
+    expect(row).toEqual({
+      status: 'sign_in_required',
+      reason: 'refresh_revoked',
+      secret_id: null,
+      ciphertext: null,
+    });
+    expect(log).toEqual(['provider sign-in: chatgpt needs a new sign-in (refresh_revoked)']);
+    const status = await api.call('/model-providers/chatgpt/sign-in', cookie);
+    expect(status.body).toMatchObject({ state: 'sign_in_required', reason: 'refresh_revoked' });
+    expect(status.body.message).toContain('Sign in again');
+  });
 });
