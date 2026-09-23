@@ -29,7 +29,7 @@ import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
 import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
-import { sandboxRevocation } from '../../src/sandbox/wiring.ts';
+import { sandboxKeyChange } from '../../src/sandbox/wiring.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const MASTER_KEY = '71'.repeat(32);
@@ -485,20 +485,29 @@ withDb('the sandbox connection kind', () => {
         ),
       );
     const policy = new PolicyService(h.jobs, undefined, {
-      beforeRevoke: sandboxRevocation({
+      beforeKeyChange: sandboxKeyChange({
         sessions: h.sessions,
         providerFor: teardown.providerFor,
         log: () => {},
       }),
     });
-    const revoke = async () => {
-      const [row] = await h.sql`select generation from connection where id = ${id}`;
-      return policy.changeConnection(id, {
-        kind: 'revoke',
-        expected_generation: Number(row?.generation),
+    const generation = async () =>
+      Number((await h.sql`select generation from connection where id = ${id}`)[0]?.generation);
+    const revoke = async () =>
+      policy.changeConnection(id, { kind: 'revoke', expected_generation: await generation() });
+    const switchKey = async () => {
+      const replacement = await h.secrets.put(
+        h.spaceId,
+        JSON.stringify({ api_key: AUTHORING_KEY }),
+      );
+      const changed = await policy.changeConnection(id, {
+        kind: 'switch',
+        secret_ref: replacement,
+        expected_generation: await generation(),
       });
+      return { changed, replacement };
     };
-    return { id, provider, teardown, opened, revoke };
+    return { id, provider, teardown, opened, revoke, switchKey };
   };
 
   test('revoking a sandbox connection destroys what it holds while the key is still there', async () => {
@@ -538,6 +547,55 @@ withDb('the sandbox connection kind', () => {
     for (const session of opened) expect(left.sessions).toContain(session.id);
     const [row] = await h.sql`select status, secret_ref from connection where id = ${id}`;
     expect(row).toMatchObject({ status: 'revoked', secret_ref: null });
+    await teardown.close();
+  }, 120_000);
+  test('switching a sandbox connection to another key destroys what the old key holds first', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, teardown, opened, switchKey } = await revocationSetup();
+    const [before] = await h.sql`select secret_ref from connection where id = ${id}`;
+    // Which key the connection held at the moment each sandbox was destroyed.
+    const heldAtDestroy: unknown[] = [];
+    const destroy = provider.destroy.bind(provider);
+    provider.destroy = async (handle, signal) => {
+      const [row] = await h.sql`select secret_ref from connection where id = ${id}`;
+      heldAtDestroy.push(row?.secret_ref);
+      return destroy(handle, signal);
+    };
+    const { changed, replacement } = await switchKey();
+    expect(changed.status).toBe('active');
+    expect(heldAtDestroy.length).toBeGreaterThanOrEqual(opened.length);
+    for (const held of heldAtDestroy) expect(held).toBe(before?.secret_ref);
+    for (const session of opened) {
+      expect(await provider.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'gone',
+      );
+      expect((await h.sessions.get(session.id))?.status).toBe('closed');
+    }
+    const [after] = await h.sql`select status, secret_ref from connection where id = ${id}`;
+    expect(after).toMatchObject({ status: 'active', secret_ref: replacement });
+    await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
+    await teardown.close();
+  }, 120_000);
+
+  test('a switch whose teardown fails still completes, and says what the old key left', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, teardown, opened, switchKey } = await revocationSetup();
+    provider.destroy = async () => {
+      throw new Error('the provider did not answer');
+    };
+    const { changed, replacement } = await switchKey();
+    expect(changed.status).toBe('active');
+    for (const session of opened) {
+      const row = await h.sessions.get(session.id);
+      expect(row?.status).toBe('lost');
+      expect(row?.lastError).toContain(
+        'had its key replaced before this sandbox could be destroyed',
+      );
+      expect(row?.lastError).toContain('the provider did not answer');
+    }
+    const [after] = await h.sql`select secret_ref from connection where id = ${id}`;
+    expect(after?.secret_ref).toBe(replacement);
+    await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
     await teardown.close();
   }, 120_000);
 });

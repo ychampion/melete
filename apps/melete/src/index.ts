@@ -116,7 +116,7 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
-import { type SandboxWiring, sandboxRevocation, startSandboxesFromEnv } from './sandbox/wiring.ts';
+import { type SandboxWiring, sandboxKeyChange, startSandboxesFromEnv } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -415,7 +415,7 @@ export async function bootstrap(
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
-  let revokeSandboxes: ReturnType<typeof sandboxRevocation> | undefined;
+  let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -513,7 +513,7 @@ export async function bootstrap(
       sandboxTeardown = connectors.sandboxTeardownProviders();
       const sandboxSessions = connectors.options.sandbox?.sessions;
       if (sandboxTeardown && sandboxSessions)
-        revokeSandboxes = sandboxRevocation({
+        releaseSandboxes = sandboxKeyChange({
           sessions: sandboxSessions,
           providerFor: sandboxTeardown.providerFor,
         });
@@ -713,7 +713,7 @@ export async function bootstrap(
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
-      policy = new PolicyService(jobs, runner, { beforeRevoke: revokeSandboxes });
+      policy = new PolicyService(jobs, runner, { beforeKeyChange: releaseSandboxes });
       attention = new AttentionService(jobs, runner);
       // A memory question is answered by settling the key it disputes, which
       // only memory can do, so the queue is handed that one capability.

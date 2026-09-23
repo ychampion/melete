@@ -33,11 +33,15 @@ export class PolicyService {
     readonly runner?: AttemptRunner,
     readonly options: {
       /**
-       * Runs inside the revocation, after its authority and generation checks
-       * and before the key is dropped: what a connection's key alone can undo
-       * is undone here. It never refuses the revocation.
+       * Runs inside a revocation, or a switch to another key, after its
+       * authority and generation checks and before the key it replaces is
+       * gone: what that key alone can undo is undone here. It never refuses
+       * the change.
        */
-      beforeRevoke?: (connection: { id: string; provider: string }) => Promise<void>;
+      beforeKeyChange?: (
+        connection: { id: string; provider: string },
+        change: 'revoke' | 'switch',
+      ) => Promise<void>;
     } = {},
   ) {}
 
@@ -241,8 +245,14 @@ export class PolicyService {
             400,
           );
       }
-      if (request.kind === 'revoke' && source.status !== 'revoked')
-        await this.options.beforeRevoke?.({ id: source.id, provider: source.provider });
+      if (
+        (request.kind === 'revoke' && source.status !== 'revoked') ||
+        (request.kind === 'switch' && request.secret_ref !== source.secretRef)
+      )
+        await this.options.beforeKeyChange?.(
+          { id: source.id, provider: source.provider },
+          request.kind,
+        );
       const [parent] = await tx
         .update(space)
         .set({ policyGeneration: sql`${space.policyGeneration} + 1` })

@@ -140,14 +140,15 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
 }
 
 /**
- * What revoking a sandbox connection does first, while its key is still held:
- * destroy every sandbox and snapshot the connection's sessions recorded. The
- * key is dropped with the revocation, and nothing reaches the account after
- * that. A teardown that does not finish does not stop the revocation; what is
- * left is recorded lost on its rows with the reason, where the sweep and a
- * space removal report it.
+ * What revoking a sandbox connection, or switching it to another key, does
+ * first, while the key it had is still held: destroy every sandbox and
+ * snapshot the connection's sessions recorded. That key is the only way into
+ * the account they live in, and after the change nothing here holds it. A
+ * teardown that does not finish does not stop the change; what is left is
+ * recorded lost on its rows with the reason, where the sweep and a space
+ * removal report it.
  */
-export function sandboxRevocation(options: {
+export function sandboxKeyChange(options: {
   sessions: SandboxSessions;
   providerFor: (adapter: string, connectionId: string) => SandboxProvider | undefined;
   log?: (line: string) => void;
@@ -155,6 +156,7 @@ export function sandboxRevocation(options: {
   const say = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   return async (
     connection: { id: string; provider: string },
+    change: 'revoke' | 'switch' = 'revoke',
     signal: AbortSignal = AbortSignal.timeout(120_000),
   ): Promise<void> => {
     if (connection.provider !== 'sandbox') return;
@@ -165,12 +167,13 @@ export function sandboxRevocation(options: {
         signal,
       );
     } catch (error) {
+      const happened = change === 'revoke' ? 'was revoked' : 'had its key replaced';
       const left = await options.sessions.recordLeftBehind(
         connection.id,
-        `the connection was revoked before this sandbox could be destroyed, and nothing can reach it without the key: ${String(error)}`,
+        `the connection ${happened} before this sandbox could be destroyed, and nothing can reach it without the key it had: ${String(error)}`,
       );
       say(
-        `sandbox connection ${connection.id} was revoked with ${left.length} session(s) not destroyed: ${String(error)}`,
+        `sandbox connection ${connection.id} ${happened} with ${left.length} session(s) not destroyed: ${String(error)}`,
       );
     }
   };
