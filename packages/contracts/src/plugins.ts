@@ -14,7 +14,7 @@ import { effectClass } from './broker.ts';
 import { prefixedId } from './common.ts';
 import { connectionCheck } from './connections.ts';
 import { connectionView } from './entities.ts';
-import { type McpStdioRunner, mcpEgressHost, mcpStdioEnvName } from './mcp.ts';
+import { MCP_ANY_PUBLIC_SITE, type McpStdioRunner, mcpEgressHost, mcpStdioEnvName } from './mcp.ts';
 
 export type PluginField = {
   /** For `env`, the variable it fills; for `egress`, a label key. */
@@ -91,16 +91,21 @@ export const PLUGIN_CATALOG: readonly PluginEntry[] = [
     id: 'fetch',
     title: 'Fetch a page',
     description:
-      'Reads web pages from the sites you list and turns them into text. It reaches nothing else.',
+      'Reads public web pages over HTTPS and turns them into text. It cannot reach your own network.',
     version: '2026.8.18',
-    launch: { runner: 'uvx', source: 'mcp-server-fetch==2026.8.18', args: [], egress: [] },
+    launch: {
+      runner: 'uvx',
+      source: 'mcp-server-fetch==2026.8.18',
+      args: [],
+      egress: [MCP_ANY_PUBLIC_SITE],
+    },
     fields: [
       {
         name: 'sites',
-        label: 'Sites it may read',
-        help: 'Host names, one per line, such as docs.example.com. HTTPS only.',
+        label: 'Only these sites',
+        help: 'Leave empty to let it read any public site, or list host names, one per line, to keep it to those.',
         placeholder: 'docs.example.com',
-        required: true,
+        required: false,
         target: 'egress',
         secret: false,
       },
@@ -280,7 +285,7 @@ export function pluginInstallation(
   );
   if (unknown.length) return { ok: false, error: `${entry.title} does not take ${unknown[0]}.` };
   const secretEnv: { name: string; value: string }[] = [];
-  const egress = [...entry.launch.egress];
+  let egress = [...entry.launch.egress];
   for (const field of entry.fields) {
     const value = values[field.name]?.trim() ? values[field.name] : undefined;
     if (!value) {
@@ -292,6 +297,8 @@ export function pluginInstallation(
       secretEnv.push({ name: field.name, value });
       continue;
     }
+    // Naming sites narrows a plugin that could otherwise read any public site.
+    egress = egress.filter((site) => site !== MCP_ANY_PUBLIC_SITE);
     for (const line of value.split(/[\n,]/).map((item) => item.trim().toLowerCase())) {
       if (!line) continue;
       if (!mcpEgressHost.safeParse(line).success)

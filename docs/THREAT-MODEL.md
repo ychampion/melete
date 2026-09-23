@@ -254,14 +254,17 @@ that holds no secret and may reach only its registry, so an install script
 cannot read the token the server will be given. The service reads the engine's
 record of each container before starting it and removes, unstarted, one
 recorded with less isolation. A server that keeps crashing is left stopped,
-and revocation stops its container and removes its volume. Conformance 9
+and a connection that goes, whether revoked or removed with its space, has its
+container stopped and its volume removed at once. Conformance 9
 observes these from inside real containers on every pull request.
 
 What stays with the server: it can read and change its own volume, use its own
 sealed variables against the destinations it was allowed, and write whatever
 it likes in its answers. Those answers are external content to the broker,
 and each call it is asked to make was admitted, and if it writes outside, was
-approved. A named destination receives whatever the server sends it,
+approved. A plugin allowed any public site, such as Fetch by default, can send
+what it reads or holds to any public address; a person who names sites keeps it
+to those. A named destination receives whatever the server sends it,
 including its own variables, so a destination is a grant of trust in both
 directions. Docker keeps a container's environment in the engine's own state
 while the container exists; the service removes each container when it stops,

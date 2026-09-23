@@ -542,7 +542,7 @@ entry asks for, which is one tap for most:
 | Plugin | Runs | Reaches | Asks for |
 | --- | --- | --- | --- |
 | Files | `@modelcontextprotocol/server-filesystem@2026.8.31` with `npx` | nothing | nothing |
-| Fetch a page | `mcp-server-fetch==2026.8.18` with `uvx` | the sites the person lists | the sites |
+| Fetch a page | `mcp-server-fetch==2026.8.18` with `uvx` | any public HTTPS site, or only the sites the person lists | nothing; sites to keep it to, if the person wants |
 | Time and time zones | `mcp-server-time==2026.8.18` with `uvx` | nothing | nothing |
 | GitHub | `ghcr.io/github/github-mcp-server:v1.12.2`, pinned by digest | `api.github.com` | a GitHub token |
 
@@ -596,7 +596,9 @@ advanced kind:
 a container image. `source` is a registry name with an optional version, or an
 image reference; a URL, a git remote, a local path or anything shaped like a
 flag is refused. `command` names a package's program or overrides an image's
-entry command. `egress` lists HTTPS host names, each with an optional port.
+entry command. `egress` lists HTTPS host names, each with an optional port, or
+`*` for any public HTTPS site. Plain HTTP is refused either way, and so is any
+name that resolves to a private, loopback or link-local address.
 Each `secret_env` value is sealed together with the others; the row keeps only
 the names, and a name the launcher sets itself, such as `PATH` or
 `HTTPS_PROXY`, is refused. The policy fields are those of an HTTP installation,
@@ -651,8 +653,10 @@ that describes different tools is refused and stopped. Three crashes, or
 starts that never reach a working session, within ten minutes leave the server
 stopped: calls fail without a start and say so in plain words, until the owner
 tests the connection with `POST /connections/{id}/health`, which is one
-deliberate retry. Revoking the connection stops its container at once and
-removes its volume. At start the service removes any server container an
+deliberate retry. When a connection goes, whether revoked by its owner or
+removed with its space, the registry retires its connector: the container
+stops at once and the volume is removed. Shutting the service down only stops
+the containers. At start the service removes any server container an
 earlier process left behind, and the volume of any connection that no longer
 exists.
 

@@ -29,7 +29,7 @@ export type EgressProxyOptions = {
 
 type Grant = { destinations: ReadonlySet<string>; tunnels: Set<() => void> };
 
-/** `host` means port 443; `host:port` names another. */
+/** `host` means port 443; `host:port` names another; `*` is any public host on 443. */
 export function egressDestination(entry: string): string {
   const [host = '', port = '443'] = entry.toLowerCase().split(':');
   return `${host}:${port}`;
@@ -133,7 +133,10 @@ export class EgressProxy {
     const match = /^([a-z0-9.-]+):(\d{1,5})$/i.exec(target);
     const host = match?.[1]?.toLowerCase();
     const port = Number(match?.[2]);
-    if (!host || !port || port > 65535 || !grant.destinations.has(`${host}:${port}`))
+    // `*` opens any public HTTPS site; the address check below still applies to it.
+    const named = grant.destinations.has(`${host}:${port}`);
+    const anySite = port === 443 && grant.destinations.has('*:443');
+    if (!host || !port || port > 65535 || !(named || anySite))
       return refuse(client, 403, 'destination_denied');
     if (grant.tunnels.size >= (this.options.maxTunnels ?? 32))
       return refuse(client, 403, 'too_many_tunnels');

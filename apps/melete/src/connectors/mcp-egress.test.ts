@@ -103,3 +103,18 @@ test('a destination without a port means HTTPS', () => {
   expect(egressDestination('API.example.com')).toBe('api.example.com:443');
   expect(egressDestination('api.example.com:8443')).toBe('api.example.com:8443');
 });
+
+test('any public site means HTTPS to any public address, and nothing private', async () => {
+  const grant = proxy.grant(['*']);
+  const open = await ask(tunnel('api.example.com:443', basic(grant.token)), 'ping\n');
+  expect(open.text).toStartWith('HTTP/1.1 200');
+  open.socket.destroy();
+  expect((await ask(tunnel('api.example.com:80', basic(grant.token)))).text).toContain('403');
+  expect((await ask(tunnel('metadata.example.com:443', basic(grant.token)))).text).toContain(
+    'address_denied',
+  );
+  expect((await ask(tunnel('mixed.example.com:443', basic(grant.token)))).text).toContain(
+    'address_denied',
+  );
+  grant.revoke();
+});

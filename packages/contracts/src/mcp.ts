@@ -98,6 +98,8 @@ export const mcpEgressHost = z
     // A name's last label is never all digits, so an address literal is not a name.
     return /[a-z]/.test(host.split('.').at(-1) ?? '') && Number(port) >= 1 && Number(port) <= 65535;
   }, 'A destination is a host name with an optional port');
+/** An egress entry that opens any public HTTPS site; private and loopback addresses stay closed. */
+export const MCP_ANY_PUBLIC_SITE = '*';
 /** Names the launcher sets itself; a secret cannot replace them. */
 export const MCP_STDIO_RESERVED_ENV = [
   'HOME',
@@ -131,8 +133,14 @@ const launchShape = {
     .regex(/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/)
     .optional(),
   args: z.array(z.string().max(4096)).max(64).default([]),
-  /** HTTPS destinations the running server may reach. Empty means none at all. */
-  egress: z.array(mcpEgressHost).max(16).default([]),
+  /**
+   * HTTPS destinations the running server may reach. Empty means none at all;
+   * `*` means any public HTTPS site.
+   */
+  egress: z
+    .array(z.union([z.literal(MCP_ANY_PUBLIC_SITE), mcpEgressHost]))
+    .max(16)
+    .default([]),
 };
 
 function checkLaunch(

@@ -10316,7 +10316,7 @@ export interface components {
         __schema75: string;
         /** @default [] */
         __schema76: components["schemas"]["__schema77"][];
-        __schema77: string;
+        __schema77: "*" | string;
         /** @default [] */
         __schema78: components["schemas"]["__schema79"][];
         __schema79: {
