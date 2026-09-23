@@ -486,8 +486,9 @@ export function traceCall(raw: unknown): ToolCall | null {
 
 /**
  * Record work as a tool entry on the job's stream. Call it inside the
- * transaction that records the work itself, so the entry exists exactly when
- * the work does; a retried write lands once.
+ * transaction that records the work, or in a short transaction right after it
+ * commits when that transaction holds a lock taken before the job's (memory's
+ * space lock). A retried write lands once.
  */
 export async function appendToolTrace(
   tx: Query,

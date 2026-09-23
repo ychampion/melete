@@ -228,7 +228,7 @@ export type ToolCall = z.infer<typeof toolCall>;
 
 /**
  * What memory did during a turn. A memory writer appends this as a `notice`
- * on the job, inside the transaction that did the work, and the conversation
+ * on the job, right after the work commits, and the conversation
  * shows it as a tool entry: "Used what you told me: …", "Remembered: …",
  * "Updated: …", "Forgot: …".
  *

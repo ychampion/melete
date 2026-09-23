@@ -27,7 +27,7 @@ export async function recordAttemptContext(
   result: RecallResult,
   startedAt?: Date,
 ): Promise<ContextRecord> {
-  return sql.begin(async (tx) => {
+  const context = await sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope, false);
     const audience = await effectiveAudience(tx, scope, jobId);
     const [attempt] =
@@ -90,7 +90,13 @@ export async function recordAttemptContext(
         await tx`insert into memory_derivations (space_id, input_kind, input_id, input_version, output_kind, output_id, output_version)
         values (${scope.spaceId}, 'source', ${source.source_id}, ${source.source_version}, 'context', ${context.id}, '1') on conflict do nothing`;
     }
-    if (context.items.length) {
+    return context;
+  });
+  // The tool entry is written after the context commits, in its own short
+  // transaction, so an event write never runs under the space lock. A crash in
+  // between loses only the entry; the recorded context is unaffected.
+  if (context.items.length)
+    await sql.begin(async (tx) => {
       // Details are named only in a personal space, to the person it belongs to.
       // In a shared space a detail may be someone else's, so only the count is told.
       const [owned] = await tx`select (s.kind = 'personal' and (j.principal_id is null
@@ -108,9 +114,8 @@ export async function recordAttemptContext(
         memory_item_id: null,
         parent: null,
       });
-    }
-    return context;
-  });
+    });
+  return context;
 }
 /**
  * Write down how the attempt talked. Measured, never enforced: the update runs

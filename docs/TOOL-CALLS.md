@@ -105,7 +105,7 @@ Entries are stored with the rest of the conversation's events. Reconnecting with
 
 ## Adding work to the stream
 
-Work that happens inside Melete becomes an entry by writing a `notice` on the job in the same database transaction as the work itself:
+Work that happens inside Melete becomes an entry by writing a `notice` on the job, in the transaction that does the work or in a short one right after it commits. Memory writes it afterwards, so an event write never runs under the space lock:
 
 - Memory writes `memoryToolNotice` (`kind: "memory_tool"`), with `op` set to `recall`, `write`, `correct` or `forget`, a count, plain labels, and the saved wording as `value`. Label and value rules are in the schema comment. `appendMemoryTool` in `apps/melete/src/experience/tools.ts` writes one.
 - Anything else writes `toolTraceNotice` (`kind: "tool_trace"`) with a complete `ToolCall`, using `appendToolTrace`. Its id is shown as `trace:<id>`. Every string in it is scrubbed again before anyone sees it.
