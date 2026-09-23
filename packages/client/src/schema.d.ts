@@ -11463,6 +11463,7 @@ export interface components {
             direction: "owed_to_you" | "you_pay" | "you_owe" | "info";
             /** @default null */
             due_at: components["schemas"]["__schema96"] | null;
+            due_date_only?: boolean;
             evidence: components["schemas"]["__schema376"][];
             id: string;
             /** @default null */

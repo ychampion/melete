@@ -99,6 +99,16 @@ describe('a scan of the demonstration mailbox', () => {
     );
   });
 
+  test('a date the email gave without a time is stored as a date', async () => {
+    const { map } = await scanFixtures();
+    const dated = map.items.filter((item) => item.due_at !== null);
+    expect(dated.length).toBeGreaterThan(0);
+    // "renews on 1 October 2026" names a day; the map keeps it as one.
+    expect(dated.some((item) => item.due_date_only === true)).toBe(true);
+    for (const item of dated.filter((entry) => entry.due_date_only))
+      expect(item.due_at?.endsWith('T00:00:00.000Z')).toBe(true);
+  });
+
   test('covers the kinds the map is made of, including promises', async () => {
     const { map } = await scanFixtures();
     const kinds = new Set<string>(map.items.map((item) => item.kind));

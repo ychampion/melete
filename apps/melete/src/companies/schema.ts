@@ -16,6 +16,7 @@
 import type { LedgerEvidence } from '@melete/contracts';
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   index,
   integer,
@@ -103,6 +104,7 @@ export const ledgerItem = pgTable(
     amountMinor: integer('amount_minor'),
     currency: text('currency'),
     dueAt: timestamp('due_at', { withTimezone: true }),
+    dueDateOnly: boolean('due_date_only').notNull().default(false),
     status: text('status').notNull().default('found'),
     confidence: text('confidence').notNull(),
     evidence: jsonb('evidence').$type<LedgerEvidence[]>().notNull(),

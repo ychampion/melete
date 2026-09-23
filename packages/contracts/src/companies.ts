@@ -128,6 +128,11 @@ export const ledgerItem = z.strictObject({
   amount_minor: minorAmount.nullable().default(null),
   currency: currencyCode.nullable().default(null),
   due_at: timestamp.nullable().default(null),
+  /**
+   * The email gave a day and no time, so `due_at` is that day's midnight UTC and
+   * the day is read in the person's own time zone. Absent means false.
+   */
+  due_date_only: z.boolean().optional(),
   status: ledgerItemStatus,
   confidence,
   /** At least one. An item with nothing to check is an item nobody can open. */

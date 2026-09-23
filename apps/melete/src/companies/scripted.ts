@@ -211,7 +211,14 @@ export function scriptedItems(request: ExtractionRequest): ExtractedItem[] {
       currency: rule.direction === 'info' ? null : (money?.currency ?? null),
       // A subscription is a standing charge, not a deadline. The date in the
       // sentence beside it is the renewal, and the renewal is its own item.
-      due_at: rule.kind === 'subscription' ? null : (date?.value ?? null),
+      // A date stated only to the day is given as a day, the way the model is
+      // asked to give one, so it is admitted as a date rather than an instant.
+      due_at:
+        rule.kind === 'subscription' || !date
+          ? null
+          : date.granularity === 'day'
+            ? date.value.slice(0, 10)
+            : date.value,
       confidence: rule.confidence ?? (money || date ? 'high' : 'medium'),
       suggested_playbook: rule.playbook,
       summary: `${rule.summary} — ${request.companyName}`,
