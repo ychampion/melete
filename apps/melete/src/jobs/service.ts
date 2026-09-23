@@ -337,7 +337,13 @@ export class JobService {
     return this.transaction((tx) => this.inputInTransaction(tx, id, text));
   }
 
-  async inputInTransaction(tx: Transaction, id: string, text: string): Promise<JobRow> {
+  async inputInTransaction(
+    tx: Transaction,
+    id: string,
+    text: string,
+    /** The answer the person marked this message as correcting, recorded as they sent it. */
+    corrects?: string,
+  ): Promise<JobRow> {
     const row = await this.lock(tx, id);
     if (!row) throw new ServiceError('not_found', 'Job not found.', 404);
     // Words in a job are its own principal's. Membership of the job's space lets
@@ -353,7 +359,12 @@ export class JobService {
     await appendEvent(tx, {
       jobId: id,
       type: 'notice',
-      payload: { kind: 'user_message', text, principal_id: speaker ?? row.principalId ?? null },
+      payload: {
+        kind: 'user_message',
+        text,
+        principal_id: speaker ?? row.principalId ?? null,
+        ...(corrects ? { corrects } : {}),
+      },
       dedupKey: `${id}:input:${updated.stateVersion}`,
     });
     return updated;

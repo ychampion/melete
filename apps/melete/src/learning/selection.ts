@@ -8,7 +8,17 @@ import type { ProcedureScope } from './contracts.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import { isGeneralProcedure, verifyDefinition } from './procedures.ts';
 import { episode, learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
-import { type ProcedureReach, triggersMatch } from './triggers.ts';
+import { type ProcedureReach, triggerSpecificity, triggersMatch } from './triggers.ts';
+
+/** Never more than three skills in one bundle, whoever wrote them. */
+export const MAX_DELIVERED_SKILLS = 3;
+/**
+ * What learning never takes: a job whose own words name a catalog skill still gets
+ * it, however many procedures were learned for this space.
+ */
+export const RESERVED_CATALOG_SLOTS = 1;
+/** How many learned procedures one job may receive. */
+export const MAX_DELIVERED_PROCEDURES = MAX_DELIVERED_SKILLS - RESERVED_CATALOG_SLOTS;
 
 export const scopeMatches = (left: ProcedureScope, right: ProcedureScope) =>
   left.task_family === right.task_family &&
@@ -151,21 +161,37 @@ export async function selectProcedureSkills(
         eq(procedureCandidate.spaceId, row.spaceId),
         inArray(procedureCandidate.state, ['enabled_canary', 'active']),
         isNull(procedureCandidate.rejectionReason),
+        // Paused or removed by the person: kept for resume or undo, never delivered.
+        isNull(procedureCandidate.pausedAt),
+        isNull(procedureCandidate.removedAt),
         eq(episode.restricted, false),
         gt(episode.expiresAt, new Date()),
       ),
     )
     .orderBy(desc(procedureCandidate.createdAt));
+  // Newest first: among equally specific matches, the latest lesson leads.
+  const deliverable: { skill: AttemptBundle['skills'][number]; specificity: number }[] = [];
+  const deliver = (candidate: typeof procedureCandidate.$inferSelect, spaceScoped: boolean) =>
+    deliverable.push({
+      skill: {
+        name: `procedure:${candidate.id}`,
+        body: candidate.body,
+        ...(spaceScoped ? { space_id: row.spaceId } : {}),
+      },
+      specificity: triggerSpecificity(candidate.triggers, row.objective, message),
+    });
   for (const { candidate, source } of candidates) {
     const promotion = procedurePromotion.safeParse(candidate.promotion);
     if (!promotion.success) continue;
     if (promotion.data.scope === 'space') {
       if (access.space.kind !== 'shared' || candidate.state !== 'active') continue;
     } else if ((promotion.data.principal_id ?? source.actor) !== access.principalId) continue;
-    if (promotion.data.basis === 'owner_trial') {
-      // The owner's approval of these exact bytes, for that owner, in the space it came from.
+    if (promotion.data.basis === 'owner_trial' || promotion.data.basis === 'owner_confirmed') {
+      // The owner's approval of these exact bytes, for that owner, in the space it came from:
+      // on trial while they try it, active once they have said to keep it.
       if (
-        candidate.state !== 'enabled_canary' ||
+        candidate.state !==
+          (promotion.data.basis === 'owner_trial' ? 'enabled_canary' : 'active') ||
         promotion.data.scope !== 'private' ||
         promotion.data.principal_id !== access.principalId ||
         source.actor !== access.principalId ||
@@ -174,7 +200,8 @@ export async function selectProcedureSkills(
         !valid(candidate, source)
       )
         continue;
-      return [{ name: `procedure:${candidate.id}`, body: candidate.body }];
+      deliver(candidate, false);
+      continue;
     }
     if (
       candidate.canarySpaceId !== row.spaceId ||
@@ -196,14 +223,12 @@ export async function selectProcedureSkills(
       .limit(1);
     if (!final || final.evidence.selection_evaluation_id !== candidate.selectedEvaluationId)
       continue;
-    // One applicable procedure avoids contradictory instructions and remains below the three-skill cap.
-    return [
-      {
-        name: `procedure:${candidate.id}`,
-        body: candidate.body,
-        ...(promotion.data.scope === 'space' ? { space_id: row.spaceId } : {}),
-      },
-    ];
+    deliver(candidate, promotion.data.scope === 'space');
   }
-  return [];
+  // The most specific matches first, at most three; the bundle's own skill cap still applies.
+  return deliverable
+    .map((entry, order) => ({ ...entry, order }))
+    .sort((left, right) => right.specificity - left.specificity || left.order - right.order)
+    .slice(0, MAX_DELIVERED_PROCEDURES)
+    .map((entry) => entry.skill);
 }

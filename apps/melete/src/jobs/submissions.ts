@@ -300,6 +300,7 @@ export class SubmissionService {
                   admission,
                   jobId ?? '',
                   postMessageRequest.parse(parsed.data).text,
+                  postMessageRequest.parse(parsed.data).corrects,
                 ),
           );
         } catch (error) {

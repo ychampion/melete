@@ -68,7 +68,15 @@ import {
   interventionRequest,
   interventionResponse,
   jobLearningScope,
+  keepAnswerRequest,
+  keepAnswerResponse,
+  learnedItemResponse,
+  learnedList,
+  learnedTryRequest,
+  learnedUndoRequest,
   learningDeletionResponse,
+  learningNoticeList,
+  learningNoticeResponse,
   learningScopeResponse,
   learningSpaceQuery,
   learningSpaceRequest,
@@ -385,6 +393,93 @@ export function buildOpenApiDocument() {
             requestParams: idParam('id', 'Procedure id'),
             requestBody: json(procedureReasonRequest),
             responses: { '200': jsonResponse('Reverted procedure', procedureResponse) },
+          },
+        },
+        '/learned': {
+          get: {
+            tags: ['learning'],
+            summary: 'List what the signed-in person taught, in their own words',
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('What was learned', learnedList) },
+          },
+        },
+        '/learned/{id}/try': {
+          post: {
+            tags: ['learning'],
+            summary: 'Try something learned on your own work, approving the exact definition shown',
+            requestParams: idParam('id', 'Learned item id'),
+            requestBody: json(learnedTryRequest),
+            responses: { '200': jsonResponse('On trial', learnedItemResponse) },
+          },
+        },
+        '/learned/{id}/share': {
+          post: {
+            tags: ['learning'],
+            summary: 'Share something you kept with your shared space, when sealed evidence exists',
+            requestParams: idParam('id', 'Learned item id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Shared', learnedItemResponse) },
+          },
+        },
+        '/learned/{id}/pause': {
+          post: {
+            tags: ['learning'],
+            summary: 'Stop using it until resumed',
+            requestParams: idParam('id', 'Learned item id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Paused', learnedItemResponse) },
+          },
+        },
+        '/learned/{id}/resume': {
+          post: {
+            tags: ['learning'],
+            summary: 'Use it again',
+            requestParams: idParam('id', 'Learned item id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Resumed', learnedItemResponse) },
+          },
+        },
+        '/learned/{id}/remove': {
+          post: {
+            tags: ['learning'],
+            summary: 'Remove it from the list and stop using it',
+            requestParams: idParam('id', 'Learned item id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Removed', learnedItemResponse) },
+          },
+        },
+        '/learned/undo': {
+          post: {
+            tags: ['learning'],
+            summary: 'Undo your latest change, named by the id you were shown',
+            requestBody: json(learnedUndoRequest),
+            responses: { '200': jsonResponse('Undone', learnedItemResponse) },
+          },
+        },
+        '/learning/notices': {
+          get: {
+            tags: ['learning'],
+            summary: 'Open "keep doing this?" questions and unread notices that something stopped',
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Notices', learningNoticeList) },
+          },
+        },
+        '/learning/notices/{id}/answer': {
+          post: {
+            tags: ['learning'],
+            summary: 'Answer yes, no or change to a "keep doing this?" question',
+            requestParams: idParam('id', 'Notice id'),
+            requestBody: json(keepAnswerRequest),
+            responses: { '200': jsonResponse('Answered', keepAnswerResponse) },
+          },
+        },
+        '/learning/notices/{id}/read': {
+          post: {
+            tags: ['learning'],
+            summary: 'Dismiss a notice that something stopped',
+            requestParams: idParam('id', 'Notice id'),
+            requestBody: json(learningSpaceRequest),
+            responses: { '200': jsonResponse('Read', learningNoticeResponse) },
           },
         },
         '/principals': {

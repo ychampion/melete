@@ -19,6 +19,7 @@ import { discriminate } from './discriminate.ts';
 import { discriminationInput } from './discrimination-input.ts';
 import { type EpisodeRow, requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash, RECORDS_FAMILY } from './procedure.ts';
+import type { Candidate } from './procedures.ts';
 import type { ProposalGateway } from './proposal-gateway.ts';
 import { learningModelCall } from './proposal-schema.ts';
 import { objectiveIsOwnerText } from './provenance.ts';
@@ -243,7 +244,9 @@ export class ProcedureProposer {
     };
   }
 
+  /** Proposes from waiting corrections; returns what it proposed, for whoever applies it. */
   async drain() {
+    const proposed: { ownerId: string; spaceId: string; candidate: Candidate }[] = [];
     // A timed-out reservation is history, never an invitation to silently spend a second call.
     await this.jobs.db.execute(sql`
       update episode set generation_state = 'rejected'
@@ -264,11 +267,13 @@ export class ProcedureProposer {
       .limit(2);
     for (const source of pending) {
       try {
-        await this.generate(source.actor, source.spaceId, source.id);
+        const candidate = await this.generate(source.actor, source.spaceId, source.id);
+        proposed.push({ ownerId: source.actor, spaceId: source.spaceId, candidate });
       } catch {
         /* A bounded rejection stays in the episode and call ledger for inspection. */
       }
     }
+    return proposed;
   }
 }
 

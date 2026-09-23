@@ -15,6 +15,7 @@ import {
   proposedWrite,
 } from './knowledge.ts';
 import { jobLearningScope } from './learning.ts';
+import { messageId } from './reactions.ts';
 import { skillFrontmatter } from './skills.ts';
 
 export const healthResponse = z.object({
@@ -107,6 +108,12 @@ export const jobResponse = z.object({ job });
 
 export const postMessageRequest = z.object({
   text: z.string().min(1),
+  /**
+   * The answer this message corrects, by its message id, when the person says so
+   * (a "correct this" reply rather than a new request). Learning reads it only
+   * when it names the latest answer on the same job.
+   */
+  corrects: messageId.optional(),
 });
 
 export const cancelJobRequest = z.object({

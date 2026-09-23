@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { overlapsProcedure, triggersMatch } from './triggers.ts';
+import {
+  overlapsProcedure,
+  triggerSpecificity,
+  triggersMatch,
+  triggersOverlap,
+} from './triggers.ts';
 
 describe('trigger matching', () => {
   test('matches the objective or the latest message after normalisation', () => {
@@ -42,5 +47,25 @@ describe('a built-in skill beside a delivered procedure', () => {
   test('does not overlap work the procedure never covered', () => {
     expect(overlapsProcedure(['remind me', 'calendar'], message)).toBe(false);
     expect(overlapsProcedure(['emails'], { phrases: ['mail'], learnedFrom: [] })).toBe(false);
+  });
+});
+
+describe('specificity and overlap', () => {
+  test('the longest matching phrase is the most specific; no match is -1, no triggers 0', () => {
+    const objective = 'Draft a follow-up email to the recruiter';
+    expect(
+      triggerSpecificity([{ phrase: 'email' }, { phrase: 'follow-up email' }], objective),
+    ).toBe('follow-up email'.length);
+    expect(triggerSpecificity([{ phrase: 'invoice' }], objective)).toBe(-1);
+    expect(triggerSpecificity([], objective)).toBe(0);
+  });
+
+  test('phrases overlap when one contains the other; no triggers overlaps everything', () => {
+    expect(triggersOverlap([{ phrase: 'recruiter' }], [{ phrase: 'the recruiter' }])).toBe(true);
+    expect(triggersOverlap([{ phrase: 'Follow-up email' }], [{ phrase: 'FOLLOW-UP email' }])).toBe(
+      true,
+    );
+    expect(triggersOverlap([{ phrase: 'recruiter' }], [{ phrase: 'weekly summary' }])).toBe(false);
+    expect(triggersOverlap([], [{ phrase: 'weekly summary' }])).toBe(true);
   });
 });

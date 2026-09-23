@@ -31,9 +31,10 @@ export const procedurePromotion = z.object({
   /**
    * Absent for delivery earned by evaluation. `owner_trial` is the owner approving the
    * exact definition by its hash: private to that owner in the origin space, and never
-   * enough on its own to activate or share.
+   * enough on its own to share. `owner_confirmed` is that owner answering "yes, keep
+   * doing this" after a job used the trial: the same private reach, made lasting.
    */
-  basis: z.enum(['evaluation', 'owner_trial']).optional(),
+  basis: z.enum(['evaluation', 'owner_trial', 'owner_confirmed']).optional(),
   definition_hash: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
@@ -283,6 +284,8 @@ export const procedureRecord = z.object({
   selectedEvaluationId: z.string().nullable(),
   canarySpaceId: z.string().nullable(),
   rejectionReason: z.string().nullable(),
+  pausedAt: timestamp.nullable().default(null),
+  removedAt: timestamp.nullable().default(null),
   version: z.number().int(),
   createdAt: timestamp,
 });
@@ -334,4 +337,129 @@ export const learningScopeResponse = z.object({
   templateId: z.string(),
   inputRefs: z.array(z.string()),
   createdAt: timestamp,
+});
+
+/**
+ * The person's own view of what was learned. Everything here is plain language
+ * rendered by trusted code from the stored definition; evaluation records and
+ * model output never appear. Corrections are one source; another source joins
+ * the same list with its own `source` value.
+ */
+export const learnedSource = z.enum(['correction']);
+export type LearnedSource = z.infer<typeof learnedSource>;
+/**
+ * `proposed`: learned from a correction and waiting for the person to try it.
+ * `trial`: used on the person's own work until they say to keep it or not.
+ * `active`: kept. `paused`: kept but not used until resumed. `reverted`: stopped,
+ * with the reason in `reason`.
+ */
+export const learnedState = z.enum(['proposed', 'trial', 'active', 'paused', 'reverted']);
+export type LearnedState = z.infer<typeof learnedState>;
+/** `share` appears only on something kept that has sealed evidence, in a shared space. */
+export const learnedAction = z.enum(['try', 'pause', 'resume', 'remove', 'share']);
+export type LearnedAction = z.infer<typeof learnedAction>;
+export const learnedChangeAction = z.enum(['pause', 'resume', 'remove', 'keep', 'decline']);
+export type LearnedChangeAction = z.infer<typeof learnedChangeAction>;
+export const learnedItem = z.strictObject({
+  id: z.string(),
+  source: learnedSource,
+  /** A short name, from where it applies. */
+  name: z.string(),
+  /** What it does, step by step, in the person's own words. */
+  does: z.array(z.string()),
+  /** The phrases in a request that make it apply. Empty means every request of its kind. */
+  applies_when: z.array(z.string()),
+  space_id: prefixedId('sp'),
+  /** False while it reaches only the person who taught it. */
+  shared: z.boolean(),
+  state: learnedState,
+  /** Why it stopped, in plain words, when `state` is `reverted`. */
+  reason: z.string().nullable(),
+  reason_code: z.string().nullable(),
+  /** What trying it approves: these exact bytes, and no later version. */
+  definition_hash: z.string(),
+  learned_at: timestamp,
+  /**
+   * When it leaves the list with the correction it came from. Null once the person
+   * said to keep it: what they kept does not expire.
+   */
+  expires_at: timestamp.nullable(),
+  /** True within a week of `expires_at`, so the list can say it is about to go. */
+  expiring_soon: z.boolean(),
+  /** What the person can do with it now. */
+  actions: z.array(learnedAction),
+});
+export type LearnedItem = z.infer<typeof learnedItem>;
+export const learnedChange = z.strictObject({
+  id: z.string(),
+  item_id: z.string(),
+  source: learnedSource,
+  action: learnedChangeAction,
+  name: z.string(),
+  created_at: timestamp,
+});
+export type LearnedChange = z.infer<typeof learnedChange>;
+export const learnedList = z.strictObject({
+  items: z.array(learnedItem),
+  /** The person's latest change in this space that can still be undone. */
+  last_change: learnedChange.nullable(),
+});
+export const learnedItemResponse = z.strictObject({
+  /** Null once removed: a removed item leaves the list until the removal is undone. */
+  item: learnedItem.nullable(),
+  change: learnedChange.nullable(),
+});
+/** Undo names the change the person saw, so a newer change is never undone by mistake. */
+export const learnedUndoRequest = learningSpaceRequest.extend({ change_id: z.string().min(1) });
+export const learnedTryRequest = procedureTrialRequest;
+
+export const learningNoticeId = prefixedId('ln');
+const keepOption = z.strictObject({ id: z.enum(['yes', 'no', 'change']), label: z.string() });
+/**
+ * `keep_question`: asked once after a job used something on trial, answered yes,
+ * no or change. `reverted`: something stopped being used, and why.
+ */
+export const learningNotice = z.discriminatedUnion('kind', [
+  z.strictObject({
+    id: learningNoticeId,
+    kind: z.literal('keep_question'),
+    item_id: z.string(),
+    name: z.string(),
+    text: z.string(),
+    options: z.array(keepOption),
+    job_id: prefixedId('job').nullable(),
+    state: z.enum(['open', 'answered', 'withdrawn']),
+    answer: z.enum(['yes', 'no', 'change']).nullable(),
+    created_at: timestamp,
+  }),
+  z.strictObject({
+    id: learningNoticeId,
+    kind: z.literal('reverted'),
+    item_id: z.string(),
+    name: z.string(),
+    text: z.string(),
+    reason_code: z.string(),
+    job_id: prefixedId('job').nullable(),
+    state: z.enum(['open', 'read']),
+    created_at: timestamp,
+  }),
+]);
+export type LearningNotice = z.infer<typeof learningNotice>;
+export const learningNoticeList = z.strictObject({ notices: z.array(learningNotice) });
+export const learningNoticeResponse = z.strictObject({ notice: learningNotice });
+export const keepAnswerRequest = z.discriminatedUnion('answer', [
+  learningSpaceRequest.extend({ answer: z.literal('yes') }),
+  learningSpaceRequest.extend({
+    answer: z.literal('no'),
+    reason: z.string().min(1).max(500).optional(),
+  }),
+  /** The person's own words for what to do differently; they become a correction. */
+  learningSpaceRequest.extend({ answer: z.literal('change'), text: z.string().min(1).max(8000) }),
+]);
+export type KeepAnswerRequest = z.infer<typeof keepAnswerRequest>;
+export const keepAnswerResponse = z.strictObject({
+  notice: learningNotice,
+  item: learnedItem.nullable(),
+  /** The correction a "change" answer opened. */
+  episode_id: episodeId.nullable(),
 });

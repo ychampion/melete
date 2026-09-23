@@ -3,8 +3,30 @@ import { withSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import { fakeProvider, type GatewayOptions, providersFromEnv } from '../gateway/index.ts';
 import type { JobService } from '../jobs/service.ts';
+import { ProcedureService } from './procedures.ts';
 import { openProposalGateway } from './proposal-gateway.ts';
 import { ProcedureProposer } from './proposer.ts';
+
+/**
+ * Proposes from waiting corrections and puts each proposal to work at once, on
+ * the owner's own jobs in the space it was taught in. Nothing waits for the
+ * person: they see it used in the job's trail and can keep, stop or change it
+ * with one answer. A proposal that cannot be tried stays in their list.
+ */
+export async function applyLearned(proposer: ProcedureProposer, procedures: ProcedureService) {
+  const tried = [];
+  for (const { ownerId, spaceId, candidate } of await proposer.drain()) {
+    if (candidate.state !== 'candidate') continue;
+    try {
+      tried.push(
+        await procedures.startTrial(ownerId, spaceId, candidate.id, candidate.bodyHash, true),
+      );
+    } catch {
+      process.stderr.write('learning trial not started\n');
+    }
+  }
+  return tried;
+}
 
 /** One durable drain; a second timer tick cannot overlap a bounded model call. */
 export async function startLearning(
@@ -37,12 +59,13 @@ export async function startLearning(
     ],
   });
   const proposer = new ProcedureProposer(jobs, gateway);
+  const procedures = new ProcedureService(jobs);
   let pending: Promise<void> | undefined;
   let closed = false;
   const tick = () => {
     if (closed || pending) return;
-    pending = proposer
-      .drain()
+    pending = applyLearned(proposer, procedures)
+      .then(() => undefined)
       .catch(() => {
         process.stderr.write('learning proposal drain failed\n');
       })

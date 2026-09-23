@@ -1,6 +1,7 @@
 /** Outcome vocabulary for personal interfaces. Never pass an internal record through here. */
 import { z } from 'zod';
 import { memoryKey } from './memory.ts';
+import { messageId } from './reactions.ts';
 
 const id = z.string().min(1).max(240);
 const text = z.string().min(1).max(4000);
@@ -223,7 +224,11 @@ export const conversationCreate = z.strictObject({
   plan_id: id.optional(),
 });
 export const conversationSwitchAgent = z.strictObject({ agent_id: id });
-export const conversationMessage = z.strictObject({ text: z.string().min(1).max(100000) });
+export const conversationMessage = z.strictObject({
+  text: z.string().min(1).max(100000),
+  /** The answer this message corrects, when the person replies to it as a correction. */
+  corrects: messageId.optional(),
+});
 export const messageAcceptance = z.strictObject({
   turn_id: id,
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),

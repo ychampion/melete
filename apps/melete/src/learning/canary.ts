@@ -3,12 +3,14 @@
  * procedure did not do its job. The canary ends in the same transaction that
  * records the correction, whether it was enabled by evaluation or by the owner's
  * own trial, so no later job receives it. One clean canary job is not enough to
- * outweigh a correction.
+ * outweigh a correction. A procedure the owner kept by answering "yes" to its
+ * trial is active on their word alone, so it stays under the same watch.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import { noticeReverted } from './notices.ts';
 import { procedureCandidate, procedureTransition } from './schema.ts';
 
 export const CANARY_INTERVENTION = 'canary_intervention';
@@ -28,7 +30,14 @@ export async function revertDeliveredCanaries(tx: Transaction, row: JobRow, epis
     .where(
       and(
         inArray(procedureCandidate.id, ids),
-        eq(procedureCandidate.state, 'enabled_canary'),
+        // What a person kept on their own word stays under the same watch as their trial.
+        or(
+          eq(procedureCandidate.state, 'enabled_canary'),
+          and(
+            eq(procedureCandidate.state, 'active'),
+            sql`${procedureCandidate.promotion}->>'basis' = 'owner_confirmed'`,
+          ),
+        ),
         eq(procedureCandidate.canarySpaceId, row.spaceId),
       ),
     )
@@ -57,7 +66,16 @@ export async function revertDeliveredCanaries(tx: Transaction, row: JobRow, epis
         ),
       )
       .returning();
-    if (saved) reverted.push(saved);
+    if (!saved) continue;
+    // The person it was delivered to hears that it stopped, and why.
+    await noticeReverted(
+      tx,
+      saved,
+      saved.promotion.principal_id ?? row.principalId,
+      row.id,
+      CANARY_INTERVENTION,
+    );
+    reverted.push(saved);
   }
   return reverted;
 }
