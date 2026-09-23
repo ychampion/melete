@@ -139,4 +139,32 @@ afterAll(async () => {
     expect(repaired.bundle.inputs.repair_briefs[0]?.changed_handle).toBe(`${seat.id}@1`);
     expect(repaired.bundle.inputs.repair_briefs[0]?.replacement_handle).toBe(`${seat.id}@2`);
   }, 20_000);
+
+  test("a job's output budget above the window leaves the attempt the whole window for input", async () => {
+    if (!handle || !queue) return;
+    const scope = await createScope({ ...handle, boss: queue.boss });
+    const jobs = new JobService(handle.db, queue.boss);
+    // The runner's default model has no catalog entry: a 128,000-token window.
+    const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
+      key: 'bundle-assembly-signing-key-32-chars',
+      scopes: [],
+    });
+    const job = await jobs.create({
+      space_id: scope.spaceId,
+      title: 'Long report',
+      objective: 'Write the long report',
+      budget: { max_output_tokens: 250_000 },
+    });
+    const claim = await runner.claim({
+      job_id: job.id,
+      expected_epoch: job.leaseEpoch,
+      expected_version: job.stateVersion,
+      reason: 'created',
+    });
+    if (!claim) throw new Error('attempt was not claimed');
+    expect(claim.claims.budget.max_output_tokens).toBe(250_000);
+    expect(claim.claims.budget.max_input_tokens).toBe(128_000);
+    expect(claim.bundle.budget.max_output_tokens).toBe(250_000);
+    expect(claim.bundle.budget.max_input_tokens).toBe(128_000);
+  });
 });

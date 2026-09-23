@@ -170,7 +170,8 @@ afterAll(async () => {
       const first = bundles[0];
       if (!first) throw new Error('No first bundle');
       expect(first.budget.max_output_tokens).toBe(8000);
-      expect(first.budget.max_input_tokens).toBe(120000);
+      // The window itself: each request sets aside only its own output from it.
+      expect(first.budget.max_input_tokens).toBe(128000);
       expect(first.skills.map((skill) => skill.name)).toEqual(['alpha', 'beta', 'gamma']);
       expect(first.knowledge).toHaveLength(2);
       expect(first.knowledge.map((item) => item.handle)).toContain(`${seat.id}@1`);

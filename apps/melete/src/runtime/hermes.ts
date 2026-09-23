@@ -2,7 +2,7 @@ import {
   type AttemptBundle,
   type AttemptOutcome,
   type EventSink,
-  inputTokenAllowance,
+  inputTokenCeiling,
   type RuntimeAdapter,
 } from '@melete/contracts';
 import {
@@ -42,7 +42,7 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
         JSON.stringify([renderInstructions(bundle), renderInput(bundle), bundle.tools]),
         'utf8',
       ) + 32768;
-    if (promptBytes > inputTokenAllowance(bundle.model.model, bundle.budget))
+    if (promptBytes > inputTokenCeiling(bundle.model.model, bundle.budget))
       return {
         kind: 'budget_exhausted',
         summary: 'input_context_exceeded: assembled prompt exceeds the model input allowance',

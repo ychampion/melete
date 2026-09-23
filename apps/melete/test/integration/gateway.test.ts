@@ -220,6 +220,52 @@ databaseTest(
 );
 
 databaseTest(
+  'an output budget above the window leaves each request its input room and still caps the job',
+  async () => {
+    // "scripted" falls back to the 128,000-token window; the job may spend
+    // 250,000 output tokens across all of its requests.
+    const s = await setup(10, 250_000);
+    try {
+      const request = (maxTokens: number, content: string) =>
+        s.post(
+          '/providers/fake/v1/chat/completions',
+          {
+            model: 'scripted',
+            max_tokens: maxTokens,
+            stream: false,
+            messages: [{ role: 'user', content }],
+          },
+          { authorization: 'Bearer melete-surrogate-fixture', 'x-melete-capability': s.token },
+        );
+      // About 75,000 tokens of conversation, far more than 128,000 - 250,000.
+      const conversation = 'conversation so far '.repeat(15_000);
+      const first = await request(4096, conversation);
+      expect(first.status).toBe(200);
+      await first.arrayBuffer();
+      const [admitted] = await s.sql`select payload from event
+        where attempt_id = ${s.claims.attempt_id} and payload->>'phase' = 'model_request'`;
+      expect(admitted?.payload.max_input_tokens).toBe(128_000 - 4096);
+      expect(admitted?.payload.max_output_tokens).toBe(4096);
+
+      // Spend all but 3,000 of the job's output, then ask for more than that.
+      const [ledger] = await s.sql`select coalesce(sum(coalesce(settled, reserved)), 0)::int as used
+        from budget_ledger where job_id = ${s.claims.job_id} and kind = 'tokens'`;
+      await s.sql`insert into budget_ledger (id, job_id, attempt_id, kind, reserved, settled)
+        values (${`led_spent_${s.claims.attempt_id}`}, ${s.claims.job_id}, ${s.claims.attempt_id},
+          'tokens', ${250_000 - 3000 - Number(ledger?.used)}, ${250_000 - 3000 - Number(ledger?.used)})`;
+      const over = await request(4096, 'Continue.');
+      expect(over.status).toBe(429);
+      expect(await over.json()).toMatchObject({ error: { code: 'budget_exceeded' } });
+      const within = await request(2000, 'Continue.');
+      expect(within.status).toBe(200);
+      await within.arrayBuffer();
+    } finally {
+      await s.close();
+    }
+  },
+);
+
+databaseTest(
   'cancellation fences both broker and provider HTTP routes without a request record',
   async () => {
     const s = await setup();

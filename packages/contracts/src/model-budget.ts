@@ -32,6 +32,12 @@ export const FALLBACK_CONTEXT_WINDOW = 128_000;
  */
 export const GATEWAY_MAX_REQUEST_BYTES = 1024 * 1024;
 
+/**
+ * Tokens the gateway charges every model request for framing, on top of its
+ * estimate of the body. An input limit no larger than this admits no request.
+ */
+export const REQUEST_FRAMING_TOKENS = 256;
+
 export function modelContextWindow(model: string): number {
   const named = hasKnownContextWindow(model) ? CONTEXT_WINDOWS[model] : undefined;
   return typeof named === 'number' ? named : FALLBACK_CONTEXT_WINDOW;
@@ -51,11 +57,30 @@ export function hasKnownContextWindow(model: string): boolean {
   return Object.hasOwn(CONTEXT_WINDOWS, model);
 }
 
-/** Context is a per-request allowance. Output remains a separate cumulative ceiling. */
+/**
+ * The most input any one request to this model may carry before that request's
+ * own output is set aside: the window, narrowed by an explicit input limit. It
+ * is what an attempt can be told before any request exists.
+ */
+export function inputTokenCeiling(model: string, limits: { max_input_tokens?: number }): number {
+  const window = modelContextWindow(model);
+  return Math.min(window, limits.max_input_tokens ?? window);
+}
+
+/**
+ * The input one request may carry: the window less the output that request asks
+ * for, narrowed by an explicit input limit.
+ *
+ * The output set aside is the request's own cap, never the job's output budget.
+ * That budget is spent across every request in the job and is bounded where it
+ * is reserved; subtracting it here as well shrank every request's input by the
+ * whole job's output, and a budget at or above the window left no room at all.
+ */
 export function inputTokenAllowance(
   model: string,
-  budget: { max_output_tokens: number; max_input_tokens?: number },
+  requestOutputTokens: number,
+  limits: { max_input_tokens?: number } = {},
 ): number {
-  const available = Math.max(0, modelContextWindow(model) - budget.max_output_tokens);
-  return Math.min(available, budget.max_input_tokens ?? available);
+  const available = Math.max(0, modelContextWindow(model) - requestOutputTokens);
+  return Math.min(available, limits.max_input_tokens ?? available);
 }

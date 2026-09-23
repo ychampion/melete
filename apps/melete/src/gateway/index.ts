@@ -4,7 +4,12 @@ import { createServer as createHttpsServer } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { SecureContextOptions, TLSSocket } from 'node:tls';
-import { GATEWAY_MAX_REQUEST_BYTES, inputTokenAllowance } from '@melete/contracts';
+import {
+  GATEWAY_MAX_REQUEST_BYTES,
+  inputTokenAllowance,
+  modelContextWindow,
+  REQUEST_FRAMING_TOKENS,
+} from '@melete/contracts';
 import { createScriptedProvider, fakeProvider } from './fake.ts';
 import { estimateInputTokens, object, SecretRedactor, UsageCollector } from './metering.ts';
 import {
@@ -213,6 +218,12 @@ export function createModelGateway(options: GatewayOptions): Server {
       if (!positiveInteger(requested) || requested > principal.maxTokens) {
         throw new GatewayError(429, 'token_cap_exceeded');
       }
+      // An output cap that leaves no room even for the framing can never fit,
+      // however short the conversation. It is refused as itself, because the
+      // engine reads input_context_exceeded as a cue to compact, and compacting
+      // cannot help a request like this one.
+      if (requested > modelContextWindow(model) - REQUEST_FRAMING_TOKENS)
+        throw new GatewayError(400, 'output_exceeds_context');
       for (const key of ['max_output_tokens', 'max_completion_tokens', 'max_tokens'])
         delete body[key];
       body[
@@ -234,11 +245,10 @@ export function createModelGateway(options: GatewayOptions): Server {
       // Remote media and built-in tools cannot be metered by this text-only gateway.
       const encoded = JSON.stringify(body);
       if (containsRemoteInput(body)) throw new GatewayError(400, 'unmetered_input_denied');
-      const inputTokens = estimateInputTokens(encoded) + 256;
+      const inputTokens = estimateInputTokens(encoded) + REQUEST_FRAMING_TOKENS;
       if (
         inputTokens >
-        (principal.maxInputTokens ??
-          inputTokenAllowance(model, { max_output_tokens: principal.maxTokens }))
+        inputTokenAllowance(model, requested, { max_input_tokens: principal.maxInputTokens })
       )
         throw new GatewayError(413, 'input_context_exceeded');
       const estimatedTokens = inputTokens + requested;

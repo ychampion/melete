@@ -7,7 +7,7 @@ import {
   type ContextAwareRuntimeAdapter,
   type ContextInvalidated,
   dedupKey,
-  inputTokenAllowance,
+  inputTokenCeiling,
   isOutcomeEnvelope,
   isTerminal,
   type JobState,
@@ -196,7 +196,7 @@ export class AttemptRunner {
         budget: {
           max_actions: budget.max_actions,
           max_output_tokens: budget.max_output_tokens,
-          max_input_tokens: inputTokenAllowance(model.model, budget),
+          max_input_tokens: inputTokenCeiling(model.model, budget),
           max_usd_est: budget.max_usd_est,
         },
         exp: Math.floor(Date.now() / 1000) + CAPABILITY_TTL_SECONDS,

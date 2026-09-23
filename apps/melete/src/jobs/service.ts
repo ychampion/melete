@@ -7,6 +7,7 @@ import {
   type JsonObject,
   jobBudget,
   jobConstraints,
+  REQUEST_FRAMING_TOKENS,
   responsibilityJob,
   schedulingClass,
   type TransitionInput,
@@ -42,6 +43,24 @@ export const DEFAULT_BUDGET: JobBudget = {
   max_attempts: 5,
   max_usd_est: 1,
 };
+
+/** The longest delay a timer holds; a longer one fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Why no attempt could ever run under this budget, or null when one could.
+ *
+ * Only limits that fail for every model and every runtime are refused. The
+ * output budget has no ceiling of its own: it is spent across the job's
+ * requests, and each request sets aside only its own output from its window.
+ */
+export function impossibleBudget(budget: JobBudget): string | null {
+  if (budget.max_input_tokens !== undefined && budget.max_input_tokens <= REQUEST_FRAMING_TOKENS)
+    return `max_input_tokens must be more than ${REQUEST_FRAMING_TOKENS}: every model request carries ${REQUEST_FRAMING_TOKENS} tokens of framing before any conversation.`;
+  if (budget.max_wall_ms > MAX_TIMER_MS)
+    return `max_wall_ms must be at most ${MAX_TIMER_MS} (about 24 days): a longer attempt timer fires at once and ends the attempt.`;
+  return null;
+}
 
 export function jobView(row: JobRow) {
   return responsibilityJob.parse({
@@ -161,6 +180,9 @@ export class JobService {
       .where(eq(space.id, value.space_id));
     if (!parent) throw new ServiceError('not_found', 'Space not found.', 404);
     const access = await spaceAuthority(tx, value.space_id, requestPrincipal(), true);
+    const budget = jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget });
+    const impossible = impossibleBudget(budget);
+    if (impossible) throw new ServiceError('invalid_budget', impossible, 400);
     const [row] = await tx
       .insert(job)
       .values({
@@ -171,7 +193,7 @@ export class JobService {
         objective: value.objective,
         objectiveOrigin,
         constraints: jobConstraints.parse(value.constraints ?? {}),
-        budget: jobBudget.parse({ ...DEFAULT_BUDGET, ...value.budget }),
+        budget,
         nextWakeAt:
           experience && (experience.dormant || ['chat', 'plan'].includes(experience.kind))
             ? null
