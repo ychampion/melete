@@ -180,3 +180,59 @@ test('a refused certificate is one rejection, with no stray error left behind', 
     server.stop(true);
   }
 });
+
+test('an MCP session is closed through the same fetch that opened it', async () => {
+  // A listener inside the installation, which the closing DELETE must never reach directly.
+  const inside: string[] = [];
+  const listener = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: (request) => {
+      inside.push(request.method);
+      return new Response(null, { status: 204 });
+    },
+  });
+  try {
+    const supplied: string[] = [];
+    const transport = openHttpMcpTransport(
+      { transport: 'http', url: `http://127.0.0.1:${listener.port}/mcp` },
+      {
+        fetch: async (_url, init) => {
+          supplied.push(init.method ?? 'GET');
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), {
+            headers: { 'content-type': 'application/json', 'mcp-session-id': 'session-1' },
+          });
+        },
+      },
+    );
+    await transport.request('initialize', {});
+    await transport.close();
+    expect(supplied).toEqual(['POST', 'DELETE']);
+    expect(inside).toEqual([]);
+
+    // Through the public-only fetch, a name that turns private by the time the
+    // session closes gets no DELETE at all.
+    const { sent, request } = recorder();
+    const answers: ResolvedAddress[][] = [[PUBLIC], [{ address: '127.0.0.1', family: 4 }]];
+    const pinnedSession = async (url: URL, address: ResolvedAddress) => {
+      await request(url, address);
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), {
+        headers: { 'content-type': 'application/json', 'mcp-session-id': 'session-2' },
+      });
+    };
+    const flipping = openHttpMcpTransport(
+      { transport: 'http', url: 'https://mcp.example.test/mcp' },
+      {
+        fetch: publicOnlyFetch({
+          resolve: async () => answers.shift() ?? [],
+          request: pinnedSession,
+        }),
+      },
+    );
+    await flipping.request('initialize', {});
+    await flipping.close();
+    expect(sent).toEqual([{ url: 'https://mcp.example.test/mcp', address: PUBLIC.address }]);
+  } finally {
+    listener.stop(true);
+  }
+});

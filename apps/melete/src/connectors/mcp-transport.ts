@@ -369,7 +369,9 @@ export function openHttpMcpTransport(
       if (session) {
         // Session disposal has no tool effect and is never used to replay a call.
         const token = await options.accessToken?.().catch(() => undefined);
-        const response = await fetch(endpoint.url, {
+        // The same fetch every request used, so closing is held to the same
+        // address checks as talking was.
+        const response = await (options.fetch ?? fetch)(endpoint.url, {
           method: 'DELETE',
           redirect: 'error',
           signal: AbortSignal.timeout(Math.min(options.timeoutMs ?? 10_000, 2_000)),
