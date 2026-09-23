@@ -251,7 +251,7 @@ withDb('tool entries in the conversation', () => {
     });
     // A runtime call the turn never heard back from: once the turn is over it
     // is still shown as it stood, but it is not the step under way.
-    await raw('tool_call_proposed', { tool: 'web_extract', call_id: 'c4', arguments: {} });
+    await raw('tool_call_proposed', { tool: 'vision_analyze', call_id: 'c4', arguments: {} });
     // Memory and a browser step, as other subsystems write them.
     const now = new Date().toISOString();
     await appendMemoryTool(sql, chat.id, attemptId, {
@@ -303,6 +303,9 @@ withDb('tool entries in the conversation', () => {
     expect(calls.filter((call) => call.kind === 'web').map((call) => call.status)).toEqual([
       'running',
       'failed',
+    ]);
+    expect(calls.filter((call) => call.kind === 'tool').map((call) => call.status)).toEqual([
+      'running',
     ]);
     expect(calls.filter((call) => call.kind === 'model').map((call) => call.status)).toEqual([
       'running',
