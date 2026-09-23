@@ -8,6 +8,7 @@ import type { JobRow } from '../../src/jobs/service.ts';
 import { SubmissionService } from '../../src/jobs/submissions.ts';
 import {
   attachConversationCorrections,
+  captureConversationCorrection,
   PAIRING_WINDOW_MS,
 } from '../../src/learning/conversation.ts';
 import { episode } from '../../src/learning/schema.ts';
@@ -251,7 +252,28 @@ const corrections = async (jobId: string) => {
     // The owner's own conversation: the speaker, not the job's owner, decides whose words these are.
     const row = await conversation(spaceId);
     const answer = await turn(row);
-    await say(row.id, CORRECTION, { principal: memberId, corrects: answer });
+    // A member cannot speak in someone else's job at all: the message is refused.
+    const receipt = await say(row.id, CORRECTION, { principal: memberId, corrects: answer });
+    expect(receipt.receipt.state).toBe('rejected');
+    expect(await corrections(row.id)).toHaveLength(0);
+    // Behind that refusal, the capture itself teaches only as the person speaking. Asked to
+    // record the owner's own thumbs-down pair as the member's, it is refused, and nothing is
+    // recorded in the member's name or the owner's.
+    await react(spaceId, answer, THUMBS_DOWN);
+    await say(row.id, CORRECTION);
+    const [owners] = await corrections(row.id);
+    expect(owners?.actor).toBe(fixture.ownerId);
+    await fixture.handle.sql`delete from episode where id = ${owners?.id ?? ''}`;
+    const current = await fixture.jobs.get(row.id);
+    let refused: unknown;
+    try {
+      await fixture.jobs.transaction((tx) =>
+        captureConversationCorrection(tx, fixture.episodes, current, memberId),
+      );
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toMatchObject({ code: 'scope_denied' });
     expect(await corrections(row.id)).toHaveLength(0);
   }, 120000);
 
