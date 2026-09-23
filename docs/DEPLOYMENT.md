@@ -579,14 +579,18 @@ never rewritten: it is honoured, or refused when it exceeds the job's budget.
 
 ### Signing in to a provider
 
-Two providers are used through a sign-in instead of a key: `chatgpt`, with the
-owner's ChatGPT account, and `openai-compatible` when its OAuth settings are
-given. Signing in needs `MELETE_MASTER_KEY`, which seals the tokens the provider
+A sign-in is an alternative to a key for two providers. OpenAI models are
+reached either with an API key, as `openai` with `OPENAI_API_KEY` and billed per
+use, or with the owner's ChatGPT account, as `chatgpt`, drawing on that
+account's plan; pick one with `MELETE_DEFAULT_PROVIDER`. An OpenAI-compatible
+endpoint takes either `OPENAI_COMPAT_API_KEY` or, when its OAuth settings are
+given, a sign-in. Signing in needs `MELETE_MASTER_KEY`, which seals the tokens the provider
 issues. Only the setup owner can sign in or out, and one sign-in serves the
 whole installation.
 
-**ChatGPT.** Set `MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to
-a model the account's plan serves, then sign in. Model access and usage limits
+**ChatGPT.** To use it instead of an OpenAI key, set
+`MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to a model the
+account's plan serves, then sign in. Model access and usage limits
 are those of the ChatGPT plan. The sign-in follows the flow of the open-source
 Codex CLI and presents its public client, which `MELETE_CHATGPT_CLIENT_ID`
 replaces when set. ChatGPT sign-in works for as long as OpenAI keeps this
