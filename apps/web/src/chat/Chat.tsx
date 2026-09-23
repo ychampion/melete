@@ -6,10 +6,19 @@
  * gap marker says where streamed text may be missing.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { amountWords } from '../companies/format.ts';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
-import { IconButton, Menu, MenuItem, MenuSep, Overline, Popover } from '../design/primitives.tsx';
+import {
+  Button,
+  IconButton,
+  Menu,
+  MenuItem,
+  MenuSep,
+  Overline,
+  Popover,
+} from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import {
   agentById,
@@ -34,6 +43,7 @@ import {
 import type {
   ActionResolution,
   LedgerAction,
+  Permission,
   PermissionOption,
   Reaction,
   RuleBounds,
@@ -148,6 +158,13 @@ function AgentChip({
   );
 }
 
+/**
+ * On the phone the decision moves to a bar at the bottom of the screen. A
+ * permission that also offers "Always allow" keeps its card footer, because
+ * that choice opens its own dialog from the card.
+ */
+const barePermission = (permission: Permission) => !permission.options.includes('always');
+
 function TurnView({
   turn,
   now,
@@ -223,6 +240,7 @@ function TurnView({
             permission={block.permission}
             decided={block.decided}
             touch={touch}
+            bare={touch && barePermission(block.permission)}
             onDecide={(option, bounds) =>
               onDecide(block.permission.id, option, block.permission.version, bounds)
             }
@@ -586,6 +604,17 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const title = conversation?.title ?? 'New chat';
   const found = useCase(conversationId, transcript.status);
+  const pending = touch
+    ? transcript.turns
+        .flatMap((turn) => turn.blocks)
+        .find(
+          (block): block is Extract<typeof block, { type: 'permission' }> =>
+            block.type === 'permission' &&
+            block.decided === null &&
+            barePermission(block.permission),
+        )
+    : undefined;
+  const amount = found ? amountWords(found.item) : null;
   const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
@@ -594,6 +623,16 @@ export function ChatScreen({ id }: { id: string | null }) {
     <Shell
       title={title}
       agentId={agentId}
+      phoneBack={() => (window.history.length > 1 ? window.history.back() : navigate('/'))}
+      phoneSub={
+        agent ? (
+          <>
+            <AgentFace look={lookOf(agent)} size={14} />
+            {agent.name}
+            {amount ? ` · ${amount.figure} ${amount.direction}` : ''}
+          </>
+        ) : undefined
+      }
       rail={!found}
       panel={
         found && caseOpen ? (
@@ -700,7 +739,36 @@ export function ChatScreen({ id }: { id: string | null }) {
               ))}
             </div>
           </div>
-          <div className="chat-foot">
+          {pending ? (
+            <div className="decide-bar">
+              <span className="decide-caption">
+                <Icon name="lock" size={13} />
+                This request can be allowed once or denied.
+              </span>
+              {pending.permission.options.includes('allow_once') ? (
+                <Button
+                  block
+                  className="btn-tall"
+                  onClick={() =>
+                    decide(pending.permission.id, 'allow_once', pending.permission.version)
+                  }
+                >
+                  Allow once
+                </Button>
+              ) : null}
+              {pending.permission.options.includes('deny') ? (
+                <Button
+                  block
+                  variant="ghost"
+                  className="btn-tall"
+                  onClick={() => decide(pending.permission.id, 'deny', pending.permission.version)}
+                >
+                  Deny
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="chat-foot" hidden={Boolean(pending)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button

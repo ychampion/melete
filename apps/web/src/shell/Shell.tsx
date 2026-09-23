@@ -612,9 +612,22 @@ export type ShellProps = {
   panel?: ReactNode;
   rail?: boolean;
   phoneActions?: ReactNode;
+  /** On the phone, a back button in place of the drawer. */
+  phoneBack?: () => void;
+  /** On the phone, a second line under the title. */
+  phoneSub?: ReactNode;
 };
 
-export function Shell({ children, title, agentId, panel, rail = true, phoneActions }: ShellProps) {
+export function Shell({
+  children,
+  title,
+  agentId,
+  panel,
+  rail = true,
+  phoneActions,
+  phoneBack,
+  phoneSub,
+}: ShellProps) {
   const phone = useMedia('(max-width: 767px)');
   const narrow = useMedia('(max-width: 1279px)');
   const [drawer, setDrawer] = useState(false);
@@ -666,21 +679,39 @@ export function Shell({ children, title, agentId, panel, rail = true, phoneActio
         <div className="shell-main">
           {phone ? (
             <header className="phone-head">
-              <IconButton
-                name="menu"
-                label="Open the sidebar"
-                size={44}
-                iconSize={20}
-                onClick={() => setDrawer(true)}
-              />
+              {phoneBack ? (
+                <IconButton
+                  name="chevronLeft"
+                  label="Back"
+                  size={44}
+                  iconSize={20}
+                  onClick={phoneBack}
+                />
+              ) : (
+                <IconButton
+                  name="menu"
+                  label="Open the sidebar"
+                  size={44}
+                  iconSize={20}
+                  onClick={() => setDrawer(true)}
+                />
+              )}
               <div className="col grow" style={{ alignItems: 'center', minWidth: 0 }}>
                 <span
                   className="row clamp1"
-                  style={{ gap: 6, fontSize: 15, fontWeight: 600, color: 'var(--heading)' }}
+                  style={{
+                    gap: 6,
+                    fontSize: 15,
+                    fontWeight: 600,
+                    lineHeight: '20px',
+                    color: 'var(--heading)',
+                    maxWidth: '100%',
+                  }}
                 >
-                  {agent ? <AgentFace look={lookOf(agent)} size={18} /> : null}
-                  {title ?? 'Melete'}
+                  {agent && !phoneSub ? <AgentFace look={lookOf(agent)} size={18} /> : null}
+                  <span className="clamp1">{title ?? 'Melete'}</span>
                 </span>
+                {phoneSub ? <span className="phone-sub clamp1">{phoneSub}</span> : null}
               </div>
               {phoneActions}
               {showRail ? (

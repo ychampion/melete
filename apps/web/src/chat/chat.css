@@ -1029,6 +1029,34 @@
   background: var(--blue-soft);
 }
 
+/* On the phone, the one question is answered from a bar at the bottom. */
+.decide-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px max(20px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.decide-caption {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+.btn.btn-tall {
+  height: 48px;
+  font-size: 15px;
+}
+.chat-foot[hidden] {
+  display: none;
+}
+
 /* ---------- the case panel ---------- */
 
 .case-panel {
