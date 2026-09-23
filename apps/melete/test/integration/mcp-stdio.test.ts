@@ -464,6 +464,85 @@ withDb('a stdio MCP server installed by its owner', () => {
     launcher.behaviour.tools = DISHONEST_TOOLS;
   }, 60_000);
 
+  test('an upgrade keeps where a plugin may reach, and never opens a narrowed one to every site', async () => {
+    if (!h || !fixture) throw new Error('Postgres unavailable');
+    const fetchEntry = pluginEntry('fetch');
+    if (!fetchEntry) throw new Error('Missing catalog entry');
+    launcher.behaviour.tools = fetchEntry.tools.map((tool) => ({
+      name: tool.name,
+      inputSchema: { type: 'object' },
+    }));
+    const added = await h.app.request(
+      '/plugins/fetch',
+      h.as(h.cookie, { values: { sites: 'docs.example.com' } }),
+    );
+    expect(added.status).toBe(201);
+    const id = installPluginResponse.parse(await added.json()).connection.id;
+    const [row] =
+      await fixture.sql`select space_id, configuration from connection where id = ${id}`;
+    if (!row) throw new Error('The fetch plugin is not installed');
+    // The person's choice is recorded with the plugin; the launch holds only the named site.
+    expect(row.configuration.plugin).toEqual({
+      id: 'fetch',
+      version: fetchEntry.version,
+      values: { sites: 'docs.example.com' },
+    });
+    expect(row.configuration.server.endpoint.launch.egress).toEqual(['docs.example.com']);
+
+    const older = (plugin: Record<string, unknown>) => ({
+      ...row.configuration,
+      plugin,
+      server: {
+        ...row.configuration.server,
+        endpoint: {
+          transport: 'container',
+          launch: {
+            ...row.configuration.server.endpoint.launch,
+            source: 'mcp-server-fetch==2025.1.1',
+          },
+        },
+      },
+    });
+    const upgraded = async (plugin: Record<string, unknown>) => {
+      await fixture.sql`update connection set configuration = ${JSON.stringify(older(plugin))}::jsonb
+        where id = ${id}`;
+      const booted = new FakeStdioLauncher();
+      booted.behaviour.tools = launcher.behaviour.tools;
+      registries.push(
+        await configuredConnectors({
+          sql: fixture.sql,
+          workRoot: 'unused',
+          spacesRoot: 'unused',
+          masterKey: MASTER_KEY,
+          stdioLauncher: booted,
+        }),
+      );
+      const [after] = await fixture.sql`select configuration from connection where id = ${id}`;
+      return { configuration: after?.configuration, starts: booted.starts };
+    };
+
+    // Rebuilt from the recorded choice: the same one site, at the new version.
+    const recorded = await upgraded({
+      id: 'fetch',
+      version: '2025.1.1',
+      values: { sites: 'docs.example.com' },
+    });
+    expect(recorded.configuration.plugin.version).toBe(fetchEntry.version);
+    expect(recorded.configuration.server.endpoint.launch).toMatchObject({
+      source: fetchEntry.launch.source,
+      egress: ['docs.example.com'],
+    });
+    expect(recorded.starts.map((start) => start.launch.egress)).toEqual([['docs.example.com']]);
+
+    // A record from before choices were kept would rebuild as every site; it is cut back to
+    // what the installed version could already reach.
+    const unrecorded = await upgraded({ id: 'fetch', version: '2025.1.1' });
+    expect(unrecorded.configuration.server.endpoint.launch.egress).toEqual([]);
+    expect(JSON.stringify(unrecorded.configuration.server)).not.toContain('"*"');
+    expect((await h.revoke(id)).status).toBe(200);
+    launcher.behaviour.tools = DISHONEST_TOOLS;
+  }, 60_000);
+
   test('revoking the connection stops its server and removes what it kept', async () => {
     if (!h || !fixture) throw new Error('Postgres unavailable');
     const [row] = await fixture.sql`select id from connection

@@ -241,7 +241,7 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   const install = async (
     actor: string,
     request: CreateConnectionRequest,
-    plugin?: { id: string; version: string },
+    plugin?: { id: string; version: string; values: Record<string, string> },
   ) => {
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
@@ -420,7 +420,16 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
         label: entry.title,
         mcp_stdio: built.config,
       }),
-      { id: entry.id, version: entry.version },
+      {
+        id: entry.id,
+        version: entry.version,
+        // Kept so a later version is built from the same choices; secrets are sealed, never kept here.
+        values: Object.fromEntries(
+          entry.fields
+            .filter((field) => !field.secret && request.values[field.name] !== undefined)
+            .map((field) => [field.name, request.values[field.name] ?? '']),
+        ),
+      },
     );
     return c.json(installPluginResponse.parse(created), 201);
   });
