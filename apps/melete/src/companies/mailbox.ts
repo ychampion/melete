@@ -25,6 +25,13 @@ export interface ScanMailbox {
   recent(limit: number): Promise<ScanMessage[]>;
 }
 
+/**
+ * A mailbox that could not be read is a failed scan, never an empty inbox. The
+ * reason is the scan's own words: the person reads it, and a transport's error
+ * can carry an address or a server's reply.
+ */
+const unreadable = (reason: string) => new Error(`I couldn't read your mailbox: ${reason}`);
+
 /** The connector's own ceiling on one read; `email.search` refuses more. */
 export const MAILBOX_READ_LIMIT = 50;
 
@@ -53,7 +60,8 @@ export function connectorMailbox(options: {
   return {
     async recent(limit: number) {
       const connector = options.registry.get(options.connectionId);
-      if (!(connector instanceof EmailConnector)) return [];
+      if (!(connector instanceof EmailConnector))
+        throw unreadable('the mail connection is not open.');
       const id = newId('act');
       const payload = canonicalizePayload({
         query: '',
@@ -91,9 +99,10 @@ export function connectorMailbox(options: {
           constraints: jobConstraints.parse({}),
         },
       );
-      if (result.outcome !== 'succeeded') return [];
+      if (result.outcome !== 'succeeded')
+        throw unreadable('the mail connection did not answer. Check it and scan again.');
       const messages = result.receipt.detail.messages;
-      if (!Array.isArray(messages)) return [];
+      if (!Array.isArray(messages)) throw unreadable('the mail connection sent back no messages.');
       const read: ScanMessage[] = [];
       for (const entry of messages) {
         if (!entry || typeof entry !== 'object') continue;
