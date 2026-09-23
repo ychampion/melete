@@ -8406,7 +8406,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema98"];
+                        "application/json": components["schemas"]["__schema107"];
                     };
                 };
             };

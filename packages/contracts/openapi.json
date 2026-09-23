@@ -1081,7 +1081,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/__schema98"
+                  "$ref": "#/components/schemas/__schema107"
                 }
               }
             }
