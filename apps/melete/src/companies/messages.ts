@@ -7,6 +7,7 @@
  * call it rather than each building their own.
  */
 
+import { domainToASCII } from 'node:url';
 import { sensitiveInboxMessage } from '../connectors/email.ts';
 import type { MailMessage } from '../connectors/mail-transport.ts';
 
@@ -78,7 +79,10 @@ const MULTI_LABEL_SUFFIXES = new Set([
 /** The registrable domain of an address: the company's identity for this scan. */
 export function registrableDomain(address: string): string | null {
   const at = address.lastIndexOf('@');
-  const host = (at < 0 ? address : address.slice(at + 1)).trim().toLowerCase().replace(/\.$/, '');
+  // An internationalised name and its ASCII spelling are one company.
+  const host = domainToASCII(
+    (at < 0 ? address : address.slice(at + 1)).trim().toLowerCase().replace(/\.$/, ''),
+  );
   if (!host || !/^[a-z0-9.-]+$/.test(host) || host.startsWith('.') || host.includes('..'))
     return null;
   const labels = host.split('.');

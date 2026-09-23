@@ -97,3 +97,8 @@ describe('hygiene', () => {
     expect(withheldFromScan(message({ text: 'Your refund is on its way.' }))).toBe(false);
   });
 });
+
+test('a company whose domain is not ASCII is still a company', () => {
+  expect(registrableDomain('rechnung@bücher.example')).toBe('xn--bcher-kva.example');
+  expect(registrableDomain('rechnung@mail.xn--bcher-kva.example')).toBe('xn--bcher-kva.example');
+});

@@ -15,6 +15,7 @@ import {
   connectorReplyMailbox,
   deliveryFailureCode,
   isReplyFrom,
+  registrableDomain,
   replyPayload,
   senderDomain,
 } from './replies.ts';
@@ -136,4 +137,10 @@ test('a display name that spells out the company’s address does not make its s
   expect(replyPayload(read).sender_domain).toBe('evil.test');
   // Reading the rendered header alone, a part that holds two addresses is nobody.
   expect(senderDomain(read.from)).toBeNull();
+});
+
+test('a company with a name outside ASCII is the same company in either spelling', () => {
+  expect(registrableDomain('support@bücher.example')).toBe('xn--bcher-kva.example');
+  expect(registrableDomain('support@mail.xn--bcher-kva.example')).toBe('xn--bcher-kva.example');
+  expect(senderDomain('Bücher <hilfe@BÜCHER.example>')).toBe('xn--bcher-kva.example');
 });
