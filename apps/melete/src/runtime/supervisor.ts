@@ -331,6 +331,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       });
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
       signal.throwIfAborted();
+      const spawnedAt = Date.now();
       child = spawn(
         resolvePython(this.options.python),
         [join(this.options.runtimePackage, 'process_launcher.py')],
@@ -356,7 +357,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
       child.once('error', (error) => {
         startupError = error;
       });
-      if (child.pid) await this.engines.record(bundle.attempt.id, child.pid, home);
+      await this.engines.record(bundle.attempt.id, child, home, spawnedAt);
       let log = '';
       const collect = (data: Buffer) => {
         log = (log + data.toString()).slice(-16_000);

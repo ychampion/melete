@@ -303,7 +303,13 @@ server.serve_forever()
     const left = await mkdtemp(join(await realpath(tmpdir()), 'melete-runtime-'));
     const killed: number[] = [];
     const orphaned: ProcessTable = {
-      startedAt: async (pid) => (pid === 4200 ? 'boot-1:900' : systemProcesses.startedAt(pid)),
+      startedAt: async (pid) =>
+        pid === 4200
+          ? killed.includes(pid)
+            ? null
+            : { stamp: 'boot-1:900', atMs: null }
+          : systemProcesses.startedAt(pid),
+      isEngine: async (pid, home) => pid === 4200 || systemProcesses.isEngine(pid, home),
       killTree: async (pid) => {
         if (pid === 4200) killed.push(pid);
         else await systemProcesses.killTree(pid);
@@ -311,8 +317,9 @@ server.serve_forever()
     };
     await new EngineRegistry(workRoot, orphaned).record(
       'att_01J00000000000000000000042',
-      4200,
+      { pid: 4200, exitCode: null, signalCode: null },
       left,
+      Date.now(),
     );
     const supervisor = new ProcessRuntimeSupervisor({
       ...options,
