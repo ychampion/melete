@@ -144,6 +144,12 @@ import {
   submissionResponse,
 } from './responsibility.ts';
 import { runtimeEvent } from './runtime.ts';
+import {
+  deleteSpaceRequest,
+  spaceRemoval,
+  spaceRemovalPreview,
+  spaceRemovalReport,
+} from './spaces.ts';
 
 const json = <T extends z.ZodType>(schema: T) => ({
   content: { 'application/json': { schema } },
@@ -417,6 +423,65 @@ export function buildOpenApiDocument() {
                 }),
               ),
               '403': problem('Space owner required'),
+            },
+          },
+        },
+        '/spaces/{id}': {
+          delete: {
+            tags: ['spaces'],
+            summary: 'Remove a space, or empty a personal one',
+            description:
+              'The name must be typed exactly as it is shown. The space is closed at once, in ' +
+              'this request; everything in it is then cleared in the background, and the removal ' +
+              'is complete only after a final count finds nothing left. A personal space keeps ' +
+              'its id and is emptied. Asking again while a removal runs returns that removal.',
+            requestParams: idParam('id', 'Space id'),
+            requestBody: json(deleteSpaceRequest),
+            responses: {
+              '202': jsonResponse('Removal started', z.object({ removal: spaceRemoval })),
+              '400': problem('The name does not match the space'),
+              '403': problem('Space owner required, or no such space'),
+              '409': problem('The browser worker uses this space'),
+            },
+          },
+        },
+        '/spaces/{id}/removal/preview': {
+          get: {
+            tags: ['spaces'],
+            summary: 'What removing a space clears, what it does not reach, and the name to type',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse('Preview', z.object({ preview: spaceRemovalPreview })),
+              '403': problem('Space owner required, or no such space'),
+            },
+          },
+        },
+        '/spaces/{id}/removal': {
+          get: {
+            tags: ['spaces'],
+            summary: 'How far the removal of a space has got',
+            requestParams: idParam('id', 'Space id'),
+            responses: {
+              '200': jsonResponse(
+                'Removal and its account so far',
+                z.object({ removal: spaceRemoval, report: spaceRemovalReport }),
+              ),
+              '404': problem('This space is not being removed, or not by the person asking'),
+            },
+          },
+        },
+        '/removals/{id}': {
+          get: {
+            tags: ['spaces'],
+            summary: 'A removal, including one whose space is gone',
+            description: 'Answered only to the person who asked for the removal.',
+            requestParams: idParam('id', 'Removal id'),
+            responses: {
+              '200': jsonResponse(
+                'Removal and its account',
+                z.object({ removal: spaceRemoval, report: spaceRemovalReport }),
+              ),
+              '404': problem('Removal not found'),
             },
           },
         },

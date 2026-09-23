@@ -80,12 +80,12 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         });
       }
     }
-    await options.store.saveMessages(options.owner, stored);
+    await options.store.saveMessages(options.owner, record.id, stored);
 
     const admitted: LedgerItem[] = [];
     for (const group of grouped.companies) {
       if (!group.candidates.length) continue;
-      const companyId = await options.store.saveCompany(options.owner, {
+      const companyId = await options.store.saveCompany(options.owner, record.id, {
         name: group.name,
         domain: group.domain,
         monthly_spend_minor: null,
@@ -154,7 +154,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         .filter((item) => item.currency === currency)
         .reduce((sum, item) => sum + (item.amount_minor ?? 0), 0);
       if (currency)
-        await options.store.saveCompany(options.owner, {
+        await options.store.saveCompany(options.owner, record.id, {
           id: companyId,
           name: group.name,
           domain: group.domain,

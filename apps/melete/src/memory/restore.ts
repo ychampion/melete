@@ -3,6 +3,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { prefixedId, timestamp } from '@melete/contracts';
 import { z } from 'zod';
+import { requeueSpaceRemoval } from '../spaces/requeue.ts';
 import { MemoryError, type MemorySql } from './db.ts';
 import { applyRestriction } from './forget.ts';
 import { lockEventOrder } from './invalidate.ts';
@@ -21,12 +22,19 @@ export const restrictionRecord = z.strictObject({
   id: prefixedId('sup'),
   owner_id: prefixedId('own'),
   space_id: prefixedId('sp'),
-  operation: z.enum(['forget', 'delete', 'revoke', 'clear']),
+  // `remove_space` is the whole space going, not a span of it being suppressed:
+  // it carries no targets and no claim ids, and the replay below handles it
+  // rather than applyRestriction, which has the wrong shape for it.
+  operation: z.enum(['forget', 'delete', 'revoke', 'clear', 'remove_space']),
   all: z.boolean(),
   claim_ids: z.array(prefixedId('k')),
   targets: z.array(target),
   eligibility_cutoff: z.number().int().nonnegative(),
   access_generation: z.number().int().positive(),
+  /** A `remove_space` record only: the space's removal epoch this removal brought it to. */
+  removal_epoch: z.number().int().positive().optional(),
+  /** A `remove_space` record only: who asked, so a replayed removal still answers to them. */
+  requested_by: z.string().min(1).optional(),
   recorded_at: timestamp,
 });
 export type RestrictionRecord = z.infer<typeof restrictionRecord>;
@@ -106,9 +114,17 @@ export async function restoreMemory(sql: MemorySql, journal: RestrictionJournal)
       return 0;
     }
     for (const record of records) {
+      // A removed space is not suppressed span by span; it is taken apart
+      // again, whether or not its memory came back with it. The row this
+      // queues leaves the space unserved until it is.
+      if (record.operation === 'remove_space') {
+        await requeueSpaceRemoval(tx, record);
+        continue;
+      }
       const [space] =
         await tx`select * from memory_spaces where space_id = ${record.space_id} and owner_id = ${record.owner_id} for update`;
-      if (space) await applyRestriction(tx, record);
+      if (!space) continue;
+      await applyRestriction(tx, record);
     }
     await tx`update memory_spaces set restore_ready = true where not revoked`;
     return records.length;

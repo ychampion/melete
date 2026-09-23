@@ -85,7 +85,12 @@ import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
-import { requestPrincipal, spaceAuthority } from './principals/authority.ts';
+import {
+  refusedForRemoval,
+  requestPrincipal,
+  SPACE_BEING_CLEARED,
+  spaceAuthority,
+} from './principals/authority.ts';
 import { mountPrincipals } from './principals/routes.ts';
 import { withDeploymentContext } from './runtime/context.ts';
 import { DockerHermesRuntimeAdapter, DockerSocketApi } from './runtime/docker.ts';
@@ -97,6 +102,8 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
+import { SpaceRemovalService } from './spaces/removal.ts';
+import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
 import { mountBrowserSites } from './workers/browser/sites.ts';
@@ -133,6 +140,7 @@ export type AppDeps = {
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
   browserSessions?: BrowserSessionService;
+  removals?: SpaceRemovalService;
   runtimeAdapter?: string;
   runner?: AttemptRunner;
   broker?: BrokerService;
@@ -148,6 +156,8 @@ export function createApp(deps: AppDeps) {
   app.onError((error, c) => {
     if (error instanceof ServiceError)
       return c.json({ error: { code: error.code, message: error.message } }, error.status);
+    if (refusedForRemoval(error))
+      return c.json({ error: { code: 'scope_denied', message: SPACE_BEING_CLEARED } }, 403);
     if (error instanceof ZodError || error instanceof SyntaxError)
       return c.json(
         { error: { code: 'invalid_request', message: 'Request data is invalid.' } },
@@ -176,6 +186,10 @@ export function createApp(deps: AppDeps) {
     });
   if (deps.db) mountArtifacts(app, deps.db, deps.env.MELETE_SPACES_DIR, personalSpace);
   mountPrincipals(app, deps.db, deps.env.MELETE_SPACES_DIR, deps.jobs);
+  // After mountPrincipals, so the owner-only guard it installs on every
+  // non-GET under /spaces/:id runs before the handler that removes one.
+  if (deps.removals && deps.db && deps.sql)
+    mountSpaceRemoval(app, { db: deps.db, sql: deps.sql, removals: deps.removals });
   if (connections) mountConnections(app, connections);
   const submissions =
     deps.submissions ?? (deps.jobs ? new SubmissionService(deps.jobs) : undefined);
@@ -354,6 +368,7 @@ export async function bootstrap(
   let learning: Awaited<ReturnType<typeof startLearning>> | undefined;
   let evaluator: ProcedureEvaluator | undefined;
   let memory: Awaited<ReturnType<typeof startServiceMemory>> | undefined;
+  let removals: SpaceRemovalService | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
@@ -375,6 +390,11 @@ export async function bootstrap(
         ]),
       () => supervisedRuntime?.close(),
       () => supervisor?.close(),
+      // A sweep in flight finishes, or resumes at its phase on the next boot.
+      () => {
+        removals?.stop();
+        return removals?.drain();
+      },
       () => memory?.stop(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
@@ -595,6 +615,27 @@ export async function bootstrap(
           connections,
           registry,
         });
+      // A removal outlives the request that asked for it and the process that
+      // was running it, so it is resumed at startup and every minute after.
+      const journal = (deploymentMemory?.routes ?? memory)?.journal;
+      if (handle && journal) {
+        removals = new SpaceRemovalService({
+          db: handle.db,
+          sql: handle.sql,
+          jobs,
+          journal,
+          roots: { spacesRoot: env.MELETE_SPACES_DIR, workRoot: env.MELETE_WORK_DIR },
+          // The registry stops answering for a space's connections before
+          // their rows go, and the verification counts what it still holds.
+          ...(registry ? { connectors: registry } : {}),
+          // The worker stops, the profile goes, and the site rows with it.
+          ...(browser ? { browser: browser.sessions } : {}),
+          ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
+        });
+        // Resumed in the background: a removal waiting on a provider or a held
+        // file does not hold up the listener, and a shutdown waits for it.
+        if (options.workers !== false) removals.start();
+      }
       if (options.workers !== false) {
         await operations.start();
         await triggers.start();
@@ -648,6 +689,7 @@ export async function bootstrap(
         : undefined,
     memory: deploymentMemory?.routes ?? memory,
     browserSessions: browser?.sessions,
+    removals,
     episodes: jobs ? new EpisodeService(jobs, (id) => runner?.interrupt(id)) : undefined,
     proposer: learning?.proposer,
     evaluator,
@@ -680,6 +722,7 @@ export async function bootstrap(
     questions,
     effectBoundary,
     browserSessions: browser?.sessions,
+    removals,
     connections,
     learning,
     memory,

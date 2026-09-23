@@ -344,6 +344,15 @@ exists to gate memory restore: it records removals, not actions. The action
 ledger is ordinary Postgres state, with no tamper-evident export. See
 [MEMORY](MEMORY.md) for what forgetting reaches.
 
+Removing a space is an owner request over the API. No connector manifest
+declares it and it creates no action, so a model has no path to it;
+`member_cannot_delete_space` and `model_cannot_reach_removal` test both. The
+removal is written to the restriction journal before anything is deleted, so a
+restored snapshot from before it is taken apart again at startup
+(`restore_does_not_resurrect_space`), and it reads complete only after a final
+count finds nothing of the space in any table, on disk or at a provider.
+Connection keys stay valid at the service that issued them until revoked there.
+
 ## Verification
 
 Run from the repository root:

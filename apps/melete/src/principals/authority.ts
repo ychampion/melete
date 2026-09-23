@@ -60,6 +60,21 @@ export function ownedSpace(spaceId: SQLWrapper, principalId = requestPrincipal()
     and coalesce(authority_space.owner_principal_id, (select id from owner limit 1)) = ${principalId})`;
 }
 
+/** What anyone asking a space under removal for anything is told. */
+export const SPACE_BEING_CLEARED = 'This space is being cleared.';
+
+/**
+ * The same refusal when it comes from the database: every insert of new work,
+ * a connection or a mailbox scan is refused there for a space under removal,
+ * including the ones written as raw SQL that never pass through this module.
+ */
+export function refusedForRemoval(error: unknown): boolean {
+  for (let current = error; current instanceof Error; current = current.cause)
+    if ((current as { code?: unknown }).code === 'P0001' && current.message === 'space_removed')
+      return true;
+  return false;
+}
+
 export async function spaceAuthority(
   db: Reader,
   spaceId: string,
@@ -69,6 +84,10 @@ export async function spaceAuthority(
   const query = db.select().from(space).where(eq(space.id, spaceId));
   const [parent] = lock ? await query.for('share') : await query;
   if (!parent) throw new ServiceError('scope_denied', 'Space is not accessible.', 403);
+  // A space under removal admits nothing, from anyone: not its owner, and not
+  // the owner of a personal space whose emptying is waiting on something. The
+  // removal's own routes answer from its record rather than from here.
+  if (parent.removedAt) throw new ServiceError('scope_denied', SPACE_BEING_CLEARED, 403);
   const [installation] = parent.ownerPrincipalId
     ? []
     : await db.select({ id: owner.id }).from(owner).limit(1);

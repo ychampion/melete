@@ -124,6 +124,10 @@ export async function ensureBuiltinConnections(
       const spaces = await tx<{ id: string }[]>`select s.id from space s
         where (${spaceId ?? null}::text is null or s.id = ${spaceId ?? null})
           and s.git_path not like ${`${EVALUATION_SPACE_PATH}%`}
+          -- A space being removed is never furnished again, by a request that
+          -- lands mid-sweep or by the pass over every space at startup. Without
+          -- this, either one puts back the connections the sweep just deleted.
+          and s.removed_at is null
           and not exists (
             select 1 from connection c, jsonb_array_elements_text(c.scopes) granted
             where c.space_id = s.id and c.provider = ${builtin.provider}

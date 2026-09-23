@@ -62,7 +62,9 @@ withDb('a promise due today where the person lives is still in force', async () 
   const spaceId = spaces.spaces.find((entry) => entry.kind === 'personal')?.id ?? '';
   const [principal] = await handle.sql`select id from principal limit 1`;
   const owner = { spaceId, principalId: String(principal?.id) };
-  const companyId = await store.saveCompany(owner, {
+  // A company is written by a scan that is still open, as a real scan writes it.
+  const scan = await store.openScan(owner);
+  const companyId = await store.saveCompany(owner, scan.id, {
     name: 'Acme',
     domain: 'acme.test',
     monthly_spend_minor: null,
@@ -71,7 +73,7 @@ withDb('a promise due today where the person lives is still in force', async () 
     last_seen_at: '2026-09-20T09:00:00.000Z',
     message_count: 1,
   });
-  await store.saveItems(owner, newId('scn'), [
+  await store.saveItems(owner, scan.id, [
     {
       id: newId('li'),
       space_id: spaceId,

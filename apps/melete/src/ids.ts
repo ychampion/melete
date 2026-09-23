@@ -17,7 +17,8 @@ export function newId(
     | 'task'
     | 'mile'
     | 'rule'
-    | 'undo',
+    | 'undo'
+    | 'rem',
 ): string {
   let value = (BigInt(Date.now()) << 80n) | BigInt(`0x${randomBytes(10).toString('hex')}`);
   let encoded = '';

@@ -1,5 +1,5 @@
 /**
- * The conformance suite. Eight scenarios that prove the properties this release
+ * The conformance suite. Nine scenarios that prove the properties this release
  * claims, run against a compose stack with the `test` connector and a scripted
  * model, so the suite is deterministic and costs nothing.
  *
@@ -130,6 +130,29 @@ export const SCENARIOS: readonly Scenario[] = [
       'the same approvals are requested for the same payload hashes',
       'the attempt row records the provider, the model requested, and the model actually served',
       'enforcement never depends on the model agreeing to be enforced',
+    ],
+  },
+  {
+    id: 9,
+    slug: 'space-removal',
+    title: 'Deleting a space leaves nothing of it, and a restore does not bring it back',
+    text:
+      'Seed a shared space with a memory claim and its source, a knowledge file, a job with a receipt, ' +
+      'an artifact with a validation row, a connection with a sealed secret, a browser profile signed in ' +
+      'to one site, a learning episode and an accepted procedure, and a sandbox session at a fake ' +
+      'provider. Take a database backup. Delete the space. Restore the backup.',
+    assertions: [
+      'no row keyed to the space is left in any table, walked from the live catalog rather than a written list',
+      'the four tables whose job_id is merely nulled are gone, receipts and notification content with them',
+      'the space directory is gone, its git history and its browser profile with it',
+      'no job workspace is left under the work root for any job the space had',
+      'the fake provider lists no session and no snapshot for the space',
+      'one remove_space record is in the retained journal and its hash chain still verifies',
+      'after restoring the backup, memory is not restore_ready and a fresh removal is queued',
+      'the resumed removal clears the restored space again, and every assertion above holds',
+      'with the provider refusing, the removal ends blocked, the space remains, and nothing says it was deleted',
+      'a personal space keeps its id, its account stays signed in, and every content table for it is empty',
+      'a member is refused, and the granted tool catalog contains no tool that reaches removal',
     ],
   },
 ];
