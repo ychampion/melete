@@ -30,6 +30,7 @@ import { publishRevision } from '../../src/memory/claims.ts';
 import { assembleAttemptKnowledge } from '../../src/memory/context.ts';
 import { lockSpace, type MemoryScope, provisionMemorySpace } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
+import { buildViews } from '../../src/memory/views.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -379,6 +380,8 @@ withDb('tool entries in the conversation', () => {
         sources: [{ source_id: source.source.source_id, source_version: '1', start: 0, end: 26 }],
       });
     });
+    // Recall reads the index and profile the memory worker builds.
+    await buildViews(sql, scope);
     const recalled = async (member: boolean) => {
       const { chat, claims } = await conversationWithAttempt('What should we cook?');
       if (member) {
