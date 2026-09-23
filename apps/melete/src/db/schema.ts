@@ -118,6 +118,31 @@ export const secret = pgTable('secret', {
   rotatedAt: timestamp('rotated_at', { withTimezone: true }),
 });
 
+/**
+ * A model provider the owner signed in to, one row per provider for the whole
+ * installation. The tokens are one sealed box bound to the provider name and
+ * the row's generation. The generation moves on every rotation, so a refresh
+ * that read an older generation cannot overwrite a newer one.
+ */
+export const providerCredential = pgTable('provider_credential', {
+  provider: text('provider').primaryKey(),
+  ownerId: text('owner_id')
+    .notNull()
+    .references(() => owner.id, { onDelete: 'cascade' }),
+  /** The sealed record's own id, which the box binds alongside the provider and generation. */
+  secretId: text('secret_id'),
+  /** Empty once a refresh was refused for good; the row then only says why. */
+  ciphertext: text('ciphertext'),
+  generation: integer('generation').notNull().default(0),
+  /** `active`, or `sign_in_required` after the provider refused a refresh. */
+  status: text('status').notNull().default('active'),
+  reason: text('reason'),
+  account: text('account'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }),
+  createdAt: created(),
+});
+
 export const connection = pgTable(
   'connection',
   {

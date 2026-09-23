@@ -74,6 +74,8 @@ export interface GatewayProvider {
   /** HTTPS URL ending at the version prefix, for example https://api.openai.com/v1/. */
   baseUrl: string;
   apiKey?: string;
+  /** Set for a provider the owner signs in to; it stands in for `apiKey`. */
+  signedIn?: SignedInCredential;
   protocols: GatewayProtocol[];
   /** The in-process fake provider never opens a connection, so its URL is not checked. */
   fake?: boolean;
@@ -82,4 +84,15 @@ export interface GatewayProvider {
    * OPENAI_COMPAT_BASE_URL, which may be a model server on their own network.
    */
   allowHttp?: boolean;
+}
+
+/**
+ * A credential that comes from the owner signing in, opened per request in the
+ * service. It is used instead of `apiKey`, and neither ever reaches the cell.
+ */
+export interface SignedInCredential {
+  /** The access token to send now. Throws a GatewayError when there is none to send. */
+  current(): Promise<{ token: string; generation: number; headers: Record<string, string> }>;
+  /** The provider refused the token of this generation; the next use refreshes first. */
+  rejected(generation: number): void;
 }

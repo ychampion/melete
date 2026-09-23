@@ -25,6 +25,8 @@ describe('the API mode a runtime is told to speak', () => {
     expect(modelApiMode('openai-compatible', 'llama3.1')).toBe('chat_completions');
     expect(modelApiMode('openai-compatible', 'gpt-6-astra')).toBe('codex_responses');
     expect(modelApiMode('fake', 'scripted')).toBe('chat_completions');
+    // ChatGPT sign-in serves the responses protocol only, whatever the model.
+    expect(modelApiMode('chatgpt', 'gpt-5.1-codex')).toBe('codex_responses');
   });
 
   test('is always a protocol the gateway serves for that provider', () => {
@@ -45,6 +47,7 @@ describe('the API mode a runtime is told to speak', () => {
       'openai',
       'anthropic',
       'google',
+      'chatgpt',
       'openai-compatible',
     ]);
   });
@@ -146,5 +149,16 @@ describe('a provider selection that can never answer', () => {
     const local = providersFromEnv({ OPENAI_COMPAT_BASE_URL: 'http://127.0.0.1:11434/v1' });
     expect(providerKeyProblem('openai-compatible', local)).toContain('OPENAI_COMPAT_API_KEY');
     expect(providerKeyProblem('fake', [fakeProvider])).toBeNull();
+    const chatgpt = configured.find((provider) => provider.name === 'chatgpt');
+    if (!chatgpt) throw new Error('the ChatGPT provider is missing');
+    expect(providerKeyProblem('chatgpt', configured)).toContain('MELETE_MASTER_KEY');
+    const signedIn = {
+      ...chatgpt,
+      signedIn: {
+        current: async () => ({ token: 't', generation: 1, headers: {} }),
+        rejected() {},
+      },
+    };
+    expect(providerKeyProblem('chatgpt', [signedIn])).toBeNull();
   });
 });

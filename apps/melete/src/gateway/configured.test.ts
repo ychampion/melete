@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../env.ts';
-import { configuredProviders } from './configured.ts';
+import { configuredProviders, signInIssuers } from './configured.ts';
+import { authorizeUrl, CHATGPT, type OAuthIssuer } from './oauth.ts';
 
 function configure(source: Record<string, string>) {
   const warnings: string[] = [];
@@ -86,5 +87,59 @@ describe('the providers a service starts with', () => {
     expect(plain.warnings).toHaveLength(1);
     expect(plain.warnings[0]).toContain('OPENAI_COMPAT_API_KEY is empty');
     expect(plain.warnings[0]).toContain('never sent to a plain http:// endpoint');
+  });
+});
+
+describe('OAuth for the OpenAI-compatible endpoint', () => {
+  const settings = (overrides: Record<string, string>) => ({
+    OPENAI_COMPAT_BASE_URL: 'https://models.example.test/v1',
+    OPENAI_COMPAT_OAUTH_CLIENT_ID: 'melete',
+    OPENAI_COMPAT_OAUTH_REDIRECT_URL: 'https://melete.example.test/callback',
+    OPENAI_COMPAT_OAUTH_AUTHORIZE_URL: 'https://login.example.test/authorize',
+    OPENAI_COMPAT_OAUTH_TOKEN_URL: 'https://login.example.test/token',
+    ...overrides,
+  });
+
+  test('refuses an endpoint on this machine when the issuer is elsewhere', () => {
+    expect(() =>
+      signInIssuers(loadEnv(settings({ OPENAI_COMPAT_OAUTH_TOKEN_URL: 'http://127.0.0.1:9/t' }))),
+    ).toThrow('OPENAI_COMPAT_OAUTH_TOKEN_URL names this machine');
+    expect(() =>
+      signInIssuers(
+        loadEnv(
+          settings({
+            OPENAI_COMPAT_OAUTH_ISSUER: 'https://login.example.test',
+            OPENAI_COMPAT_OAUTH_REVOKE_URL: 'http://localhost:9/r',
+          }),
+        ),
+      ),
+    ).toThrow('OPENAI_COMPAT_OAUTH_REVOKE_URL names this machine');
+  });
+
+  test('accepts endpoints on this machine for an issuer on this machine', () => {
+    const issuers = signInIssuers(
+      loadEnv(
+        settings({
+          OPENAI_COMPAT_OAUTH_AUTHORIZE_URL: 'http://127.0.0.1:9/authorize',
+          OPENAI_COMPAT_OAUTH_TOKEN_URL: 'http://127.0.0.1:9/token',
+        }),
+      ),
+    );
+    expect((issuers['openai-compatible'] as OAuthIssuer).tokenUrl).toBe('http://127.0.0.1:9/token');
+  });
+});
+
+describe('the ChatGPT sign-in client', () => {
+  const chatgpt = (source: Record<string, string>) =>
+    signInIssuers(loadEnv(source)).chatgpt as OAuthIssuer;
+
+  test('is the Codex CLI public client unless the operator names another', () => {
+    expect(chatgpt({}).clientId).toBe(CHATGPT.clientId);
+    expect(chatgpt({ MELETE_CHATGPT_CLIENT_ID: '' }).clientId).toBe(CHATGPT.clientId);
+    const own = chatgpt({ MELETE_CHATGPT_CLIENT_ID: 'app_melete_registered' });
+    expect(own.clientId).toBe('app_melete_registered');
+    expect(new URL(authorizeUrl(own, 'state', 'challenge')).searchParams.get('client_id')).toBe(
+      'app_melete_registered',
+    );
   });
 });

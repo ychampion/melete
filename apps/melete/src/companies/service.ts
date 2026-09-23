@@ -13,7 +13,7 @@ import type { Sql } from 'postgres';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
-import { configuredProviders } from '../gateway/configured.ts';
+import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
 import type { CompanyExtractor } from './extract.ts';
@@ -36,6 +36,7 @@ function lazyGatewayExtractor(options: {
   provider: string;
   model: string;
   env: Env;
+  sql?: Sql;
 }): CompanyExtractor {
   let opened: Promise<{ extractor: CompanyExtractor }> | undefined;
   return {
@@ -43,7 +44,11 @@ function lazyGatewayExtractor(options: {
       opened ??= openExtractionGateway({
         provider: options.provider,
         model: options.model,
-        providers: configuredProviders(options.env, () => {}),
+        providers: configuredProviders(
+          options.env,
+          () => {},
+          options.sql ? providerSignIn(options.sql, options.env) : undefined,
+        ),
         maxCalls: GATEWAY_CALL_CEILING,
       });
       return (await opened).extractor.extract(request);
@@ -56,7 +61,7 @@ function lazyGatewayExtractor(options: {
  * absent, the scan is scripted and deterministic, which is what a demonstration
  * and every test want.
  */
-export function configuredExtractor(env: Env): CompanyExtractor {
+export function configuredExtractor(env: Env, sql?: Sql): CompanyExtractor {
   const model = process.env.MELETE_COMPANIES_MODEL?.trim();
   if (!model) return scriptedExtractor();
   const provider = process.env.MELETE_COMPANIES_PROVIDER?.trim() ?? env.MELETE_DEFAULT_PROVIDER;
@@ -64,6 +69,7 @@ export function configuredExtractor(env: Env): CompanyExtractor {
     provider,
     model: model === 'default' ? DEFAULT_EXTRACTION_MODEL : model,
     env,
+    sql,
   });
 }
 
@@ -121,7 +127,7 @@ export function companiesDeps(options: {
       options.sql && options.registry
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
-    extractor: configuredExtractor(options.env),
+    extractor: configuredExtractor(options.env, options.sql),
     // Without a job service there is nothing to create a job on, and the route's
     // stub refuses. The route records `job_id` and `handling` itself once this
     // returns an id, so the handler is given no `onStatusChange` of its own.

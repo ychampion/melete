@@ -198,6 +198,25 @@ const variables = z.object({
   GOOGLE_API_KEY: z.string().optional(),
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
   OPENAI_COMPAT_API_KEY: z.string().optional(),
+  /**
+   * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
+   * public client, the only one OpenAI has registered for this sign-in.
+   */
+  MELETE_CHATGPT_CLIENT_ID: unsetWhenBlank(z.string().max(200).optional()),
+  /**
+   * OAuth for the OpenAI-compatible endpoint, for a provider that issues access
+   * tokens instead of keys. The owner signs in once; the gateway refreshes.
+   */
+  OPENAI_COMPAT_OAUTH_ISSUER: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_AUTHORIZE_URL: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_TOKEN_URL: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_REVOKE_URL: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_CLIENT_ID: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_CLIENT_SECRET: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_SCOPES: unsetWhenBlank(z.string().optional()),
+  OPENAI_COMPAT_OAUTH_REDIRECT_URL: unsetWhenBlank(z.string().optional()),
+  /** The provider's name on the sign-in button, for example "Acme Models". */
+  OPENAI_COMPAT_OAUTH_LABEL: unsetWhenBlank(z.string().max(60).optional()),
 
   MELETE_DEFAULT_PROVIDER: z.string().default('fireworks'),
   /** The identifier the provider serves, which for Fireworks is the full account path. */

@@ -60,6 +60,23 @@ describe('what configure.ts tells an operator about the provider it wrote', () =
     ).toEqual([]);
   });
 
+  test('a signed-in provider needs the master key, not a provider key', () => {
+    expect(providerWarnings({ MELETE_DEFAULT_PROVIDER: 'chatgpt' })).toEqual([
+      "MELETE_DEFAULT_PROVIDER=chatgpt is used through the owner's sign-in, which needs MELETE_MASTER_KEY in deploy/.env to seal what the provider issues.",
+    ]);
+    expect(
+      providerWarnings({ MELETE_DEFAULT_PROVIDER: 'chatgpt', MELETE_MASTER_KEY: 'a'.repeat(64) }),
+    ).toEqual([]);
+    expect(
+      providerWarnings({
+        MELETE_DEFAULT_PROVIDER: 'openai-compatible',
+        OPENAI_COMPAT_BASE_URL: 'https://models.example.net/v1',
+        OPENAI_COMPAT_OAUTH_ISSUER: 'https://login.example.net',
+        MELETE_MASTER_KEY: 'a'.repeat(64),
+      }),
+    ).toEqual([]);
+  });
+
   test('a plain HTTP endpoint is not satisfied by the OpenAI key', () => {
     const warnings = providerWarnings({
       MELETE_DEFAULT_PROVIDER: 'openai-compatible',

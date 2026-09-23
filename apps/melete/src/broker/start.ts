@@ -12,7 +12,8 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
 import { resolveExperienceGrant } from '../experience/rules.ts';
-import { configuredProviders } from '../gateway/configured.ts';
+import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
+import type { ProviderSignIn } from '../gateway/credentials.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
 import { startQueue } from '../jobs/queue.ts';
 import { filesystemSpaces } from '../knowledge/spaces.ts';
@@ -40,6 +41,8 @@ export async function startEffectBoundary(
     /** A broker and registry the service already built, so both listeners share them. */
     broker?: BrokerService;
     registry?: ConnectorRegistry;
+    /** The owner's provider sign-ins, shared with the API that manages them. */
+    signIn?: ProviderSignIn;
   } = {},
 ) {
   if (!env.MELETE_CAPABILITY_KEY || !env.MELETE_APPROVAL_KEY || !env.DATABASE_URL) {
@@ -50,7 +53,11 @@ export async function startEffectBoundary(
   const binding = parseBrokerBind(env.MELETE_BROKER_BIND);
   if (!binding) throw new Error('MELETE_BROKER_BIND must be hostname:port');
   const { hostname, port } = binding;
-  const providers = configuredProviders(env);
+  const providers = configuredProviders(
+    env,
+    undefined,
+    dependencies.signIn ?? providerSignIn(handle.sql, env),
+  );
   const connections =
     dependencies.connections ?? (await readConnectionConfig(env.MELETE_CONNECTIONS_FILE));
   const browser = dependencies.browserSessions

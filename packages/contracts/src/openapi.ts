@@ -114,6 +114,15 @@ import {
   trustRequest,
   trustResolution,
 } from './provenance.ts';
+import {
+  completeSignInPending,
+  completeSignInRequest,
+  providerSignInList,
+  providerSignInStatus,
+  signInProvider,
+  startSignInRequest,
+  startSignInResponse,
+} from './provider-signin.ts';
 import { personReactionRequest, reactionListResponse, reactionResponse } from './reactions.ts';
 import { jobRepairsResponse } from './repair.ts';
 import {
@@ -255,6 +264,7 @@ export function buildOpenApiDocument() {
         { name: 'artifacts' },
         { name: 'approvals' },
         { name: 'connections' },
+        { name: 'model-providers' },
         { name: 'knowledge' },
         { name: 'skills' },
         { name: 'memory' },
@@ -1686,6 +1696,85 @@ export function buildOpenApiDocument() {
               '404': problem('No such item for this person'),
               '409': problem('Already finished, or no longer quotable'),
               '503': problem('Handling is not connected yet'),
+            },
+          },
+        },
+
+        '/model-providers/sign-in': {
+          get: {
+            tags: ['model-providers'],
+            summary: 'List the model providers the owner can sign in to, and each one’s state',
+            responses: {
+              '200': jsonResponse('Sign-in states', providerSignInList),
+              '403': problem('Only the setup owner manages model sign-in'),
+              '503': problem('MELETE_MASTER_KEY is not set, so nothing can be sealed'),
+            },
+          },
+        },
+
+        '/model-providers/{provider}/sign-in': {
+          get: {
+            tags: ['model-providers'],
+            summary: 'Read one provider’s sign-in state',
+            requestParams: { path: z.object({ provider: signInProvider }) },
+            responses: {
+              '200': jsonResponse('Sign-in state', providerSignInStatus),
+              '403': problem('Only the setup owner manages model sign-in'),
+              '404': problem('This installation offers no sign-in for that provider'),
+              '503': problem('MELETE_MASTER_KEY is not set'),
+            },
+          },
+          post: {
+            tags: ['model-providers'],
+            summary: 'Start signing the installation in to a model provider',
+            description:
+              'A device sign-in answers with a code to enter at the provider’s verification page. ' +
+              'A browser sign-in answers with an address to open; the provider then sends the ' +
+              'browser to `redirect_uri`, and that whole address is passed to complete. A newer ' +
+              'start for the same provider replaces an unfinished one; either expires after ' +
+              'fifteen minutes.',
+            requestParams: { path: z.object({ provider: signInProvider }) },
+            requestBody: json(startSignInRequest),
+            responses: {
+              '201': jsonResponse('Started', startSignInResponse),
+              '400': problem('Invalid request, or a method this provider does not offer'),
+              '403': problem('Only the setup owner manages model sign-in'),
+              '404': problem('This installation offers no sign-in for that provider'),
+              '502': problem('The provider could not be reached or refused the request'),
+              '503': problem('MELETE_MASTER_KEY is not set'),
+            },
+          },
+          delete: {
+            tags: ['model-providers'],
+            summary: 'Sign out: remove the sealed tokens and ask the provider to revoke them',
+            requestParams: { path: z.object({ provider: signInProvider }) },
+            responses: {
+              '200': jsonResponse('Signed out', providerSignInStatus),
+              '403': problem('Only the setup owner manages model sign-in'),
+              '404': problem('This installation offers no sign-in for that provider'),
+              '503': problem('MELETE_MASTER_KEY is not set'),
+            },
+          },
+        },
+
+        '/model-providers/{provider}/sign-in/complete': {
+          post: {
+            tags: ['model-providers'],
+            summary: 'Finish a sign-in',
+            description:
+              'A browser sign-in is finished once, with the address the browser was sent back to. ' +
+              'A device sign-in is checked with the provider at most once per `interval` and ' +
+              'answers 202 until the code has been entered.',
+            requestParams: { path: z.object({ provider: signInProvider }) },
+            requestBody: json(completeSignInRequest),
+            responses: {
+              '200': jsonResponse('Signed in', providerSignInStatus),
+              '202': jsonResponse('The code has not been entered yet', completeSignInPending),
+              '400': problem('The address is not the one sent, or its state does not match'),
+              '403': problem('Only the setup owner manages model sign-in'),
+              '404': problem('No unfinished sign-in by that id'),
+              '502': problem('The provider could not be reached or refused the code'),
+              '503': problem('MELETE_MASTER_KEY is not set'),
             },
           },
         },

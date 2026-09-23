@@ -539,7 +539,8 @@ credential in `deploy/.env`. Disable `MELETE_ENABLE_FAKE_PROVIDER` and
 | `anthropic` | `ANTHROPIC_API_KEY` | messages |
 | `openai` | `OPENAI_API_KEY` | responses |
 | `google` | `GOOGLE_API_KEY` | chat completions |
-| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY` | chat completions; responses for `gpt-6` models |
+| `chatgpt` | the owner's ChatGPT sign-in | responses |
+| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, or OAuth sign-in | chat completions; responses for `gpt-6` models |
 
 Any other name stops the service at start-up with a message naming the setting,
 and so does `openai-compatible` without a usable `OPENAI_COMPAT_BASE_URL`. An
@@ -575,6 +576,77 @@ hundred tokens truncates ordinary answers. The limit is reserved against the
 job's output budget until the call settles at its real usage, and it is lowered
 to what the job has left rather than refused. A limit the runtime does name is
 never rewritten: it is honoured, or refused when it exceeds the job's budget.
+
+### Signing in to a provider
+
+A sign-in is an alternative to a key for two providers. OpenAI models are
+reached either with an API key, as `openai` with `OPENAI_API_KEY` and billed per
+use, or with the owner's ChatGPT account, as `chatgpt`, drawing on that
+account's plan; pick one with `MELETE_DEFAULT_PROVIDER`. An OpenAI-compatible
+endpoint takes either `OPENAI_COMPAT_API_KEY` or, when its OAuth settings are
+given, a sign-in. Signing in needs `MELETE_MASTER_KEY`, which seals the tokens the provider
+issues. Only the setup owner can sign in or out, and one sign-in serves the
+whole installation.
+
+**ChatGPT.** To use it instead of an OpenAI key, set
+`MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to a model the
+account's plan serves, then sign in. Model access and usage limits
+are those of the ChatGPT plan. The sign-in follows the flow of the open-source
+Codex CLI and presents its public client, which `MELETE_CHATGPT_CLIENT_ID`
+replaces when set. ChatGPT sign-in works for as long as OpenAI keeps this
+sign-in open to apps other than its own. It offers two methods:
+
+- **Device code** (the default). Melete shows a short code and a link to
+  `auth.openai.com`; open the link on any device, sign in and enter the code.
+  Melete checks for completion at the interval the provider asks for.
+- **Browser.** Melete returns an address to open. After you approve, the browser
+  is sent to `http://localhost:1455/auth/callback`, which does not load, because
+  that address is the only one registered for this sign-in. Copy the whole
+  address from the address bar and give it to Melete to finish.
+
+**An OpenAI-compatible provider with OAuth.** For an endpoint whose provider
+issues OAuth access tokens, register a redirect address with that provider and
+set:
+
+| Setting | Value |
+| --- | --- |
+| `OPENAI_COMPAT_OAUTH_ISSUER` | The issuer; its authorize, token and revocation addresses are read from its metadata |
+| `OPENAI_COMPAT_OAUTH_AUTHORIZE_URL`, `OPENAI_COMPAT_OAUTH_TOKEN_URL` | Both, instead of the issuer, for a provider that publishes no metadata |
+| `OPENAI_COMPAT_OAUTH_REVOKE_URL` | Optional; where sign-out revokes the grant |
+| `OPENAI_COMPAT_OAUTH_CLIENT_ID` | The client registered with the provider |
+| `OPENAI_COMPAT_OAUTH_CLIENT_SECRET` | Only for a confidential client |
+| `OPENAI_COMPAT_OAUTH_SCOPES` | Space-separated, as the provider names them |
+| `OPENAI_COMPAT_OAUTH_REDIRECT_URL` | The registered redirect address |
+| `OPENAI_COMPAT_OAUTH_LABEL` | The provider's name on the sign-in button |
+
+Every sign-in uses PKCE and a one-time state. With these set, the signed-in
+token is sent to `OPENAI_COMPAT_BASE_URL` in place of `OPENAI_COMPAT_API_KEY`.
+Provider addresses must be `https://`, or `http://` on `localhost`. A partial
+setting stops the service at start-up with the name of what is missing.
+
+**The sign-in routes.** Each takes the owner's session:
+
+| Route | What it does |
+| --- | --- |
+| `GET /model-providers/sign-in` | Each provider's name, state (`signed_out`, `pending`, `signed_in` or `sign_in_required`) and, when there is something to do, a sentence saying what |
+| `POST /model-providers/{provider}/sign-in` | Starts a sign-in; `{"method": "browser"}` picks the browser method |
+| `POST /model-providers/{provider}/sign-in/complete` | Finishes it: `{"sign_in_id": ...}`, plus `"callback_url"` for the browser method. A device sign-in answers `202` until the code is entered |
+| `DELETE /model-providers/{provider}/sign-in` | Signs out: removes the tokens and asks the provider to revoke them |
+
+An unfinished sign-in expires after fifteen minutes, and starting another
+replaces it. Unfinished sign-ins are held in the service's memory, so a restart
+ends them.
+
+**Refresh.** The gateway refreshes the access token before it expires, five
+minutes early or at half its lifetime, whichever is sooner, and once per
+provider at a time across the whole service. A token the provider refuses is
+refreshed on the next call. When the provider refuses the refresh itself, the
+tokens are removed, the state becomes `sign_in_required` with a `reason`, the
+service log names the provider and the reason, and each model call to that
+provider is refused with `provider_sign_in_required` until the owner signs in
+again. While the provider cannot be reached, a token that has not yet expired
+keeps serving; once it expires, calls are refused with
+`provider_credential_unavailable` until a refresh succeeds.
 
 Provider secrets belong to Melete's gateway. Runtime cells receive short-lived
 capabilities and surrogate credentials. Do not copy a provider key into a
