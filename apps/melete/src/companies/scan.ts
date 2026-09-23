@@ -13,7 +13,7 @@
 
 import type { LedgerItem } from '@melete/contracts';
 import type { CompanyExtractor, ScanExtractor } from './extract.ts';
-import type { ScanMailbox } from './mailbox.ts';
+import { MAILBOX_UNREADABLE, MailboxUnreadable, type ScanMailbox } from './mailbox.ts';
 import { messageText, type ScanMessage } from './messages.ts';
 import { prefilter } from './prefilter.ts';
 import type { CompanyStore, Owner, ScanRecord, StoredMessage } from './repository.ts';
@@ -43,7 +43,14 @@ export type ScanOptions = {
 export type ScanOutcome = ScanRecord & { counts: Record<string, number> };
 
 /** Why a scan failed: the mailbox could not be read, or something after it went wrong. */
-export type ScanFailure = 'mailbox_unavailable' | 'scan_failed';
+/**
+ * What a failed scan says, from a fixed set. The mailbox's own sentence when it
+ * said why it could not be read; otherwise one of these.
+ */
+export const SCAN_FAILED = {
+  mailbox: "I couldn't read your mailbox.",
+  after: 'This scan stopped before it finished. Scan again.',
+} as const;
 
 /**
  * Run the scan. Failures are recorded on the scan row rather than thrown at the
@@ -57,11 +64,11 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   const counts: Record<string, number> = { ...noDrops() };
   let seen = 0;
   let found = 0;
-  let reason: ScanFailure = 'mailbox_unavailable';
+  let reason: string = SCAN_FAILED.mailbox;
   let session: ScanExtractor | undefined;
   try {
     const messages = await options.mailbox.recent(options.readLimit ?? 50);
-    reason = 'scan_failed';
+    reason = SCAN_FAILED.after;
     const grouped = prefilter(messages, {
       now,
       windowDays,
@@ -184,10 +191,11 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       counts,
     });
     return { ...record, status: 'done', messagesSeen: seen, itemsFound: found, counts };
-  } catch {
-    // The reason is a fixed code. What a transport or a store threw can carry a
-    // server's reply, an account name or a sentence out of somebody's mail, and
-    // none of that is kept on the scan or shown to anyone.
+  } catch (error) {
+    // The reason comes from a fixed set of the scan's own sentences. What a
+    // transport or a store threw can carry a server's reply, an account name or
+    // a sentence out of somebody's mail, and none of that is kept or shown.
+    if (error instanceof MailboxUnreadable) reason = MAILBOX_UNREADABLE[error.reason];
     await options.store.closeScan(options.owner, record.id, {
       status: 'failed',
       messagesSeen: seen,

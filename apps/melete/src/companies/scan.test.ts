@@ -5,7 +5,7 @@ import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fix
 import { fixtureMailbox } from './mailbox.ts';
 import { messageText } from './messages.ts';
 import { MemoryCompanyStore, type Owner } from './repository.ts';
-import { runScan } from './scan.ts';
+import { runScan, SCAN_FAILED } from './scan.ts';
 import { scriptedExtractor } from './scripted.ts';
 
 const owner: Owner = {
@@ -332,7 +332,7 @@ describe('a scan whose mailbox will not answer', () => {
       now,
     });
     expect(outcome.status).toBe('failed');
-    expect(outcome.error).toBe('mailbox_unavailable');
+    expect(outcome.error).toBe(SCAN_FAILED.mailbox);
     expect((await store.map(owner, now)).items).toEqual([]);
     expect((await store.scan(owner, outcome.id))?.status).toBe('failed');
   });
@@ -365,7 +365,7 @@ describe('a scan whose mailbox will not answer', () => {
       now,
     });
     expect(failing.status).toBe('failed');
-    expect(failing.error).toBe('scan_failed');
+    expect(failing.error).toBe(SCAN_FAILED.after);
     expect(JSON.stringify(await store.scan(owner, failing.id))).not.toContain('IMAP');
   });
 });
