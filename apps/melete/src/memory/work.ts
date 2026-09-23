@@ -65,6 +65,7 @@ export async function claimWork(
       where w.space_id = ${scope.spaceId} and s.state = 'active'
         and (${options.workId ?? null}::text is null or w.id = ${options.workId ?? null})
         and (w.status = 'pending' or (w.status = 'leased' and w.lease_until <= clock_timestamp()))
+        and (w.retry_at is null or w.retry_at <= clock_timestamp())
       order by w.created_at, w.id for update of w skip locked limit 1`;
     if (!row) return null;
     const [leased] = await tx`update memory_work set status = 'leased', fence = fence + 1,
@@ -142,6 +143,39 @@ export async function reserveExtractionCall(
     await tx`update memory_work set calls = calls + 1, reserved_usd = (reserved_usd::numeric + ${EXTRACTION_LIMITS.call_usd})::text where id = ${work.id}`;
   });
 }
+/** Give back a call reservation that no answer came back for. */
+export async function refundExtractionCall(
+  sql: MemorySql,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+) {
+  await sql`update memory_work set calls = greatest(calls - 1, 0),
+    reserved_usd = greatest(reserved_usd::numeric - ${EXTRACTION_LIMITS.call_usd}, 0)::text
+    where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+}
+/** The longest a message waits between tries while the model provider is failing. */
+export const PROVIDER_BACKOFF = { first_seconds: 30, max_seconds: 1800 } as const;
+/**
+ * Put work back unread until the provider is likely to answer again: 30 s after
+ * the first failure, doubling each time, never more than 30 min apart. Nothing
+ * is rejected, however long the outage lasts.
+ */
+export async function deferWork(
+  sql: MemorySql,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  code: string,
+) {
+  await sql.begin(async (tx) => {
+    await lockSpace(tx, scope);
+    await tx`update memory_work set status = 'pending', lease_until = null, error_code = ${code},
+      provider_failures = provider_failures + 1,
+      retry_at = clock_timestamp() + least(
+        ${PROVIDER_BACKOFF.max_seconds} * interval '1 second',
+        ${PROVIDER_BACKOFF.first_seconds} * power(2, least(provider_failures, 16)) * interval '1 second')
+      where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+  });
+}
 /** Only committed terminal segments count toward the independently locked stream cursor. */
 export async function advanceConsumed(tx: MemoryTx, source: SourceEvent) {
   await tx`select committed_sequence from memory_streams where space_id = ${source.space_id} and publisher = ${source.publisher} and stream = ${source.stream} for update`;
@@ -188,7 +222,8 @@ export async function repairQueue(sql: MemorySql, boss: PgBoss) {
   const rows =
     await sql`select w.id, w.space_id from memory_work w join memory_spaces p on p.space_id = w.space_id join memory_sources s on s.id = w.source_id
     where p.restore_ready and not p.revoked and s.state = 'active'
-      and (w.status = 'pending' or (w.status = 'leased' and w.lease_until <= clock_timestamp())) order by w.created_at limit 100`;
+      and (w.status = 'pending' or (w.status = 'leased' and w.lease_until <= clock_timestamp()))
+      and (w.retry_at is null or w.retry_at <= clock_timestamp()) order by w.created_at limit 100`;
   for (const row of rows) {
     await boss.send(
       MEMORY_EXTRACT_QUEUE,

@@ -11,6 +11,7 @@ import { type EmbeddingProvider, runViewWork } from './views.ts';
 import {
   checkLease,
   claimWork,
+  deferWork,
   finishWork,
   MEMORY_EXTRACT_QUEUE,
   repairQueue,
@@ -85,9 +86,12 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     await traced(await commitExtraction(options.sql, scope, batch, { proposals }));
   } catch (error) {
     const code = error instanceof MemoryError ? error.code : 'extraction_failed';
-    // Out of calls for this work or for the day: the message is left unread
-    // rather than retried into the same refusal.
-    if (['extraction_budget', 'memory_daily_budget'].includes(code)) {
+    // The provider did not answer, or today's reads are spent: the message stays
+    // unread and is tried again later, with a growing gap.
+    if (['extraction_provider_unavailable', 'memory_daily_budget'].includes(code))
+      await deferWork(options.sql, scope, batch, code);
+    // Out of answered calls for this one message: retrying would ask again.
+    else if (code === 'extraction_budget') {
       await options.sql.begin(async (tx) => {
         await lockSpace(tx, scope);
         await checkLease(tx, scope, batch);

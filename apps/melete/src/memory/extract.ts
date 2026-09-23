@@ -1,7 +1,12 @@
 import { type ExtractionProposal, extractionChangeSet } from '@melete/contracts';
 import { z } from 'zod';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
-import { EXTRACTION_LIMITS, type ExtractionBatch, reserveExtractionCall } from './work.ts';
+import {
+  EXTRACTION_LIMITS,
+  type ExtractionBatch,
+  refundExtractionCall,
+  reserveExtractionCall,
+} from './work.ts';
 
 /** Whose memory a call extracts for, so a gateway can hold each person to a budget. */
 export type ExtractionCall = { ownerId: string; spaceId: string; workId: string };
@@ -77,17 +82,31 @@ export async function proposeExtraction(
   });
   if (content.length > EXTRACTION_LIMITS.context_characters + 4000)
     throw new MemoryError('extraction_input_size');
-  const response = await gateway.chat(
-    {
-      messages: [
-        { role: 'system', content: INSTRUCTIONS },
-        { role: 'user', content },
-      ],
-      max_tokens: EXTRACTION_LIMITS.output_tokens,
-      signal: AbortSignal.timeout(EXTRACTION_LIMITS.timeout_ms),
-    },
-    { ownerId: scope.ownerId, spaceId: scope.spaceId, workId: batch.work.id },
-  );
+  let response: string;
+  try {
+    response = await gateway.chat(
+      {
+        messages: [
+          { role: 'system', content: INSTRUCTIONS },
+          { role: 'user', content },
+        ],
+        max_tokens: EXTRACTION_LIMITS.output_tokens,
+        signal: AbortSignal.timeout(EXTRACTION_LIMITS.timeout_ms),
+      },
+      { ownerId: scope.ownerId, spaceId: scope.spaceId, workId: batch.work.id },
+    );
+  } catch (error) {
+    // No answer came back: the provider failed, timed out or was unreachable, or
+    // the person's daily reads are spent. Neither is the message's fault, so the
+    // call is not charged to it and the message waits to be read later.
+    const code = error instanceof MemoryError ? error.code : null;
+    if (code !== null && !['extraction_gateway_failure', 'memory_daily_budget'].includes(code))
+      throw error;
+    await refundExtractionCall(sql, scope, batch);
+    throw new MemoryError(
+      code === 'memory_daily_budget' ? code : 'extraction_provider_unavailable',
+    );
+  }
   if (response.length > 128000) throw new MemoryError('extraction_response_size');
   return extractionChangeSet.parse(JSON.parse(response)).proposals;
 }

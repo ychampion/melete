@@ -10,6 +10,7 @@ import { createScriptedProvider, fakeProvider } from '../../src/gateway/index.ts
 import { newId } from '../../src/ids.ts';
 import { captureChat, chatIntent } from '../../src/memory/capture.ts';
 import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
+import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
 import { cleanupMemory } from '../../src/memory/forget.ts';
 import { openMemoryGateway } from '../../src/memory/gateway.ts';
@@ -344,6 +345,125 @@ withDb('automatic memory from chat', () => {
       expect(other).toBe('{"proposals":[]}');
     } finally {
       await opened.close();
+    }
+  });
+});
+
+withDb('a model provider outage', () => {
+  test('a message waits out a provider outage unread, costs no reads, and is kept once it recovers', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const journal = await createJournal();
+    const text = "Ana's email is ana@studio.example.";
+    const evidence = await ingest(db.sql, scope, {
+      stream: 'chat',
+      source_identity: 'outage',
+      source_version: '1',
+      source_type: 'message',
+      author: 'owner',
+      event_at: '2026-08-02T09:00:00Z',
+      text,
+    });
+    const quote = 'ana@studio.example';
+    const start = text.indexOf(quote);
+    const reply = JSON.stringify({
+      proposals: [
+        {
+          op: 'add',
+          expected_revision: null,
+          domain_key: 'contact.ana.email',
+          key: 'contact.ana.email',
+          content: quote,
+          kind: 'user_statement',
+          factual_status: 'attributed',
+          valid_from: '2026-08-02T09:00:00Z',
+          valid_until: null,
+          sources: [
+            {
+              source_id: evidence.source.source_id,
+              source_version: '1',
+              start,
+              end: start + quote.length,
+              quote,
+            },
+          ],
+        },
+      ],
+    });
+    let down = true;
+    const answers = createScriptedProvider([{ text: reply }]);
+    const opened = await openMemoryGateway({
+      sql: db.sql,
+      provider: 'fake',
+      model: 'fake-scripted-v1',
+      providers: [fakeProvider],
+      // The provider answers 503 until it comes back.
+      fake: async (body, attemptId, protocol) =>
+        down
+          ? new Response('{"error":"unavailable"}', {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            })
+          : answers(body, attemptId, protocol),
+      dailyCalls: 2,
+    });
+    const service = {
+      sql: db.sql,
+      boss: db.boss,
+      journal: journal.journal,
+      gateway: opened.gateway,
+    };
+    const work = async () => {
+      const [row] = await db.sql`select id, status, calls, provider_failures,
+        extract(epoch from (retry_at - clock_timestamp()))::float as wait from memory_work where source_id = ${evidence.source.source_id}`;
+      return row as {
+        id: string;
+        status: string;
+        calls: number;
+        provider_failures: number;
+        wait: number | null;
+      };
+    };
+    try {
+      const waits: number[] = [];
+      // Five failures, more than the message's four calls and the person's two daily reads.
+      for (let failure = 1; failure <= 5; failure++) {
+        const { id } = await work();
+        await runExtractionWork(service, id);
+        const after = await work();
+        expect([after.status, after.calls, after.provider_failures]).toEqual([
+          'pending',
+          0,
+          failure,
+        ]);
+        waits.push(Math.round(after.wait ?? 0));
+        // While the wait lasts the message is not tried at all.
+        await runExtractionWork(service, id);
+        expect((await work()).provider_failures).toBe(failure);
+        await db.sql`update memory_work set retry_at = clock_timestamp() - interval '1 second' where id = ${id}`;
+      }
+      // 30 s after the first failure, doubling each time.
+      expect(waits.map((wait) => Math.round(wait / 30))).toEqual([1, 2, 4, 8, 16]);
+      // However long the outage, the gap stops growing at 30 minutes.
+      const { id } = await work();
+      await db.sql`update memory_work set provider_failures = 20 where id = ${id}`;
+      await runExtractionWork(service, id);
+      expect(Math.round((await work()).wait ?? 0)).toBeLessThanOrEqual(1800);
+      await db.sql`update memory_work set retry_at = clock_timestamp() - interval '1 second' where id = ${id}`;
+      // The provider comes back: the message is read and kept, and only that read is counted.
+      down = false;
+      await runExtractionWork(service, id);
+      expect((await work()).status).toBe('done');
+      const [kept] = await db.sql`select b.content from memory_claims c
+        join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
+        where c.space_id = ${scope.spaceId} and c.key = 'contact.ana.email'`;
+      expect(kept?.content).toBe(quote);
+      const [reads] = await db.sql`select count(*)::int as n from memory_model_calls
+        where owner_id = ${scope.ownerId} and settlement->>'status' = 'succeeded'`;
+      expect(reads?.n).toBe(1);
+    } finally {
+      await opened.close();
+      await journal.close();
     }
   });
 });

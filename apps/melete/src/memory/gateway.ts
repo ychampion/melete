@@ -62,8 +62,11 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         // One person's calls are counted under one lock, so two workers cannot
         // both take the last call of the day.
         await tx`select pg_advisory_xact_lock(hashtext(${`memory-calls:${call.ownerId}`}))`;
+        // A call the provider refused, or that never reached it, is not a read.
         const [used] = await tx`select count(*)::int as calls from memory_model_calls
-          where owner_id = ${call.ownerId} and created_at > clock_timestamp() - interval '1 day'`;
+          where owner_id = ${call.ownerId} and created_at > clock_timestamp() - interval '1 day'
+            and not coalesce(settlement->>'status' = 'failed'
+              or (settlement->>'status' = 'unknown' and settlement->>'httpStatus' is null), false)`;
         if (Number(used?.calls ?? 0) >= options.dailyCalls)
           throw new GatewayError(429, 'memory_daily_budget');
         const id = randomUUID();

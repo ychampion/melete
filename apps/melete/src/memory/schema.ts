@@ -116,6 +116,10 @@ export const memoryWorkTable = pgTable(
     calls: integer('calls').notNull().default(0),
     reservedUsd: text('reserved_usd').notNull().default('0'),
     errorCode: text('error_code'),
+    /** Consecutive calls the model provider did not answer; sets the backoff. */
+    providerFailures: integer('provider_failures').notNull().default(0),
+    /** Not offered to a worker before this, while the provider is failing. */
+    retryAt: instant('retry_at'),
     createdAt: created(),
   },
   (t) => [index('memory_work_pending').on(t.spaceId, t.status, t.leaseUntil)],
