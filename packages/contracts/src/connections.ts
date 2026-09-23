@@ -243,7 +243,7 @@ export const CONNECTION_CHECK_DETAIL: Record<ConnectionCheckCode, string> = {
   unavailable:
     'The destination could not be reached or refused the credential. Check the address, the account and the password.',
   credential_refused:
-    'The server refused the account name or password. Use an app password where the provider offers one, then test again.',
+    'The server refused the account name or password. Use an app password where the provider offers one, then test again. Outlook.com accepts only its own sign-in, so no password works there.',
   not_running:
     'This connection has no running connector. Check the master key and the service log, then test again.',
   revoked: 'This connection was removed and can no longer be used.',
@@ -427,6 +427,7 @@ const mailProvider = (
   imap: [host: string, port: number, secure: boolean],
   smtp: [host: string, port: number, secure: boolean],
   passwordHelp: string,
+  usernameHelp?: string,
 ): ConnectionKindDescriptor => ({
   id,
   kind: 'mail',
@@ -442,7 +443,11 @@ const mailProvider = (
     { path: 'mail.smtp.secure', value: smtp[2] },
   ],
   fields: [
-    text('mail.username', 'Email address', { input: 'email', placeholder: 'you@example.com' }),
+    text('mail.username', 'Email address', {
+      input: 'email',
+      placeholder: 'you@example.com',
+      ...(usernameHelp ? { help: usernameHelp } : {}),
+    }),
     text('credentials.password', 'App password', {
       input: 'password',
       secret: true,
@@ -458,6 +463,7 @@ const calendarProvider = (
   title: string,
   serverUrl: string,
   passwordHelp: string,
+  usernameHelp?: string,
 ): ConnectionKindDescriptor => ({
   id,
   kind: 'caldav',
@@ -468,7 +474,11 @@ const calendarProvider = (
     { path: 'caldav.server_url', value: serverUrl },
   ],
   fields: [
-    text('caldav.username', 'Email address', { input: 'email', placeholder: 'you@example.com' }),
+    text('caldav.username', 'Email address', {
+      input: 'email',
+      placeholder: 'you@example.com',
+      ...(usernameHelp ? { help: usernameHelp } : {}),
+    }),
     text('credentials.password', 'App password', {
       input: 'password',
       secret: true,
@@ -496,6 +506,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
     ['imap.mail.me.com', 993, true],
     ['smtp.mail.me.com', 587, false],
     'Create an app-specific password at account.apple.com, under Sign-In and Security.',
+    'Your iCloud Mail address, such as you@icloud.com, even when you sign in to Apple with another address.',
   ),
   mailProvider(
     'fastmail',
@@ -529,7 +540,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       text('credentials.password', 'Password', {
         input: 'password',
         secret: true,
-        help: 'An app password where the provider offers one.',
+        help: 'An app password where the provider offers one. Outlook.com accepts only its own sign-in and cannot be connected with a password.',
       }),
       text('mail.imap.host', 'IMAP server', { placeholder: 'imap.example.com' }),
       text('mail.imap.port', 'IMAP port', { input: 'number', default: 993 }),
@@ -555,6 +566,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
     'iCloud Calendar',
     'https://caldav.icloud.com/',
     'Create an app-specific password at account.apple.com, under Sign-In and Security.',
+    'The email address you sign in to Apple with.',
   ),
   calendarProvider(
     'fastmail-calendar',
