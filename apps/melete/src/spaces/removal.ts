@@ -161,7 +161,7 @@ export type RemovalDeps = {
 const LEASE_MS = 60_000;
 const RETRY_MS = 5_000;
 
-/** States in which a removal is still in charge of its space. */
+/** States in which a removal no longer holds its space, so it is not the live one. */
 const LIVE_EXCLUDED = ['complete', 'cleaning'] as const;
 
 /** The phases after the fence, in the order they run. */
