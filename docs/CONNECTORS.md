@@ -240,8 +240,9 @@ private, link-local or otherwise non-routable destination is refused, whether it
 is written as a literal address or is what the name resolves to. Installation
 answers such an address with `400` before a row or a sealed secret exists. Every
 read resolves the name again, refuses it if any answer is not public, and sends
-the request to the address it checked. CalDAV and MCP addresses are the owner's
-own servers and may be on a private network.
+the request to the address it checked. A CalDAV address is the owner's own
+server and may be on a private network. An MCP server follows the rule under
+[Installed MCP servers](#installed-mcp-servers).
 
 Evidence, all in
 [connection-kinds.test.ts](../apps/melete/test/integration/connection-kinds.test.ts)
@@ -498,7 +499,21 @@ generic MCP verification cannot prove that an effect happened.
 
 An HTTP server is installed with `POST /connections` and its `mcp` block, as
 described under [Installing a connection](#installing-a-connection); the row then
-stores the policy. The same policy can instead be pinned by the operator: create
+stores the policy.
+
+Where an MCP server may live depends on whose space it is installed in. In the
+setup owner's spaces it may be at any address, including one on the owner's own
+machine or network. In every other account's space it must be at a public
+address: the service applies the address checks of `web.fetch`, so a loopback,
+private, link-local or otherwise non-routable destination is refused, whether it
+is written as a literal address or is what the name resolves to. Installation
+answers such an address with `400`. Every request to the server resolves the
+name again, refuses it if any answer is not public, and connects to the address
+it checked, so a name that later resolves inside the installation reaches
+nothing. Evidence: `an MCP server at a private address is the setup owner’s
+alone` in
+[connection-kinds.test.ts](../apps/melete/test/integration/connection-kinds.test.ts)
+and [public-fetch.test.ts](../apps/melete/src/connectors/public-fetch.test.ts). The same policy can instead be pinned by the operator: create
 the connection row with provider `mcp` and the exact granted tool scopes, then
 add its transport and policy to the owner-controlled `MELETE_CONNECTIONS_FILE`:
 

@@ -24,6 +24,11 @@ export type McpTransportOptions = {
   maxMessageBytes?: number;
   /** Only the trusted credential store supplies this value. */
   accessToken?: () => Promise<string | undefined>;
+  /**
+   * How an HTTP request is made. The service supplies a public-only, pinned
+   * fetch for an endpoint that may not reach private addresses.
+   */
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
 };
 
 const disconnected = () =>
@@ -250,7 +255,7 @@ export function openHttpMcpTransport(
       const body = JSON.stringify(message);
       if (Buffer.byteLength(body) > maxBytes) throw new Error('MCP request limit exceeded');
       const token = await options.accessToken?.();
-      const response = await fetch(endpoint.url, {
+      const response = await (options.fetch ?? fetch)(endpoint.url, {
         method: 'POST',
         redirect: 'error',
         // The pinned Windows Bun pool can stall MCP posts while Hermes streams.

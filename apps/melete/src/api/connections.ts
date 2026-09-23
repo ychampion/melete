@@ -26,7 +26,9 @@ import {
 } from '../connectors/configured.ts';
 import { icsFeedTarget } from '../connectors/ics-feed.ts';
 import { mcpServerConfig } from '../connectors/mcp.ts';
+import { setupOwnersSpace } from '../connectors/mcp-connector.ts';
 import { mcpCredentials, mcpCredentialUrl } from '../connectors/mcp-credentials.ts';
+import { isPublicEndpoint } from '../connectors/public-fetch.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Connector } from '../connectors/types.ts';
 import type { Database } from '../db/client.ts';
@@ -243,6 +245,14 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
     // Authority is settled first, so no address in the request is resolved and
     // no connector is opened on the word of someone who may not install here.
     await requireInstaller(deps.db, spaceId, actor, installation.kind);
+    // An MCP server outside the setup owner's own spaces must be a public
+    // address; the connector holds it to that again on every request.
+    if (
+      installation.kind === 'mcp' &&
+      !(await setupOwnersSpace(deps.sql, spaceId)) &&
+      !(await isPublicEndpoint(installation.config.url))
+    )
+      throw new ServiceError('invalid_request', 'An MCP server must be at a public address.', 400);
     const id = newId('conn');
     const stored = await storedShape(installation, id, spaceId, factory);
 
