@@ -474,9 +474,19 @@ export class DockerStdioLauncher implements StdioLauncher {
   }
 
   private async dropNetwork(names: Names) {
-    if (this.options.selfId)
+    // Most servers never had one, and engines answer a disconnect from a missing network with
+    // 500, not 404, so the network is looked up first.
+    let network: { Containers?: Record<string, unknown> | null };
+    try {
+      network = (await this.docker.request('GET', `/networks/${names.network}`)) as typeof network;
+    } catch (error) {
+      if (error instanceof DockerError && error.status === 404) return;
+      throw error;
+    }
+    const self = this.options.selfId;
+    if (self && Object.keys(network.Containers ?? {}).some((id) => id.startsWith(self)))
       await this.remove('POST', `/networks/${names.network}/disconnect`, {
-        Container: this.options.selfId,
+        Container: self,
         Force: true,
       });
     await this.remove('DELETE', `/networks/${names.network}`);

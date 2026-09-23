@@ -95,6 +95,11 @@ class FakeEngine implements DockerStdioApi {
       return null;
     }
     match = /^\/networks\/([^/]+)$/.exec(route);
+    if (match && method === 'GET') {
+      // A real engine lists members by full id; the service knows itself by its short one.
+      if (!this.networks.has(match[1] ?? '')) throw new DockerError(404, 'GET', route);
+      return { Containers: { 'service-container-full-id': {} } };
+    }
     if (match && method === 'DELETE') {
       this.networks.delete(match[1] ?? '');
       return null;
@@ -464,9 +469,16 @@ describe('the Docker stdio launcher', () => {
     const launcher = new DockerStdioLauncher({
       project: 'melete',
       socket: 'unused',
+      selfId: 'service-container',
       docker: engine,
     });
+    // A server that never had a network: nothing is disconnected, which an engine answers with 500.
     await launcher.destroy(CONNECTION);
+    expect(engine.calls.some((call) => call.includes('/disconnect'))).toBe(false);
+    engine.calls.length = 0;
+    engine.networks.add(`${PREFIX}-net`);
+    await launcher.destroy(CONNECTION);
+    expect(engine.calls).toContain(`POST /networks/${PREFIX}-net/disconnect`);
     expect(engine.calls).toEqual(
       expect.arrayContaining([
         `DELETE /containers/${PREFIX}?force=true`,
