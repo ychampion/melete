@@ -32,8 +32,12 @@ same validation, precedence and correction rules as every other extraction. It
 keeps preferences, standing instructions and facts about people, places,
 projects and dates, and supersedes a claim the message corrects.
 
-In a shared space, memory belongs to the space's owner, and a message from
-another member is not kept.
+Messages are kept from personal spaces, and in a shared space only from its
+owner. A member's messages in a shared space are not kept in any memory, theirs
+or the owner's. A message counts as the owner's only when the service recorded
+the owner as its speaker, in the owner's own conversation (`only the space
+owner's own messages are kept; a member's are kept nowhere` in
+[memory-shared-space.test.ts](../apps/melete/test/integration/memory-shared-space.test.ts)).
 
 A person can say these in plain words:
 

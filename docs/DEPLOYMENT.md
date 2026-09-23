@@ -667,7 +667,8 @@ provider key stays in the gateway. `MELETE_MEMORY_MODEL` names a different model
 for this (a smaller one is usually enough), with `MELETE_MEMORY_PROVIDER` when it
 is served by another provider; `MELETE_MEMORY_MODEL=off` stops model reads and
 keeps structured observations only. `MELETE_MEMORY_DAILY_CALLS` (default `200`)
-is how many reads one person's memory may make in a day. When the budget is
+is how many reads one person's memory may make in a day; raise or lower it for
+your provider's cost. When the budget is
 spent or the provider fails, the message is left unread, the conversation
 carries on, and the service log records `memory: memory_daily_budget` or
 `memory: extraction_gateway_failure`.
