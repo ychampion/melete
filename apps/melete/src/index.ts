@@ -441,12 +441,26 @@ export async function bootstrap(
     }
     if (env.DATABASE_URL) queue = await startQueue(env.DATABASE_URL);
     jobs = handle && queue ? new JobService(handle.db, queue.boss) : undefined;
+    // A job memory invalidated is queued with no wake of its own; this enqueues
+    // one. Both memory startups deliver through it.
+    const activeJobs = jobs;
+    const wakeRecomputedJob =
+      activeJobs && options.workers !== false
+        ? async (jobId: string) => {
+            await activeJobs.transaction(async (tx) => {
+              const row = await activeJobs.lock(tx, jobId);
+              if (row?.state === 'queued' && row.nextWakeAt)
+                await activeJobs.enqueue(tx, row, 'recovery');
+            });
+          }
+        : undefined;
     if (handle && queue && env.MELETE_RUNTIME_ADAPTER === 'docker') {
       deploymentMemory = await startDeploymentMemory({
         sql: handle.sql,
         boss: queue.boss,
         restrictionsDir: env.MELETE_RESTRICTIONS_DIR,
         workers: options.workers,
+        onJobRecompute: wakeRecomputedJob,
       });
     }
     if (jobs) {
@@ -480,20 +494,11 @@ export async function bootstrap(
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
         // Memory is part of every Postgres-backed service, whichever runtime
         // carries the attempt; the deploy lane's docker path starts its own.
-        const activeJobs = jobs;
         memory = await startServiceMemory(
           handle.sql,
           queue.boss,
           env.MELETE_SPACES_DIR,
-          options.workers === false
-            ? undefined
-            : async (jobId) => {
-                await activeJobs.transaction(async (tx) => {
-                  const row = await activeJobs.lock(tx, jobId);
-                  if (row?.state === 'queued' && row.nextWakeAt)
-                    await activeJobs.enqueue(tx, row, 'recovery');
-                });
-              },
+          wakeRecomputedJob,
         );
       }
       if (env.MELETE_RUNTIME_ADAPTER === 'hermes' && !options.runtime && handle && queue) {

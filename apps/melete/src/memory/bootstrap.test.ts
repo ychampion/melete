@@ -21,7 +21,7 @@ const parent = await testDatabase();
 afterAll(async () => parent?.close());
 const withDb = parent ? describe : describe.skip;
 
-async function fixture(workers = false) {
+async function fixture(workers = false, onJobRecompute?: (jobId: string) => Promise<void>) {
   const handle = await testDatabase();
   if (!handle) throw new Error('Postgres unavailable');
   const queue = await startQueue(handle.url);
@@ -31,6 +31,7 @@ async function fixture(workers = false) {
     boss: queue.boss,
     restrictionsDir: directory,
     workers,
+    onJobRecompute,
   };
   const memory = await startDeploymentMemory(options);
   const app = createApp({
@@ -232,6 +233,30 @@ withDb('deployment memory startup', () => {
       await f.close();
     }
   }, 15000);
+
+  test('a deployment wakes the jobs memory invalidated and settles their outbox rows', async () => {
+    const woken: string[] = [];
+    const f = await fixture(false, async (jobId) => {
+      woken.push(jobId);
+    });
+    try {
+      const owner = await f.setup();
+      await f.sql`insert into memory_outbox (id, space_id, kind, target_id)
+        values ('recompute-fixture', ${owner.spaceId}, 'job_recompute', 'job_recompute_target')`;
+      const deadline = Date.now() + 3000;
+      while (!woken.length && Date.now() < deadline) await Bun.sleep(25);
+      expect(woken).toEqual(['job_recompute_target']);
+      let completed = null;
+      while (!completed && Date.now() < deadline + 2000) {
+        [completed] =
+          await f.sql`select id from memory_outbox where id = 'recompute-fixture' and completed_at is not null`;
+        if (!completed) await Bun.sleep(25);
+      }
+      expect(completed).toBeDefined();
+    } finally {
+      await f.close();
+    }
+  });
 
   test('unstructured extraction without a gateway stops at its durable attempt cap', async () => {
     const f = await fixture();
