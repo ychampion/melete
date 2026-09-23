@@ -841,7 +841,9 @@ async function runScenario(
             'irrelevant',
           );
         if (expected.dated) {
-          const item = items.find((entry) => entry.key === step.key);
+          // The date must be on the item the answer rests on, not merely on
+          // some item for the key that recall also delivered.
+          const item = items.find((entry) => reply.uses.includes(entry.handle));
           check(
             `${label} the old plan carries its date`,
             Boolean(item?.valid_from && (item.valid_until || item.superseded_at)),
