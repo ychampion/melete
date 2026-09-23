@@ -86,7 +86,7 @@ async function harness() {
   };
   useConnectorFactory(registry, new ConnectorFactory(options));
   const jobs = new JobService(fixture.db, queue.boss);
-  const catalog = new RuntimeCatalog(fixture.db, registry, 'unused');
+  const catalog = new RuntimeCatalog(fixture.db, registry);
   const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
     key: 'stdio-mcp-capability-key-at-least-32-bytes',
     liveConnectionScopes: true,
@@ -573,6 +573,17 @@ withDb('a stdio MCP server installed by its owner', () => {
     expect(late).not.toMatchObject({ status: 'succeeded' });
     expect(launcher.starts).toHaveLength(starts);
   }, 60_000);
+
+  test('revoking a connection no connector was serving still removes what was kept for it', async () => {
+    if (!h || !fixture) throw new Error('Postgres unavailable');
+    // Left in error by a failed first start, say, so this process never opened it.
+    const id = `conn_${h.spaceId.slice(3)}unserved`;
+    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status)
+      values (${id}, ${h.spaceId}, 'mcp', 'Stopped plugin', '[]'::jsonb, 'error')`;
+    expect(launcher.destroyed).not.toContain(id);
+    expect((await h.revoke(id)).status).toBe(200);
+    expect(launcher.destroyed).toContain(id);
+  });
 
   test('a service without a container launcher neither offers nor installs stdio servers', async () => {
     if (!h) throw new Error('Postgres unavailable');

@@ -48,3 +48,33 @@ test('removing a connection retires its connector; shutdown only closes it', asy
   await registry.close();
   expect(seen).toEqual(['retire gone', 'close kept']);
 });
+
+test('releasing a gone connection retires its connector and releases what was kept, served or not', async () => {
+  const seen: string[] = [];
+  const connector = (id: string, retires: boolean) =>
+    Object.assign(createTestConnector(memoryTestLedger()), {
+      close: async () => {
+        seen.push(`close ${id}`);
+      },
+      ...(retires
+        ? {
+            retire: async () => {
+              seen.push(`retire ${id}`);
+            },
+          }
+        : {}),
+    });
+  const registry = new ConnectorRegistry()
+    .register('con_server', connector('server', true))
+    .register('con_mail', connector('mail', false))
+    .addReleaser(async (id) => {
+      seen.push(`release ${id}`);
+    });
+  await registry.release('con_server');
+  // Never opened here, as a connection in error or on a service that restarted: its data still goes.
+  await registry.release('con_unserved');
+  // A connector the caller means to keep is left in place, and nothing is released for it.
+  await registry.release('con_mail', (item) => Boolean(item.retire));
+  expect(registry.get('con_mail')).toBeDefined();
+  expect(seen).toEqual(['retire server', 'release con_server', 'release con_unserved']);
+});

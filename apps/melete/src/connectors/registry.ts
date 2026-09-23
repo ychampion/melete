@@ -35,6 +35,28 @@ function checkInCellTool(tool: ConnectorTool): void {
 /** A connection selects trusted code; payloads cannot select a module or credentials. */
 export class ConnectorRegistry {
   private readonly connections = new Map<string, Connector>();
+  private readonly releasers: Array<(connectionId: string) => Promise<void>> = [];
+
+  /** Something that keeps data for connections whether or not a connector is serving them. */
+  addReleaser(release: (connectionId: string) => Promise<void>): this {
+    this.releasers.push(release);
+    return this;
+  }
+
+  /**
+   * The connection is gone. Its connector, if one is serving it, is retired;
+   * then whatever was kept for it is released, whether or not a connector was
+   * ever opened. `only` keeps a connector the caller means to leave in place,
+   * and then nothing is released.
+   */
+  async release(connectionId: string, only?: (connector: Connector) => boolean): Promise<void> {
+    const connector = this.connections.get(connectionId);
+    if (connector) {
+      if (only && !only(connector)) return;
+      await this.remove(connectionId, connector);
+    }
+    for (const release of this.releasers) await release(connectionId);
+  }
 
   register(connectionId: string, connector: Connector): this {
     if (!connectionId || this.connections.has(connectionId)) {

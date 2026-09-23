@@ -388,12 +388,20 @@ export function connectorFactoryFor(
 /** Bind a registry to a factory built elsewhere, as a protocol fixture does. */
 export function useConnectorFactory(registry: ConnectorRegistry, factory: ConnectorFactory): void {
   factories.set(registry, factory);
+  keepReleasing(registry, factory.options);
+}
+
+/** A stdio server's volumes outlive its connector; a gone connection's are removed all the same. */
+function keepReleasing(registry: ConnectorRegistry, options: ConnectorOptions): void {
+  const launcher = options.stdioLauncher;
+  if (launcher) registry.addReleaser((connectionId) => launcher.destroy(connectionId));
 }
 
 export async function configuredConnectors(options: ConnectorOptions) {
   const registry = new ConnectorRegistry();
   const factory = new ConnectorFactory(options);
   factories.set(registry, factory);
+  keepReleasing(registry, options);
   // Publishing by email uses the mailbox the owner already configured. The
   // artifacts connector is therefore registered after the loop, so the order
   // connections happen to appear in does not decide whether it can mail.
