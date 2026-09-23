@@ -142,9 +142,47 @@ function relative(iso: string, now: number): string {
 
 /* ---------- the queue ---------- */
 
-type Decision =
+export type Decision =
   | { kind: 'permission'; id: string; permission: Permission }
   | { kind: 'question'; id: string; question: Question };
+
+const chatOf = (decision: Decision) =>
+  decision.kind === 'permission'
+    ? decision.permission.conversation_id
+    : decision.question.conversation_id;
+
+/**
+ * The queue, oldest first. Neither a permission nor a question carries a
+ * time, so each is dated by its conversation's last change: a conversation
+ * waiting on the person stops changing when it starts to wait. Ties keep the
+ * order the service listed them in.
+ */
+export function queueOrder(decisions: Decision[], conversations: Conversation[]): Decision[] {
+  const since = (decision: Decision) =>
+    conversations.find((conversation) => conversation.id === chatOf(decision))?.updated_at ??
+    '\uffff';
+  return decisions
+    .map((decision, index) => ({ decision, index, at: since(decision) }))
+    .sort((a, b) => a.at.localeCompare(b.at) || a.index - b.index)
+    .map((entry) => entry.decision);
+}
+
+/**
+ * The card at the front and the one tucked under it. The front is held by id,
+ * so a decision arriving later never moves the card the person is reading.
+ */
+export function frontOf(
+  ordered: Decision[],
+  frontId: string | null,
+): { front: Decision | undefined; next: Decision | undefined } {
+  const at = Math.max(
+    0,
+    ordered.findIndex((decision) => decision.id === frontId),
+  );
+  const front = ordered[at];
+  const next = ordered.length > 1 ? ordered[(at + 1) % ordered.length] : undefined;
+  return { front, next };
+}
 
 function Face({ agent, size, state }: { agent: Agent | null; size: number; state?: 'idle' }) {
   return agent ? (
@@ -324,26 +362,22 @@ function WaitingOnYou({
 }) {
   const { agents, conversations, refreshConversations } = useApp();
   const { permissions, questions } = decisions;
-  const [offset, setOffset] = useState(0);
+  const [frontId, setFrontId] = useState<string | null>(null);
   const flight = useInFlight();
   // Decided here and answered by the service: gone from the queue before the next read.
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
-  const queue: Decision[] = [
-    ...permissions.map(
-      (permission): Decision => ({ kind: 'permission', id: permission.id, permission }),
-    ),
-    ...questions.map((question): Decision => ({ kind: 'question', id: question.id, question })),
-  ].filter((decision) => !gone.has(decision.id));
-  if (queue.length === 0) return null;
-  const at = offset % queue.length;
-  const ordered = [...queue.slice(at), ...queue.slice(0, at)];
-  const [front, next] = ordered;
+  const queue = queueOrder(
+    [
+      ...permissions.map(
+        (permission): Decision => ({ kind: 'permission', id: permission.id, permission }),
+      ),
+      ...questions.map((question): Decision => ({ kind: 'question', id: question.id, question })),
+    ].filter((decision) => !gone.has(decision.id)),
+    conversations,
+  );
+  const { front, next } = frontOf(queue, frontId);
   if (!front) return null;
 
-  const chatOf = (decision: Decision) =>
-    decision.kind === 'permission'
-      ? decision.permission.conversation_id
-      : decision.question.conversation_id;
   const conversationOf = (decision: Decision) =>
     conversations.find((conversation) => conversation.id === chatOf(decision));
   const agentOf = (decision: Decision) => agentById(agents, conversationOf(decision)?.agent_id);
@@ -354,6 +388,8 @@ function WaitingOnYou({
   };
   const settled = (id: string) => {
     setGone((previous) => new Set(previous).add(id));
+    // The card under the one just decided comes forward.
+    if (id === front.id) setFrontId(next?.id ?? null);
     refreshConversations();
   };
   // One request per decision: a second press while the first is in flight is refused.
@@ -397,7 +433,7 @@ function WaitingOnYou({
           onAnswer={answer}
         />
         {next ? (
-          <button type="button" className="queue-next" onClick={() => setOffset((n) => n + 1)}>
+          <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>
             <Face agent={agentOf(next)} size={16} />
             <span className="queue-next-agent">{agentOf(next)?.name ?? 'Melete'}</span>
             <span className="clamp1 grow queue-next-what">
