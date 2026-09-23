@@ -8,7 +8,7 @@ import type {
 } from '../connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
-import { connectorReplyMailbox, isReplyFrom } from './replies.ts';
+import { connectorReplyMailbox, isReplyFrom, replyPayload, senderDomain } from './replies.ts';
 
 const SPACE = 'spc_test';
 const CONNECTION = 'con_test';
@@ -64,4 +64,32 @@ test('a reply the mail server could not date is read as arriving now, not droppe
   expect(message?.messageId).toBe('<undated@acme.test>');
   if (!message) return;
   expect(isReplyFrom({ domain: 'acme.test', since }, message)).toBe(true);
+});
+
+test('the sender is every address in the From header, not the last one that looks right', () => {
+  // A comment after the address is not part of it.
+  expect(senderDomain('billing@acme.test (Acme Billing)')).toBe('acme.test');
+  expect(senderDomain('"Acme, Inc." <billing@mail.acme.test>')).toBe('acme.test');
+  expect(senderDomain('Acme <a@acme.test>, b@billing.acme.test')).toBe('acme.test');
+  // Two senders who are not one company are nobody's reply.
+  expect(senderDomain('someone@evil.test, Acme <billing@acme.test>')).toBeNull();
+  expect(senderDomain('Acme Billing')).toBeNull();
+  expect(senderDomain('')).toBeNull();
+
+  const since = '2026-09-18T09:00:00.000Z';
+  const message = (from: string) => ({
+    messageId: '<r@acme.test>',
+    from,
+    subject: 'Re: Refund',
+    receivedAt: '2026-09-18T11:00:00.000Z',
+  });
+  expect(isReplyFrom({ domain: 'acme.test', since }, message('billing@acme.test (Acme)'))).toBe(
+    true,
+  );
+  expect(
+    isReplyFrom({ domain: 'acme.test', since }, message('x@evil.test, Acme <b@acme.test>')),
+  ).toBe(false);
+  // What the poller delivers names the one company the message is from.
+  expect(replyPayload(message('billing@acme.test (Acme)')).sender_domain).toBe('acme.test');
+  expect(replyPayload(message('x@evil.test, b@acme.test')).sender_domain).toBeNull();
 });

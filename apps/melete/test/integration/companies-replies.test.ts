@@ -14,7 +14,7 @@ import {
   companyDomain,
   deliverReplies,
   fixtureReplyMailbox,
-  fromAddress,
+  fromAddresses,
   isReplyFrom,
   REPLY_EVENT_NAME,
   type ReplyCandidate,
@@ -351,9 +351,9 @@ withDb('noticing that a company wrote back', () => {
 });
 
 test('who sent it, and whether it answers us', () => {
-  expect(fromAddress('Acme Support <support@acme.test>')).toBe('support@acme.test');
-  expect(fromAddress('support@acme.test')).toBe('support@acme.test');
-  expect(fromAddress('Acme Support')).toBeNull();
+  expect(fromAddresses('Acme Support <support@acme.test>')).toEqual(['support@acme.test']);
+  expect(fromAddresses('support@acme.test')).toEqual(['support@acme.test']);
+  expect(fromAddresses('Acme Support')).toEqual([]);
   expect(registrableDomain('no-reply@billing.acme.test')).toBe('acme.test');
   expect(registrableDomain('someone@shop.acme.co.uk')).toBe('acme.co.uk');
   expect(registrableDomain('nonsense')).toBeNull();

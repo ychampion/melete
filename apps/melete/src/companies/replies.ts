@@ -72,11 +72,40 @@ export interface ReplyMailbox {
 // who sent it
 // --------------------------------------------------------------------------
 
-/** The address inside `Acme Billing <billing@acme.test>`, lowercased. */
-export function fromAddress(from: string): string | null {
-  const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(from);
-  const bare = angled?.[1] ?? (/^[^<>@\s]+@[^<>@\s]+$/.test(from.trim()) ? from.trim() : null);
-  return bare ? bare.toLowerCase() : null;
+/**
+ * Every address in a From header, lowercased. Quoted display names and
+ * comments are set aside first, so `"Acme, Inc." <a@acme.test>` is one address
+ * and `billing@acme.test (Acme Billing)` is `billing@acme.test`. A part that is
+ * not an address makes the whole header unreadable, which reads as nobody.
+ */
+export function fromAddresses(from: string): string[] {
+  let text = from.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  for (let previous = ''; previous !== text; ) {
+    previous = text;
+    text = text.replace(/\([^()]*\)/g, ' ');
+  }
+  const addresses: string[] = [];
+  for (const part of text.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(trimmed)?.[1];
+    const address = angled ?? (/^[^<>@\s"]+@[^<>@\s"]+$/.test(trimmed) ? trimmed : null);
+    if (!address) return [];
+    addresses.push(address.toLowerCase());
+  }
+  return addresses;
+}
+
+/**
+ * The one company a From header speaks for: the registrable domain every
+ * address in it shares, or nothing. A header naming two companies is not a
+ * reply from either, whichever of them comes last.
+ */
+export function senderDomain(from: string): string | null {
+  const domains = new Set(fromAddresses(from).map((address) => registrableDomain(address)));
+  if (domains.size !== 1) return null;
+  const [domain] = domains;
+  return domain ?? null;
 }
 
 /**
@@ -137,8 +166,7 @@ export function isReplyFrom(
   message: ReplyMessage,
 ): boolean {
   if (!message.messageId) return false;
-  const sender = fromAddress(message.from);
-  if (!sender || registrableDomain(sender) !== candidate.domain) return false;
+  if (senderDomain(message.from) !== candidate.domain) return false;
   const at = Date.parse(message.receivedAt);
   const since = Date.parse(candidate.since);
   if (!Number.isFinite(at) || !Number.isFinite(since)) return false;
@@ -311,6 +339,21 @@ export type ReplyPollerDeps = {
 };
 
 /**
+ * The observation a reply is delivered as. `sender_domain` is what a chase's
+ * watch compares, so the judgement of who sent it is made once, here, from the
+ * parsed header rather than by a pattern over its text.
+ */
+export function replyPayload(message: ReplyMessage) {
+  return {
+    message_id: message.messageId,
+    from: message.from,
+    sender_domain: senderDomain(message.from),
+    subject: message.subject,
+    received_at: message.receivedAt,
+  };
+}
+
+/**
  * Hand one candidate's replies to the trigger service. Returns how many events
  * were new, so a caller can say what it did without reading the event table.
  */
@@ -333,12 +376,7 @@ export async function deliverReplies(
       // the cursor and the key that makes a second sighting a duplicate.
       cursor: message.messageId,
       dedup_key: message.messageId,
-      payload: {
-        message_id: message.messageId,
-        from: message.from,
-        subject: message.subject,
-        received_at: message.receivedAt,
-      },
+      payload: replyPayload(message),
     });
     if (!received.duplicate) delivered += 1;
   }

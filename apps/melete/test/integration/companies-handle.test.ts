@@ -492,7 +492,12 @@ withDb('handing one ledger item to a playbook', () => {
         event_name: REPLY_EVENT_NAME,
         cursor: 'acme-1',
         dedup_key: 'acme-reply-1',
-        payload: { from: 'support@acme.test', subject: 'Re: Refund for order 7781' },
+        // What the reply poller delivers: the parsed sender is what the watch reads.
+        payload: {
+          from: 'support@acme.test',
+          sender_domain: 'acme.test',
+          subject: 'Re: Refund for order 7781',
+        },
       });
     const received = await reply();
     expect(received.duplicate).toBe(false);

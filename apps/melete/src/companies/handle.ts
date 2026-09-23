@@ -137,12 +137,13 @@ export function oneLine(value: string, limit = 300): string {
 }
 
 /**
- * A `from` header sent by this registrable domain or a subdomain of it, as the
- * watch grammar reads it: `support@acme.test`, `Acme <billing@mail.acme.test>`,
- * but never `x@acme.test.evil.test` or `x@notacme.test`.
+ * The watch a chase waits on: a reply whose From header speaks for this
+ * company alone. The poller parses the header once and names the sender's
+ * registrable domain, so the watch compares a value rather than a pattern.
  */
-export const senderPattern = (domain: string): string =>
-  `(?i)@(?:[a-z0-9-]+\\.)*${domain.replaceAll('.', '\\.')}>?\\s*$`;
+export const replyWatch = (domain: string) => ({
+  all: [{ field: 'sender_domain', op: 'eq' as const, value: domain }],
+});
 
 const hostnames = (domain: string): string[] => {
   const host = domain.trim().toLowerCase().replace(/\.$/, '');
@@ -343,9 +344,7 @@ export async function handleLedgerItem(
       kind: 'watch',
       connection_id: input.connectionId,
       event_name: replyEvent,
-      predicate: {
-        all: [{ field: 'from', op: 'matches', value: senderPattern(replyDomain) }],
-      },
+      predicate: replyWatch(replyDomain),
       poll_seconds: 300,
     });
   }
