@@ -52,11 +52,17 @@ export class ConnectorRegistry {
     return this.connections.get(connectionId);
   }
 
-  /** Failed installation can remove only the worker it opened, never a replacement. */
+  /**
+   * The connection is gone: revoked, removed with its space, or never
+   * published. What its connector runs stops now and what only it kept is
+   * released. A failed installation can remove only the worker it opened,
+   * never a replacement. Shutdown uses `close`, which keeps that data.
+   */
   async remove(connectionId: string, expected: Connector): Promise<void> {
     if (this.connections.get(connectionId) !== expected) return;
     this.connections.delete(connectionId);
-    await expected.close?.();
+    if (expected.retire) await expected.retire();
+    else await expected.close?.();
   }
 
   entries(): [string, Connector][] {

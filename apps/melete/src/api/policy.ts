@@ -10,15 +10,15 @@ export function mountPolicy(app: Hono, policy: PolicyService, registry?: Connect
       id,
       connectionLifecycle.parse(await c.req.json()),
     );
-    // A connector that owns something running, such as a server's container, stops with the
-    // revocation rather than at its next idle check, and releases what it kept.
+    // A connector that runs something of its own, such as a server's container, leaves the
+    // registry with the revocation, which stops it and releases what it kept.
     const connector = registry?.get(id);
-    if (changed.status === 'revoked' && registry && connector?.retire) {
-      await registry.remove(id, connector).catch(() => {});
-      await connector
-        .retire()
-        .catch(() => process.stderr.write('a revoked connection could not release its server\n'));
-    }
+    if (changed.status === 'revoked' && registry && connector?.retire)
+      await registry
+        .remove(id, connector)
+        .catch(() =>
+          process.stderr.write('a revoked connection could not release its connector\n'),
+        );
     return c.json(changed);
   });
   app.post('/spaces/:id/policy-generation', async (c) => {

@@ -64,8 +64,9 @@ export interface Connector {
   routes?(action: Action, ctx: ConnectorContext): Promise<string[]>;
   close?(): Promise<void>;
   /**
-   * Called once the connection is revoked, after `close`: release what only
-   * this connection owned, such as its kept data. Shutdown never calls it.
+   * In place of `close` when the connection itself is gone: stop, then
+   * release what only this connection owned, such as its kept data. The
+   * registry calls it on removal; shutdown never does.
    */
   retire?(): Promise<void>;
 }
