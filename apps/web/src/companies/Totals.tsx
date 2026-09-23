@@ -97,25 +97,35 @@ export function TotalsRow({
   onFilter: (next: Filter) => void;
 }) {
   const rows = totalsOf(totals, companies, currency);
+  const cell = (total: Total) => {
+    // The count of companies filters to nothing, so it is a figure and not a control.
+    if (total.filter === null)
+      return (
+        <div key={total.key} className="total">
+          <span className="total-figure figure">{total.figure}</span>
+          <span className="total-label">{total.label}</span>
+        </div>
+      );
+    const on = sameFilter(total.filter, filter);
+    return (
+      <button
+        key={total.key}
+        type="button"
+        className="total"
+        data-on={on ? 'true' : undefined}
+        data-tone={total.tone}
+        aria-pressed={on}
+        onClick={() => onFilter(on ? null : total.filter)}
+      >
+        <span className="total-figure figure">{total.figure}</span>
+        <span className="total-label">{total.label}</span>
+      </button>
+    );
+  };
   return (
     <section className="totals" aria-label="What these companies add up to">
-      {rows.map((total) => {
-        const on = total.filter !== null && sameFilter(total.filter, filter);
-        return (
-          <button
-            key={total.key}
-            type="button"
-            className="total"
-            data-on={on ? 'true' : undefined}
-            data-tone={total.tone}
-            aria-pressed={total.filter === null ? undefined : on}
-            onClick={() => onFilter(on ? null : total.filter)}
-          >
-            <span className="total-figure">{total.figure}</span>
-            <span className="total-label">{total.label}</span>
-          </button>
-        );
-      })}
+      <div className="totals-money">{rows.slice(0, 3).map(cell)}</div>
+      <div className="totals-counts">{rows.slice(3).map(cell)}</div>
     </section>
   );
 }
