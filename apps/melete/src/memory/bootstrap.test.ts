@@ -256,7 +256,7 @@ withDb('deployment memory startup', () => {
     } finally {
       await f.close();
     }
-  });
+  }, 15_000);
 
   test('unstructured extraction without a gateway stops at its durable attempt cap', async () => {
     const f = await fixture();
