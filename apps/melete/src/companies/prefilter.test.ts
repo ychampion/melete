@@ -102,3 +102,15 @@ test('a company whose domain is not ASCII is still a company', () => {
   expect(registrableDomain('rechnung@bücher.example')).toBe('xn--bcher-kva.example');
   expect(registrableDomain('rechnung@mail.xn--bcher-kva.example')).toBe('xn--bcher-kva.example');
 });
+
+test('a rendered From that holds two addresses in one part is nobody’s mail', () => {
+  const result = prefilter(
+    [
+      message({ from: '"Acme" <billing@acme.example> "" <x@evil.test>' }),
+      message({ messageId: '<b@example.test>', from: 'x@evil.test, Acme <billing@acme.example>' }),
+    ],
+    { now: new Date(FIXTURE_REFERENCE), windowDays: 90 },
+  );
+  expect(result.companies.map((group) => group.domain)).toEqual([]);
+  expect(result.counts.noSender).toBe(2);
+});

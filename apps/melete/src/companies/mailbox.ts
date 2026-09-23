@@ -112,6 +112,13 @@ export function connectorMailbox(options: {
             uid: Number(record.uid ?? 0),
             message_id: typeof record.message_id === 'string' ? record.message_id : null,
             from: String(record.from ?? ''),
+            ...(Array.isArray(record.from_addresses)
+              ? {
+                  from_addresses: record.from_addresses.filter(
+                    (entry): entry is string => typeof entry === 'string',
+                  ),
+                }
+              : {}),
             to: String(record.to ?? ''),
             subject: String(record.subject ?? ''),
             text: String(record.text ?? ''),
