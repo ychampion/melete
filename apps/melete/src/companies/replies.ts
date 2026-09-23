@@ -26,6 +26,7 @@
  * function over rows so the integrator can swap in a ledger-scoped query without
  * touching anything else here.
  */
+
 import { canonicalizePayload, jobConstraints } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
@@ -48,6 +49,11 @@ export const REPLY_READ_LIMIT = 50;
 export type ReplyMessage = {
   messageId: string;
   from: string;
+  /**
+   * The addresses the mail parser read from the header. When present they are
+   * the only thing that decides who sent it; `from` is only for showing.
+   */
+  fromAddresses?: string[];
   subject: string;
   receivedAt: string;
 };
@@ -89,8 +95,12 @@ export function fromAddresses(from: string): string[] {
   for (const part of text.split(',')) {
     const trimmed = part.trim();
     if (!trimmed) continue;
-    const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(trimmed)?.[1];
-    const address = angled ?? (/^[^<>@\s"]+@[^<>@\s"]+$/.test(trimmed) ? trimmed : null);
+    const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(trimmed);
+    // One angle-address per part, and no address outside it: a part that holds
+    // two is a display name pretending to be a sender, and reads as nobody.
+    const outside = angled ? trimmed.replace(angled[0], '') : '';
+    if (angled && /[<>@]/.test(outside)) return [];
+    const address = angled?.[1] ?? (/^[^<>@\s"]+@[^<>@\s"]+$/.test(trimmed) ? trimmed : null);
     if (!address) return [];
     addresses.push(address.toLowerCase());
   }
@@ -103,10 +113,19 @@ export function fromAddresses(from: string): string[] {
  * reply from either, whichever of them comes last.
  */
 export function senderDomain(from: string): string | null {
-  const domains = new Set(fromAddresses(from).map((address) => registrableDomain(address)));
+  return sharedDomain(fromAddresses(from));
+}
+
+function sharedDomain(addresses: readonly string[]): string | null {
+  const domains = new Set(addresses.map((address) => registrableDomain(address)));
   if (domains.size !== 1) return null;
   const [domain] = domains;
   return domain ?? null;
+}
+
+/** Who a message is from: the parsed addresses when the mailbox gave them. */
+export function messageSenderDomain(message: ReplyMessage): string | null {
+  return message.fromAddresses ? sharedDomain(message.fromAddresses) : senderDomain(message.from);
 }
 
 /**
@@ -167,7 +186,7 @@ export function isReplyFrom(
   message: ReplyMessage,
 ): boolean {
   if (!message.messageId) return false;
-  if (senderDomain(message.from) !== candidate.domain) return false;
+  if (messageSenderDomain(message) !== candidate.domain) return false;
   const at = Date.parse(message.receivedAt);
   const since = Date.parse(candidate.since);
   if (!Number.isFinite(at) || !Number.isFinite(since)) return false;
@@ -319,6 +338,13 @@ export function connectorReplyMailbox(options: {
         read.push({
           messageId,
           from: String(record.from ?? ''),
+          ...(Array.isArray(record.from_addresses)
+            ? {
+                fromAddresses: record.from_addresses.filter(
+                  (entry): entry is string => typeof entry === 'string',
+                ),
+              }
+            : {}),
           subject: String(record.subject ?? ''),
           receivedAt: typeof record.date === 'string' ? record.date : readAt,
         });
@@ -348,7 +374,7 @@ export function replyPayload(message: ReplyMessage) {
   return {
     message_id: message.messageId,
     from: message.from,
-    sender_domain: senderDomain(message.from),
+    sender_domain: messageSenderDomain(message),
     subject: message.subject,
     received_at: message.receivedAt,
   };

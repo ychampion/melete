@@ -1,11 +1,13 @@
 import { expect, test } from 'bun:test';
+import { simpleParser } from 'mailparser';
 import { ServiceError } from '../api/errors.ts';
 import { EmailConnector } from '../connectors/email.ts';
-import type {
-  EmailConnection,
-  MailMessage,
-  MailTransport,
-  OutgoingMail,
+import {
+  type EmailConnection,
+  type MailMessage,
+  type MailTransport,
+  type OutgoingMail,
+  toMailMessage,
 } from '../connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
@@ -110,4 +112,28 @@ test('a reply that could not be delivered is logged by a fixed reason, never by 
     'internal_error',
   );
   expect(deliveryFailureCode('not even an error')).toBe('internal_error');
+});
+
+test('a display name that spells out the company’s address does not make its sender the company', async () => {
+  // The name decodes to `Acme" <support@acme.test> "`; the address is x@evil.test.
+  const name = Buffer.from('Acme" <support@acme.test> "').toString('base64');
+  const parsed = await simpleParser(
+    `From: =?UTF-8?B?${name}?= <x@evil.test>\r\nMessage-ID: <r@evil.test>\r\nDate: Fri, 18 Sep 2026 11:00:00 +0000\r\nSubject: Re: Refund\r\n\r\nPaid.`,
+  );
+  const message = toMailMessage(1, parsed);
+  expect(message.from_addresses).toEqual(['x@evil.test']);
+  const registry = new ConnectorRegistry();
+  registry.register(CONNECTION, new EmailConnector(config, secret, () => new Inbox([message])));
+  const [read] = await connectorReplyMailbox({
+    registry,
+    connectionId: CONNECTION,
+    spaceId: SPACE,
+  }).recent(50);
+  expect(read?.messageId).toBe('<r@evil.test>');
+  if (!read) return;
+  const since = '2026-09-18T09:00:00.000Z';
+  expect(isReplyFrom({ domain: 'acme.test', since }, read)).toBe(false);
+  expect(replyPayload(read).sender_domain).toBe('evil.test');
+  // Reading the rendered header alone, a part that holds two addresses is nobody.
+  expect(senderDomain(read.from)).toBeNull();
 });
