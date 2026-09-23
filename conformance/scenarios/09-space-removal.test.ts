@@ -20,6 +20,7 @@ import {
   type SandboxTeardown,
   SpaceRemovalService,
 } from '../../apps/melete/src/spaces/removal.ts';
+import { BrowserSiteService } from '../../apps/melete/src/workers/browser/sites.ts';
 import { testDatabase } from '../../apps/melete/test/helpers/database.ts';
 import {
   type SeededSpace,
@@ -63,19 +64,23 @@ function fakeSandboxes(): SandboxTeardown & { held: { sessions: string[]; snapsh
 }
 
 /**
- * A browser worker that removes the profile it is asked to forget and leaves
- * the space root alone, as the real one does.
+ * The service's own browser sites, over a worker registry that records which
+ * space's worker it was asked to stop. The profile directory and the site
+ * rows are removed by the real service.
  */
-function fakeBrowser(): BrowserTeardown & { forgot: string[] } {
+function fakeBrowser(sql: Sql): BrowserTeardown & { forgot: string[] } {
   const forgot: string[] = [];
   return {
     forgot,
-    forgetSpace: async (spaceId) => {
-      forgot.push(spaceId);
-      const profile = join(spacesRoot, spaceId, 'browser');
-      await rm(profile, { recursive: true, force: true });
-      return { space_id: spaceId, profile, rows: 1 };
-    },
+    sites: new BrowserSiteService(sql, {
+      spacesRoot,
+      get: async () => {
+        throw new Error('no browser worker is started in this scenario');
+      },
+      release: async (spaceId) => {
+        forgot.push(spaceId);
+      },
+    }),
   };
 }
 
@@ -160,7 +165,7 @@ withDb(`conformance 9: ${s.title}`, () => {
   if (!handle) return;
   const { sql } = handle;
   const sandboxes = fakeSandboxes();
-  const browser = fakeBrowser();
+  const browser = fakeBrowser(sql);
   let seeded: SeededSpace;
   let journal: FileRestrictionJournal;
   let removals: SpaceRemovalService;

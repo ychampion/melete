@@ -35,6 +35,10 @@ import { PolicyService } from '../jobs/policy.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { RestrictionJournal } from '../memory/restore.ts';
 import { spaceAuthority } from '../principals/authority.ts';
+import {
+  type BrowserSiteService,
+  forgetBrowserProfilesForSpace,
+} from '../workers/browser/sites.ts';
 import { appendRemovalRecord } from './journal.ts';
 import {
   clearSpaceFiles,
@@ -81,15 +85,15 @@ export type SandboxTeardown = {
 };
 
 /**
- * The browser lane owns the worker that holds a space's Chromium profile open
- * and the record of which sites it is signed in to. One call does all of it,
- * in the order it has to happen: the worker exits, then the profile directory
- * goes, then the site rows. It leaves the space root itself alone, so the
- * filesystem phase below still owns it — which is why this runs first.
+ * The service's browser sessions, which own the worker that holds a space's
+ * Chromium profile open and the record of which sites it is signed in to.
+ * `forgetBrowserProfilesForSpace` does all of it in the order it has to
+ * happen: the worker exits, then the profile directory goes, then the site
+ * rows. It leaves the space root itself alone, so the filesystem phase below
+ * still owns it, which is why this runs first. Absent, there is no browser
+ * worker and no profile, and any site rows go with the space's other rows.
  */
-export type BrowserTeardown = {
-  forgetSpace(spaceId: string): Promise<{ space_id: string; profile: string | null; rows: number }>;
-};
+export type BrowserTeardown = { sites: BrowserSiteService };
 
 /**
  * Engine session volumes kept past the attempt that made them, labelled by
@@ -496,7 +500,7 @@ export class SpaceRemovalService {
           emptied,
           this.deps.browser
             ? async () => {
-                await this.deps.browser?.forgetSpace(row.spaceId);
+                await forgetBrowserProfilesForSpace(this.deps.browser, row.spaceId);
               }
             : undefined,
         );
@@ -630,18 +634,12 @@ export class SpaceRemovalService {
     row: SpaceRemovalRow,
     counts: RemovalCounts,
   ): Promise<RemovalCounts> {
-    if (!this.deps.browser) {
-      const present = await tableExists(this.deps.sql, 'browser_site_profile');
-      const held = present
-        ? await countRows(this.deps.sql, 'browser_site_profile', row.spaceId)
-        : 0;
-      return omit(counts, 'browser', held > 0 ? 'capability_absent' : 'not_applicable');
-    }
     // One call, which stops the worker, removes the profile directory and
     // deletes the site rows in that order. It is idempotent and silent for a
-    // space that never browsed, and it leaves the space root for the
-    // filesystem phase below, which is why it has to run before it.
-    const forgotten = await this.deps.browser.forgetSpace(row.spaceId);
+    // space that never browsed, and for a deployment with no browser worker,
+    // and it leaves the space root for the filesystem phase below, which is
+    // why it has to run before it.
+    const forgotten = await forgetBrowserProfilesForSpace(this.deps.browser, row.spaceId);
     // What went, which is a different record from what is left: the site rows
     // being zero afterwards is proved by the verification walk, and this is
     // what the finished account says about the profile that went with them.

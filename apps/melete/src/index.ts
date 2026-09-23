@@ -626,6 +626,8 @@ export async function bootstrap(
           // The registry stops answering for a space's connections before
           // their rows go, and the verification counts what it still holds.
           ...(registry ? { connectors: registry } : {}),
+          // The worker stops, the profile goes, and the site rows with it.
+          ...(browser ? { browser: browser.sessions } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
         });
         // Resumed in the background: a removal waiting on a provider or a held

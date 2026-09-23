@@ -213,6 +213,8 @@ export async function seedSpace(
     (job_id, candidate_id, evaluation_id, body_hash, use_candidate, expires_at)
     select ${trialJobId}, ${candidateId}, id, 'bhash', true, now() + interval '1 hour'
     from procedure_evaluation where candidate_id = ${candidateId} limit 1`;
+  await sql`insert into browser_site_profile (space_id, domain, label)
+    values (${spaceId}, 'example.test', 'example.test')`;
   await sql`insert into learning_evaluation_lease (space_id, candidate_id, holder, expires_at)
     values (${spaceId}, ${candidateId}, 'evaluator', now() + interval '1 minute')`;
 

@@ -47,6 +47,7 @@ import {
   type SandboxTeardown,
   SpaceRemovalService,
 } from '../../src/spaces/removal.ts';
+import { BrowserSiteService } from '../../src/workers/browser/sites.ts';
 import { testDatabase } from '../helpers/database.ts';
 import { type SeededSpace, seedFiles, seedSpace } from './space-removal-fixture.ts';
 
@@ -185,6 +186,26 @@ async function removeCompletely(seeded: SeededSpace, overrides: Overrides = {}) 
   return { removals, fenced, finished };
 }
 
+/**
+ * The service's own browser sites over a worker that no test here starts.
+ * Stopping one is recorded; the rows and the profile directory are removed by
+ * the real service.
+ */
+function browserSites(released: string[] = []): BrowserTeardown {
+  if (!handle) throw new Error('Postgres unavailable');
+  return {
+    sites: new BrowserSiteService(handle.sql, {
+      spacesRoot,
+      get: async () => {
+        throw new Error('no browser worker is started in these tests');
+      },
+      release: async (spaceId) => {
+        released.push(spaceId);
+      },
+    }),
+  };
+}
+
 /** The phases after the fence, in the order the sweep runs them. */
 const SWEEP_ORDER: readonly RemovalPhase[] = [
   'sessions',
@@ -238,6 +259,9 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   job: 'operational',
   artifact: 'operational',
   browser_recipe_candidate: 'operational',
+  // With a browser worker, the browser phase takes these with the profile;
+  // this test runs without one, so they go with the space's other rows.
+  browser_site_profile: 'operational',
   browser_session_binding: 'operational',
   company: 'operational',
   company_message: 'operational',
@@ -534,16 +558,10 @@ describe.if(handle !== null)('removing a space', () => {
 
   test('removal_goes_round_again_after_a_late_write — a row landing behind its phase is swept on the next pass', async () => {
     const seeded = await seed('shared');
-    let passes = 0;
-    const browser: BrowserTeardown = {
-      forgetSpace: async (spaceId) => {
-        passes += 1;
-        return { space_id: spaceId, profile: null, rows: passes === 1 ? 2 : 0 };
-      },
-    };
+    const released: string[] = [];
     const halting = new AbortController();
     const removals = await service({
-      browser,
+      browser: browserSites(released),
       onPhase: (_id, phase) => {
         if (phase === 'memory') halting.abort();
       },
@@ -569,8 +587,9 @@ describe.if(handle !== null)('removing a space', () => {
     expect(outcome(finished)).toBe('complete');
     expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
     // What the first pass cleared is still counted after the second.
-    expect(passes).toBe(2);
-    expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 2 } });
+    // The fixture's one signed-in site went on the first pass, none on the second.
+    expect(released).toEqual([seeded.spaceId, seeded.spaceId]);
+    expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 1 } });
   });
 
   test('a_scan_still_reading_cannot_write_into_a_cleared_space — the emptied space stays empty', async () => {
@@ -1126,23 +1145,34 @@ describe.if(handle !== null)('removing a space', () => {
 
   test('removal_clears_browser_profile — the worker stops, the profile and its sites go, the space root is left for the sweep', async () => {
     const seeded = await seed('shared');
-    const forgot: string[] = [];
-    const browser: BrowserTeardown = {
-      forgetSpace: async (spaceId) => {
-        // One call: the worker exits, the profile directory goes, then the
-        // site rows. It leaves the space root alone, which is why the
-        // filesystem phase still owns it and has to run after this.
-        forgot.push(spaceId);
-        const profile = join(spacesRoot, spaceId, 'browser');
-        await rm(profile, { recursive: true, force: true });
-        return { space_id: spaceId, profile, rows: 2 };
+    await sql`insert into browser_site_profile (space_id, domain, label)
+      values (${seeded.spaceId}, 'mail.test', 'mail.test')`;
+    const profile = join(spacesRoot, seeded.spaceId, 'browser');
+    await mkdir(join(profile, 'Default'), { recursive: true });
+    await writeFile(join(profile, 'Default', 'Cookies'), 'session=signed-in');
+    const released: string[] = [];
+
+    // Stopped straight after the browser phase: what is gone by then went
+    // through the browser's own teardown, not the filesystem sweep after it.
+    const halting = new AbortController();
+    const removals = await service({
+      browser: browserSites(released),
+      onPhase: (_id, phase) => {
+        if (phase === 'browser') halting.abort();
       },
-    };
-    const { finished } = await removeCompletely(seeded, { browser });
+    });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    await removals.run(fenced.id, halting.signal);
+    expect(released).toEqual([seeded.spaceId]);
+    expect(await exists(profile)).toBe(false);
+    expect(await countOf(sql, 'browser_site_profile', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    // The space root is the filesystem phase's, and it has not run yet.
+    expect(await exists(join(spacesRoot, seeded.spaceId))).toBe(true);
+
+    const finished = await removals.run(fenced.id);
     expect(outcome(finished)).toBe('complete');
-    expect(forgot).toEqual([seeded.spaceId]);
+    // The fixture's site and this one, both cleared on the first pass.
     expect(finished.counts).toMatchObject({ cleared: { signed_in_sites: 2 } });
-    expect(await exists(join(spacesRoot, seeded.spaceId, 'browser'))).toBe(false);
   });
 
   test('removal_clears_runtime_homes — by the job ids the fence kept, and listed again afterwards', async () => {

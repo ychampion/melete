@@ -120,6 +120,11 @@ const SPACE_KEYED_OPERATIONAL = [
   'learning_job',
   // Held while a procedure is evaluated in the space; a removal ends it.
   'learning_evaluation_lease',
+  // The browser phase deletes these with the profile they describe. A
+  // deployment with no browser worker has no profile, and any rows an earlier
+  // configuration left go here, since an emptied space keeps its row and the
+  // cascade from it never fires.
+  'browser_site_profile',
 ] as const;
 
 /**
