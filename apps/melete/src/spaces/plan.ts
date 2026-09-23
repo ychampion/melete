@@ -118,6 +118,9 @@ const SPACE_KEYED_OPERATIONAL = [
   'procedure_candidate',
   'episode',
   'learning_job',
+  // What learning told the person about a procedure, and the changes they made to it.
+  'learning_notice',
+  'learned_change',
   // Held while a procedure is evaluated in the space; a removal ends it.
   'learning_evaluation_lease',
   // The browser phase deletes these with the profile they describe. A

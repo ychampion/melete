@@ -205,6 +205,15 @@ export async function seedSpace(
   await sql`insert into learning_model_call
     (id, episode_id, provider, model, reserved_tokens, max_output_tokens)
     values (${newId('lmc')}, ${episodeId}, 'fake', 'script', 100, 50)`;
+  // What learning asked or told the person about it, and the changes they made to it.
+  await sql`insert into learning_notice
+    (id, space_id, principal_id, candidate_id, job_id, kind, definition_hash)
+    values (${newId('ln')}, ${spaceId}, ${principalId}, ${candidateId}, ${jobId},
+      'keep_question', 'bhash')`;
+  await sql`insert into learned_change
+    (id, space_id, principal_id, source, item_id, candidate_id, action, before, after)
+    values (${newId('lc')}, ${spaceId}, ${principalId}, 'correction', ${candidateId},
+      ${candidateId}, 'pause', '{}'::jsonb, '{}'::jsonb)`;
   // A trial grant is written against its own synthetic job, in the same space.
   const trialJobId = newId('job');
   await sql`insert into job (id, space_id, title, principal_id, objective, state)
