@@ -375,7 +375,7 @@ withDb('a stdio MCP server installed by its owner', () => {
     expect(added.check?.code).toBe('ok');
     const [row] =
       await fixture.sql`select configuration from connection where id = ${added.connection.id}`;
-    expect(row?.configuration.plugin).toEqual({ id: 'time', version: time.version });
+    expect(row?.configuration.plugin).toEqual({ id: 'time', version: time.version, values: {} });
     expect(row?.configuration.server.endpoint.launch).toMatchObject({
       runner: 'uvx',
       source: time.launch.source,
@@ -578,8 +578,8 @@ withDb('a stdio MCP server installed by its owner', () => {
     if (!h || !fixture) throw new Error('Postgres unavailable');
     // Left in error by a failed first start, say, so this process never opened it.
     const id = `conn_${h.spaceId.slice(3)}unserved`;
-    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status)
-      values (${id}, ${h.spaceId}, 'mcp', 'Stopped plugin', '[]'::jsonb, 'error')`;
+    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status, configuration)
+      values (${id}, ${h.spaceId}, 'mcp', 'Stopped plugin', '[]'::jsonb, 'error', '{}'::jsonb)`;
     expect(launcher.destroyed).not.toContain(id);
     expect((await h.revoke(id)).status).toBe(200);
     expect(launcher.destroyed).toContain(id);

@@ -1289,7 +1289,8 @@ describe.if(handle !== null)('removing a space', () => {
     // The running server is retired, which stops its container, and both connections' kept
     // volumes are released, the one no connector was serving included.
     expect(retired).toEqual([served]);
-    expect([...launcher.destroyed].sort()).toEqual([served, unserved].sort());
+    // Every connection the space had is released; these two are the plugin's.
+    expect(launcher.destroyed).toEqual(expect.arrayContaining([served, unserved]));
     expect(registry.get(served)).toBeUndefined();
   });
 
