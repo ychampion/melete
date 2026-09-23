@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 type Entry = { idx: number; when: number; tag: string };
 const journal = JSON.parse(
@@ -24,5 +24,23 @@ describe('migration journal order', () => {
     expect(first).toBeGreaterThan(-1);
     for (const [offset, entry] of entries.slice(first).entries())
       expect([entry.tag, entry.when]).toEqual([entry.tag, SEQUENCE_START + offset]);
+  });
+
+  test('each migration has its schema snapshot, and each snapshot follows the one before it', () => {
+    // `drizzle-kit generate` diffs the schema against the newest snapshot. A
+    // migration written by hand without one leaves that snapshot behind, and
+    // every later branch generates the missing migration again as its own.
+    let previous: string | undefined;
+    for (const entry of journal.entries) {
+      const file = new URL(
+        `../../drizzle/meta/${String(entry.idx).padStart(4, '0')}_snapshot.json`,
+        import.meta.url,
+      );
+      expect([entry.tag, existsSync(file)]).toEqual([entry.tag, true]);
+      const snapshot = JSON.parse(readFileSync(file, 'utf8')) as { id: string; prevId: string };
+      if (previous !== undefined)
+        expect([entry.tag, snapshot.prevId]).toEqual([entry.tag, previous]);
+      previous = snapshot.id;
+    }
   });
 });
