@@ -4,8 +4,8 @@
  * never what the person did there. Signing out of a site removes its cookies and storage from
  * the profile and the record with them.
  */
-import { rm } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { lstat, realpath, rm } from 'node:fs/promises';
+import { dirname, join, resolve, sep } from 'node:path';
 import { type BrowserSite, browserSiteForgotten, browserSiteList } from '@melete/contracts';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -16,16 +16,42 @@ import { BrowserFault } from './sessions.ts';
 
 type SiteRow = { domain: string; label: string; last_used: string | Date };
 
+/** A path that is there, or null. `lstat` so a link is seen as a link, not as what it leads to. */
+async function entry(path: string) {
+  return lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
 /**
  * The one directory a space's browser owns, or a refusal. The id is the only part a caller
  * supplies, so it is held to the shape a space id has and the result is held inside the root:
  * `rm` with `force` is silent, and a silent removal outside the spaces root is the worst kind.
+ * A string check is not enough on its own, because a space directory or its `browser` directory
+ * planted as a link would take the removal to wherever the link leads. So no link is allowed
+ * anywhere on the path, and what is there must really be where it sits: the same confinement the
+ * worker applies before Chromium opens a profile. Nothing is created; a space with no directory
+ * has nothing to remove.
  */
-export function confinedSpaceProfile(spacesRoot: string, spaceId: string): string {
+export async function confinedSpaceProfile(spacesRoot: string, spaceId: string): Promise<string> {
   if (!/^sp_[A-Za-z0-9_-]+$/.test(spaceId)) throw new BrowserFault('invalid_space');
   const root = resolve(spacesRoot);
-  const profile = resolve(root, spaceId, 'browser');
+  const space = join(root, spaceId);
+  const profile = join(space, 'browser');
   if (!profile.startsWith(root + sep)) throw new BrowserFault('profile_outside_space');
+  for (let current = profile; ; current = dirname(current)) {
+    if ((await entry(current))?.isSymbolicLink()) throw new BrowserFault('profile_symlink');
+    if (dirname(current) === current) break;
+  }
+  if (!(await entry(root))) return profile;
+  const canonical = await realpath(root);
+  for (const [path, expected] of [
+    [space, join(canonical, spaceId)],
+    [profile, join(canonical, spaceId, 'browser')],
+  ] as const)
+    if ((await entry(path)) && (await realpath(path)) !== expected)
+      throw new BrowserFault('profile_outside_space');
   return profile;
 }
 
@@ -92,7 +118,7 @@ export class BrowserSiteService {
   async forgetSpace(spaceId: string): Promise<ForgottenBrowserProfiles> {
     const root = this.workers.spacesRoot;
     // A directory is removed here, so the space names one inside the spaces root or none at all.
-    const profile = root === undefined ? null : confinedSpaceProfile(root, spaceId);
+    const profile = root === undefined ? null : await confinedSpaceProfile(root, spaceId);
     // Nothing is removed while a worker may still be writing to it; where a worker cannot be
     // stopped, nothing is removed at all.
     if (profile && !this.workers.release) throw new BrowserFault('worker_release_unavailable');
