@@ -69,7 +69,8 @@ export interface CompanyStore {
     input: Omit<Company, 'id' | 'space_id'> & { id?: string },
   ): Promise<string>;
   saveItems(owner: Owner, scanId: string, items: readonly LedgerItem[]): Promise<number>;
-  map(owner: Owner, now: Date): Promise<CompanyMap>;
+  /** `timeZone` is the person's own; a due date with no time is a day there. */
+  map(owner: Owner, now: Date, timeZone?: string): Promise<CompanyMap>;
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
   setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
@@ -172,6 +173,21 @@ const itemView = (row: ItemRow): LedgerItem => ({
   job_id: row.jobId,
   summary: row.summary,
 });
+
+/**
+ * A scan runs inside the service process that started it, so a scan still
+ * marked running when the service starts was cut off when it last stopped.
+ * Left alone it would be handed back to every later request to scan, and the
+ * person could never scan again.
+ */
+export async function closeInterruptedScans(db: Database): Promise<number> {
+  const closed = await db
+    .update(companyScan)
+    .set({ status: 'failed', error: 'interrupted by a restart', finishedAt: new Date() })
+    .where(eq(companyScan.status, 'running'))
+    .returning({ id: companyScan.id });
+  return closed.length;
+}
 
 export class PostgresCompanyStore implements CompanyStore {
   constructor(private readonly db: Database) {}
@@ -326,7 +342,7 @@ export class PostgresCompanyStore implements CompanyStore {
     return written.length;
   }
 
-  async map(owner: Owner, now: Date): Promise<CompanyMap> {
+  async map(owner: Owner, now: Date, timeZone?: string): Promise<CompanyMap> {
     const companies = await this.db
       .select()
       .from(company)
@@ -338,7 +354,7 @@ export class PostgresCompanyStore implements CompanyStore {
       .where(ownedItem(owner))
       .orderBy(desc(ledgerItem.createdAt), ledgerItem.id);
     const view = items.map(itemView);
-    const totals = computeTotals(view, { now });
+    const totals = computeTotals(view, { now, timeZone });
     return {
       companies: companies.map(companyView),
       items: view,
@@ -517,7 +533,7 @@ export class MemoryCompanyStore implements CompanyStore {
     }
     return written;
   }
-  async map(owner: Owner, now: Date): Promise<CompanyMap> {
+  async map(owner: Owner, now: Date, timeZone?: string): Promise<CompanyMap> {
     const companies = [...this.companies.values()]
       .filter((row) => this.mine(owner, row))
       .map(({ spaceId: _s, principalId: _p, ...rest }) => rest)
@@ -528,7 +544,7 @@ export class MemoryCompanyStore implements CompanyStore {
     return {
       companies,
       items,
-      totals: computeTotals(items, { now }),
+      totals: computeTotals(items, { now, timeZone }),
       currency: DEFAULT_CURRENCY,
     };
   }

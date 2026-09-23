@@ -255,7 +255,13 @@ export class PolicyService {
         await tx
           .update(trigger)
           .set({ enabled: false })
-          .where(and(eq(trigger.kind, 'event'), sql`${trigger.spec}->>'connection_id' = ${id}`));
+          .where(
+            and(
+              // A watch listens on its connection exactly as an event trigger does.
+              inArray(trigger.kind, ['event', 'watch']),
+              sql`${trigger.spec}->>'connection_id' = ${id}`,
+            ),
+          );
       const controls = await this.invalidateInTransaction(
         tx,
         source.spaceId,

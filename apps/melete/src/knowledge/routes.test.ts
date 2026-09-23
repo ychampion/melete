@@ -267,6 +267,29 @@ describe('reading a space', () => {
     expect(body.hits[0]?.id).toBe(ID.landlord);
   });
 
+  test('a member gets the shared records a search finds, however well private ones rank', async () => {
+    const shared = 'k_01J8ZP3QWABCDEFGHJKMNPQRSY';
+    writeFileSync(
+      join(paths.knowledge, 'team-tooling.md'),
+      serializeRecord(
+        record({ id: shared, title: 'Team tooling', audience: 'space', tags: ['team'] }),
+        'The team installs dependencies with bun.',
+      ),
+      'utf8',
+    );
+    const member = knowledgeRoutes({
+      spaces: filesystemSpaces(root),
+      authorizeSpace: async () => ({ owner: false }),
+    });
+    // The owner's private record says "bun" more often, so it ranks first; it
+    // must not take the only slot a member asked for and leave them nothing.
+    const res = await member.request(`/knowledge/search?space_id=${spaceId}&q=bun&limit=1`, {
+      headers: headers(),
+    });
+    const body = (await res.json()) as HitsBody;
+    expect(body.hits.map((hit) => hit.id)).toEqual([shared]);
+  });
+
   test('listing gives one line per record', async () => {
     const res = await app().request('/knowledge', { headers: headers() });
     const body = (await res.json()) as { records: Array<{ id: string }> };

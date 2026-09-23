@@ -225,15 +225,19 @@ export function fixtureReplyMailbox(messages: readonly ReplyMessage[]): ReplyMai
  * The installed mailbox, read through the registered connector with a minted
  * read action. The action is never recorded as an effect: an agent looking at
  * mail is not something that happened to the world.
+ *
+ * A message the server could not date is dated when this read first sees it,
+ * so a reply is read rather than dropped; delivery is keyed by message id, so
+ * seeing it again on a later read is not a second wake.
  */
 export function connectorReplyMailbox(options: {
   registry: ConnectorRegistry;
   connectionId: string;
   spaceId: string;
-  undatedAt: string;
 }): ReplyMailbox {
   return {
     async recent(limit) {
+      const readAt = new Date().toISOString();
       const connector = options.registry.get(options.connectionId);
       if (!(connector instanceof EmailConnector)) return [];
       const id = newId('act');
@@ -256,7 +260,7 @@ export function connectorReplyMailbox(options: {
           authorization_ref: null,
           budget_reservation: null,
           idempotency_key: id,
-          dispatched_at: options.undatedAt,
+          dispatched_at: readAt,
           receipt: null,
           resolved_at: null,
           reconciliation: null,
@@ -264,7 +268,7 @@ export function connectorReplyMailbox(options: {
           repair_counters: {},
           repair_disposition: null,
           retry_after_at: null,
-          created_at: options.undatedAt,
+          created_at: readAt,
         },
         {
           job_id: id,
@@ -287,7 +291,7 @@ export function connectorReplyMailbox(options: {
           messageId,
           from: String(record.from ?? ''),
           subject: String(record.subject ?? ''),
-          receivedAt: typeof record.date === 'string' ? record.date : options.undatedAt,
+          receivedAt: typeof record.date === 'string' ? record.date : readAt,
         });
       }
       return read.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, limit);
@@ -355,7 +359,15 @@ export class CompanyReplyPoller {
   async runOnce(): Promise<number> {
     let delivered = 0;
     for (const candidate of await readCandidates(this.deps.sql)) {
-      delivered += await deliverReplies(this.deps, candidate);
+      // One chase whose mailbox cannot take a reply right now must not stop
+      // every chase after it from being read. Its reply is still in the
+      // mailbox, and delivery is keyed by message id, so the next pass that
+      // succeeds delivers it once.
+      try {
+        delivered += await deliverReplies(this.deps, candidate);
+      } catch {
+        process.stderr.write(`company replies: delivery_failed ${candidate.jobId}\n`);
+      }
     }
     return delivered;
   }

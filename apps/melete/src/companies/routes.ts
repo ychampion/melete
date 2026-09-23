@@ -17,11 +17,12 @@ import {
   companyMap as companyMapContract,
   ledgerItem as ledgerItemContract,
 } from '@melete/contracts';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
+import { experienceProfile } from '../db/schema.ts';
 import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
@@ -76,6 +77,15 @@ async function ownerFor(db: Database, spaceId: string): Promise<Owner> {
 }
 
 /** The spaces a principal may speak for: personal ones they own, shared ones they joined. */
+/** The time zone the person keeps in the space's profile; UTC until they set one. */
+async function profileTimeZone(db: Database, spaceId: string): Promise<string> {
+  const [row] = await db
+    .select({ timeZone: experienceProfile.timeZone })
+    .from(experienceProfile)
+    .where(eq(experienceProfile.spaceId, spaceId));
+  return row?.timeZone ?? 'UTC';
+}
+
 async function visibleSpaceIds(db: Database, principalId: string): Promise<string[]> {
   const rows = await db.execute<{ id: string }>(sql`select s.id from space s
     where (s.kind = 'personal' and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
@@ -156,7 +166,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
 
   app.get('/spaces/:spaceId/companies', async (c) => {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
-    const map = await deps.store.map(owner, now());
+    const map = await deps.store.map(owner, now(), await profileTimeZone(deps.db, owner.spaceId));
     // A dropped item is one the person has said is not a thing. It stays in the
     // store, so a re-scan does not offer it again, but it is off the map.
     // A settled one stays: finishing with a company is worth seeing.

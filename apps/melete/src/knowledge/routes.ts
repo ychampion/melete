@@ -188,16 +188,21 @@ export function knowledgeRoutes(deps: KnowledgeDeps) {
       );
       return c.json({ hits: scanForRetracted(records, q, limit) });
     }
+    const records = loadSpace(space.paths).records;
     const visible = new Set(
-      loadSpace(space.paths)
-        .records.filter((record) =>
+      records
+        .filter((record) =>
           audienceVisible(record.frontmatter.audience, space.id, c.get('spaceOwner')),
         )
         .map((record) => record.frontmatter.id),
     );
-    const hits = withIndex(space, (index) => index.query(q, { limit })).filter((hit) =>
-      visible.has(hit.id),
-    );
+    // Rank every match, then filter, then cut: a limit applied before the
+    // audience filter lets records this caller cannot see take its places.
+    const hits = withIndex(space, (index) =>
+      index.query(q, { limit: Math.max(limit, records.length) }),
+    )
+      .filter((hit) => visible.has(hit.id))
+      .slice(0, limit);
     return c.json({ hits: hits.map(hitView) });
   });
 

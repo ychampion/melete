@@ -37,6 +37,7 @@ import { pendingRuntimeWait } from './broker/runtime-wait.ts';
 import type { BrokerService } from './broker/service.ts';
 import { startEffectBoundary } from './broker/start.ts';
 import { CompanyReplyPoller, connectorReplyMailbox } from './companies/replies.ts';
+import { closeInterruptedScans } from './companies/repository.ts';
 import { type CompaniesDeps, mountCompanies } from './companies/routes.ts';
 import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
@@ -392,6 +393,7 @@ export async function bootstrap(
   try {
     if (handle) {
       await migrateDatabase(handle);
+      await closeInterruptedScans(handle.db);
       await expireEpisodes(handle.sql);
       episodeRetention = setInterval(() => {
         void expireEpisodes(handle.sql).catch(() =>
@@ -611,9 +613,6 @@ export async function bootstrap(
                 registry: connectors,
                 connectionId: candidate.connectionId,
                 spaceId: candidate.spaceId,
-                // A message the connector could not date is treated as having
-                // arrived when the chase started, so it is read, not discarded.
-                undatedAt: candidate.since,
               }),
           });
           await companyReplies.start();

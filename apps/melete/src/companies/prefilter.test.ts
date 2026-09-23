@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { messageText, registrableDomain, senderAddress, withheldFromScan } from './messages.ts';
-import { isCandidate, monthlySpendFrom, prefilter } from './prefilter.ts';
+import { isCandidate, prefilter } from './prefilter.ts';
 
 const now = new Date(FIXTURE_REFERENCE);
 const message = (over: Partial<Parameters<typeof isCandidate>[0]> = {}) => ({
@@ -95,12 +95,5 @@ describe('hygiene', () => {
   test('is the connector’s own filter, applied to the scan', () => {
     expect(withheldFromScan(message({ text: 'Your OTP is 449120.' }))).toBe(true);
     expect(withheldFromScan(message({ text: 'Your refund is on its way.' }))).toBe(false);
-  });
-});
-
-describe('the monthly figure', () => {
-  test('scales what was admitted to a month, and is nothing without amounts', () => {
-    expect(monthlySpendFrom([4800, 4800], 90)).toBe(3200);
-    expect(monthlySpendFrom([], 90)).toBe(null);
   });
 });

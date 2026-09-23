@@ -178,14 +178,15 @@ describe('reading a mailbox through the installed connector', () => {
     for (const entry of read) expect(entry.text).not.toContain('<p>');
   });
 
-  test('a space with no such connection reads nothing rather than failing', async () => {
+  test('a connection this server has not opened is a mailbox it could not read', async () => {
     const reader = connectorMailbox({
       registry: new ConnectorRegistry(),
       connectionId: 'con_absent',
       spaceId: SPACE,
       undatedAt: UNDATED,
     });
-    expect(await reader.recent(50)).toEqual([]);
+    // An empty answer here would read to the person as an empty inbox.
+    await expect(reader.recent(50)).rejects.toThrow(/^I couldn't read your mailbox: /);
   });
 
   test('a connection belonging to another space is refused by the connector itself', async () => {
@@ -197,7 +198,28 @@ describe('reading a mailbox through the installed connector', () => {
       spaceId: 'spc_somebody_else',
       undatedAt: UNDATED,
     });
-    expect(await reader.recent(50)).toEqual([]);
+    await expect(reader.recent(50)).rejects.toThrow(/^I couldn't read your mailbox: /);
+  });
+
+  test('a scan of a mailbox that cannot be read fails and says so', async () => {
+    const { transport, reader } = mailbox();
+    transport.search = async () => {
+      throw new Error('IMAP login failed for accounts@thackeraylane.example');
+    };
+    const store = new MemoryCompanyStore();
+    const owner = { spaceId: SPACE, principalId: 'own_01J0000000000000000000000B' };
+    const outcome = await runScan({
+      store,
+      mailbox: reader,
+      extractor: scriptedExtractor(),
+      owner,
+      now: new Date(UNDATED),
+    });
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/^I couldn't read your mailbox: /);
+    // The reason is the product's own words, never the transport's.
+    expect(outcome.error).not.toContain('thackeraylane');
+    expect((await store.scan(owner, outcome.id))?.status).toBe('failed');
   });
 
   test('the whole demonstration mailbox survives the round trip through a real connector', async () => {
@@ -325,6 +347,6 @@ describe('reading a mailbox through the installed connector', () => {
       spaceId: SPACE,
       undatedAt: UNDATED,
     });
-    expect(await reader.recent(50)).toEqual([]);
+    await expect(reader.recent(50)).rejects.toThrow(/^I couldn't read your mailbox: /);
   });
 });

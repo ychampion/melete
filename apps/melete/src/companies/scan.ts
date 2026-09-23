@@ -15,7 +15,7 @@ import type { LedgerItem } from '@melete/contracts';
 import type { CompanyExtractor } from './extract.ts';
 import type { ScanMailbox } from './mailbox.ts';
 import { messageText, type ScanMessage } from './messages.ts';
-import { monthlySpendFrom, prefilter } from './prefilter.ts';
+import { prefilter } from './prefilter.ts';
 import type { CompanyStore, Owner, ScanRecord, StoredMessage } from './repository.ts';
 import { type AdmissionContext, admitAll, noDrops } from './validate.ts';
 
@@ -138,15 +138,22 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       admitted.push(...result.items);
 
       // A company's monthly figure is derived from what it was admitted to
-      // charge, so it can never exceed what the person can open and read.
-      const spend = result.items
-        .filter((item) => item.direction === 'you_pay' && item.amount_minor !== null)
-        .map((item) => item.amount_minor ?? 0);
-      const currency = result.items.find(
-        (item) => item.direction === 'you_pay' && item.currency,
-      )?.currency;
-      const monthly = monthlySpendFrom(spend, windowDays);
-      if (monthly !== null && currency)
+      // charge, so it can never exceed what the person can open and read. It
+      // follows the map's own rule: standing charges only, in one currency, at
+      // the price each one states. A one-off bill is not a month's spend, and
+      // a monthly charge read out of a 90-day window is still that charge.
+      const standing = result.items.filter(
+        (item) =>
+          item.kind === 'subscription' &&
+          item.direction === 'you_pay' &&
+          item.amount_minor !== null &&
+          item.currency !== null,
+      );
+      const currency = standing[0]?.currency;
+      const monthly = standing
+        .filter((item) => item.currency === currency)
+        .reduce((sum, item) => sum + (item.amount_minor ?? 0), 0);
+      if (currency)
         await options.store.saveCompany(options.owner, {
           id: companyId,
           name: group.name,

@@ -43,3 +43,15 @@ export function numericDate(at: Date, timeZone = 'UTC'): string {
   const month = new Intl.DateTimeFormat('en-GB', { timeZone, month: '2-digit' }).format(at);
   return `${String(day).padStart(2, '0')}/${month}/${year}`;
 }
+
+/** "2026-09-12": the calendar day it is at that instant in that zone, sortable as text. */
+export function calendarDay(at: Date, timeZone = 'UTC'): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}

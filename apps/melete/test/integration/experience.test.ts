@@ -31,6 +31,7 @@ import {
   space,
   trigger,
 } from '../../src/db/schema.ts';
+import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
@@ -665,6 +666,40 @@ withDb('experience rows and authenticated scope', () => {
         history.events.some(
           (item) => item.item.type === 'say' && item.item.text === 'Saved history.',
         ),
+      ).toBe(true);
+    } finally {
+      await reader.close();
+    }
+  });
+  test('projection waits its turn in event order, so a live stream cannot pass its rows', async () => {
+    const chat = await createConversation();
+    const fixture = required(handle);
+    await fixture.db.insert(event).values({
+      jobId: chat.id,
+      type: 'notice',
+      payload: { kind: 'experience_say', text: 'In order.' },
+      dedupKey: `${chat.id}:ordered-say`,
+    });
+    const reader = openDatabase(fixture.url, 1);
+    try {
+      const projection = new ExperienceEvents(reader.db);
+      let synced = false;
+      let pending: Promise<void> | undefined;
+      await fixture.sql.begin(async (tx) => {
+        // Another writer holds the event order. Anything the projection appends
+        // now would take a sequence number that commits after later ones, and a
+        // stream that had read past it would never show it.
+        await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        pending = projection.sync(spaceId, chat.id).then(() => {
+          synced = true;
+        });
+        await Bun.sleep(300);
+        expect(synced).toBe(false);
+      });
+      await pending;
+      const page = await projection.page(spaceId, 0, chat.id);
+      expect(
+        page.events.some((item) => item.item.type === 'say' && item.item.text === 'In order.'),
       ).toBe(true);
     } finally {
       await reader.close();

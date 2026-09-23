@@ -71,6 +71,34 @@ describe('a scan of the demonstration mailbox', () => {
     expect(domains).not.toContain('longshoreletter.example');
   });
 
+  test('a company costs a month what its standing charges come to', async () => {
+    const { map } = await scanFixtures();
+    let checked = 0;
+    for (const company of map.companies) {
+      const subscriptions = map.items.filter(
+        (item) =>
+          item.company_id === company.id &&
+          item.kind === 'subscription' &&
+          item.direction === 'you_pay' &&
+          item.amount_minor !== null &&
+          item.currency === company.currency,
+      );
+      if (!subscriptions.length) continue;
+      checked++;
+      // A monthly charge found in a window of receipts is that charge a month,
+      // not a share of it, and a one-off bill from the same company is not monthly.
+      expect(company.monthly_spend_minor).toBe(
+        subscriptions.reduce((sum, item) => sum + (item.amount_minor ?? 0), 0),
+      );
+    }
+    expect(checked).toBeGreaterThan(0);
+    // The headline adds the same figures, in its own currency.
+    const inGbp = map.companies.filter((company) => company.currency === 'GBP');
+    expect(inGbp.reduce((sum, company) => sum + (company.monthly_spend_minor ?? 0), 0)).toBe(
+      map.totals.monthly_spend_minor,
+    );
+  });
+
   test('covers the kinds the map is made of, including promises', async () => {
     const { map } = await scanFixtures();
     const kinds = new Set<string>(map.items.map((item) => item.kind));
