@@ -95,9 +95,17 @@ async function conversation(db: TestDatabase, scope: MemoryScope, title = 'New c
     values (${jobId}, ${scope.spaceId}, ${title}, ${title}, 'chat', 'completed', 1, 1)`;
   return jobId;
 }
-async function say(db: TestDatabase, jobId: string, text: string) {
+/**
+ * A message typed into a conversation. The service records its speaker on the
+ * event; by default that is the job's own person, `null` records none.
+ */
+async function say(db: TestDatabase, jobId: string, text: string, speaker?: string | null) {
+  const [job] =
+    await db.sql`select coalesce(principal_id, (select id from owner limit 1)) as principal_id from job where id = ${jobId}`;
+  const who = speaker === undefined ? (job?.principal_id as string) : speaker;
+  const payload = { kind: 'user_message', text, ...(who ? { principal_id: who } : {}) };
   await db.sql`insert into event (job_id, type, payload, dedup_key)
-    values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text })}::text::jsonb, ${`evt:${newId('turn')}`})`;
+    values (${jobId}, 'notice', ${JSON.stringify(payload)}::text::jsonb, ${`evt:${newId('turn')}`})`;
 }
 /** The memory notices a conversation holds: what was done, to what, and the words quoted. */
 async function traces(db: TestDatabase, jobId: string) {
@@ -271,9 +279,23 @@ withDb('automatic memory from chat', () => {
       const [row] =
         await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
       expect(row?.n).toBe(0);
+      // A member's words accepted onto the owner's own conversation are still the
+      // member's, and a message whose speaker was not recorded is nobody's.
+      const owners = await conversation(db, scope);
+      await say(db, owners, 'My sister Maya is on +351 912 345 678.', memberId);
+      await say(db, owners, 'My sister Maya is on +351 912 345 678.', null);
+      await captureChat({ ...capture, scopeForJob: scopeFor(db, scope) });
+      const [kept] =
+        await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
+      expect(kept?.n).toBe(0);
       const outcomes =
-        await db.sql`select outcome from memory_capture where job_id in (${job}, ${theirs}) order by event_seq`;
-      expect(outcomes.map((entry) => entry.outcome)).toEqual(['skipped:member', 'skipped:member']);
+        await db.sql`select outcome from memory_capture where job_id in (${job}, ${theirs}, ${owners}) order by event_seq`;
+      expect(outcomes.map((entry) => entry.outcome)).toEqual([
+        'skipped:member',
+        'skipped:member',
+        'skipped:member',
+        'skipped:member',
+      ]);
     } finally {
       await journal.close();
     }

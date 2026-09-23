@@ -585,7 +585,7 @@ async function runScenario(
           conversations.set(key, jobId);
         }
         const [event] = await sql`insert into event (job_id, type, payload, dedup_key)
-          values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text: step.text })}::text::jsonb,
+          values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text: step.text, principal_id: space.scope.ownerId })}::text::jsonb,
             ${`${scenario.id}:${label}:${jobId}`}) returning seq`;
         const owner = { ...space.scope, principalId: space.scope.ownerId };
         await captureChat({

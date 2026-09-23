@@ -102,6 +102,8 @@ type Pending = {
   job_id: string;
   space_id: string;
   principal_id: string;
+  /** Who typed the message, as the service recorded it on the event; absent on older events. */
+  speaker_id: string | null;
   text: string;
   created_at: Date;
 };
@@ -110,14 +112,14 @@ type Pending = {
 export async function captureChat(options: CaptureOptions, limit = 50): Promise<number> {
   const { sql } = options;
   const rows =
-    await sql`select e.seq, e.job_id, e.created_at, e.payload->>'text' as text, j.space_id,
+    await sql`select e.seq, e.job_id, e.created_at, e.payload->>'text' as text, e.payload->>'principal_id' as speaker_id, j.space_id,
       coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
     from event e join job j on j.id = e.job_id
     where e.seq > (select coalesce(max(event_seq), 0) from memory_capture where outcome <> 'pending')
       and e.type = 'notice' and e.payload->>'kind' = 'user_message'
       and not exists (select 1 from memory_capture c where c.event_seq = e.seq)
     union all
-    select e.seq, e.job_id, e.created_at, e.payload->>'text' as text, j.space_id,
+    select e.seq, e.job_id, e.created_at, e.payload->>'text' as text, e.payload->>'principal_id' as speaker_id, j.space_id,
       coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
     from memory_capture c join event e on e.seq = c.event_seq join job j on j.id = e.job_id
     where c.outcome = 'pending' and c.created_at < clock_timestamp() - ${PENDING_LEASE}::interval
@@ -165,14 +167,17 @@ async function captureOne(
       return { outcome: 'skipped:scope_denied', sourceId: null };
     throw error;
   }
-  // Memory in a space is its owner's. The speaker is whoever the job belongs
-  // to, and only the space's owner speaking is kept, whichever runtime path
-  // built the scope.
+  // Memory in a space is its owner's, and a message is theirs only when the
+  // service recorded them as its speaker. A job's owner is not proof of who
+  // typed into it, so a message with no recorded speaker is not kept, and
+  // neither is one typed by anyone else or on anyone else's job.
   const [space] =
     await sql`select coalesce(s.owner_principal_id, (select id from owner limit 1)) as owner_id
       from space s where s.id = ${row.space_id}`;
   if (
     scope.role !== 'owner' ||
+    !row.speaker_id ||
+    row.speaker_id !== space?.owner_id ||
     space?.owner_id !== row.principal_id ||
     (scope.principalId !== undefined && scope.principalId !== row.principal_id)
   )
