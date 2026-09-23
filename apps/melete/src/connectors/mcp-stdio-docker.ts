@@ -24,7 +24,7 @@ import type { McpStdioLaunch } from '@melete/contracts';
 import { type DockerApi, DockerError, DockerSocketApi } from '../runtime/docker.ts';
 import { DOCKER_API_VERSION } from '../runtime/docker-engine.ts';
 import { type EgressGrant, EgressProxy } from './mcp-egress.ts';
-import type { StdioLauncher, StdioLaunchSpec } from './mcp-stdio.ts';
+import { StdioCapacityError, type StdioLauncher, type StdioLaunchSpec } from './mcp-stdio.ts';
 import type { StdioChannel } from './mcp-transport.ts';
 
 const OWNER = 'com.melete.mcp-launcher';
@@ -43,6 +43,9 @@ export const STDIO_LIMITS = {
   pids: 128,
   nanoCpus: 1_000_000_000,
   tmpfs: 'rw,nosuid,nodev,size=64m,mode=1777',
+  prepareTmpfs: 'rw,nosuid,nodev,size=256m,mode=1777',
+  /** Servers running at once across the whole deployment. */
+  servers: 16,
 } as const;
 
 /** What the backend needs from Docker beyond plain API requests. */
@@ -75,6 +78,8 @@ export type DockerStdioOptions = {
   proxy?: EgressProxy;
   /** How long a package runner's preparation may take. */
   prepareTimeoutMs?: number;
+  /** Servers running at once across the deployment; a start beyond it is refused. */
+  maxServers?: number;
 };
 
 export const DEFAULT_STDIO_IMAGES = {
@@ -137,22 +142,50 @@ export function ownedDirectories(paths: readonly string[], uid = 10001, gid = 10
 }
 
 /**
- * The volume's root and the directories a server's environment points into.
- * They are written into the volume itself: Docker refuses an archive for a
+ * The server's volume: its root and the home its environment points into. Both
+ * volumes are written into directly, because Docker refuses an archive for a
  * read-only root filesystem anywhere outside a volume.
  */
-const DATA_DIRECTORIES = ['./', 'home/', 'npm/', 'uv/'];
+const DATA_DIRECTORIES = ['./', 'home/'];
+/** The package volume: written by preparation alone, and read-only to the server. */
+const PACKAGE_DIRECTORIES = ['./', 'npm/', 'uv/'];
+
+/** `@scope/name@1.0` is the npm package `@scope/name`. */
+export function npmName(source: string): string {
+  const at = source.indexOf('@', 1);
+  return at > 0 ? source.slice(0, at) : source;
+}
 
 /** The package name alone, for a runner that wants a command named after it. */
 function pythonName(source: string): string {
   return /^[A-Za-z0-9._-]+/.exec(source)?.[0] ?? source;
 }
 
-/** `name@1.0` is `name==1.0` to `uvx --from`. */
+/** `name@1.0` is `name==1.0` to uv. */
 function pythonRequirement(source: string): string {
   const at = source.indexOf('@');
   return at > 0 ? `${source.slice(0, at)}==${source.slice(at + 1)}` : source;
 }
+
+/**
+ * Starts a prepared npm package's program the way npx picks it, from the
+ * package's own `bin`, as a child sharing the standard streams. It needs only
+ * the read-only package volume, so the server never writes where its code is.
+ */
+const NPM_LAUNCHER = [
+  "const {spawn}=require('child_process'),fs=require('fs'),path=require('path');",
+  'const [,name,wanted,...args]=process.argv;',
+  "const root=path.join('/pkg/npm/node_modules',name);",
+  "const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));",
+  "const short=name.split('/').pop();",
+  "const bins=typeof pkg.bin==='string'?{[short]:pkg.bin}:(pkg.bin||{});",
+  'const keys=Object.keys(bins);',
+  "const chosen=wanted!=='-'?wanted:(keys.length===1?keys[0]:short);",
+  "if(!bins[chosen]){process.stderr.write('no program named '+chosen+String.fromCharCode(10));process.exit(127)}",
+  "const child=spawn(process.execPath,[path.join(root,bins[chosen]),...args],{stdio:'inherit'});",
+  "for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>child.kill(s));",
+  "child.on('exit',(code,signal)=>process.exit(code??(signal?1:0)));",
+].join('');
 
 export type StdioCommand = { image: string; argv?: string[]; entrypoint?: string[] };
 
@@ -165,33 +198,35 @@ export function stdioCommands(
     return {
       prepare: {
         image: images.node,
-        entrypoint: ['npx', '--yes', '--package', launch.source, '--', 'node', '-e', '0'],
+        entrypoint: [
+          'npm',
+          'install',
+          '--prefix',
+          '/pkg/npm',
+          '--no-save',
+          '--no-audit',
+          '--no-fund',
+          launch.source,
+        ],
       },
       run: {
         image: images.node,
-        entrypoint: launch.command
-          ? ['npx', '--offline', '--yes', '--package', launch.source, '--', launch.command]
-          : ['npx', '--offline', '--yes', launch.source],
+        entrypoint: ['node', '-e', NPM_LAUNCHER, npmName(launch.source), launch.command ?? '-'],
         argv: launch.args,
       },
     };
-  if (launch.runner === 'uvx') {
-    const requirement = pythonRequirement(launch.source);
+  if (launch.runner === 'uvx')
     return {
-      prepare: { image: images.python, entrypoint: ['uv', 'tool', 'install', requirement] },
+      prepare: {
+        image: images.python,
+        entrypoint: ['uv', 'tool', 'install', '--force', pythonRequirement(launch.source)],
+      },
       run: {
         image: images.python,
-        entrypoint: [
-          'uvx',
-          '--offline',
-          '--from',
-          requirement,
-          launch.command ?? pythonName(launch.source),
-        ],
+        entrypoint: [`/pkg/uv/bin/${launch.command ?? pythonName(launch.source)}`],
         argv: launch.args,
       },
     };
-  }
   return {
     run: {
       image: launch.source,
@@ -201,32 +236,49 @@ export function stdioCommands(
   };
 }
 
-const RUNNER_ENV = [
-  'HOME=/data/home',
+/** The running server: a home in its own volume and a scratch `/tmp`. */
+const SERVER_ENV = ['HOME=/data/home', 'TMPDIR=/tmp'];
+/**
+ * Preparation keeps nothing but the package. Its home and caches are in
+ * memory, it reads no user, global or project configuration, and uv uses the
+ * image's own Python rather than one it would fetch.
+ */
+const PREPARE_ENV = [
+  'HOME=/tmp/home',
   'TMPDIR=/tmp',
-  'NPM_CONFIG_CACHE=/data/npm',
+  'NPM_CONFIG_CACHE=/tmp/npm-cache',
+  'NPM_CONFIG_USERCONFIG=/dev/null',
+  'NPM_CONFIG_GLOBALCONFIG=/dev/null',
   'NPM_CONFIG_UPDATE_NOTIFIER=false',
-  'UV_CACHE_DIR=/data/uv/cache',
-  'UV_TOOL_DIR=/data/uv/tools',
-  'UV_PYTHON_INSTALL_DIR=/data/uv/python',
+  'UV_CACHE_DIR=/tmp/uv-cache',
+  'UV_TOOL_DIR=/pkg/uv/tools',
+  'UV_TOOL_BIN_DIR=/pkg/uv/bin',
+  'UV_NO_CONFIG=1',
+  'UV_PYTHON_PREFERENCE=only-system',
+  'UV_LINK_MODE=copy',
 ];
+
+export type StdioMount = { volume: string; target: '/data' | '/pkg'; readOnly: boolean };
 
 /** The create body for a server or preparation container. Pure, so its restrictions are tested. */
 export function stdioContainerBody(input: {
   image: string;
   command: StdioCommand;
   labels: Record<string, string>;
-  volume: string;
+  mounts: readonly StdioMount[];
   network?: string;
   env: readonly string[];
   interactive: boolean;
+  /** Preparation downloads into memory, so it has more of it. */
+  tmpfs?: string;
+  workdir: string;
 }): Record<string, unknown> {
   return {
     Image: input.image,
     ...(input.command.entrypoint ? { Entrypoint: input.command.entrypoint } : {}),
     ...(input.command.argv ? { Cmd: input.command.argv } : {}),
     User: USER,
-    WorkingDir: '/data/home',
+    WorkingDir: input.workdir,
     Env: [...input.env],
     Labels: input.labels,
     AttachStdin: input.interactive,
@@ -247,17 +299,28 @@ export function stdioContainerBody(input: {
       Memory: STDIO_LIMITS.memoryBytes,
       MemorySwap: STDIO_LIMITS.memoryBytes,
       NanoCpus: STDIO_LIMITS.nanoCpus,
-      Tmpfs: { '/tmp': STDIO_LIMITS.tmpfs },
+      Tmpfs: { '/tmp': input.tmpfs ?? STDIO_LIMITS.tmpfs },
       RestartPolicy: { Name: 'no' },
       // What a server says may be private; it is read from the attached stream and never kept.
       LogConfig: { Type: 'none', Config: {} },
-      Mounts: [{ Type: 'volume', Source: input.volume, Target: '/data' }],
+      Mounts: input.mounts.map((mount) => ({
+        Type: 'volume',
+        Source: mount.volume,
+        Target: mount.target,
+        ReadOnly: mount.readOnly,
+      })),
     },
     ...(input.network ? { NetworkingConfig: { EndpointsConfig: { [input.network]: {} } } } : {}),
   };
 }
 
-type Names = { container: string; prepare: string; network: string; volume: string };
+type Names = {
+  container: string;
+  prepare: string;
+  network: string;
+  volume: string;
+  packages: string;
+};
 
 /** Docker over its socket, including the hijacked attach that `fetch` cannot make. */
 export class DockerStdioSocket extends DockerSocketApi implements DockerStdioApi {
@@ -371,6 +434,7 @@ export class DockerStdioLauncher implements StdioLauncher {
   private proxy?: Promise<{ proxy: EgressProxy; port: number }>;
   private readonly prepared = new Set<string>();
   private readonly running = new Map<string, Promise<void>>();
+  private live = 0;
 
   constructor(private readonly options: DockerStdioOptions) {
     if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(options.project))
@@ -389,6 +453,11 @@ export class DockerStdioLauncher implements StdioLauncher {
     return null;
   }
 
+  /** True when a start now would pass the deployment's limit on running servers. */
+  full(): boolean {
+    return this.live >= (this.options.maxServers ?? STDIO_LIMITS.servers);
+  }
+
   private names(connectionId: string): Names {
     if (!/^conn_[A-Za-z0-9]+$/.test(connectionId)) throw new Error('Invalid connection id');
     const prefix = `${this.options.project}-mcp-${connectionId.toLowerCase()}`;
@@ -397,6 +466,7 @@ export class DockerStdioLauncher implements StdioLauncher {
       prepare: `${prefix}-prepare`,
       network: `${prefix}-net`,
       volume: `${prefix}-data`,
+      packages: `${prefix}-pkg`,
     };
   }
 
@@ -431,26 +501,38 @@ export class DockerStdioLauncher implements StdioLauncher {
     return this.proxy;
   }
 
-  /** The image's id, pulled first when the host does not have it. */
+  /**
+   * The image's id, pulled first when the host does not have it. A reference
+   * that pins a digest runs only if the image on this host carries that
+   * digest, whatever its tag now points to.
+   */
   private async image(reference: string, signal: AbortSignal): Promise<string> {
     const path = `/images/${encodeURIComponent(reference)}/json`;
+    type Found = { Id: string; RepoDigests?: string[] | null };
+    let found: Found | undefined;
     try {
-      return ((await this.docker.request('GET', path)) as { Id: string }).Id;
+      found = (await this.docker.request('GET', path)) as Found;
     } catch (error) {
       if (!(error instanceof DockerError && error.status === 404)) throw error;
     }
-    await this.docker.pull(reference, signal);
-    return ((await this.docker.request('GET', path)) as { Id: string }).Id;
+    if (!found) {
+      await this.docker.pull(reference, signal);
+      found = (await this.docker.request('GET', path)) as Found;
+    }
+    const digest = /@(sha256:[a-f0-9]{64})$/.exec(reference)?.[1];
+    if (digest && !(found.RepoDigests ?? []).some((entry) => entry.endsWith(`@${digest}`)))
+      throw new Error('The image on this host is not the one its digest names');
+    return found.Id;
   }
 
-  private async volume(connectionId: string, names: Names) {
+  private async volume(connectionId: string, name: string) {
     const volume = (await this.docker.request('POST', '/volumes/create', {
-      Name: names.volume,
+      Name: name,
       Labels: this.labels(connectionId),
     })) as { Name: string; Labels: Record<string, string> };
     // Creating a volume that exists returns it; one that belongs to anything else is refused.
-    if (volume.Name !== names.volume || !this.owned(volume.Labels, connectionId))
-      throw new Error('Refusing a data volume that belongs to another owner');
+    if (volume.Name !== name || !this.owned(volume.Labels, connectionId))
+      throw new Error('Refusing a volume that belongs to another owner');
   }
 
   /** An internal network with only the server and the service, which serves as its proxy. */
@@ -466,6 +548,14 @@ export class DockerStdioLauncher implements StdioLauncher {
       Options: { 'com.docker.network.bridge.gateway_mode_ipv4': 'isolated' },
       Labels: this.labels(connectionId),
     })) as { Id: string };
+    // An engine that made it routable would give the server the host's network.
+    const recorded = (await this.docker.request('GET', `/networks/${created.Id}`)) as {
+      Internal?: boolean;
+    };
+    if (recorded.Internal !== true) {
+      await this.remove('DELETE', `/networks/${created.Id}`);
+      throw new Error('The server network was not created internal');
+    }
     await this.docker.request('POST', `/networks/${created.Id}/connect`, {
       Container: self,
       EndpointConfig: { Aliases: [EGRESS_ALIAS] },
@@ -512,33 +602,67 @@ export class DockerStdioLauncher implements StdioLauncher {
     };
   }
 
-  /** Create, set up the volume, and verify a container before anything runs in it. */
+  /** Create, verify, and make its volume writable to it, before anything runs in a container. */
   private async create(
     name: string,
     body: Record<string, unknown>,
     network: string | undefined,
+    mounts: readonly StdioMount[],
+    writable: { path: '/data' | '/pkg'; directories: string[] },
   ): Promise<string> {
-    await this.remove('DELETE', `/containers/${name}?force=true`);
+    await this.remove('DELETE', `/containers/${name}?force=true&v=true`);
     const created = (await this.docker.request(
       'POST',
       `/containers/create?name=${name}`,
       body,
     )) as { Id: string };
     const inspected = (await this.docker.request('GET', `/containers/${created.Id}/json`)) as {
-      HostConfig: { NetworkMode: string; ReadonlyRootfs: boolean; CapDrop: string[] | null };
-      Mounts?: { Destination: string }[];
+      Config?: { User?: string };
+      HostConfig: {
+        NetworkMode: string;
+        ReadonlyRootfs: boolean;
+        CapDrop: string[] | null;
+        SecurityOpt?: string[] | null;
+        Privileged?: boolean;
+        PidsLimit?: number | null;
+        Memory?: number;
+      };
+      Mounts?: { Type: string; Name?: string; Destination: string; RW: boolean }[];
     };
+    const recorded = inspected.Mounts ?? [];
+    const ours = mounts.every((mount) =>
+      recorded.some(
+        (entry) =>
+          entry.Type === 'volume' &&
+          entry.Name === mount.volume &&
+          entry.Destination === mount.target &&
+          entry.RW === !mount.readOnly,
+      ),
+    );
+    // An image may declare volumes of its own; they are anonymous, go with the container, and
+    // are all it gets besides ours.
+    const others = recorded.filter((entry) => !mounts.some((mount) => mount.volume === entry.Name));
+    const anonymous = others.every(
+      (entry) => entry.Type === 'volume' && /^[a-f0-9]{64}$/.test(entry.Name ?? ''),
+    );
+    const host = inspected.HostConfig;
     // What the engine recorded is what runs; anything less isolated is removed unstarted.
     if (
-      inspected.HostConfig.NetworkMode !== (network ?? 'none') ||
-      inspected.HostConfig.ReadonlyRootfs !== true ||
-      !inspected.HostConfig.CapDrop?.includes('ALL') ||
-      (inspected.Mounts ?? []).some((mount) => mount.Destination !== '/data')
+      inspected.Config?.User !== USER ||
+      host.NetworkMode !== (network ?? 'none') ||
+      host.ReadonlyRootfs !== true ||
+      !host.CapDrop?.includes('ALL') ||
+      !host.SecurityOpt?.includes('no-new-privileges:true') ||
+      host.Privileged !== false ||
+      host.PidsLimit !== STDIO_LIMITS.pids ||
+      host.Memory !== STDIO_LIMITS.memoryBytes ||
+      !ours ||
+      !anonymous
     ) {
-      await this.remove('DELETE', `/containers/${created.Id}?force=true`);
+      await this.remove('DELETE', `/containers/${created.Id}?force=true&v=true`);
       throw new Error('The server container was not created with its restrictions');
     }
-    await this.docker.putArchive(created.Id, '/data', ownedDirectories(DATA_DIRECTORIES));
+    await this.docker.putArchive(created.Id, writable.path, ownedDirectories(writable.directories));
     return created.Id;
   }
 
@@ -555,6 +679,8 @@ export class DockerStdioLauncher implements StdioLauncher {
     const image = await this.image(command.image, signal);
     await this.network(spec.connectionId, names);
     const { env, grant } = await this.proxyEnv(registry);
+    // Only the package volume: nothing the server ever wrote in its own volume reaches here.
+    const mounts: StdioMount[] = [{ volume: names.packages, target: '/pkg', readOnly: false }];
     let id: string | undefined;
     try {
       id = await this.create(
@@ -563,13 +689,17 @@ export class DockerStdioLauncher implements StdioLauncher {
           image,
           command,
           labels: this.labels(spec.connectionId),
-          volume: names.volume,
+          mounts,
           network: names.network,
           // A package's install scripts run here with no secret: only the running server gets them.
-          env: [...RUNNER_ENV, ...env],
+          env: [...PREPARE_ENV, ...env],
           interactive: false,
+          tmpfs: STDIO_LIMITS.prepareTmpfs,
+          workdir: '/tmp',
         }),
         names.network,
+        mounts,
+        { path: '/pkg', directories: PACKAGE_DIRECTORIES },
       );
       signal.throwIfAborted();
       await this.docker.request('POST', `/containers/${id}/start`);
@@ -589,7 +719,7 @@ export class DockerStdioLauncher implements StdioLauncher {
       this.prepared.add(key);
     } finally {
       grant.revoke();
-      if (id) await this.remove('DELETE', `/containers/${id}?force=true`);
+      if (id) await this.remove('DELETE', `/containers/${id}?force=true&v=true`);
       await this.dropNetwork(names);
     }
   }
@@ -600,8 +730,30 @@ export class DockerStdioLauncher implements StdioLauncher {
     const names = this.names(spec.connectionId);
     // One server per connection: a start waits for the previous container to be gone.
     await this.running.get(spec.connectionId);
+    if (this.full()) throw new StdioCapacityError();
+    this.live += 1;
+    let counted = true;
+    const uncount = () => {
+      if (counted) this.live -= 1;
+      counted = false;
+    };
+    try {
+      return await this.run(spec, names, signal, uncount);
+    } catch (error) {
+      uncount();
+      throw error;
+    }
+  }
+
+  private async run(
+    spec: StdioLaunchSpec,
+    names: Names,
+    signal: AbortSignal,
+    uncount: () => void,
+  ): Promise<StdioChannel> {
     const { run, prepare } = stdioCommands(spec.launch, this.images);
-    await this.volume(spec.connectionId, names);
+    await this.volume(spec.connectionId, names.volume);
+    if (prepare) await this.volume(spec.connectionId, names.packages);
     if (prepare) await this.prepare(spec, names, prepare, signal);
     signal.throwIfAborted();
     const image = await this.image(run.image, signal);
@@ -614,11 +766,17 @@ export class DockerStdioLauncher implements StdioLauncher {
     let id: string | undefined;
     let stream: AttachedStream | undefined;
     const release = async () => {
+      uncount();
       egress?.grant.revoke();
       stream?.destroy();
-      if (id) await this.remove('DELETE', `/containers/${id}?force=true`);
+      if (id) await this.remove('DELETE', `/containers/${id}?force=true&v=true`);
       if (egress) await this.dropNetwork(names);
     };
+    // Its own volume to write, and the prepared package to read, never to change.
+    const mounts: StdioMount[] = [
+      { volume: names.volume, target: '/data', readOnly: false },
+      ...(prepare ? [{ volume: names.packages, target: '/pkg' as const, readOnly: true }] : []),
+    ];
     try {
       id = await this.create(
         names.container,
@@ -626,16 +784,19 @@ export class DockerStdioLauncher implements StdioLauncher {
           image,
           command: run,
           labels: this.labels(spec.connectionId),
-          volume: names.volume,
+          mounts,
           network: egress ? names.network : undefined,
           env: [
-            ...RUNNER_ENV,
+            ...SERVER_ENV,
             ...(egress?.env ?? []),
             ...Object.entries(spec.env).map(([key, value]) => `${key}=${value}`),
           ],
           interactive: true,
+          workdir: '/data/home',
         }),
         egress ? names.network : undefined,
+        mounts,
+        { path: '/data', directories: DATA_DIRECTORIES },
       );
       stream = await this.docker.attach(id);
       signal.throwIfAborted();
@@ -683,9 +844,10 @@ export class DockerStdioLauncher implements StdioLauncher {
     const names = this.names(connectionId);
     await this.running.get(connectionId);
     for (const container of [names.container, names.prepare])
-      await this.remove('DELETE', `/containers/${container}?force=true`);
+      await this.remove('DELETE', `/containers/${container}?force=true&v=true`);
     await this.dropNetwork(names);
     await this.remove('DELETE', `/volumes/${names.volume}`);
+    await this.remove('DELETE', `/volumes/${names.packages}`);
     for (const key of this.prepared)
       if (key.startsWith(`${connectionId}\n`)) this.prepared.delete(key);
   }
@@ -701,7 +863,7 @@ export class DockerStdioLauncher implements StdioLauncher {
     )) as Array<{ Id: string; Labels: Record<string, string> }>;
     for (const container of containers)
       if (this.owned(container.Labels))
-        await this.remove('DELETE', `/containers/${container.Id}?force=true`);
+        await this.remove('DELETE', `/containers/${container.Id}?force=true&v=true`);
     const networks = (await this.docker.request('GET', `/networks?filters=${filter}`)) as Array<{
       Id: string;
       Labels: Record<string, string>;

@@ -17,6 +17,7 @@ import {
   type McpStdioLaunch,
   mcpStdioLaunch,
   pluginEntry,
+  pluginInstallation,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
@@ -58,9 +59,18 @@ export interface StdioLauncher {
   start(spec: StdioLaunchSpec, signal: AbortSignal): Promise<StdioChannel>;
   /** Remove everything the connection owns, its kept data included. */
   destroy(connectionId: string): Promise<void>;
+  /** True when the deployment runs as many servers as it allows; a start would be refused. */
+  full?(): boolean;
   /** Remove what earlier service processes left running; `keep` names connections whose data stays. */
   reconcile(keep: ReadonlySet<string>): Promise<void>;
   close(): Promise<void>;
+}
+
+/** The deployment is running as many servers as it allows; nothing is wrong with this one. */
+export class StdioCapacityError extends Error {
+  constructor() {
+    super('The service is running as many plugin servers as it allows.');
+  }
 }
 
 export type StdioLifecycleOptions = {
@@ -88,6 +98,7 @@ export const STDIO_LIFECYCLE_DEFAULTS = {
 export const STDIO_REFUSALS = {
   crashLoop: 'The MCP server stopped repeatedly, so it is left stopped until its owner tests it.',
   start: 'The MCP server could not be started.',
+  busy: 'Too many plugins are running right now. Try again in a little while.',
 } as const;
 
 type State = 'stopped' | 'running' | 'crash_loop' | 'closed';
@@ -102,6 +113,8 @@ export class StdioServer {
   private idle?: ReturnType<typeof setTimeout>;
   private inflight = 0;
   private starting?: Promise<void>;
+  /** The last start was refused for want of room, not because this server failed. */
+  private busy = false;
   private readonly limits: Required<Omit<StdioLifecycleOptions, 'now'>>;
   private readonly now: () => number;
 
@@ -135,10 +148,20 @@ export class StdioServer {
         kind: 'revoked_credential',
         detail: 'MCP connection is no longer installed',
       });
-    const channel = await this.launcher.start(
-      { ...this.spec, env: granted.env },
-      AbortSignal.timeout(this.limits.startTimeoutMs),
-    );
+    if (this.launcher.full?.()) {
+      this.busy = true;
+      throw new Error(STDIO_REFUSALS.busy);
+    }
+    let channel: StdioChannel;
+    try {
+      channel = await this.launcher.start(
+        { ...this.spec, env: granted.env },
+        AbortSignal.timeout(this.limits.startTimeoutMs),
+      );
+    } catch (error) {
+      if (error instanceof StdioCapacityError) this.busy = true;
+      throw error;
+    }
     let requested = false;
     const watched: StdioChannel = {
       write: (text) => channel.write(text),
@@ -181,11 +204,13 @@ export class StdioServer {
     if (this.state === 'crash_loop') return STDIO_REFUSALS.crashLoop;
     if (this.state === 'running' && this.channel) return undefined;
     const before = this.crashTotal;
+    this.busy = false;
     this.starting ??= reopen()
       .catch((error: unknown) => {
         // A start that never reached a working session counts against the budget too,
-        // once, whether or not the server's own exit was already counted.
-        if (this.current() !== 'closed' && this.crashTotal === before) this.crashed();
+        // once, whether or not the server's own exit was already counted. A deployment
+        // with no room left is not this server's failure.
+        if (this.current() !== 'closed' && this.crashTotal === before && !this.busy) this.crashed();
         throw error;
       })
       .finally(() => {
@@ -195,6 +220,7 @@ export class StdioServer {
       await this.starting;
       return undefined;
     } catch {
+      if (this.busy) return STDIO_REFUSALS.busy;
       return this.current() === 'crash_loop' ? STDIO_REFUSALS.crashLoop : STDIO_REFUSALS.start;
     }
   }
@@ -276,15 +302,23 @@ export class StdioServer {
 export const storedStdioConnection = z.object({
   server: mcpServerConfig,
   tools: z.array(mcpToolDefinition).max(256).optional(),
-  plugin: z.object({ id: z.string(), version: z.string() }).optional(),
+  plugin: z
+    .object({
+      id: z.string(),
+      version: z.string(),
+      values: z.record(z.string(), z.string()).default({}),
+    })
+    .optional(),
 });
 
 /**
  * A stored installation's connector. A plugin whose catalog entry now pins
- * another version is moved to it here: the new version is started once to
- * record its catalog, and if it will not start the plugin stays on the version
- * it had. Only the launch moves; the tools, their grants and the person's
- * values and sites are the ones they installed.
+ * another version is moved to it here: the new version is built from the
+ * person's recorded choices, started once to record its catalog, and if it
+ * will not start the plugin stays on the version it had. An upgrade never
+ * widens where a plugin may reach: the new destinations are cut to the ones
+ * the installed version already had. The tools, their grants and the sealed
+ * variables stay as they were installed.
  */
 export async function openStoredStdioConnector(
   row: { id: string; spaceId: string; configuration: Record<string, unknown> | null },
@@ -296,29 +330,46 @@ export async function openStoredStdioConnector(
   const stored = storedStdioConnection.parse(row.configuration);
   const binding = { connectionId: row.id, spaceId: row.spaceId };
   const entry = stored.plugin ? pluginEntry(stored.plugin.id) : undefined;
-  if (
+  const upgrade =
     entry &&
     stored.plugin &&
     entry.version !== stored.plugin.version &&
     stored.server.endpoint.transport === 'container'
-  ) {
-    const { command: _previous, ...kept } = stored.server.endpoint.launch;
+      ? pluginInstallation(entry, {
+          ...Object.fromEntries(
+            entry.fields
+              .filter((field) => !field.secret && stored.plugin?.values[field.name] !== undefined)
+              .map((field) => [field.name, stored.plugin?.values[field.name] ?? '']),
+          ),
+          // Secret values stay sealed and are not needed to build the launch.
+          ...Object.fromEntries(
+            entry.fields.filter((field) => field.secret).map((field) => [field.name, 'sealed']),
+          ),
+        })
+      : undefined;
+  if (entry && upgrade?.ok && stored.plugin && stored.server.endpoint.transport === 'container') {
+    const kept = stored.server.endpoint.launch;
+    const allowed = new Set(kept.egress);
     const server = mcpServerConfig.parse({
       ...stored.server,
       endpoint: {
         transport: 'container',
         launch: {
-          ...kept,
-          runner: entry.launch.runner,
-          source: entry.launch.source,
-          ...(entry.launch.command ? { command: entry.launch.command } : {}),
-          args: entry.launch.args,
-          egress: [...new Set([...entry.launch.egress, ...kept.egress])],
+          runner: upgrade.config.runner,
+          source: upgrade.config.source,
+          ...(upgrade.config.command ? { command: upgrade.config.command } : {}),
+          args: upgrade.config.args,
+          egress: upgrade.config.egress.filter((site) => allowed.has(site)),
+          secret_env_names: kept.secret_env_names,
         },
       },
     });
     const { tools: _recorded, ...rest } = row.configuration ?? {};
-    const moved = { ...rest, server, plugin: { id: entry.id, version: entry.version } };
+    const moved = {
+      ...rest,
+      server,
+      plugin: { ...stored.plugin, id: entry.id, version: entry.version },
+    };
     const before = JSON.stringify(row.configuration);
     const [changed] =
       await sql`update connection set configuration = ${JSON.stringify(moved)}::jsonb

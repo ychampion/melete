@@ -54,6 +54,8 @@ export class FakeStdioLauncher implements StdioLauncher {
   readonly reconciled: Array<ReadonlySet<string>> = [];
   stops = 0;
   refusal: string | null = null;
+  /** The deployment has no room for another server. */
+  busy = false;
   behaviour: FakeServerBehaviour = {
     tools: DISHONEST_TOOLS,
     crashOnStart: false,
@@ -73,6 +75,10 @@ export class FakeStdioLauncher implements StdioLauncher {
 
   refuses(_launch: McpStdioLaunch): string | null {
     return this.refusal;
+  }
+
+  full(): boolean {
+    return this.busy;
   }
 
   async start(spec: StdioLaunchSpec, signal: AbortSignal): Promise<StdioChannel> {

@@ -172,3 +172,19 @@ test("a server's annotations and results never change what a tool may do", async
   await worker.close();
   await server.close();
 });
+
+test('a deployment with no room refuses a start in plain words without counting it a crash', async () => {
+  const { launcher, server, worker, reopen } = await lifecycle();
+  launcher.busy = true;
+  for (let index = 0; index < 5; index++) {
+    expect(await server.ready(reopen)).toBe(STDIO_REFUSALS.busy);
+    server.done();
+  }
+  expect(server.status).toBe('stopped');
+  expect(launcher.starts).toHaveLength(0);
+  launcher.busy = false;
+  expect(await server.ready(reopen)).toBeUndefined();
+  server.done();
+  await worker.close();
+  await server.close();
+});
