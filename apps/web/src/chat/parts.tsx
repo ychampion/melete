@@ -19,6 +19,7 @@ import {
   Select,
   Status,
 } from '../design/primitives.tsx';
+import { decisionKey, pressOf } from '../experience/decide.ts';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
 import { type ToolEntry, toolOf } from '../experience/trace.ts';
@@ -637,6 +638,7 @@ export function PermissionCard({
   onDecide,
   touch = false,
   bare = false,
+  busy = false,
 }: {
   permission: Permission;
   decided: PermissionOption | 'closed' | null;
@@ -644,6 +646,8 @@ export function PermissionCard({
   touch?: boolean;
   /** Drawn without its footer, when the phone carries the decision in a bottom bar. */
   bare?: boolean;
+  /** The decision's request is in flight: its actions wait for the answer. */
+  busy?: boolean;
 }) {
   const [always, setAlways] = useState(false);
   const [cap, setCap] = useState('10');
@@ -677,16 +681,13 @@ export function PermissionCard({
 
   // The keys work only while this card has focus: Enter on the card itself, D anywhere in it.
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!pending || always || event.metaKey || event.ctrlKey || event.altKey) return;
-    const target = event.target as HTMLElement;
-    if (target.closest('input, textarea, select, [role="dialog"]')) return;
-    if (event.key === 'Enter' && target === event.currentTarget && can('allow_once')) {
-      event.preventDefault();
-      onDecide('allow_once');
-    } else if ((event.key === 'd' || event.key === 'D') && can('deny')) {
-      event.preventDefault();
-      onDecide('deny');
-    }
+    if (!pending || always) return;
+    const intent = decisionKey(pressOf(event), { allow: can('allow_once'), deny: can('deny') });
+    if (!intent) return;
+    event.preventDefault();
+    if (busy) return;
+    if (intent.kind === 'allow') onDecide('allow_once');
+    else if (intent.kind === 'deny') onDecide('deny');
   };
 
   return (
@@ -748,7 +749,13 @@ export function PermissionCard({
           </span>
           <div className="permission-actions">
             {can('always') ? (
-              <Button size={size} variant="outline" block={touch} onClick={() => setAlways(true)}>
+              <Button
+                size={size}
+                variant="outline"
+                block={touch}
+                disabled={busy}
+                onClick={() => setAlways(true)}
+              >
                 Always allow
               </Button>
             ) : null}
@@ -758,6 +765,7 @@ export function PermissionCard({
                 variant="ghost"
                 block={touch}
                 hint={touch ? undefined : 'D'}
+                disabled={busy}
                 onClick={() => onDecide('deny')}
               >
                 Deny
@@ -768,6 +776,7 @@ export function PermissionCard({
                 size={size}
                 block={touch}
                 hint={touch ? undefined : '↵'}
+                disabled={busy}
                 onClick={() => onDecide('allow_once')}
               >
                 Allow once
@@ -851,11 +860,14 @@ export function Questionnaire({
   question,
   answered,
   active,
+  busy = false,
   onAnswer,
   onOwn,
 }: {
   question: Question;
   answered: string | null;
+  /** The answer's request is in flight: the options wait for it. */
+  busy?: boolean;
   /** Only the newest open question listens to the number keys. */
   active: boolean;
   onAnswer: (optionId: string) => void;
@@ -887,7 +899,7 @@ export function Questionnaire({
             type="button"
             className="question-option"
             data-on={on ? 'true' : undefined}
-            disabled={Boolean(answered)}
+            disabled={Boolean(answered) || busy}
             onClick={() => onAnswer(option.id)}
           >
             <span className="kbd">{index + 1}</span>

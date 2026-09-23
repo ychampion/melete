@@ -20,6 +20,7 @@ import {
   Popover,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { useInFlight } from '../experience/decide.ts';
 import {
   agentById,
   lookOf,
@@ -179,6 +180,7 @@ function TurnView({
   onResolve,
   reactions = [],
   onReact,
+  busy,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -196,6 +198,8 @@ function TurnView({
   reactions?: Reaction[];
   /** Absent when the agent's bubble cannot be reacted to. */
   onReact?: (emoji: string) => void;
+  /** Whether a decision's request is in flight. */
+  busy: (id: string) => boolean;
 }) {
   const { agents } = useApp();
   const { transcript } = useTranscript();
@@ -241,6 +245,7 @@ function TurnView({
             decided={block.decided}
             touch={touch}
             bare={touch && barePermission(block.permission)}
+            busy={busy(block.permission.id)}
             onDecide={(option, bounds) =>
               onDecide(block.permission.id, option, block.permission.version, bounds)
             }
@@ -252,6 +257,7 @@ function TurnView({
             key={block.question.id}
             question={block.question}
             answered={block.answered}
+            busy={busy(block.question.id)}
             active={latest && open?.id === block.question.id}
             onAnswer={(optionId) => onAnswer(block.question.id, optionId)}
             onOwn={onOwn}
@@ -341,6 +347,7 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [unreactable, setUnreactable] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
+  const flight = useInFlight();
   const wide = useMedia('(min-width: 1180px)');
   // The case panel follows the width until the person opens or closes it.
   const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
@@ -509,12 +516,13 @@ export function ChatScreen({ id }: { id: string | null }) {
     [conversationId, agentId, agents, state, refreshConversations],
   );
 
-  const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) => {
-    const call =
-      option === 'always' && bounds
-        ? adapter.decideAlways(id, version, bounds)
-        : adapter.decide(id, option === 'always' ? 'allow_once' : option, version);
-    void call.then((result) => {
+  // One request per decision: a second press while the first is in flight is refused.
+  const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) =>
+    void flight.run(id, async () => {
+      const result =
+        option === 'always' && bounds
+          ? await adapter.decideAlways(id, version, bounds)
+          : await adapter.decide(id, option === 'always' ? 'allow_once' : option, version);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
         return;
@@ -530,7 +538,6 @@ export function ChatScreen({ id }: { id: string | null }) {
       if (result.data.rule)
         toast({ kind: 'ok', title: 'Rule created', sub: result.data.rule.text });
     });
-  };
 
   const sendDraft = (handle: string) =>
     void adapter.sendDraft(handle).then((result) => {
@@ -567,12 +574,13 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const answer = useCallback(
     (questionId: string, optionId: string) =>
-      void adapter.answer(questionId, optionId).then((result) => {
+      void flight.run(questionId, async () => {
+        const result = await adapter.answer(questionId, optionId);
         if (result.data === null)
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
         else setTranscript((previous) => markQuestion(previous, questionId, optionId));
       }),
-    [setTranscript],
+    [flight, setTranscript],
   );
 
   // The newest open question in the newest turn listens to the number keys.
@@ -724,6 +732,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   onOwn={(own) => void send(own)}
                   unknown={turn.id === lastId ? unknown : undefined}
                   onResolve={resolve}
+                  busy={(id) => flight.has(id)}
                   reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
                   onReact={
                     reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
@@ -751,6 +760,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                 <Button
                   block
                   className="btn-tall"
+                  disabled={flight.has(pending.permission.id)}
                   onClick={() =>
                     decide(pending.permission.id, 'allow_once', pending.permission.version)
                   }
@@ -763,6 +773,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   block
                   variant="ghost"
                   className="btn-tall"
+                  disabled={flight.has(pending.permission.id)}
                   onClick={() => decide(pending.permission.id, 'deny', pending.permission.version)}
                 >
                   Deny

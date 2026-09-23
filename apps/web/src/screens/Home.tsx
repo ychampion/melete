@@ -14,6 +14,7 @@ import { Icon, type IconName } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button, Checkbox, Input, Status } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { decisionKey, pressOf, useInFlight } from '../experience/decide.ts';
 import {
   agentById,
   faceOf,
@@ -159,6 +160,7 @@ function DecisionCard({
   agent,
   linked,
   now,
+  busy,
   onDecide,
   onAnswer,
 }: {
@@ -167,6 +169,8 @@ function DecisionCard({
   agent: Agent | null;
   linked: { item: LedgerItem; company: string } | null;
   now: number;
+  /** The decision's request is in flight: its actions wait for the answer. */
+  busy: boolean;
   onDecide: (permission: Permission, option: 'allow_once' | 'deny') => void;
   onAnswer: (question: Question, optionId: string) => void;
 }) {
@@ -184,31 +188,19 @@ function DecisionCard({
 
   // The keys work only while this card has focus.
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const target = event.target as HTMLElement;
-    if (target.closest('input, textarea, select')) return;
-    const key = event.key.toLowerCase();
-    if (permission) {
-      if (key === 'enter' && target === event.currentTarget && can('allow_once')) {
-        event.preventDefault();
-        onDecide(permission, 'allow_once');
-      } else if (key === 'd' && can('deny')) {
-        event.preventDefault();
-        onDecide(permission, 'deny');
-      }
-    }
-    if (question) {
-      const n = Number(event.key);
-      const option = Number.isInteger(n) ? options[n - 1] : undefined;
-      if (option) {
-        event.preventDefault();
-        onAnswer(question, option.id);
-      }
-    }
-    if (key === 'r' && chatId) {
-      event.preventDefault();
-      open();
-    }
+    const intent = decisionKey(pressOf(event), {
+      allow: can('allow_once'),
+      deny: can('deny'),
+      read: Boolean(chatId),
+      options,
+    });
+    if (!intent) return;
+    event.preventDefault();
+    if (intent.kind === 'read') open();
+    else if (busy) return;
+    else if (intent.kind === 'allow' && permission) onDecide(permission, 'allow_once');
+    else if (intent.kind === 'deny' && permission) onDecide(permission, 'deny');
+    else if (intent.kind === 'answer' && question) onAnswer(question, intent.optionId);
   };
 
   const title = permission
@@ -277,6 +269,7 @@ function DecisionCard({
                 key={option.id}
                 type="button"
                 className="question-option"
+                disabled={busy}
                 onClick={() => onAnswer(question, option.id)}
               >
                 <span className="kbd">{index + 1}</span>
@@ -289,7 +282,12 @@ function DecisionCard({
       ) : null}
       <div className="decision-actions">
         {permission && can('allow_once') ? (
-          <Button className="btn-card" hint="↵" onClick={() => onDecide(permission, 'allow_once')}>
+          <Button
+            className="btn-card"
+            hint="↵"
+            disabled={busy}
+            onClick={() => onDecide(permission, 'allow_once')}
+          >
             Allow once
           </Button>
         ) : null}
@@ -304,6 +302,7 @@ function DecisionCard({
             className="btn-card"
             variant="ghost"
             hint="D"
+            disabled={busy}
             onClick={() => onDecide(permission, 'deny')}
           >
             Deny
@@ -326,12 +325,15 @@ function WaitingOnYou({
   const { agents, conversations, refreshConversations } = useApp();
   const { permissions, questions } = decisions;
   const [offset, setOffset] = useState(0);
+  const flight = useInFlight();
+  // Decided here and answered by the service: gone from the queue before the next read.
+  const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
   const queue: Decision[] = [
     ...permissions.map(
       (permission): Decision => ({ kind: 'permission', id: permission.id, permission }),
     ),
     ...questions.map((question): Decision => ({ kind: 'question', id: question.id, question })),
-  ];
+  ].filter((decision) => !gone.has(decision.id));
   if (queue.length === 0) return null;
   const at = offset % queue.length;
   const ordered = [...queue.slice(at), ...queue.slice(0, at)];
@@ -350,22 +352,28 @@ function WaitingOnYou({
     const company = item && map?.companies.find((entry) => entry.id === item.company_id);
     return item && company ? { item, company: company.name } : null;
   };
-  const settled = () => refreshConversations();
+  const settled = (id: string) => {
+    setGone((previous) => new Set(previous).add(id));
+    refreshConversations();
+  };
+  // One request per decision: a second press while the first is in flight is refused.
   const decide = (permission: Permission, option: 'allow_once' | 'deny') =>
-    void adapter.decide(permission.id, option, permission.version).then((result) => {
+    void flight.run(permission.id, async () => {
+      const result = await adapter.decide(permission.id, option, permission.version);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
         return;
       }
-      settled();
+      settled(permission.id);
     });
   const answer = (question: Question, optionId: string) =>
-    void adapter.answer(question.id, optionId).then((result) => {
+    void flight.run(question.id, async () => {
+      const result = await adapter.answer(question.id, optionId);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
         return;
       }
-      settled();
+      settled(question.id);
     });
 
   return (
@@ -384,6 +392,7 @@ function WaitingOnYou({
           agent={agentOf(front)}
           linked={linkedOf(front)}
           now={now}
+          busy={flight.has(front.id)}
           onDecide={decide}
           onAnswer={answer}
         />
