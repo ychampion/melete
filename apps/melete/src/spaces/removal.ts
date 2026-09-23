@@ -441,11 +441,7 @@ export class SpaceRemovalService {
         if (error instanceof LeaseLost || lost.aborted) throw new LeaseLost();
         return this.block(row.id, token, phase, counts, describe(error));
       }
-      if (
-        phase === 'verify' &&
-        !removalIsClear(counts) &&
-        !this.onlyWorkspacesLeft(row, counts)
-      )
+      if (phase === 'verify' && !removalIsClear(counts) && !this.onlyWorkspacesLeft(row, counts))
         return this.block(row.id, token, phase, counts, unclearReason(counts));
       await this.record(row.id, token, counts);
     }
