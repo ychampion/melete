@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
-import { Menu, MenuItem, MenuSep, Overline, Popover } from '../design/primitives.tsx';
+import { IconButton, Menu, MenuItem, MenuSep, Overline, Popover } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import {
   agentById,
@@ -41,6 +41,7 @@ import type {
 } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
 import {
   ActionBar,
@@ -322,6 +323,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [unreactable, setUnreactable] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
+  const wide = useMedia('(min-width: 1180px)');
+  // The case panel follows the width until the person opens or closes it.
+  const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
 
   const last = latestTurn(transcript);
   const composerState = transcript.composer;
@@ -498,6 +502,11 @@ export function ChatScreen({ id }: { id: string | null }) {
         return;
       }
       setTranscript((previous) => markPermission(previous, id, result.data.option));
+      // The draft behind the decision has moved on; read where it stands now.
+      if (conversationId)
+        void adapter.drafts(conversationId).then((drafts) => {
+          if (drafts.data) setTranscript((previous) => setDrafts(previous, drafts.data.drafts));
+        });
       if (result.data.rule)
         toast({ kind: 'ok', title: 'Rule created', sub: result.data.rule.text });
     });
@@ -576,18 +585,44 @@ export function ChatScreen({ id }: { id: string | null }) {
   };
 
   const title = conversation?.title ?? 'New chat';
+  const found = useCase(conversationId, transcript.status);
+  const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
 
   return (
-    <Shell title={title} agentId={agentId}>
+    <Shell
+      title={title}
+      agentId={agentId}
+      rail={!found}
+      panel={
+        found && caseOpen ? (
+          <CasePanel
+            found={found}
+            transcript={transcript}
+            now={now}
+            onClose={() => setCaseChoice(false)}
+          />
+        ) : undefined
+      }
+    >
       <TranscriptContext.Provider value={{ transcript }}>
         <div className="chat">
           <div className="chat-head">
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
-            <RailToggle />
+            {found ? (
+              <IconButton
+                name="panelRight"
+                label={caseOpen ? 'Hide the case' : 'Show the case'}
+                on={caseOpen}
+                aria-expanded={caseOpen}
+                onClick={() => setCaseChoice(!caseOpen)}
+              />
+            ) : (
+              <RailToggle />
+            )}
           </div>
           <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
             <div className="chat-messages">

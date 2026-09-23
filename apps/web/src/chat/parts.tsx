@@ -4,14 +4,24 @@
  * Each renders from the contract's typed data and calls back with the one
  * thing a person can do to it.
  */
-import { type ReactNode, useState } from 'react';
+import { type KeyboardEvent, type ReactNode, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Logo, type LogoName } from '../design/logos.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
-import { Avatar, Badge, Button, Dialog, Field, IconButton, Select } from '../design/primitives.tsx';
+import {
+  Avatar,
+  Badge,
+  Button,
+  Dialog,
+  Field,
+  IconButton,
+  Select,
+  Status,
+} from '../design/primitives.tsx';
 import { lookOf } from '../experience/hooks.ts';
 import { answerOf, reactionMessageSeq, type TranscriptTurn } from '../experience/reduce.ts';
+import { type ToolEntry, toolOf } from '../experience/trace.ts';
 import type {
   ActionResolution,
   Agent,
@@ -164,6 +174,45 @@ const actionIcon = (step: Extract<TrailStep, { type: 'action' }>): IconName => {
   return 'search';
 };
 
+const TOOL_ICON: Record<string, IconName> = {
+  connector: 'mail',
+  web: 'globe',
+  file: 'fileText',
+  artifact: 'upload',
+  browser: 'compass',
+  sandbox: 'square',
+  skill: 'sparkles',
+  memory_recall: 'book',
+  memory_write: 'book',
+  memory_correct: 'pencil',
+  memory_forget: 'trash',
+  model: 'sparkles',
+  retry: 'refresh',
+};
+
+/** What went in and what came out, in Melete's words; anything from outside is quoted. */
+function ToolLines({ tool }: { tool: ToolEntry }) {
+  const summaries = [tool.input_summary, tool.output_summary].filter(
+    (summary): summary is NonNullable<typeof summary> => summary !== null,
+  );
+  if (summaries.length === 0) return null;
+  return (
+    <div className="trail-tool">
+      {summaries.map((summary, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: input then output, in that order
+        <span key={index} className="trail-tool-line">
+          {summary.text}
+          {summary.quote ? (
+            <q className="trail-quote" title={`From a ${summary.quote.from}`}>
+              {summary.quote.text}
+            </q>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 
 export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
@@ -249,21 +298,28 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
                 </div>
               );
             if (step.type !== 'action') return null;
+            const tool = toolOf(step);
             return (
               <div key={key} className="col">
                 <div className="trail-row">
                   <span className="trail-icon">
-                    <span style={{ color: 'var(--secondary)', display: 'flex' }}>
-                      <Icon name={actionIcon(step)} size={15} />
+                    <span
+                      style={{
+                        color: tool?.status === 'failed' ? 'var(--danger)' : 'var(--secondary)',
+                        display: 'flex',
+                      }}
+                    >
+                      <Icon name={(tool && TOOL_ICON[tool.kind]) || actionIcon(step)} size={15} />
                     </span>
                   </span>
                   <span style={{ flex: 1, fontSize: 13, color: 'var(--secondary)', minWidth: 0 }}>
-                    {step.label}
-                    {step.meta ? (
+                    {tool?.title ?? step.label}
+                    {!tool && step.meta ? (
                       <span style={{ color: 'var(--muted)' }}> · {step.meta}</span>
                     ) : null}
                   </span>
                 </div>
+                {tool ? <ToolLines tool={tool} /> : null}
                 {step.sources.length ? (
                   <div className="trail-chips">
                     {step.sources.map((source) => (
@@ -301,6 +357,19 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** A message body as paragraphs: a blank line is a gap, a single break stays a break. */
+function Paragraphs({ text }: { text: string }) {
+  const paragraphs = text.split(/\n\s*\n/).filter((part) => part.trim().length > 0);
+  return (
+    <>
+      {paragraphs.map((part, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: the paragraphs are a cut of one string, in order
+        <p key={index}>{part.trim()}</p>
+      ))}
+    </>
   );
 }
 
@@ -389,6 +458,25 @@ export function ResultCard({
     );
   };
   const isDraft = Boolean(draftBody);
+  if (draft && (draft.status === 'awaiting_permission' || draft.status === 'sent'))
+    return (
+      <div className="draft-row">
+        <Avatar initials={draft.recipient.slice(0, 2).toUpperCase()} size={28} tone="sage" />
+        <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
+          <span className="clamp1 draft-row-title">{draft.subject || card.title}</span>
+          <span className="clamp1 draft-row-meta">
+            To {draft.recipient} · {draft.channel === 'email' ? 'email' : 'message'}
+          </span>
+        </span>
+        {draft.status === 'awaiting_permission' ? (
+          <span className="draft-tag">Waiting for your decision</span>
+        ) : (
+          <Status tone="settled" quiet>
+            Sent
+          </Status>
+        )}
+      </div>
+    );
   return (
     <div className="result-card">
       <div className="result-body">
@@ -418,10 +506,10 @@ export function ResultCard({
           )}
           {isDraft ? (
             <div className="draft-body">
-              {draft?.subject ? (
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>{draft.subject}</div>
+              {draft?.subject && draft.subject !== card.title ? (
+                <div className="draft-subject">{draft.subject}</div>
               ) : null}
-              {draftBody}
+              <Paragraphs text={draftBody ?? ''} />
             </div>
           ) : null}
           {draft ? (
@@ -528,6 +616,7 @@ export function ReceiptRow({
         <Button
           variant="outline"
           size="sm"
+          className="btn-undo"
           onClick={onUndo}
           title={`Undo until ${timeOf(receipt.undo?.valid_until ?? receipt.when)}`}
         >
@@ -547,11 +636,14 @@ export function PermissionCard({
   decided,
   onDecide,
   touch = false,
+  bare = false,
 }: {
   permission: Permission;
   decided: PermissionOption | 'closed' | null;
   onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
   touch?: boolean;
+  /** Drawn without its footer, when the phone carries the decision in a bottom bar. */
+  bare?: boolean;
 }) {
   const [always, setAlways] = useState(false);
   const [cap, setCap] = useState('10');
@@ -569,107 +661,119 @@ export function PermissionCard({
             ? 'Decided'
             : null;
   const can = (option: PermissionOption) => permission.options.includes(option);
+  const fields = permission.why.slice(1).map((line) => {
+    const [label = '', ...value] = line.split(': ');
+    return { label, value: value.join(': ') };
+  });
+  const draft = permission.draft;
+  if (draft && !fields.some((field) => field.label.toLowerCase() === 'to'))
+    fields.push({
+      label: 'To',
+      value: `${draft.recipient}${draft.cc?.length ? ` · cc ${draft.cc.join(', ')}` : ''}${
+        draft.bcc?.length ? ` · bcc ${draft.bcc.join(', ')}` : ''
+      }`,
+    });
+  const size = touch ? 'xl' : 'md';
+
+  // The keys work only while this card has focus: Enter on the card itself, D anywhere in it.
+  const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!pending || always || event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('input, textarea, select, [role="dialog"]')) return;
+    if (event.key === 'Enter' && target === event.currentTarget && can('allow_once')) {
+      event.preventDefault();
+      onDecide('allow_once');
+    } else if ((event.key === 'd' || event.key === 'D') && can('deny')) {
+      event.preventDefault();
+      onDecide('deny');
+    }
+  };
+
   return (
-    <div className="card-pad">
-      <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
-        <span
-          className="row"
-          style={{
-            justifyContent: 'center',
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: 'var(--blue-soft)',
-            color: 'var(--blue-ink)',
-            flexShrink: 0,
-          }}
-        >
-          <Icon name="lock" size={20} />
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset would restyle the card and carries no more meaning than a named group
+    <div
+      className="permission"
+      data-pending={pending ? 'true' : undefined}
+      role="group"
+      aria-label={permission.what}
+      tabIndex={pending ? 0 : undefined}
+      onKeyDown={onKey}
+    >
+      <div className="permission-head">
+        <span className="permission-lock" data-done={pending ? undefined : 'true'}>
+          <Icon name={pending ? 'lock' : 'check'} size={16} />
         </span>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-            {permission.what}
-          </span>
-          <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{permission.why[0]}</span>
+          <span className="permission-what">{permission.what}</span>
+          <span className="permission-why">{permission.why[0]}</span>
         </div>
         {outcome ? (
-          <Badge tone={decided === 'allow_once' || decided === 'always' ? 'success' : 'neutral'}>
+          <Status tone={decided === 'allow_once' || decided === 'always' ? 'settled' : 'kind'}>
             {outcome}
-          </Badge>
+          </Status>
         ) : null}
       </div>
-      {permission.why.length > 1 ? (
-        <div className="col">
-          {permission.why.slice(1).map((line) => {
-            const [label, ...value] = line.split(': ');
-            return (
-              <div key={line} className="field-row">
-                <span>{label}</span>
-                <span>{value.join(': ')}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-      {permission.preview && !permission.draft ? (
-        <ResultCard card={permission.preview} readOnly touch={touch} />
-      ) : null}
-      {permission.draft ? (
-        <div className="col" style={{ gap: 6 }}>
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            To {permission.draft.recipient}
-            {permission.draft.cc?.length ? ` · cc ${permission.draft.cc.join(', ')}` : ''}
-            {permission.draft.bcc?.length ? ` · bcc ${permission.draft.bcc.join(', ')}` : ''}
-            {' · '}
-            {permission.draft.channel === 'email' ? 'email' : 'message'}
-          </span>
-          <div className="draft-body">
-            {permission.draft.subject ? (
-              <div style={{ fontWeight: 500, marginBottom: 4 }}>{permission.draft.subject}</div>
-            ) : null}
-            {permission.draft.body}
-          </div>
-        </div>
-      ) : null}
-      <div
-        className="row"
-        style={{ gap: 8, fontSize: 12, color: 'var(--muted)', alignItems: 'flex-start' }}
-      >
-        <Icon name="lock" size={14} />
-        <span>
-          {can('always')
-            ? '“Always allow” creates a rule with a limit and an expiry you can see and revoke in Settings.'
-            : 'This request can be allowed once or denied.'}
-        </span>
-      </div>
       {pending ? (
-        <div className="card-actions">
-          {can('allow_once') ? (
-            <Button size={touch ? 'xl' : 'sm'} block={touch} onClick={() => onDecide('allow_once')}>
-              Allow once
-            </Button>
+        <div className="permission-body">
+          {fields.length ? (
+            <div className="permission-fields">
+              {fields.map((field) => (
+                <div key={`${field.label}-${field.value}`} className="permission-field">
+                  <span>{field.label}</span>
+                  <span>{field.value}</span>
+                </div>
+              ))}
+            </div>
           ) : null}
-          {can('always') ? (
-            <Button
-              size={touch ? 'xl' : 'sm'}
-              variant="outline"
-              block={touch}
-              onClick={() => setAlways(true)}
-            >
-              Always allow
-            </Button>
+          {permission.preview && !draft ? (
+            <ResultCard card={permission.preview} readOnly touch={touch} />
           ) : null}
-          <div className="grow" />
-          {can('deny') ? (
-            <Button
-              size={touch ? 'xl' : 'sm'}
-              variant="ghost"
-              block={touch}
-              onClick={() => onDecide('deny')}
-            >
-              Deny
-            </Button>
+          {draft ? (
+            <div className="permission-draft">
+              {draft.subject ? <div className="draft-subject">{draft.subject}</div> : null}
+              <Paragraphs text={draft.body} />
+            </div>
           ) : null}
+        </div>
+      ) : null}
+      {pending && !bare ? (
+        <div className="permission-foot">
+          <span className="permission-caption">
+            <Icon name="lock" size={13} />
+            <span>
+              {can('always')
+                ? '“Always allow” creates a rule with a limit and an expiry you can see and revoke in Settings.'
+                : 'This request can be allowed once or denied.'}
+            </span>
+          </span>
+          <div className="permission-actions">
+            {can('always') ? (
+              <Button size={size} variant="outline" block={touch} onClick={() => setAlways(true)}>
+                Always allow
+              </Button>
+            ) : null}
+            {can('deny') ? (
+              <Button
+                size={size}
+                variant="ghost"
+                block={touch}
+                hint={touch ? undefined : 'D'}
+                onClick={() => onDecide('deny')}
+              >
+                Deny
+              </Button>
+            ) : null}
+            {can('allow_once') ? (
+              <Button
+                size={size}
+                block={touch}
+                hint={touch ? undefined : '↵'}
+                onClick={() => onDecide('allow_once')}
+              >
+                Allow once
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
       <Dialog

@@ -5,7 +5,7 @@
  * there, and the three things a person can do about it.
  */
 import { Icon } from '../design/icons.tsx';
-import { Button, CompanyTile, Skeleton, Status } from '../design/primitives.tsx';
+import { Button, CompanyTile, Skeleton, Status, type StatusTone } from '../design/primitives.tsx';
 import type {
   Company,
   Confidence,
@@ -30,15 +30,21 @@ const CONFIDENCE_WORDS: Record<Confidence, string> = {
   low: 'Read with low confidence',
 };
 
-function StatusChip({ item, now }: { item: LedgerItem; now: number }) {
-  if (item.status === 'settled') return <Status tone="settled">Settled</Status>;
-  if (item.status === 'dropped') return <Status tone="kind">Not this</Status>;
+/** A row's state in the status vocabulary. */
+export function statusOf(item: LedgerItem, now: number): { tone: StatusTone; words: string } {
+  if (item.status === 'settled') return { tone: 'settled', words: 'Settled' };
+  if (item.status === 'dropped') return { tone: 'kind', words: 'Not this' };
   if (item.status === 'handling' || item.status === 'waiting')
-    return <Status tone="working">{STATUS_WORDS[item.status]}</Status>;
+    return { tone: 'working', words: STATUS_WORDS[item.status] };
   // A promise past its date has lapsed; money past its date is overdue.
   if (isOverdue(item, now))
-    return <Status tone="late">{item.kind === 'promise' ? 'Lapsed' : 'Overdue'}</Status>;
-  return <Status tone="kind">{KIND_WORDS[item.kind]}</Status>;
+    return { tone: 'late', words: item.kind === 'promise' ? 'Lapsed' : 'Overdue' };
+  return { tone: 'kind', words: KIND_WORDS[item.kind] };
+}
+
+function StatusChip({ item, now }: { item: LedgerItem; now: number }) {
+  const { tone, words } = statusOf(item, now);
+  return <Status tone={tone}>{words}</Status>;
 }
 
 /** Confidence, said quietly: a mark a person can hover, and a sentence in the detail. */

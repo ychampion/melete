@@ -11,30 +11,33 @@
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 12px;
-  height: 48px;
-  padding: 0 var(--chat-gutter);
+  gap: 10px;
+  height: 56px;
+  padding: 0 16px 0 24px;
   flex-shrink: 0;
 }
 .chat-head h1 {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   line-height: 20px;
   min-width: 0;
 }
+/* The column sits at the bottom of the sheet, so a short chat reads from the composer up. */
 .chat-scroll {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px var(--chat-gutter) 48px;
+  padding: 8px var(--chat-gutter) 32px;
   scroll-behavior: smooth;
 }
 .chat-messages {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  max-width: 820px;
-  margin: 0 auto;
+  max-width: 720px;
+  margin: auto auto 0;
   width: 100%;
 }
 .chat-foot {
@@ -43,7 +46,7 @@
   position: relative;
 }
 .chat-foot-inner {
-  max-width: 820px;
+  max-width: 720px;
   margin: 0 auto;
   position: relative;
 }
@@ -153,14 +156,21 @@
   align-items: flex-start;
   gap: 12px;
 }
+/* What the agent says is set in the voice face. */
 .turn-text p {
-  font-size: 15px;
-  line-height: 24px;
-  color: var(--text);
-  padding-top: 2px;
+  font-family: var(--font-voice);
+  font-size: 17px;
+  line-height: 28px;
+  letter-spacing: -0.012em;
+  color: var(--heading);
   text-wrap: pretty;
-  min-height: 24px;
+  min-height: 28px;
   overflow-wrap: anywhere;
+}
+@media (max-width: 767px) {
+  .turn-text p {
+    line-height: 26px;
+  }
 }
 .turn-body {
   display: flex;
@@ -266,6 +276,21 @@
   white-space: nowrap;
   max-width: 100%;
 }
+/* A tool entry's summaries. Words that came from outside are quoted, never voiced. */
+.trail-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 0 6px 26px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.trail-quote {
+  margin-left: 4px;
+  font-style: italic;
+  color: var(--secondary);
+}
 .trail-chip > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -359,7 +384,10 @@
 }
 .receipt[data-standalone="true"] {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
+}
+.btn.btn-undo {
+  height: 30px;
 }
 .card-pad {
   display: flex;
@@ -370,14 +398,193 @@
   background: var(--surface);
   border: 1px solid var(--line);
 }
-.draft-body {
-  padding: 8px 12px;
-  border-radius: 10px;
+.draft-body,
+.permission-draft {
+  padding: 14px 16px;
+  border-radius: var(--radius-block);
   background: var(--soft);
   font-size: 14px;
-  line-height: 20px;
+  line-height: 22px;
   color: var(--text);
   text-wrap: pretty;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.draft-body > p,
+.permission-draft > p {
+  margin: 0;
+}
+.draft-body > p + p,
+.permission-draft > p + p {
+  margin-top: 10px;
+}
+.draft-subject {
+  font-weight: 600;
+  color: var(--heading);
+  margin-bottom: 8px;
+}
+
+/* A draft already handed to a decision, or sent: one quiet row. */
+.draft-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.draft-row-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.draft-row-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+.draft-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  font-size: 12px;
+  color: var(--secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* The one question: a lifted card with its keys on its actions. */
+.permission {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-lift);
+  overflow: hidden;
+}
+.permission:focus-visible {
+  border-radius: var(--radius-card);
+  box-shadow:
+    var(--shadow-lift),
+    0 0 0 2px var(--surface),
+    0 0 0 5px var(--ring);
+}
+.permission-head {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 0;
+}
+.permission:not([data-pending="true"]) .permission-head {
+  align-items: center;
+  padding-bottom: 16px;
+}
+.permission-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--sand);
+  color: var(--sand-ink);
+  flex-shrink: 0;
+}
+.permission-lock[data-done="true"] {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.permission-what {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.permission-why {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--muted);
+}
+.permission-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+}
+.permission-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.permission-field {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 13px;
+  line-height: 18px;
+}
+.permission-field > span:first-child {
+  color: var(--muted);
+}
+.permission-field > span:last-child {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.permission-draft {
+  padding: 18px 20px;
+  font-size: 15px;
+  line-height: 24px;
+}
+.permission-foot {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.permission-caption {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.permission-caption > svg {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.permission-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 767px) {
+  .permission-head {
+    padding: 14px 14px 0;
+  }
+  .permission-body {
+    padding: 12px 14px 14px;
+  }
+  .permission-draft {
+    padding: 14px 16px;
+  }
+  .permission-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    width: 100%;
+  }
 }
 .draft-body textarea {
   width: 100%;
@@ -593,11 +800,13 @@
   display: flex;
   flex-direction: column;
   position: relative;
-  padding: 0 8px;
-  border-radius: 14px;
+  padding: 0 11px;
+  border-radius: 16px;
   background: var(--surface);
   border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow);
+  box-shadow:
+    0 1px 2px #1d1b160a,
+    0 10px 28px -18px #1d1b1633;
   transition:
     border-color 0.15s,
     box-shadow 0.15s;
@@ -615,8 +824,8 @@
   flex-direction: row;
   align-items: flex-end;
   gap: 6px;
-  min-height: 46px;
-  padding: 7px 0;
+  min-height: 54px;
+  padding: 10px 0;
 }
 .composer-row textarea {
   flex: 1;
@@ -818,4 +1027,138 @@
 .react-btn[data-on="true"] {
   opacity: 1;
   background: var(--blue-soft);
+}
+
+/* ---------- the case panel ---------- */
+
+.case-panel {
+  width: 320px;
+}
+.case-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 12px 0 20px;
+  flex-shrink: 0;
+}
+.case-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.case-close {
+  display: none;
+}
+.case-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 20px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.case-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.case-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.case-label::first-letter {
+  text-transform: uppercase;
+}
+.case-figure .figure {
+  font-size: 40px;
+  line-height: 44px;
+  color: var(--heading);
+}
+.case-figure .figure[data-settled="true"] {
+  color: var(--success);
+}
+.case-status {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: -8px;
+}
+.case-ref {
+  font-size: 12px;
+  color: var(--muted);
+}
+.case-steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  position: relative;
+}
+.case-steps::before {
+  content: "";
+  position: absolute;
+  left: 8.5px;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--line);
+}
+.case-step {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0;
+}
+.case-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  background: var(--surface);
+  border: 1px dashed var(--control);
+}
+.case-step[data-state="done"] .case-mark {
+  border: 0;
+  background: var(--success-soft);
+  color: var(--success);
+}
+.case-step[data-state="now"] .case-mark {
+  border: 0;
+  background: var(--sand);
+  box-shadow:
+    inset 0 0 0 5px var(--sand),
+    inset 0 0 0 9px var(--rating);
+}
+.case-step-label {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--heading);
+}
+.case-step[data-state="later"] .case-step-label {
+  color: var(--secondary);
+  font-weight: 400;
+}
+.case-step-sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+@media (max-width: 1023px) {
+  .case-close {
+    display: inline-flex;
+  }
 }
