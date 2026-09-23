@@ -199,6 +199,11 @@ const variables = z.object({
   OPENAI_COMPAT_BASE_URL: z.string().optional(),
   OPENAI_COMPAT_API_KEY: z.string().optional(),
   /**
+   * The OAuth client ChatGPT sign-in presents. Left empty, the Codex CLI's
+   * public client, the only one OpenAI has registered for this sign-in.
+   */
+  MELETE_CHATGPT_CLIENT_ID: unsetWhenBlank(z.string().max(200).optional()),
+  /**
    * OAuth for the OpenAI-compatible endpoint, for a provider that issues access
    * tokens instead of keys. The owner signs in once; the gateway refreshes.
    */

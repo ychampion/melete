@@ -588,7 +588,9 @@ whole installation.
 **ChatGPT.** Set `MELETE_DEFAULT_PROVIDER=chatgpt` and `MELETE_DEFAULT_MODEL` to
 a model the account's plan serves, then sign in. Model access and usage limits
 are those of the ChatGPT plan. The sign-in follows the flow of the open-source
-Codex CLI, and offers two methods:
+Codex CLI and presents its public client, which `MELETE_CHATGPT_CLIENT_ID`
+replaces when set. ChatGPT sign-in works for as long as OpenAI keeps this
+sign-in open to apps other than its own. It offers two methods:
 
 - **Device code** (the default). Melete shows a short code and a link to
   `auth.openai.com`; open the link on any device, sign in and enter the code.

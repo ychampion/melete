@@ -111,7 +111,7 @@ export function chatgptIssuer(overrides: { issuer?: string; clientId?: string } 
     authorizeUrl: `${issuer}/oauth/authorize`,
     tokenUrl: `${issuer}/oauth/token`,
     revokeUrl: `${issuer}/oauth/revoke`,
-    clientId: overrides.clientId ?? CHATGPT.clientId,
+    clientId: overrides.clientId || CHATGPT.clientId,
     scopes: CHATGPT.scopes,
     redirectUri: CHATGPT.redirectUri,
     extraAuthorizeParams: { id_token_add_organizations: 'true', codex_cli_simplified_flow: 'true' },

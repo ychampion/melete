@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { loadEnv } from '../env.ts';
-import { configuredProviders } from './configured.ts';
+import { configuredProviders, signInIssuers } from './configured.ts';
+import { authorizeUrl, CHATGPT, type OAuthIssuer } from './oauth.ts';
 
 function configure(source: Record<string, string>) {
   const warnings: string[] = [];
@@ -86,5 +87,20 @@ describe('the providers a service starts with', () => {
     expect(plain.warnings).toHaveLength(1);
     expect(plain.warnings[0]).toContain('OPENAI_COMPAT_API_KEY is empty');
     expect(plain.warnings[0]).toContain('never sent to a plain http:// endpoint');
+  });
+});
+
+describe('the ChatGPT sign-in client', () => {
+  const chatgpt = (source: Record<string, string>) =>
+    signInIssuers(loadEnv(source)).chatgpt as OAuthIssuer;
+
+  test('is the Codex CLI public client unless the operator names another', () => {
+    expect(chatgpt({}).clientId).toBe(CHATGPT.clientId);
+    expect(chatgpt({ MELETE_CHATGPT_CLIENT_ID: '' }).clientId).toBe(CHATGPT.clientId);
+    const own = chatgpt({ MELETE_CHATGPT_CLIENT_ID: 'app_melete_registered' });
+    expect(own.clientId).toBe('app_melete_registered');
+    expect(new URL(authorizeUrl(own, 'state', 'challenge')).searchParams.get('client_id')).toBe(
+      'app_melete_registered',
+    );
   });
 });

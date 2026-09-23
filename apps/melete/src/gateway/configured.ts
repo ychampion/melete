@@ -34,7 +34,9 @@ export const compatibleOAuth = (env: Env): boolean =>
  * start-up with the name of what is missing.
  */
 export function signInIssuers(env: Env): Record<string, IssuerSource> {
-  const issuers: Record<string, IssuerSource> = { [CHATGPT_PROVIDER]: chatgptIssuer() };
+  const issuers: Record<string, IssuerSource> = {
+    [CHATGPT_PROVIDER]: chatgptIssuer({ clientId: env.MELETE_CHATGPT_CLIENT_ID }),
+  };
   if (!compatibleOAuth(env)) return issuers;
   const missing = [
     ...(env.OPENAI_COMPAT_BASE_URL ? [] : ['OPENAI_COMPAT_BASE_URL']),
