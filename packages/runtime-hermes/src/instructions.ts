@@ -14,8 +14,13 @@
  * change rarely, the knowledge changes per attempt, and the volatile inputs go
  * last, so the longest stable prefix is as long as it can be.
  */
-import { type AttemptBundle, CONTEXT_LIMITS, renderSinceLast } from '@melete/contracts';
-import { estimateTokens, loadIdentity } from '@melete/skills';
+import {
+  type AttemptBundle,
+  CONTEXT_LIMITS,
+  renderSinceLast,
+  SKILL_READ_TOOL_NAME,
+} from '@melete/contracts';
+import { estimateTokens, indexLine, loadIdentity } from '@melete/skills';
 
 /**
  * Who Melete is, read from the one file that defines it rather than copied.
@@ -37,6 +42,14 @@ export function renderInstructions(bundle: AttemptBundle): string {
       `# How to do this kind of work\n\n${bundle.skills
         .map((skill) => `## ${skill.name}\n\n${skill.body}`)
         .join('\n\n')}`,
+    );
+  }
+
+  const index = bundle.skill_index ?? [];
+  if (index.length > 0) {
+    // Names and one line each; the bodies stay with the broker until asked for.
+    parts.push(
+      `# Other skills you can read\n\nBefore doing work one of these describes, read it with ${SKILL_READ_TOOL_NAME} and follow it.\n\n${index.map(indexLine).join('\n')}`,
     );
   }
 

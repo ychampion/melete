@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { type AttemptBundle, CONTEXT_LIMITS, EMPTY_SINCE_LAST } from '@melete/contracts';
-import { estimateTokens } from '@melete/skills';
+import { estimateTokens, indexLine } from '@melete/skills';
 import {
   HERMES_APPROVAL_ANSWERS,
   HERMES_ROUTES,
@@ -137,6 +137,18 @@ describe('context assembly', () => {
       name,
       body: 'Read the record and check the receipt before making a claim. '.repeat(10),
     }));
+    // A skill index at its whole allowance.
+    representative.skill_index = [];
+    for (
+      let index = 0;
+      estimateTokens(representative.skill_index.map((entry) => `${indexLine(entry)}\n`).join('')) <
+      CONTEXT_LIMITS.skill_index_tokens;
+      index++
+    )
+      representative.skill_index.push({
+        name: `skill-${index}`,
+        description: 'Handle one kind of errand the person asks for, start to finish.',
+      });
     // A catalog at its whole allowance: the schema budget and the names-only index.
     const allowance = CONTEXT_LIMITS.core_catalog_tokens + CONTEXT_LIMITS.catalog_index_tokens;
     representative.tools = [];
@@ -337,6 +349,17 @@ describe('context assembly', () => {
     const system = client.renderSystem(bundle);
     expect(system.indexOf(IDENTITY)).toBe(0);
     expect(system.indexOf('draft-follow-up')).toBeLessThan(system.indexOf('already knows'));
+  });
+
+  test('the skill index names each skill and how to read it, never its body', () => {
+    const indexed = structuredClone(bundle);
+    indexed.skill_index = [
+      { name: 'summarize-a-source', description: 'Summarise a file or a page.' },
+    ];
+    const system = client.renderSystem(indexed);
+    expect(system).toContain('- summarize-a-source: Summarise a file or a page.');
+    expect(system).toContain('read it with skills.read');
+    expect(client.renderSystem(bundle)).not.toContain('Other skills you can read');
   });
 
   test('every knowledge excerpt carries where it came from', () => {
