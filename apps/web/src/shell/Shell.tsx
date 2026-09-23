@@ -8,10 +8,12 @@
 import {
   createContext,
   type ReactNode,
+  type Ref,
   useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { AgentFace } from '../design/face.tsx';
@@ -363,7 +365,16 @@ const durationLabel = (event: CalendarEvent) => {
   return `${hours} hour${minutes > 60 ? 's' : ''}`;
 };
 
-export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?: boolean }) {
+export function Rail({
+  onClose,
+  sheet = false,
+  panelRef,
+}: {
+  onClose?: () => void;
+  sheet?: boolean;
+  /** The panel itself, so an overlay can take focus when it opens. */
+  panelRef?: Ref<HTMLElement>;
+}) {
   const home = useLoad(() => adapter.home(), []);
   const tasks = useLoad(() => adapter.tasks(), []);
   const connections = useLoad(() => adapter.connections(), []);
@@ -393,7 +404,7 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
     connections.data?.connections.filter((c) => c.status === 'connected').length ?? 0;
   let lastDay = '';
   return (
-    <aside className="rail" aria-label="Your day">
+    <aside className="rail" aria-label="Your day" ref={panelRef} tabIndex={-1}>
       <div className="col" style={{ gap: 10 }}>
         <div className="row" style={{ justifyContent: 'space-between', height: 28 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Your day</h2>
@@ -657,10 +668,41 @@ export function Shell({
 
   const showRail = rail && !panel;
   const railVisible = showRail && (narrow ? railOpen : !railHidden);
+  // Over the page (under 1280px) the day is an overlay: it takes focus when it
+  // opens, Escape closes it, and focus goes back to what opened it.
+  const railRef = useRef<HTMLElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const closeRail = useCallback(() => {
+    setRailOpen(false);
+    openerRef.current?.focus();
+  }, []);
+  const overlay = narrow && railOpen && rail && !panel;
+  useEffect(() => {
+    if (!overlay) return;
+    railRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const active = document.activeElement;
+      const ours =
+        !active ||
+        active === document.body ||
+        active === openerRef.current ||
+        railRef.current?.contains(active);
+      if (!ours) return;
+      event.preventDefault();
+      closeRail();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [overlay, closeRail]);
   const toggleRail = useCallback(() => {
-    if (narrow) setRailOpen((o) => !o);
-    else setRailHidden((h) => !h);
-  }, [narrow]);
+    if (narrow) {
+      if (!railOpen) openerRef.current = document.activeElement as HTMLElement | null;
+      setRailOpen(!railOpen);
+      return;
+    }
+    setRailHidden((h) => !h);
+  }, [narrow, railOpen]);
   const railState = useMemo<RailState>(
     () => ({ available: showRail && !phone, on: railVisible, toggle: toggleRail }),
     [showRail, phone, railVisible, toggleRail],
@@ -721,7 +763,7 @@ export function Shell({
                   size={44}
                   iconSize={20}
                   on={railOpen}
-                  onClick={() => setRailOpen((o) => !o)}
+                  onClick={toggleRail}
                 />
               ) : null}
               <IconButton
@@ -736,7 +778,7 @@ export function Shell({
           <div className="shell-body">
             <main className="shell-content">{children}</main>
             {panel}
-            {railVisible ? <Rail sheet={narrow} onClose={() => setRailOpen(false)} /> : null}
+            {railVisible ? <Rail sheet={narrow} onClose={closeRail} panelRef={railRef} /> : null}
           </div>
         </div>
         <CommandPalette open={palette} onClose={() => setPalette(false)} />
