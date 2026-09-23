@@ -187,19 +187,25 @@ const questionsFor = async (candidateId: string) => {
     );
     // Using it shows in the trail like any other piece of work.
     expect(announced.map((entry) => entry.payload)).toContainEqual(
-      expect.objectContaining({
+      // Exactly the trail's notice shape: a kind and a call, nothing beside them.
+      {
         kind: 'tool_trace',
-        procedure_id: candidate.id,
-        call: expect.objectContaining({
+        call: {
+          id: expect.stringContaining(candidate.id),
           kind: 'skill',
           title: 'Used what you taught me: Follow-up email',
           status: 'done',
+          started_at: expect.any(String),
+          ended_at: expect.any(String),
+          input_summary: null,
           output_summary: {
             text: '2 steps you taught',
             quote: { text: 'Use bullet points.', from: 'message' },
           },
-        }),
-      }),
+          detail: null,
+          parent: null,
+        },
+      },
     );
     // A second job that uses it adds no second question.
     await usedIt(spaceId);

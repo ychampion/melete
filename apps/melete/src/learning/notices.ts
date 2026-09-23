@@ -282,7 +282,6 @@ export async function traceProcedureUse(
           detail: null,
           parent: null,
         },
-        procedure_id: candidate.id,
       },
       dedupKey: `tool:${id}:done`,
     });
