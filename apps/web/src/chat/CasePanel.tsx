@@ -71,6 +71,24 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
       !block.reversed &&
       !block.receipt.what.startsWith('Removed again'),
   );
+  // A draft exists from the moment the chat shows one: its card, the
+  // permission that carries it, or the conversation's list of drafts.
+  const drafted =
+    drafts.length > 0 ||
+    blocks.some(
+      (block) =>
+        (block.type === 'card' &&
+          (block.card.primary_action?.kind === 'send' ||
+            block.card.facts.some((fact) => fact.label === 'Draft'))) ||
+        (block.type === 'permission' && block.permission.draft !== undefined),
+    );
+  const draftSubject =
+    drafts[0]?.subject ??
+    blocks.flatMap((block) =>
+      block.type === 'permission' && block.permission.draft?.subject
+        ? [block.permission.draft.subject]
+        : [],
+    )[0];
   const steps: Step[] = [
     {
       key: 'found',
@@ -79,8 +97,8 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
       state: 'done',
     },
   ];
-  if (drafts.length > 0 || sent)
-    steps.push({ key: 'draft', label: 'Draft written', sub: drafts[0]?.subject, state: 'done' });
+  if (drafted || sent)
+    steps.push({ key: 'draft', label: 'Draft written', sub: draftSubject, state: 'done' });
   if (permission?.type === 'permission') {
     const allowed =
       permission.decided === 'allow_once' ||
@@ -100,7 +118,7 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
       state: allowed ? 'done' : 'now',
     });
   }
-  if (drafts.length > 0 || sent) {
+  if (drafted || sent) {
     steps.push({
       key: 'sent',
       label: 'Sent from your address',

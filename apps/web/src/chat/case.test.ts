@@ -5,7 +5,14 @@
  */
 import { expect, test } from 'bun:test';
 import { emptyTranscript, type Transcript, type TranscriptTurn } from '../experience/reduce.ts';
-import type { Company, Draft, LedgerItem, Permission, Receipt } from '../experience/types.ts';
+import type {
+  Company,
+  Draft,
+  LedgerItem,
+  Permission,
+  Receipt,
+  ResultCard,
+} from '../experience/types.ts';
 import { type Case, caseSteps } from './CasePanel.tsx';
 
 const COMPANY: Company = {
@@ -131,4 +138,37 @@ test('a settled item settles the case', () => {
   );
   expect(keys(steps)).toContain('settled:done');
   expect(keys(steps)).toContain('watch:done');
+});
+
+test('a draft counts as written from the moment its card is in the chat', () => {
+  const card = {
+    id: 'draft_1',
+    title: 'The refund',
+    meta: 'Email',
+    facts: [],
+    primary_action: { label: 'Review and send', kind: 'send', handle: 'draft_1' },
+    secondary_actions: [],
+    source_connection: null,
+  } as ResultCard;
+  const steps = caseSteps(found, transcript([{ type: 'card', card }]));
+  expect(keys(steps)).toEqual([
+    'found:done',
+    'draft:done',
+    'sent:later',
+    'watch:later',
+    'settled:later',
+  ]);
+});
+
+test('a permission carrying the draft is enough to call it written', () => {
+  const steps = caseSteps(
+    found,
+    transcript([{ type: 'permission', permission: PERMISSION, decided: null }]),
+  );
+  expect(steps.find((step) => step.key === 'draft')).toEqual({
+    key: 'draft',
+    label: 'Draft written',
+    sub: 'The refund',
+    state: 'done',
+  });
 });
