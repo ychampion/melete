@@ -98,7 +98,7 @@ A summary is safe to show the person whose conversation it is:
 { "steps_done": 4, "current": "Reading a web page" }
 ```
 
-`steps_done` counts finished entries in the current turn, apart from the model and retries. `current` is the title of the latest entry that is still running or waiting for approval, and `null` between steps and once the turn has ended. Progress is a count of real steps, so draw it as steps done and the step under way rather than as a percentage.
+`steps_done` counts finished entries in the current turn, apart from the model and retries. `current` is the title of the latest entry that is still running or waiting for approval. While the turn waits on the person, only the entry waiting for approval counts. It is `null` between steps and once the turn has ended. Progress is a count of real steps, so draw it as steps done and the step under way rather than as a percentage.
 
 ## Replay
 

@@ -466,6 +466,7 @@ export class ExperienceEvents {
     spaceId: string,
     jobId: string,
     turnId: string,
+    stage: 'under_way' | 'waiting' | 'ended',
     principalId = requestPrincipal(),
   ): Promise<ConversationProgress> {
     await this.sync(spaceId, jobId, principalId);
@@ -490,9 +491,16 @@ export class ExperienceEvents {
       latest.set(parsed.data.id, parsed.data);
     }
     const calls = [...latest.values()];
-    const current = [...calls]
-      .reverse()
-      .find((call) => ['running', 'needs_approval'].includes(call.status));
+    // While the turn runs, the latest running or waiting entry is the step under
+    // way. While it waits on the person, only the entry asking for approval is.
+    // Once it has ended nothing is under way, whatever was left running.
+    const live =
+      stage === 'under_way'
+        ? ['running', 'needs_approval']
+        : stage === 'waiting'
+          ? ['needs_approval']
+          : [];
+    const current = [...calls].reverse().find((call) => live.includes(call.status));
     return conversationProgress.parse({
       steps_done: calls.filter(
         (call) =>
