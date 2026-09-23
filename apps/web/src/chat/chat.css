@@ -532,6 +532,9 @@
 .permission-field > span:first-child {
   color: var(--muted);
 }
+.permission-field > span:first-child::first-letter {
+  text-transform: uppercase;
+}
 .permission-field > span:last-child {
   color: var(--text);
   overflow-wrap: anywhere;
