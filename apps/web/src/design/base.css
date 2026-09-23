@@ -286,6 +286,15 @@ img {
   border: 1px solid var(--line);
   color: var(--muted);
 }
+/* A phone has no keys to press. */
+@media (max-width: 767px) {
+  .key-hint {
+    display: none;
+  }
+  .btn.btn-hinted {
+    padding-right: 14px;
+  }
+}
 .btn-primary .key-hint {
   background: color-mix(in srgb, var(--primary-fg) 18%, transparent);
   border-color: transparent;

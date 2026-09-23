@@ -1,0 +1,456 @@
+/*
+ * Home: a 640px column for the brief, the queue and what is in motion, and a
+ * 296px column for the day beside it. Under 1240px the day moves below.
+ */
+
+.home {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 64px;
+  padding: 44px 40px 48px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.home-main {
+  display: flex;
+  flex-direction: column;
+  width: 640px;
+  max-width: 100%;
+  min-width: 0;
+}
+.home-day {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  width: 296px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+@media (max-width: 1239px) {
+  .home {
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 40px;
+  }
+  .home-day {
+    width: 640px;
+    max-width: 100%;
+  }
+}
+@media (max-width: 767px) {
+  .home {
+    padding: 24px 16px 32px;
+  }
+}
+
+/* ---------- the brief ---------- */
+
+.brief {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.brief-date {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.brief-greeting {
+  font-family: var(--font-voice);
+  font-size: 42px;
+  line-height: 48px;
+  font-weight: 400;
+  color: var(--heading);
+}
+.brief-line {
+  font-size: 20px;
+  line-height: 28px;
+  color: var(--secondary);
+  text-wrap: pretty;
+}
+@media (max-width: 767px) {
+  .brief-greeting {
+    font-size: 34px;
+    line-height: 40px;
+  }
+  .brief-line {
+    font-size: 18px;
+    line-height: 26px;
+  }
+}
+.home-error {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+/* ---------- composer and suggestions ---------- */
+
+.home-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 24px;
+}
+.suggestions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--secondary);
+  white-space: nowrap;
+  max-width: 100%;
+  transition: border-color 0.15s;
+}
+.suggestion > svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.suggestion:hover:not(:disabled) {
+  border-color: var(--blue-line);
+}
+.suggestion:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---------- sections ---------- */
+
+.home-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 32px;
+}
+.home-day .home-section {
+  margin-top: 0;
+}
+.home-section-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
+}
+.home-section-head h2 {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.home-section-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- the queue ---------- */
+
+.queue {
+  display: flex;
+  flex-direction: column;
+}
+.decision {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  z-index: 2;
+  padding: 20px;
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-lift);
+}
+.decision:focus-visible {
+  border-radius: var(--radius-card);
+  box-shadow:
+    var(--shadow-lift),
+    0 0 0 2px var(--surface),
+    0 0 0 5px var(--ring);
+}
+.decision-who {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.decision-agent {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+  white-space: nowrap;
+}
+.decision-for {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 0;
+}
+.decision-title {
+  font-size: 23px;
+  line-height: 30px;
+  color: var(--heading);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.decision-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-block);
+  background: var(--soft);
+}
+.decision-draft {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.decision-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.decision-option {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+  white-space: nowrap;
+}
+.decision-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.queue-next {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+  margin: -14px 14px 0;
+  padding: 26px 16px 12px;
+  border-radius: 0 0 14px 14px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-top: 0;
+  text-align: left;
+  min-width: 0;
+}
+.queue-next:hover {
+  background: var(--row-hover);
+}
+.queue-next:focus-visible {
+  border-radius: 0 0 14px 14px;
+}
+.queue-next-agent {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--heading);
+}
+.queue-next-what {
+  font-size: 13px;
+  color: var(--secondary);
+}
+.queue-next-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------- in motion ---------- */
+
+.motion {
+  display: flex;
+  flex-direction: column;
+}
+.motion-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 6px 0;
+  text-decoration: none;
+  color: inherit;
+}
+.motion-row + .motion-row {
+  border-top: 1px solid var(--line);
+}
+.motion-row:hover {
+  text-decoration: none;
+  color: inherit;
+}
+.motion-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--heading);
+}
+.motion-row:hover .motion-title {
+  color: var(--primary);
+}
+.motion-line {
+  font-size: 13px;
+  color: var(--muted);
+}
+/* Steps done and the one under way: counted steps, never a percentage. */
+.motion-track {
+  display: inline-flex;
+  flex-direction: row;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.motion-track > span {
+  width: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--primary);
+}
+.motion-track > span[data-state="now"] {
+  background: var(--blue-line);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion-track > span[data-state="now"] {
+    animation: none;
+  }
+}
+.motion-when {
+  width: 64px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- the day ---------- */
+
+.day-grid {
+  position: relative;
+  margin-top: 6px;
+}
+.day-hour {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.day-hour > span:first-child {
+  width: 40px;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 12px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.day-line {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.day-past {
+  position: absolute;
+  left: 48px;
+  right: 0;
+  top: 0;
+  background: var(--surface);
+  opacity: 0.55;
+}
+.day-event {
+  position: absolute;
+  left: 52px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 3px 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  text-decoration: none;
+}
+.day-event:hover {
+  text-decoration: none;
+  filter: brightness(0.98);
+}
+.day-event-title {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+}
+.day-event-time {
+  font-size: 11px;
+  line-height: 14px;
+}
+.day-now {
+  position: absolute;
+  left: 48px;
+  right: 0;
+  height: 2px;
+  background: var(--primary);
+}
+.day-now-tag {
+  position: absolute;
+  left: 0;
+  width: 44px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.day-next {
+  padding-left: 52px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.task-add {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  margin-top: 2px;
+  padding: 0 4px 0 0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  align-self: flex-start;
+}
+.task-add:hover {
+  color: var(--heading);
+}
