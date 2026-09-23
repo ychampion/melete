@@ -22,7 +22,6 @@ if (fixture)
   fixture.runner.options.loadCatalog = new RuntimeCatalog(
     fixture.handle.db,
     new ConnectorRegistry(),
-    'unused-learning-skill-root',
   ).forAttempt;
 afterAll(async () => {
   await fixture?.close();

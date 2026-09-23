@@ -216,7 +216,6 @@ export class AttemptRunner {
         previous?.inputCursor ?? 0,
         generations,
         capabilities.version,
-        claims.scopes,
       );
       if (this.options.loadCatalog)
         Object.assign(bundle, await this.options.loadCatalog(tx, claims, bundle));

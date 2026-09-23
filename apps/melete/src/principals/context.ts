@@ -15,17 +15,20 @@ export function audienceVisible(audience: string | undefined, spaceId: string, i
   }
 }
 
-/** No cross-space scan: the selected space is checked before its bytes are opened. */
-export async function selectedContext(
+/**
+ * At most three skills for the objective and latest message, from those the
+ * principal may read. `offered` says whether the attempt could use a skill
+ * naming these tools; one it cannot is never chosen, so it takes no place.
+ */
+export async function selectedSkills(
   tx: Transaction,
   spaceId: string,
   principalId: string | null,
   objective: string,
   latestMessage: string,
   publicCompartment = false,
-  /** Whether the attempt could use a skill naming these tools; one it cannot takes no place. */
   offered: (tools: readonly string[]) => boolean = () => true,
-): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
+): Promise<SkillPayload[]> {
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   const loaded = loadSkills(
     publicCompartment ? {} : { spaceSkillsDirectory: join(access.space.gitPath, 'skills') },
@@ -36,11 +39,31 @@ export async function selectedContext(
         audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
       offered(skill.frontmatter.tools),
   );
-  const skills = chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) => ({
+  return chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) => ({
     name: skill.frontmatter.name,
     body: skill.body,
     ...(skill.source === 'space' ? { space_id: spaceId } : {}),
   }));
+}
+
+/** No cross-space scan: the selected space is checked before its bytes are opened. */
+export async function selectedContext(
+  tx: Transaction,
+  spaceId: string,
+  principalId: string | null,
+  objective: string,
+  latestMessage: string,
+  publicCompartment = false,
+): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
+  const skills = await selectedSkills(
+    tx,
+    spaceId,
+    principalId,
+    objective,
+    latestMessage,
+    publicCompartment,
+  );
+  const access = await spaceAuthority(tx, spaceId, principalId, true);
   if (publicCompartment) return { skills, knowledge: [] };
   const paths = spacePaths(dirname(access.space.gitPath), basename(access.space.gitPath));
   // Bounded excerpts use only active published records. Candidate evaluation belongs to the learning loop.
