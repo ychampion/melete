@@ -3,6 +3,7 @@ import { type KnowledgeExcerpt, normalizeAudience, type SkillPayload } from '@me
 import { loadSpace, spacePaths } from '@melete/knowledge';
 import { chooseSkills, loadSkills } from '@melete/skills';
 import type { Transaction } from '../db/transaction.ts';
+import { overlapsProcedure, type ProcedureReach } from '../learning/triggers.ts';
 import { spaceAuthority } from './authority.ts';
 
 /** A file's audience can narrow membership; it can never grant membership. */
@@ -28,6 +29,8 @@ export async function selectedSkills(
   latestMessage: string,
   publicCompartment = false,
   offered: (tools: readonly string[]) => boolean = () => true,
+  /** What a delivered learned procedure covers; a built-in covering the same work gives way to it. */
+  beside?: ProcedureReach,
 ): Promise<SkillPayload[]> {
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   const loaded = loadSkills(
@@ -37,7 +40,12 @@ export async function selectedSkills(
     (skill) =>
       (skill.source === 'builtin' ||
         audienceVisible(skill.frontmatter.audience, spaceId, access.role === 'owner')) &&
-      offered(skill.frontmatter.tools),
+      offered(skill.frontmatter.tools) &&
+      !(
+        skill.source === 'builtin' &&
+        beside &&
+        overlapsProcedure(skill.frontmatter.triggers, beside)
+      ),
   );
   return chooseSkills(objective, latestMessage, eligible, 3).map(({ skill }) => ({
     name: skill.frontmatter.name,
@@ -54,6 +62,7 @@ export async function selectedContext(
   objective: string,
   latestMessage: string,
   publicCompartment = false,
+  beside?: ProcedureReach,
 ): Promise<{ skills: SkillPayload[]; knowledge: KnowledgeExcerpt[] }> {
   const skills = await selectedSkills(
     tx,
@@ -62,6 +71,8 @@ export async function selectedContext(
     objective,
     latestMessage,
     publicCompartment,
+    undefined,
+    beside,
   );
   const access = await spaceAuthority(tx, spaceId, principalId, true);
   if (publicCompartment) return { skills, knowledge: [] };

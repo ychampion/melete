@@ -83,11 +83,7 @@ const CHECKS = [{ kind: 'word_count', min: 10, max: 40 }] as const;
     expect(graded(summary).score).toBe(1);
     expect(summary.length).toBeLessThan(first.length);
     const delivered = fixture.runtime.observed.find((bundle) => bundle.attempt.job_id === later.id);
-    // The learned procedure leads; built-in skills the request calls for fill the rest.
-    expect(delivered?.skills[0]?.name).toBe(`procedure:${candidate.id}`);
-    expect(delivered?.skills.filter((skill) => skill.name.startsWith('procedure:'))).toHaveLength(
-      1,
-    );
+    expect(delivered?.skills.map((skill) => skill.name)).toEqual([`procedure:${candidate.id}`]);
     expect(delivered?.inputs.new_user_messages).toEqual([]);
     // A request the triggers do not name gets the default answer, not the limit.
     const unrelated = await fixture.create(spaceId, 'Draft a follow-up email to the landlord');

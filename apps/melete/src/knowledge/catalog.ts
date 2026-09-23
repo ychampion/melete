@@ -6,6 +6,7 @@ import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
+import { procedureReach } from '../learning/selection.ts';
 import { selectedSkills } from '../principals/context.ts';
 
 /**
@@ -56,6 +57,10 @@ export class RuntimeCatalog {
       bundle.inputs.new_user_messages.at(-1)?.content ?? '',
       bundle.job.constraints.public_compartment === true,
       (needed) => needed.every((tool) => reachable.has(tool)),
+      await procedureReach(
+        tx,
+        bundle.skills.filter((skill) => skill.name.startsWith('procedure:')),
+      ),
     );
     const procedures = bundle.skills.filter((skill) => skill.name.startsWith('procedure:'));
     const skills = [
