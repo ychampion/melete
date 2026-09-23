@@ -161,21 +161,25 @@ const MAX_QUERY_TERMS = 32;
  */
 export function lexicalQuery(query: string): string | null {
   const terms = lexicalTerms(query);
-  // Terms hold only letters, digits and @._+-, so quoting each one is enough.
-  return terms.length ? terms.map((term) => `'${term}'`).join(' | ') : null;
+  return terms.length ? terms.map(tsqueryTerm).join(' | ') : null;
 }
 /** The meaningful words of a request, lower-cased and split as the index splits them. */
 export function lexicalTerms(query: string): string[] {
   const candidate = query.trim();
   const text = memoryKey.safeParse(candidate).success ? candidate.replace(/[.:]/g, ' ') : query;
   const terms = new Set<string>();
-  for (const word of text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}@._+-]*/gu) ?? []) {
-    const parts = word.includes('@') ? [word.replace(/[._+-]+$/, '')] : word.split(/[._+-]+/);
-    for (const part of parts)
+  for (const raw of text.toLowerCase().split(/\s+/)) {
+    // A possessive names the same thing ("Maya's" is Maya); what is left of a
+    // word keeps its inner punctuation, so an address, a link or a decimal is
+    // read by the same parser, and split the same way, as the index was.
+    const word = raw.replace(/['’]s$/u, '').replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    for (const part of word.split(/['’]/u))
       if (part.length > 1 && !STOPWORDS.has(part) && terms.size < MAX_QUERY_TERMS) terms.add(part);
   }
   return [...terms];
 }
+/** One term as a `to_tsquery` operand, which the parser then splits as the index was split. */
+export const tsqueryTerm = (term: string) => `'${term.replace(/['\\]/g, '')}'`;
 
 export async function lexicalCandidates(
   tx: MemoryTx,

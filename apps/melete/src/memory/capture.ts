@@ -23,7 +23,7 @@ import type { PgBoss } from 'pg-boss';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { persistEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory } from './forget.ts';
-import { lexicalTerms } from './recall.ts';
+import { lexicalTerms, tsqueryTerm } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
 import { appendMemoryNotices, memoryNotice } from './trace.ts';
 import { MEMORY_EXTRACT_QUEUE } from './work.ts';
@@ -248,9 +248,7 @@ async function forgetFromChat(
   } else {
     const terms = lexicalTerms(target);
     const query = terms
-      .map(
-        (term) => `(${[term, ...(SAME_THING[term] ?? [])].map((word) => `'${word}'`).join(' | ')})`,
-      )
+      .map((term) => `(${[term, ...(SAME_THING[term] ?? [])].map(tsqueryTerm).join(' | ')})`)
       .join(' & ');
     const matches = terms.length
       ? await sql`select c.id, c.key from memory_claims c

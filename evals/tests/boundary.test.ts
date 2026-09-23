@@ -298,16 +298,15 @@ describe('typed lifecycle waits', () => {
 
 describe('typed memory-key lexical lookup', () => {
   test('normalizes typed preference keys to the index token boundaries', () => {
-    expect(lexicalQuery('pref.calendar.duration')).toBe('pref calendar duration');
-    expect(lexicalQuery('  pref.mail.signature  ')).toBe('pref mail signature');
+    expect(lexicalQuery('pref.calendar.duration')).toBe("'pref' | 'calendar' | 'duration'");
+    expect(lexicalQuery('  pref.mail.signature  ')).toBe("'pref' | 'mail' | 'signature'");
   });
-  test('leaves ordinary phrases, email addresses, and URLs unchanged', () => {
-    for (const query of [
-      'When did Alex reply?',
-      'alex@example.test',
-      'https://example.test/a.b',
-      'Budget: 2.5',
-    ])
-      expect(lexicalQuery(query)).toBe(query);
+  test('matches any meaningful word, keeping addresses, links and numbers whole', () => {
+    expect(lexicalQuery('When did Alex reply?')).toBe("'did' | 'alex' | 'reply'");
+    expect(lexicalQuery("Email Ana's agenda")).toBe("'email' | 'ana' | 'agenda'");
+    expect(lexicalQuery('alex@example.test')).toBe("'alex@example.test'");
+    expect(lexicalQuery('https://example.test/a.b')).toBe("'https://example.test/a.b'");
+    expect(lexicalQuery('Budget: 2.5')).toBe("'budget' | '2.5'");
+    expect(lexicalQuery('the and of')).toBeNull();
   });
 });
