@@ -145,6 +145,10 @@ describe('model gateway effect boundary', () => {
       messages: [{ role: 'user', content: 'prompt context '.repeat(20_000) }],
     });
     expect(crowded.status).toBe(413);
+    // One that asks for the whole window cannot be helped by compaction, and says so.
+    const whole = await post('/v1/chat/completions', { max_tokens: 128_000, messages: [] });
+    expect(whole.status).toBe(400);
+    expect(await whole.json()).toMatchObject({ error: { code: 'output_exceeds_context' } });
     expect(budget.reservations).toHaveLength(1);
   });
   test('streams the fake tool conversation end to end and records actual model and usage', async () => {
