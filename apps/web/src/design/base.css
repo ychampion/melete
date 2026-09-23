@@ -1130,6 +1130,16 @@ img {
   [data-tone="working"] > .status-dot {
     animation: none;
   }
+  /*
+   * A face's states animate its parts through selectors like
+   * `.af-idle .af-eyes`, which outrank `.af *`; these match them part for part
+   * so the face holds still too.
+   */
+  .af .af-eyes,
+  .af .af-body,
+  .af .af-facets {
+    animation: none;
+  }
 }
 
 /* A grouped field: the fieldset carries no chrome, the legend sits like a label. */
