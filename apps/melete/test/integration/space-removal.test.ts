@@ -34,6 +34,7 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { webManifest } from '../../src/connectors/web.ts';
 import { job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
@@ -1266,8 +1267,8 @@ describe.if(handle !== null)('removing a space', () => {
 
   test('plugin_servers_go_with_the_space — a running one is retired, and a stopped one’s data goes too', async () => {
     const seeded = await seed('shared');
-    const served = `conn_${seeded.spaceId.slice(3)}served`;
-    const unserved = `conn_${seeded.spaceId.slice(3)}unserved`;
+    const served = newId('conn');
+    const unserved = newId('conn');
     for (const id of [served, unserved])
       await sql`insert into connection (id, space_id, provider, label, scopes)
         values (${id}, ${seeded.spaceId}, 'mcp', 'A plugin', '[]'::jsonb)`;

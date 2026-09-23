@@ -27,6 +27,7 @@ import {
 import { STDIO_REFUSALS } from '../../src/connectors/mcp-stdio.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -577,7 +578,7 @@ withDb('a stdio MCP server installed by its owner', () => {
   test('revoking a connection no connector was serving still removes what was kept for it', async () => {
     if (!h || !fixture) throw new Error('Postgres unavailable');
     // Left in error by a failed first start, say, so this process never opened it.
-    const id = `conn_${h.spaceId.slice(3)}unserved`;
+    const id = newId('conn');
     await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status, configuration)
       values (${id}, ${h.spaceId}, 'mcp', 'Stopped plugin', '[]'::jsonb, 'error', '{}'::jsonb)`;
     expect(launcher.destroyed).not.toContain(id);
