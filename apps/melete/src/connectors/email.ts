@@ -9,6 +9,7 @@ import type {
 } from '@melete/contracts';
 import { z } from 'zod';
 import {
+  credentialRefused,
   type EmailConnection,
   ImapSmtpTransport,
   type MailAttachment,
@@ -359,11 +360,12 @@ export class EmailConnector implements Connector {
         detail: 'IMAP connection is available.',
         checked_at: new Date().toISOString(),
       };
-    } catch {
+    } catch (error) {
       return {
         status: 'failing',
         detail: 'Mail connection unavailable.',
         checked_at: new Date().toISOString(),
+        ...(credentialRefused(error) ? { reason: 'credential_refused' as const } : {}),
       };
     }
   }

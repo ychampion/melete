@@ -6,8 +6,7 @@ triggers:
   - take care of
   - sort out
   - deal with
-tools:
-  - knowledge.search
+tools: []
 max_tokens: 400
 ---
 
@@ -21,7 +20,8 @@ Write the plan before doing anything.
 4. Name what you are missing. Ask for all of it in one question, not three.
 5. Do the first step. Report what happened before starting the second.
 
-Search the space first: the person may have decided this before. If a record
+Read what Melete already knows first: the person may have decided this
+before. If a record
 contradicts the request, say so and ask which one holds.
 
 Prefer a plan that survives being interrupted. Each step should leave the work

@@ -1,19 +1,33 @@
-import { join } from 'node:path';
-import { CONTEXT_LIMITS, skillsWithToolsAvailable, type ToolSpec } from '@melete/contracts';
-import { loadSkills } from '@melete/skills';
+import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
 import { and, eq } from 'drizzle-orm';
+import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
 import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
+import { procedureReach } from '../learning/selection.ts';
+import { selectedSkills } from '../principals/context.ts';
+
+/**
+ * Every tool name an attempt can reach: all it was granted, not the first few
+ * by name, since discovery loads the rest, and the lifecycle wait, which is the
+ * broker's own tool rather than a connection's.
+ */
+export function reachableToolNames(
+  granted: readonly ToolSpec[],
+  scopes: readonly string[],
+): Set<string> {
+  const names = new Set(granted.map((tool) => tool.name));
+  if (scopes.includes(RUNTIME_WAIT_TOOL.name)) names.add(RUNTIME_WAIT_TOOL.name);
+  return names;
+}
 
 /** The API and runtime consult live grants against the same configured adapters. */
 export class RuntimeCatalog {
   constructor(
     private readonly db: Database,
     private readonly connectors: ConnectorLookup,
-    private readonly spacesRoot: string,
   ) {}
 
   async toolsForSpace(
@@ -29,22 +43,30 @@ export class RuntimeCatalog {
   }
 
   forAttempt: NonNullable<RunnerOptions['loadCatalog']> = async (tx, claims, bundle) => {
-    const tools = (await this.toolsForSpace(claims.space_id, claims.scopes, tx)).slice(
-      0,
-      CONTEXT_LIMITS.max_tools,
+    const granted = await this.toolsForSpace(claims.space_id, claims.scopes, tx);
+    const tools = granted.slice(0, CONTEXT_LIMITS.max_tools);
+    const reachable = reachableToolNames(granted, claims.scopes);
+    // The same selection bundle construction made, with its audience rules, now
+    // over only the skills this attempt can use: one it cannot would otherwise
+    // take a place and then be dropped. Evaluated procedures keep their place.
+    const chosen = await selectedSkills(
+      tx,
+      claims.space_id,
+      bundle.principal_id ?? null,
+      bundle.job.objective,
+      bundle.inputs.new_user_messages.at(-1)?.content ?? '',
+      bundle.job.constraints.public_compartment === true,
+      (needed) => needed.every((tool) => reachable.has(tool)),
+      await procedureReach(
+        tx,
+        bundle.skills.filter((skill) => skill.name.startsWith('procedure:')),
+      ),
     );
-    const available = new Set(
-      skillsWithToolsAvailable(
-        loadSkills({ spaceSkillsDirectory: join(this.spacesRoot, claims.space_id, 'skills') })
-          .skills,
-        tools,
-      ).map((skill) => skill.frontmatter.name),
-    );
-    // Bundle construction already checked audience and evaluated-procedure evidence.
-    // Catalog enrichment may narrow those skills, but must not replace that selection.
-    const skills = bundle.skills.filter(
-      (skill) => skill.name.startsWith('procedure:') || available.has(skill.name),
-    );
+    const procedures = bundle.skills.filter((skill) => skill.name.startsWith('procedure:'));
+    const skills = [
+      ...procedures,
+      ...chosen.filter((skill) => !procedures.some((kept) => kept.name === skill.name)),
+    ].slice(0, CONTEXT_LIMITS.max_skills);
     return { tools, skills };
   };
 }

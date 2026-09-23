@@ -6,7 +6,8 @@ import { type EmailConnection, ImapSmtpTransport } from './mail-transport.ts';
 import type { SecretAccess } from './secrets.ts';
 
 /** A tiny protocol destination: test commands are real sockets, with no mailbox outside this process. */
-async function mailServers() {
+async function mailServers(options: { smtpRefusesLogin?: boolean; sentName?: string } = {}) {
+  const sentName = options.sentName ?? 'Sent';
   const sockets = new Set<Socket>();
   const sent: string[] = [];
   const auth: string[] = [];
@@ -35,10 +36,18 @@ async function mailServers() {
         if (upper === 'CAPABILITY') socket.write('* CAPABILITY IMAP4rev1 AUTH=PLAIN SASL-IR\r\n');
         else if (upper.startsWith('AUTHENTICATE PLAIN '))
           auth.push(Buffer.from(command.split(' ')[2] ?? '', 'base64').toString());
+        else if (command === 'LIST "" ""') socket.write('* LIST (\\Noselect) "/" ""\r\n');
         else if (upper.startsWith('LIST '))
-          socket.write('* LIST (\\HasNoChildren) "/" "INBOX"\r\n');
+          socket.write(
+            `* LIST (\\HasNoChildren) "/" "INBOX"\r\n* LIST (\\HasNoChildren \\Sent) "/" "${sentName}"\r\n`,
+          );
         else if (upper.startsWith('SELECT ') || upper.startsWith('EXAMINE ')) {
-          mailbox = /sent/i.test(command) ? 'Sent' : 'INBOX';
+          const name = command.slice(command.indexOf(' ') + 1).replace(/^"|"$/g, '');
+          if (name !== 'INBOX' && name !== sentName) {
+            socket.write(`${tag} NO [NONEXISTENT] No such mailbox\r\n`);
+            continue;
+          }
+          mailbox = name === sentName ? 'Sent' : 'INBOX';
           const messages = mailbox === 'Sent' ? sent : inbox;
           socket.write(
             `* FLAGS (\\Seen)\r\n* ${messages.length} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] Valid\r\n* OK [UIDNEXT ${messages.length + 1}] Next\r\n`,
@@ -103,7 +112,11 @@ async function mailServers() {
           if (/^EHLO /i.test(line)) socket.write('250-localhost\r\n250 AUTH PLAIN\r\n');
           else if (/^AUTH PLAIN /i.test(line)) {
             auth.push(Buffer.from(line.split(' ')[2] ?? '', 'base64').toString());
-            socket.write('235 authenticated\r\n');
+            socket.write(
+              options.smtpRefusesLogin
+                ? '535 5.7.8 Authentication failed\r\n'
+                : '235 authenticated\r\n',
+            );
           } else if (line === 'DATA') {
             dataMode = true;
             socket.write('354 Send message\r\n');
@@ -191,6 +204,76 @@ describe('IMAP and SMTP wire adapters', () => {
       await destination.close();
     }
   }, 20_000);
+
+  test('a test reaches both halves: sending must work as well as reading', async () => {
+    const working = await mailServers();
+    const refusing = await mailServers({ smtpRefusesLogin: true });
+    try {
+      await new ImapSmtpTransport(working.config, 'test-app-password').health();
+      // Reading still works; only the outgoing server refuses the password.
+      const transport = new ImapSmtpTransport(refusing.config, 'test-app-password');
+      await transport.search('', 5);
+      expect(
+        await transport.health().then(
+          () => 'passed',
+          () => 'failed',
+        ),
+      ).toBe('failed');
+      // A closed outgoing port is the same failure, found before anything is sent.
+      const closed = new ImapSmtpTransport(
+        { ...working.config, smtp: { ...working.config.smtp, port: 1 } },
+        'test-app-password',
+      );
+      expect(
+        await closed.health().then(
+          () => 'passed',
+          () => 'failed',
+        ),
+      ).toBe('failed');
+      expect(working.sent).toEqual([]);
+    } finally {
+      await working.close();
+      await refusing.close();
+    }
+  }, 30_000);
+
+  test('a sent folder named its own way is found by its flag, so a send can be confirmed', async () => {
+    const destination = await mailServers({ sentName: 'Sent Messages' });
+    try {
+      const secrets: SecretAccess = { withSecret: async (_id, _space, use) => use('app-password') };
+      const connector = new EmailConnector(destination.config, secrets);
+      const action = mailAction('email.send', {
+        to: ['friend@example.test'],
+        subject: 'Hello',
+        body: 'See you soon.',
+      });
+      expect((await connector.execute(action, mailContext())).outcome).toBe('succeeded');
+      expect((await connector.verify(action, mailContext())).decision).toBe('succeeded');
+    } finally {
+      await destination.close();
+    }
+  }, 30_000);
+
+  test('a refused password is told apart from a server that cannot be reached', async () => {
+    const refusing = await mailServers({ smtpRefusesLogin: true });
+    const working = await mailServers();
+    try {
+      const secrets: SecretAccess = { withSecret: async (_id, _space, use) => use('app-password') };
+      expect(await new EmailConnector(refusing.config, secrets).health()).toMatchObject({
+        status: 'failing',
+        reason: 'credential_refused',
+      });
+      const closed = await new EmailConnector(
+        { ...working.config, smtp: { ...working.config.smtp, port: 1 } },
+        secrets,
+      ).health();
+      expect(closed.status).toBe('failing');
+      expect(closed.reason).toBeUndefined();
+    } finally {
+      await refusing.close();
+      await working.close();
+    }
+  }, 30_000);
 
   test('plaintext test exceptions cannot target remote servers', () => {
     const config: EmailConnection = {

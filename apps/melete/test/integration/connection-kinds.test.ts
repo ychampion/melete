@@ -113,6 +113,48 @@ async function imapDouble(accepts: () => string) {
   return (server.address() as AddressInfo).port;
 }
 
+/** A real socket that speaks enough SMTP to sign in, and checks the password. It never takes a message. */
+async function smtpDouble(accepts: () => string) {
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    socket.write('220 localhost ESMTP test double\r\n');
+    let buffer = '';
+    socket.on('data', (data) => {
+      buffer += data.toString();
+      while (buffer.includes('\r\n')) {
+        const at = buffer.indexOf('\r\n');
+        const line = buffer.slice(0, at);
+        buffer = buffer.slice(at + 2);
+        if (/^EHLO /i.test(line)) socket.write('250-localhost\r\n250 AUTH PLAIN\r\n');
+        else if (/^AUTH PLAIN /i.test(line)) {
+          const supplied = Buffer.from(line.split(' ')[2] ?? '', 'base64')
+            .toString()
+            .split('\0')
+            .at(-1);
+          socket.write(
+            supplied === accepts()
+              ? '235 authenticated\r\n'
+              : '535 5.7.8 Authentication failed\r\n',
+          );
+        } else if (/^QUIT/i.test(line)) socket.end('221 Bye\r\n');
+        else socket.write('502 not in this double\r\n');
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  closers.push(
+    () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      }),
+  );
+  return (server.address() as AddressInfo).port;
+}
+
 const FEED = [
   'BEGIN:VCALENDAR',
   'VERSION:2.0',
@@ -143,7 +185,7 @@ async function harness() {
     }),
   );
   const jobs = new JobService(fixture.db, queue.boss);
-  const catalog = new RuntimeCatalog(fixture.db, registry, 'unused');
+  const catalog = new RuntimeCatalog(fixture.db, registry);
   const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
     key: 'connection-kinds-capability-key-32-bytes',
     liveConnectionScopes: true,
@@ -266,7 +308,13 @@ withDb('installing each kind of connection through the API', () => {
     const kinds = connectionKindListResponse.parse(
       await (await h.app.request('/connection-kinds', h.as(h.cookie))).json(),
     ).kinds;
-    expect(kinds.map((kind) => kind.kind).sort()).toEqual(['caldav', 'ics', 'mail', 'mcp']);
+    expect([...new Set(kinds.map((kind) => kind.kind))].sort()).toEqual([
+      'caldav',
+      'ics',
+      'mail',
+      'mcp',
+    ]);
+    expect(kinds.map((kind) => kind.id)).toContain('gmail');
     expect((await h.app.request('/connections', h.as('', { provider: 'imap' }))).status).toBe(401);
   });
 
@@ -274,6 +322,7 @@ withDb('installing each kind of connection through the API', () => {
     if (!h) throw new Error('Postgres unavailable');
     let accepted = 'a-different-password';
     const port = await imapDouble(() => accepted);
+    const smtpPort = await smtpDouble(() => accepted);
     const body = {
       provider: 'imap',
       label: 'Personal mail',
@@ -282,7 +331,7 @@ withDb('installing each kind of connection through the API', () => {
         username: 'owner@example.test',
         from: 'owner@example.test',
         imap: { host: '127.0.0.1', port, secure: false },
-        smtp: { host: '127.0.0.1', port, secure: false },
+        smtp: { host: '127.0.0.1', port: smtpPort, secure: false },
       },
     };
     for (const invalid of [
@@ -298,6 +347,14 @@ withDb('installing each kind of connection through the API', () => {
       expect(refused.status).toBe(400);
       expectNoSecret(refused.text);
     }
+    // A refused field is named the way the form names it.
+    const named = await h.install({
+      ...body,
+      mail: { ...body.mail, imap: { ...body.mail.imap, port: 0 } },
+    });
+    expect(JSON.parse(named.text)).toEqual({
+      error: { code: 'invalid_request', message: 'IMAP port is too small.' },
+    });
     expect(await h.sql`select id from connection where provider = 'imap'`).toHaveLength(0);
 
     // The mailbox refuses this password: the row is kept in error and offers nothing.
@@ -305,7 +362,8 @@ withDb('installing each kind of connection through the API', () => {
     expect(failed.status).toBe(201);
     const failure = connectionResponse.parse(failed.json);
     expect(failure.connection).toMatchObject({ status: 'error', setup_state: 'error' });
-    expect(failure.check).toMatchObject({ status: 'failing', code: 'unavailable' });
+    // The mailbox answered and turned the password away, and the person is told which.
+    expect(failure.check).toMatchObject({ status: 'failing', code: 'credential_refused' });
     expectNoSecret(failed.text);
     expect((await h.offered()).bundle).not.toContain('email.search');
 
@@ -422,6 +480,77 @@ withDb('installing each kind of connection through the API', () => {
       expect(after.bundle).not.toContain(tool);
       expect(after.brokered).not.toContain(tool);
     }
+  }, 120_000);
+
+  test('CalDAV from the service address alone: the calendar is found, and only its address is stored', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const expected = `Basic ${Buffer.from(`owner:${DAV_PASSWORD}`).toString('base64')}`;
+    const ok = (href: string, prop: string) =>
+      `<d:response><d:href>${href}</d:href><d:propstat><d:prop>${prop}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`;
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(request) {
+        if (request.headers.get('authorization') !== expected)
+          return new Response(null, { status: 401 });
+        const path = new URL(request.url).pathname;
+        const body =
+          path === '/'
+            ? ok(
+                '/',
+                '<d:current-user-principal><d:href>/p/owner/</d:href></d:current-user-principal>',
+              )
+            : path === '/p/owner/'
+              ? ok(
+                  '/p/owner/',
+                  '<c:calendar-home-set><d:href>/c/owner/</d:href></c:calendar-home-set>',
+                )
+              : path === '/c/owner/' && request.headers.get('depth') === '1'
+                ? ok(
+                    '/c/owner/work/',
+                    '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>',
+                  )
+                : '';
+        return new Response(
+          `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">${body}</d:multistatus>`,
+          { status: 207 },
+        );
+      },
+    });
+    closers.push(() => server.stop(true));
+    const body = {
+      provider: 'caldav',
+      label: 'Found calendar',
+      credentials: { password: DAV_PASSWORD },
+      caldav: { server_url: server.url.toString(), username: 'owner' },
+    };
+
+    const refused = await h.install({ ...body, credentials: { password: 'not-the-password' } });
+    expect(JSON.parse(refused.text)).toEqual({
+      error: {
+        code: 'invalid_request',
+        message:
+          'The calendar service did not accept the account name and password. Use an app password where the provider offers one.',
+      },
+    });
+    expect(await h.sql`select id from connection where label = 'Found calendar'`).toHaveLength(0);
+    expect(
+      (await h.install({ ...body, caldav: { ...body.caldav, calendar_url: `${server.url}c/` } }))
+        .status,
+    ).toBe(400);
+
+    const created = await h.install(body);
+    expect(created.status).toBe(201);
+    const installed = connectionResponse.parse(created.json);
+    expect(installed.connection).toMatchObject({ status: 'active' });
+    const [row] =
+      await h.sql`select configuration from connection where id = ${installed.connection.id}`;
+    expect(row?.configuration).toEqual({
+      kind: 'caldav',
+      caldav: { username: 'owner', calendar_url: `${server.url}c/owner/work/` },
+    });
+    expectNoSecret(created.text);
+    expect((await h.revoke(installed.connection.id)).status).toBe(200);
   }, 120_000);
 
   test('calendar feed: the address is the secret, the feed is read through the broker, and revocation removes it', async () => {

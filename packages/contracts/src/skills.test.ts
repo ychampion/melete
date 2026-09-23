@@ -84,6 +84,27 @@ describe('selectSkills', () => {
     expect(names(selectSkills('ping', '', [...tied].reverse(), 2))).toEqual(['beta', 'alpha']);
   });
 
+  test('a trigger matches whole words, never the inside of another word', () => {
+    const planner = [make('plan-a-responsibility', ['plan']), ...skills];
+    expect(selectSkills('Show me my purchase history', '', skills)).toEqual([]);
+    expect(selectSkills('Is this explanation right?', '', planner)).toEqual([]);
+    expect(selectSkills('Tell me about the planet Mars', '', planner)).toEqual([]);
+    expect(selectSkills('Clear out my inbox, then check inbox rules', '', skills)).toEqual([]);
+  });
+
+  test('a plural and a hyphen still match the trigger they spell', () => {
+    const planner = [make('plan-a-responsibility', ['plan']), ...skills];
+    expect(names(selectSkills('Make plans for the move', '', planner))).toEqual([
+      'plan-a-responsibility',
+    ]);
+    expect(names(selectSkills('A follow-up to the landlord', '', skills))).toEqual([
+      'draft-follow-up',
+    ]);
+    expect(names(selectSkills('A quick check-in on Friday', '', skills))).toEqual([
+      'schedule-a-check-in',
+    ]);
+  });
+
   test('a maximum of zero selects nothing rather than throwing', () => {
     expect(selectSkills('follow up', '', skills, 0)).toEqual([]);
   });
@@ -139,9 +160,22 @@ describe('skill frontmatter', () => {
 });
 
 describe('countMatches', () => {
-  test('counts non-overlapping occurrences and nothing for an empty needle', () => {
+  test('the last word may carry an ending, and nothing else', () => {
+    expect(countMatches('the notes summarised', 'summarise')).toBe(1);
+    expect(countMatches('summarising the notes', 'summarise')).toBe(1);
+    expect(countMatches('two replies came', 'reply')).toBe(1);
+    expect(countMatches('she replied', 'reply')).toBe(1);
+    expect(countMatches('i was reminded', 'remind')).toBe(1);
+    expect(countMatches('booking a table', 'book')).toBe(1);
+    expect(countMatches('the boxes', 'box')).toBe(1);
+    expect(countMatches('a booklet', 'book')).toBe(0);
+    expect(countMatches('the planet', 'plan')).toBe(0);
+  });
+
+  test('counts whole-word occurrences and nothing for an empty needle', () => {
     expect(countMatches('status report and status report', 'status report')).toBe(2);
-    expect(countMatches('aaaa', 'aa')).toBe(2);
+    expect(countMatches('aa aa', 'aa')).toBe(2);
+    expect(countMatches('aaaa', 'aa')).toBe(0);
     expect(countMatches('weekly summary', 'monthly')).toBe(0);
     expect(countMatches('anything', '')).toBe(0);
   });

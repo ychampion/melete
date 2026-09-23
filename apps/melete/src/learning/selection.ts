@@ -1,6 +1,6 @@
 import { type AttemptBundle, jsonObject, procedurePromotion } from '@melete/contracts';
 import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
-import { event } from '../db/schema.ts';
+import { event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { spaceAuthority } from '../principals/authority.ts';
@@ -8,7 +8,7 @@ import type { ProcedureScope } from './contracts.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import { isGeneralProcedure, verifyDefinition } from './procedures.ts';
 import { episode, learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
-import { triggersMatch } from './triggers.ts';
+import { type ProcedureReach, triggersMatch } from './triggers.ts';
 
 export const scopeMatches = (left: ProcedureScope, right: ProcedureScope) =>
   left.task_family === right.task_family &&
@@ -40,6 +40,30 @@ async function latestUserMessage(tx: Transaction, jobId: string) {
  * every delivery. `latestMessage` is optional: a caller that has already read the
  * person's latest message may pass it; otherwise it is read here.
  */
+/**
+ * What the delivered procedures cover: their trigger phrases and the objective
+ * of the job each was learned on. Nothing when none is delivered.
+ */
+export async function procedureReach(
+  tx: Transaction,
+  delivered: AttemptBundle['skills'],
+): Promise<ProcedureReach | undefined> {
+  const ids = delivered.flatMap((skill) =>
+    skill.name.startsWith('procedure:') ? [skill.name.slice('procedure:'.length)] : [],
+  );
+  if (ids.length === 0) return undefined;
+  const rows = await tx
+    .select({ triggers: procedureCandidate.triggers, objective: job.objective })
+    .from(procedureCandidate)
+    .innerJoin(episode, eq(episode.id, procedureCandidate.episodeId))
+    .innerJoin(job, eq(job.id, episode.jobId))
+    .where(inArray(procedureCandidate.id, ids));
+  return {
+    phrases: rows.flatMap((row) => row.triggers.map((trigger) => trigger.phrase)),
+    learnedFrom: rows.map((row) => row.objective),
+  };
+}
+
 export async function selectProcedureSkills(
   tx: Transaction,
   row: JobRow,

@@ -433,7 +433,7 @@ export async function bootstrap(
         connections,
         browserSessions: browser?.sessions,
       });
-      catalog = new RuntimeCatalog(handle.db, registry, env.MELETE_SPACES_DIR);
+      catalog = new RuntimeCatalog(handle.db, registry);
     }
     if (handle) {
       events = new EventStream(handle);

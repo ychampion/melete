@@ -558,6 +558,13 @@ export class CalendarConnector implements Connector {
           { depth: '0', 'content-type': 'application/xml' },
         );
         await response.body?.cancel();
+        if (response.status === 401 || response.status === 403)
+          return {
+            status: 'failing',
+            detail: 'Calendar connection unavailable.',
+            checked_at: new Date().toISOString(),
+            reason: 'credential_refused',
+          };
         if (response.status !== 207) throw new Error('Calendar unavailable');
       }
       return {

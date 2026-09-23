@@ -6,11 +6,12 @@ triggers:
   - tidy up
   - organise these
   - organize these
+  - organise my
+  - organize my
 tools:
   - files.list
   - files.read
   - files.move
-  - knowledge.propose_write
 max_tokens: 400
 ---
 
@@ -28,5 +29,5 @@ One line per file in your report: where it came from, where it is now, why.
 Leave anything you are unsure about where it is and list it as undecided. A
 wrong move costs more than an unsorted file.
 
-If sorting taught you something durable about how this person files things,
-propose a record. Do not write one for a single case.
+If sorting showed a lasting habit in how this person files things, say it in
+one line so they can confirm it. One case is not a habit.

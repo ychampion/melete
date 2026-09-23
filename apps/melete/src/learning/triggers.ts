@@ -17,3 +17,28 @@ export function triggersMatch(
     return !!needle && haystacks.some((haystack) => countMatches(haystack, needle) > 0);
   });
 }
+
+/** What a delivered procedure covers: its own trigger phrases and the requests it was learned on. */
+export type ProcedureReach = { phrases: readonly string[]; learnedFrom: readonly string[] };
+
+/**
+ * Whether a built-in skill covers the same work as a delivered procedure, and
+ * so would dilute the way the person taught it. It does when one of its
+ * triggers and one of the procedure's phrases are the same words or one holds
+ * the other, or when it would have been chosen for a request the procedure was
+ * learned on: it was in play when the person corrected the work.
+ */
+export function overlapsProcedure(
+  skillTriggers: readonly string[],
+  reach: ProcedureReach,
+): boolean {
+  const triggers = skillTriggers.map(normalizeForMatch).filter(Boolean);
+  const phrases = reach.phrases.map(normalizeForMatch).filter(Boolean);
+  const learned = reach.learnedFrom.map(normalizeForMatch);
+  return triggers.some(
+    (trigger) =>
+      phrases.some(
+        (phrase) => countMatches(phrase, trigger) > 0 || countMatches(trigger, phrase) > 0,
+      ) || learned.some((request) => countMatches(request, trigger) > 0),
+  );
+}

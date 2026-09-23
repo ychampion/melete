@@ -63,6 +63,16 @@ export interface MailTransport {
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const loopback = (host: string) => ['127.0.0.1', '::1', 'localhost'].includes(host);
 
+/**
+ * Whether a server turned the account name and password away, as opposed to
+ * not answering. IMAP says so on the error it raises; SMTP answers `EAUTH`.
+ */
+export function credentialRefused(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false;
+  const fields = error as { authenticationFailed?: unknown; code?: unknown };
+  return fields.authenticationFailed === true || fields.code === 'EAUTH';
+}
+
 /** TLS verification is always enabled; the test exception cannot target a remote host. */
 export function validateMailConnection(config: EmailConnection): void {
   if (!config.username || /[\r\n]/.test(config.from)) throw new Error('Invalid mail configuration');
@@ -164,6 +174,21 @@ export class ImapSmtpTransport implements MailTransport {
     });
   }
 
+  private smtp() {
+    return nodemailer.createTransport({
+      ...this.config.smtp,
+      auth: { user: this.config.username, pass: this.password },
+      requireTLS: !this.config.allowInsecureLocalForTests,
+      ignoreTLS: this.config.allowInsecureLocalForTests ?? false,
+      logger: false,
+      debug: false,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
+      tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
+    });
+  }
+
   async read(uid: number): Promise<MailMessage | null> {
     return this.imap(this.config.inbox ?? 'INBOX', (client) => this.message(client, uid));
   }
@@ -192,18 +217,7 @@ export class ImapSmtpTransport implements MailTransport {
     });
     if (!Buffer.isBuffer(composed.message))
       throw new Error('Mail composition did not return bytes');
-    const smtp = nodemailer.createTransport({
-      ...this.config.smtp,
-      auth: { user: this.config.username, pass: this.password },
-      requireTLS: !this.config.allowInsecureLocalForTests,
-      ignoreTLS: this.config.allowInsecureLocalForTests ?? false,
-      logger: false,
-      debug: false,
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 15_000,
-      tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
-    });
+    const smtp = this.smtp();
     let accepted: string[];
     let rejected: string[];
     try {
@@ -223,8 +237,9 @@ export class ImapSmtpTransport implements MailTransport {
       sentCopy = await this.findSent(message.messageId);
       if (!sentCopy) {
         const raw = composed.message;
+        const folder = await this.sentFolder();
         sentCopy = await this.imap(null, async (client) =>
-          Boolean(await client.append(this.config.sent ?? 'Sent', raw, ['\\Seen'])),
+          Boolean(await client.append(folder, raw, ['\\Seen'])),
         );
       }
     } catch {
@@ -233,8 +248,29 @@ export class ImapSmtpTransport implements MailTransport {
     return { messageId: message.messageId, sentCopy, accepted, rejected };
   }
 
+  private sent?: Promise<string>;
+
+  /**
+   * The folder sent mail lands in. Providers name it their own way ("Sent
+   * Messages", "[Gmail]/Sent Mail", a translated name), so unless the person
+   * named one, the folder the server flags as sent is used, and "Sent" only
+   * when it flags none. Without it a send could never be confirmed.
+   */
+  private sentFolder(): Promise<string> {
+    if (this.config.sent) return Promise.resolve(this.config.sent);
+    this.sent ??= this.imap(null, async (client) => {
+      const flagged = (await client.list()).find((mailbox) => mailbox.specialUse === '\\Sent');
+      return flagged?.path ?? 'Sent';
+    }).catch((error: unknown) => {
+      // A failed lookup is asked again next time rather than remembered.
+      this.sent = undefined;
+      throw error;
+    });
+    return this.sent;
+  }
+
   async findSent(messageId: string): Promise<boolean> {
-    return this.imap(this.config.sent ?? 'Sent', async (client) => {
+    return this.imap(await this.sentFolder(), async (client) => {
       const uids = await client.search({ header: { 'message-id': messageId } }, { uid: true });
       // IMAP HEADER searches are substring matches. Confirm the parsed header
       // before treating a search hit as evidence for this exact action.
@@ -246,7 +282,18 @@ export class ImapSmtpTransport implements MailTransport {
     });
   }
 
+  /**
+   * Both halves: a mailbox that reads but cannot send would otherwise pass its
+   * test and fail at the first message the person approved. The SMTP check
+   * signs in and sends nothing.
+   */
   async health(): Promise<void> {
     await this.imap(this.config.inbox ?? 'INBOX', async () => {});
+    const smtp = this.smtp();
+    try {
+      await smtp.verify();
+    } finally {
+      smtp.close();
+    }
   }
 }

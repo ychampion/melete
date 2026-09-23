@@ -8,6 +8,7 @@ import {
   connectionInstallation,
   connectionKindListResponse,
   connectionListResponse,
+  connectionRequestProblem,
   connectionResponse,
   connectionView,
   createConnectionRequest,
@@ -16,6 +17,7 @@ import { and, asc, eq, ne, not, sql as query } from 'drizzle-orm';
 import type { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { builtinEnvironment, ensureBuiltinConnections } from '../connectors/builtin.ts';
+import { CalendarDiscoveryError, discoverCalendar } from '../connectors/caldav-discovery.ts';
 import {
   type ConnectionSource,
   type ConnectorFactory,
@@ -96,7 +98,10 @@ async function check(connector: Connector | undefined, status: string): Promise<
     ]);
     if (health.status === 'ok') return result('ok', 'ok');
     if (health.status === 'degraded') return result('degraded', 'degraded');
-    return result('failing', 'unavailable');
+    return result(
+      'failing',
+      health.reason === 'credential_refused' ? 'credential_refused' : 'unavailable',
+    );
   } catch {
     return result('failing', 'unavailable');
   } finally {
@@ -218,7 +223,11 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
   });
 
   app.post('/connections', async (c) => {
-    const request = createConnectionRequest.parse(await c.req.json());
+    const parsed = createConnectionRequest.safeParse(await c.req.json());
+    // The person is told which field to fix, in the words the form uses for it.
+    if (!parsed.success)
+      throw new ServiceError('invalid_request', connectionRequestProblem(parsed.error.issues), 400);
+    const request = parsed.data;
     const resolved = connectionInstallation(request);
     if (!resolved.ok) throw new ServiceError('invalid_request', resolved.error, 400);
     const installation = resolved.value;
@@ -410,6 +419,28 @@ async function storedShape(
       secret: credential ? JSON.stringify(credential) : null,
       configuration: { server: config },
     };
+  }
+  // A calendar service's address is enough: the calendar itself is found with
+  // the account's own credential, and only its address is stored.
+  if (installation.kind === 'caldav' && installation.config.server_url) {
+    const { server_url: serverUrl, ...rest } = installation.config;
+    try {
+      const found = await discoverCalendar({
+        serverUrl,
+        username: rest.username,
+        password: installation.credentials.password,
+        allowInsecureLocalForTests: factory.options.insecureLocalFixtures === true,
+      });
+      installation.config = { username: rest.username, calendar_url: found.calendar_url };
+    } catch (error) {
+      throw new ServiceError(
+        'invalid_request',
+        error instanceof CalendarDiscoveryError
+          ? error.message
+          : 'The calendar service could not be reached. Check the address and try again.',
+        400,
+      );
+    }
   }
   const shape =
     installation.kind === 'mail'

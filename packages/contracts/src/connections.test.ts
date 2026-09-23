@@ -8,6 +8,7 @@ import {
   connectionCheck,
   connectionInstallation,
   connectionKindListResponse,
+  connectionRequestProblem,
   connectionResponse,
   createConnectionRequest,
 } from './connections.ts';
@@ -186,7 +187,16 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
 describe('connection kind descriptors', () => {
   test('cover every credentialed kind and parse as the served response', () => {
     const parsed = connectionKindListResponse.parse({ kinds: CONNECTION_KIND_DESCRIPTORS });
-    expect(parsed.kinds.map((kind) => kind.kind).sort()).toEqual(['caldav', 'ics', 'mail', 'mcp']);
+    expect([...new Set(parsed.kinds.map((kind) => kind.kind))].sort()).toEqual([
+      'caldav',
+      'ics',
+      'mail',
+      'mcp',
+    ]);
+    const ids = parsed.kinds.map((kind) => kind.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // Every kind keeps an entry for a server no provider entry names.
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp']) expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
       const secrets = kind.fields.filter((field) => field.secret).map((field) => field.path);
       expect(secrets.every((path) => path.startsWith('credentials.') || path === 'ics.url')).toBe(
@@ -248,5 +258,195 @@ describe('connection views and checks', () => {
     expect(connectionCheck.safeParse({ ...check, code: 'ECONNREFUSED 10.0.0.1' }).success).toBe(
       false,
     );
+  });
+});
+
+describe('what a person is told when a request is refused', () => {
+  const told = (body: unknown) => {
+    const parsed = createConnectionRequest.safeParse(body);
+    if (parsed.success) throw new Error('expected a refusal');
+    return connectionRequestProblem(parsed.error.issues);
+  };
+
+  test('names the field by its form label and says what is wrong in plain words', () => {
+    expect(
+      told({ ...mail, mail: { ...mail.mail, imap: { ...mail.mail.imap, port: 70000 } } }),
+    ).toBe('IMAP port is too large.');
+    expect(told({ ...mail, mail: { ...mail.mail, from: 'owner' } })).toBe(
+      'Send as is not an email address.',
+    );
+    expect(told({ ...mail, mail: { ...mail.mail, imap: { port: 993, secure: true } } })).toBe(
+      'IMAP server is needed.',
+    );
+    expect(
+      told({ ...caldav, caldav: { ...caldav.caldav, calendar_url: 'http://dav.example.test/c/' } }),
+    ).toBe('Calendar address: The address must use TLS and carry no credentials or fragment.');
+    expect(told({ ...ics, ics: {} })).toBe('Feed address is needed.');
+  });
+
+  test('a row in a list is named by its position', () => {
+    const mcp = {
+      provider: 'mcp',
+      label: 'Notes',
+      mcp: {
+        id: 'notes',
+        url: 'https://mcp.example.test/mcp',
+        audience: 'owner',
+        allowed_scopes: ['mcp_notes.search'],
+        tools: [{ name: 'search', alias: 'Search Tool', required_scopes: ['mcp_notes.search'] }],
+      },
+    };
+    expect(told(mcp)).toBe('Tools, row 1: Alias has characters it cannot contain.');
+  });
+
+  test('never repeats a value the person typed, so a password cannot come back', () => {
+    const message = told({
+      ...mail,
+      credentials: { password: 42 } as unknown as Record<string, string>,
+    });
+    expect(message).toBe('Password has the wrong kind of value.');
+    expect(
+      told({
+        ...mail,
+        mail: { ...mail.mail, imap: { ...mail.mail.imap, port: 'value-never-echoed' } },
+      }),
+    ).not.toContain('value-never-echoed');
+  });
+});
+
+describe('an address that is not a web address', () => {
+  test('is refused as invalid rather than failing the request', () => {
+    for (const body of [
+      { ...ics, ics: { url: 'not a link' } },
+      { ...caldav, caldav: { ...caldav.caldav, calendar_url: 'dav.example.test/calendars' } },
+      {
+        provider: 'mcp',
+        label: 'Notes',
+        mcp: {
+          id: 'notes',
+          url: 'mcp.example.test',
+          audience: 'owner',
+          allowed_scopes: ['mcp_notes.search'],
+          tools: [{ name: 'search', alias: 'search', required_scopes: ['mcp_notes.search'] }],
+        },
+      },
+    ]) {
+      const parsed = createConnectionRequest.safeParse(body);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success)
+        expect(connectionRequestProblem(parsed.error.issues)).toMatch(
+          /^(Feed address|Calendar address|Server address) is not a web address\.$/,
+        );
+    }
+  });
+});
+
+describe('a mailbox sender', () => {
+  test('is the account name when that is an address, so a person types it once', () => {
+    const { from: _, ...rest } = mail.mail;
+    const resolved = connectionInstallation(createConnectionRequest.parse({ ...mail, mail: rest }));
+    expect(
+      resolved.ok && resolved.value.kind === 'mail' ? resolved.value.config.from : resolved,
+    ).toBe('owner@example.test');
+  });
+
+  test('is asked for when the account name is not an address', () => {
+    const { from: _, ...rest } = mail.mail;
+    const resolved = connectionInstallation(
+      createConnectionRequest.parse({ ...mail, mail: { ...rest, username: 'owner' } }),
+    );
+    expect(resolved).toEqual({
+      ok: false,
+      error: 'Send as is needed when the account name is not an email address.',
+    });
+  });
+});
+
+describe('a CalDAV calendar', () => {
+  test('may be named by its calendar service instead of its own address, never both', () => {
+    const service = { server_url: 'https://caldav.example.test/', username: 'owner' };
+    const resolved = resolve({ ...caldav, caldav: service });
+    expect(resolved.ok && resolved.value.config).toEqual(service);
+    const both = createConnectionRequest.safeParse({
+      ...caldav,
+      caldav: { ...caldav.caldav, server_url: service.server_url },
+    });
+    expect(both.success ? 'accepted' : connectionRequestProblem(both.error.issues)).toBe(
+      'Calendar address: Give either the calendar address or the calendar service address.',
+    );
+    const plain = createConnectionRequest.safeParse({
+      ...caldav,
+      caldav: { server_url: 'http://caldav.example.test/', username: 'owner' },
+    });
+    expect(plain.success).toBe(false);
+  });
+});
+
+describe('providers whose servers are known', () => {
+  const providers = CONNECTION_KIND_DESCRIPTORS.filter((kind) => kind.id !== kind.kind);
+
+  test('ask only for an address and an app password, or a feed address', () => {
+    expect(providers.map((kind) => kind.id)).toEqual([
+      'gmail',
+      'icloud-mail',
+      'fastmail',
+      'yahoo-mail',
+      'icloud-calendar',
+      'fastmail-calendar',
+      'google-calendar-feed',
+    ]);
+    for (const kind of providers) {
+      const shown = kind.fields.map((field) => field.path).sort();
+      expect(shown).toEqual(
+        kind.kind === 'ics'
+          ? ['ics.url']
+          : [`${kind.kind}.username`, 'credentials.password'].sort(),
+      );
+      expect(kind.fields.find((field) => field.secret)?.help).toBeTruthy();
+    }
+  });
+
+  test('fill in their servers, so what the person typed becomes a complete installation', () => {
+    const typed = (kind: ConnectionKindDescriptor) =>
+      kind.kind === 'ics'
+        ? { ics: { url: 'https://calendar.google.com/calendar/ical/me/private-x/basic.ics' } }
+        : {
+            [kind.kind]: { username: 'me@example.test' },
+            credentials: { password: 'app-password' },
+          };
+    const installed = Object.fromEntries(
+      providers.map((kind) => {
+        const body: Record<string, unknown> = { label: kind.title };
+        for (const { path, value } of kind.fixed) {
+          const keys = path.split('.');
+          let at = body;
+          for (const key of keys.slice(0, -1)) {
+            at[key] = at[key] ?? {};
+            at = at[key] as Record<string, unknown>;
+          }
+          at[keys.at(-1) as string] = value;
+        }
+        const extra = typed(kind) as Record<string, Record<string, unknown>>;
+        for (const [key, value] of Object.entries(extra))
+          body[key] = { ...((body[key] as object) ?? {}), ...value };
+        const resolved = connectionInstallation(createConnectionRequest.parse(body));
+        if (!resolved.ok) throw new Error(`${kind.id}: ${resolved.error}`);
+        return [kind.id, resolved.value.kind === 'mcp' ? null : resolved.value.config];
+      }),
+    );
+    expect(installed.gmail).toEqual({
+      username: 'me@example.test',
+      from: 'me@example.test',
+      imap: { host: 'imap.gmail.com', port: 993, secure: true },
+      smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
+    });
+    // iCloud sends over STARTTLS on 587, which the connector demands before it signs in.
+    expect(installed['icloud-mail']).toMatchObject({
+      smtp: { host: 'smtp.mail.me.com', port: 587, secure: false },
+    });
+    expect(installed['icloud-calendar']).toEqual({
+      server_url: 'https://caldav.icloud.com/',
+      username: 'me@example.test',
+    });
   });
 });

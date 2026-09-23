@@ -246,7 +246,7 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
   const kinds = useLoad(() => adapter.connectionKinds(), []);
   const [chosen, setChosen] = useState<string | null>(null);
   const list = kinds.data?.kinds ?? [];
-  const kind = list.find((item) => item.kind === chosen);
+  const kind = list.find((item) => item.id === chosen);
   // An instance that does not serve kinds cannot install anything, so nothing is drawn.
   if (kinds.unavailable || (!kinds.loading && !kinds.error && list.length === 0)) return null;
 
@@ -258,7 +258,7 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
       {kinds.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{kinds.error}</p> : null}
       {kind ? (
         <KindForm
-          key={kind.kind}
+          key={kind.id}
           kind={kind}
           onDone={() => {
             setChosen(null);
@@ -269,11 +269,11 @@ export function AddConnection({ onInstalled }: { onInstalled: () => void }) {
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
           {list.map((item) => (
             <Button
-              key={item.kind}
+              key={item.id}
               variant="outline"
               icon="plus"
               title={item.description}
-              onClick={() => setChosen(item.kind)}
+              onClick={() => setChosen(item.id)}
             >
               {item.title}
             </Button>

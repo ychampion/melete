@@ -6,6 +6,7 @@ triggers:
   - cancel my subscription
   - stop the subscription
   - end the membership
+  - membership
 tools:
   - email.draft
   - email.send

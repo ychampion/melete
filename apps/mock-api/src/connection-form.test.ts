@@ -49,7 +49,12 @@ test('a form drawn only from the served descriptors installs every kind', async 
   const kinds = connectionKindListResponse.parse(
     JSON.parse((await json('/connection-kinds')).text),
   ).kinds;
-  expect(kinds.map((kind) => kind.kind).sort()).toEqual(['caldav', 'ics', 'mail', 'mcp']);
+  expect([...new Set(kinds.map((kind) => kind.kind))].sort()).toEqual([
+    'caldav',
+    'ics',
+    'mail',
+    'mcp',
+  ]);
 
   for (const kind of kinds) {
     const values: FormValues = emptyForm(kind);
@@ -67,12 +72,12 @@ test('a form drawn only from the served descriptors installs every kind', async 
 
     const body = requestBody(kind, values);
     const created = await json('/connections', body);
-    expect([kind.kind, created.status]).toEqual([kind.kind, 201]);
+    expect([kind.id, created.status]).toEqual([kind.id, 201]);
     const view = connectionResponse.parse(JSON.parse(created.text));
     expect(view.check?.code).toBe('ok');
     for (const field of kind.fields.filter((item) => item.secret))
       expect(created.text).not.toContain(String(values.fields[field.path]).trim());
-    if (kind.kind === 'mail') {
+    if (kind.id === 'mail') {
       // Numbers and switches arrive typed, optional blanks are left out, a password is not trimmed.
       expect(body).toMatchObject({
         provider: 'imap',
@@ -92,7 +97,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
   }
 
   // Unticking a grant narrows the request; unticking all of them is caught before sending.
-  const mail = kinds.find((kind) => kind.kind === 'mail');
+  const mail = kinds.find((kind) => kind.id === 'mail');
   if (!mail) throw new Error('Missing mail descriptor');
   const narrowed = emptyForm(mail);
   for (const [path, value] of Object.entries(TYPED))

@@ -44,7 +44,7 @@ import {
 } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { agentIdentity, agentView } from '../experience/agents.ts';
-import { selectProcedureSkills } from '../learning/selection.ts';
+import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
 import { asKnowledge, recall } from '../memory/recall.ts';
@@ -443,6 +443,7 @@ export async function buildAttemptSkeleton(
     ];
   });
   const constraints = jobConstraints.parse(row.constraints);
+  const procedures = await selectProcedureSkills(tx, row, model, runtimeVersion);
   const context = await selectedContext(
     tx,
     row.spaceId,
@@ -450,6 +451,7 @@ export async function buildAttemptSkeleton(
     row.objective,
     history.inputs.new_user_messages.at(-1)?.content ?? '',
     constraints.public_compartment,
+    await procedureReach(tx, procedures),
   );
   const wait = waitSpec.parse(row.wait);
   // A transition into queued clears the wait. A queued job that still holds an
@@ -509,10 +511,7 @@ export async function buildAttemptSkeleton(
     since_last: delta,
     transcript: history.transcript,
     tools: [],
-    skills: mergeSkills(
-      await selectProcedureSkills(tx, row, model, runtimeVersion),
-      context.skills,
-    ),
+    skills: mergeSkills(procedures, context.skills),
     knowledge: context.knowledge,
     workspace: { mount: '/work', files: [] },
     // The budget is one question per wake, stated rather than implied.
