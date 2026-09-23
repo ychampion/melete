@@ -220,6 +220,49 @@ describe('the totals', () => {
     expect(totals.owed_to_you_minor).toBe(0);
   });
 
+  test('a date with no time is a whole day in the person’s own time zone', () => {
+    // A promise "by 25 September" has not lapsed while it is still the 25th
+    // where the person lives, and a renewal due today is still due soon.
+    const promise = item({
+      kind: 'promise',
+      direction: 'info',
+      amount_minor: null,
+      currency: null,
+    });
+    const onThe25th = { due_at: '2026-09-25T00:00:00.000Z' };
+    const at = (iso: string, timeZone: string) => ({ now: new Date(iso), timeZone });
+
+    // 15:30 on the 25th in Kolkata: in force, and the renewal is today.
+    const kolkata = computeTotals(
+      [{ ...promise, ...onThe25th }, item({ kind: 'renewal', direction: 'you_pay', ...onThe25th })],
+      at('2026-09-25T10:00:00.000Z', 'Asia/Kolkata'),
+    );
+    expect(kolkata.promises_in_force).toBe(1);
+    expect(kolkata.promises_lapsed).toBe(0);
+    expect(kolkata.renewals_next_30d).toBe(1);
+
+    // 22:00 on the 25th in New York, which is already the 26th in UTC.
+    const newYork = computeTotals(
+      [{ ...promise, ...onThe25th }],
+      at('2026-09-26T02:00:00.000Z', 'America/New_York'),
+    );
+    expect(newYork.promises_in_force).toBe(1);
+
+    // The 26th where the person is: the 25th has gone.
+    const after = computeTotals(
+      [{ ...promise, ...onThe25th }],
+      at('2026-09-26T10:00:00.000Z', 'Europe/London'),
+    );
+    expect(after.promises_lapsed).toBe(1);
+
+    // A stated time is an instant, and lapses at that instant.
+    const instant = computeTotals(
+      [{ ...promise, due_at: '2026-09-25T09:00:00.000Z' }],
+      at('2026-09-25T10:00:00.000Z', 'Asia/Kolkata'),
+    );
+    expect(instant.promises_lapsed).toBe(1);
+  });
+
   test('counts a renewal only when it falls inside the next thirty days', () => {
     const totals = computeTotals(
       [
