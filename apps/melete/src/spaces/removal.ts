@@ -14,6 +14,7 @@
  * claimed to clear and finds nothing. A phase that could not be reached is not
  * a zero, and a removal carrying one reports itself blocked instead.
  */
+import { resolve, sep } from 'node:path';
 import {
   EMPTY_COUNTS,
   type RemovalCounts,
@@ -23,7 +24,7 @@ import {
   type SpaceRemoval,
   spaceRemoval as spaceRemovalContract,
 } from '@melete/contracts';
-import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { ServiceError } from '../api/errors.ts';
 import type { Connector } from '../connectors/types.ts';
@@ -41,6 +42,7 @@ import {
 } from '../workers/browser/sites.ts';
 import { appendRemovalRecord } from './journal.ts';
 import {
+  clearJobWorkspaces,
   clearSpaceFiles,
   endSpaceAccess,
   type LeaseHold,
@@ -144,11 +146,23 @@ export type RemovalDeps = {
   browserSpace?: string;
   /** How long a claimed removal holds its lease before another run may take it. */
   leaseMs?: number;
+  /**
+   * Stop these jobs and wait until the runtime has let go of them, so the
+   * workspaces they held can be removed. The service passes its attempt
+   * runner's; left out, nothing in this process is running a job.
+   */
+  stopJobs?: (jobIds: readonly string[]) => Promise<void>;
+  /** The first pause before a removal that could not finish is tried again; it doubles each time. */
+  retryMs?: number;
   /** Named so tests can watch a phase boundary without timing it. */
   onPhase?: (removalId: string, phase: RemovalPhase) => void;
 };
 
 const LEASE_MS = 60_000;
+const RETRY_MS = 5_000;
+
+/** States in which a removal is still in charge of its space. */
+const LIVE_EXCLUDED = ['complete', 'cleaning'] as const;
 
 /** The phases after the fence, in the order they run. */
 const SWEEP: readonly RemovalPhase[] = [
@@ -189,12 +203,14 @@ class LeaseLost extends Error {
 
 export class SpaceRemovalService {
   private readonly leaseMs: number;
+  private readonly retryMs: number;
   private timer?: ReturnType<typeof setInterval>;
   private resuming?: Promise<unknown>;
   private readonly inFlight = new Map<string, Promise<SpaceRemovalRow>>();
 
   constructor(readonly deps: RemovalDeps) {
     this.leaseMs = deps.leaseMs ?? LEASE_MS;
+    this.retryMs = deps.retryMs ?? RETRY_MS;
   }
 
   /**
@@ -248,7 +264,12 @@ export class SpaceRemovalService {
       const [live] = await tx
         .select()
         .from(spaceRemoval)
-        .where(and(eq(spaceRemoval.spaceId, spaceId), ne(spaceRemoval.state, 'complete')));
+        .where(
+          and(
+            eq(spaceRemoval.spaceId, spaceId),
+            notInArray(spaceRemoval.state, [...LIVE_EXCLUDED]),
+          ),
+        );
       if (live) {
         if (live.requestedBy !== actor)
           throw new ServiceError('scope_denied', 'Space administration requires its owner.', 403);
@@ -379,6 +400,7 @@ export class SpaceRemovalService {
       Math.max(25, Math.floor(this.leaseMs / 3)),
     );
     try {
+      if (claimed.state === 'cleaning') return await this.cleanUp(claimed, token);
       return await this.sweepHeld(claimed, token, lost.signal, signal);
     } catch (error) {
       // Another run has the removal now. This one stops where it is and writes
@@ -419,7 +441,11 @@ export class SpaceRemovalService {
         if (error instanceof LeaseLost || lost.aborted) throw new LeaseLost();
         return this.block(row.id, token, phase, counts, describe(error));
       }
-      if (phase === 'verify' && !removalIsClear(counts))
+      if (
+        phase === 'verify' &&
+        !removalIsClear(counts) &&
+        !this.onlyWorkspacesLeft(row, counts)
+      )
         return this.block(row.id, token, phase, counts, unclearReason(counts));
       await this.record(row.id, token, counts);
     }
@@ -493,16 +519,20 @@ export class SpaceRemovalService {
         // now: on Windows the directory cannot be removed while Chromium has
         // it open.
         await raw.begin(hold);
+        // The fence cancelled every job, and a cancelled job's runtime can
+        // still be tearing down with its workspace open, so it is stopped and
+        // waited for first, and again before each retry.
+        await this.deps.stopJobs?.(row.jobIds);
         await clearSpaceFiles(
           { spacesRoot: roots.spacesRoot, workRoot: roots.workRoot },
           row.spaceId,
           row.jobIds,
           emptied,
-          this.deps.browser
-            ? async () => {
-                await forgetBrowserProfilesForSpace(this.deps.browser, row.spaceId);
-              }
-            : undefined,
+          async () => {
+            await this.deps.stopJobs?.(row.jobIds);
+            if (this.deps.browser)
+              await forgetBrowserProfilesForSpace(this.deps.browser, row.spaceId);
+          },
         );
         return counts;
       case 'operational':
@@ -655,7 +685,8 @@ export class SpaceRemovalService {
     const [row] = await this.deps.db
       .update(spaceRemoval)
       .set({
-        state: 'running',
+        // A removal left cleaning stays cleaning: its run only cleans.
+        state: sql`case when ${spaceRemoval.state} = 'cleaning' then 'cleaning' else 'running' end`,
         leaseOwner: token,
         leaseExpiresAt: new Date(Date.now() + this.leaseMs),
         attempts: sql`${spaceRemoval.attempts} + 1`,
@@ -665,7 +696,13 @@ export class SpaceRemovalService {
         and(
           eq(spaceRemoval.id, removalId),
           ne(spaceRemoval.state, 'complete'),
-          or(isNull(spaceRemoval.leaseExpiresAt), sql`${spaceRemoval.leaseExpiresAt} < now()`),
+          // No run holds a removal with no owner; its time is only when the
+          // timer next tries it, and asking directly does not wait for that.
+          or(
+            isNull(spaceRemoval.leaseOwner),
+            isNull(spaceRemoval.leaseExpiresAt),
+            sql`${spaceRemoval.leaseExpiresAt} < now()`,
+          ),
         ),
       )
       .returning();
@@ -724,7 +761,7 @@ export class SpaceRemovalService {
     });
   }
 
-  private block(
+  private async block(
     removalId: string,
     token: string,
     phase: RemovalPhase,
@@ -737,8 +774,52 @@ export class SpaceRemovalService {
       counts,
       blockedReason: reason,
       leaseOwner: null,
-      leaseExpiresAt: null,
+      leaseExpiresAt: await this.retryAt(removalId),
     });
+  }
+
+  /**
+   * When the timer next tries a removal that could not finish: soon after the
+   * first try, and further apart each time, up to a few minutes.
+   */
+  private async retryAt(removalId: string): Promise<Date> {
+    const [row] = await this.deps.db
+      .select({ attempts: spaceRemoval.attempts })
+      .from(spaceRemoval)
+      .where(eq(spaceRemoval.id, removalId));
+    const tries = Math.max(1, row?.attempts ?? 1);
+    const pause = Math.min(this.retryMs * 2 ** (tries - 1), this.leaseMs * 5);
+    return new Date(Date.now() + pause);
+  }
+
+  /**
+   * Nothing is left of an emptied space but workspaces that stopped work still
+   * holds open. The space can open again: its rows and its directory have
+   * gone, and those workspaces belong to jobs it no longer has.
+   */
+  private onlyWorkspacesLeft(row: SpaceRemovalRow, counts: RemovalCounts): boolean {
+    if (row.kind !== 'emptied' || counts.paths.length === 0) return false;
+    const workRoot = resolve(this.deps.roots.workRoot) + sep;
+    return (
+      counts.paths.every((path) => resolve(path).startsWith(workRoot)) &&
+      removalIsClear({ ...counts, paths: [] })
+    );
+  }
+
+  /**
+   * An emptied space that is open again, with workspaces still to remove. Only
+   * those are tried: the space directory is in use, and nothing else of the
+   * removal is repeated.
+   */
+  private async cleanUp(row: SpaceRemovalRow, token: string): Promise<SpaceRemovalRow> {
+    const workRoot = this.deps.roots.workRoot;
+    await this.deps.sql.begin(this.holdFor(row.id, token));
+    await this.deps.stopJobs?.(row.jobIds);
+    const held = await clearJobWorkspaces(workRoot, row.jobIds, async () => {
+      await this.deps.stopJobs?.(row.jobIds);
+    });
+    const counts = removalCounts.parse({ ...(row.counts ?? {}), paths: held });
+    return this.finish(row.id, token, counts);
   }
 
   private release(removalId: string, token: string): Promise<SpaceRemovalRow> {
@@ -749,12 +830,28 @@ export class SpaceRemovalService {
     });
   }
 
-  /** `complete` is written in one place, and only after a clear verification. */
-  private finish(
+  /**
+   * `complete` is written in one place, and only after a clear verification.
+   * An emptied space whose only leftovers are held workspaces is `cleaning`.
+   */
+  private async finish(
     removalId: string,
     token: string,
     counts: RemovalCounts,
   ): Promise<SpaceRemovalRow> {
+    const [row] = await this.deps.db
+      .select()
+      .from(spaceRemoval)
+      .where(eq(spaceRemoval.id, removalId));
+    if (row && this.onlyWorkspacesLeft(row, counts))
+      return this.write(removalId, token, {
+        state: 'cleaning',
+        phase: 'space',
+        counts,
+        blockedReason: unclearReason(counts),
+        leaseOwner: null,
+        leaseExpiresAt: await this.retryAt(removalId),
+      });
     if (!removalIsClear(counts))
       return this.block(removalId, token, 'verify', counts, unclearReason(counts));
     return this.write(removalId, token, {
@@ -810,7 +907,7 @@ export class SpaceRemovalService {
         });
     };
     pass();
-    this.timer = setInterval(pass, this.leaseMs);
+    this.timer = setInterval(pass, Math.min(this.leaseMs, this.retryMs));
     this.timer.unref?.();
   }
 

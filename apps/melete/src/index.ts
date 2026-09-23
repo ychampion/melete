@@ -674,6 +674,14 @@ export async function bootstrap(
           // The worker stops, the profile goes, and the site rows with it.
           ...(browser ? { browser: browser.sessions } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),
+          // A cancelled job's runtime can still hold its workspace open; the
+          // files phase stops it and waits for it before removing the workspace.
+          ...(runner
+            ? {
+                stopJobs: (jobIds: readonly string[]) =>
+                  runner?.stopJobs(jobIds) ?? Promise.resolve(),
+              }
+            : {}),
         });
         // Resumed in the background: a removal waiting on a provider or a held
         // file does not hold up the listener, and a shutdown waits for it.

@@ -16915,6 +16915,7 @@
           "pending",
           "running",
           "blocked",
+          "cleaning",
           "complete"
         ]
       },

@@ -12,7 +12,9 @@
  * against a space that had something everywhere.
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { access, chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ConnectorManifest, RemovalPhase } from '@melete/contracts';
@@ -81,6 +83,8 @@ type Overrides = {
   onPhase?: (removalId: string, phase: RemovalPhase) => void;
   connectors?: ConnectorRegistry;
   leaseMs?: number;
+  retryMs?: number;
+  stopJobs?: (jobIds: readonly string[]) => Promise<void>;
 };
 
 async function service(overrides: Overrides = {}) {
@@ -94,6 +98,8 @@ async function service(overrides: Overrides = {}) {
     journal: overrides.journal ?? (await newJournal()),
     roots: { spacesRoot, workRoot },
     leaseMs: overrides.leaseMs ?? 5_000,
+    ...(overrides.retryMs ? { retryMs: overrides.retryMs } : {}),
+    ...(overrides.stopJobs ? { stopJobs: overrides.stopJobs } : {}),
     ...(overrides.sandboxes ? { sandboxes: overrides.sandboxes } : {}),
     ...(overrides.browser ? { browser: overrides.browser } : {}),
     ...(overrides.runtimeHomes ? { runtimeHomes: overrides.runtimeHomes } : {}),
@@ -205,6 +211,44 @@ function browserSites(released: string[] = []): BrowserTeardown {
     }),
   };
 }
+
+/**
+ * Hold a directory the way a job that is still running does, so it cannot be
+ * removed until the hold is let go. On Windows that is a process working in
+ * it, which is what holds a job's workspace there. Elsewhere a process's
+ * working directory holds nothing, so a directory whose entries cannot be
+ * removed stands in for it.
+ */
+async function holdDirectory(directory: string): Promise<() => Promise<void>> {
+  await mkdir(directory, { recursive: true });
+  let released = false;
+  if (process.platform === 'win32') {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      cwd: directory,
+      stdio: 'ignore',
+    });
+    await Bun.sleep(300);
+    return async () => {
+      if (released) return;
+      released = true;
+      child.kill();
+      await once(child, 'exit');
+      await Bun.sleep(100);
+    };
+  }
+  const inner = join(directory, 'held');
+  await mkdir(inner, { recursive: true });
+  await writeFile(join(inner, 'open'), 'in use');
+  await chmod(inner, 0o555);
+  return async () => {
+    if (released) return;
+    released = true;
+    await chmod(inner, 0o755);
+  };
+}
+
+/** Root can remove what a read-only directory holds, so there the hold does not hold. */
+const canHold = process.platform === 'win32' || process.getuid?.() !== 0;
 
 /** The phases after the fence, in the order the sweep runs them. */
 const SWEEP_ORDER: readonly RemovalPhase[] = [
@@ -1064,6 +1108,97 @@ describe.if(handle !== null)('removing a space', () => {
     expect(sweeps).toBe(1);
     expect(finished.attempts).toBe(1);
   });
+
+  test('an_emptying_stops_the_job_holding_its_workspace_first — and then removes it', async () => {
+    const seeded = await seed('personal');
+    const workspace = join(workRoot, seeded.jobId);
+    const release = await holdDirectory(workspace);
+    const stopped: string[][] = [];
+    try {
+      const removals = await service({
+        // The runner's stop, here letting go of the hold as a stopped job does.
+        stopJobs: async (jobIds) => {
+          stopped.push([...jobIds]);
+          await release();
+        },
+      });
+      const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+      const finished = await removals.run(fenced.id);
+      expect(outcome(finished)).toBe('complete');
+      expect(stopped[0]).toContain(seeded.jobId);
+      expect(await exists(workspace)).toBe(false);
+    } finally {
+      await release();
+    }
+  });
+
+  test.if(canHold)(
+    'a_held_workspace_does_not_lock_the_person_out — the emptied space opens again, and the workspace goes when let go',
+    async () => {
+      const seeded = await seed('personal');
+      const workspace = join(workRoot, seeded.jobId);
+      const release = await holdDirectory(workspace);
+      const removals = await service({ retryMs: 60_000 });
+      const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+      const made = join(spacesRoot, seeded.spaceId, 'knowledge', 'after-emptying.md');
+      try {
+        const left = await removals.run(fenced.id);
+        // Everything of the space has gone but a workspace a job still holds.
+        expect(left.state).toBe('cleaning');
+        expect(left.blockedReason).toContain(seeded.jobId);
+        expect(await rowsLeft(sql, seeded.spaceId)).toEqual({});
+        // The space is open again, and its owner can work in it.
+        const [open] = await sql<{ removed_at: Date | null }[]>`select removed_at from space
+          where id = ${seeded.spaceId}`;
+        expect(open?.removed_at).toBeNull();
+        expect((await spaceAuthority(db, seeded.spaceId, seeded.principalId)).role).toBe('owner');
+        await mkdir(join(spacesRoot, seeded.spaceId, 'knowledge'), { recursive: true });
+        await writeFile(made, 'written after the space opened again');
+
+        // Tried again while still held: still cleaning, and only the workspace
+        // was touched, never the space directory that is in use.
+        const again = await removals.run(fenced.id);
+        expect(again.state).toBe('cleaning');
+        expect(await exists(made)).toBe(true);
+      } finally {
+        await release();
+      }
+      const finished = await removals.run(fenced.id);
+      expect(outcome(finished)).toBe('complete');
+      expect(await exists(workspace)).toBe(false);
+      expect(await exists(made)).toBe(true);
+    },
+  );
+
+  test.if(canHold)(
+    'a_removal_that_could_not_finish_is_tried_again_soon — by the running service, without a restart',
+    async () => {
+      const seeded = await seed('personal');
+      const release = await holdDirectory(join(workRoot, seeded.jobId));
+      const removals = await service({ retryMs: 1_000 });
+      const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+      try {
+        expect((await removals.run(fenced.id)).state).toBe('cleaning');
+        // Not tried again before its pause is up.
+        expect((await removals.resume()).map((row) => row.id)).not.toContain(fenced.id);
+      } finally {
+        await release();
+      }
+      // The service's own timer tries it again once it is due.
+      removals.start();
+      try {
+        let state = '';
+        for (let tick = 0; tick < 40 && state !== 'complete'; tick += 1) {
+          await Bun.sleep(250);
+          state = (await removals.byId(fenced.id))?.state ?? '';
+        }
+        expect(state).toBe('complete');
+      } finally {
+        removals.stop();
+        await removals.drain();
+      }
+    },
+  );
 
   test('a_run_that_loses_its_lease_stops — and writes nothing after', async () => {
     const seeded = await seed('shared');

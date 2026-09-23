@@ -59,14 +59,20 @@ export const spaceRemoval = pgTable(
   },
   (t) => [
     check('space_removal_kind', sql`${t.kind} in ('removed','emptied')`),
-    check('space_removal_state', sql`${t.state} in ('pending','running','blocked','complete')`),
+    check(
+      'space_removal_state',
+      sql`${t.state} in ('pending','running','blocked','cleaning','complete')`,
+    ),
     check(
       'space_removal_phase',
       sql`${t.phase} in ('fence','sessions','journal','sandboxes','browser','runtime','files','operational','principals','memory','verify','space')`,
     ),
     // One live removal per space, so a second request joins the sweep already
-    // running instead of starting a rival one.
-    uniqueIndex('space_removal_live_idx').on(t.spaceId).where(sql`${t.state} <> 'complete'`),
+    // running instead of starting a rival one. A removal left cleaning up after
+    // an emptied space has reopened is not live: the space is in use again.
+    uniqueIndex('space_removal_live_idx')
+      .on(t.spaceId)
+      .where(sql`${t.state} not in ('complete','cleaning')`),
     index('space_removal_ready_idx').on(t.state, t.leaseExpiresAt),
   ],
 );

@@ -63,13 +63,20 @@ export function reportFor(
   return {
     removal,
     headline: headlineFor(removal),
-    cleared: removal.state === 'complete' ? clearedLines(removal.kind) : [],
-    still_yours: removal.state === 'complete' ? whatStays(providers) : [],
+    cleared: finished(removal) ? clearedLines(removal.kind) : [],
+    still_yours: finished(removal) ? whatStays(providers) : [],
   };
+}
+
+/** Everything in the space has gone; a `cleaning` removal has only old work files left. */
+function finished(removal: SpaceRemoval): boolean {
+  return removal.state === 'complete' || removal.state === 'cleaning';
 }
 
 function headlineFor(removal: SpaceRemoval): string {
   const name = removal.space_name;
+  if (removal.state === 'cleaning')
+    return `${name} is empty, and yours to use again. A few files from work that was stopped are still open, and Melete removes them as soon as they are let go.`;
   if (removal.state === 'complete')
     return removal.kind === 'emptied'
       ? `${name} is empty. The space is yours to start again whenever you like.`
