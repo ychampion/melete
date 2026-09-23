@@ -520,6 +520,8 @@ export function ChatScreen({ id }: { id: string | null }) {
         return;
       }
       setTranscript((previous) => markPermission(previous, id, result.data.option));
+      // Home's count and the sidebar read the same lists; refresh them together.
+      refreshConversations();
       // The draft behind the decision has moved on; read where it stands now.
       if (conversationId)
         void adapter.drafts(conversationId).then((drafts) => {

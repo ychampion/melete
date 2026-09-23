@@ -88,7 +88,10 @@ export type AppContextValue = {
   setOnboarded: (next: boolean) => void;
   agents: Agent[];
   conversations: Conversation[];
+  /** What waits on the person, read in the same refresh as the conversations. */
+  decisions: Decisions;
   refreshProfile: () => void;
+  /** Reads the conversations, the open permissions and the open questions together. */
   refreshConversations: () => void;
   refreshAgents: () => void;
   /** Ends the session on the service and returns to sign-in. */
@@ -107,20 +110,28 @@ export const agentById = (agents: Agent[], id: string | null | undefined): Agent
   (id ? agents.find((agent) => agent.id === id) : null) ?? null;
 
 /**
- * What waits on the person: open permissions and open questions. Reloads when
- * the conversation list refreshes, so the count follows the work.
+ * What waits on the person: open permissions and open questions. `error` is
+ * the service's sentence when either list could not be read; the lists keep
+ * what was last read.
  */
-export function useDecisions(): {
-  permissions: Loaded<{ permissions: Permission[] }>;
-  questions: Loaded<{ questions: Question[] }>;
-  count: number;
-} {
-  const { conversations } = useApp();
-  const permissions = useLoad(() => adapter.permissions(), [conversations]);
-  const questions = useLoad(() => adapter.questions(), [conversations]);
-  const count =
-    (permissions.data?.permissions.length ?? 0) + (questions.data?.questions.length ?? 0);
-  return { permissions, questions, count };
+export type Decisions = {
+  permissions: Permission[];
+  questions: Question[];
+  loaded: boolean;
+  error: string | null;
+};
+
+export const NO_DECISIONS: Decisions = {
+  permissions: [],
+  questions: [],
+  loaded: false,
+  error: null,
+};
+
+/** The open decisions, read once per refresh for the whole app. */
+export function useDecisions(): Decisions & { count: number } {
+  const { decisions } = useApp();
+  return { ...decisions, count: decisions.permissions.length + decisions.questions.length };
 }
 
 /** The address a company job sends from, when a permission names it. */

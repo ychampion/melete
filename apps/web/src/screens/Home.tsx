@@ -327,12 +327,10 @@ function WaitingOnYou({
   const { permissions, questions } = decisions;
   const [offset, setOffset] = useState(0);
   const queue: Decision[] = [
-    ...(permissions.data?.permissions ?? []).map(
+    ...permissions.map(
       (permission): Decision => ({ kind: 'permission', id: permission.id, permission }),
     ),
-    ...(questions.data?.questions ?? []).map(
-      (question): Decision => ({ kind: 'question', id: question.id, question }),
-    ),
+    ...questions.map((question): Decision => ({ kind: 'question', id: question.id, question })),
   ];
   if (queue.length === 0) return null;
   const at = offset % queue.length;
@@ -352,11 +350,7 @@ function WaitingOnYou({
     const company = item && map?.companies.find((entry) => entry.id === item.company_id);
     return item && company ? { item, company: company.name } : null;
   };
-  const settled = () => {
-    permissions.reload();
-    questions.reload();
-    refreshConversations();
-  };
+  const settled = () => refreshConversations();
   const decide = (permission: Permission, option: 'allow_once' | 'deny') =>
     void adapter.decide(permission.id, option, permission.version).then((result) => {
       if (result.data === null) {

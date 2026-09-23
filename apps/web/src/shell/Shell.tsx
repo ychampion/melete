@@ -239,7 +239,7 @@ function Sidebar({
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const address = sendingAddress(decisions.permissions.data?.permissions ?? []);
+  const address = sendingAddress(decisions.permissions);
   return (
     <aside className="sidebar" data-open={open ? 'true' : undefined} aria-label="Sections">
       <div className="sidebar-head">
