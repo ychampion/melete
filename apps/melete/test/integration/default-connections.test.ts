@@ -438,7 +438,7 @@ const skilled = late ? await database() : null;
         expect.objectContaining({
           id: `skills:${researching.claims.attempt_id}`,
           kind: 'skill',
-          title: 'Followed the skill: Research with sources',
+          title: 'Used the skill: Research with sources',
           status: 'done',
         }),
       ]);

@@ -17,7 +17,7 @@ describe('the skills an attempt follows are shown as one tool entry', () => {
     expect(call).toEqual({
       id: 'skills:att_1',
       kind: 'skill',
-      title: 'Followed 2 ways of working',
+      title: 'Used 2 skills',
       status: 'done',
       started_at: at.toISOString(),
       ended_at: at.toISOString(),
@@ -33,7 +33,7 @@ describe('the skills an attempt follows are shown as one tool entry', () => {
     expect(
       skillTraceCall('att_2', [{ name: 'plan-a-responsibility', body: 'x' }], at),
     ).toMatchObject({
-      title: 'Followed the skill: Plan a responsibility',
+      title: 'Used the skill: Plan a responsibility',
       output_summary: { text: 'Plan a responsibility' },
     });
     expect(
@@ -42,7 +42,7 @@ describe('the skills an attempt follows are shown as one tool entry', () => {
         [{ name: 'procedure:prc_01J00000000000000000000000', body: 'x' }],
         at,
       ),
-    ).toMatchObject({ title: 'Followed a way of working you showed me' });
+    ).toMatchObject({ title: 'Used a way of working you showed me' });
   });
 
   test('an attempt with no skills has no entry', () => {

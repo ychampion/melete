@@ -46,9 +46,9 @@ export function skillTraceCall(
   const title =
     names.length === 1 && only
       ? only === LEARNED
-        ? `Followed ${LEARNED}`
-        : `Followed the skill: ${only}`
-      : `Followed ${names.length} ways of working`;
+        ? `Used ${LEARNED}`
+        : `Used the skill: ${only}`
+      : `Used ${names.length} skills`;
   const when = at.toISOString();
   return {
     id: `skills:${attemptId}`,
