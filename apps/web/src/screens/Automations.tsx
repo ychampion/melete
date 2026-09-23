@@ -18,7 +18,7 @@ import {
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import type { Automation, AutomationRun } from '../experience/types.ts';
-import { Shell, toast } from '../shell/Shell.tsx';
+import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -259,9 +259,12 @@ export function AutomationsScreen() {
               Routines that run on a schedule, and tell you what they did.
             </p>
           </div>
-          <Button icon="plus" onClick={() => setCreating(true)}>
-            New routine
-          </Button>
+          <div className="row" style={{ gap: 8 }}>
+            <Button icon="plus" onClick={() => setCreating(true)}>
+              New routine
+            </Button>
+            <RailToggle />
+          </div>
         </div>
         {data.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{data.error}</p> : null}
         <div

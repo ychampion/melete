@@ -67,8 +67,22 @@
   --studio-text: #e6e7ea;
   --studio-muted: #8e939c;
 
+  --rose: #f6e5e1;
+  --rose-ink: #8a4336;
+
+  --radius-sheet: 14px;
+  --radius-card: 16px;
+  --radius-block: 12px;
+  --radius-button: 10px;
+
+  --shadow-sheet: 0 0 0 1px var(--line), 0 1px 2px #1d1b1608, 0 12px 32px -24px #1d1b1633;
+  --shadow-lift: 0 0 0 1px var(--line), 0 1px 2px #1d1b160a, 0 18px 40px -22px #1d1b1640;
+  --shadow-pill: 0 0 0 1px var(--line), 0 1px 2px #1d1b160f;
+
+  /* Melete speaks in the voice face; everything a person operates is DM Sans. */
   --font-body: "DM Sans Variable", "DM Sans", system-ui, sans-serif;
-  --font-head: "Manrope Variable", "Manrope", "DM Sans", system-ui, sans-serif;
+  --font-voice: "Newsreader Variable", "Newsreader", Georgia, "Times New Roman", serif;
+  --font-head: var(--font-body);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -121,6 +135,11 @@
 
     --shadow: 0 8px 24px -8px #000000cc;
     --elevated: 0 24px 48px -12px #000000e6, 0 0 0 1px #42464e;
+    --rose: #2e1d1b;
+    --rose-ink: #e3b0a6;
+    --shadow-sheet: 0 0 0 1px var(--line);
+    --shadow-lift: 0 0 0 1px var(--line-strong), 0 20px 40px -16px #000000;
+    --shadow-pill: 0 0 0 1px var(--line);
     --ring: #8db6f780;
     --skeleton-a: #1c1d20;
     --skeleton-b: #33363c;
@@ -176,6 +195,11 @@
 
   --shadow: 0 8px 24px -8px #000000cc;
   --elevated: 0 24px 48px -12px #000000e6, 0 0 0 1px #42464e;
+  --rose: #2e1d1b;
+  --rose-ink: #e3b0a6;
+  --shadow-sheet: 0 0 0 1px var(--line);
+  --shadow-lift: 0 0 0 1px var(--line-strong), 0 20px 40px -16px #000000;
+  --shadow-pill: 0 0 0 1px var(--line);
   --ring: #8db6f780;
   --skeleton-a: #1c1d20;
   --skeleton-b: #33363c;

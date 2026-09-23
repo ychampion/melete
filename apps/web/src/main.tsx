@@ -1,5 +1,5 @@
-import '@fontsource-variable/manrope';
 import '@fontsource-variable/dm-sans';
+import '@fontsource-variable/newsreader/opsz.css';
 import './design/tokens.css';
 import './design/base.css';
 

@@ -40,7 +40,7 @@ import type {
   TurnStatus,
 } from '../experience/types.ts';
 import { navigate } from '../router.ts';
-import { Shell, toast } from '../shell/Shell.tsx';
+import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { Composer } from './Composer.tsx';
 import {
   ActionBar,
@@ -587,6 +587,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
+            <RailToggle />
           </div>
           <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
             <div className="chat-messages">

@@ -12,7 +12,7 @@ import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
-import { Shell, toast } from '../shell/Shell.tsx';
+import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
@@ -267,6 +267,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
               What Melete remembers, what it may reach, and what it may do without asking.
             </p>
           </div>
+          <RailToggle />
         </div>
         <div className="card-12 row" style={{ gap: 12, padding: '12px 16px', flexWrap: 'wrap' }}>
           <div className="col grow" style={{ gap: 2, minWidth: 200 }}>

@@ -9,7 +9,7 @@ import { Button, Chip, TabsUnderline } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { messageKey, useApp, useLoad } from '../experience/hooks.ts';
 import { href, navigate } from '../router.ts';
-import { Shell, toast } from '../shell/Shell.tsx';
+import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { PlanTable } from './Plans.tsx';
 
 const PROMPTS: { label: string; icon: IconName; text: string }[] = [
@@ -93,9 +93,12 @@ export function HomeScreen() {
               {data ? `${data.date} · Personal` : ''}
             </div>
           </div>
-          <Button variant="outline" icon="plus" onClick={() => navigate('/plans?new=1')}>
-            New plan
-          </Button>
+          <div className="row" style={{ gap: 8 }}>
+            <Button variant="outline" icon="plus" onClick={() => navigate('/plans?new=1')}>
+              New plan
+            </Button>
+            <RailToggle />
+          </div>
         </div>
         {home.error ? <p style={{ color: 'var(--danger)', fontSize: 13 }}>{home.error}</p> : null}
         <div className="col" style={{ gap: 12 }}>

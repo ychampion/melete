@@ -4,6 +4,7 @@
  * conversations, and which capabilities this instance has).
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import type { FaceState } from '../design/face.tsx';
 import { adapter, type Result, subscribeConversation } from './adapter.ts';
 import {
   acceptLocalTurn,
@@ -18,7 +19,16 @@ import {
   setDrafts,
   type Transcript,
 } from './reduce.ts';
-import type { Agent, Capabilities, Conversation, Profile, Turn } from './types.ts';
+import type {
+  Agent,
+  Capabilities,
+  Conversation,
+  Permission,
+  Profile,
+  Question,
+  Turn,
+  TurnStatus,
+} from './types.ts';
 
 export type Loaded<T> = {
   data: T | null;
@@ -95,6 +105,50 @@ export function useApp(): AppContextValue {
 
 export const agentById = (agents: Agent[], id: string | null | undefined): Agent | null =>
   (id ? agents.find((agent) => agent.id === id) : null) ?? null;
+
+/**
+ * What waits on the person: open permissions and open questions. Reloads when
+ * the conversation list refreshes, so the count follows the work.
+ */
+export function useDecisions(): {
+  permissions: Loaded<{ permissions: Permission[] }>;
+  questions: Loaded<{ questions: Question[] }>;
+  count: number;
+} {
+  const { conversations } = useApp();
+  const permissions = useLoad(() => adapter.permissions(), [conversations]);
+  const questions = useLoad(() => adapter.questions(), [conversations]);
+  const count =
+    (permissions.data?.permissions.length ?? 0) + (questions.data?.questions.length ?? 0);
+  return { permissions, questions, count };
+}
+
+/** The address a company job sends from, when a permission names it. */
+export function sendingAddress(permissions: Permission[]): string | null {
+  for (const permission of permissions)
+    for (const line of permission.why)
+      if (line.startsWith('From: ')) return line.slice('From: '.length).trim() || null;
+  return null;
+}
+
+/** The face an agent wears for a conversation's status. */
+export function faceOf(status: TurnStatus | undefined): FaceState {
+  switch (status) {
+    case 'queued':
+    case 'working':
+    case 'streaming':
+      return 'working';
+    case 'done':
+      return 'done';
+    case 'failed':
+      return 'failed';
+    case 'paused':
+    case 'stopped':
+      return 'inactive';
+    default:
+      return 'idle';
+  }
+}
 
 /* ---------- conversations ---------- */
 

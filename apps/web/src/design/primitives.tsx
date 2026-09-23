@@ -36,6 +36,7 @@ export function Button({
   iconRight,
   loading = false,
   block = false,
+  hint,
   children,
   className,
   type = 'button',
@@ -47,12 +48,15 @@ export function Button({
   iconRight?: IconName;
   loading?: boolean;
   block?: boolean;
+  /** The key that presses this button while its card has focus. Drawn, never announced. */
+  hint?: string;
 }) {
   const classes = [
     'btn',
     `btn-${size}`,
     `btn-${variant}`,
     block ? 'btn-block' : '',
+    hint ? 'btn-hinted' : '',
     className ?? '',
   ]
     .filter(Boolean)
@@ -66,7 +70,74 @@ export function Button({
       ) : null}
       {children ? <span>{children}</span> : null}
       {iconRight ? <Icon name={iconRight} size={14} /> : null}
+      {hint ? <KeyHint>{hint}</KeyHint> : null}
     </button>
+  );
+}
+
+/** A key drawn on an action. Shortcuts work only while their card has focus. */
+export function KeyHint({ children }: { children: ReactNode }) {
+  return (
+    <span className="key-hint" aria-hidden="true">
+      {children}
+    </span>
+  );
+}
+
+/**
+ * One status vocabulary for rows, jobs and cases. A pill where the state is
+ * the point of a column; quiet (a dot and words) everywhere else. `kind` is a
+ * word with no urgency: a plain chip with no dot.
+ */
+export type StatusTone = 'working' | 'needs' | 'waiting' | 'late' | 'settled' | 'kind';
+
+export function Status({
+  tone,
+  quiet = false,
+  children,
+}: {
+  tone: StatusTone;
+  quiet?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <span className={quiet ? 'status-quiet' : 'status-pill'} data-tone={tone}>
+      {tone === 'kind' ? null : <span className="status-dot" />}
+      {children}
+    </span>
+  );
+}
+
+const TILE_TINTS = ['sage', 'lilac', 'sand', 'travel', 'rose'] as const;
+
+/** A company's initial on a tint picked from its id, so it keeps one colour everywhere. */
+export function CompanyTile({
+  id,
+  name,
+  size = 28,
+}: {
+  id: string;
+  name: string;
+  size?: 24 | 28 | 36;
+}) {
+  let hash = 0;
+  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  const tint = TILE_TINTS[hash % TILE_TINTS.length] ?? 'sage';
+  return (
+    <span
+      className="company-tile"
+      aria-hidden="true"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: Math.round(size * 0.28),
+        fontSize: size >= 36 ? 15 : size >= 28 ? 12 : 11,
+        background: `var(--${tint})`,
+        color: `var(--${tint}-ink)`,
+      }}
+    >
+      {name.trim().charAt(0).toUpperCase() || '·'}
+    </span>
   );
 }
 
