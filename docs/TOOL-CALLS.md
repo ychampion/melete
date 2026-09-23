@@ -86,7 +86,8 @@ A summary is safe to show the person whose conversation it is:
 
 - `text` is always Melete's own wording: counts, recipients, times, file and app names.
 - Anything that came from outside is in `quote`, with `from` saying where it came from. That covers a page title, a message subject, a file name, or the words the model gave a tool. Draw a quote as a quotation from that source, never in the assistant's voice. A page can say "Ignore previous instructions" and it will arrive here as a quote from `page`.
-- Values shaped like credentials, sealed secrets, signed tokens or internal record names are dropped entirely. Links keep their scheme, host and path only.
+- Render every `text` and `quote.text` as plain text. They are never Markdown or HTML, so a quote that contains `**`, `<a>` or a link stays literal.
+- Values shaped like credentials, sealed secrets, signed tokens or internal record names are dropped entirely, including a secret inside a longer name such as `DB_PASSWORD=`. Links keep their scheme, host and path only, and a path that carries something shaped like a key is cut back to the site.
 - Memory entries name saved details by their plain label ("Home city"). In a shared space, a detail another person saved is counted but never named or quoted. A recall never includes the saved values, and a forget never repeats what was forgotten.
 
 ## Progress
@@ -97,7 +98,7 @@ A summary is safe to show the person whose conversation it is:
 { "steps_done": 4, "current": "Reading a web page" }
 ```
 
-`steps_done` counts finished entries in the current turn, apart from the model and retries. `current` is the title of the latest entry that is still running or waiting for approval, and `null` between steps. Progress is a count of real steps, so draw it as steps done and the step under way rather than as a percentage.
+`steps_done` counts finished entries in the current turn, apart from the model and retries. `current` is the title of the latest entry that is still running or waiting for approval, and `null` between steps and once the turn has ended. Progress is a count of real steps, so draw it as steps done and the step under way rather than as a percentage.
 
 ## Replay
 
@@ -107,8 +108,10 @@ Entries are stored with the rest of the conversation's events. Reconnecting with
 
 Work that happens inside Melete becomes an entry by writing a `notice` on the job, in the transaction that does the work or in a short one right after it commits. Memory writes it afterwards, so an event write never runs under the space lock:
 
-- Memory writes `memoryToolNotice` (`kind: "memory_tool"`), with `op` set to `recall`, `write`, `correct` or `forget`, a count, plain labels, and the saved wording as `value`. Label and value rules are in the schema comment. `appendMemoryTool` in `apps/melete/src/experience/tools.ts` writes one.
+- Memory writes `memoryToolNotice` (`kind: "memory_tool"`), with `op` set to `recall`, `write`, `correct` or `forget`, a count, plain labels, and the saved wording as `value`. Label and value rules are in the schema comment. `appendMemoryTool` in `apps/melete/src/experience/tools.ts` writes one, keeping at most 20 labels of up to 80 characters; the count still covers every detail.
+- The recall entry is written in its own short transaction after the recall is recorded, taking the job the way every event writer does. It only describes the recall, so a write that fails is logged and the attempt carries on with the context it has.
 - Anything else writes `toolTraceNotice` (`kind: "tool_trace"`) with a complete `ToolCall`, using `appendToolTrace`. Its id is shown as `trace:<id>`. Every string in it is scrubbed again before anyone sees it.
+- Both helpers key each write by the job, the entry, its status and its content. A retried write lands once; a status revisited with new content, or the same id in another job, is written.
 
 Broker actions, runtime tool events, model requests and memory recall produce their entries automatically.
 

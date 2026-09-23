@@ -249,6 +249,9 @@ withDb('tool entries in the conversation', () => {
       status: 'succeeded',
       latency_ms: 1200,
     });
+    // A runtime call the turn never heard back from: once the turn is over it
+    // is still shown as it stood, but it is not the step under way.
+    await raw('tool_call_proposed', { tool: 'web_extract', call_id: 'c4', arguments: {} });
     // Memory and a browser step, as other subsystems write them.
     const now = new Date().toISOString();
     await appendMemoryTool(sql, chat.id, attemptId, {
@@ -311,7 +314,7 @@ withDb('tool entries in the conversation', () => {
       from: 'page',
     });
     // The runtime's view of a connector verb adds no entry of its own.
-    expect(new Set(calls.map((call) => call.id)).size).toBe(8);
+    expect(new Set(calls.map((call) => call.id)).size).toBe(9);
     // The trail gains one finished step for each entry it did not already tell.
     const trail = page.events.flatMap((item) =>
       item.item.type === 'action' && item.item.tool ? [item.item.label] : [],

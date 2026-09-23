@@ -5,9 +5,13 @@ import {
   TOOL_TITLE_LIMIT,
   type ToolCall,
 } from '@melete/contracts';
+import type { Query } from '../broker/records.ts';
 import { type ActionRow, BACKEND_VOCABULARY, projectActionGroup } from './projectors.ts';
 import {
   actionCall,
+  appendMemoryTool,
+  appendToolTrace,
+  displayUrl,
   memoryCall,
   modelCall,
   runtimeCall,
@@ -420,5 +424,108 @@ describe('memory', () => {
     });
     expect(running).toMatchObject({ title: 'Remembering', output_summary: null });
     expect(memoryCall({ ...notice, op: 'write' })).toBeNull();
+  });
+});
+
+/** A stand-in transaction that records each statement's values instead of running it. */
+function recordingTx() {
+  const writes: unknown[][] = [];
+  const tx = ((_strings: TemplateStringsArray, ...values: unknown[]) => {
+    writes.push(values);
+    return Promise.resolve([]);
+  }) as unknown as Query;
+  // The event insert: job, attempt, type, payload, dedup key, and the job again for its epoch.
+  const inserts = () => writes.filter((values) => values.length === 6);
+  return { tx, inserts };
+}
+
+describe('writers', () => {
+  const notice = {
+    op: 'recall' as const,
+    id: 'recall:att_1',
+    status: 'done' as const,
+    started_at: at.toISOString(),
+    ended_at: later.toISOString(),
+    value: null,
+    memory_item_id: null,
+    parent: null,
+  };
+
+  test('a memory entry keeps at most twenty labels of at most eighty characters', async () => {
+    const { tx, inserts } = recordingTx();
+    const long = `pref: ${'very long preference name '.repeat(8)}`;
+    const labels = [long, ...Array.from({ length: 24 }, (_, index) => `Detail ${index}`), '  '];
+    await appendMemoryTool(tx, 'job_1', 'att_1', { ...notice, count: 26, labels });
+    const [values] = inserts();
+    const payload = JSON.parse(String(values?.[3]));
+    expect(payload.labels).toHaveLength(20);
+    expect(payload.labels[0].length).toBeLessThanOrEqual(80);
+    expect(payload.count).toBe(26);
+    expect(memoryCall(payload)?.title).toContain('and 23 more');
+  });
+
+  test('a write is keyed by its job and content, so revisits and other jobs are kept', async () => {
+    const keys = async (job: string, value: string | null) => {
+      const { tx, inserts } = recordingTx();
+      await appendMemoryTool(tx, job, null, {
+        ...notice,
+        op: 'write',
+        id: 'write:k_1@1',
+        count: 1,
+        labels: ['Diet'],
+        value,
+      });
+      return String(inserts()[0]?.[4]);
+    };
+    expect(await keys('job_1', 'Vegan')).toBe(await keys('job_1', 'Vegan'));
+    expect(await keys('job_1', 'Vegan')).not.toBe(await keys('job_2', 'Vegan'));
+    expect(await keys('job_1', 'Vegan')).not.toBe(await keys('job_1', 'Vegetarian'));
+    const { tx, inserts } = recordingTx();
+    const call = traceCall({
+      id: 'x',
+      kind: 'tool',
+      title: 'Used a tool',
+      status: 'running',
+      started_at: at.toISOString(),
+      ended_at: null,
+      input_summary: null,
+      output_summary: null,
+      detail: null,
+      parent: null,
+    });
+    if (!call) throw new Error('trace did not parse');
+    await appendToolTrace(tx, 'job_1', null, call);
+    await appendToolTrace(tx, 'job_1', null, { ...call, title: 'Using a tool' });
+    const [first, second] = inserts();
+    expect(first?.[4]).not.toBe(second?.[4]);
+  });
+});
+
+describe('scrubbing', () => {
+  test('a secret named inside a longer variable name is still a secret', () => {
+    for (const text of [
+      'export DB_PASSWORD=hunter2',
+      'AWS_SECRET_ACCESS_KEY=abc123',
+      'GITHUB_TOKEN: abc',
+      'set MY_API_KEY = short',
+      'password: hunter2',
+    ])
+      expect(toolText(text)).toBeNull();
+    expect(toolText('Tokens of appreciation for the team')).toBe(
+      'Tokens of appreciation for the team',
+    );
+  });
+
+  test('a link whose path carries a key is cut back to its site', () => {
+    expect(displayUrl('https://example.test/reset/a1b2c3d4e5f6?x=1')).toBe('https://example.test/');
+    expect(displayUrl('https://hooks.example.test/services/T0001/B0002/Xy9z8w7v6u5t')).toBe(
+      'https://hooks.example.test/',
+    );
+    expect(displayUrl('https://example.test/menu/dinner-2026')).toBe(
+      'https://example.test/menu/dinner-2026',
+    );
+    expect(toolText('see https://example.test/reset/a1b2c3d4e5f6 now')).toBe(
+      'see https://example.test/ now',
+    );
   });
 });

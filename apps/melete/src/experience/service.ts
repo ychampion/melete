@@ -167,12 +167,14 @@ export class ExperienceService {
           .where(and(eq(experienceTurn.id, row.currentTurnId), eq(experienceTurn.jobId, row.id)))
       : [];
     // A turn under way, or one that finished within the day, reports its steps.
-    const recent =
-      turn &&
-      (['queued', 'working', 'streaming', 'paused'].includes(turn.status) ||
-        Date.now() - row.updatedAt.getTime() < 24 * 60 * 60 * 1000);
-    const progress =
+    // Only a turn still under way has a current step: once it has ended, an
+    // entry left running (a crash, a stop) is not something happening now.
+    const underWay =
+      turn && ['queued', 'working', 'streaming', 'paused', 'needs_you'].includes(turn.status);
+    const recent = turn && (underWay || Date.now() - row.updatedAt.getTime() < 24 * 60 * 60 * 1000);
+    const measured =
       recent && this.progress ? await this.progress(row.spaceId, row.id, turn.id) : undefined;
+    const progress = measured && { ...measured, current: underWay ? measured.current : null };
     return conversationView(
       row,
       turn,

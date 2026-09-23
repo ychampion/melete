@@ -9,6 +9,7 @@ import {
   type StyleViolation,
   styleViolations as styleViolationsSchema,
 } from '@melete/contracts';
+import { lockJob } from '../broker/records.ts';
 import { memoryKeyLabel } from '../experience/evidence.ts';
 import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
@@ -92,11 +93,27 @@ export async function recordAttemptContext(
     }
     return context;
   });
-  // The tool entry is written after the context commits, in its own short
-  // transaction, so an event write never runs under the space lock. A crash in
-  // between loses only the entry; the recorded context is unaffected.
-  if (context.items.length)
+  if (context.items.length) await recordRecallEntry(sql, jobId, attemptId, context, startedAt);
+  return context;
+}
+
+/**
+ * The tool entry is written after the context commits, in its own short
+ * transaction, so an event write never runs under the space lock. It takes the
+ * job the way every event writer does (the event order lock, then the job row),
+ * so a stream cursor cannot pass it. It only describes the recall: a failure is
+ * logged and the attempt goes on with the context it already has.
+ */
+async function recordRecallEntry(
+  sql: MemorySql,
+  jobId: string,
+  attemptId: string,
+  context: ContextRecord,
+  startedAt?: Date,
+) {
+  try {
     await sql.begin(async (tx) => {
+      await lockJob(tx, jobId);
       // Details are named only in a personal space, to the person it belongs to.
       // In a shared space a detail may be someone else's, so only the count is told.
       const [owned] = await tx`select (s.kind = 'personal' and (j.principal_id is null
@@ -115,7 +132,10 @@ export async function recordAttemptContext(
         parent: null,
       });
     });
-  return context;
+  } catch (error) {
+    const name = error instanceof Error ? error.name : 'error';
+    process.stderr.write(`memory: recall entry for ${attemptId} was not written (${name})\n`);
+  }
 }
 /**
  * Write down how the attempt talked. Measured, never enforced: the update runs

@@ -39,8 +39,26 @@ import {
 } from './projectors.ts';
 
 const CREDENTIAL =
-  /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|\b(?:password|passwd|secret|token|api[_-]?key|authorization|cookie)\s*[:=]|[A-Za-z0-9+/_-]{40,}/i;
+  /\bBearer\s+\S|\bsk-[A-Za-z0-9_-]{8,}|\bgh[opsu]_[A-Za-z0-9]{8,}|\bgithub_pat_|\bxox[abprs]-|\bAKIA[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[A-Za-z0-9_-]{8,}\.|sealed-box-v1:|-----BEGIN|(?:^|[^A-Za-z])[A-Za-z_]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential)[A-Za-z_]*\s*[:=]|[A-Za-z0-9+/_-]{40,}/i;
+/** A path segment that reads like a key rather than a word: long, and mixing letters and digits. */
+const TOKEN_SEGMENT = /^(?=[^/]*\d)(?=[^/]*[A-Za-z])[A-Za-z0-9_.~-]{12,}$/;
 
+/**
+ * A link as it may be shown: scheme, host and path, with no credentials or
+ * query. A path that carries something shaped like a key (a reset link, a
+ * webhook address) is cut back to the site itself.
+ */
+export function displayUrl(value: unknown): string | undefined {
+  const url = safeUrl(value);
+  if (!url) return undefined;
+  const parsed = new URL(url);
+  return parsed.pathname.split('/').some((segment) => TOKEN_SEGMENT.test(segment))
+    ? `${parsed.origin}/`
+    : url;
+}
+
+const MEMORY_LABEL_LIMIT = 80;
+const MEMORY_LABEL_COUNT = 20;
 const clip = (value: string, limit: number) =>
   value.length <= limit ? value : `${value.slice(0, limit - 1).trimEnd()}…`;
 
@@ -57,7 +75,7 @@ export function toolText(value: unknown, limit: number = TOOL_QUOTE_LIMIT): stri
     .trim();
   if (!flat || /^[[{]/.test(flat) || CREDENTIAL.test(flat) || BACKEND_VOCABULARY.test(flat))
     return null;
-  const linked = flat.replace(/\bhttps?:\/\/\S+/gi, (match) => safeUrl(match) ?? 'a link');
+  const linked = flat.replace(/\bhttps?:\/\/\S+/gi, (match) => displayUrl(match) ?? 'a link');
   return clip(linked, limit);
 }
 
@@ -269,7 +287,7 @@ function actionDetail(
   if (typeof detail.artifact_id === 'string' && /^art_/.test(detail.artifact_id))
     return { type: 'artifact', id: detail.artifact_id };
   if (row.kind === 'web.fetch') {
-    const url = safeUrl(detail.final_url ?? detail.url);
+    const url = displayUrl(detail.final_url ?? detail.url);
     return url ? { type: 'page', id: row.id, url } : null;
   }
   if (['write_external', 'write_reversible', 'spend'].includes(row.effectClass) && row.receipt)
@@ -469,7 +487,7 @@ export function traceCall(raw: unknown): ToolCall | null {
     const quoted = value.quote ? quote(value.quote.text, value.quote.from) : undefined;
     return summary(text, quoted);
   };
-  const url = call.detail?.url ? safeUrl(call.detail.url) : undefined;
+  const url = call.detail?.url ? displayUrl(call.detail.url) : undefined;
   return toolCall.parse({
     ...call,
     id: toolId('trace', call.id),
@@ -483,6 +501,17 @@ export function traceCall(raw: unknown): ToolCall | null {
       : null,
   });
 }
+
+/**
+ * One write per job, entry, status and content. The same write retried lands
+ * once; a status revisited with different content, or an id another job also
+ * uses, is a write of its own.
+ */
+const traceKey = (prefix: string, jobId: string, id: string, status: string, value: unknown) =>
+  `${prefix}:${jobId}:${createHash('sha256')
+    .update(JSON.stringify([id, status, value]))
+    .digest('hex')
+    .slice(0, 32)}`;
 
 /**
  * Record work as a tool entry on the job's stream. Call it inside the
@@ -503,7 +532,7 @@ export async function appendToolTrace(
     attemptId,
     'notice',
     { kind: TOOL_TRACE_NOTICE, call: value },
-    `tool:${value.id}:${value.status}`,
+    traceKey('tool', jobId, value.id, value.status, value),
   );
 }
 
@@ -514,14 +543,25 @@ export async function appendMemoryTool(
   attemptId: string | null,
   notice: Omit<MemoryToolNotice, 'kind'>,
 ): Promise<void> {
-  const value = memoryToolNotice.parse({ ...notice, kind: MEMORY_TOOL_NOTICE });
+  // A key label can be longer than the contract's bound, and a recall can
+  // touch more details than it names; the entry keeps the count either way.
+  const labels = notice.labels
+    .map((label) => clip(label.trim(), MEMORY_LABEL_LIMIT))
+    .filter((label) => label.length > 0)
+    .slice(0, MEMORY_LABEL_COUNT);
+  const value = memoryToolNotice.parse({
+    ...notice,
+    labels,
+    value: notice.value?.trim() ? clip(notice.value.trim(), TOOL_QUOTE_LIMIT) : null,
+    kind: MEMORY_TOOL_NOTICE,
+  });
   await appendEvent(
     tx,
     jobId,
     attemptId,
     'notice',
     value,
-    `memory-tool:${value.id}:${value.status}`,
+    traceKey('memory-tool', jobId, value.id, value.status, value),
   );
 }
 

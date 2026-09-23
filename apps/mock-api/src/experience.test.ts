@@ -162,6 +162,12 @@ test('experience scenario drafts first, reviews an explicit send, and replays sa
       'running',
       'done',
     ]);
+  // Home reads the finished turn's steps; nothing is under way once it is done.
+  const view = C.conversationResponse.parse(
+    (await call(mock, `/conversations/${chat.id}`)).body,
+  ).conversation;
+  expect(view.progress?.steps_done).toBeGreaterThan(0);
+  expect(view.progress?.current).toBeNull();
   expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
   expect(
     C.experienceEventPage.parse(

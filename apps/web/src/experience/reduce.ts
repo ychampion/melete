@@ -71,6 +71,8 @@ export type Transcript = {
   drafts: Record<string, Draft>;
   /** Message identities retained from the two event streams, keyed by their actual seq. */
   messages: Record<string, ReactionMessage>;
+  /** The permission each waiting action entry points at, keyed by the entry's id. */
+  approvals: Record<string, string>;
 };
 
 export const emptyTranscript = (): Transcript => ({
@@ -81,6 +83,7 @@ export const emptyTranscript = (): Transcript => ({
   status: 'idle',
   drafts: {},
   messages: {},
+  approvals: {},
 });
 
 const fromTurn = (turn: Turn): TranscriptTurn => ({
@@ -161,12 +164,28 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
   // turn except the status that says so (or a pause). Any other event means the
   // person decided somewhere else; the contract has no decision event, so the
   // block closes without claiming which way it went. Tool entries are background
-  // work (memory, the model) that can land while the person decides, except an
-  // action entry moving on from needs_approval, which is the decision itself.
+  // work (memory, the model) that can land while the person decides; the one
+  // that settles a permission is the entry that pointed at it moving on.
+  if (item.type === 'tool') {
+    const tool = item.tool;
+    const { [tool.id]: pending, ...others } = base.approvals;
+    if (tool.status === 'needs_approval' && tool.detail?.type === 'permission')
+      return applyItem({ ...base, approvals: { ...others, [tool.id]: tool.detail.id } }, event);
+    if (pending === undefined) return applyItem(base, event);
+    return applyItem(
+      patchTurn({ ...base, approvals: others }, event.turn_id, (turn) => ({
+        ...turn,
+        blocks: turn.blocks.map((block) =>
+          block.type === 'permission' && block.permission.id === pending && block.decided === null
+            ? { ...block, decided: 'closed' }
+            : block,
+        ),
+      })),
+      event,
+    );
+  }
   const stillWaiting =
     (item.type === 'status' && ['needs_you', 'paused', 'queued', 'idle'].includes(item.status)) ||
-    (item.type === 'tool' &&
-      !(item.tool.id.startsWith('action:') && item.tool.status !== 'needs_approval')) ||
     (item.type === 'action' && item.tool !== undefined);
   const waited = stillWaiting
     ? base
