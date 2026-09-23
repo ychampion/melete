@@ -40,6 +40,8 @@ async function conversation(spaceId: string, principal?: string) {
         tx,
         { space_id: spaceId, title: 'Chat', objective: SOURCE },
         { kind: 'chat' },
+        // What the chat surface records for a conversation the person started by typing.
+        'owner_request',
       ),
     ),
   );
