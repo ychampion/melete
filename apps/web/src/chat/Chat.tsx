@@ -583,25 +583,6 @@ export function ChatScreen({ id }: { id: string | null }) {
     [flight, setTranscript],
   );
 
-  // The newest open question in the newest turn listens to the number keys.
-  const open = openQuestion(transcript);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-      const n = Number(event.key);
-      const options = open.options.slice(0, 4);
-      if (!Number.isInteger(n) || n < 1 || n > options.length + 1) return;
-      event.preventDefault();
-      const option = options[n - 1];
-      if (option) answer(open.id, option.id);
-      else document.getElementById(`own-${open.id}`)?.focus();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, answer]);
-
   const setConversationAgent = (next: string) => {
     setAgentId(next);
     if (conversationId)

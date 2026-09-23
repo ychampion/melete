@@ -885,15 +885,32 @@ export function Questionnaire({
   answered: string | null;
   /** The answer's request is in flight: the options wait for it. */
   busy?: boolean;
-  /** Only the newest open question listens to the number keys. */
+  /** The newest open question, drawn as the one waiting on the person. */
   active: boolean;
   onAnswer: (optionId: string) => void;
   onOwn: (text: string) => void;
 }) {
   const [own, setOwn] = useState('');
   const options = question.options.slice(0, 4);
+  // The number keys answer only while this card has focus.
+  const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (answered) return;
+    const intent = decisionKey(pressOf(event), { options, own: true });
+    if (!intent) return;
+    event.preventDefault();
+    if (intent.kind === 'own') document.getElementById(`own-${question.id}`)?.focus();
+    else if (intent.kind === 'answer' && !busy) onAnswer(intent.optionId);
+  };
   return (
-    <div className="question" data-active={active ? 'true' : undefined}>
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset would restyle the card and carries no more meaning than a named group
+    <div
+      className="question"
+      data-active={active ? 'true' : undefined}
+      role="group"
+      aria-label={question.text}
+      tabIndex={answered ? -1 : 0}
+      onKeyDown={onKey}
+    >
       <div
         className="row"
         style={{ justifyContent: 'space-between', padding: '0 2px 4px', gap: 8 }}
