@@ -701,6 +701,41 @@ withDb('attempt runner against Postgres and pg-boss', () => {
     }
   });
 
+  test('stopping a job waits until its runtime has returned, so what it held open can go', async () => {
+    const started = deferred<AttemptBundle>();
+    const release = deferred<void>();
+    const worker = runner(
+      new StubRuntimeAdapter({
+        // A runtime that is still tearing down after it was told to stop.
+        ignoreAbort: true,
+        onStall: (_name, bundle) => {
+          started.resolve(bundle);
+          return release.promise;
+        },
+      }),
+    );
+    const row = await create([{ type: 'stall', key: 'hold-workspace' }], {
+      budget: { max_wall_ms: 5000 },
+    });
+    const running = worker.handleWake(wake(row));
+    await started.promise;
+    let stopped = false;
+    const stopping = worker.stopJobs([row.id], 5_000).then(() => {
+      stopped = true;
+    });
+    try {
+      await Bun.sleep(300);
+      // Interrupted, but its runtime has not returned, so its workspace may
+      // still be open.
+      expect(stopped).toBe(false);
+    } finally {
+      release.resolve();
+    }
+    await stopping;
+    expect(stopped).toBe(true);
+    await running;
+  });
+
   test('recovery skipping a locked job does not abort its still-running runtime', async () => {
     const { jobs, handle } = fixture();
     const started = deferred<AttemptBundle>();
