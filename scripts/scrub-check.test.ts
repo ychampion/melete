@@ -3,7 +3,15 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathViolation, releasing, report, scanText, scrub, violation } from './scrub-check.ts';
+import {
+  invalidUtf8,
+  pathViolation,
+  releasing,
+  report,
+  scanText,
+  scrub,
+  violation,
+} from './scrub-check.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 /** Any tracked path that is neither this file nor the check itself. */
@@ -159,6 +167,55 @@ describe('a release refuses the placeholder link', () => {
         { file: 'README.md', line: 3, text: link, rule: 'release placeholder' },
       ]);
       expect(report(findings)).toContain('live address');
+    } finally {
+      await rm(tree, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a text file the linter cannot read is refused', () => {
+  const bytes = (...values: number[]) => new Uint8Array(values);
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+
+  test('valid UTF-8, including characters outside ASCII, passes', () => {
+    expect(invalidUtf8(utf8('plain'))).toBe(-1);
+    expect(invalidUtf8(utf8('a dash \u2014, an ellipsis \u2026, an emoji \u{1f600}'))).toBe(-1);
+    expect(invalidUtf8(bytes())).toBe(-1);
+  });
+
+  test('a stray byte, a cut sequence, an overlong form or a surrogate is found where it sits', () => {
+    // 0x85 is the ellipsis a Windows code page writes where UTF-8 has three bytes.
+    expect(invalidUtf8(bytes(0x61, 0x3d, 0x85, 0x62))).toBe(2);
+    expect(invalidUtf8(bytes(0x61, 0xe2, 0x80))).toBe(1);
+    expect(invalidUtf8(bytes(0xc0, 0xaf))).toBe(0);
+    expect(invalidUtf8(bytes(0xe0, 0x80, 0xaf))).toBe(0);
+    expect(invalidUtf8(bytes(0xf0, 0x80, 0x80, 0xaf))).toBe(0);
+    expect(invalidUtf8(bytes(0xed, 0xa0, 0x80))).toBe(0);
+    expect(invalidUtf8(bytes(0xf4, 0x90, 0x80, 0x80))).toBe(0);
+  });
+
+  test('a tracked file carrying one fails the scan with its line', async () => {
+    const tree = await mkdtemp(join(tmpdir(), 'melete-utf8-scan-'));
+    try {
+      await writeFile(join(tree, 'good.ts'), 'export const dash = "\u2014";\n');
+      await writeFile(
+        join(tree, 'bad.ts'),
+        Buffer.concat([
+          Buffer.from('const a = 1;\n// Matrix parameters (`;x='),
+          Buffer.from([0x85]),
+          Buffer.from('`)\n'),
+        ]),
+      );
+      for (const command of [
+        ['init', '-q'],
+        ['add', 'good.ts', 'bad.ts'],
+      ])
+        expect(Bun.spawnSync(['git', ...command], { cwd: tree }).exitCode).toBe(0);
+      const { findings } = await scrub(`${tree}/`);
+      expect(findings).toEqual([
+        { file: 'bad.ts', line: 2, text: 'a byte that is not UTF-8 (0x85)', rule: 'not utf-8' },
+      ]);
+      expect(report(findings)).toContain('saved as UTF-8');
     } finally {
       await rm(tree, { recursive: true, force: true });
     }
