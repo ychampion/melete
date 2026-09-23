@@ -11,7 +11,9 @@
  * may move to another host only inside the service's own domain (iCloud keeps
  * each account's calendars on a numbered host of its own).
  */
+import { isIP } from 'node:net';
 import { XMLParser } from 'fast-xml-parser';
+import { publicPin, type ResolvedAddress, resolveHost } from './web.ts';
 
 export type DiscoveredCalendar = { calendar_url: string; name: string | null };
 
@@ -35,14 +37,47 @@ const text = (value: unknown): string | null =>
       ? String(object(value)['#text']).trim() || null
       : null;
 
-/** The last two labels of a host: `p42-caldav.icloud.com` and `caldav.icloud.com` share `icloud.com`. */
-const site = (host: string) => host.split('.').slice(-2).join('.');
+/**
+ * Services known to keep an account's calendars on a host of its own inside
+ * their domain (iCloud's numbered `pNN-caldav.icloud.com`). Only these may move
+ * a request to another host; every other service stays on the host it was given.
+ */
+export const CALDAV_PROVIDER_DOMAINS = ['icloud.com', 'fastmail.com'] as const;
+
+const bare = (host: string) => host.replace(/^\[|\]$/g, '').toLowerCase();
+const within = (host: string, domain: string) => host === domain || host.endsWith(`.${domain}`);
+
+/**
+ * Whether a step may go from the address the person gave to `next`. The same
+ * host always may. An address written as an IP matches only itself. Another
+ * host must sit inside the same known provider's domain, and a service that
+ * answers from public addresses may never send the credential to a private one.
+ */
+export async function hopAllowed(
+  origin: URL,
+  next: URL,
+  resolve: (hostname: string) => Promise<ResolvedAddress[]> = resolveHost,
+): Promise<boolean> {
+  const from = bare(origin.hostname);
+  const to = bare(next.hostname);
+  if (from === to) return true;
+  if (isIP(from) || isIP(to)) return false;
+  if (!CALDAV_PROVIDER_DOMAINS.some((domain) => within(from, domain) && within(to, domain)))
+    return false;
+  try {
+    const [was, will] = await Promise.all([resolve(from), resolve(to)]);
+    return !publicPin(was) || publicPin(will) !== undefined;
+  } catch {
+    return false;
+  }
+}
 
 export type DiscoveryOptions = {
   serverUrl: string;
   username: string;
   password: string;
   fetcher?: typeof fetch;
+  resolve?: (hostname: string) => Promise<ResolvedAddress[]>;
   /** Plain HTTP to a loopback fixture, for tests only. */
   allowInsecureLocalForTests?: boolean;
 };
@@ -50,21 +85,22 @@ export type DiscoveryOptions = {
 export async function discoverCalendar(options: DiscoveryOptions): Promise<DiscoveredCalendar> {
   const fetcher = options.fetcher ?? fetch;
   const origin = new URL(options.serverUrl);
-  const allowed = (url: URL) =>
+  const secure = (url: URL) =>
     !url.username &&
     !url.password &&
     (url.protocol === 'https:' ||
       (options.allowInsecureLocalForTests === true &&
         url.protocol === 'http:' &&
-        LOOPBACK.includes(url.hostname))) &&
-    site(url.hostname) === site(origin.hostname);
-  if (!allowed(origin)) throw new CalendarDiscoveryError('The calendar service must use HTTPS.');
+        LOOPBACK.includes(url.hostname)));
+  const allowed = async (url: URL) =>
+    secure(url) && (await hopAllowed(origin, url, options.resolve));
+  if (!secure(origin)) throw new CalendarDiscoveryError('The calendar service must use HTTPS.');
   const authorization = `Basic ${Buffer.from(`${options.username}:${options.password}`).toString('base64')}`;
 
   async function propfind(start: URL, depth: '0' | '1', body: string) {
     let url = start;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      if (!allowed(url))
+      if (!(await allowed(url)))
         throw new CalendarDiscoveryError(
           'The calendar service pointed somewhere outside its own address.',
         );
@@ -128,11 +164,25 @@ export async function discoverCalendar(options: DiscoveryOptions): Promise<Disco
     return new URL(href, found.url);
   };
 
+  // A service that does not answer at the address given usually answers at its
+  // well-known address (RFC 6764); a refused password is final either way.
   const principal = await step(
     origin,
     'current-user-principal',
     'The calendar service did not say which account this is.',
-  );
+  ).catch((error: unknown) => {
+    if (
+      !(error instanceof CalendarDiscoveryError) ||
+      error.message.startsWith('The calendar service did not accept') ||
+      origin.pathname.startsWith('/.well-known/')
+    )
+      throw error;
+    return step(
+      new URL('/.well-known/caldav', origin),
+      'current-user-principal',
+      'The calendar service did not say which account this is.',
+    );
+  });
   const home = await step(
     principal,
     'calendar-home-set',
@@ -156,7 +206,7 @@ export async function discoverCalendar(options: DiscoveryOptions): Promise<Disco
       // A collection that says nothing about what it holds is taken to hold events.
       if (components.length && !components.includes('VEVENT')) continue;
       const url = new URL(href, listing.url);
-      if (!allowed(url)) continue;
+      if (!(await allowed(url))) continue;
       if (!url.pathname.endsWith('/')) url.pathname += '/';
       return { calendar_url: url.toString(), name: text(prop.displayname) };
     }

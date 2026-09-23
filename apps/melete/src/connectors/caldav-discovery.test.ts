@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { CalendarDiscoveryError, discoverCalendar } from './caldav-discovery.ts';
+import { CalendarDiscoveryError, discoverCalendar, hopAllowed } from './caldav-discovery.ts';
 
 const PASSWORD = 'app-password';
 let homeHost = '';
@@ -133,5 +133,76 @@ describe('finding a calendar from the service address', () => {
         }),
       ),
     ).toBe('The calendar service must use HTTPS.');
+  });
+});
+
+describe('where a step may take the credential', () => {
+  const answers: Record<string, string> = {
+    'caldav.icloud.com': '17.253.1.1',
+    'p42-caldav.icloud.com': '17.253.2.2',
+    'p66-caldav.icloud.com': '10.0.0.5',
+    'dav.example.co.uk': '93.184.216.34',
+    'evil.co.uk': '93.184.216.35',
+  };
+  const resolve = async (host: string) => {
+    const address = answers[host];
+    if (!address) throw new Error('no such host');
+    return [{ address, family: 4 as const }];
+  };
+  const hop = (from: string, to: string) => hopAllowed(new URL(from), new URL(to), resolve);
+
+  test('the same host always, and another host only inside a known provider', async () => {
+    expect(await hop('https://dav.example.co.uk/', 'https://dav.example.co.uk/c/')).toBe(true);
+    expect(await hop('https://caldav.icloud.com/', 'https://p42-caldav.icloud.com/1/')).toBe(true);
+    // A shared public suffix is not a shared owner.
+    expect(await hop('https://dav.example.co.uk/', 'https://evil.co.uk/')).toBe(false);
+  });
+
+  test('an address written as an IP matches only itself', async () => {
+    expect(await hop('https://10.0.0.1/', 'https://10.0.0.1/c/')).toBe(true);
+    expect(await hop('https://10.0.0.1/', 'https://192.168.0.1/')).toBe(false);
+    expect(await hop('https://caldav.icloud.com/', 'https://17.253.2.2/')).toBe(false);
+  });
+
+  test('a service on public addresses never sends the credential to a private one', async () => {
+    expect(await hop('https://caldav.icloud.com/', 'https://p66-caldav.icloud.com/')).toBe(false);
+  });
+});
+
+describe('a service that answers only at its well-known address', () => {
+  test('is found there', async () => {
+    const wellKnown = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        const answer = (body: string) => new Response(multistatus(body), { status: 207 });
+        if (path === '/.well-known/caldav')
+          return answer(
+            ok(path, '<d:current-user-principal><d:href>/p/</d:href></d:current-user-principal>'),
+          );
+        if (path === '/p/')
+          return answer(
+            ok(path, '<c:calendar-home-set><d:href>/h/</d:href></c:calendar-home-set>'),
+          );
+        if (path === '/h/')
+          return answer(
+            ok('/h/cal/', '<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>'),
+          );
+        return new Response('', { status: 404 });
+      },
+    });
+    try {
+      expect(
+        await discoverCalendar({
+          serverUrl: `http://127.0.0.1:${wellKnown.port}/`,
+          username: 'owner',
+          password: PASSWORD,
+          allowInsecureLocalForTests: true,
+        }),
+      ).toEqual({ calendar_url: `http://127.0.0.1:${wellKnown.port}/h/cal/`, name: null });
+    } finally {
+      wellKnown.stop(true);
+    }
   });
 });
