@@ -80,11 +80,15 @@ const pythonPackage = z
       String.raw`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,-]+\])?(?:@[A-Za-z0-9.*+!_-]+|${pythonVersion}(?:,${pythonVersion})*)?$`,
     ),
   );
+/**
+ * An image names its registry and pins its content: `ghcr.io/org/server:1.0@sha256:…`.
+ * A tag alone can be moved to other content after the owner chose it.
+ */
 const imageReference = z
   .string()
   .max(512)
   .regex(
-    /^(?:[a-z0-9.-]+(?::\d{1,5})?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$/,
+    /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?|localhost(?::\d{1,5})?)\/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$/,
   );
 /** A destination the server may open: a DNS name with at least one dot, and an optional port. */
 export const mcpEgressHost = z
@@ -159,7 +163,7 @@ function checkLaunch(
       path: ['source'],
       message:
         launch.runner === 'image'
-          ? 'An image is a registry reference such as ghcr.io/example/server:1.0'
+          ? 'An image names its registry and digest, such as ghcr.io/example/server:1.0@sha256:…'
           : 'A package is a registry name with an optional version, never a URL or a path',
     });
   if (new Set(launch.egress).size !== launch.egress.length)

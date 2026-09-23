@@ -150,7 +150,12 @@ describe('connection installation requests', () => {
       'mcp-server-time@2026.1.0',
     ])
       expect([source, parse({ runner: 'uvx', source })]).toEqual([source, true]);
-    expect(parse({ runner: 'image', source: 'ghcr.io/example/server:1.0' })).toBe(true);
+    expect(
+      parse({ runner: 'image', source: `ghcr.io/example/server:1.0@sha256:${'a'.repeat(64)}` }),
+    ).toBe(true);
+    // A tag alone can move, and a name without a registry host is resolved by whoever configured the engine.
+    expect(parse({ runner: 'image', source: 'ghcr.io/example/server:1.0' })).toBe(false);
+    expect(parse({ runner: 'image', source: `server@sha256:${'a'.repeat(64)}` })).toBe(false);
     expect(
       parse({ runner: 'image', source: `registry.local:5000/server@sha256:${'a'.repeat(64)}` }),
     ).toBe(true);

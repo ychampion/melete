@@ -727,7 +727,7 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       }),
       text('mcp_stdio.source', 'Package or image', {
         placeholder: '@modelcontextprotocol/server-filesystem',
-        help: 'An npm or PyPI package with an optional version, or an image such as ghcr.io/example/server:1.0.',
+        help: 'An npm or PyPI package with an optional version, or an image with its registry and digest, such as ghcr.io/example/server:1.0@sha256:….',
       }),
       text('mcp_stdio.command', 'Command', {
         required: false,
