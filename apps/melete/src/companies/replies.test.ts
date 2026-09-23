@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { ServiceError } from '../api/errors.ts';
 import { EmailConnector } from '../connectors/email.ts';
 import type {
   EmailConnection,
@@ -8,7 +9,13 @@ import type {
 } from '../connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
-import { connectorReplyMailbox, isReplyFrom, replyPayload, senderDomain } from './replies.ts';
+import {
+  connectorReplyMailbox,
+  deliveryFailureCode,
+  isReplyFrom,
+  replyPayload,
+  senderDomain,
+} from './replies.ts';
 
 const SPACE = 'spc_test';
 const CONNECTION = 'con_test';
@@ -92,4 +99,15 @@ test('the sender is every address in the From header, not the last one that look
   // What the poller delivers names the one company the message is from.
   expect(replyPayload(message('billing@acme.test (Acme)')).sender_domain).toBe('acme.test');
   expect(replyPayload(message('x@evil.test, b@acme.test')).sender_domain).toBeNull();
+});
+
+test('a reply that could not be delivered is logged by a fixed reason, never by its text', () => {
+  expect(
+    deliveryFailureCode(new ServiceError('unknown_connection', 'Connection is not active.', 404)),
+  ).toBe('unknown_connection');
+  // Anything else may carry a server's words or a person's address.
+  expect(deliveryFailureCode(new Error('IMAP said no to someone@example.test'))).toBe(
+    'internal_error',
+  );
+  expect(deliveryFailureCode('not even an error')).toBe('internal_error');
 });

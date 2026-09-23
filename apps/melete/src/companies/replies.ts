@@ -28,6 +28,7 @@
  */
 import { canonicalizePayload, jobConstraints } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { ServiceError } from '../api/errors.ts';
 import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { newId } from '../ids.ts';
@@ -384,6 +385,17 @@ export async function deliverReplies(
 }
 
 /**
+ * Why a delivery failed, as a code an operator can act on. A service error
+ * already names its reason in a fixed code; anything else can carry a mail
+ * server's words or an address, so it is logged as one fixed code instead.
+ */
+export function deliveryFailureCode(error: unknown): string {
+  return error instanceof ServiceError && /^[a-z_]{1,64}$/.test(error.code)
+    ? error.code
+    : 'internal_error';
+}
+
+/**
  * Looks at the mailbox on the service's own periodic scheduling, which is
  * pg-boss, the same one the recovery scan runs on. There is no second scheduler
  * and no timer of its own.
@@ -403,8 +415,10 @@ export class CompanyReplyPoller {
       // succeeds delivers it once.
       try {
         delivered += await deliverReplies(this.deps, candidate);
-      } catch {
-        process.stderr.write(`company replies: delivery_failed ${candidate.jobId}\n`);
+      } catch (error) {
+        process.stderr.write(
+          `company replies: delivery_failed ${deliveryFailureCode(error)} ${candidate.jobId}\n`,
+        );
       }
     }
     return delivered;
