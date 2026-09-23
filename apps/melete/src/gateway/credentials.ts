@@ -604,6 +604,12 @@ export class ProviderSignIn {
         }
         let next: OAuthTokens;
         try {
+          // The issuer may rotate even when this call then times out, or the
+          // commit below fails. The row then keeps a refresh token the issuer
+          // has already spent, and the next refresh presents it, which the
+          // issuer treats as reuse and answers by ending the grant. The window
+          // is narrow and the Codex CLI's is the same. The call stays inside
+          // the lock: outside it, two processes could present one token.
           next = await refreshTokens(issuer, tokens.refreshToken, this.fetcher, this.now());
         } catch (error) {
           const failure =
