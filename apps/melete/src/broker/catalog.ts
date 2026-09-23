@@ -5,6 +5,7 @@ import {
   type ConnectionHealth,
   type JsonObject,
   REACT_TOOL_NAME,
+  SKILL_READ_TOOL_NAME,
   type Skill,
   type ToolSpec,
 } from '@melete/contracts';
@@ -14,6 +15,8 @@ import { z } from 'zod';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
+import { plainSkillTitle } from '../jobs/skill-trace.ts';
+import { audienceVisible } from '../principals/context.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
 import { gist, relevance, terms, words } from './lexical.ts';
@@ -22,6 +25,8 @@ import { hasResumableAction, RESUME_ACTION_TOOL } from './resume.ts';
 import { RUNTIME_WAIT_TOOL } from './runtime-wait.ts';
 
 export type CatalogSource = 'connector' | 'capability' | 'skill' | 'mcp';
+/** A skill with where it came from: a built-in is readable by anyone the space admits. */
+export type SourcedSkill = Skill & { source?: 'builtin' | 'space' };
 
 /** Supplied by trusted service code or operator configuration, never by a tool result. */
 export type CatalogMetadata = {
@@ -129,6 +134,24 @@ export const SAY_TOOL: ToolSpec = {
   connection_id: null,
 };
 
+/**
+ * Reads the body of a skill the attempt's index names. One broker-owned tool
+ * serves every skill, so reading one needs no schema load and no new run.
+ */
+export const SKILL_READ_TOOL: ToolSpec = {
+  name: SKILL_READ_TOOL_NAME,
+  description:
+    'Read the full instructions of a skill listed in your skill index, by its exact name. Read one before doing the kind of work it describes.',
+  input_schema: {
+    type: 'object',
+    properties: { name: { type: 'string', minLength: 1, maxLength: 80 } },
+    required: ['name'],
+    additionalProperties: false,
+  },
+  effect_class: 'read',
+  connection_id: null,
+};
+
 export const toolTokens = (tools: readonly ToolSpec[]): number =>
   estimateTokens(
     JSON.stringify(
@@ -153,6 +176,8 @@ export type CoreSelectionContext = {
   conversational?: boolean;
   /** An approved action is waiting to be carried out, so resuming it comes first. */
   resumable?: boolean;
+  /** The attempt may read skills it was not given in full, so the reader must be on offer. */
+  readable?: boolean;
 };
 
 const namespace = (name: string) => (name.includes('.') ? name.slice(0, name.indexOf('.')) : null);
@@ -197,7 +222,8 @@ export function selectCore(
           : context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name
             ? 2
             : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
-                (context.conversational === true && item.tool.name === REACT_TOOL_NAME)
+                (context.conversational === true && item.tool.name === REACT_TOOL_NAME) ||
+                (context.readable === true && item.tool.name === SKILL_READ_TOOL.name)
               ? 1
               : 0,
     }))
@@ -288,20 +314,47 @@ export type CatalogOptions = {
   connectors: ConnectorResolver;
   coreTokenBudget?: number;
   /** This loader is service-owned and already selects the job's space. */
-  skills?: (spaceId: string) => Promise<readonly Skill[]>;
+  skills?: (spaceId: string) => Promise<readonly SourcedSkill[]>;
   nativeTools?: readonly ToolSpec[];
 };
+
+/**
+ * The skills an attempt may read: every tool one names is within its scopes,
+ * and a space skill's audience admits the reader. A built-in is readable by
+ * anyone the space admits; a space skill with no audience is its owner's alone.
+ */
+export function readableSkills(
+  skills: readonly SourcedSkill[],
+  reader: { spaceId: string; scopes: readonly string[]; owner: boolean },
+): SourcedSkill[] {
+  return skills.filter(
+    (skill) =>
+      skill.frontmatter.tools.every((scope) => reader.scopes.includes(scope)) &&
+      (skill.source === 'builtin' ||
+        audienceVisible(skill.frontmatter.audience, reader.spaceId, reader.owner)),
+  );
+}
 
 /** The context is durable, but possession of a schema never becomes authority. */
 export class ToolCatalog {
   constructor(private readonly options: CatalogOptions) {}
 
-  private async skills(job: LockedJob, claims: CapabilityClaims): Promise<readonly Skill[]> {
+  /**
+   * The skills this attempt may read: its granted scopes cover every tool one
+   * names, and a space skill's audience admits the attempt's principal. A skill
+   * with no audience is private to the space's owner.
+   */
+  private async skills(
+    tx: Query,
+    job: LockedJob,
+    claims: CapabilityClaims,
+  ): Promise<readonly SourcedSkill[]> {
     if (job.constraints.public_compartment) return [];
     const skills = (await this.options.skills?.(job.space_id)) ?? [];
-    return skills.filter((skill) =>
-      skill.frontmatter.tools.every((scope) => claims.scopes.includes(scope)),
-    );
+    const [space] = await tx`select owner_principal_id from space where id = ${job.space_id}`;
+    const owner =
+      claims.principal_id === undefined || space?.owner_principal_id === claims.principal_id;
+    return readableSkills(skills, { spaceId: job.space_id, scopes: claims.scopes, owner });
   }
 
   private async scoped(
@@ -319,7 +372,7 @@ export class ToolCatalog {
       join job j on j.id = a.job_id where j.space_id = ${job.space_id} and a.status = 'succeeded'
       group by a.connection_id, a.kind`;
     const items: ScopedCatalogItem[] = [];
-    const skills = await this.skills(job, claims);
+    const skills = await this.skills(tx, job, claims);
     const nativeNames = new Set(
       [...META_TOOLS, ...(this.options.nativeTools ?? [])].map((tool) => tool.name),
     );
@@ -441,6 +494,8 @@ export class ToolCatalog {
     const resumable = await hasResumableAction(tx, job);
     for (const tool of [...(this.options.nativeTools ?? []), ...(access.chat ? [SAY_TOOL] : [])]) {
       if (tool.name === RUNTIME_WAIT_TOOL.name && !claims.scopes.includes(tool.name)) continue;
+      // Offered only while there is a skill this attempt may read.
+      if (tool.name === SKILL_READ_TOOL.name && skills.length === 0) continue;
       // Offered only while the owner's approval is waiting to be carried out.
       if (tool.name === RESUME_ACTION_TOOL.name && !resumable) continue;
       if (
@@ -508,6 +563,7 @@ export class ToolCatalog {
       text: [job.objective, row?.message].filter(Boolean).join(' '),
       waitable: row?.waitable === true,
       resumable: await hasResumableAction(tx, job),
+      readable: (await this.skills(tx, job, claims)).length > 0,
       conversational:
         access.chat || first || Number(row?.message_seq ?? 0) > Number(row?.prior_cursor ?? 0),
     };
@@ -723,8 +779,11 @@ export class ToolCatalog {
     });
   }
 
-  callSkill(claims: CapabilityClaims, name: string, args: JsonObject): Promise<JsonObject> {
-    z.object({}).strict().parse(args);
+  async callSkill(claims: CapabilityClaims, name: string, args: JsonObject): Promise<JsonObject> {
+    const reading = name === SKILL_READ_TOOL.name;
+    const asked = reading
+      ? z.strictObject({ name: z.string().min(1).max(80) }).parse(args).name
+      : (z.object({}).strict().parse(args), null);
     return this.within(claims, async (tx, job, items, context) => {
       if (
         !this.current(context, items).some(
@@ -732,10 +791,35 @@ export class ToolCatalog {
         )
       )
         throw new BrokerFault('unknown_tool');
-      const skill = (await this.skills(job, claims)).find(
-        (item) => `skills.${item.frontmatter.name.replaceAll('-', '_')}` === name,
+      const skill = (await this.skills(tx, job, claims)).find((item) =>
+        reading
+          ? item.frontmatter.name === asked
+          : `skills.${item.frontmatter.name.replaceAll('-', '_')}` === name,
       );
       if (!skill) throw new BrokerFault('unknown_tool');
+      // The conversation shows the read as a tool entry naming the skill.
+      const at = new Date().toISOString();
+      const title = plainSkillTitle(skill.frontmatter.name);
+      const call = {
+        id: `skill-read:${claims.attempt_id}:${skill.frontmatter.name}`,
+        kind: 'skill',
+        title: `Used the skill: ${title}`,
+        status: 'done',
+        started_at: at,
+        ended_at: at,
+        input_summary: null,
+        output_summary: { text: title },
+        detail: null,
+        parent: null,
+      };
+      await appendEvent(
+        tx,
+        job.id,
+        claims.attempt_id,
+        'notice',
+        { kind: 'tool_trace', call },
+        `tool:${call.id}:${call.status}`,
+      );
       await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
         phase: 'skill_read',
         name,

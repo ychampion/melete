@@ -453,6 +453,49 @@ dbTest('skills are scoped read content and cannot grant their named tool scopes'
   ).toMatchObject({ code: 'unknown_tool' });
 });
 
+dbTest('skills.read reads an indexed skill by name, once per read, with a tool entry', async () => {
+  const skill = (name: string, tools: string[]) => ({
+    path: `${name}/SKILL.md`,
+    body: `The ${name} procedure.`,
+    source: 'builtin' as const,
+    frontmatter: {
+      name,
+      tools,
+      description: `The ${name} skill`,
+      triggers: [name],
+      max_tokens: 400,
+    },
+  });
+  const s = await setup({
+    skills: [skill('receipts', ['test.invoice']), skill('vault', ['vault.export'])],
+  });
+  // With a skill to read, the reader is in the first catalog; no load is needed.
+  expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toContain('skills.read');
+  expect(await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' })).toEqual(
+    { name: 'receipts', body: 'The receipts procedure.' },
+  );
+  // A skill outside the attempt's scopes, or one that does not exist, cannot be read.
+  for (const name of ['vault', 'nothing-here'])
+    expect(
+      await rejectionOf(s.broker.discovery.callSkill(s.claims, 'skills.read', { name })),
+    ).toMatchObject({ code: 'unknown_tool' });
+  expect(
+    await rejectionOf(
+      s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts', extra: 1 }),
+    ),
+  ).toBeDefined();
+  const traced = await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id}
+    and type = 'notice' and payload->>'kind' = 'tool_trace'`;
+  expect(traced.map((row) => row.payload.call)).toEqual([
+    expect.objectContaining({
+      id: `skill-read:${s.claims.attempt_id}:receipts`,
+      kind: 'skill',
+      title: 'Used the skill: Receipts',
+      status: 'done',
+    }),
+  ]);
+});
+
 dbTest(
   'HTTP discovery rejects unauthenticated, forged schemas and extra authority fields',
   async () => {

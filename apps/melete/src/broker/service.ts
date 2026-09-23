@@ -61,7 +61,7 @@ import {
   saveBinding,
 } from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
-import { type CatalogOptions, resolveToolAlias, ToolCatalog } from './catalog.ts';
+import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } from './catalog.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -223,6 +223,7 @@ export class BrokerService implements BrokerOperations {
         REACT_TOOL,
         RUNTIME_WAIT_TOOL,
         RESUME_ACTION_TOOL,
+        SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
       ],
     });
