@@ -31,6 +31,14 @@ export class PolicyService {
   constructor(
     readonly jobs: JobService,
     readonly runner?: AttemptRunner,
+    readonly options: {
+      /**
+       * Runs inside the revocation, after its authority and generation checks
+       * and before the key is dropped: what a connection's key alone can undo
+       * is undone here. It never refuses the revocation.
+       */
+      beforeRevoke?: (connection: { id: string; provider: string }) => Promise<void>;
+    } = {},
   ) {}
 
   async invalidateInTransaction(
@@ -233,6 +241,8 @@ export class PolicyService {
             400,
           );
       }
+      if (request.kind === 'revoke' && source.status !== 'revoked')
+        await this.options.beforeRevoke?.({ id: source.id, provider: source.provider });
       const [parent] = await tx
         .update(space)
         .set({ policyGeneration: sql`${space.policyGeneration} + 1` })

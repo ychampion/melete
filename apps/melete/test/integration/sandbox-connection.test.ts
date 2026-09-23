@@ -18,13 +18,18 @@ import {
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
 import { createApp } from '../../src/index.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
-import { SandboxSessions } from '../../src/sandbox/sessions.ts';
+import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
+import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
+import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
+import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
+import { sandboxRevocation } from '../../src/sandbox/wiring.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const MASTER_KEY = '71'.repeat(32);
@@ -76,16 +81,14 @@ async function harness() {
     modalRefusal: null,
     fetch: sandboxFetch,
   };
-  useConnectorFactory(
-    registry,
-    new ConnectorFactory({
-      sql: fixture.sql,
-      workRoot,
-      spacesRoot: 'unused',
-      masterKey: MASTER_KEY,
-      sandbox,
-    }),
-  );
+  const factory = new ConnectorFactory({
+    sql: fixture.sql,
+    workRoot,
+    spacesRoot: 'unused',
+    masterKey: MASTER_KEY,
+    sandbox,
+  });
+  useConnectorFactory(registry, factory);
   const jobs = new JobService(fixture.db, queue.boss);
   const catalog = new RuntimeCatalog(fixture.db, registry);
   const runner = new AttemptRunner(jobs, new StubRuntimeAdapter(), {
@@ -188,6 +191,9 @@ async function harness() {
     counts,
     offered,
     broker,
+    jobs,
+    sessions: sandbox.sessions,
+    secrets: factory.secrets,
     onHandshake: (hook: () => Promise<boolean>) => {
       duringHandshake = hook;
     },
@@ -441,5 +447,97 @@ withDb('the sandbox connection kind', () => {
         (select secret_ref from connection where id = ${installed.id})`;
       await h.sql`delete from connection where id = ${installed.id}`;
     }
+  }, 120_000);
+  /**
+   * Sessions for an installed connection, on the in-memory provider under the
+   * adapter name the row selects, and the revocation the service runs.
+   */
+  const revocationSetup = async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const created = await h.install(body());
+    expect(created.status).toBe(201);
+    const id = connectionResponse.parse(created.json).connection.id;
+    // Earlier tests here revoke through the route, which runs no teardown, and
+    // their stand-in sandboxes share this provider's identifiers; their rows
+    // are finished with so the unique sandbox index only sees this test's.
+    await h.sql`update sandbox_session set status = 'closed', closed_at = now()
+      where space_id = ${h.spaceId} and status not in ('closed', 'lost')`;
+    const provider = new FakeSandboxProvider({ capabilities: { adapter: 'e2b' } });
+    const teardown = sandboxTeardownProviders({
+      sql: h.sql,
+      secrets: h.secrets,
+      project: PROJECT,
+      open: () => ({ provider, close: async () => {} }),
+    });
+    const job = await h.jobs.create({
+      space_id: h.spaceId,
+      title: 'Sandbox work',
+      objective: 'Run something in the sandbox',
+    });
+    const opened = [];
+    for (const _ of [1, 2])
+      opened.push(
+        await h.sessions.open(
+          { connectionId: id, spaceId: h.spaceId, jobId: job.id, attemptId: null, agentId: null },
+          provider,
+          sessionSpec(PROJECT, h.spaceId, id),
+          AbortSignal.timeout(30_000),
+        ),
+      );
+    const policy = new PolicyService(h.jobs, undefined, {
+      beforeRevoke: sandboxRevocation({
+        sessions: h.sessions,
+        providerFor: teardown.providerFor,
+        log: () => {},
+      }),
+    });
+    const revoke = async () => {
+      const [row] = await h.sql`select generation from connection where id = ${id}`;
+      return policy.changeConnection(id, {
+        kind: 'revoke',
+        expected_generation: Number(row?.generation),
+      });
+    };
+    return { id, provider, teardown, opened, revoke };
+  };
+
+  test('revoking a sandbox connection destroys what it holds while the key is still there', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, teardown, opened, revoke } = await revocationSetup();
+    expect((await revoke()).status).toBe('revoked');
+    for (const session of opened) {
+      expect(await provider.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'gone',
+      );
+      expect((await h.sessions.get(session.id))?.status).toBe('closed');
+    }
+    const [row] = await h.sql`select status, secret_ref from connection where id = ${id}`;
+    expect(row).toMatchObject({ status: 'revoked', secret_ref: null });
+    await teardown.close();
+  }, 120_000);
+
+  test('a revocation whose teardown fails still completes, and says what it left', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, teardown, opened, revoke } = await revocationSetup();
+    provider.destroy = async () => {
+      throw new Error('the provider did not answer');
+    };
+    expect((await revoke()).status).toBe('revoked');
+    for (const session of opened) {
+      const row = await h.sessions.get(session.id);
+      expect(row?.status).toBe('lost');
+      expect(row?.lastError).toContain('revoked before this sandbox could be destroyed');
+      expect(row?.lastError).toContain('the provider did not answer');
+      expect(await provider.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'running',
+      );
+    }
+    // Nothing is left looking live: asked what the space still holds, the
+    // answer names both, since no key can reach them now.
+    const left = await h.sessions.listWorkspacesForSpace(h.spaceId, teardown.providerFor);
+    for (const session of opened) expect(left.sessions).toContain(session.id);
+    const [row] = await h.sql`select status, secret_ref from connection where id = ${id}`;
+    expect(row).toMatchObject({ status: 'revoked', secret_ref: null });
+    await teardown.close();
   }, 120_000);
 });

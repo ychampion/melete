@@ -44,6 +44,7 @@ import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
 import {
   type ConfiguredConnection,
+  type ConnectorFactory,
   configuredBrowserSessions,
   connectorFactoryFor,
   connectorOptionsFromEnv,
@@ -115,7 +116,7 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
-import { type SandboxWiring, startSandboxesFromEnv } from './sandbox/wiring.ts';
+import { type SandboxWiring, sandboxRevocation, startSandboxesFromEnv } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -413,6 +414,8 @@ export async function bootstrap(
   let companyReplies: CompanyReplyPoller | undefined;
   let signIn: ProviderSignIn | undefined;
   let sandboxes: SandboxWiring | undefined;
+  let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
+  let revokeSandboxes: ReturnType<typeof sandboxRevocation> | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -444,6 +447,7 @@ export async function bootstrap(
       // After the registry: each server's container is removed by its connector first.
       () => stdioLauncher?.close(),
       () => browser?.pool.close(),
+      () => sandboxTeardown?.close(),
       () => queue?.stop(),
       () => handle?.close(),
     ]) {
@@ -500,11 +504,19 @@ export async function bootstrap(
       catalog = new RuntimeCatalog(handle.db, registry);
       // Sandboxes are the service's own: their providers come from the same
       // factory the connectors did, so the key stays with the connection.
-      sandboxes = startSandboxesFromEnv(
-        handle.sql,
-        env,
-        connectorFactoryFor(registry, () => connectorOptionsFromEnv(handle.sql, env)),
+      const connectors = connectorFactoryFor(registry, () =>
+        connectorOptionsFromEnv(handle.sql, env),
       );
+      sandboxes = startSandboxesFromEnv(handle.sql, env, connectors);
+      // A sandbox connection's key is the only way into its account, so a
+      // revocation destroys what the connection holds before the key goes.
+      sandboxTeardown = connectors.sandboxTeardownProviders();
+      const sandboxSessions = connectors.options.sandbox?.sessions;
+      if (sandboxTeardown && sandboxSessions)
+        revokeSandboxes = sandboxRevocation({
+          sessions: sandboxSessions,
+          providerFor: sandboxTeardown.providerFor,
+        });
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
         await sandboxes.reconcile(AbortSignal.timeout(120_000));
@@ -701,7 +713,7 @@ export async function bootstrap(
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
-      policy = new PolicyService(jobs, runner);
+      policy = new PolicyService(jobs, runner, { beforeRevoke: revokeSandboxes });
       attention = new AttentionService(jobs, runner);
       // A memory question is answered by settling the key it disputes, which
       // only memory can do, so the queue is handed that one capability.

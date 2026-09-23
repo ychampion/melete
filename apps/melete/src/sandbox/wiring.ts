@@ -140,6 +140,43 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
 }
 
 /**
+ * What revoking a sandbox connection does first, while its key is still held:
+ * destroy every sandbox and snapshot the connection's sessions recorded. The
+ * key is dropped with the revocation, and nothing reaches the account after
+ * that. A teardown that does not finish does not stop the revocation; what is
+ * left is recorded lost on its rows with the reason, where the sweep and a
+ * space removal report it.
+ */
+export function sandboxRevocation(options: {
+  sessions: SandboxSessions;
+  providerFor: (adapter: string, connectionId: string) => SandboxProvider | undefined;
+  log?: (line: string) => void;
+}) {
+  const say = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  return async (
+    connection: { id: string; provider: string },
+    signal: AbortSignal = AbortSignal.timeout(120_000),
+  ): Promise<void> => {
+    if (connection.provider !== 'sandbox') return;
+    try {
+      await options.sessions.destroyWorkspacesForConnection(
+        connection.id,
+        options.providerFor,
+        signal,
+      );
+    } catch (error) {
+      const left = await options.sessions.recordLeftBehind(
+        connection.id,
+        `the connection was revoked before this sandbox could be destroyed, and nothing can reach it without the key: ${String(error)}`,
+      );
+      say(
+        `sandbox connection ${connection.id} was revoked with ${left.length} session(s) not destroyed: ${String(error)}`,
+      );
+    }
+  };
+}
+
+/**
  * What the wiring needs of the connector factory, without depending on it: the
  * sandbox settings it was built with and the providers it has opened.
  */

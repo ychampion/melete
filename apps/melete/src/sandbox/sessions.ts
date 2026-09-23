@@ -896,15 +896,55 @@ export class SandboxSessions {
    * trying everything if anything could not be destroyed, so the caller does
    * not delete the space over a sandbox that is still there.
    */
-  async destroyWorkspacesForSpace(
+  destroyWorkspacesForSpace(
     spaceId: string,
     providerFor: ProviderFor,
     signal: AbortSignal,
   ): Promise<{ closed: string[]; snapshotsDeleted: string[] }> {
+    return this.destroyAll({ spaceId }, providerFor, signal);
+  }
+
+  /**
+   * The same for one connection, before its key is dropped: the key is what
+   * reaches its account, so once a connection is revoked nothing here can
+   * destroy what it left behind.
+   */
+  destroyWorkspacesForConnection(
+    connectionId: string,
+    providerFor: ProviderFor,
+    signal: AbortSignal,
+  ): Promise<{ closed: string[]; snapshotsDeleted: string[] }> {
+    return this.destroyAll({ connectionId }, providerFor, signal);
+  }
+
+  /**
+   * Record, as lost and with the reason, every session of a connection that
+   * still holds something. Used when a connection is revoked with its
+   * sandboxes not all destroyed, so what is left is stated on its rows and
+   * reported by `listWorkspacesForSpace`, never left to look live.
+   */
+  async recordLeftBehind(connectionId: string, reason: string): Promise<string[]> {
+    const rows = await this.sql`update sandbox_session set status = 'lost', closed_at = now(),
+        seconds_charged = coalesce(seconds_charged, extract(epoch from now() - opened_at)),
+        last_error = ${reason}
+      where connection_id = ${connectionId} and status in ('opening', 'ready', 'paused', 'closing')
+      returning id`;
+    return rows.map((row) => row.id as string);
+  }
+
+  private async destroyAll(
+    scope: { spaceId: string } | { connectionId: string },
+    providerFor: ProviderFor,
+    signal: AbortSignal,
+  ): Promise<{ closed: string[]; snapshotsDeleted: string[] }> {
+    const within =
+      'spaceId' in scope
+        ? this.sql`space_id = ${scope.spaceId}`
+        : this.sql`connection_id = ${scope.connectionId}`;
     const failures: string[] = [];
     const closed: string[] = [];
     const live = await this.sql`select id, adapter, connection_id from sandbox_session
-      where space_id = ${spaceId} and status in ('opening', 'ready', 'paused', 'closing')`;
+      where ${within} and status in ('opening', 'ready', 'paused', 'closing')`;
     for (const candidate of live) {
       // Resolved before the row is taken, so a provider that cannot be had
       // leaves the row as it was rather than `closing`.
@@ -935,7 +975,7 @@ export class SandboxSessions {
     // is asked for once more.
     const lost = await this.sql`select id, adapter, connection_id, provider_sandbox_id,
         persistence, resume_ref
-      from sandbox_session where space_id = ${spaceId} and status = 'lost'`;
+      from sandbox_session where ${within} and status = 'lost'`;
     for (const row of lost) {
       try {
         const provider = providerFor(row.adapter as string, row.connection_id as string);
@@ -950,12 +990,12 @@ export class SandboxSessions {
     // failed, or one left on a row that was lost.
     const snapshots = await this.sql`select distinct adapter, connection_id, resume_ref
       from sandbox_session
-      where space_id = ${spaceId} and persistence = 'snapshot' and resume_ref is not null`;
+      where ${within} and persistence = 'snapshot' and resume_ref is not null`;
     const snapshotsDeleted: string[] = [];
     for (const snapshot of snapshots) {
-      const provider = providerFor(snapshot.adapter as string, snapshot.connection_id as string);
       const ref = snapshot.resume_ref as string;
       try {
+        const provider = providerFor(snapshot.adapter as string, snapshot.connection_id as string);
         if (!provider?.deleteSnapshot)
           throw new Error(`no ${snapshot.adapter as string} adapter can delete snapshots`);
         await provider.deleteSnapshot(ref, signal);
@@ -965,7 +1005,7 @@ export class SandboxSessions {
       }
     }
     if (failures.length)
-      throw new Error(`the space's sandboxes were not all destroyed: ${failures.join('; ')}`);
+      throw new Error(`the sandboxes were not all destroyed: ${failures.join('; ')}`);
     return { closed, snapshotsDeleted };
   }
 
