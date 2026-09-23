@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { evidenceHolds, LEDGER_ITEM_KINDS, type LedgerItem } from '@melete/contracts';
-import type { CompanyExtractor } from './extract.ts';
+import { type CompanyExtractor, EXTRACTION_INSTRUCTIONS } from './extract.ts';
 import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
 import { messageText } from './messages.ts';
@@ -378,4 +378,8 @@ describe('one person’s map is one person’s', () => {
     if (!first) return;
     expect(await store.item(elsewhere, first.id)).toBe(null);
   });
+});
+
+test('the extractor is asked for a date with no time as a bare date', () => {
+  expect(EXTRACTION_INSTRUCTIONS).toContain('YYYY-MM-DD');
 });
