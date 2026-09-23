@@ -172,7 +172,6 @@ describe('countMatches', () => {
     expect(countMatches('the planet', 'plan')).toBe(0);
   });
 
-
   test('counts whole-word occurrences and nothing for an empty needle', () => {
     expect(countMatches('status report and status report', 'status report')).toBe(2);
     expect(countMatches('aa aa', 'aa')).toBe(2);
