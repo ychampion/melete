@@ -362,7 +362,7 @@ function DecisionCard({
   );
 }
 
-function WaitingOnYou({
+export function WaitingOnYou({
   decisions,
   map,
   now,
@@ -394,13 +394,14 @@ function WaitingOnYou({
   );
   const { front, next } = frontOf(queue, frontId);
   const frontKey = front?.id ?? null;
+  const failed = decisions.error;
   useEffect(() => {
     if (!focusFront.current) return;
     focusFront.current = false;
     if (frontKey) cardRef.current?.focus();
     else onCleared();
   }, [frontKey, onCleared]);
-  if (!front) return null;
+  if (!front && !failed) return null;
 
   const conversationOf = (decision: Decision) =>
     conversations.find((conversation) => conversation.id === chatOf(decision));
@@ -414,7 +415,7 @@ function WaitingOnYou({
     focusFront.current = true;
     setGone((previous) => new Set(previous).add(id));
     // The card under the one just decided comes forward.
-    if (id === front.id) setFrontId(next?.id ?? null);
+    if (id === front?.id) setFrontId(next?.id ?? null);
     refreshConversations();
   };
   // One request per decision: a second press while the first is in flight is refused.
@@ -442,36 +443,46 @@ function WaitingOnYou({
       <div className="home-section-head">
         <h2 id="home-waiting">
           Waiting on you
-          <span className="nav-count">{queue.length}</span>
+          {queue.length ? <span className="nav-count">{queue.length}</span> : null}
         </h2>
       </div>
-      <div className="queue">
-        <DecisionCard
-          key={front.id}
-          decision={front}
-          conversation={conversationOf(front)}
-          agent={agentOf(front)}
-          linked={linkedOf(front)}
-          now={now}
-          busy={flight.has(front.id)}
-          cardRef={cardRef}
-          onDecide={decide}
-          onAnswer={answer}
-        />
-        {next ? (
-          <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>
-            <Face agent={agentOf(next)} size={16} />
-            <span className="queue-next-agent">{agentOf(next)?.name ?? 'Melete'}</span>
-            <span className="clamp1 grow queue-next-what">
-              {next.kind === 'permission' ? next.permission.what : next.question.text}
-            </span>
-            <span className="queue-next-hint">
-              Next
-              <Icon name="chevronDown" size={13} />
-            </span>
-          </button>
-        ) : null}
-      </div>
+      {failed ? (
+        <div className="queue-failed" role="status">
+          <span>Couldn’t read what’s waiting on you. {failed}</span>
+          <Button size="sm" variant="outline" onClick={refreshConversations}>
+            Try again
+          </Button>
+        </div>
+      ) : null}
+      {front ? (
+        <div className="queue">
+          <DecisionCard
+            key={front.id}
+            decision={front}
+            conversation={conversationOf(front)}
+            agent={agentOf(front)}
+            linked={linkedOf(front)}
+            now={now}
+            busy={flight.has(front.id)}
+            cardRef={cardRef}
+            onDecide={decide}
+            onAnswer={answer}
+          />
+          {next ? (
+            <button type="button" className="queue-next" onClick={() => setFrontId(next.id)}>
+              <Face agent={agentOf(next)} size={16} />
+              <span className="queue-next-agent">{agentOf(next)?.name ?? 'Melete'}</span>
+              <span className="clamp1 grow queue-next-what">
+                {next.kind === 'permission' ? next.permission.what : next.question.text}
+              </span>
+              <span className="queue-next-hint">
+                Next
+                <Icon name="chevronDown" size={13} />
+              </span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

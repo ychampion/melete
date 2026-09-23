@@ -284,6 +284,25 @@
   color: var(--muted);
 }
 
+/* What is waiting could not be read: say so, and offer to read it again. */
+.queue-failed {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-block);
+  background: var(--soft);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--secondary);
+}
+.queue-failed > span {
+  flex: 1;
+  min-width: 200px;
+}
+
 /* ---------- in motion ---------- */
 
 .motion {
