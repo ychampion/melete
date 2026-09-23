@@ -4,7 +4,7 @@
  * Each renders from the contract's typed data and calls back with the one
  * thing a person can do to it.
  */
-import { type KeyboardEvent, type ReactNode, useState } from 'react';
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Logo, type LogoName } from '../design/logos.tsx';
@@ -665,6 +665,22 @@ export function PermissionCard({
             ? 'Decided'
             : null;
   const can = (option: PermissionOption) => permission.options.includes(option);
+  // When a decision made here collapses the card, focus stays on it rather
+  // than falling to the page with the buttons that were pressed.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const was = useRef(decided);
+  useEffect(() => {
+    const before = was.current;
+    was.current = decided;
+    if (before !== null || decided === null || decided === 'closed') return;
+    const active = document.activeElement;
+    const lost =
+      !active ||
+      active === document.body ||
+      cardRef.current?.contains(active) ||
+      active.closest('.decide-bar') !== null;
+    if (lost) cardRef.current?.focus({ preventScroll: true });
+  }, [decided]);
   const fields = permission.why.slice(1).map((line) => {
     const [label = '', ...value] = line.split(': ');
     return { label, value: value.join(': ') };
@@ -693,11 +709,12 @@ export function PermissionCard({
   return (
     // biome-ignore lint/a11y/useSemanticElements: a fieldset would restyle the card and carries no more meaning than a named group
     <div
+      ref={cardRef}
       className="permission"
       data-pending={pending ? 'true' : undefined}
       role="group"
       aria-label={permission.what}
-      tabIndex={pending ? 0 : undefined}
+      tabIndex={pending ? 0 : -1}
       onKeyDown={onKey}
     >
       <div className="permission-head">

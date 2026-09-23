@@ -4,7 +4,15 @@
  * Every line is composed from what the service returns; a section with
  * nothing behind it is not drawn.
  */
-import { type KeyboardEvent, useEffect, useMemo, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type Ref,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Composer } from '../chat/Composer.tsx';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import { amountWords, matches, money } from '../companies/format.ts';
@@ -199,9 +207,11 @@ function DecisionCard({
   linked,
   now,
   busy,
+  cardRef,
   onDecide,
   onAnswer,
 }: {
+  cardRef?: Ref<HTMLDivElement>;
   decision: Decision;
   conversation: Conversation | undefined;
   agent: Agent | null;
@@ -259,6 +269,7 @@ function DecisionCard({
   return (
     // biome-ignore lint/a11y/useSemanticElements: a fieldset would restyle the card and carries no more meaning than a named group
     <div
+      ref={cardRef}
       className="decision"
       role="group"
       aria-label={title}
@@ -355,10 +366,13 @@ function WaitingOnYou({
   decisions,
   map,
   now,
+  onCleared,
 }: {
   decisions: ReturnType<typeof useDecisions>;
   map: CompanyMap | null;
   now: number;
+  /** The last decision was made: focus leaves the queue for the page. */
+  onCleared: () => void;
 }) {
   const { agents, conversations, refreshConversations } = useApp();
   const { permissions, questions } = decisions;
@@ -366,6 +380,9 @@ function WaitingOnYou({
   const flight = useInFlight();
   // Decided here and answered by the service: gone from the queue before the next read.
   const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
+  // After a decision, focus goes to the card that comes forward.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const focusFront = useRef(false);
   const queue = queueOrder(
     [
       ...permissions.map(
@@ -376,6 +393,13 @@ function WaitingOnYou({
     conversations,
   );
   const { front, next } = frontOf(queue, frontId);
+  const frontKey = front?.id ?? null;
+  useEffect(() => {
+    if (!focusFront.current) return;
+    focusFront.current = false;
+    if (frontKey) cardRef.current?.focus();
+    else onCleared();
+  }, [frontKey, onCleared]);
   if (!front) return null;
 
   const conversationOf = (decision: Decision) =>
@@ -387,6 +411,7 @@ function WaitingOnYou({
     return item && company ? { item, company: company.name } : null;
   };
   const settled = (id: string) => {
+    focusFront.current = true;
     setGone((previous) => new Set(previous).add(id));
     // The card under the one just decided comes forward.
     if (id === front.id) setFrontId(next?.id ?? null);
@@ -429,6 +454,7 @@ function WaitingOnYou({
           linked={linkedOf(front)}
           now={now}
           busy={flight.has(front.id)}
+          cardRef={cardRef}
           onDecide={decide}
           onAnswer={answer}
         />
@@ -729,6 +755,8 @@ export function HomeScreen() {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const now = useNow(true, 60_000);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const cleared = useCallback(() => mainRef.current?.focus(), []);
 
   useEffect(() => {
     let live = true;
@@ -803,7 +831,7 @@ export function HomeScreen() {
   return (
     <Shell title="Home" rail={false}>
       <div className="home">
-        <div className="home-main">
+        <div className="home-main" ref={mainRef} tabIndex={-1}>
           <header className="brief">
             {data ? <span className="brief-date">{data.date}</span> : null}
             <h1 className="brief-greeting voice">{data?.greeting ?? 'Hello'}</h1>
@@ -845,7 +873,7 @@ export function HomeScreen() {
               ))}
             </div>
           </div>
-          <WaitingOnYou decisions={decisions} map={map} now={now} />
+          <WaitingOnYou decisions={decisions} map={map} now={now} onCleared={cleared} />
           <InMotion now={now} />
         </div>
         <DayColumn now={now} />
