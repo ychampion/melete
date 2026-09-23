@@ -57,23 +57,45 @@ const MESSAGE_WEIGHT = 2;
 const WORD = /[\p{L}\p{N}]/u;
 const isWord = (char: string | undefined) => char !== undefined && WORD.test(char);
 
+/** Endings the last word of a trigger may carry: "books", "boxes", "booked", "booking". */
+const ENDINGS = ['ing', 'es', 'ed', 's', 'd'];
+
+/**
+ * The spellings a trigger's last word takes: as written, and with a final "y"
+ * or "e" changed the way an ending changes it ("reply", "replies", "replied";
+ * "summarise", "summarising").
+ */
+const spellings = (needle: string): string[] => {
+  const stem = needle.slice(0, -1);
+  if (needle.endsWith('y')) return [needle, `${stem}ies`, `${stem}ied`];
+  if (needle.endsWith('e')) return [needle, `${stem}ing`];
+  return [needle];
+};
+
 /**
  * Whole words only: "chase" is not in "purchase" and "plan" is not in
- * "planet". A plural of the last word still counts, so "plans" is a plan.
- * The needle is already normalised; occurrences do not overlap.
+ * "planet". The last word may carry an ending, so "plans", "booked" and
+ * "replies" still count. The needle is already normalised; occurrences do not
+ * overlap.
  */
 export const countMatches = (haystack: string, needle: string): number => {
   if (!needle) return 0;
   let count = 0;
-  let from = 0;
-  for (;;) {
-    const at = haystack.indexOf(needle, from);
-    if (at === -1) return count;
-    let end = at + needle.length;
-    if (haystack[end] === 's' && !isWord(haystack[end + 1])) end += 1;
-    if (!isWord(haystack[at - 1]) && !isWord(haystack[end])) count += 1;
-    from = at + needle.length;
+  for (const spelling of spellings(needle)) {
+    let from = 0;
+    for (;;) {
+      const at = haystack.indexOf(spelling, from);
+      if (at === -1) break;
+      const end = at + spelling.length;
+      const ending = ENDINGS.find(
+        (suffix) => haystack.startsWith(suffix, end) && !isWord(haystack[end + suffix.length]),
+      );
+      const stop = spelling === needle ? end + (ending?.length ?? 0) : end;
+      if (!isWord(haystack[at - 1]) && !isWord(haystack[stop])) count += 1;
+      from = end;
+    }
   }
+  return count;
 };
 
 /**

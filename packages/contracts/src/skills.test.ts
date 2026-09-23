@@ -160,6 +160,19 @@ describe('skill frontmatter', () => {
 });
 
 describe('countMatches', () => {
+  test('the last word may carry an ending, and nothing else', () => {
+    expect(countMatches('the notes summarised', 'summarise')).toBe(1);
+    expect(countMatches('summarising the notes', 'summarise')).toBe(1);
+    expect(countMatches('two replies came', 'reply')).toBe(1);
+    expect(countMatches('she replied', 'reply')).toBe(1);
+    expect(countMatches('i was reminded', 'remind')).toBe(1);
+    expect(countMatches('booking a table', 'book')).toBe(1);
+    expect(countMatches('the boxes', 'box')).toBe(1);
+    expect(countMatches('a booklet', 'book')).toBe(0);
+    expect(countMatches('the planet', 'plan')).toBe(0);
+  });
+
+
   test('counts whole-word occurrences and nothing for an empty needle', () => {
     expect(countMatches('status report and status report', 'status report')).toBe(2);
     expect(countMatches('aa aa', 'aa')).toBe(2);
