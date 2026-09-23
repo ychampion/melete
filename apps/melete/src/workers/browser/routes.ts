@@ -4,10 +4,18 @@ import type { Sql } from 'postgres';
 import { ServiceError } from '../../api/errors.ts';
 import { appendEvent } from '../../broker/records.ts';
 import type { ConnectorContext } from '../../connectors/types.ts';
+import { EVENT_ORDER_LOCK } from '../../db/transaction.ts';
 import type { BrowserWorkerClient } from './client.ts';
+import { BrowserLiveService, type BrowserLiveServiceOptions } from './live-service.ts';
 import { BrowserFault, type BrowserSession } from './sessions.ts';
+import { BrowserSiteService } from './sites.ts';
 
-export type BrowserWorkers = { get(spaceId: string): Promise<BrowserWorkerClient> };
+export type BrowserWorkers = {
+  get(spaceId: string): Promise<BrowserWorkerClient>;
+  /** Where one directory per space lives, and how one space's worker stops: see forgetSpace. */
+  readonly spacesRoot?: string;
+  release?(spaceId: string): Promise<void>;
+};
 type Binding = Pick<BrowserSession, 'id' | 'space_id' | 'job_id' | 'control_epoch' | 'control'>;
 export const browserInputReasons = new Set([
   'stale_control_epoch',
@@ -19,10 +27,18 @@ export const browserInputReasons = new Set([
 /** The database maps a worker session to service-owned authority; tool arguments cannot rebind it. */
 export class BrowserSessionService {
   onPark?: (jobId: string, attemptIds: string[]) => void;
+  /** The live views of these sessions, in memory for as long as the process runs. */
+  readonly live: BrowserLiveService;
+  /** The sites these sessions have signed in to, recorded over the space's one profile. */
+  readonly sites: BrowserSiteService;
   constructor(
     readonly sql: Sql,
     readonly workers: BrowserWorkers,
-  ) {}
+    options: { live?: BrowserLiveServiceOptions } = {},
+  ) {
+    this.live = new BrowserLiveService(this, options.live);
+    this.sites = new BrowserSiteService(sql, workers);
+  }
 
   async record(session: BrowserSession, scope: { space_id: string; job_id: string }) {
     if (session.space_id !== scope.space_id || session.job_id !== scope.job_id)
@@ -75,6 +91,8 @@ export class BrowserSessionService {
   ) {
     await this.authorize(sessionId, scope);
     const fenced = await this.sql.begin(async (tx) => {
+      // Before the job lock, as every event writer does: event order is commit order.
+      await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
       const [job] =
         await tx`select id, space_id, state, lease_epoch, wait from job where id = ${scope.job_id} for update`;
       if (
@@ -130,8 +148,9 @@ export class BrowserSessionService {
   /**
    * A person may steer only the browser of a job they own, in a space they may
    * still use. Anything else reads as an absent session, before the worker moves.
+   * Every route a person reaches asks this one question.
    */
-  async control(sessionId: string, operation: 'takeover' | 'handback', principalId?: string) {
+  async steerable(sessionId: string, principalId?: string): Promise<Binding & { job_id: string }> {
     const binding = await this.authorize(sessionId);
     if (!binding.job_id) throw new BrowserFault('session_not_found');
     if (principalId) {
@@ -144,19 +163,63 @@ export class BrowserSessionService {
               where m.space_id = s.id and m.principal_id = ${principalId} and m.revoked_at is null)))`;
       if (!owned) throw new BrowserFault('session_not_found');
     }
+    return { ...binding, job_id: binding.job_id };
+  }
+
+  /**
+   * A person's control is recorded before the worker is asked for it, so nothing can be learned
+   * into a recipe in between. A worker that refuses leaves the binding as it found it.
+   */
+  private async hold(sessionId: string): Promise<Binding | undefined> {
+    return this.sql.begin(async (tx) => {
+      const [before] = await tx<
+        Binding[]
+      >`select id, space_id, job_id, control_epoch, control from browser_session_binding
+        where id = ${sessionId} for update`;
+      if (!before) return undefined;
+      await tx`update browser_session_binding set control = 'human', updated_at = now()
+        where id = ${sessionId}`;
+      return before;
+    });
+  }
+
+  private async release(before: Binding): Promise<void> {
+    await this.sql`update browser_session_binding set control = ${before.control},
+      updated_at = now() where id = ${before.id} and control = 'human'
+        and control_epoch = ${before.control_epoch}`;
+  }
+
+  async control(sessionId: string, operation: 'takeover' | 'handback', principalId?: string) {
+    const binding = await this.steerable(sessionId, principalId);
     const worker = await this.workers.get(binding.space_id);
+    const held = operation === 'takeover' ? await this.hold(sessionId) : undefined;
     // The worker bumps immediately, before the database transaction can wait on any job row lock.
-    const session = await worker[operation](sessionId);
+    const session: BrowserSession & { site?: string } = await worker[operation](sessionId).catch(
+      async (error: unknown) => {
+        // A refusal leaves control where it was. An unfinished call may have taken control, so
+        // that binding stays with the person until a lease records what the worker really holds.
+        if (held && error instanceof BrowserFault) await this.release(held);
+        throw error;
+      },
+    );
     const scope = { space_id: binding.space_id, job_id: binding.job_id };
     await this.record(session, scope);
+    // Any live view of this session belongs to the epoch that has just ended.
+    this.live.ended(sessionId);
     if (operation === 'takeover') await this.park(scope, sessionId, 'human_control');
-    else
-      await appendEvent(this.sql, scope.job_id, null, 'notice', {
-        kind: 'browser_handback',
-        session_id: sessionId,
-        control_epoch: session.control_epoch,
-        fresh_observation_required: true,
+    else {
+      await this.sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+        await appendEvent(tx, scope.job_id, null, 'notice', {
+          kind: 'browser_handback',
+          session_id: sessionId,
+          control_epoch: session.control_epoch,
+          fresh_observation_required: true,
+        });
       });
+      // The takeover ended on a site whose cookies the profile now holds: the space is signed in.
+      if (session.site) await this.sites.record(binding.space_id, session.site);
+    }
     return {
       session_id: session.id,
       control_epoch: session.control_epoch,

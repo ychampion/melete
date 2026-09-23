@@ -62,6 +62,8 @@ export async function planBrowserRecipe(
         repair_candidate: { id: saved.id, version: saved.version, state: 'candidate' },
       };
     } catch (error) {
+      if (error instanceof BrowserRecipeFault && error.reason === 'recipe_frozen')
+        return { disposition: 'stop', reason: 'human_control', steps: [], aliases_used: 0 };
       if (!(error instanceof BrowserRecipeFault) || error.reason !== 'recipe_version_conflict')
         throw error;
     }

@@ -10,6 +10,7 @@ export type BrowserObservation = {
   id: string;
   url: string;
   tree: string;
+  /** Empty when the worker withheld the picture, as after a person hands back control. */
   screenshot: string;
   schema: JsonValue;
 };
@@ -41,12 +42,16 @@ export function browserArtifactSink(sql: Sql, spacesRoot: string): BrowserArtifa
     }
     const contents = [
       { key: 'tree', mime: 'text/plain', extension: 'txt', bytes: Buffer.from(observation.tree) },
-      {
-        key: 'screenshot',
-        mime: 'image/png',
-        extension: 'png',
-        bytes: Buffer.from(observation.screenshot, 'base64'),
-      },
+      ...(observation.screenshot
+        ? [
+            {
+              key: 'screenshot',
+              mime: 'image/png',
+              extension: 'png',
+              bytes: Buffer.from(observation.screenshot, 'base64'),
+            },
+          ]
+        : []),
     ];
     if (contents.some((item) => item.bytes.byteLength > 4 * 1024 * 1024))
       throw new Error('browser observation exceeds artifact limit');

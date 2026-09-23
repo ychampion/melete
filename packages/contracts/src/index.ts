@@ -9,6 +9,7 @@ export * from './api.ts';
 export * from './artifacts.ts';
 export * from './broker.ts';
 export * from './browser.ts';
+export * from './browser-live.ts';
 export * from './capabilities.ts';
 export * from './common.ts';
 export * from './companies.ts';

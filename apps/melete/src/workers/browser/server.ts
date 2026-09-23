@@ -11,6 +11,7 @@ const leaseRequest = z.strictObject({
   }),
 });
 const sessionRequest = z.strictObject({ session_id: z.string().min(1) });
+const forgetRequest = z.strictObject({ domain: z.string().min(1).max(255) });
 
 /** This listener is only a broker transport; the owner's authenticated routes live in the service. */
 export async function startBrowserServer(options: {
@@ -19,6 +20,8 @@ export async function startBrowserServer(options: {
   port?: number;
   hostname?: string;
   command?: (input: unknown) => Promise<unknown>;
+  /** A person's live channel; see live-routes.ts. */
+  live?: (path: string, body: unknown) => Promise<unknown>;
 }) {
   if (options.token.length < 32) throw new Error('A private worker token is required');
   const secret = Buffer.from(`Bearer ${options.token}`);
@@ -47,11 +50,17 @@ export async function startBrowserServer(options: {
         return Response.json(
           await options.sessions.handback(sessionRequest.parse(body).session_id),
         );
+      if (path === '/profile/forget')
+        return Response.json(await options.sessions.forgetSite(forgetRequest.parse(body).domain));
       if (path === '/release') {
         await options.sessions.close();
         return Response.json({ released: true });
       }
       if (path === '/command' && options.command) return Response.json(await options.command(body));
+      if (path.startsWith('/live/') && options.live) {
+        const result = await options.live(path, body);
+        if (result !== undefined) return Response.json(result);
+      }
       return Response.json({ error: 'not_found' }, { status: 404 });
     } catch (error) {
       const invalid = error instanceof z.ZodError || error instanceof SyntaxError;

@@ -40,7 +40,7 @@ type Workflow = {
 };
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-/** The proof the browser sign-in branch brings; this workflow runs it the moment it lands. */
+/** The renderer sandbox proof, which the browser-sandbox job runs inside the worker container. */
 const SANDBOX_PROOF = 'apps/melete/test/integration/browser-sandbox.test.ts';
 
 function load(relative: string) {
@@ -206,20 +206,12 @@ describe('the continuous integration workflow', () => {
   });
 });
 
-describe('the browser sandbox proof this workflow expects', () => {
-  test('is run when it is in the tree, and named in the summary when it is not', () => {
+describe('the browser sandbox proof this workflow runs', () => {
+  test('is in the tree and runs on every change, with no step skipped', () => {
+    expect(existsSync(join(root, SANDBOX_PROOF))).toBe(true);
     const job = ci.named.find(([key]) => key === 'browser-sandbox')?.[1];
-    const guard = (job?.steps ?? []).find((step) => step.id === 'proof');
-    // Whether the proof is here yet or not, the job names the path it looks for.
-    expect(guard?.run).toContain(SANDBOX_PROOF);
-    expect(guard?.run).toContain('::notice::');
-    const gated = (job?.steps ?? []).filter((step) =>
-      step.if?.includes("steps.proof.outputs.present == 'true'"),
-    );
-    // Only the build and the proof itself wait on it; the user-namespace check never does.
-    expect(gated.length).toBe(2);
-    expect(gated.every((step) => /docker build|bun test/.test(step.run ?? ''))).toBe(true);
-    // Whenever the proof is in the tree the guard resolves true and the job runs it.
+    // Nothing in the job may be skipped: a quiet skip is how the sandbox came to be off before.
+    expect((job?.steps ?? []).filter((step) => step.if !== undefined)).toEqual([]);
     expect((job?.steps ?? []).some((step) => step.run?.includes(`bun test ${SANDBOX_PROOF}`))).toBe(
       true,
     );
@@ -336,12 +328,9 @@ describe('the conformance workflow', () => {
   });
 
   test('every script, compose file and package script both workflows name exists', () => {
-    // The renderer sandbox proof arrives on its own branch; the job guards its absence and
-    // the sandbox proof test above holds that guard to naming this exact path.
     for (const line of [...commands, ...conformance.commands])
       for (const file of filesNamed([line]))
-        if (file !== SANDBOX_PROOF)
-          expect([line, existsSync(join(root, file))]).toEqual([line, true]);
+        expect([line, existsSync(join(root, file))]).toEqual([line, true]);
     const named = conformance.commands.flatMap((line) => {
       // The scenarios are piped through tee, so a named script may carry a pipe after it.
       const match = /^bun run ([\w:-]+)(?: \||$)/.exec(line);

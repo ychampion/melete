@@ -120,23 +120,10 @@ jobs:
             echo "::error::this runner refuses unprivileged user namespaces, which Chromium's renderer sandbox requires; the proof cannot run here"
             exit 1
           fi
-      # The proof itself arrives with the browser sign-in branch. Until that lands there is
-      # nothing to run, and the job says so in the summary rather than looking proved.
-      - name: Find the sandbox proof
-        id: proof
-        run: |
-          if [ -f apps/melete/test/integration/browser-sandbox.test.ts ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::apps/melete/test/integration/browser-sandbox.test.ts is not in this tree, so the renderer sandbox was not proved"
-          fi
       # The same tag the proof runs, so its own build is a cache hit rather than a second build.
       - name: Build the browser image
-        if: steps.proof.outputs.present == 'true'
         run: docker build -t melete-browser-sandbox-proof -f deploy/Dockerfile.browser .
       - name: Prove the renderer is sandboxed inside the container
-        if: steps.proof.outputs.present == 'true'
         env:
           MELETE_BROWSER_SANDBOX_PROOF: '1'
         run: bun test apps/melete/test/integration/browser-sandbox.test.ts --max-concurrency=1

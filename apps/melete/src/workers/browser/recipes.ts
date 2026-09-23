@@ -64,7 +64,8 @@ export class BrowserRecipeFault extends Error {
       | 'invalid_recipe'
       | 'sensitive_control'
       | 'recipe_version_conflict'
-      | 'invalid_recipe_transition',
+      | 'invalid_recipe_transition'
+      | 'recipe_frozen',
   ) {
     // Never attach rejected input: validation failures can contain credentials.
     super(reason);
@@ -319,6 +320,11 @@ export class PostgresBrowserRecipeStore implements BrowserRecipeStore {
       // A per-version advisory lock also serializes two first inserts, before a row exists.
       const key = JSON.stringify([candidate.space_id, candidate.id, candidate.version]);
       await tx`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+      // A space's one browser lease is its most recent binding. Nothing is learned into recipes
+      // while a person holds control of it.
+      const [lease] = await tx`select control from browser_session_binding
+        where space_id = ${candidate.space_id} order by updated_at desc, id desc limit 1`;
+      if (lease && lease.control !== 'automation') throw new BrowserRecipeFault('recipe_frozen');
       const rows = await tx`
         select id, space_id, version, state, schema, steps, safe_aliases, reason
         from browser_recipe_candidate where space_id = ${candidate.space_id}

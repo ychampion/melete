@@ -38,6 +38,10 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      # Chromium puts each renderer in a user namespace of its own, which the engine's default
+      # seccomp profile refuses. config/browser-seccomp.json is that default profile with the
+      # user, pid and net namespace calls the sandbox makes added to it, and nothing else.
+      - seccomp=./config/browser-seccomp.json
     pids_limit: 384
     mem_limit: 2g
     shm_size: 256m

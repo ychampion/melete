@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { LiveDown, LiveInput, LiveOpen } from './live-protocol.ts';
 import { BrowserFault, type BrowserPolicy, type BrowserSession } from './sessions.ts';
 
 export class BrowserWorkerClient {
@@ -42,8 +43,41 @@ export class BrowserWorkerClient {
   takeover(sessionId: string): Promise<BrowserSession> {
     return this.request('/takeover', { session_id: sessionId });
   }
-  handback(sessionId: string): Promise<BrowserSession> {
+  /** A handback also reports the site the person ended on, when the profile holds its cookies. */
+  handback(sessionId: string): Promise<BrowserSession & { site?: string }> {
     return this.request('/handback', { session_id: sessionId });
+  }
+  forgetSite(domain: string): Promise<{ domain: string; cookies: number; origins: string[] }> {
+    return this.request('/profile/forget', { domain });
+  }
+  liveOpen(sessionId: string, controlEpoch: number): Promise<LiveOpen> {
+    return this.request('/live/open', { session_id: sessionId, control_epoch: controlEpoch });
+  }
+  livePull(
+    liveId: string,
+    ackThrough: number,
+    timeoutMs: number,
+    fresh = false,
+  ): Promise<{ events: LiveDown[] }> {
+    return this.request('/live/pull', {
+      live_id: liveId,
+      ack_through: ackThrough,
+      timeout_ms: timeoutMs,
+      ...(fresh ? { fresh } : {}),
+    });
+  }
+  liveInput(
+    liveId: string,
+    ackThrough: number,
+    events: LiveInput[],
+  ): Promise<{ accepted: number }> {
+    return this.request('/live/input', { live_id: liveId, ack_through: ackThrough, events });
+  }
+  liveScope(liveId: string, host: string): Promise<{ site_scope: string[] }> {
+    return this.request('/live/scope', { live_id: liveId, host });
+  }
+  liveClose(liveId: string): Promise<{ closed: true }> {
+    return this.request('/live/close', { live_id: liveId });
   }
 }
 
@@ -73,6 +107,8 @@ export class BrowserWorkerPool {
     readonly options: {
       spacesRoot: string;
       idleMs?: number;
+      /** How long a person's inactive takeover keeps a development child's Chromium open. */
+      humanIdleMs?: number;
       endpoints?: BrowserWorkerEndpoint[];
       allowLocalProcess?: boolean;
       /** Tests supply their own entry that injects a fixed local fixture; never owner/model configuration. */
@@ -126,6 +162,7 @@ export class BrowserWorkerPool {
           MELETE_BROWSER_ROOT: spaceRoot,
           MELETE_BROWSER_TOKEN: token,
           MELETE_BROWSER_IDLE_MS: String(this.options.idleMs ?? 300_000),
+          MELETE_BROWSER_HUMAN_IDLE_MS: String(this.options.humanIdleMs ?? 900_000),
           MELETE_BROWSER_HEADLESS: String(this.options.headless ?? true),
         },
         stdin: 'ignore',
@@ -171,6 +208,19 @@ export class BrowserWorkerPool {
       await child.exited;
       throw error;
     }
+  }
+
+  /** Where this pool keeps one directory per space, so a space's profile can be found again. */
+  get spacesRoot(): string {
+    return this.options.spacesRoot;
+  }
+
+  /** Stop one space's worker and forget it; the next request for that space starts a new one. */
+  async release(spaceId: string): Promise<void> {
+    const worker = this.workers.get(spaceId);
+    if (!worker) return;
+    this.workers.delete(spaceId);
+    await (await worker.catch(() => undefined))?.close();
   }
 
   async close() {

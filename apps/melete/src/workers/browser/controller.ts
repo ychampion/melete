@@ -2,11 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { CDPSession, ElementHandle, Locator, Page } from 'playwright';
 import { z } from 'zod';
 import {
+  type BrowserEgress,
   BrowserNetworkError,
   type BrowserNetworkOptions,
   BrowserRedirect,
   createBrowserEgress,
 } from './egress.ts';
+import { BrowserLive, type BrowserLiveOptions } from './live.ts';
+import { handbackLabel, handbackUrl, withoutValues } from './redact.ts';
 import { BrowserFault, BrowserSessions, type BrowserSessionsOptions } from './sessions.ts';
 import { isSensitiveControl, type VisibleSchema } from './visible.ts';
 
@@ -104,6 +107,7 @@ export type BrowserObservation = {
   id: string;
   url: string;
   tree: string;
+  /** Empty for the first observation after a person hands back control. */
   screenshot: string;
   schema: VisibleSchema;
 };
@@ -117,14 +121,26 @@ export type BrowserCommandResult = {
 /** All browser input is dispatched here, below the broker and independent of a model's cooperation. */
 export class BrowserController {
   readonly sessions: BrowserSessions;
-  private network?: ReturnType<typeof createBrowserEgress>;
+  readonly live: BrowserLive;
+  private network?: BrowserEgress;
   private cdp?: CDPSession;
   private dialogRevision = 0;
   private pageId?: string;
   private replacingPage = false;
+  /**
+   * Set at handback. What a person typed or was shown stays on the page they hand back however
+   * many times it is looked at, so this clears only when an automation action replaces the
+   * top-level document.
+   */
+  private handback = false;
   readonly metrics = { observations: 0, dispatched_inputs: 0, refused_inputs: 0 };
 
-  constructor(options: BrowserSessionsOptions & { network?: BrowserNetworkOptions }) {
+  constructor(
+    options: BrowserSessionsOptions & {
+      network?: BrowserNetworkOptions;
+      live?: BrowserLiveOptions;
+    },
+  ) {
     this.sessions = new BrowserSessions({
       ...options,
       install: async (context, policy) => {
@@ -133,13 +149,31 @@ export class BrowserController {
         await this.network.install(context);
         this.cdp = undefined;
         this.pageId = undefined;
-        // Additional windows cannot become an unobserved channel outside the single-page lease.
+        // A new context opens on a new document, so nothing a person left behind is on it.
+        this.handback = false;
+        // Additional windows cannot become an unobserved channel outside the single-page lease,
+        // except one popup at a time that a person in control opens and sees in their live view.
         context.on('page', (page) => {
-          if (!this.replacingPage && this.sessions.page && page !== this.sessions.page)
-            void page.close();
+          if (this.replacingPage || !this.sessions.page || page === this.sessions.page) return;
+          if (!this.live.popup(page)) void page.close();
         });
       },
     });
+    this.live = new BrowserLive(this, options.live);
+    this.sessions.onControl((change) => {
+      if (change === 'handback') this.handback = true;
+      return undefined;
+    });
+  }
+
+  guard(): BrowserEgress | undefined {
+    return this.network;
+  }
+
+  adoptPage(page: Page): void {
+    this.sessions.page = page;
+    page.setDefaultTimeout(2500);
+    this.cdp = undefined;
   }
 
   private async attach(): Promise<{ page: Page; cdp: CDPSession }> {
@@ -332,20 +366,29 @@ export class BrowserController {
     const session = this.sessions.requireSession(command.session_id, command.job_id);
     if (session.control !== 'automation') throw new BrowserFault('human_control');
     const epoch = session.control_epoch;
+    // What a person typed or was shown can still be on the page they hand back: until automation
+    // leaves that document, an observation carries no picture, no form values, no form intents,
+    // and a tree and labels with the page's contents taken out, and it still refuses below.
+    const handedBack = this.handback;
     const { page, cdp } = await this.attach();
     const schema = await this.schema(page, cdp);
     // No screenshot, tree, episode, recipe or artifact is recorded while authentication fields are visible.
     if (schema.some((control) => control.sensitive))
       throw new BrowserFault('sensitive_input_require_takeover');
-    const tree = await page.locator('body').ariaSnapshot();
-    if (tree.length > 128_000) throw new BrowserFault('observation_too_large');
-    const screenshot = await cdp.send('Page.captureScreenshot', {
-      format: 'png',
-      clip: { x: 0, y: 0, width: 1024, height: 768, scale: 0.5 },
-      captureBeyondViewport: false,
-    });
+    const snapshot = await page.locator('body').ariaSnapshot();
+    if (snapshot.length > 128_000) throw new BrowserFault('observation_too_large');
+    const tree = handedBack ? withoutValues(snapshot) : snapshot;
+    const screenshot = handedBack
+      ? ''
+      : (
+          await cdp.send('Page.captureScreenshot', {
+            format: 'png',
+            clip: { x: 0, y: 0, width: 1024, height: 768, scale: 0.5 },
+            captureBeyondViewport: false,
+          })
+        ).data;
     const intents: BrowserSubmitIntent[] = [];
-    for (const control of schema.filter((control) => control.role === 'button')) {
+    for (const control of handedBack ? [] : schema.filter((control) => control.role === 'button')) {
       try {
         intents.push(await this.formIntent(page, control.label));
       } catch (error) {
@@ -359,13 +402,21 @@ export class BrowserController {
       control_epoch: epoch,
       observation: {
         id: `obs_${randomUUID()}`,
-        url: page.url(),
-        schema,
+        url: handedBack ? handbackUrl(page.url()) : page.url(),
+        schema: handedBack
+          ? schema.map((control) => ({ ...control, label: handbackLabel(control.label) }))
+          : schema,
         tree,
-        screenshot: screenshot.data,
+        screenshot,
       },
       result: { submit_intents: intents },
     };
+  }
+
+  /** The top-level document: a new page, or a navigation that loads a new document, changes it. */
+  private async documentOf(cdp: CDPSession): Promise<string> {
+    const { frameTree } = await cdp.send('Page.getFrameTree');
+    return `${frameTree.frame.id} ${frameTree.frame.loaderId}`;
   }
 
   private async transition(page: Page, cdp: CDPSession): Promise<string> {
@@ -405,6 +456,9 @@ export class BrowserController {
         if (!this.network) throw new BrowserFault('worker_unavailable');
         if (command.operation.kind === 'read') {
           this.sessions.checkInput(command.session_id, command.control_epoch);
+          // Text read from the page is kept with the receipt, and the page still holds what the
+          // person typed or was shown until automation moves it to another document.
+          if (this.handback) throw new BrowserFault('read_after_handback');
           if ((await this.schema(page, cdp)).some((control) => control.sensitive))
             throw new BrowserFault('sensitive_input_require_takeover');
           const query = command.operation;
@@ -420,6 +474,7 @@ export class BrowserController {
         // Even a caller that skips planning checks reaches this controller gate before it can act.
         this.sessions.checkInput(command.session_id, command.control_epoch);
         const before = await this.transition(page, cdp);
+        const handedBackIn = this.handback ? await this.documentOf(cdp) : undefined;
         const action = command.operation;
         if (action.kind === 'open') {
           await this.navigate(command, action.url);
@@ -561,6 +616,8 @@ export class BrowserController {
           } else await this.network.run('reversible', click);
         }
         ({ page, cdp } = await this.attach());
+        if (handedBackIn !== undefined && (await this.documentOf(cdp)) !== handedBackIn)
+          this.handback = false;
         const after = await this.transition(page, cdp);
         if (before !== after || action.kind === 'open' || action.kind === 'submit')
           return this.observe(command);

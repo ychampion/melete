@@ -1,14 +1,20 @@
 import { BrowserController } from './controller.ts';
 import type { BrowserNetworkOptions } from './egress.ts';
+import type { BrowserLiveOptions } from './live.ts';
+import { liveRoutes } from './live-routes.ts';
 import { startBrowserServer } from './server.ts';
 
-export async function startBrowserWorker(options: { network?: BrowserNetworkOptions } = {}) {
+export async function startBrowserWorker(
+  options: { network?: BrowserNetworkOptions; live?: BrowserLiveOptions } = {},
+) {
   const controller = new BrowserController({
     spaceId: process.env.MELETE_BROWSER_SPACE ?? '',
     spaceRoot: process.env.MELETE_BROWSER_ROOT ?? '',
     idleMs: Number(process.env.MELETE_BROWSER_IDLE_MS ?? 300_000),
+    humanIdleMs: Number(process.env.MELETE_BROWSER_HUMAN_IDLE_MS ?? 900_000),
     headless: process.env.MELETE_BROWSER_HEADLESS !== 'false',
     network: options.network,
+    live: options.live,
   });
   const { sessions } = controller;
   const server = await startBrowserServer({
@@ -17,6 +23,7 @@ export async function startBrowserWorker(options: { network?: BrowserNetworkOpti
     port: Number(process.env.MELETE_BROWSER_PORT ?? 0),
     hostname: process.env.MELETE_BROWSER_HOST ?? '127.0.0.1',
     command: (input) => controller.command(input),
+    live: liveRoutes(controller.live),
   });
   process.stdout.write(`${JSON.stringify({ port: server.port })}\n`);
   const close = async () => {

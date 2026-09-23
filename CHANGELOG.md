@@ -75,7 +75,7 @@ to named tests on the tagged tree; the README's gates table is the summary.
   checks instead of the image build.
 - **Bounded logs.** Every Compose service and every attempt container rotates a
   `json-file` log at 10 MB with five files. `compose:check` (30 checks),
-  `browser:compose:check` (12) and `tailscale:compose:check` (15) refuse a
+  `browser:compose:check` (14) and `tailscale:compose:check` (15) refuse a
   service without the bound.
 - **Reach your installation from your own devices over your tailnet.** An
   optional Compose override runs one Tailscale node beside the stack: it joins
@@ -90,6 +90,25 @@ to named tests on the tagged tree; the README's gates table is the summary.
   server takes a forwarded address only on a connection from the one upstream
   the deployment names. Sign-in is unchanged: a password and a device cookie.
   [Tailscale](docs/DEPLOYMENT.md#tailscale).
+- **Sign in to a site yourself, in the browser the agent uses.** While you
+  hold control of a browser session, the service streams the worker's page to
+  you and passes your clicks and keystrokes to it, so you complete a sign-in, a
+  one-time code or an identity provider's hand-off yourself and then hand back
+  (`POST /browser/sessions/{id}/live` with its `frames`, `input`, `scope` and
+  `close` routes). The view is bound to your account, the session, the control
+  epoch and the address you opened it from. What you type reaches no event,
+  recipe, log or artifact. Until the agent moves to a new page, its looks at
+  the page you handed back keep the page's roles and control names with no
+  values, no page text, no screenshot and no query string, and it cannot read
+  text off that page.
+  Your navigation stays on the job's sites, the site you took over and the sites
+  you allow, plus the few a page leads you to just after you act. The space
+  lists the sites it is signed in to at `GET /browser/sites` and signs out of
+  one at `DELETE /browser/sites/{domain}`, clearing that site's cookies and
+  stored data. Chromium runs with its renderer sandbox under a seccomp profile
+  of its own, held to the engine default plus three additions by
+  `browser:compose:check` and checked in CI by the `browser-sandbox` job.
+  [Signing in yourself](docs/browser-worker.md#signing-in-yourself).
 - **A Docker Engine preflight.** In Docker runtime mode the service asks the
   engine for its version before it opens the database, and stops with one
   message naming Docker Engine 28.0 and Docker Compose 2.33.1 when the engine is

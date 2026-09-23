@@ -39,7 +39,17 @@ import {
   triggerResponse,
 } from './api.ts';
 import { approvalDecisionRequest } from './broker.ts';
-import { browserControlResponse } from './browser.ts';
+import { browserControlResponse, browserSiteForgotten, browserSiteList } from './browser.ts';
+import {
+  liveClose,
+  liveClosed,
+  liveId,
+  liveInputResponse,
+  liveOpen,
+  liveScope,
+  liveScopeResponse,
+  liveUp,
+} from './browser-live.ts';
 import { company, companyMap, ledgerItem } from './companies.ts';
 import {
   connectionCheckResponse,
@@ -1329,6 +1339,142 @@ export function buildOpenApiDocument() {
               '403': problem('Request origin refused'),
               '404': problem('No such browser session'),
               '409': problem('Browser control could not change'),
+            },
+          },
+        },
+        '/browser/sites': {
+          get: {
+            tags: ['browser'],
+            summary: "List the sites this space's browser is signed in to",
+            description:
+              "One record per registrable domain whose cookies the space's browser profile " +
+              'holds, with when it was last used. The owner of the space alone may read this.',
+            responses: {
+              '200': jsonResponse('Signed-in sites', browserSiteList),
+              '401': problem('Owner authentication required'),
+              '404': problem('Not the owner of this space'),
+            },
+          },
+        },
+        '/browser/sites/{domain}': {
+          delete: {
+            tags: ['browser'],
+            summary: 'Sign out of one site',
+            description:
+              "The worker closes the browser, removes that domain's cookies and its origins' " +
+              'storage from the profile, and the record goes with them. The owner of the space ' +
+              'alone may do this.',
+            requestParams: idParam('domain', 'Registrable domain as listed'),
+            responses: {
+              '200': jsonResponse('The site is forgotten', browserSiteForgotten),
+              '400': problem('Not a registrable domain'),
+              '401': problem('Owner authentication required'),
+              '404': problem('Not the owner of this space'),
+              '409': problem('The browser could not be cleared'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/live': {
+          post: {
+            tags: ['browser'],
+            summary: 'Open a live view of a browser session the person controls',
+            description:
+              'Requires the owner session, same-origin protection and human control. The live id ' +
+              'is held in memory and bound to this principal, session, control epoch and address. ' +
+              'One view per session: a second opener is refused while the first may still return.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            responses: {
+              '200': jsonResponse('The live view is open', liveOpen),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused'),
+              '404': problem('No such browser session'),
+              '409': problem('The live view could not open'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/live/frames': {
+          get: {
+            tags: ['browser'],
+            summary: 'Follow one live view as Server-Sent Events',
+            description:
+              'One event per live message: a JPEG frame, where the page is, a notice, or the end ' +
+              'of the view. Only frames carry an id. Nothing is buffered, so a reconnect with ' +
+              '`Last-Event-ID` replays nothing and is repainted from the page as it is now.',
+            requestParams: {
+              ...idParam('id', 'Browser session id returned by browser.observe'),
+              query: z.object({
+                live_id: liveId.meta({ description: 'The live id this view was opened with' }),
+                after: z.string().optional().meta({
+                  description: 'Frame sequence to resume after, for clients without Last-Event-ID',
+                }),
+              }),
+            },
+            responses: {
+              '200': {
+                description: 'The live event stream',
+                content: { 'text/event-stream': { schema: z.string() } },
+              },
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such browser session'),
+              '410': problem('The live view is closed'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/live/input': {
+          post: {
+            tags: ['browser'],
+            summary: "Send a person's input to the live page",
+            description:
+              'Page-level mouse, wheel, key, text and touch events only, never a browser ' +
+              'protocol method, script or selector. Every event is checked against the control ' +
+              'epoch immediately before it reaches the page.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            requestBody: json(liveUp),
+            responses: {
+              '200': jsonResponse('Events accepted in order', liveInputResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such browser session'),
+              '410': problem('The live view is closed'),
+              '429': problem('Input above the rate cap; the view closes'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/live/scope': {
+          post: {
+            tags: ['browser'],
+            summary: 'Allow one more site for this takeover',
+            description:
+              'The person allows a host they navigated to. It holds for this takeover only and is ' +
+              'never persisted.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            requestBody: json(liveScope),
+            responses: {
+              '200': jsonResponse('The sites this takeover may reach', liveScopeResponse),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such browser session'),
+              '409': problem('The host was refused or the scope is full'),
+              '410': problem('The live view is closed'),
+            },
+          },
+        },
+        '/browser/sessions/{id}/live/close': {
+          post: {
+            tags: ['browser'],
+            summary: 'Close the live view',
+            description:
+              'Ends the view. Control stays with the person until they hand it back, and a view ' +
+              'can be opened again.',
+            requestParams: idParam('id', 'Browser session id returned by browser.observe'),
+            requestBody: json(liveClose),
+            responses: {
+              '200': jsonResponse('The live view is closed', liveClosed),
+              '401': problem('Owner authentication required'),
+              '403': problem('Request origin refused, or another person or address'),
+              '404': problem('No such browser session'),
+              '410': problem('The live view was already closed'),
             },
           },
         },

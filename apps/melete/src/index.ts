@@ -96,7 +96,9 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
+import { mountBrowserLive } from './workers/browser/live-service.ts';
 import { type BrowserSessionService, mountBrowserSessions } from './workers/browser/routes.ts';
+import { mountBrowserSites } from './workers/browser/sites.ts';
 
 export const VERSION = '0.1.0-pre';
 
@@ -244,6 +246,8 @@ export function createApp(deps: AppDeps) {
       }),
     );
   if (deps.browserSessions) mountBrowserSessions(app, deps.browserSessions);
+  if (deps.browserSessions) mountBrowserLive(app, deps.browserSessions);
+  if (deps.browserSessions) mountBrowserSites(app, deps.browserSessions.sites);
 
   app.get('/health', async (c) => {
     const database = await deps.checkDatabase();
