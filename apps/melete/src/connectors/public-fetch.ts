@@ -68,7 +68,9 @@ export const pinnedRequest: PinnedRequest = (url, address, init) =>
         );
       },
     );
-    req.once('error', reject);
+    // A refused certificate or a reset is reported by the request and again by
+    // its socket; the second must land on a listener, not end the process.
+    req.on('error', reject);
     req.end(body);
   });
 

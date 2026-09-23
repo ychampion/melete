@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
+import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
 import { ConnectorFaultError } from './faults.ts';
 import { openHttpMcpTransport } from './mcp-transport.ts';
 import { pinnedRequest, publicOnlyFetch } from './public-fetch.ts';
@@ -150,4 +151,32 @@ describe('a public-only fetch', () => {
     await transport.close();
     expect(hits).toBe(before);
   });
+});
+
+test('a refused certificate is one rejection, with no stray error left behind', async () => {
+  const stray: unknown[] = [];
+  const count = (error: unknown) => stray.push(error);
+  process.on('uncaughtException', count);
+  const { cert, key } = selfSignedPair('mcp.example.test');
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    tls: { cert, key },
+    fetch: () => new Response('ok'),
+  });
+  try {
+    await expect(
+      pinnedRequest(
+        new URL(`https://mcp.example.test:${server.port}/mcp`),
+        { address: '127.0.0.1', family: 4 },
+        { method: 'POST', body: '{}' },
+      ),
+    ).rejects.toBeDefined();
+    // The socket reports the failure again after the request has; nobody may be left to hear it alone.
+    await Bun.sleep(300);
+    expect(stray).toEqual([]);
+  } finally {
+    process.off('uncaughtException', count);
+    server.stop(true);
+  }
 });
