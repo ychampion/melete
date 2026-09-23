@@ -198,6 +198,8 @@ const MEMORY_TABLES = [
   'memory_contradictions',
   'memory_questions',
   'memory_rejections',
+  'memory_capture',
+  'memory_model_calls',
   'memory_spaces',
 ] as const;
 
