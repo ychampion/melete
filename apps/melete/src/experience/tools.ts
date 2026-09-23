@@ -352,6 +352,8 @@ const UNSHOWN = new Set([
   // which carries the command and its receipt.
   'terminal',
   'process',
+  // Reading a skill from the index; the broker's own entry names the skill that was read.
+  'skills.read',
 ]);
 const NATIVE: Record<string, [ToolKind, doing: string, done: string]> = {
   compose: ['tool', 'Working through several steps', 'Worked through several steps'],

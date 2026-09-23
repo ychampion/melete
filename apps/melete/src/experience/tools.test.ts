@@ -239,7 +239,7 @@ describe('runtime tools, the model and traces', () => {
       doing: 'Using the skill: Research with sources',
       done: 'Used the skill: Research with sources',
     });
-    for (const name of ['email.send', 'mcp_linear.create_issue', 'say', 'load_tool'])
+    for (const name of ['email.send', 'mcp_linear.create_issue', 'say', 'load_tool', 'skills.read'])
       expect(runtimeTool(name)).toBeNull();
     expect(runtimeTool('web_search')?.done).toBe('Searched the web');
     // A cell's terminal is told by its `terminal.run` action, once.
