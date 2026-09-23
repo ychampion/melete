@@ -15,6 +15,13 @@ const MIXED_SEED = /\b(?=[A-Za-z2-7]*[2-7])(?=[A-Za-z2-7]*[A-Za-z])[A-Za-z2-7]{1
  */
 const DIGIT_RUN = /\d(?:[\s-]?\d){3,}/g;
 /**
+ * A code made of letters, named as one: an upper-case run of six to eight letters straight after
+ * a code, token, key, PIN, passcode or OTP word (`Use code KXQPMZ`, `Key: QWERTYUI`). The word is
+ * matched in the usual cases, not case-blind, so the run itself has to be upper-case.
+ */
+const LETTER_CODE =
+  /\b((?:[Cc]odes?|CODES?|[Tt]okens?|TOKENS?|[Kk]eys?|KEYS?|PIN|[Pp]in|[Pp]asscodes?|PASSCODES?|OTP|[Oo]tp)\b[\s:=#-]*)[A-Z]{6,8}\b/g;
+/**
  * A path segment that may be a token: its letters and digits, with separators taken out, run to
  * six or more and mix both. `7f3k9x`, `zqpath-9f3a` and a long hex id qualify; `page-2`, `v2` and
  * `getting-started` do not.
@@ -23,6 +30,11 @@ function mixedToken(segment: string): boolean {
   const run = segment.replace(/[^A-Za-z0-9]/g, '');
   return run.length >= 6 && /\d/.test(run) && /[A-Za-z]/.test(run);
 }
+/**
+ * A path segment of twenty letters or digits or more with no separator in it, which a readable
+ * path rarely has and a token of letters alone (`qwertyuiopasdfghjklzxcvbnm`) does.
+ */
+const UNBROKEN_RUN = /^[A-Za-z0-9]{20,}$/;
 /** A JSON web token, with or without the bearer word in front of it. */
 const TOKEN = /\b(?:Bearer\s+)?eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?/g;
 
@@ -89,7 +101,7 @@ const ENTRY = /^(\s*- )('?)([a-z]+)(?: "((?:[^"\\]|\\.)*)")?(.*)$/;
  * code can sit in one; the secret shapes go, and so does any run of four or more digits.
  */
 export function handbackLabel(label: string): string {
-  return patterns(label).replace(DIGIT_RUN, REDACTED);
+  return patterns(label).replace(DIGIT_RUN, REDACTED).replace(LETTER_CODE, `$1${REDACTED}`);
 }
 
 /**
@@ -115,7 +127,8 @@ export function handbackUrl(value: string): string {
       } catch {
         return encodeURIComponent(REDACTED);
       }
-      const kept = mixedToken(decoded) ? REDACTED : handbackLabel(decoded);
+      const kept =
+        mixedToken(decoded) || UNBROKEN_RUN.test(decoded) ? REDACTED : handbackLabel(decoded);
       return kept === decoded ? segment : encodeURIComponent(kept);
     })
     .join('/');

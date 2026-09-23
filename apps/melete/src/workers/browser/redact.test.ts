@@ -213,6 +213,44 @@ test('a handed-back URL keeps its host and path shape and loses what could be a 
   expect(handbackUrl('not a url')).toBe('');
 });
 
+test('a code of letters alone is caught in a control name, and ordinary names are kept', () => {
+  for (const [label, seen] of [
+    ['Use code KXQPMZ', `Use code ${REDACTED}`],
+    ['Key: QWERTYUI', `Key: ${REDACTED}`],
+    ['Recovery key ABCDEFG', `Recovery key ${REDACTED}`],
+    ['Your PIN is', 'Your PIN is'],
+    ['OTP HJKLMN', `OTP ${REDACTED}`],
+    ['Token=ZXCVBN', `Token=${REDACTED}`],
+  ] as const)
+    expect([label, handbackLabel(label)]).toEqual([label, seen]);
+  for (const kept of [
+    'Enter code',
+    'Code of CONDUCT',
+    'Use code Kxqpmz',
+    'Copy key ABCDE',
+    'Keyboard SHORTCUTS',
+    'Continue',
+  ])
+    expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
+});
+
+test('a handed-back URL loses a long unbroken run, even of letters alone', () => {
+  const redacted = encodeURIComponent(REDACTED);
+  for (const [url, seen] of [
+    [
+      'https://example.com/login/magic/qwertyuiopasdfghjklzxcvbnm',
+      `https://example.com/login/magic/${redacted}`,
+    ],
+    ['https://example.com/r/ABCDEFGHIJKLMNOPQRST', `https://example.com/r/${redacted}`],
+    ['https://example.com/settings/notifications', 'https://example.com/settings/notifications'],
+    [
+      'https://example.com/help/a-very-long-readable-article-name',
+      'https://example.com/help/a-very-long-readable-article-name',
+    ],
+  ] as const)
+    expect([url, handbackUrl(url)]).toEqual([url, seen]);
+});
+
 test('a handed-back URL loses short mixed tokens, encoded tokens and matrix parameters', () => {
   const redacted = encodeURIComponent(REDACTED);
   for (const [url, seen] of [
