@@ -78,6 +78,8 @@ export const companyMessage = pgTable(
     fromAddress: text('from_address').notNull(),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
     body: text('body').notNull(),
+    /** When an extraction call answered for this message. A later scan does not ask again. */
+    extractedAt: timestamp('extracted_at', { withTimezone: true }),
     createdAt: created(),
   },
   (table) => [
@@ -145,9 +147,14 @@ export const companyScan = pgTable(
     itemsFound: integer('items_found').notNull().default(0),
     counts: jsonb('counts').$type<Record<string, number>>().notNull().default({}),
     error: text('error'),
+    /** Model calls this scan made, counted against its person's daily allowance. */
+    modelCalls: integer('model_calls').notNull().default(0),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: created(),
   },
-  (table) => [index('company_scan_owner_idx').on(table.spaceId, table.principalId, table.status)],
+  (table) => [
+    index('company_scan_owner_idx').on(table.spaceId, table.principalId, table.status),
+    index('company_scan_principal_started_idx').on(table.principalId, table.startedAt),
+  ],
 );

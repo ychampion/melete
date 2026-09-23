@@ -76,10 +76,12 @@ describe('the live extractor’s budget', () => {
       });
 
     // The first person scans until they have asked for more than any one scan may.
+    // Each round is another of their spaces: a mailbox already read is not asked
+    // about twice, so rescanning one space would spend nothing.
     let scans = 0;
     while (seen.calls <= SCAN_CALL_CEILING && scans < 20) {
       const before = seen.calls;
-      expect((await scan(first)).status).toBe('done');
+      expect((await scan({ ...first, spaceId: `${first.spaceId}${scans}` })).status).toBe('done');
       expect(seen.calls - before).toBeGreaterThan(0);
       scans += 1;
     }

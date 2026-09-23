@@ -71,7 +71,11 @@ export interface CompanyExtractor {
 }
 
 /** The extractor one scan uses, and the way to put it away afterwards. */
-export type ScanExtractor = CompanyExtractor & { close(): Promise<void> };
+export type ScanExtractor = CompanyExtractor & {
+  close(): Promise<void>;
+  /** Messages whose call the provider never answered, so a later scan asks again. */
+  unanswered?: ReadonlySet<string>;
+};
 
 /**
  * The JSON schema sent to the provider. It is written by hand rather than

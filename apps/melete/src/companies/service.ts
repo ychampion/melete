@@ -49,7 +49,11 @@ export function gatewayExtractor(options: {
       ...(options.fetch ? { fetch: options.fetch } : {}),
       maxCalls: SCAN_CALL_CEILING,
     });
-    return { extract: (request) => gateway.extractor.extract(request), close: gateway.close };
+    return {
+      extract: (request) => gateway.extractor.extract(request),
+      close: gateway.close,
+      unanswered: gateway.unanswered,
+    };
   };
   return {
     async extract(request) {
@@ -62,6 +66,19 @@ export function gatewayExtractor(options: {
     },
     forScan: open,
   };
+}
+
+/** Model calls one person's scans may make in a day when the operator sets none. */
+export const DEFAULT_DAILY_SCAN_CALLS = 500;
+
+/**
+ * The daily allowance of model calls per person, when a live model runs.
+ * `MELETE_COMPANIES_DAILY_CALLS` sets it; a scripted scan spends nothing and has none.
+ */
+export function configuredDailyCalls(): number | undefined {
+  if (!process.env.MELETE_COMPANIES_MODEL?.trim()) return undefined;
+  const raw = Number(process.env.MELETE_COMPANIES_DAILY_CALLS);
+  return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_DAILY_SCAN_CALLS;
 }
 
 /**
@@ -135,6 +152,7 @@ export function companiesDeps(options: {
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
     extractor: configuredExtractor(options.env, options.sql),
+    ...(configuredDailyCalls() === undefined ? {} : { dailyCalls: configuredDailyCalls() }),
     // Without a job service there is nothing to create a job on, and the route's
     // stub refuses. The route records `job_id` and `handling` itself once this
     // returns an id, so the handler is given no `onStatusChange` of its own.

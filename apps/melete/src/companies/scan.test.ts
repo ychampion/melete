@@ -343,23 +343,12 @@ describe('a scan whose mailbox will not answer', () => {
     // name or a line of somebody's mail. None of it belongs on the scan.
     const said = 'IMAP said: login failed for billing@acme.test (Subject: your code is 482913)';
     const failing = await runScan({
-      store: {
-        ...store,
-        runningScan: store.runningScan.bind(store),
-        openScan: store.openScan.bind(store),
-        closeScan: store.closeScan.bind(store),
-        scan: store.scan.bind(store),
-        saveMessages: store.saveMessages.bind(store),
+      // The real store in every respect but one: saving a company throws.
+      store: Object.assign(Object.create(store) as MemoryCompanyStore, {
         saveCompany: async () => {
           throw new Error(said);
         },
-        saveItems: store.saveItems.bind(store),
-        map: store.map.bind(store),
-        item: store.item.bind(store),
-        setStatus: store.setStatus.bind(store),
-        setJob: store.setJob.bind(store),
-        exclusive: store.exclusive.bind(store),
-      },
+      }),
       mailbox: fixtureMailbox(fixtureMessages()),
       extractor: scriptedExtractor(),
       owner,

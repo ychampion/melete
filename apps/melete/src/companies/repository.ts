@@ -10,7 +10,7 @@
  */
 
 import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
@@ -60,9 +60,17 @@ export interface CompanyStore {
       itemsFound: number;
       counts: Record<string, number>;
       error?: string;
+      /** Model calls the scan made. */
+      modelCalls?: number;
     },
   ): Promise<void>;
   scan(owner: Owner, scanId: string): Promise<ScanRecord | null>;
+  /** Of these message ids, the ones an extraction call has already answered for. */
+  extractedMessageIds(owner: Owner, messageIds: readonly string[]): Promise<Set<string>>;
+  /** Record that an extraction call answered for these messages. */
+  markExtracted(owner: Owner, messageIds: readonly string[]): Promise<void>;
+  /** Model calls a person's scans made since a moment, across all their spaces. */
+  modelCallsSince(principalId: string, since: Date): Promise<number>;
   /**
    * Messages and companies are written for a scan, and only while that scan's
    * row is there. Removing a space deletes its scans first, so a scan still
@@ -245,9 +253,48 @@ export class PostgresCompanyStore implements CompanyStore {
         itemsFound: result.itemsFound,
         counts: result.counts,
         error: result.error ?? null,
+        modelCalls: result.modelCalls ?? 0,
         finishedAt: new Date(),
       })
       .where(and(ownedScan(owner), eq(companyScan.id, scanId)));
+  }
+
+  async extractedMessageIds(owner: Owner, messageIds: readonly string[]): Promise<Set<string>> {
+    if (!messageIds.length) return new Set();
+    const rows = await this.db
+      .select({ messageId: companyMessage.messageId })
+      .from(companyMessage)
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          inArray(companyMessage.messageId, [...messageIds]),
+          isNotNull(companyMessage.extractedAt),
+        ),
+      );
+    return new Set(rows.map((row) => row.messageId));
+  }
+
+  async markExtracted(owner: Owner, messageIds: readonly string[]): Promise<void> {
+    if (!messageIds.length) return;
+    await this.db
+      .update(companyMessage)
+      .set({ extractedAt: new Date() })
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          inArray(companyMessage.messageId, [...messageIds]),
+        ),
+      );
+  }
+
+  async modelCallsSince(principalId: string, since: Date): Promise<number> {
+    const [row] = await this.db
+      .select({ calls: sql<number>`coalesce(sum(${companyScan.modelCalls}), 0)::int` })
+      .from(companyScan)
+      .where(and(eq(companyScan.principalId, principalId), gte(companyScan.startedAt, since)));
+    return Number(row?.calls ?? 0);
   }
 
   async scan(owner: Owner, scanId: string): Promise<ScanRecord | null> {
@@ -536,6 +583,22 @@ export class MemoryCompanyStore implements CompanyStore {
       error: result.error ?? null,
       finishedAt: new Date().toISOString(),
     });
+    this.calls.set(scanId, result.modelCalls ?? 0);
+  }
+  private readonly calls = new Map<string, number>();
+  private readonly extracted = new Set<string>();
+  async extractedMessageIds(owner: Owner, messageIds: readonly string[]): Promise<Set<string>> {
+    return new Set(messageIds.filter((id) => this.extracted.has(this.key(owner, id))));
+  }
+  async markExtracted(owner: Owner, messageIds: readonly string[]): Promise<void> {
+    for (const id of messageIds) this.extracted.add(this.key(owner, id));
+  }
+  async modelCallsSince(principalId: string, since: Date): Promise<number> {
+    let total = 0;
+    for (const row of this.scans.values())
+      if (row.principalId === principalId && Date.parse(row.startedAt) >= since.getTime())
+        total += this.calls.get(row.id) ?? 0;
+    return total;
   }
   async scan(owner: Owner, scanId: string): Promise<ScanRecord | null> {
     const row = this.scans.get(scanId);

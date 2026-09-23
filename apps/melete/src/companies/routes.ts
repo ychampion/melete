@@ -52,6 +52,8 @@ export type CompaniesDeps = {
    */
   schedule?: (work: () => Promise<void>) => void | Promise<void>;
   now?: () => Date;
+  /** Model calls one person's scans may make in a day. Left out, there is no daily limit. */
+  dailyCalls?: number;
 };
 
 /**
@@ -194,6 +196,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
         store: deps.store,
         mailbox,
         extractor: deps.extractor,
+        ...(deps.dailyCalls === undefined ? {} : { dailyCalls: deps.dailyCalls }),
         owner,
         now: now(),
         scan: record,

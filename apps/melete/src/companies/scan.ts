@@ -38,7 +38,15 @@ export type ScanOptions = {
    * rather than starting a second one.
    */
   scan?: ScanRecord;
+  /**
+   * Model calls this person's scans may make in a day, across all their spaces.
+   * Left out, a scan makes as many as it has messages to read.
+   */
+  dailyCalls?: number;
 };
+
+/** The window a daily allowance counts over. */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type ScanOutcome = ScanRecord & { counts: Record<string, number> };
 
@@ -66,6 +74,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   let found = 0;
   let reason: string = SCAN_FAILED.mailbox;
   let session: ScanExtractor | undefined;
+  let calls = 0;
   try {
     const messages = await options.mailbox.recent(options.readLimit ?? 50);
     reason = SCAN_FAILED.after;
@@ -99,6 +108,24 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     // so no other scan, and no other person's, can use it up.
     session = await options.extractor.forScan?.();
     const extractor = session ?? options.extractor;
+    // A message a model has already answered for is not asked about again: what
+    // it said is in the store, and asking twice only spends twice.
+    const alreadyRead = await options.store.extractedMessageIds(
+      options.owner,
+      stored.map((message) => message.messageId),
+    );
+    const allowance =
+      options.dailyCalls === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.max(
+            0,
+            options.dailyCalls -
+              (await options.store.modelCallsSince(
+                options.owner.principalId,
+                new Date(now.getTime() - DAY_MS),
+              )),
+          );
+    const answered: string[] = [];
     const admitted: LedgerItem[] = [];
     for (const group of grouped.companies) {
       if (!group.candidates.length) continue;
@@ -122,6 +149,15 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         // about a bad span: drop the one thing, count it, and keep the rest,
         // because a person is better served by most of their companies than by
         // an error where a map should be.
+        if (alreadyRead.has(message.messageId)) {
+          counts.already_read = (counts.already_read ?? 0) + 1;
+          continue;
+        }
+        if (calls >= allowance) {
+          counts.daily_allowance_reached = (counts.daily_allowance_reached ?? 0) + 1;
+          continue;
+        }
+        calls += 1;
         let items: Awaited<ReturnType<CompanyExtractor['extract']>> = [];
         try {
           items = await extractor.extract({
@@ -137,6 +173,8 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
           counts.extractor_failed = (counts.extractor_failed ?? 0) + 1;
           continue;
         }
+        // A call the provider never answered is asked again next time.
+        if (!session?.unanswered?.has(message.messageId)) answered.push(message.messageId);
         for (const candidate of items)
           proposed.push({
             candidate,
@@ -183,12 +221,14 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         });
     }
     found = await options.store.saveItems(options.owner, record.id, admitted);
+    await options.store.markExtracted(options.owner, answered);
     counts.proposed = admitted.length;
     await options.store.closeScan(options.owner, record.id, {
       status: 'done',
       messagesSeen: seen,
       itemsFound: found,
       counts,
+      modelCalls: session ? calls : 0,
     });
     return { ...record, status: 'done', messagesSeen: seen, itemsFound: found, counts };
   } catch (error) {
@@ -202,6 +242,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       itemsFound: found,
       counts,
       error: reason,
+      modelCalls: session ? calls : 0,
     });
     return {
       ...record,

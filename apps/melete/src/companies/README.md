@@ -68,6 +68,13 @@ gateway, the way `learning/proposal-gateway.ts` does, so the provider credential
 stays in the gateway. `gpt-6-astra` is served over the Responses protocol, which
 `requiresResponsesProtocol` already decides for every `gpt-6` model.
 
+Each scan opens a gateway of its own, allowed at most fifty calls, one per
+message it can read, and closes it when the scan ends. Across all their spaces,
+one person's scans may make `MELETE_COMPANIES_DAILY_CALLS` model calls in any 24
+hours (500 when unset); a message past that is counted as
+`daily_allowance_reached` and read on a later scan. The allowance is each
+person's own.
+
 The provider request shape is pinned by `gateway.test.ts`, which runs the real
 gateway and replaces the upstream at the socket, so what is recorded is the
 request a provider would receive. A live provider's reply has not been exercised
@@ -95,7 +102,9 @@ of mail.
 ## Scanning again
 
 A second scan over the same mailbox writes nothing and reports `items_found: 0`:
-every claim is already held, matched on `dedupeKey`.
+every claim is already held, matched on `dedupeKey`. It also asks the model
+nothing about a message a model has already answered for (`already_read`); a
+message whose call the provider never answered is asked about again.
 
 One exception, `refreshable()` in `repository.ts`. A subscription is keyed on its
 company alone, because a company charges one subscription at a time — so when a
