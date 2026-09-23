@@ -382,8 +382,8 @@ describe('the Docker stdio launcher', () => {
     expect(prepare.Env).toEqual(
       expect.arrayContaining([
         'HOME=/tmp',
-        'NPM_CONFIG_USERCONFIG=/dev/null',
-        'NPM_CONFIG_GLOBALCONFIG=/dev/null',
+        'NPM_CONFIG_USERCONFIG=/tmp/no-user-npmrc',
+        'NPM_CONFIG_GLOBALCONFIG=/tmp/no-global-npmrc',
         'NPM_CONFIG_CACHE=/tmp/npm-cache',
         'UV_NO_CONFIG=1',
         'UV_PYTHON_PREFERENCE=only-system',

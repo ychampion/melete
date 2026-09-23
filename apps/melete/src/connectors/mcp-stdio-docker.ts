@@ -253,8 +253,10 @@ const PREPARE_ENV = [
   'HOME=/tmp',
   'TMPDIR=/tmp',
   'NPM_CONFIG_CACHE=/tmp/npm-cache',
-  'NPM_CONFIG_USERCONFIG=/dev/null',
-  'NPM_CONFIG_GLOBALCONFIG=/dev/null',
+  // Paths in a fresh, empty /tmp: nothing can be planted there, and npm reads a
+  // missing file as no configuration (it refuses /dev/null as one).
+  'NPM_CONFIG_USERCONFIG=/tmp/no-user-npmrc',
+  'NPM_CONFIG_GLOBALCONFIG=/tmp/no-global-npmrc',
   'NPM_CONFIG_UPDATE_NOTIFIER=false',
   'UV_CACHE_DIR=/tmp/uv-cache',
   'UV_TOOL_DIR=/pkg/uv/tools',

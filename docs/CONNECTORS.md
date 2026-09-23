@@ -649,7 +649,8 @@ A package runner is prepared in a separate container that holds no secret and
 may reach only its registry (`registry.npmjs.org`, or `pypi.org` and
 `files.pythonhosted.org`). Preparation writes the package into a volume of its
 own, keeps its home and caches in memory, and reads no user, global or project
-configuration (`NPM_CONFIG_USERCONFIG=/dev/null`, `UV_NO_CONFIG=1`), with uv
+configuration (npm's user and global files point into its empty `/tmp`, and
+`UV_NO_CONFIG=1`), with uv
 held to the image's own Python. It never sees the server's `/data`, and the
 server can only read what it prepared, so nothing a server writes reaches the
 next preparation or changes what runs. The server then runs offline from the
