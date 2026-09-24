@@ -63,11 +63,7 @@ export type LearnedOwner = { spaceId: string; principalId: string | null };
 async function liveEngineRows(tx: Transaction, names: readonly string[], owner: LearnedOwner) {
   if (names.length === 0 || !owner.principalId) return [];
   return tx
-    .select({
-      name: procedureCandidate.skillName,
-      description: procedureCandidate.description,
-      objective: job.objective,
-    })
+    .select({ name: procedureCandidate.skillName })
     .from(procedureCandidate)
     .innerJoin(job, eq(job.id, procedureCandidate.sourceJobId))
     .where(
@@ -109,45 +105,29 @@ export async function learnedSkills(
 }
 
 /**
- * What the delivered learned skills cover, so a built-in doing the same work is
- * left out beside them. For an evaluated procedure: its trigger phrases and the
- * objective of the job it was learned on. For an engine skill, which has no
- * trigger phrases: its name read as words, its description, and the objective of
- * the job that wrote it. Nothing when no learned skill is delivered.
+ * What the delivered correction procedures cover: their trigger phrases, which are
+ * the person's own words, and the objective of the job each was learned on. A
+ * built-in doing the same work is left out beside them. A skill the engine wrote
+ * has no such words behind it, so it never pushes a built-in out. Nothing when no
+ * correction procedure is delivered.
  */
 export async function procedureReach(
   tx: Transaction,
   delivered: AttemptBundle['skills'],
-  owner?: LearnedOwner,
 ): Promise<ProcedureReach | undefined> {
   const ids = delivered.flatMap((skill) =>
     skill.name.startsWith('procedure:') ? [skill.name.slice('procedure:'.length)] : [],
   );
-  const engine = owner
-    ? await liveEngineRows(
-        tx,
-        delivered.flatMap((skill) => (skill.name.startsWith('procedure:') ? [] : [skill.name])),
-        owner,
-      )
-    : [];
-  if (ids.length === 0 && engine.length === 0) return undefined;
-  const rows = ids.length
-    ? await tx
-        .select({ triggers: procedureCandidate.triggers, objective: job.objective })
-        .from(procedureCandidate)
-        .innerJoin(episode, eq(episode.id, procedureCandidate.episodeId))
-        .innerJoin(job, eq(job.id, episode.jobId))
-        .where(inArray(procedureCandidate.id, ids))
-    : [];
+  if (ids.length === 0) return undefined;
+  const rows = await tx
+    .select({ triggers: procedureCandidate.triggers, objective: job.objective })
+    .from(procedureCandidate)
+    .innerJoin(episode, eq(episode.id, procedureCandidate.episodeId))
+    .innerJoin(job, eq(job.id, episode.jobId))
+    .where(inArray(procedureCandidate.id, ids));
   return {
-    phrases: [
-      ...rows.flatMap((row) => row.triggers.map((trigger) => trigger.phrase)),
-      ...engine.flatMap((row) => [
-        (row.name ?? '').replaceAll('-', ' '),
-        ...(row.description ? [row.description] : []),
-      ]),
-    ],
-    learnedFrom: [...rows.map((row) => row.objective), ...engine.map((row) => row.objective)],
+    phrases: rows.flatMap((row) => row.triggers.map((trigger) => trigger.phrase)),
+    learnedFrom: rows.map((row) => row.objective),
   };
 }
 

@@ -77,12 +77,20 @@ const engineChange = (name: string, description: string) => ({
 });
 
 /**
- * A body as a prohibition compares it: line endings unified, every run of whitespace
- * one space, the ends trimmed and case folded. A rewrap, a trailing newline or a
- * doubled space does not make stopped instructions new ones.
+ * A body as a prohibition compares it: compatibility forms folded (NFKC, so a
+ * full-width letter is the letter), invisible format characters such as a
+ * zero-width space removed, line endings unified, every run of whitespace one
+ * space, the ends trimmed and case folded. None of those makes stopped
+ * instructions new ones.
  */
 export const normalizedBody = (body: string) =>
-  body.replace(/\r\n?/g, '\n').replace(/\s+/g, ' ').trim().toLowerCase();
+  body
+    .normalize('NFKC')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 
 /** The digest a prohibition keeps of a body, so the same instructions are recognised under any name. */
 export const bodyDigest = (body: string) =>

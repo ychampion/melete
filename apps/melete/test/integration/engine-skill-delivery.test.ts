@@ -40,6 +40,7 @@ const stored = async (id: string) => {
   return row;
 };
 
+const WEEKLY_NOTES_BODY = '# Weekly notes\n\n1. Keep one line per task.\n2. Mark what is done.';
 const COVER_LETTER_BODY = '# Cover letters\n\n1. Open with the role.\n2. Keep it to one page.';
 const MONTHLY_BODY = '# Monthly digest\n\n1. Keep the month under 300 words.';
 
@@ -416,12 +417,20 @@ async function liveSkill(
       ['trailing-digest', `${DIGEST_BODY} `],
       ['shouted-digest', DIGEST_BODY.toUpperCase()],
     ];
-    const rewritten = await fixture.writing(shared, { items: [ownerItem()] });
-    for (const [name, body] of rewrites)
+    // An invisible zero-width space, or a full-width letter, is not new text either.
+    rewrites.push(
+      ['zero-width-digest', DIGEST_BODY.replace('Weekly', 'Week\u200Bly')],
+      ['full-width-digest', DIGEST_BODY.replace('Weekly', '\uFF37eekly')],
+    );
+    let rewritten = await fixture.writing(shared, { items: [ownerItem()] });
+    for (const [index, [name, body]] of rewrites.entries()) {
+      // One attempt decides five skills at most.
+      if (index === 5) rewritten = await fixture.writing(shared, { items: [ownerItem()] });
       expect(await fixture.engine.intake(rewritten.claims, skill(name, body))).toMatchObject({
         state: 'rejected',
         reason: 'owner_prohibited',
       });
+    }
     // It is that person's alone: another member of the space is not bound by it and
     // cannot lift it.
     const theirs = await fixture.writing(shared, { items: [ownerItem()], principal: memberId });
@@ -472,7 +481,7 @@ async function liveSkill(
     expect(same?.[0]?.body).not.toBe(DIGEST_BODY);
   }, 120000);
 
-  test('a live engine skill reaches a production attempt, and a built-in doing its work steps aside', async () => {
+  test('a live engine skill reaches a production attempt beside the built-ins its request selects', async () => {
     if (!fixture) return;
     const spaceId = await fixture.createSpace();
     await liveSkill(spaceId, 'cover-letter-style', [ownerItem()], COVER_LETTER_BODY, {
@@ -493,26 +502,43 @@ async function liveSkill(
       const claim = await fixture.runner.claim(wake(row));
       const skills = claim?.bundle.skills ?? [];
       await fixture.jobs.cancel(row.id);
-      // The engine's skill is delivered as it was written, first.
+      // The engine's skill survives that step, delivered as it was written, first.
       expect(skills[0]).toEqual({ name: 'cover-letter-style', body: COVER_LETTER_BODY });
-      // write-a-draft would have been chosen for this objective ("write a", "cover
-      // letter") and covers the same work, so it is left out; a built-in for other
-      // work in the same request still takes a place.
-      expect(skills.map((skill) => skill.name)).toEqual([
-        'cover-letter-style',
-        'plan-a-responsibility',
-      ]);
-      // Without the engine skill, the same request is given the built-in.
-      const plain = await fixture.createSpace();
-      const other = await fixture.create(
-        plain,
-        'Write a cover letter for the design role, then plan the move',
-      );
-      const bare = await fixture.runner.claim(wake(other));
-      await fixture.jobs.cancel(other.id);
-      expect(bare?.bundle.skills.map((skill) => skill.name)).toContain('write-a-draft');
+      // An engine skill has no trigger words of the person's behind it, so it leaves
+      // out no built-in: the ones this request selects are still there beside it.
+      const names = skills.map((skill) => skill.name);
+      expect(names).toContain('write-a-draft');
+      expect(names).toContain('plan-a-responsibility');
+      expect(names).toHaveLength(3);
     } finally {
       fixture.runner.options.loadCatalog = previous;
     }
+  }, 120000);
+
+  test('a broadly described engine skill does not keep the built-ins its request selects away', async () => {
+    if (!fixture) return;
+    const spaceId = await fixture.createSpace();
+    await liveSkill(spaceId, 'weekly-notes', [ownerItem()], WEEKLY_NOTES_BODY, {
+      // Every word a built-in for this request is chosen by: research, refund,
+      // follow up, chase.
+      description: 'Research, refund and follow up notes, and who to chase, each week.',
+    });
+    const request =
+      'Research phone plans, chase the refund for the kettle, and follow up with the plumber';
+    const row = await fixture.create(spaceId, request);
+    const claim = await fixture.runner.claim(wake(row));
+    await fixture.jobs.cancel(row.id);
+    const names = claim?.bundle.skills.map((skill) => skill.name) ?? [];
+    // Its description names the same work as those built-ins, and it still takes one
+    // place only: the rest go to the built-ins the request selects.
+    const plain = await fixture.createSpace();
+    const other = await fixture.create(plain, request);
+    const bare = await fixture.runner.claim(wake(other));
+    await fixture.jobs.cancel(other.id);
+    const builtIns = bare?.bundle.skills.map((skill) => skill.name) ?? [];
+    expect(builtIns.length).toBeGreaterThan(0);
+    expect(names[0]).toBe('weekly-notes');
+    expect(names.slice(1)).toEqual(builtIns.slice(0, names.length - 1));
+    expect(names.length).toBe(Math.min(3, builtIns.length + 1));
   }, 120000);
 });
