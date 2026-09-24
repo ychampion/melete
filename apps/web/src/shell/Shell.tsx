@@ -36,6 +36,7 @@ import {
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { agentById, lookOf, useApp, useDecisions, useLoad, useMedia } from '../experience/hooks.ts';
+import { givenName } from '../experience/profile.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
@@ -150,7 +151,7 @@ function AccountMenu({ address }: { address: string | null }) {
   const [open, setOpen] = useState(false);
   const [theme, setTheme, dark] = useTheme();
   const close = useCallback(() => setOpen(false), []);
-  const name = profile?.name ?? 'You';
+  const name = givenName(profile) || 'You';
   const initials = name
     .split(' ')
     .map((part) => part[0] ?? '')

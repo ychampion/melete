@@ -10,6 +10,7 @@ import { Logo } from '../design/logos.tsx';
 import { Badge, Button, IconButton, Input, TabsUnderline } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { useApp, useLoad } from '../experience/hooks.ts';
+import { givenName } from '../experience/profile.ts';
 import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
@@ -272,7 +273,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
         <div className="card-12 row" style={{ gap: 12, padding: '12px 16px', flexWrap: 'wrap' }}>
           <div className="col grow" style={{ gap: 2, minWidth: 200 }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}>
-              Signed in as {profile?.name ?? 'you'}
+              Signed in as {givenName(profile) || 'you'}
             </span>
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
               Signing out ends this session on every open tab; nothing saved here is lost.

@@ -12,6 +12,7 @@ import { MeleteMark } from '../design/mark.tsx';
 import { Button, Chip, Field, Input, Segmented, Toggle } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import { givenName } from '../experience/profile.ts';
 import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
@@ -1016,7 +1017,7 @@ export function OnboardingScreen() {
   const connections = useLoad(() => adapter.connections(), []);
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
-  const [name, setName] = useState(profile?.name ?? '');
+  const [name, setName] = useState(givenName(profile));
   const [brief, setBrief] = useState(true);
   const [agent, setAgent] = useState<AgentInput>({
     ...blankAgent(),
