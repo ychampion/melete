@@ -332,10 +332,17 @@
       "breakpoints": true
     },
     {
-      "idx": 43,
+      "idx": 47,
       "version": "7",
-      "when": 1789232400023,
-      "tag": "0043_agent_all_connections",
+      "when": 1789232400027,
+      "tag": "0047_mail_discard_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789232400028,
+      "tag": "0048_agent_all_connections",
       "breakpoints": true
     }
   ]

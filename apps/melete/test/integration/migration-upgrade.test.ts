@@ -172,7 +172,7 @@ databaseTest(
   "a personal space's agents reach every connection after the upgrade; a shared space's keep none",
   async () => {
     const fixture = await createPostgresFixture({
-      migrationsFolder: await currentFolderBefore('0043_agent_all_connections'),
+      migrationsFolder: await currentFolderBefore('0048_agent_all_connections'),
     });
     if (!fixture) throw new Error('Postgres fixture unavailable');
     try {
