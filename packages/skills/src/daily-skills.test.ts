@@ -28,7 +28,13 @@ describe.each([
   ],
   [
     'write-a-draft',
-    ['Write a cover letter for the design job', 'Proofread my essay', 'Rewrite this paragraph'],
+    [
+      'Write a cover letter for the design job',
+      'Proofread my essay',
+      'Rewrite this paragraph',
+      'Draft an email to the landlord about the boiler',
+      'Write an introduction for my talk',
+    ],
     ['Summarise this PDF', 'Remind me on Friday', "What's in my inbox?", 'Tell me a joke'],
   ],
 ])('%s', (name, chosen, passed) => {

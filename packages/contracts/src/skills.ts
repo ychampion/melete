@@ -63,9 +63,11 @@ const ENDINGS = ['ing', 'es', 'ed', 's', 'd'];
 /**
  * The spellings a trigger's last word takes: as written, and with a final "y"
  * or "e" changed the way an ending changes it ("reply", "replies", "replied";
- * "summarise", "summarising").
+ * "summarise", "summarising"). A last word "a" is also "an".
  */
 const spellings = (needle: string): string[] => {
+  // "Draft a" is written before a vowel as "draft an", and means the same.
+  if (needle === 'a' || needle.endsWith(' a')) return [needle, `${needle}n`];
   const stem = needle.slice(0, -1);
   if (needle.endsWith('y')) return [needle, `${stem}ies`, `${stem}ied`];
   if (needle.endsWith('e')) return [needle, `${stem}ing`];
