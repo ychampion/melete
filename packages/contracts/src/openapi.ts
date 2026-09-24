@@ -1705,6 +1705,10 @@ export function buildOpenApiDocument() {
                   messages_seen: z.number().int().nonnegative(),
                   items_found: z.number().int().nonnegative(),
                   error: z.string().optional(),
+                  note: z.string().optional().meta({
+                    description:
+                      'Present when the scan stopped at the daily allowance; the rest are read on a later scan',
+                  }),
                 }),
               ),
               '403': problem('This space is not accessible to the signed-in account'),

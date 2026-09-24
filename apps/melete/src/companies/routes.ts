@@ -27,7 +27,7 @@ import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
 import type { ScanMailbox } from './mailbox.ts';
-import type { CompanyStore, LedgerDetail, Owner } from './repository.ts';
+import type { CompanyStore, LedgerDetail, Owner, ScanRecord } from './repository.ts';
 import { runScan } from './scan.ts';
 
 export const ledgerStatusChange = z.strictObject({ status: z.enum(['dropped', 'settled']) });
@@ -162,6 +162,20 @@ function sections(store: CompanyStore) {
   };
 }
 
+/** What a scan that stopped at the day's allowance says about the messages it left. */
+export const SCAN_ALLOWANCE_NOTE = 'Some messages will be read on your next scan tomorrow.';
+
+/** One scan as its person sees it. The note is additive: a scan that read everything has none. */
+export function scanView(record: ScanRecord) {
+  return {
+    status: record.status,
+    messages_seen: record.messagesSeen,
+    items_found: record.itemsFound,
+    ...(record.error ? { error: record.error } : {}),
+    ...((record.counts.daily_allowance_reached ?? 0) > 0 ? { note: SCAN_ALLOWANCE_NOTE } : {}),
+  };
+}
+
 export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   const exclusively = sections(deps.store);
   const handler = deps.handler ?? stubLedgerItemHandler();
@@ -209,12 +223,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
     const record = await deps.store.scan(owner, c.req.param('scanId'));
     if (!record) throw new ServiceError('not_found', 'No such scan.', 404);
-    return c.json({
-      status: record.status,
-      messages_seen: record.messagesSeen,
-      items_found: record.itemsFound,
-      ...(record.error ? { error: record.error } : {}),
-    });
+    return c.json(scanView(record));
   });
 
   app.get('/spaces/:spaceId/companies', async (c) => {
