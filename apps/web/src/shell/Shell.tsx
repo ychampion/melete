@@ -130,7 +130,7 @@ function SpaceSwitcher() {
       <button
         type="button"
         className="space-switch"
-        aria-label="Switch space"
+        aria-label="Personal, switch space"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
@@ -314,9 +314,13 @@ function Sidebar({
               </span>
               <span className="clamp1 grow">{chat.title}</span>
               {chat.status === 'needs_you' ? (
-                <span className="chat-dot" data-tone="needs" title="Waiting for you" />
+                <span className="chat-dot" data-tone="needs" title="Waiting for you">
+                  <span className="sr-only">, waiting for you</span>
+                </span>
               ) : live ? (
-                <span className="chat-dot dot-live" data-tone="working" title="Working" />
+                <span className="chat-dot dot-live" data-tone="working" title="Working">
+                  <span className="sr-only">, working</span>
+                </span>
               ) : null}
             </a>
           );

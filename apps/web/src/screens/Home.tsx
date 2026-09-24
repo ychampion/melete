@@ -867,7 +867,7 @@ export function HomeScreen() {
                   onClick={() => void handle(suggestion.id)}
                 >
                   <Icon name={suggestion.icon} size={14} />
-                  {suggestion.label}
+                  <span>{suggestion.label}</span>
                 </button>
               ))}
               {prompts.map((prompt) => (
@@ -879,7 +879,7 @@ export function HomeScreen() {
                   onClick={() => void start(prompt.text)}
                 >
                   <Icon name={prompt.icon} size={14} />
-                  {prompt.label}
+                  <span>{prompt.label}</span>
                 </button>
               ))}
             </div>

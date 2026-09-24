@@ -119,6 +119,11 @@
   max-width: 100%;
   transition: border-color 0.15s;
 }
+.suggestion > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .suggestion > svg {
   color: var(--muted);
   flex-shrink: 0;
