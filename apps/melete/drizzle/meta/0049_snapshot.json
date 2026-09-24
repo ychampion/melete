@@ -1,5 +1,5 @@
 {
-  "id": "1d4b92a5-8a23-41bd-a01c-21d247d51a91",
+  "id": "9b62fc47-2e56-4e57-bd3c-e907902daf94",
   "prevId": "7ce07768-711c-41b0-a5d9-9d7b6aee80b0",
   "version": "7",
   "dialect": "postgresql",
@@ -8085,6 +8085,12 @@
         },
         "job_id": {
           "name": "job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_job_id": {
+          "name": "last_job_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false

@@ -112,6 +112,8 @@ export const ledgerItem = pgTable(
     evidence: jsonb('evidence').$type<LedgerEvidence[]>().notNull(),
     suggestedPlaybook: text('suggested_playbook'),
     jobId: text('job_id'),
+    /** The chase that last handled it and stopped, once it is open again. */
+    lastJobId: text('last_job_id'),
     summary: text('summary').notNull(),
     /** The scan that found it, so a re-scan can replace its own findings. */
     scanId: text('scan_id').notNull(),

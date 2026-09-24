@@ -321,10 +321,53 @@ withDb('handling what a company owes, from the scan to the reply that resolves i
     expect(done.state).toBe('completed');
     // Nothing more went out after the company paid.
     expect(await sends(to)).toHaveLength(2);
-    // And the map says so: the item is settled and the total stops counting it.
+    // The chase is done, but only the person can say the money arrived. The
+    // item waits for them, with its chase on it, and is still counted.
     const after = await store.map(scanOwner, new Date(FIXTURE_REFERENCE));
-    expect(after.items.find((entry) => entry.id === item.id)?.status).toBe('settled');
-    expect(after.totals.owed_to_you_minor).toBe(owedAtStart - 53450);
+    expect(after.items.find((entry) => entry.id === item.id)).toMatchObject({
+      status: 'waiting',
+      job_id: jobId,
+    });
+    expect(after.totals.owed_to_you_minor).toBe(owedAtStart);
+    // They say "Settled", and the total stops counting it.
+    await store.setStatus(scanOwner, item.id, 'settled');
+    const settled = await store.map(scanOwner, new Date(FIXTURE_REFERENCE));
+    expect(settled.totals.owed_to_you_minor).toBe(owedAtStart - 53450);
+  });
+
+  test('a chase that ends on a refusal leaves the item unsettled and still owed', async () => {
+    const { jobs } = fixture();
+    const to = 'business@tidewell.example';
+    const before = (await store.map(scanOwner, new Date(FIXTURE_REFERENCE))).totals;
+    const { jobId, item } = await handleIt('tidewell.example');
+    const opened = await allowOnceAndSend(
+      await claim(await jobs.get(jobId)),
+      jobId,
+      to,
+      'My account is GBP 486.40 in credit. Please refund the balance to my bank account.',
+    );
+    await waitForReply(opened.claimed, jobId, new Date(Date.now() + 7 * 86_400_000));
+    expect(
+      await poll([
+        {
+          messageId: '<no-1@tidewell.example>',
+          from: 'Tidewell Energy <business@tidewell.example>',
+          subject: 'Re: Refund',
+          receivedAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ]),
+    ).toBe(1);
+    // The company says no, and the chase finishes with that on the record.
+    const refused = await claim(await jobs.get(jobId));
+    const done = await runner.commitOutcome(refused.claims, {
+      kind: 'completed',
+      summary: 'Tidewell Energy refused to refund the credit.',
+      evidence: [{ kind: 'action', action_id: opened.proposal.action_id }],
+    });
+    expect(done.state).toBe('completed');
+    const after = await store.map(scanOwner, new Date(FIXTURE_REFERENCE));
+    expect(after.items.find((entry) => entry.id === item.id)?.status).toBe('waiting');
+    expect(after.totals).toEqual(before);
   });
 
   test('a chase that is stopped puts the item back, ready to be handled again', async () => {
@@ -340,6 +383,10 @@ withDb('handling what a company owes, from the scan to the reply that resolves i
       status: 'found',
       job_id: null,
     });
+    // It remembers which chase it was.
+    const [row] = await fixture().handle
+      .sql`select last_job_id from ledger_item where id = ${item.id}`;
+    expect(row?.last_job_id).toBe(jobId);
     expect((await store.map(scanOwner, new Date(FIXTURE_REFERENCE))).totals).toEqual(before);
   });
 
