@@ -26,13 +26,14 @@ export type TurnBlock =
   | { type: 'card'; card: ResultCard }
   | { type: 'receipt'; receipt: Receipt; reversed: boolean }
   /**
-   * `decided` is the option this client chose; `closed` means the turn moved on
-   * after a decision made elsewhere (the contract carries no decision event).
+   * `decided` is the option chosen, here or as the stream's decision reports
+   * it; `replaced` means a later message made the request stale; `closed`
+   * means the turn moved on after a decision this client has not seen.
    */
   | {
       type: 'permission';
       permission: Permission;
-      decided: PermissionOption | 'closed' | null;
+      decided: PermissionOption | 'replaced' | 'closed' | null;
     }
   /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
   | { type: 'question'; question: Question; answered: string | null };
@@ -206,6 +207,31 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
     base = patchTurn(base, event.turn_id, (turn) =>
       turn.messageSeq === null ? { ...turn, messageSeq: event.seq } : turn,
     );
+  }
+  // A permission's decision settles its card, in whichever turn drew it, and
+  // says nothing about any other card still waiting.
+  if (item.type === 'decision') {
+    const decision = item.decision;
+    if (decision.kind !== 'permission') return base;
+    const outcome = decision.outcome;
+    if (
+      outcome !== 'allow_once' &&
+      outcome !== 'always' &&
+      outcome !== 'deny' &&
+      outcome !== 'replaced'
+    )
+      return base;
+    return {
+      ...base,
+      turns: base.turns.map((turn) => ({
+        ...turn,
+        blocks: turn.blocks.map((block) =>
+          block.type === 'permission' && block.permission.id === decision.id
+            ? { ...block, decided: outcome }
+            : block,
+        ),
+      })),
+    };
   }
   if (
     (item.type === 'card' && hasBlock(base, item.card.id)) ||
