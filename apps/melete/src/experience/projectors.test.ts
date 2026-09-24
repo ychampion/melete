@@ -10,6 +10,7 @@ import {
   projectPermission,
   projectPermissionDecision,
   projectQuestionDecision,
+  SUPERSEDED_NOTE,
   safeUrl,
   senderAddress,
 } from './projectors.ts';
@@ -173,4 +174,16 @@ test('a closed question is answered with the chosen text, or withdrawn with none
     at,
   });
   expect([withdrawn.outcome, withdrawn.answer]).toEqual(['withdrawn', null]);
+});
+
+test('a permission a later message made stale reads as replaced, not as a refusal', () => {
+  expect(
+    projectPermissionDecision({
+      approvalId: 'apr_one',
+      decision: 'denied',
+      ruleSaved: false,
+      note: SUPERSEDED_NOTE,
+      at: new Date('2026-09-25T09:00:00.000Z'),
+    }).outcome,
+  ).toBe('replaced');
 });

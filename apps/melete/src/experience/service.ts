@@ -13,17 +13,19 @@ import {
   type SubmissionReceipt,
   unavailable,
 } from '@melete/contracts';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { ServiceError } from '../api/errors.ts';
 import type { Database } from '../db/client.ts';
-import { agent, connection, event, experienceTurn, job } from '../db/schema.ts';
+import { action, agent, approval, connection, event, experienceTurn, job } from '../db/schema.ts';
+import type { Transaction } from '../db/transaction.ts';
+import { appendEvent } from '../events/store.ts';
 import { newId } from '../ids.ts';
 import type { AttemptRunner } from '../jobs/runner.ts';
 import type { JobRow, JobService } from '../jobs/service.ts';
 import type { SubmissionService } from '../jobs/submissions.ts';
 import { ownJob } from '../principals/authority.ts';
 import { agentValues, agentView } from './agents.ts';
-import { answerText, plainText } from './projectors.ts';
+import { answerText, plainText, SUPERSEDED_NOTE } from './projectors.ts';
 
 export const experienceMissing = () => new ServiceError('not_found', 'That item is not here.', 404);
 export function conversationView(
@@ -52,6 +54,50 @@ export function conversationView(
     plan_id: row.planId,
     ...(progress ? { progress } : {}),
   });
+}
+
+/**
+ * A new message in a conversation changes what was asked for, so every
+ * permission still waiting in it is stale: the draft it would send was written
+ * for the request before this one. Each is decided as denied, noted as
+ * replaced, in the same transaction that accepts the message, so it can never
+ * be allowed afterwards and nothing it covered is sent. That includes the
+ * send of a reviewed draft, which runs as a command job under the conversation.
+ */
+export async function supersedePendingPermissions(tx: Transaction, conversationId: string) {
+  const pending = await tx
+    .select({ approval, action })
+    .from(approval)
+    .innerJoin(action, eq(action.id, approval.actionId))
+    .innerJoin(job, eq(job.id, action.jobId))
+    .where(
+      and(
+        isNull(approval.decision),
+        eq(action.status, 'needs_approval'),
+        or(eq(job.id, conversationId), eq(job.experienceParentId, conversationId)),
+      ),
+    )
+    .for('update', { of: [approval, action] });
+  for (const { approval: stale, action: effect } of pending) {
+    await tx
+      .update(approval)
+      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: 'system' })
+      .where(eq(approval.id, stale.id));
+    await tx.update(action).set({ status: 'denied' }).where(eq(action.id, effect.id));
+    await appendEvent(tx, {
+      jobId: effect.jobId,
+      attemptId: effect.attemptId,
+      type: 'approval_decided',
+      payload: {
+        approval_id: stale.id,
+        action_id: effect.id,
+        decision: 'denied',
+        note: SUPERSEDED_NOTE,
+        payload_hash: effect.payloadHash,
+      },
+      dedupKey: `${stale.id}:decision`,
+    });
+  }
 }
 
 export class ExperienceService {
@@ -88,6 +134,7 @@ export class ExperienceService {
           text,
         });
         await tx.update(job).set({ currentTurnId: turnId }).where(eq(job.id, row.id));
+        await supersedePendingPermissions(tx, row.id);
       };
     }
   }

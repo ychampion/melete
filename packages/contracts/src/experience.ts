@@ -314,7 +314,11 @@ export const experienceDecision = z.strictObject({
   kind: z.enum(['permission', 'question']),
   /** The permission's or the question's id. */
   id,
-  outcome: z.enum(['allow_once', 'always', 'deny', 'answered', 'withdrawn']),
+  /**
+   * `replaced` is a permission a later message in the same conversation made
+   * stale: it can no longer be allowed, and nothing it covered is sent.
+   */
+  outcome: z.enum(['allow_once', 'always', 'deny', 'replaced', 'answered', 'withdrawn']),
   /** The chosen answer, for an answered question. */
   answer: z.string().max(4000).nullable(),
   decided_at: date,

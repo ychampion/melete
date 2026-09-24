@@ -347,3 +347,42 @@ test('a chats cursor carries its position and nothing else is taken for one', ()
   for (const bad of ['nonsense', Buffer.from('2026|a|b').toString('base64url'), ''])
     expect(C.decodeConversationCursor(bad)).toBeNull();
 });
+
+test('a new message makes a pending draft send stale, as the service does', async () => {
+  const { mock, chat } = await chatFixture();
+  const drafts = C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
+    (await call(mock, `/conversations/${chat.id}/drafts`)).body,
+  );
+  const draft = C.experienceDraft.parse(drafts.drafts[0]);
+  const send = C.experienceOperations['POST /drafts/{id}/send'].response.parse(
+    (await call(mock, `/drafts/${draft.id}/send`, 'POST')).body,
+  );
+  const permission = C.permissionCard.parse(send.permission);
+  const firmer = await call(mock, `/conversations/${chat.id}/messages`, 'POST', {
+    text: 'Make it firmer',
+  });
+  expect(firmer.response.status).toBe(200);
+  expect(
+    C.experienceOperations['GET /permissions'].response.parse(
+      (await call(mock, '/permissions')).body,
+    ).permissions,
+  ).toHaveLength(0);
+  const allowed = await call(mock, `/permissions/${permission.id}`, 'POST', {
+    option: 'allow_once',
+    version: permission.version,
+  });
+  expect(allowed.response.status).toBe(409);
+  expect(
+    C.experienceOperations['GET /conversations/{id}/receipts'].response.parse(
+      (await call(mock, `/conversations/${chat.id}/receipts`)).body,
+    ).receipts,
+  ).toHaveLength(0);
+  const stream = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events?limit=200`)).body,
+  );
+  expect(
+    stream.events.flatMap((event) =>
+      event.item.type === 'decision' ? [[event.item.decision.id, event.item.decision.outcome]] : [],
+    ),
+  ).toEqual([[permission.id, 'replaced']]);
+});

@@ -2501,6 +2501,7 @@
                                               "allow_once",
                                               "always",
                                               "deny",
+                                              "replaced",
                                               "answered",
                                               "withdrawn"
                                             ]

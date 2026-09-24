@@ -352,6 +352,9 @@ export function senderAddress(configuration: unknown): string | null {
   return plainText(value, '', 4000) === value.trim() ? value.trim() : null;
 }
 
+/** The note on a permission a later message in its conversation made stale. */
+export const SUPERSEDED_NOTE = 'replaced';
+
 /**
  * A decided permission as the conversation shows it. An approval that saved a
  * standing rule was "always"; any other approval was this once.
@@ -360,12 +363,21 @@ export function projectPermissionDecision(input: {
   approvalId: string;
   decision: unknown;
   ruleSaved: boolean;
+  /** Why it was decided, when the service decided it rather than the person. */
+  note?: unknown;
   at: Date;
 }): ExperienceDecision {
   return experienceDecision.parse({
     kind: 'permission',
     id: input.approvalId,
-    outcome: input.decision === 'denied' ? 'deny' : input.ruleSaved ? 'always' : 'allow_once',
+    outcome:
+      input.decision === 'denied'
+        ? input.note === SUPERSEDED_NOTE
+          ? 'replaced'
+          : 'deny'
+        : input.ruleSaved
+          ? 'always'
+          : 'allow_once',
     answer: null,
     decided_at: input.at.toISOString(),
   });
