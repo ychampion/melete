@@ -160,6 +160,14 @@ describe('skill frontmatter', () => {
 });
 
 describe('countMatches', () => {
+  test('a trigger ending in "a" also matches "an"', () => {
+    expect(countMatches('draft an email to the landlord', 'draft a')).toBe(1);
+    expect(countMatches('write an essay', 'write a')).toBe(1);
+    expect(countMatches('schedule an appointment', 'schedule a')).toBe(1);
+    expect(countMatches('draft a toast', 'draft a')).toBe(1);
+    expect(countMatches('draft anything', 'draft a')).toBe(0);
+  });
+
   test('the last word may carry an ending, and nothing else', () => {
     expect(countMatches('the notes summarised', 'summarise')).toBe(1);
     expect(countMatches('summarising the notes', 'summarise')).toBe(1);
