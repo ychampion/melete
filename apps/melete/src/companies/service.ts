@@ -77,7 +77,10 @@ export const DEFAULT_DAILY_SCAN_CALLS = 500;
  */
 export function configuredDailyCalls(): number | undefined {
   if (!process.env.MELETE_COMPANIES_MODEL?.trim()) return undefined;
-  const raw = Number(process.env.MELETE_COMPANIES_DAILY_CALLS);
+  // An empty value is an unset one: `Number('')` is 0, which would stop every scan.
+  const written = process.env.MELETE_COMPANIES_DAILY_CALLS?.trim();
+  if (!written) return DEFAULT_DAILY_SCAN_CALLS;
+  const raw = Number(written);
   return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_DAILY_SCAN_CALLS;
 }
 

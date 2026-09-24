@@ -14,7 +14,12 @@ import { DEFAULT_EXTRACTION_MODEL } from './gateway.ts';
 import { fixtureMailbox } from './mailbox.ts';
 import { MemoryCompanyStore, type Owner } from './repository.ts';
 import { runScan } from './scan.ts';
-import { gatewayExtractor, SCAN_CALL_CEILING } from './service.ts';
+import {
+  configuredDailyCalls,
+  DEFAULT_DAILY_SCAN_CALLS,
+  gatewayExtractor,
+  SCAN_CALL_CEILING,
+} from './service.ts';
 
 const provider: GatewayProvider = {
   name: 'openai',
@@ -129,5 +134,41 @@ describe('the live extractor’s budget', () => {
       text: 'Subject: Receipt\n\nThank you for your payment.',
     });
     expect(seen.calls).toBe(before);
+  });
+});
+
+describe('the daily allowance setting', () => {
+  const read = (settings: Record<string, string | undefined>) => {
+    const saved = {
+      model: process.env.MELETE_COMPANIES_MODEL,
+      calls: process.env.MELETE_COMPANIES_DAILY_CALLS,
+    };
+    const assign = (name: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    };
+    try {
+      assign('MELETE_COMPANIES_MODEL', settings.model);
+      assign('MELETE_COMPANIES_DAILY_CALLS', settings.calls);
+      return configuredDailyCalls();
+    } finally {
+      assign('MELETE_COMPANIES_MODEL', saved.model);
+      assign('MELETE_COMPANIES_DAILY_CALLS', saved.calls);
+    }
+  };
+
+  test('an empty setting is no setting, so the default applies', () => {
+    expect(read({ model: 'default', calls: '' })).toBe(DEFAULT_DAILY_SCAN_CALLS);
+    expect(read({ model: 'default', calls: '  ' })).toBe(DEFAULT_DAILY_SCAN_CALLS);
+    expect(read({ model: 'default', calls: undefined })).toBe(DEFAULT_DAILY_SCAN_CALLS);
+  });
+
+  test('a number is taken as written, including zero', () => {
+    expect(read({ model: 'default', calls: '25' })).toBe(25);
+    expect(read({ model: 'default', calls: '0' })).toBe(0);
+  });
+
+  test('a scripted scan spends nothing and has no allowance', () => {
+    expect(read({ model: undefined, calls: '25' })).toBeUndefined();
   });
 });
