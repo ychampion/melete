@@ -256,15 +256,19 @@ async function captureOne(
   return { outcome: 'remembered', sourceId: evidence.source.source_id };
 }
 
+/** The subject a saved detail about the person themselves is filed under. */
+const OWN_SUBJECTS = ['me', 'my', 'self', 'mine', 'owner'];
 /**
- * The saved details a "forget …" names. Every subject word must appear, and
- * when a field is named ("number", "email") the detail must be that field. A
- * request that names only a field ("forget my number") names no subject.
+ * The saved details a "forget …" names. A named subject ("Maya's number") means
+ * that subject only; "my …" means the person's own details only; and when a
+ * field is named ("number", "email") the detail must be that field. A request
+ * that names neither a subject nor "my" names nothing, and null says so.
  */
 async function namedDetails(sql: MemorySql, scope: MemoryScope, target: string) {
   const terms = lexicalTerms(target);
   const subject = terms.filter((term) => !(term in FIELD_WORDS));
-  if (!subject.length) return null;
+  const own = /\b(?:my|mine|me)\b/i.test(target);
+  if (!subject.length && !own) return null;
   const fields = terms.filter((term) => term in FIELD_WORDS && FIELD_WORDS[term]?.length);
   const query = [
     ...subject.map(tsqueryTerm),
@@ -274,8 +278,9 @@ async function namedDetails(sql: MemorySql, scope: MemoryScope, target: string) 
     join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
     join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
     where c.space_id = ${scope.spaceId} and not c.hidden
-      and to_tsvector('simple', replace(replace(c.domain_key, '.', ' '), ':', ' ') || ' ' || b.content)
-        @@ to_tsquery('simple', ${query})
+      and (${!own} or split_part(c.domain_key, '.', 2) = any(${OWN_SUBJECTS}))
+      and (${query === ''} or to_tsvector('simple', replace(replace(c.domain_key, '.', ' '), ':', ' ') || ' ' || b.content)
+        @@ to_tsquery('simple', ${query || "'x'"}))
     order by r.data_revision desc limit ${ASK_LIMIT + 1}`;
 }
 

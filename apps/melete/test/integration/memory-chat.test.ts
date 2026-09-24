@@ -17,7 +17,7 @@ import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
 import { cleanupMemory } from '../../src/memory/forget.ts';
-import { openMemoryGateway } from '../../src/memory/gateway.ts';
+import { failureCode, openMemoryGateway } from '../../src/memory/gateway.ts';
 import { memoryHealth } from '../../src/memory/health.ts';
 import { attemptRecallQuery, recall } from '../../src/memory/recall.ts';
 import { runExtractionWork } from '../../src/memory/service.ts';
@@ -397,6 +397,41 @@ withDb('automatic memory from chat', () => {
         )
         .catch((error: Error) => error.message);
       expect(other).toBe('{"proposals":[]}');
+      // A call that was sent counts even when no answer came back, a timeout
+      // included; only a call the provider answered with an error does not.
+      const sent = newId('own');
+      for (const settlement of [
+        { status: 'unknown', httpStatus: null },
+        { status: 'unknown', httpStatus: null },
+      ])
+        await db.sql`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens, settlement)
+          values (${newId('turn')}, ${sent}, 'sp_budget', ${newId('task')}, 'fake', 'fake-scripted-v1', 100, ${JSON.stringify(settlement)}::text::jsonb)`;
+      const timedOut = await opened.gateway
+        .chat(
+          {
+            messages: [{ role: 'user', content: '{}' }],
+            max_tokens: 100,
+            signal: AbortSignal.timeout(10_000),
+          },
+          { ownerId: sent, spaceId: 'sp_budget', workId: 'after-timeouts' },
+        )
+        .catch((error: Error) => error.message);
+      expect(timedOut).toBe('memory_daily_budget');
+      const refused = newId('own');
+      for (let i = 0; i < 2; i++)
+        await db.sql`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens, settlement)
+          values (${newId('turn')}, ${refused}, 'sp_budget', ${newId('task')}, 'fake', 'fake-scripted-v1', 100, ${JSON.stringify({ status: 'failed', httpStatus: 503 })}::text::jsonb)`;
+      const afterErrors = await opened.gateway
+        .chat(
+          {
+            messages: [{ role: 'user', content: '{}' }],
+            max_tokens: 100,
+            signal: AbortSignal.timeout(10_000),
+          },
+          { ownerId: refused, spaceId: 'sp_budget', workId: 'after-errors' },
+        )
+        .catch((error: Error) => error.message);
+      expect(afterErrors).toBe('{"proposals":[]}');
     } finally {
       await opened.close();
     }
@@ -503,10 +538,11 @@ withDb('a model provider outage', () => {
         status: 'waiting',
         waiting: 1,
         reason: 'provider_unavailable',
+        failed: 0,
       });
       // However long the outage, the gap stops growing at 30 minutes.
       const { id } = await work();
-      await db.sql`update memory_work set provider_failures = 20 where id = ${id}`;
+      await db.sql`update memory_work set provider_failures = 6 where id = ${id}`;
       await runExtractionWork(service, id);
       expect(Math.round((await work()).wait ?? 0)).toBeLessThanOrEqual(1800);
       await db.sql`update memory_work set retry_at = clock_timestamp() - interval '1 second' where id = ${id}`;
@@ -575,20 +611,38 @@ withDb('asking to forget in plain words', () => {
           await db.sql`select payload->'call'->'output_summary'->>'text' as text from event
             where job_id = ${chat} and payload->>'kind' = 'tool_trace' order by seq`
         ).map((row) => row.text as string);
+      await detail(
+        'ana',
+        "Ana's email is ana@studio.example.",
+        'contact.ana.email',
+        'ana@studio.example',
+      );
       const everything = await kept();
 
-      // A field alone names nobody: nothing is forgotten, least of all Bob's.
+      // "My number" is the person's own number, and only that: Bob's stays.
       await say(db, chat, 'Forget my number.');
       await captureChat(capture);
-      expect(await kept()).toEqual(everything);
+      const withoutMine = everything.filter((key) => key !== 'contact.me.phone');
+      expect(await kept()).toEqual(withoutMine);
+
+      // "My address": the person has none saved, so nothing goes, Ana's email least of all.
+      await say(db, chat, 'Forget my address.');
+      await captureChat(capture);
+      expect(await kept()).toEqual(withoutMine);
+      expect((await replies()).at(-1)).toBe('Nothing saved matched');
+
+      // A field alone names nobody: it asks whose, and forgets nothing.
+      await say(db, chat, 'Forget the number.');
+      await captureChat(capture);
+      expect(await kept()).toEqual(withoutMine);
       expect((await replies()).at(-1)).toBe(
-        'Say whose number to forget, for example "forget Ana\'s email"',
+        'Say whose the number to forget, for example "forget Ana\'s email"',
       );
 
       // Two details name Maya: it asks which, and forgets neither.
       await say(db, chat, "Forget Maya's details.");
       await captureChat(capture);
-      expect(await kept()).toEqual(everything);
+      expect(await kept()).toEqual(withoutMine);
       expect((await replies()).at(-1)).toBe(
         "More than one saved detail matched: maya's email, maya's phone. Say which one to forget",
       );
@@ -598,12 +652,19 @@ withDb('asking to forget in plain words', () => {
       await captureChat(capture);
       expect((await replies()).at(-1)).toBe('Nothing saved matched');
 
+      // A request that names something not saved matches nothing: the number in
+      // it is not kept, and Maya's saved number stays.
+      await say(db, chat, "Forget Maya's old number +351 910 000 099.");
+      await captureChat(capture);
+      expect((await replies()).at(-1)).toBe('Nothing saved matched');
+      expect(await kept()).toEqual(withoutMine);
+
       // Named exactly, the one detail goes and nothing else does.
       await say(db, chat, "Forget Maya's number.");
       await captureChat(capture);
-      expect(await kept()).toEqual(everything.filter((key) => key !== 'contact.maya.phone'));
+      expect(await kept()).toEqual(withoutMine.filter((key) => key !== 'contact.maya.phone'));
 
-      // None of the four requests was kept as something the person said.
+      // None of the requests was kept as something the person said.
       const [requests] = await db.sql`select count(*)::int as n from memory_sources
         where space_id = ${scope.spaceId} and publisher = 'chat'`;
       expect(requests?.n).toBe(0);
@@ -611,8 +672,11 @@ withDb('asking to forget in plain words', () => {
         await db.sql`select c.outcome from memory_capture c join event e on e.seq = c.event_seq
         where e.job_id = ${chat} and e.type = 'notice' order by c.event_seq`;
       expect(outcomes.map((row) => row.outcome)).toEqual([
+        'forgot',
+        'forgot:none',
         'forgot:ask',
         'forgot:ask',
+        'forgot:none',
         'forgot:none',
         'forgot',
       ]);
@@ -656,6 +720,98 @@ withDb('asking to forget in plain words', () => {
       await journal.close();
     }
   });
+});
+
+withDb('failures asking again cannot fix', () => {
+  test('a refused call, a very long message and an outage that outlasts the backoff each end the message', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const journal = await createJournal();
+    let answer: 'refuse' | 'down' | 'ok' = 'refuse';
+    const ok = createScriptedProvider(
+      Array.from({ length: 10 }, () => ({ text: '{"proposals":[]}' })),
+    );
+    const opened = await openMemoryGateway({
+      sql: db.sql,
+      provider: 'fake',
+      model: 'no-such-model',
+      providers: [fakeProvider],
+      // A wrong model name is refused by the provider with 404; an outage is 503.
+      fake: async (body, attemptId, protocol) =>
+        answer === 'ok'
+          ? ok(body, attemptId, protocol)
+          : new Response('{"error":"no"}', {
+              status: answer === 'refuse' ? 404 : 503,
+              headers: { 'content-type': 'application/json' },
+            }),
+      dailyCalls: 50,
+    });
+    const service = {
+      sql: db.sql,
+      boss: db.boss,
+      journal: journal.journal,
+      gateway: opened.gateway,
+    };
+    const message = async (identity: string, text: string) => {
+      const evidence = await ingest(db.sql, scope, {
+        stream: 'chat',
+        source_identity: identity,
+        source_version: '1',
+        source_type: 'message',
+        author: 'owner',
+        event_at: '2026-08-02T09:00:00Z',
+        text,
+      });
+      const [work] =
+        await db.sql`select id from memory_work where source_id = ${evidence.source.source_id}`;
+      return work?.id as string;
+    };
+    const state = async (id: string) => {
+      const [row] = await db.sql`select status, error_code from memory_work where id = ${id}`;
+      return [row?.status, row?.error_code];
+    };
+    try {
+      // The provider refuses the model: asking again cannot succeed, so it stops.
+      const refused = await message('bad-model', 'My dentist is Dr Silva.');
+      await runExtractionWork(service, refused);
+      expect(await state(refused)).toEqual(['rejected', 'extraction_provider_refused']);
+
+      // A 14,000-character message reaches an end, answered or refused, never waiting forever.
+      answer = 'ok';
+      const long = await message('long', '我'.repeat(14_000));
+      await runExtractionWork(service, long);
+      expect(['done', 'rejected']).toContain((await state(long))[0]);
+
+      // An outage that outlasts eight tries gives the message up with a recorded fault.
+      answer = 'down';
+      const waited = await message('outage', 'My sister Maya is on +351 912 345 678.');
+      await db.sql`update memory_work set provider_failures = 7 where id = ${waited}`;
+      await runExtractionWork(service, waited);
+      expect(await state(waited)).toEqual(['rejected', 'extraction_provider_unavailable:given_up']);
+      const health = await memoryHealth(db.sql);
+      expect(health.failed).toBeGreaterThanOrEqual(2);
+    } finally {
+      await opened.close();
+      await journal.close();
+    }
+  });
+});
+
+test('a failed call is sorted by whether asking again can help', () => {
+  expect(failureCode(429, '{"error":{"code":"memory_daily_budget"}}', undefined)).toBe(
+    'memory_daily_budget',
+  );
+  expect(failureCode(429, '{"error":{"code":"memory_call_too_large"}}', undefined)).toBe(
+    'extraction_call_refused',
+  );
+  expect(failureCode(413, '{"error":{"code":"input_context_exceeded"}}', undefined)).toBe(
+    'extraction_call_refused',
+  );
+  expect(failureCode(502, 'provider_rejected_request', 404)).toBe('extraction_provider_refused');
+  expect(failureCode(502, 'provider_rejected_request', 400)).toBe('extraction_provider_refused');
+  expect(failureCode(429, 'provider_rejected_request', 429)).toBe('extraction_gateway_failure');
+  expect(failureCode(502, 'provider_rejected_request', 503)).toBe('extraction_gateway_failure');
+  expect(failureCode(504, 'request_timeout', null)).toBe('extraction_gateway_failure');
 });
 
 test('what a message asks of memory is read from its opening words', () => {

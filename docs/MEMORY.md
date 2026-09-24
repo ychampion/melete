@@ -47,7 +47,8 @@ A person can say these in plain words:
 | "That's wrong, it's ..." or "Actually, ... now" | Supersedes the claim it corrects |
 | "Forget that" or "Don't remember that" | Removes what their previous kept message in the conversation taught, through the restriction journal |
 | "Forget Maya's number" | Removes the one saved detail that names Maya and that field, through the restriction journal |
-| "Forget my number", or a request several details match | Asks which detail they mean and removes nothing |
+| "Forget my number" | Removes the person's own number only, never someone else's |
+| "Forget the number", or a request several details match | Asks which detail they mean and removes nothing |
 | "Forget Carol's number" with nothing saved about Carol | Says nothing saved matched |
 | "Don't remember this" or "Off the record" | Does not keep that message |
 
