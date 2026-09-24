@@ -124,10 +124,12 @@ async function liveSkill(
     const { spaceId, memberId } = await fixture.sharedSpace(true);
     if (!memberId) throw new Error('No member');
     const live = await liveSkill(spaceId, 'weekly-digest');
+    // Activation is the correction road: an engine skill has no correction behind it,
+    // so there it reads as absent, whichever scope is asked for.
     for (const scope of ['space', 'private'] as const)
       await rejectsWith(
         () => fixture.procedures.activate(fixture.ownerId, spaceId, live.candidateId, scope),
-        'promotion_denied',
+        'not_found',
       );
     expect(await stored(live.candidateId)).toMatchObject({
       state: 'enabled_canary',
