@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { connectionKindListResponse, connectionResponse } from '@melete/contracts';
+import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import {
   ConnectorFactory,
@@ -27,6 +28,7 @@ import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
 import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
+import { SandboxRefusal } from '../../src/sandbox/manifest.ts';
 import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
 import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
 import { sandboxKeyChange } from '../../src/sandbox/wiring.ts';
@@ -597,5 +599,70 @@ withDb('the sandbox connection kind', () => {
     expect(after?.secret_ref).toBe(replacement);
     await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
     await teardown.close();
+  }, 120_000);
+  test('a workspace resume that races a revocation waits for it and is refused, and nothing hangs', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, revoke } = await revocationSetup();
+    const agentId = recordId('agent');
+    await h.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone, standing_instruction)
+      values (${agentId}, ${h.spaceId}, 'Agent', 'helper', 'blue', 'plain', 'black', 'calm', 'help')`;
+    const job = await h.jobs.create({ space_id: h.spaceId, title: 'Race', objective: 'Race' });
+    const spec = sessionSpec(PROJECT, h.spaceId, id);
+    const workspace = {
+      connectionId: id,
+      spaceId: h.spaceId,
+      jobId: job.id,
+      attemptId: null,
+      agentId,
+      persistence: 'pause' as const,
+      concurrency: { perConnection: 8, installation: 8 },
+    };
+    const opened = await h.sessions.openWorkspace(
+      workspace,
+      provider,
+      spec,
+      AbortSignal.timeout(30_000),
+    );
+    await h.sessions.suspendWorkspace(opened.id, provider, AbortSignal.timeout(30_000));
+    // The revocation's teardown is held inside its first provider call, with
+    // the connection row locked for update, while a resume begins.
+    let entered!: () => void;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const destroy = provider.destroy.bind(provider);
+    let calls = 0;
+    provider.destroy = async (handle, signal) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await gate;
+      }
+      return destroy(handle, signal);
+    };
+    const revoking = revoke().then(
+      (changed) => changed.status,
+      (error: unknown) => `revoke failed: ${String(error)}`,
+    );
+    await inside;
+    const resuming = h.sessions
+      .openWorkspace(workspace, provider, spec, AbortSignal.timeout(60_000))
+      .then(
+        () => 'resumed',
+        (error: unknown) =>
+          error instanceof SandboxRefusal ? error.code : `resume failed: ${String(error)}`,
+      );
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    release();
+    const outcome = await Promise.race([
+      Promise.all([revoking, resuming]),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 20_000)),
+    ]);
+    expect(outcome).toEqual(['revoked', 'connection_inactive']);
+    expect(await provider.inspect(sessionHandle(opened), AbortSignal.timeout(10_000))).toBe('gone');
   }, 120_000);
 });

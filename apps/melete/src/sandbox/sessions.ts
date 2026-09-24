@@ -254,6 +254,23 @@ export class SandboxSessions {
     return { id, spec, cap };
   }
 
+  /**
+   * The connection must be active, and its row is held for share until the
+   * session is written. This is the first lock an opening takes: a revocation
+   * or a key switch holds the row for update while it tears the connection's
+   * sandboxes down, so an opening waits for it here and then sees the result,
+   * instead of holding advisory and session locks the teardown needs.
+   */
+  private async checkConnection(tx: TransactionSql, input: OpenSession) {
+    const [held] = await tx`select status from connection
+      where id = ${input.connectionId} for share`;
+    if (held?.status !== 'active')
+      throw new SandboxRefusal(
+        'connection_inactive',
+        'this sandbox connection is not active, so no sandbox is opened through it',
+      );
+  }
+
   private async checkCap(tx: TransactionSql, input: OpenSession, cap: number | null) {
     if (cap === null) return;
     await tx`select pg_advisory_xact_lock(hashtext(${`sandbox-job:${input.jobId}`}))`;
@@ -327,6 +344,7 @@ export class SandboxSessions {
     const { id, spec, cap } = this.prepare(input, provider, specFor, persistence);
     try {
       await this.sql.begin(async (tx) => {
+        await this.checkConnection(tx, input);
         await this.checkCap(tx, input, cap);
         await this.checkConcurrency(tx, input);
         if (input.agentId) {
@@ -412,6 +430,7 @@ export class SandboxSessions {
     let suspended: SessionRow | null = null;
     try {
       await this.sql.begin(async (tx) => {
+        await this.checkConnection(tx, input);
         await this.checkCap(tx, input, cap);
         // Before the workspace lock, and in that order in both paths: two locks
         // taken in opposite orders by two openings would deadlock.

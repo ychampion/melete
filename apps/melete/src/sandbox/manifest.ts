@@ -36,7 +36,8 @@ export type RefusalCode =
   | 'workspace_not_live'
   | 'suspend_failed'
   | 'concurrency_exhausted'
-  | 'sandbox_time_exhausted';
+  | 'sandbox_time_exhausted'
+  | 'connection_inactive';
 
 export class SandboxRefusal extends Error {
   override readonly name = 'SandboxRefusal';
