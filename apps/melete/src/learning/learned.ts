@@ -343,6 +343,13 @@ export class CorrectionSource implements LearnedSourceProvider {
   }
 }
 
+/**
+ * Whether a change can be offered for undo. Removing an engine skill erases its
+ * text, so that removal is never shown as something to undo.
+ */
+export const undoable = (change: { source: string; action: string }) =>
+  !(change.source === 'engine' && change.action === 'remove');
+
 /** A correction is named from its trigger words; an engine skill by the name it was given. */
 const nameOf = (candidate: Candidate) =>
   candidate.origin === 'engine_staged' ? (candidate.skillName ?? '') : learnedName(candidate);
@@ -427,9 +434,10 @@ export class LearnedService {
       const latest = await this.latest(tx, principalId, spaceId);
       return {
         items,
-        last_change: latest
-          ? changeView(latest.change, latest.candidate ? nameOf(latest.candidate) : '')
-          : null,
+        last_change:
+          latest && undoable(latest.change)
+            ? changeView(latest.change, latest.candidate ? nameOf(latest.candidate) : '')
+            : null,
       };
     });
   }
@@ -448,13 +456,16 @@ export class LearnedService {
         action,
         applied,
       );
-      return { item: await source.item(tx, principalId, spaceId, id), change };
+      return {
+        item: await source.item(tx, principalId, spaceId, id),
+        change: undoable({ source: source.source, action }) ? change : null,
+      };
     });
   }
 
   /** Sharing what the person kept, on the same sealed evidence any sharing needs. */
   async share(principalId: string, spaceId: string, id: string) {
-    await this.requireCorrection(id);
+    await this.requireCorrection(principalId, spaceId, id);
     await this.procedures.activate(principalId, spaceId, id, 'space');
     return this.jobs.transaction(async (tx) => ({
       item: await (await this.sourceFor(tx, id)).item(tx, principalId, spaceId, id),
@@ -463,8 +474,12 @@ export class LearnedService {
   }
 
   /** Sharing and trying are the correction road; an engine skill has its own controls. */
-  private async requireCorrection(id: string) {
-    const source = await this.jobs.transaction((tx) => this.sourceFor(tx, id));
+  private async requireCorrection(principalId: string, spaceId: string, id: string) {
+    // The space first: someone outside it learns nothing about what the id names.
+    const source = await this.jobs.transaction(async (tx) => {
+      await requireLearningSpace(tx, principalId, spaceId);
+      return this.sourceFor(tx, id);
+    });
     if (source.source !== 'correction')
       throw new ServiceError(
         'invalid_procedure_state',
@@ -475,7 +490,7 @@ export class LearnedService {
 
   /** Trying approves the definition the person was shown, by its hash. */
   async try(principalId: string, spaceId: string, id: string, definitionHash: string) {
-    await this.requireCorrection(id);
+    await this.requireCorrection(principalId, spaceId, id);
     await this.procedures.startTrial(principalId, spaceId, id, definitionHash);
     return this.jobs.transaction(async (tx) => ({
       item: await (await this.sourceFor(tx, id)).item(tx, principalId, spaceId, id),
