@@ -6,7 +6,7 @@
 import { expect, test } from 'bun:test';
 import { progressOf, toolOf } from '../experience/trace.ts';
 import type { Conversation, Permission, Question } from '../experience/types.ts';
-import { briefLine, type Decision, frontOf, queueOrder } from './Home.tsx';
+import { briefLine, type Decision, frontOf, queueOrder, waitedFor } from './Home.tsx';
 
 test('both clauses, spelled out, with the money the map totals', () => {
   expect(briefLine(2, 6, 481_100, 'GBP')).toBe(
@@ -77,47 +77,58 @@ test('progress is read only when present, as steps and never a percentage', () =
   expect(progressOf(conversation({ steps_done: 2, current: null }))?.current).toBeNull();
 });
 
-const chat = (id: string, updated_at: string) => ({ id, updated_at }) as unknown as Conversation;
-const permission = (id: string, conversation_id: string): Decision => ({
+const permission = (id: string, created_at: string): Decision => ({
   kind: 'permission',
   id,
-  permission: { id, conversation_id } as unknown as Permission,
+  permission: { id, conversation_id: 'job_1', created_at } as unknown as Permission,
 });
-const question = (id: string, conversation_id: string): Decision => ({
+const question = (id: string, created_at: string): Decision => ({
   kind: 'question',
   id,
-  question: { id, conversation_id } as unknown as Question,
+  question: { id, conversation_id: 'job_1', created_at } as unknown as Question,
 });
 const ids = (list: Decision[]) => list.map((decision) => decision.id);
 
-test('the queue is oldest first, dated by when each conversation last changed', () => {
-  const chats = [
-    chat('c_new', '2026-09-23T10:00:00.000Z'),
-    chat('c_old', '2026-09-23T08:00:00.000Z'),
-    chat('c_mid', '2026-09-23T09:00:00.000Z'),
-  ];
-  const ordered = queueOrder(
-    [permission('p_new', 'c_new'), question('q_old', 'c_old'), permission('p_mid', 'c_mid')],
-    chats,
-  );
+test('the queue is oldest first, by when each was asked', () => {
+  const ordered = queueOrder([
+    permission('p_new', '2026-09-23T10:00:00.000Z'),
+    question('q_old', '2026-09-23T08:00:00.000Z'),
+    permission('p_mid', '2026-09-23T09:00:00.000Z'),
+  ]);
   expect(ids(ordered)).toEqual(['q_old', 'p_mid', 'p_new']);
 });
 
 test('a decision that arrives later does not move the card at the front', () => {
-  const chats = [chat('c_1', '2026-09-23T09:00:00.000Z'), chat('c_0', '2026-09-23T08:00:00.000Z')];
-  const before = queueOrder([permission('p_1', 'c_1')], chats);
+  const before = queueOrder([permission('p_1', '2026-09-23T09:00:00.000Z')]);
   const held = frontOf(before, null).front?.id ?? null;
   expect(held).toBe('p_1');
   // An older decision shows up; the person is still reading p_1.
-  const after = queueOrder([permission('p_1', 'c_1'), question('q_0', 'c_0')], chats);
+  const after = queueOrder([
+    permission('p_1', '2026-09-23T09:00:00.000Z'),
+    question('q_0', '2026-09-23T08:00:00.000Z'),
+  ]);
   expect(ids(after)).toEqual(['q_0', 'p_1']);
   expect(frontOf(after, held).front?.id).toBe('p_1');
   expect(frontOf(after, held).next?.id).toBe('q_0');
 });
 
 test('the front falls to the oldest when the held card is gone', () => {
-  const chats = [chat('c_a', '2026-09-23T08:00:00.000Z'), chat('c_b', '2026-09-23T09:00:00.000Z')];
-  const ordered = queueOrder([permission('p_b', 'c_b'), permission('p_a', 'c_a')], chats);
+  const ordered = queueOrder([
+    permission('p_b', '2026-09-23T09:00:00.000Z'),
+    permission('p_a', '2026-09-23T08:00:00.000Z'),
+  ]);
   expect(frontOf(ordered, 'p_gone').front?.id).toBe('p_a');
   expect(frontOf([ordered[0] as Decision], null).next).toBeUndefined();
+});
+
+test('how long the front has waited reads the way a person would say it', () => {
+  const asked = '2026-09-25T09:00:00.000Z';
+  const after = (minutes: number) => Date.parse(asked) + minutes * 60_000;
+  expect(waitedFor(asked, after(0))).toBe('Just now');
+  expect(waitedFor(asked, after(1))).toBe('About a minute');
+  expect(waitedFor(asked, after(12))).toBe('12 minutes');
+  expect(waitedFor(asked, after(70))).toBe('About an hour');
+  expect(waitedFor(asked, after(5 * 60))).toBe('5 hours');
+  expect(waitedFor(asked, after(26 * 60))).toBe('A day');
+  expect(waitedFor(asked, after(3 * 24 * 60))).toBe('3 days');
 });
