@@ -389,6 +389,13 @@ async function isolated(cookie: string, other: Seeded, ownAgentId = other.agentI
     const response = await call(cookie, path, method, body);
     expect([method, path, [403, 404].includes(response.status)]).toEqual([method, path, true]);
   }
+  // Deciding another person's approval directly, even with the exact content it shows, is refused.
+  const [held] = await sql`select payload_hash from approval where id = ${other.permissionId}`;
+  const direct = await call(cookie, `/approvals/${other.permissionId}`, 'POST', {
+    decision: 'approved',
+    payload_hash: held?.payload_hash,
+  });
+  expect([403, 404]).toContain(direct.status);
   if (other.detailId) {
     // Saved details answer "not connected" to anyone but their owner; nothing is read or changed.
     for (const [path, method, body] of [
