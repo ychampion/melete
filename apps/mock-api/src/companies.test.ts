@@ -369,3 +369,11 @@ test('once approved the job sends, keeps going, and the sent step can still be u
   expect(said).toContain('replied again');
   expect(said).toContain('Settled.');
 });
+
+test('the profile names the address a company chase leaves from', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const { profile } = C.experienceOperations['GET /profile'].response.parse(
+    (await call(mock, '/profile')).body,
+  );
+  expect(profile.sending_address).toBe('jamie.davis@fastmail.example');
+});

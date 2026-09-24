@@ -155,6 +155,33 @@ withDb('experience rows and authenticated scope', () => {
     expect(JSON.stringify(result)).not.toContain('Dinner private');
     expect((await request(`/tasks/${task.id}`, 'DELETE')).status).toBe(200);
   });
+  test('the profile names the address messages leave from, once a mailbox can send', async () => {
+    const profile = async () =>
+      experienceOperations['GET /profile'].response.parse(await (await request('/profile')).json())
+        .profile;
+    expect((await profile()).sending_address).toBeNull();
+    const mailbox = newId('conn');
+    const db = required(handle).db;
+    await db.insert(connection).values({
+      id: mailbox,
+      spaceId,
+      label: 'Mail',
+      provider: 'imap',
+      scopes: ['email.search', 'email.send'],
+      configuration: { mail: { from: 'alex@example.test' } },
+    });
+    try {
+      expect((await profile()).sending_address).toBe('alex@example.test');
+      // A mailbox that can only read is not where anything leaves from.
+      await db
+        .update(connection)
+        .set({ scopes: ['email.search'] })
+        .where(eq(connection.id, mailbox));
+      expect((await profile()).sending_address).toBeNull();
+    } finally {
+      await db.delete(connection).where(eq(connection.id, mailbox));
+    }
+  });
   test('plans project real child completion and preserve context in a linked conversation', async () => {
     const persona = agentResponse.parse(
       await (await request('/agents', 'POST', AGENT_TEMPLATES.templates[0]?.agent)).json(),

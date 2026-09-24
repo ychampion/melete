@@ -14,7 +14,7 @@ import { action, connection, experienceProfile, job, task } from '../db/schema.t
 import { newId } from '../ids.ts';
 import { ownJob } from '../principals/authority.ts';
 import type { ExperienceEffects } from './effects.ts';
-import { actionLabel, appName, object, plainText, safeUrl } from './projectors.ts';
+import { actionLabel, appName, object, plainText, safeUrl, senderAddress } from './projectors.ts';
 import { experienceMissing } from './service.ts';
 
 export const taskView = (row: typeof task.$inferSelect) =>
@@ -65,16 +65,38 @@ export class ExperienceHome {
       .from(experienceProfile)
       .where(eq(experienceProfile.spaceId, spaceId));
     return {
-      profile: profileInput.parse(
-        row
-          ? {
-              name: row.name,
-              time_zone: row.timeZone,
-              day_hours: { start: row.dayStart, end: row.dayEnd },
-            }
-          : { name: 'there', time_zone: 'UTC', day_hours: { start: '08:00', end: '22:00' } },
-      ),
+      profile: {
+        ...profileInput.parse(
+          row
+            ? {
+                name: row.name,
+                time_zone: row.timeZone,
+                day_hours: { start: row.dayStart, end: row.dayEnd },
+              }
+            : { name: 'there', time_zone: 'UTC', day_hours: { start: '08:00', end: '22:00' } },
+        ),
+        sending_address: await this.sendingAddress(spaceId),
+      },
     };
+  }
+  /**
+   * The mailbox a message from this space leaves from: its active connection
+   * that can send, chosen the way a company chase chooses it.
+   */
+  async sendingAddress(spaceId: string): Promise<string | null> {
+    const [mailbox] = await this.db
+      .select({ configuration: connection.configuration })
+      .from(connection)
+      .where(
+        and(
+          eq(connection.spaceId, spaceId),
+          eq(connection.status, 'active'),
+          sql`${connection.scopes} ? 'email.send'`,
+        ),
+      )
+      .orderBy(connection.id)
+      .limit(1);
+    return mailbox ? senderAddress(mailbox.configuration) : null;
   }
   async saveProfile(spaceId: string, raw: unknown) {
     const input = profileInput.parse(raw);

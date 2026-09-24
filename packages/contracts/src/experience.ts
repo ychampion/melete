@@ -533,7 +533,14 @@ export const profileInput = z.strictObject({
     end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   }),
 });
-export const profileResponse = z.strictObject({ profile: profileInput });
+export const profileView = profileInput.extend({
+  /**
+   * The address messages leave from: the connected mailbox that can send, when
+   * there is one. It is read from the connection, not set here.
+   */
+  sending_address: z.string().max(4000).nullable(),
+});
+export const profileResponse = z.strictObject({ profile: profileView });
 export const homeResponse = z.strictObject({
   greeting: text,
   date: text,

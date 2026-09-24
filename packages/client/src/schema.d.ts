@@ -10926,6 +10926,7 @@ export interface components {
                     start: string;
                 };
                 name: string;
+                sending_address: string | null;
                 time_zone: string;
             };
         };

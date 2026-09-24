@@ -18428,12 +18428,24 @@
                   "end"
                 ],
                 "additionalProperties": false
+              },
+              "sending_address": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
               "name",
               "time_zone",
-              "day_hours"
+              "day_hours",
+              "sending_address"
             ],
             "additionalProperties": false
           }

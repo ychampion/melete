@@ -68,6 +68,8 @@ export function mountCompaniesMock(
 ): { fixture: Fixture } {
   const principalId = newId('own');
   const fixture = buildFixture(deps.spaceId, principalId);
+  // The mailbox a company chase leaves from is the one the profile names.
+  experience.sendingAddress = fixture.from_address;
   const startEmpty = process.env.MELETE_MOCK_COMPANIES === 'empty';
   let found = !startEmpty;
   let scan: Scan | null = null;

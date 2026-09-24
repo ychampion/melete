@@ -83,6 +83,8 @@ export type TaskInput = Body<paths['/tasks'], 'post'>;
 export type Home = Success<Ok<paths['/home'], 'get'>>;
 export type CalendarEvent = Success<Home['upcoming']>[number];
 export type Profile = Success<Ok<paths['/profile'], 'get'>>['profile'];
+/** What a profile save sends: the sending address is read from the mailbox, not set. */
+export type ProfileInput = Body<paths['/profile'], 'patch'>;
 export type Automation = Success<Ok<paths['/automations'], 'get'>>['automations'][number];
 export type AutomationRun = Automation['runs'][number];
 export type AutomationCreate = Body<paths['/automations'], 'post'>;

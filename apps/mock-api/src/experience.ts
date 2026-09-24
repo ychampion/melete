@@ -142,6 +142,8 @@ export class ExperienceMock {
     time_zone: 'UTC',
     day_hours: { start: '08:00', end: '22:00' },
   });
+  /** The address messages leave from, when a mailbox that can send is connected. */
+  sendingAddress: string | null = null;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
     const allowed = [...deps.store.connections.values()]
       .filter((row) => row.space_id === deps.spaceId)
@@ -1574,10 +1576,10 @@ export class ExperienceMock {
         return { reasons: [`You saved this detail: ${item.value}`], output: null, used_at: null };
       }
       case 'GET /profile':
-        return { profile: this.profile };
+        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
       case 'PATCH /profile':
         this.profile = C.profileInput.parse(input);
-        return { profile: this.profile };
+        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
       case 'GET /home': {
         const tasks = [...this.tasks.values()].filter((task) => !task.done);
         return {

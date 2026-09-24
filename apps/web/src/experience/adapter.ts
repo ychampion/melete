@@ -36,6 +36,7 @@ import type {
   Plan,
   PlanCreate,
   Profile,
+  ProfileInput,
   Question,
   Reaction,
   Receipt,
@@ -102,7 +103,7 @@ const path = (id: string) => ({ params: { path: { id } } });
 export const adapter = {
   /* ---------- session ---------- */
   profile: () => guard<{ profile: Profile }>(() => api.GET('/profile')),
-  saveProfile: (profile: Profile) =>
+  saveProfile: (profile: ProfileInput) =>
     guard<{ profile: Profile }>(() => api.PATCH('/profile', { body: profile })),
   magicLink: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link', { body: { email } })),
