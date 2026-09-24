@@ -73,6 +73,8 @@ const GUIDANCE: Record<string, string> = {
   'release placeholder': 'Replace the placeholder link with the live address before releasing.',
   'not utf-8':
     'The linter skips a file it cannot read as UTF-8. Replace the byte with the character it was meant to be, saved as UTF-8.',
+  'not plain text':
+    'A source or text file must not carry a NUL byte: it is read as binary and skipped. Remove the byte.',
 };
 
 /**
@@ -182,6 +184,38 @@ export function invalidUtf8(bytes: Uint8Array): number {
   return -1;
 }
 
+/**
+ * Source and text files, which are read whatever bytes they carry. Elsewhere a NUL in the first
+ * bytes marks a binary file whose contents are skipped; here that would take a file out of every
+ * rule, so a NUL, or a UTF-16 or UTF-32 byte order mark, is refused instead. A UTF-8 byte order
+ * mark is allowed.
+ */
+const TEXT_FILE = /\.(?:ts|tsx|js|mjs|json|md|ya?ml|sql|css|html)$/i;
+
+type WideEncoding = 'utf-32le' | 'utf-32be' | 'utf-16le' | 'utf-16be';
+
+/** The encoding a UTF-16 or UTF-32 byte order mark announces, or null. UTF-32 is tried first. */
+export function wideEncoding(bytes: Uint8Array): WideEncoding | null {
+  const [a, b, c, d] = bytes;
+  if (a === 0xff && b === 0xfe && c === 0 && d === 0) return 'utf-32le';
+  if (a === 0 && b === 0 && c === 0xfe && d === 0xff) return 'utf-32be';
+  if (a === 0xff && b === 0xfe) return 'utf-16le';
+  if (a === 0xfe && b === 0xff) return 'utf-16be';
+  return null;
+}
+
+/** A wide file's text, so its contents are still checked against every rule. */
+function decodeWide(bytes: Uint8Array, encoding: WideEncoding): string {
+  if (encoding.startsWith('utf-16')) return new TextDecoder(encoding).decode(bytes);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const points: number[] = [];
+  for (let offset = 4; offset + 4 <= bytes.length; offset += 4) {
+    const point = view.getUint32(offset, encoding === 'utf-32le');
+    points.push(point <= 0x10ffff ? point : 0xfffd);
+  }
+  return String.fromCodePoint(...points);
+}
+
 const STRICT = new TextDecoder('utf-8', { fatal: true });
 
 function readsAsUtf8(bytes: Uint8Array): boolean {
@@ -217,7 +251,19 @@ export async function scrub(
     const named = pathViolation(file);
     if (named) findings.push({ file, line: null, text: 'the file name itself', rule: named });
     const bytes = new Uint8Array(await Bun.file(`${root}${file}`).arrayBuffer());
-    if (bytes.slice(0, 8192).includes(0)) continue;
+    if (TEXT_FILE.test(file)) {
+      const wide = wideEncoding(bytes);
+      if (wide) {
+        findings.push({ file, line: null, text: `a ${wide} byte order mark`, rule: 'not utf-8' });
+        findings.push(...scanText(file, decodeWide(bytes, wide), release));
+        continue;
+      }
+      const nul = bytes.indexOf(0);
+      if (nul >= 0) {
+        const line = bytes.slice(0, nul).filter((byte) => byte === 0x0a).length + 1;
+        findings.push({ file, line, text: 'a NUL byte', rule: 'not plain text' });
+      }
+    } else if (bytes.slice(0, 8192).includes(0)) continue;
     // The strict decoder is native and quick; the byte walk runs only to say where it failed.
     const bad = readsAsUtf8(bytes) ? -1 : invalidUtf8(bytes);
     if (bad >= 0) {

@@ -222,6 +222,56 @@ describe('a text file the linter cannot read is refused', () => {
   });
 });
 
+describe('a source file cannot hide from the rules behind its bytes', () => {
+  test('a NUL or a wide byte order mark is refused, and the file is still read', async () => {
+    const tree = await mkdtemp(join(tmpdir(), 'melete-wide-scan-'));
+    const planted = '// W2 admits the effect.\n';
+    try {
+      await writeFile(
+        join(tree, 'zero.ts'),
+        Buffer.concat([
+          Buffer.from('const a = 1;\n'),
+          Buffer.from([0]),
+          Buffer.from(`\n${planted}`),
+        ]),
+      );
+      await writeFile(
+        join(tree, 'wide.ts'),
+        Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(planted, 'utf16le')]),
+      );
+      const wide32 = Buffer.alloc(4 + planted.length * 4);
+      wide32.writeUInt32LE(0xfeff, 0);
+      for (const [index, character] of [...planted].entries())
+        wide32.writeUInt32LE(character.codePointAt(0) ?? 0, 4 + index * 4);
+      await writeFile(join(tree, 'wide32.md'), wide32);
+      await writeFile(
+        join(tree, 'bom.ts'),
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('export const ok = 1;\n')]),
+      );
+      // Not a text file: still skipped as binary, as screenshots are.
+      await writeFile(join(tree, 'image.png'), Buffer.from([0x89, 0x50, 0, 0x57, 0x32]));
+      for (const command of [
+        ['init', '-q'],
+        ['add', 'zero.ts', 'wide.ts', 'wide32.md', 'bom.ts', 'image.png'],
+      ])
+        expect(Bun.spawnSync(['git', ...command], { cwd: tree }).exitCode).toBe(0);
+      const { findings } = await scrub(`${tree}/`);
+      expect(findings.map((finding) => [finding.file, finding.line, finding.rule])).toEqual([
+        ['wide.ts', null, 'not utf-8'],
+        ['wide.ts', 1, 'work code'],
+        ['wide32.md', null, 'not utf-8'],
+        ['wide32.md', 1, 'work code'],
+        ['zero.ts', 2, 'not plain text'],
+        ['zero.ts', 3, 'work code'],
+      ]);
+      expect(findings.find((finding) => finding.file === 'wide.ts')?.text).toContain('utf-16le');
+      expect(findings.find((finding) => finding.file === 'wide32.md')?.text).toContain('utf-32le');
+    } finally {
+      await rm(tree, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('the failure tells a contributor what to do', () => {
   test('it names the rule, the line, and what to write instead', () => {
     const findings = scanText(source, ['const ok = true;', '// W2 admits the effect.'].join('\n'));
