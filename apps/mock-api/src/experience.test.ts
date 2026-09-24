@@ -130,6 +130,15 @@ test('experience scenario drafts first, reviews an explicit send, and replays sa
     },
   });
   expect(C.permissionOutcome.parse(decision.body).rule?.bounds.count_cap).toBe(2);
+  // The decision rides the conversation stream, so a reload shows it decided.
+  const stream = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events?limit=200`)).body,
+  );
+  expect(
+    stream.events.flatMap((event) =>
+      event.item.type === 'decision' ? [[event.item.decision.id, event.item.decision.outcome]] : [],
+    ),
+  ).toEqual([[permission.id, 'always']]);
   expect(
     C.experienceDraft.parse(
       C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(
@@ -301,4 +310,40 @@ test('the uncertain scenario leaves a reviewed send unconfirmed without repeatin
     C.conversationResponse.parse((await call(mock, `/conversations/${chat.id}`)).body).conversation
       .status,
   ).toBe('needs_you');
+});
+
+test('the chats list pages most recent first, as the service does', async () => {
+  const mock = createMock({ speed: 0 });
+  const agentId = C.agentList.parse((await call(mock, '/agents')).body).agents[0]?.id;
+  if (!agentId) throw new Error('Missing mock agent');
+  for (const title of ['One', 'Two', 'Three'])
+    await call(mock, '/conversations', 'POST', { title, agent_id: agentId });
+  const seen: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const path = `/conversations?limit=2${cursor ? `&cursor=${cursor}` : ''}`;
+    const page = C.conversationList.parse((await call(mock, path)).body);
+    expect(page.conversations.length).toBeLessThanOrEqual(2);
+    seen.push(...page.conversations.map((entry) => `${entry.updated_at}|${entry.id}`));
+    cursor = page.next_cursor;
+  } while (cursor);
+  const all = C.conversationList.parse((await call(mock, '/conversations')).body);
+  expect(all.next_cursor).toBeNull();
+  expect(seen).toHaveLength(all.conversations.length);
+  expect(new Set(seen).size).toBe(seen.length);
+  expect([...seen].sort().reverse()).toEqual(seen);
+  expect((await call(mock, '/conversations?cursor=nonsense')).response.status).toBe(400);
+});
+
+test('a chats cursor carries its position and nothing else is taken for one', () => {
+  const cursor = C.encodeConversationCursor({
+    updated_at: '2026-09-24T08:00:00.000Z',
+    id: 'job_1',
+  });
+  expect(C.decodeConversationCursor(cursor)).toEqual({
+    updated_at: '2026-09-24T08:00:00.000Z',
+    id: 'job_1',
+  });
+  for (const bad of ['nonsense', Buffer.from('2026|a|b').toString('base64url'), ''])
+    expect(C.decodeConversationCursor(bad)).toBeNull();
 });

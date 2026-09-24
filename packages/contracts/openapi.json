@@ -1776,7 +1776,26 @@
         ],
         "summary": "GET /conversations",
         "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
-        "parameters": [],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 200,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Outcome or unavailable capability",
@@ -1792,10 +1811,22 @@
                           "items": {
                             "$ref": "#/components/schemas/__schema161"
                           }
+                        },
+                        "next_cursor": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
-                        "conversations"
+                        "conversations",
+                        "next_cursor"
                       ],
                       "additionalProperties": false
                     },
@@ -2441,6 +2472,67 @@
                                     "required": [
                                       "type",
                                       "question"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "const": "decision"
+                                      },
+                                      "decision": {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "permission",
+                                              "question"
+                                            ]
+                                          },
+                                          "id": {
+                                            "$ref": "#/components/schemas/__schema162"
+                                          },
+                                          "outcome": {
+                                            "type": "string",
+                                            "enum": [
+                                              "allow_once",
+                                              "always",
+                                              "deny",
+                                              "answered",
+                                              "withdrawn"
+                                            ]
+                                          },
+                                          "answer": {
+                                            "anyOf": [
+                                              {
+                                                "type": "string",
+                                                "maxLength": 4000
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "decided_at": {
+                                            "$ref": "#/components/schemas/__schema166"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "id",
+                                          "outcome",
+                                          "answer",
+                                          "decided_at"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "decision"
                                     ],
                                     "additionalProperties": false
                                   },
@@ -13086,6 +13178,76 @@
         }
       }
     },
+    "/ledger/{id}/stop": {
+      "post": {
+        "tags": [
+          "companies"
+        ],
+        "summary": "Stop handling this item",
+        "description": "Cancels the job chasing the item, if one still runs, and returns the item to open so it can be handled again later.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Ledger item id"
+            },
+            "required": true,
+            "description": "Ledger item id"
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The item, open again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema399"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such item for this person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The item is already settled or dropped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Stopping is not connected yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema134"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/model-providers/sign-in": {
       "get": {
         "tags": [
@@ -18142,6 +18304,9 @@
           },
           "draft": {
             "$ref": "#/components/schemas/__schema179"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema166"
           }
         },
         "required": [
@@ -18151,7 +18316,8 @@
           "why",
           "options",
           "version",
-          "preview"
+          "preview",
+          "created_at"
         ],
         "additionalProperties": false
       },
@@ -18255,6 +18421,9 @@
           },
           "options": {
             "$ref": "#/components/schemas/__schema181"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema166"
           }
         },
         "required": [
@@ -18263,7 +18432,8 @@
           "text",
           "why",
           "if_ignored",
-          "options"
+          "options",
+          "created_at"
         ],
         "additionalProperties": false
       },
@@ -18752,12 +18922,24 @@
                   "end"
                 ],
                 "additionalProperties": false
+              },
+              "sending_address": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
               "name",
               "time_zone",
-              "day_hours"
+              "day_hours",
+              "sending_address"
             ],
             "additionalProperties": false
           }

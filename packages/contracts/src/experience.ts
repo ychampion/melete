@@ -104,6 +104,8 @@ export const experienceQuestion = z.strictObject({
   why: z.array(text),
   if_ignored: text,
   options: quickOptions,
+  /** When it was asked; the queue is oldest first. */
+  created_at: date,
 });
 
 /** Every bound is required. The recipient is resolved from trusted evidence by the service. */
@@ -140,6 +142,8 @@ export const permissionCard = z.strictObject({
   version: id,
   preview: resultCard.nullable(),
   draft: experienceDraft.optional(),
+  /** When permission was asked for; the queue is oldest first. */
+  created_at: date,
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 export const permissionDecision = z.discriminatedUnion('option', [
@@ -301,6 +305,22 @@ export const trailStep = z.discriminatedUnion('type', [
 ]);
 export type TrailStep = z.infer<typeof trailStep>;
 
+/**
+ * How a permission or a question in the conversation was decided. It follows
+ * the item it decides on the same stream, so a reloaded conversation shows the
+ * decision rather than an open card.
+ */
+export const experienceDecision = z.strictObject({
+  kind: z.enum(['permission', 'question']),
+  /** The permission's or the question's id. */
+  id,
+  outcome: z.enum(['allow_once', 'always', 'deny', 'answered', 'withdrawn']),
+  /** The chosen answer, for an answered question. */
+  answer: z.string().max(4000).nullable(),
+  decided_at: date,
+});
+export type ExperienceDecision = z.infer<typeof experienceDecision>;
+
 export const experienceEvent = z.strictObject({
   seq: count,
   conversation_id: id,
@@ -313,6 +333,7 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('receipt'), receipt: experienceReceipt }),
     z.strictObject({ type: z.literal('permission'), permission: permissionCard }),
     z.strictObject({ type: z.literal('question'), question: experienceQuestion }),
+    z.strictObject({ type: z.literal('decision'), decision: experienceDecision }),
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
     z.strictObject({ type: z.literal('tool'), tool: toolCall }),
   ]),
@@ -367,7 +388,30 @@ export const messageAcceptance = z.strictObject({
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),
 });
 export const conversationResponse = z.strictObject({ conversation });
-export const conversationList = z.strictObject({ conversations: z.array(conversation) });
+/**
+ * The chats list, most recently active first. `next_cursor` continues after the
+ * last one returned, and is null when there are no more.
+ */
+export const conversationList = z.strictObject({
+  conversations: z.array(conversation),
+  next_cursor: z.string().max(200).nullable(),
+});
+export const conversationListQuery = z.strictObject({
+  limit: z.coerce.number().int().positive().max(200).default(200),
+  cursor: z.string().max(200).optional(),
+});
+
+/** Where a page of chats ends: the last one's activity time and id, opaque to a client. */
+export type ConversationCursor = { updated_at: string; id: string };
+export function encodeConversationCursor(position: ConversationCursor): string {
+  return Buffer.from(`${position.updated_at}|${position.id}`, 'utf8').toString('base64url');
+}
+/** Null for anything that is not a cursor this list handed out. */
+export function decodeConversationCursor(cursor: string): ConversationCursor | null {
+  const [updatedAt, id, extra] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+  if (extra !== undefined || !updatedAt || !id || !date.safeParse(updatedAt).success) return null;
+  return { updated_at: updatedAt, id };
+}
 export const turnList = z.strictObject({ turns: z.array(conversationTurn) });
 
 export const agentInput = z.strictObject({
@@ -499,7 +543,14 @@ export const profileInput = z.strictObject({
     end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   }),
 });
-export const profileResponse = z.strictObject({ profile: profileInput });
+export const profileView = profileInput.extend({
+  /**
+   * The address messages leave from: the connected mailbox that can send, when
+   * there is one. It is read from the connection, not set here.
+   */
+  sending_address: z.string().max(4000).nullable(),
+});
+export const profileResponse = z.strictObject({ profile: profileView });
 export const homeResponse = z.strictObject({
   greeting: text,
   date: text,
@@ -581,7 +632,7 @@ export const magicLinkConsume = z.strictObject({ token: z.string().min(32).max(2
 
 /** Shared operation table makes the mock and OpenAPI cover precisely the same surface. */
 export const experienceOperations = {
-  'GET /conversations': { response: conversationList },
+  'GET /conversations': { query: conversationListQuery, response: conversationList },
   'POST /conversations': { request: conversationCreate, response: conversationResponse },
   'GET /conversations/{id}': { response: conversationResponse },
   'PATCH /conversations/{id}/agent': {

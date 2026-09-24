@@ -68,6 +68,8 @@ export function mountCompaniesMock(
 ): { fixture: Fixture } {
   const principalId = newId('own');
   const fixture = buildFixture(deps.spaceId, principalId);
+  // The mailbox a company chase leaves from is the one the profile names.
+  experience.sendingAddress = fixture.from_address;
   const startEmpty = process.env.MELETE_MOCK_COMPANIES === 'empty';
   let found = !startEmpty;
   let scan: Scan | null = null;
@@ -198,6 +200,22 @@ export function mountCompaniesMock(
     row.job_id = conversation.id;
     row.status = 'handling';
     return c.json({ job_id: conversation.id }, 201);
+  });
+
+  app.post('/ledger/:id/stop', (c) => {
+    const row = item(c.req.param('id'));
+    if (!row) return c.json(fail('not_found', 'No such item.'), 404);
+    if (row.status === 'settled' || row.status === 'dropped')
+      return c.json(fail('not_handling', 'This item is already closed.'), 409);
+    // The chase stops where the service would cancel its job; the item is open again.
+    const chat = row.job_id ? experience.chats.get(row.job_id) : undefined;
+    if (chat && !chat.stopped) {
+      chat.stopped = true;
+      experience.state(chat, 'stopped');
+    }
+    row.job_id = null;
+    row.status = 'found';
+    return c.json(row);
   });
 
   return { fixture };

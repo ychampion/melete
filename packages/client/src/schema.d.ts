@@ -2022,7 +2022,10 @@ export interface paths {
          */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -2037,6 +2040,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             conversations: components["schemas"]["__schema161"][];
+                            next_cursor: string | null;
                         } | components["schemas"]["__schema168"];
                     };
                 };
@@ -2339,6 +2343,18 @@ export interface paths {
                                     question: components["schemas"]["__schema180"];
                                     /** @constant */
                                     type: "question";
+                                } | {
+                                    decision: {
+                                        answer: string | null;
+                                        decided_at: components["schemas"]["__schema166"];
+                                        id: components["schemas"]["__schema162"];
+                                        /** @enum {string} */
+                                        kind: "permission" | "question";
+                                        /** @enum {string} */
+                                        outcome: "allow_once" | "always" | "deny" | "answered" | "withdrawn";
+                                    };
+                                    /** @constant */
+                                    type: "decision";
                                 } | {
                                     composer: components["schemas"]["__schema165"];
                                     status: components["schemas"]["__schema164"];
@@ -5313,6 +5329,77 @@ export interface paths {
                     };
                 };
                 /** @description Handling is not connected yet */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema134"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ledger/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop handling this item
+         * @description Cancels the job chasing the item, if one still runs, and returns the item to open so it can be handled again later.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    space_id?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Ledger item id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The item, open again */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema399"];
+                    };
+                };
+                /** @description No such item for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema134"];
+                    };
+                };
+                /** @description The item is already settled or dropped */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema134"];
+                    };
+                };
+                /** @description Stopping is not connected yet */
                 503: {
                     headers: {
                         [name: string]: unknown;
@@ -10950,6 +11037,7 @@ export interface components {
         };
         __schema177: {
             conversation_id: components["schemas"]["__schema162"];
+            created_at: components["schemas"]["__schema166"];
             draft?: components["schemas"]["__schema179"];
             id: components["schemas"]["__schema162"];
             options: components["schemas"]["__schema178"][];
@@ -10975,6 +11063,7 @@ export interface components {
         };
         __schema180: {
             conversation_id: components["schemas"]["__schema162"] | null;
+            created_at: components["schemas"]["__schema166"];
             id: components["schemas"]["__schema162"];
             if_ignored: components["schemas"]["__schema163"];
             options: components["schemas"]["__schema181"];
@@ -11086,6 +11175,7 @@ export interface components {
                     start: string;
                 };
                 name: string;
+                sending_address: string | null;
                 time_zone: string;
             };
         };

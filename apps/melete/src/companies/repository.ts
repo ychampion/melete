@@ -95,6 +95,8 @@ export interface CompanyStore {
    * by a write inside it cannot be interleaved with the same check elsewhere.
    */
   exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T>;
+  /** Back to open: no job names it, and it can be handled again. */
+  release(owner: Owner, id: string): Promise<LedgerItem | null>;
 }
 
 const iso = (value: Date | string): string =>
@@ -518,6 +520,15 @@ export class PostgresCompanyStore implements CompanyStore {
       .returning();
     return row ? itemView(row) : null;
   }
+
+  async release(owner: Owner, id: string): Promise<LedgerItem | null> {
+    const [row] = await this.db
+      .update(ledgerItem)
+      .set({ jobId: null, status: 'found' })
+      .where(and(ownedItem(owner), eq(ledgerItem.id, id)))
+      .returning();
+    return row ? itemView(row) : null;
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -728,6 +739,13 @@ export class MemoryCompanyStore implements CompanyStore {
     const item = this.own(owner, id);
     if (!item) return null;
     const updated: LedgerItem = { ...item, job_id: jobId, status: 'handling' };
+    this.items.set(id, updated);
+    return updated;
+  }
+  async release(owner: Owner, id: string): Promise<LedgerItem | null> {
+    const item = this.own(owner, id);
+    if (!item) return null;
+    const updated: LedgerItem = { ...item, job_id: null, status: 'found' };
     this.items.set(id, updated);
     return updated;
   }

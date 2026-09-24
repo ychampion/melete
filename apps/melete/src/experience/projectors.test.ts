@@ -8,6 +8,8 @@ import {
   projectActionGroup,
   projectCards,
   projectPermission,
+  projectPermissionDecision,
+  projectQuestionDecision,
   safeUrl,
   senderAddress,
 } from './projectors.ts';
@@ -112,7 +114,10 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
     connection: { ...mailbox, sender: 'jo@example.test' },
     reasons: ['This change needs your permission before it happens.'],
     canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
   });
+  // The queue is oldest first, so the card says when it was asked.
+  expect(shown.created_at).toBe('2026-09-24T08:00:00.000Z');
   expect(shown.preview?.facts.slice(0, 2)).toEqual([
     { label: 'From', value: 'jo@example.test' },
     { label: 'To', value: 'support@acme.test' },
@@ -125,6 +130,7 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
     connection: mailbox,
     reasons: ['This change needs your permission before it happens.'],
     canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
   });
   expect(withoutSender.preview?.facts.map((fact) => fact.label)).toEqual([
     'To',
@@ -132,4 +138,39 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
     'Message',
   ]);
   expect(JSON.stringify(shown)).not.toMatch(BACKEND_VOCABULARY);
+});
+
+test('a decided permission says which of the three choices was taken', () => {
+  const at = new Date('2026-09-24T09:00:00.000Z');
+  const decided = (decision: string, ruleSaved: boolean) =>
+    projectPermissionDecision({ approvalId: 'apr_one', decision, ruleSaved, at });
+  expect(decided('approved', false)).toEqual({
+    kind: 'permission',
+    id: 'apr_one',
+    outcome: 'allow_once',
+    answer: null,
+    decided_at: '2026-09-24T09:00:00.000Z',
+  });
+  expect(decided('approved', true).outcome).toBe('always');
+  expect(decided('denied', false).outcome).toBe('deny');
+});
+
+test('a closed question is answered with the chosen text, or withdrawn with none', () => {
+  const at = new Date('2026-09-24T09:00:00.000Z');
+  expect(
+    projectQuestionDecision({ questionId: 'q_one', state: 'answered', answer: 'Cook at home', at }),
+  ).toEqual({
+    kind: 'question',
+    id: 'q_one',
+    outcome: 'answered',
+    answer: 'Cook at home',
+    decided_at: '2026-09-24T09:00:00.000Z',
+  });
+  const withdrawn = projectQuestionDecision({
+    questionId: 'q_one',
+    state: 'withdrawn',
+    answer: 'ignored',
+    at,
+  });
+  expect([withdrawn.outcome, withdrawn.answer]).toEqual(['withdrawn', null]);
 });

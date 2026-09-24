@@ -1837,6 +1837,26 @@ export function buildOpenApiDocument() {
           },
         },
 
+        '/ledger/{id}/stop': {
+          post: {
+            tags: ['companies'],
+            summary: 'Stop handling this item',
+            description:
+              'Cancels the job chasing the item, if one still runs, and returns the item to ' +
+              'open so it can be handled again later.',
+            requestParams: {
+              ...idParam('id', 'Ledger item id'),
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: {
+              '200': jsonResponse('The item, open again', ledgerItem),
+              '404': problem('No such item for this person'),
+              '409': problem('The item is already settled or dropped'),
+              '503': problem('Stopping is not connected yet'),
+            },
+          },
+        },
+
         '/model-providers/sign-in': {
           get: {
             tags: ['model-providers'],

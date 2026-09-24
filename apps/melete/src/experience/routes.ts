@@ -252,7 +252,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
     'POST /agents': (spaceId, _c, input) => service.saveAgent(spaceId, input),
     'PATCH /agents/{id}': (spaceId, c, input) =>
       service.saveAgent(spaceId, input, c.req.param('id') ?? ''),
-    'GET /conversations': (spaceId) => service.conversations(spaceId),
+    'GET /conversations': (spaceId, c) => service.conversations(spaceId, c.req.query()),
     'POST /conversations': (spaceId, _c, input) => service.createConversation(spaceId, input),
     'GET /conversations/{id}': async (spaceId, c) => ({
       conversation: await service.view(

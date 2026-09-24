@@ -46,6 +46,7 @@ const permission = (id: string) =>
       options: ['allow_once', 'deny'],
       version: 'v1',
       preview: null,
+      created_at: '2026-09-24T08:00:00.000Z',
     },
   });
 const decided = (events: ExperienceEvent[]) =>

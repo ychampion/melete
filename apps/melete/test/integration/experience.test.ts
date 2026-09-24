@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   agentResponse,
   automationResponse,
+  conversationList,
   conversationResponse,
   dedupKey,
   experienceOperations,
@@ -153,6 +154,33 @@ withDb('experience rows and authenticated scope', () => {
     expect(result.results.some((item) => item.id === task.id && item.kind === 'task')).toBe(true);
     expect(JSON.stringify(result)).not.toContain('Dinner private');
     expect((await request(`/tasks/${task.id}`, 'DELETE')).status).toBe(200);
+  });
+  test('the profile names the address messages leave from, once a mailbox can send', async () => {
+    const profile = async () =>
+      experienceOperations['GET /profile'].response.parse(await (await request('/profile')).json())
+        .profile;
+    expect((await profile()).sending_address).toBeNull();
+    const mailbox = newId('conn');
+    const db = required(handle).db;
+    await db.insert(connection).values({
+      id: mailbox,
+      spaceId,
+      label: 'Mail',
+      provider: 'imap',
+      scopes: ['email.search', 'email.send'],
+      configuration: { mail: { from: 'alex@example.test' } },
+    });
+    try {
+      expect((await profile()).sending_address).toBe('alex@example.test');
+      // A mailbox that can only read is not where anything leaves from.
+      await db
+        .update(connection)
+        .set({ scopes: ['email.search'] })
+        .where(eq(connection.id, mailbox));
+      expect((await profile()).sending_address).toBeNull();
+    } finally {
+      await db.delete(connection).where(eq(connection.id, mailbox));
+    }
   });
   test('plans project real child completion and preserve context in a linked conversation', async () => {
     const persona = agentResponse.parse(
@@ -327,6 +355,29 @@ withDb('experience rows and authenticated scope', () => {
     ).toBe(404);
     expect((await request('/conversations', 'GET')).status).toBe(200);
   });
+  test('the chats list pages most recent first, without a gap or a repeat', async () => {
+    const made = [
+      await createConversation(),
+      await createConversation(),
+      await createConversation(),
+    ];
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const path = `/conversations?limit=2${cursor ? `&cursor=${cursor}` : ''}`;
+      const page = conversationList.parse(await (await request(path)).json());
+      expect(page.conversations.length).toBeLessThanOrEqual(2);
+      seen.push(...page.conversations.map((entry) => entry.updated_at + entry.id));
+      cursor = page.next_cursor;
+    } while (cursor);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect([...seen].sort().reverse()).toEqual(seen);
+    const everything = conversationList.parse(await (await request('/conversations')).json());
+    expect(everything.next_cursor).toBeNull();
+    expect(seen).toHaveLength(everything.conversations.length);
+    for (const chat of made) expect(seen.some((entry) => entry.endsWith(chat.id))).toBe(true);
+    expect((await request('/conversations?cursor=not-a-cursor')).status).toBe(400);
+  });
   test('submissions persist exactly one turn, finish and accept the next message', async () => {
     const chat = await createConversation();
     const first = messageAcceptance.parse(
@@ -451,6 +502,10 @@ withDb('experience rows and authenticated scope', () => {
         .find((item) => item.conversation_id === chat.id),
     );
     expect(question.options).toHaveLength(2);
+    // The queue is oldest first, and each entry says when it was asked.
+    const [asked] = await required(handle)
+      .sql`select created_at from question where id = ${question.id}`;
+    expect(question.created_at).toBe(new Date(asked?.created_at).toISOString());
     expect(question.why).toEqual(['For Dinner.']);
     expect(
       (await request(`/quick-answers/${question.id}`, 'POST', { option_id: 'invented' })).status,
@@ -465,6 +520,18 @@ withDb('experience rows and authenticated scope', () => {
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
     expect(turns.turns.filter((turn) => turn.text === 'Cook at home')).toHaveLength(1);
+    // The answer rides the conversation stream once, so a reload shows it answered.
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id, 200);
+    expect(
+      page.events.flatMap((event) => (event.item.type === 'decision' ? [event.item.decision] : [])),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'question',
+        id: question.id,
+        outcome: 'answered',
+        answer: 'Cook at home',
+      }),
+    ]);
   });
   test('saved details use plain keys, correction history, dependency explanations and durable forgetting', async () => {
     const sql = required(handle).sql;

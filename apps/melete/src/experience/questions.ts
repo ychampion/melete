@@ -52,6 +52,7 @@ export class ExperienceQuestions {
           options: quickOptions
             .parse(row.options)
             .map((option) => ({ ...option, label: plainText(option.label, 'Choose this option') })),
+          created_at: row.createdAt.toISOString(),
         }),
       );
     }

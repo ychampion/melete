@@ -9,9 +9,12 @@
  * key. Both answer the same interface, so nothing downstream knows which ran.
  */
 
+import { isTerminal, jobState } from '@melete/contracts';
+import { eq } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
+import { job } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
@@ -161,6 +164,14 @@ export function companiesDeps(options: {
     // returns an id, so the handler is given no `onStatusChange` of its own.
     ...(jobs
       ? {
+          cancelJob: async (id: string, reason: string) => {
+            const [row] = await options.db
+              .select({ state: job.state })
+              .from(job)
+              .where(eq(job.id, id));
+            if (!row || isTerminal(jobState.parse(row.state))) return;
+            await jobs.cancel(id, reason);
+          },
           handler: playbookHandler({
             createJob: (input) => jobs.create(input),
             ...(triggers ? { createTrigger: (id, spec) => triggers.create(id, spec) } : {}),

@@ -143,6 +143,8 @@ export class ExperienceMock {
     time_zone: 'UTC',
     day_hours: { start: '08:00', end: '22:00' },
   });
+  /** The address messages leave from, when a mailbox that can send is connected. */
+  sendingAddress: string | null = null;
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
     for (const template of AGENT_TEMPLATES.templates) {
       const agent = C.experienceAgent.parse({
@@ -251,6 +253,7 @@ export class ExperienceMock {
     }
     proposal.decision = input.option;
     this.permissions.delete(id);
+    this.decided(chat, 'permission', id, input.option);
     if (input.option === 'deny') {
       this.event(chat, { type: 'note', text: 'Nothing was changed.' });
       const target = proposal.onDenied
@@ -261,6 +264,19 @@ export class ExperienceMock {
     this.state(chat, 'working');
     this.schedule(chat);
     return C.permissionOutcome.parse({ status: 'ok', option: input.option, rule });
+  }
+  /** The decision on the same stream as the card it decides, as the service sends it. */
+  decided(
+    chat: Parameters<typeof this.event>[0],
+    kind: C.ExperienceDecision['kind'],
+    id: string,
+    outcome: C.ExperienceDecision['outcome'],
+    answer: string | null = null,
+  ) {
+    this.event(chat, {
+      type: 'decision',
+      decision: C.experienceDecision.parse({ kind, id, outcome, answer, decided_at: this.now() }),
+    });
   }
   /** Start a scripted conversation without an HTTP round trip, for seeding. */
   start(title: string, agentId: string, text: string, planId?: string, scenarioId?: string) {
@@ -766,6 +782,7 @@ export class ExperienceMock {
         text: plainText(step.question, 'What should happen next?'),
         why: ['Your answer decides the next step.'],
         if_ignored: 'This conversation waits for your answer.',
+        created_at: this.now(),
         options: step.options.map((option, index) => ({
           id: `option-${index + 1}`,
           label: option.description
@@ -821,6 +838,7 @@ export class ExperienceMock {
           options: ['allow_once', 'always', 'deny'],
           version: newId('v'),
           preview: chat.lastCard,
+          created_at: this.now(),
         });
         proposal.permissionId = permission.id;
         this.permissions.set(permission.id, permission);
@@ -948,6 +966,7 @@ export class ExperienceMock {
         text: plainText(step.question, 'What should happen next?'),
         why: ['Your answer is needed to continue.'],
         if_ignored: 'This conversation waits for your answer.',
+        created_at: this.now(),
         options: [
           { id: 'continue', label: 'Continue' },
           { id: 'stop', label: 'Stop here' },
@@ -1219,6 +1238,7 @@ export class ExperienceMock {
       version: newId('v'),
       draft,
       preview: chat.cards.find((card) => card.id === id) ?? null,
+      created_at: this.now(),
     });
     this.permissions.set(permission.id, permission);
     this.permissionDrafts.set(permission.id, id);
@@ -1263,6 +1283,7 @@ export class ExperienceMock {
       });
       this.rules.set(rule.id, rule);
     }
+    this.decided(chat, 'permission', id, input.option);
     if (input.option === 'deny') {
       draft.status = 'draft';
       this.event(chat, { type: 'note', text: 'The message was not sent.' });
@@ -1407,8 +1428,27 @@ export class ExperienceMock {
         this.agents.set(agent.id, agent);
         return { agent };
       }
-      case 'GET /conversations':
-        return { conversations: [...this.chats.values()].map((chat) => chat.view) };
+      case 'GET /conversations': {
+        // Most recently active first, a page at a time, as the service answers.
+        const query = C.conversationListQuery.parse(c.req.query());
+        const after = query.cursor ? C.decodeConversationCursor(query.cursor) : null;
+        if (query.cursor && !after)
+          throw new MockExperienceError(400, 'Start the list again from the top.');
+        const position = (view: C.Conversation) => `${view.updated_at}|${view.id}`;
+        const views = [...this.chats.values()]
+          .map((chat) => chat.view)
+          .sort((a, b) => position(b).localeCompare(position(a)))
+          .filter((view) => !after || position(view) < `${after.updated_at}|${after.id}`);
+        const page = views.slice(0, query.limit);
+        const last = page.at(-1);
+        return {
+          conversations: page,
+          next_cursor:
+            views.length > query.limit && last
+              ? C.encodeConversationCursor({ updated_at: last.updated_at, id: last.id })
+              : null,
+        };
+      }
       case 'POST /conversations':
         return this.create(input);
       case 'GET /conversations/{id}':
@@ -1472,6 +1512,8 @@ export class ExperienceMock {
         this.questions.delete(id);
         if (question.conversation_id) {
           const chat = required(this.chats, question.conversation_id);
+          const chosen = question.options.find((choice) => choice.id === input.option_id);
+          this.decided(chat, 'question', id, 'answered', chosen?.label ?? null);
           if (input.option_id === 'stop') {
             chat.stopped = true;
             this.state(chat, 'stopped');
@@ -1532,10 +1574,10 @@ export class ExperienceMock {
         return { reasons: [`You saved this detail: ${item.value}`], output: null, used_at: null };
       }
       case 'GET /profile':
-        return { profile: this.profile };
+        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
       case 'PATCH /profile':
         this.profile = C.profileInput.parse(input);
-        return { profile: this.profile };
+        return { profile: { ...this.profile, sending_address: this.sendingAddress } };
       case 'GET /home': {
         const tasks = [...this.tasks.values()].filter((task) => !task.done);
         return {
