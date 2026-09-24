@@ -8,6 +8,33 @@ const fixture = await createConformanceFixture();
 const databaseTest = fixture ? test : test.skip;
 afterAll(async () => await fixture?.close());
 
+/** Long beside a destination write, so the timeout can only fire after it. */
+const DISPATCH_TIMEOUT_MS = 2_000;
+
+/** A step the test waits on, which the destination can also report as failed. */
+function outcome() {
+  let succeed = () => {};
+  let fail = (_reason: string) => {};
+  const promise = new Promise<void>((resolve, reject) => {
+    succeed = resolve;
+    fail = (reason) => reject(new Error(reason));
+  });
+  return { promise, succeed, fail };
+}
+
+/** Waits at most `ms`, then fails with what did not happen instead of hanging. */
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function setup(verify = true) {
   if (!fixture) throw new Error('Postgres fixture unavailable');
   return fixture.setup({ verify });
@@ -18,14 +45,22 @@ describe(`conformance 3: ${spec.title}`, () => {
     'provider timeout after the destination write reconciles the original logical action identity',
     async () => {
       if (!fixture) throw new Error('Postgres fixture unavailable');
-      const wrote = deferred();
+      // The dispatch timeout starts with the connector call and aborts it, and
+      // the destination refuses an aborted call before it writes. The write
+      // must land first, so the timeout is long beside the write, and the
+      // destination then holds its reply until the timeout has fired.
+      const write = outcome();
+      const timedOut = outcome();
       const release = deferred();
       const s = await fixture.setup({
-        dispatchTimeoutMs: 75,
+        dispatchTimeoutMs: DISPATCH_TIMEOUT_MS,
         execute: async (action, ctx, destination) => {
+          if (ctx.signal?.aborted)
+            write.fail('the dispatch timeout fired before the destination was called');
           const receipt = await destination.execute(action, ctx);
-          wrote.resolve();
-          // The injected timeout is after durable acceptance, never before execute.
+          write.succeed();
+          if (ctx.signal?.aborted) timedOut.succeed();
+          else ctx.signal?.addEventListener('abort', () => timedOut.succeed(), { once: true });
           await release.promise;
           return receipt;
         },
@@ -34,9 +69,12 @@ describe(`conformance 3: ${spec.title}`, () => {
       const p = await s.approve(payload, 'provider-timeout-action');
       await s.broker.admit(s.claims, p.action_id, p.payload_hash);
       const dispatch = s.broker.dispatch(p.action_id);
+      // A dispatch that fails before the write ends the wait with its reason.
+      void dispatch.catch((error: unknown) => write.fail(`the dispatch failed: ${String(error)}`));
       try {
-        await wrote.promise;
-        const unknown = await dispatch;
+        await within(write.promise, DISPATCH_TIMEOUT_MS, 'the destination write did not land');
+        await within(timedOut.promise, 2 * DISPATCH_TIMEOUT_MS, 'the dispatch timeout never fired');
+        const unknown = await within(dispatch, DISPATCH_TIMEOUT_MS, 'the dispatch never returned');
         expect(unknown.status).toBe('unknown');
         const [accepted] =
           await s.sql`select action_id, payload_hash from test_destination_ledger where action_id = ${p.action_id}`;
@@ -62,7 +100,7 @@ describe(`conformance 3: ${spec.title}`, () => {
         ).toHaveLength(1);
       } finally {
         release.resolve();
-        await dispatch;
+        await within(dispatch, DISPATCH_TIMEOUT_MS, 'the dispatch never returned');
       }
     },
   );
