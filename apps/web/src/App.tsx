@@ -15,6 +15,7 @@ import type { Agent, Capabilities, Conversation } from './experience/types.ts';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
 import { AutomationsScreen } from './screens/Automations.tsx';
+import { ChatsScreen } from './screens/Chats.tsx';
 import { CompaniesScreen } from './screens/Companies.tsx';
 import { HomeScreen } from './screens/Home.tsx';
 import { OnboardingScreen, SignInScreen } from './screens/Onboarding.tsx';
@@ -223,6 +224,8 @@ export function App() {
     screen = <SignInScreen signedIn={signedIn} />;
   } else if (!onboarded || head === 'setup') {
     screen = <OnboardingScreen />;
+  } else if (head === 'chats') {
+    screen = <ChatsScreen />;
   } else if (head === 'chat') {
     screen = <ChatScreen key={second ?? 'new'} id={second ?? null} />;
   } else if (head === 'agents') {

@@ -528,6 +528,10 @@ function InMotion({ now }: { now: number }) {
     <section className="home-section" aria-labelledby="home-motion">
       <div className="home-section-head">
         <h2 id="home-motion">In motion</h2>
+        <a className="section-link" href={href('/chats')}>
+          All chats
+          <Icon name="chevronRight" size={14} />
+        </a>
       </div>
       <div className="motion">
         {rows.map((conversation) => {
