@@ -144,3 +144,21 @@ test('a company with a name outside ASCII is the same company in either spelling
   expect(registrableDomain('support@mail.xn--bcher-kva.example')).toBe('xn--bcher-kva.example');
   expect(senderDomain('Bücher <hilfe@BÜCHER.example>')).toBe('xn--bcher-kva.example');
 });
+
+test('a message with two From headers is from nobody, whichever the parser kept', async () => {
+  const parsed = await simpleParser(
+    'From: x@evil.test\r\nFrom: a@acme.test\r\nMessage-ID: <two@evil.test>\r\nDate: Fri, 18 Sep 2026 11:00:00 +0000\r\nSubject: Re: Refund\r\n\r\nPaid.',
+  );
+  const message = toMailMessage(1, parsed);
+  expect(message.from_addresses).toEqual([]);
+  const registry = new ConnectorRegistry();
+  registry.register(CONNECTION, new EmailConnector(config, secret, () => new Inbox([message])));
+  const [read] = await connectorReplyMailbox({
+    registry,
+    connectionId: CONNECTION,
+    spaceId: SPACE,
+  }).recent(50);
+  if (!read) throw new Error('Expected the message to be read');
+  expect(isReplyFrom({ domain: 'acme.test', since: '2026-09-18T09:00:00.000Z' }, read)).toBe(false);
+  expect(replyPayload(read).sender_domain).toBeNull();
+});
