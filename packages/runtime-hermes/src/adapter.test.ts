@@ -254,6 +254,42 @@ describe('lifecycle hook bridge', () => {
 });
 
 describe('a recorded run', () => {
+  test("the owner's new message reaches the model once, and earlier context once", async () => {
+    const { calls, fetch } = harness();
+    const asked = {
+      role: 'user' as const,
+      content: 'Book the dentist for Tuesday.',
+      at: '2026-09-23T09:00:00Z',
+    };
+    const earlier = {
+      role: 'user' as const,
+      content: 'I prefer mornings.',
+      at: '2026-09-22T09:00:00Z',
+    };
+    const reply = {
+      role: 'assistant' as const,
+      content: 'Noted, mornings.',
+      at: '2026-09-22T09:00:05Z',
+    };
+    await adapterWith(fetch).start(
+      {
+        ...bundle,
+        transcript: [earlier, reply, asked],
+        inputs: { ...bundle.inputs, new_user_messages: [asked] },
+      },
+      new Collector(),
+      new AbortController().signal,
+    );
+    const started = calls.find(
+      (call) => new URL(call.url).pathname === '/v1/runs' && call.init?.method === 'POST',
+    );
+    const input = String(JSON.parse(String(started?.init?.body)).input);
+    const count = (text: string) => input.split(text).length - 1;
+    expect(count(asked.content)).toBe(1);
+    expect(count(earlier.content)).toBe(1);
+    expect(count(reply.content)).toBe(1);
+  });
+
   test('maps the stream to contract events in order', async () => {
     const { fetch } = harness();
     const sink = new Collector();

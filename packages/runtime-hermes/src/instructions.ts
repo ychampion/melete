@@ -132,8 +132,11 @@ export function renderInput(bundle: AttemptBundle): string {
     );
   // Disposable engines have no session history. The service's bounded ledger
   // is the source of prior messages and completed tool-call identities.
-  if (bundle.transcript.length)
-    lines.push('', '## Prior conversation and tool results', '', JSON.stringify(bundle.transcript));
+  // A new message is written once, under "From the owner" below.
+  const fresh = new Set(bundle.inputs.new_user_messages.map((message) => JSON.stringify(message)));
+  const prior = bundle.transcript.filter((message) => !fresh.has(JSON.stringify(message)));
+  if (prior.length)
+    lines.push('', '## Prior conversation and tool results', '', JSON.stringify(prior));
   for (const brief of bundle.inputs.repair_briefs)
     lines.push('', '## Repair required', '', JSON.stringify(brief));
 
