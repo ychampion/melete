@@ -11,18 +11,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import type { Filter } from '../companies/format.ts';
-import { byCompany, inOrder, matches, sameFilter } from '../companies/format.ts';
+import { byCompany, inOrder, matches, money, sameFilter } from '../companies/format.ts';
 import { CompanyHeader, EmptyLedger, LedgerDetailPanel, LedgerRow } from '../companies/Ledger.tsx';
 import { TotalsRow, totalsOf } from '../companies/Totals.tsx';
+import { OWED_LINE, owedHeadline } from '../copy/money-back.ts';
 import { Icon } from '../design/icons.tsx';
 import { Segmented } from '../design/primitives.tsx';
 import { useMedia, useNow } from '../experience/hooks.ts';
 import type { CompanyMap, LedgerDetail, ScanProgress } from '../experience/types.ts';
-import { navigate } from '../router.ts';
+import { navigate, useRoute } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import '../companies/companies.css';
 
 const SCAN_POLL_MS = 400;
+const OWED: Filter = { kind: 'direction', value: 'owed_to_you' };
 
 export function CompaniesScreen() {
   const [spaceId, setSpaceId] = useState<string | null>(null);
@@ -31,6 +33,12 @@ export function CompaniesScreen() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>(null);
   const [grouped, setGrouped] = useState(true);
+  // `?first=1` is the arrival from setup with an inbox just connected: the
+  // first scan starts on its own, and its result leads with what is owed back.
+  const first = useRoute().query.get('first') === '1';
+  const [justScanned, setJustScanned] = useState(false);
+  const firstScan = useRef(false);
+  const ledOwed = useRef(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [detail, setDetail] = useState<LedgerDetail | null>(null);
   const [busy, setBusy] = useState(false);
@@ -109,7 +117,10 @@ export function CompaniesScreen() {
           setScanning(false);
           if (progress.data.status === 'failed')
             setError(progress.data.error ?? 'The scan stopped before it finished.');
-          else void load(spaceId);
+          else {
+            setJustScanned(true);
+            void load(spaceId);
+          }
         });
       }, SCAN_POLL_MS);
     });
@@ -154,6 +165,23 @@ export function CompaniesScreen() {
   const flat = useMemo(() => inOrder(items, now), [items, now]);
   const companyOf = (id: string) => map?.companies.find((company) => company.id === id);
   const nothingFound = map !== null && map.companies.length === 0 && map.items.length === 0;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the first scan starts once, when an empty map arrives
+  useEffect(() => {
+    if (!first || !nothingFound || !spaceId || firstScan.current) return;
+    firstScan.current = true;
+    startScan();
+  }, [first, nothingFound, spaceId]);
+  const owing = map
+    ? new Set(map.items.filter((row) => matches(row, OWED, now)).map((row) => row.company_id)).size
+    : 0;
+  const owedTotal = map?.totals.owed_to_you_minor ?? 0;
+  // A scan that finds money owed back leads with it: the owed rows, most urgent first.
+  useEffect(() => {
+    if (!justScanned || !map || ledOwed.current || owedTotal <= 0) return;
+    ledOwed.current = true;
+    setFilter(OWED);
+    setGrouped(false);
+  }, [justScanned, map, owedTotal]);
   const flatView = !grouped || phone;
   // A money figure pressed in reading order: say what the rows add up to.
   const pressed = map
@@ -219,6 +247,14 @@ export function CompaniesScreen() {
 
         {map && !nothingFound ? (
           <div className="companies">
+            {justScanned && owedTotal > 0 ? (
+              <div className="col" style={{ gap: 4 }}>
+                <p className="brief-line voice" style={{ color: 'var(--heading)' }}>
+                  {owedHeadline(money(owedTotal, map.currency), owing)}
+                </p>
+                <p style={{ fontSize: 14, color: 'var(--muted)' }}>{OWED_LINE}</p>
+              </div>
+            ) : null}
             <TotalsRow
               totals={map.totals}
               companies={map.companies.length}
