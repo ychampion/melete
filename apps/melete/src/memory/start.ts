@@ -166,6 +166,9 @@ export async function startServiceMemory(
     journal,
     markdown,
     scopeForJob,
+    async provision(spaceId: string, principalId: string) {
+      await scopeForSpace(principalId, spaceId);
+    },
     async resolveScope(request: Request): Promise<MemoryScope | null> {
       const cookies = request.headers.get('cookie') ?? '';
       const token = cookies

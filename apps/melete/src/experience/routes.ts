@@ -39,6 +39,8 @@ export type ExperienceDeps = {
   registry?: ConnectorRegistry;
   questions?: QuestionService;
   memoryJournal?: RestrictionJournal;
+  /** Provisions a space's memory on its owner's first use. */
+  memoryProvision?: (spaceId: string, principalId: string) => Promise<void>;
   triggers?: TriggerService;
 };
 /**
@@ -65,7 +67,9 @@ const SPACE_OWNER_SURFACES = new Set([
 export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceService {
   const service = new ExperienceService(deps.db, deps.jobs, deps.submissions, deps.runner);
   const questions = new ExperienceQuestions(deps.db, deps.questions, deps.sql);
-  const memory = deps.sql ? new ExperienceMemory(deps.sql, deps.memoryJournal) : undefined;
+  const memory = deps.sql
+    ? new ExperienceMemory(deps.sql, deps.memoryJournal, deps.memoryProvision)
+    : undefined;
   const ownerEffects =
     deps.sql && deps.broker && deps.registry
       ? new ExperienceEffects(deps.sql, deps.broker, deps.registry)

@@ -20,6 +20,12 @@ export type MemoryRouteOptions = {
   resolveScope?: (request: Request) => Promise<MemoryScope | null>;
   markdown?: MarkdownViews;
   recallOptions?: RecallOptions;
+  /**
+   * Provision a space's memory the first time its owner uses it, through the
+   * same restore gate as every other first use. A principal who is not the
+   * space's owner provisions nothing.
+   */
+  provision?: (spaceId: string, principalId: string) => Promise<void>;
 };
 export function createMemoryRouter(options: MemoryRouteOptions) {
   const app = new Hono<{ Variables: { memoryScope: MemoryScope } }>();
