@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import type { JobBudget } from '@melete/contracts';
 import postgres from 'postgres';
 import { newId } from '../../apps/melete/src/ids.ts';
+import { repointTestServer } from '../../apps/melete/test/helpers/database.ts';
 import { parseEnvFile } from '../../deploy/scripts/provider-settings.ts';
 
 export const composeEnabled = process.env.MELETE_CONFORMANCE_COMPOSE === '1';
@@ -166,6 +167,35 @@ export async function waitForStack(): Promise<void> {
     180_000,
     'all four Compose services to become healthy',
   );
+  // Healthy is the container's own view. The tests reach Postgres from the host,
+  // at the address it has now, so that connection is what is waited for.
+  await waitFor(
+    async () => {
+      const db = postgres(await databaseUrl(), { max: 1, prepare: false, connect_timeout: 5 });
+      try {
+        await db`select 1`;
+        return true;
+      } catch {
+        return false;
+      } finally {
+        await db.end({ timeout: 1 });
+      }
+    },
+    60_000,
+    'Postgres to accept a connection from the host',
+  );
+}
+
+/**
+ * Restart every service and wait until the stack answers again. A restarted
+ * container can come back on a different address on its network, so the
+ * database address the tests use is looked up again and every later fixture
+ * follows it. A pool opened before this call still points at the old address.
+ */
+export async function restartStack(): Promise<void> {
+  await compose('restart');
+  await waitForStack();
+  repointTestServer(await databaseUrl());
 }
 
 export async function ensureTestConnection(): Promise<{ spaceId: string; connectionId: string }> {
