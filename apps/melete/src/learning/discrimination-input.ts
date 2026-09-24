@@ -1,7 +1,8 @@
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { action } from '../db/schema.ts';
+import { action, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
+import { caseInput } from './case-input.ts';
 import type { DiscriminationInput } from './discriminate.ts';
 import type { EpisodeRow } from './episodes.ts';
 
@@ -29,7 +30,14 @@ export async function discriminationInput(
         ...(source.correctiveJobId ? [source.correctiveJobId] : []),
       ]),
     );
+  // A request that carried rows is the same request in both answers.
+  const [origin] = await db
+    .select({ objective: job.objective })
+    .from(job)
+    .where(eq(job.id, source.jobId));
+  const carried = origin ? caseInput(origin.objective) : undefined;
   return {
+    ...(carried ? { input: carried } : {}),
     prior: source.priorOutput,
     corrected: source.correctedOutput,
     priorActions: rows.filter(

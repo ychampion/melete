@@ -64,6 +64,12 @@ import { executionSettlement, executionStartResponse } from './execution-admissi
 import { experiencePaths } from './experience-openapi.ts';
 import { hookObservation } from './hooks.ts';
 import {
+  engineSkillApprovalRequest,
+  engineSkillEditRequest,
+  engineSkillListResponse,
+  engineSkillProhibitionListResponse,
+  engineSkillProhibitionResponse,
+  engineSkillResponse,
   episodeListResponse,
   interventionRequest,
   interventionResponse,
@@ -483,6 +489,93 @@ export function buildOpenApiDocument() {
             responses: { '200': jsonResponse('Read', learningNoticeResponse) },
           },
         },
+        '/engine-skills': {
+          get: {
+            tags: ['learning'],
+            summary: 'List the skills the engine wrote for itself in this space',
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Engine skills', engineSkillListResponse) },
+          },
+        },
+        '/engine-skills/held': {
+          get: {
+            tags: ['learning'],
+            summary: 'List engine-written skills waiting for the owner to read them',
+            requestParams: { query: learningSpaceQuery },
+            responses: { '200': jsonResponse('Held engine skills', engineSkillListResponse) },
+          },
+        },
+        '/engine-skills/prohibitions': {
+          get: {
+            tags: ['learning'],
+            summary:
+              'List the standing prohibitions this person placed on engine skills, in any space',
+            requestParams: { query: learningSpaceQuery },
+            responses: {
+              '200': jsonResponse('Prohibitions', engineSkillProhibitionListResponse),
+            },
+          },
+        },
+        '/engine-skills/prohibitions/{id}/lift': {
+          post: {
+            tags: ['learning'],
+            summary: 'Lift a standing prohibition on an engine skill',
+            requestParams: idParam('id', 'Prohibition id'),
+            requestBody: json(learningSpaceRequest),
+            responses: {
+              '200': jsonResponse('Lifted prohibition', engineSkillProhibitionResponse),
+            },
+          },
+        },
+        '/engine-skills/{id}/approve': {
+          post: {
+            tags: ['learning'],
+            summary: 'Approve the exact bytes of a held engine-written skill',
+            requestParams: idParam('id', 'Skill id'),
+            requestBody: json(engineSkillApprovalRequest),
+            responses: { '200': jsonResponse('Live engine skill', engineSkillResponse) },
+          },
+        },
+        '/engine-skills/{id}/edit': {
+          post: {
+            tags: ['learning'],
+            summary: 'Replace an engine-written skill with the owner’s own text',
+            requestParams: idParam('id', 'Skill id'),
+            requestBody: json(engineSkillEditRequest),
+            responses: { '200': jsonResponse('Edited engine skill', engineSkillResponse) },
+          },
+        },
+        '/engine-skills/{id}/stop': {
+          post: {
+            tags: ['learning'],
+            summary:
+              'Stop an engine-written skill and prohibit its name and body in every space until lifted',
+            requestParams: idParam('id', 'Skill id'),
+            requestBody: json(procedureReasonRequest),
+            responses: { '200': jsonResponse('Stopped engine skill', engineSkillResponse) },
+          },
+        },
+        ...Object.fromEntries(
+          (
+            [
+              ['decline', 'Decline a held engine-written skill and erase its body'],
+              ['delete', 'Delete an engine-written skill and erase its body'],
+              ['pause', 'Stop delivering an engine-written skill from the next attempt'],
+              ['resume', 'Deliver a paused engine-written skill again'],
+            ] as const
+          ).map(([action, summary]) => [
+            `/engine-skills/{id}/${action}`,
+            {
+              post: {
+                tags: ['learning'],
+                summary,
+                requestParams: idParam('id', 'Skill id'),
+                requestBody: json(learningSpaceRequest),
+                responses: { '200': jsonResponse('Engine skill', engineSkillResponse) },
+              },
+            },
+          ]),
+        ),
         '/principals': {
           post: {
             tags: ['spaces'],

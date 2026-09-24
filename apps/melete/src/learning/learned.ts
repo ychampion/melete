@@ -250,7 +250,7 @@ export class CorrectionSource implements LearnedSourceProvider {
 
   /** Locked, and the person's own; anything else reads as absent. */
   private async mine(tx: Transaction, principalId: string, spaceId: string, id: string) {
-    const locked = await this.procedures.locked(tx, principalId, spaceId, id);
+    const locked = await this.procedures.lockedCorrection(tx, principalId, spaceId, id);
     if ((locked.candidate.promotion.principal_id ?? locked.source.actor) !== principalId)
       throw new ServiceError('not_found', 'Procedure not found.', 404);
     return locked;
@@ -576,7 +576,7 @@ export class LearnedService {
           return { row, episodeId: row.episodeId, candidateId: row.candidateId };
         throw new ServiceError('question_closed', 'This question is no longer open.', 409);
       }
-      const { candidate, source, objective } = await this.procedures.locked(
+      const { candidate, source, objective } = await this.procedures.lockedCorrection(
         tx,
         principalId,
         spaceId,

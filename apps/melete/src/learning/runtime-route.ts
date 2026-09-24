@@ -1,11 +1,35 @@
 import { createHash } from 'node:crypto';
-import { type CapabilityClaims, type ToolSpec, toolSpec } from '@melete/contracts';
+import {
+  type CapabilityClaims,
+  type EngineSkillIntakeRequest,
+  engineSkillIntakeRequest,
+  engineSkillIntakeResponse,
+  MAX_ENGINE_SKILL_BODY,
+  type ToolSpec,
+  toolSpec,
+} from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { ServiceError } from '../api/errors.ts';
 import { AuthenticationError, verifyCapability } from '../broker/capability.ts';
 import { BrokerFault } from '../broker/errors.ts';
 import type { BrokerOperations } from '../broker/http.ts';
 import { appendEvent, checkAttempt, lockJob } from '../broker/records.ts';
+
+/** The path the plugin inside the agent's container posts a skill package to. */
+export const ENGINE_SKILL_PATH = '/tools/learning/skill';
+
+/**
+ * What the intake needs from whoever mounts this route: the service function,
+ * given the verified claims and the package. Supplied by the deployment that
+ * has a database; without it the path falls through to the broker's own 404.
+ */
+export type EngineSkillIntakeOperations = {
+  intake(
+    claims: CapabilityClaims,
+    skill: EngineSkillIntakeRequest,
+  ): Promise<{ candidateId: string; state: 'live' | 'held' | 'rejected'; reason: string | null }>;
+};
 
 export const LEARNING_TOOL: ToolSpec = {
   name: 'learning.propose',
@@ -20,12 +44,16 @@ export const LEARNING_TOOL: ToolSpec = {
  * Hermes can refer an existing owner intervention, but cannot invent one or publish a skill.
  * This read-only handoff uses the existing capability verifier and current-attempt authorizer.
  */
+/** Said once per process: an unwired intake is a deployment mistake, not traffic. */
+let warnedUnwired = false;
+
 export function learningRuntimeFetch(options: {
   sql: Sql;
   capabilityKey: string;
   broker: Pick<BrokerOperations, 'authorize'>;
   fallback: (request: Request) => Response | Promise<Response>;
   onError?: (error: unknown) => void;
+  skills?: EngineSkillIntakeOperations;
 }) {
   let available: Promise<boolean> | undefined;
   async function hasLearningSchema() {
@@ -60,11 +88,53 @@ export function learningRuntimeFetch(options: {
   }
   return async (request: Request): Promise<Response> => {
     const path = new URL(request.url).pathname;
-    if (path !== '/tools/learning/propose' && !(path === '/tools' && request.method === 'GET'))
+    if (
+      path !== '/tools/learning/propose' &&
+      path !== ENGINE_SKILL_PATH &&
+      !(path === '/tools' && request.method === 'GET')
+    )
       return options.fallback(request);
     try {
       // Standalone broker deployments can precede the additive learning migration.
       if (!(await hasLearningSchema())) return options.fallback(request);
+      if (path === ENGINE_SKILL_PATH) {
+        if (request.method !== 'POST')
+          return Response.json({ error: { code: 'not_found' } }, { status: 404 });
+        // Mounted without an intake, this path would quietly answer 404 and a whole
+        // write surface would look absent rather than unwired. It says so instead,
+        // once per process, and answers with a code naming the missing wiring.
+        if (!options.skills) {
+          if (!warnedUnwired) {
+            warnedUnwired = true;
+            options.onError?.(
+              new Error(
+                'The engine-skill intake is mounted without a service; skill packages are refused.',
+              ),
+            );
+          }
+          return Response.json({ error: { code: 'skill_intake_unwired' } }, { status: 503 });
+        }
+        // Who is asking, and how much they declare, are settled before the body is read.
+        const claims = await principal(request);
+        const limit = MAX_ENGINE_SKILL_BODY + 2048;
+        if (Number(request.headers.get('content-length') ?? 0) > limit)
+          return Response.json({ error: { code: 'payload_invalid' } }, { status: 413 });
+        const raw = await request.text();
+        if (raw.length > limit)
+          return Response.json({ error: { code: 'payload_invalid' } }, { status: 413 });
+        // Strict: the package is the only thing the caller may say, so a request
+        // that also names a principal, space, job or attempt is refused outright.
+        const skill = engineSkillIntakeRequest.parse(JSON.parse(raw));
+        const admission = await options.skills.intake(claims, skill);
+        return Response.json(
+          engineSkillIntakeResponse.parse({
+            skill_id: admission.candidateId,
+            name: skill.name,
+            state: admission.state,
+            reason: admission.reason,
+          }),
+        );
+      }
       if (path === '/tools' && request.method === 'GET') {
         const response = await options.fallback(request);
         if (!response.ok) return response;
@@ -124,6 +194,9 @@ export function learningRuntimeFetch(options: {
         return Response.json({ error: { code: 'unauthorized' } }, { status: 401 });
       if (error instanceof BrokerFault)
         return Response.json({ error: { code: error.code } }, { status: 403 });
+      // A refused intake answers with its reason code, never with what was refused.
+      if (error instanceof ServiceError)
+        return Response.json({ error: { code: error.code } }, { status: error.status });
       if (error instanceof z.ZodError || error instanceof SyntaxError)
         return Response.json({ error: { code: 'payload_invalid' } }, { status: 400 });
       options.onError?.(error);

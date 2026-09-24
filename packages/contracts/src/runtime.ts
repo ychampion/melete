@@ -19,6 +19,13 @@ export const runtimeCapabilities = z.object({
   tools: z.boolean(),
   interrupt: z.boolean(),
   version: z.string(),
+  /**
+   * Where an attempt's files live. `job` is a workspace no other job reads or
+   * writes, with an engine home that does not outlive the attempt. A runtime that
+   * keeps files across jobs says `persistent`; one that says nothing is treated
+   * the same way, since an earlier job may have written what this one reads.
+   */
+  workspace: z.enum(['job', 'persistent']).optional(),
 });
 export type RuntimeCapabilities = z.infer<typeof runtimeCapabilities>;
 

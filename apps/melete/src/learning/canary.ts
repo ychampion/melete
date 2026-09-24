@@ -10,6 +10,8 @@ import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
+import { ENGINE_ORIGIN } from './engine-scan.ts';
+import { digest } from './episodes.ts';
 import { noticeReverted } from './notices.ts';
 import { procedureCandidate, procedureTransition } from './schema.ts';
 
@@ -17,19 +19,34 @@ export const CANARY_INTERVENTION = 'canary_intervention';
 
 export async function revertDeliveredCanaries(tx: Transaction, row: JobRow, episodeId: string) {
   const delivered = await tx.execute(sql`
-    select distinct substr(skill->>'name', 11) as id
+    select distinct skill->>'name' as name, skill->>'version' as version
     from learning_attempt captured
     join attempt on attempt.id = captured.attempt_id,
     jsonb_array_elements(captured.versions->'skills') skill
-    where attempt.job_id = ${row.id} and skill->>'name' like 'procedure:%'`);
-  const ids = delivered.map((entry) => String(entry.id));
-  if (!ids.length) return [];
+    where attempt.job_id = ${row.id}`);
+  const names = delivered.map((entry) => String(entry.name));
+  // The bytes, not just the name: a catalog skill that happens to share a name with
+  // an engine-written one is a different thing and is not reverted for it.
+  const versions = new Set(delivered.map((entry) => String(entry.version)));
+  // A learned procedure is delivered under its id; a skill the engine wrote for itself
+  // under its own name. An intervention ends either one.
+  const ids = names.filter((name) => name.startsWith('procedure:')).map((name) => name.slice(10));
+  const written = names.filter((name) => !name.startsWith('procedure:'));
+  if (!ids.length && !written.length) return [];
   const canaries = await tx
     .select()
     .from(procedureCandidate)
     .where(
       and(
-        inArray(procedureCandidate.id, ids),
+        or(
+          ids.length ? inArray(procedureCandidate.id, ids) : undefined,
+          written.length
+            ? and(
+                eq(procedureCandidate.origin, ENGINE_ORIGIN),
+                inArray(procedureCandidate.skillName, written),
+              )
+            : undefined,
+        ),
         // What a person kept on their own word stays under the same watch as their trial.
         or(
           eq(procedureCandidate.state, 'enabled_canary'),
@@ -44,6 +61,11 @@ export async function revertDeliveredCanaries(tx: Transaction, row: JobRow, epis
     .for('update');
   const reverted = [];
   for (const candidate of canaries) {
+    // A procedure was named by its own id, so it was this one. An engine skill is named
+    // by a name anything could share, so the delivered bytes decide: only the skill this
+    // job actually read ends here.
+    if (candidate.origin === ENGINE_ORIGIN && !versions.has(`sha256:${digest(candidate.body)}`))
+      continue;
     await tx.insert(procedureTransition).values({
       id: newId('pt'),
       candidateId: candidate.id,

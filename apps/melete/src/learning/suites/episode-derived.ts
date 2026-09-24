@@ -22,6 +22,7 @@ import { ServiceError } from '../../api/errors.ts';
 import { job } from '../../db/schema.ts';
 import { visibleJob } from '../../principals/authority.ts';
 import type { GeneralChange } from '../admit.ts';
+import { caseInput } from '../case-input.ts';
 import { digest } from '../episodes.ts';
 import { definitionHash } from '../procedure.ts';
 import type { Candidate } from '../procedures.ts';
@@ -73,6 +74,8 @@ export const episodeDerivedSuite: EvaluationSuite = {
     'apps/melete/src/learning/suites/episode-derived.ts',
     'apps/melete/src/learning/scope.ts',
     'apps/melete/src/learning/triggers.ts',
+    'apps/melete/src/learning/case-input.ts',
+    'conformance/learning/records.ts',
     'conformance/learning/validation.ts',
     'conformance/learning/sealed-final.ts',
   ],
@@ -116,14 +119,21 @@ export const episodeDerivedSuite: EvaluationSuite = {
       if (!scopeMatches(row.scope, candidate.scope)) continue;
       if (!triggersMatch(candidate.triggers, row.objective)) continue;
       seen.add(row.template);
-      history.push({ template: row.template, objective: row.objective, origin: 'history' });
+      const input = caseInput(row.objective);
+      history.push({
+        template: row.template,
+        objective: row.objective,
+        origin: 'history',
+        ...(input ? { input } : {}),
+      });
     }
     const variants: EvaluationCase[] = [];
     for (const objective of (candidate.change as GeneralChange).variant_objectives ?? []) {
       const template = objectiveTemplate(objective);
       if (seen.has(template)) continue;
       seen.add(template);
-      variants.push({ template, objective, origin: 'variant' });
+      const input = caseInput(objective);
+      variants.push({ template, objective, origin: 'variant', ...(input ? { input } : {}) });
     }
     const pool = new Map([...history, ...variants].map((value) => [value.template, value]));
 

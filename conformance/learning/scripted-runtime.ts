@@ -24,7 +24,13 @@ import {
 export class ScriptedRecordRuntime implements RuntimeAdapter {
   readonly observed: AttemptBundle[] = [];
   async capabilities() {
-    return { version: 'scripted-records/1', tools: true, streaming: false, interrupt: true };
+    return {
+      version: 'scripted-records/1',
+      tools: true,
+      streaming: false,
+      interrupt: true,
+      workspace: 'job' as const,
+    };
   }
   async start(bundle: AttemptBundle, sink: EventSink, signal: AbortSignal) {
     signal.throwIfAborted();

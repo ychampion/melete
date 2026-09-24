@@ -243,7 +243,14 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
 
   async capabilities(): Promise<RuntimeCapabilities> {
     this.shutdown.signal.throwIfAborted();
-    return this.waitForApi(this.options.probeUrl, this.options.probeKey, this.shutdown.signal);
+    const engine = await this.waitForApi(
+      this.options.probeUrl,
+      this.options.probeKey,
+      this.shutdown.signal,
+    );
+    // Each attempt mounts only its own job's directory and an engine home volume
+    // that is removed with the attempt.
+    return { ...engine, workspace: 'job' };
   }
 
   start(bundle: AttemptBundle, sink: EventSink, signal: AbortSignal): Promise<AttemptOutcome> {

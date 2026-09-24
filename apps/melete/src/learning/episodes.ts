@@ -73,6 +73,7 @@ export async function captureAttemptVersions(
   tx: Transaction,
   bundle: AttemptBundle,
   runtime: string,
+  workspace?: 'job' | 'persistent',
 ) {
   await tx
     .insert(learningAttempt)
@@ -89,6 +90,7 @@ export async function captureAttemptVersions(
           name: skill.name,
           version: `sha256:${digest(skill.body)}`,
         })),
+        ...(workspace ? { workspace } : {}),
       },
     })
     .onConflictDoNothing();
@@ -517,8 +519,16 @@ async function liveJobEvidence(tx: Transaction, row: JobRow) {
   return registration;
 }
 
+/** The same handles for a caller that holds only a job id, such as engine-skill intake. */
+export const jobInputReferences = (tx: Transaction, row: Pick<JobRow, 'id' | 'spaceId'>) =>
+  inputReferences(tx, row);
+
 /** Context derivations record exact delivered claim/source versions without copying their private text. */
-async function inputReferences(tx: Transaction, row: JobRow, declared?: string[]) {
+async function inputReferences(
+  tx: Transaction,
+  row: Pick<JobRow, 'id' | 'spaceId'>,
+  declared?: string[],
+) {
   let references = declared;
   if (!references) {
     const [registration] = await tx.select().from(learningJob).where(eq(learningJob.jobId, row.id));

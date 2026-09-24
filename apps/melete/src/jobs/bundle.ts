@@ -790,11 +790,16 @@ function mergeSkills(
   procedures: AttemptBundle['skills'],
   selected: AttemptBundle['skills'],
 ): AttemptBundle['skills'] {
-  const seen = new Set<string>();
+  // A catalog skill keeps its name: a learned skill that takes it is left out
+  // rather than replacing Melete's own or the owner's added skill.
+  const seen = new Set<string>(selected.map((skill) => skill.name));
   const merged: AttemptBundle['skills'] = [];
-  for (const skill of [...procedures, ...selected]) {
+  for (const skill of procedures) {
     if (seen.has(skill.name)) continue;
     seen.add(skill.name);
+    merged.push(skill);
+  }
+  for (const skill of selected) {
     merged.push(skill);
   }
   return merged.slice(0, CONTEXT_LIMITS.max_skills);

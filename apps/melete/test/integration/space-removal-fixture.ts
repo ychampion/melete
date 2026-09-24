@@ -214,6 +214,10 @@ export async function seedSpace(
     (id, space_id, principal_id, source, item_id, candidate_id, action, before, after)
     values (${newId('lc')}, ${spaceId}, ${principalId}, 'correction', ${candidateId},
       ${candidateId}, 'pause', '{}'::jsonb, '{}'::jsonb)`;
+  // A "don't do this" the space's person said here. It is theirs, not the space's.
+  await sql`insert into engine_skill_prohibition
+    (id, space_id, principal_id, skill_name, body_sha256, reason)
+    values (${newId('esp')}, ${spaceId}, ${principalId}, 'weekly-digest', null, 'not like this')`;
   // A trial grant is written against its own synthetic job, in the same space.
   const trialJobId = newId('job');
   await sql`insert into job (id, space_id, title, principal_id, objective, state)

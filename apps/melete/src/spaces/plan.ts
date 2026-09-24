@@ -103,6 +103,9 @@ export async function sweepOperational(
     await tx`delete from question where space_id = ${spaceId}`;
     for (const table of SPACE_KEYED_OPERATIONAL)
       await tx`delete from ${tx(table)} where space_id = ${spaceId}`;
+    // A person's "don't do this" is theirs, not the space's: it keeps standing in
+    // their other spaces, and only the record of where it was said goes.
+    await tx`update engine_skill_prohibition set space_id = null where space_id = ${spaceId}`;
   });
 }
 

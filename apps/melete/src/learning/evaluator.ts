@@ -179,6 +179,12 @@ export class ProcedureEvaluator {
       const reserved = await this.jobs.transaction(async (tx) => {
         const { candidate, source } = await this.procedures.locked(tx, ownerId, spaceId, id);
         verifyDefinition(candidate);
+        // Evaluation compares a correction's two answers; a skill the engine wrote has neither.
+        if (!source)
+          throw new ServiceError(
+            'invalid_procedure_state',
+            'A skill the engine wrote has no correction to evaluate.',
+          );
         if (candidate.rejectionReason)
           throw new ServiceError('candidate_rejected', 'This candidate remains rejected history.');
         // Checks that cannot tell the corrected answer from the objected one measure nothing.

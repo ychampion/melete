@@ -18,6 +18,16 @@ export async function restrictEpisodes(
         select 1 from jsonb_array_elements_text(input_refs) ref where split_part(ref, '@', 1) = any(${ids})
       )) returning id`;
   await tx`delete from procedure_candidate where episode_id = any(${removed.map((row) => row.id)})`;
+  // A skill the engine wrote reaches back to what its job read. Forgetting any of
+  // that restricts the skill and erases its bytes, replay after a restore included.
+  await tx`update procedure_candidate set state = 'reverted', rejection_reason = 'inputs_forgotten',
+    body = '', description = '', hold_reason = null, paused_at = null, input_refs = '[]',
+    version = version + 1
+    where origin = 'engine_staged' and space_id = ${record.space_id} and rejection_reason is null and (
+      (${record.all} and exists (select 1 from job j where j.id = procedure_candidate.source_job_id
+        and j.created_at <= ${record.recorded_at})) or exists (
+        select 1 from jsonb_array_elements_text(input_refs) ref where split_part(ref, '@', 1) = any(${ids})
+      ))`;
 }
 
 /** Retention erases private bytes and keeps only a tombstone so retries cannot recreate evidence. */

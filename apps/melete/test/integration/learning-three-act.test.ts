@@ -114,14 +114,15 @@ const historyTask = (month: number): RecordTask => ({
       triggers: [
         { phrase: 'supplied records', evidence: at('objective', objective, 'supplied records') },
       ],
-      // A held-out history case carries only its objective, so there are no input rows to preserve.
+      // A held-out case whose objective is a table carries those rows, so the
+      // sort has to give every one of them back, on history as on this job.
       checks: [
         {
           kind: 'records_sorted',
           key: 'due',
           type: 'date',
           direction: 'ascending',
-          preserve_rows: false,
+          preserve_rows: true,
         },
       ],
       variant_objectives: [],

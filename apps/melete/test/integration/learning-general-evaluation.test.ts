@@ -158,6 +158,7 @@ const plan = async (spaceId: string, candidateId: string) => {
       spaceId,
       candidateId,
     );
+    if (!source) throw new Error('A learned procedure always has its episode');
     return episodeDerivedSuite.plan({ tx, ownerId: fixture.ownerId, candidate, source });
   });
 };

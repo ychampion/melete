@@ -1,11 +1,15 @@
 import type { SecureContextOptions } from 'node:tls';
 import { ID_PREFIXES, prefixedId } from '@melete/contracts';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import type { PgBoss } from 'pg-boss';
 import type { Sql } from 'postgres';
 import { createActionReadApi } from '../api/actions.ts';
 import type { ArtifactRoots } from '../artifact/content.ts';
 import { type ArtifactCritic, createArtifactRecorder } from '../artifact/record.ts';
+import { schema } from '../db/schema.ts';
+import { serviceTransaction } from '../db/transaction.ts';
 import { createModelGateway, type GatewayOptions, type GatewayProvider } from '../gateway/index.ts';
+import { EngineSkillService } from '../learning/engine-skills.ts';
 import { learningRuntimeFetch } from '../learning/runtime-route.ts';
 import { matchesServiceKey } from './capability.ts';
 import { PostgresGatewayBudget } from './gateway-budget.ts';
@@ -87,6 +91,16 @@ export function createInternalServer(options: {
       return space.success ? space.data : null;
     },
   });
+  // The skills the engine writes arrive here from the plugin in its cell, under the
+  // attempt's capability, and are admitted in the service's own transactions.
+  const db = drizzle(options.sql, { schema });
+  const catalogSkills = options.catalog?.skills;
+  const skills = new EngineSkillService(
+    { transaction: (operation) => serviceTransaction(db, operation) },
+    catalogSkills
+      ? async (spaceId) => (await catalogSkills(spaceId)).map((skill) => skill.frontmatter.name)
+      : undefined,
+  );
   const server = createModelGateway({
     authenticate: (token) => budget.authenticate(token),
     budget,
@@ -100,6 +114,11 @@ export function createInternalServer(options: {
       sql: options.sql,
       capabilityKey: options.capabilityKey,
       broker,
+      skills,
+      onError: (error) =>
+        process.stderr.write(
+          `learning route: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+        ),
       fallback: (request) =>
         request.method === 'GET' && new URL(request.url).pathname === '/actions'
           ? reads.fetch(request)

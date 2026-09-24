@@ -463,6 +463,19 @@ export type AdmittedProcedure = {
   knownRisk: string;
 };
 
+/**
+ * A length check with only an upper bound is satisfied by an empty answer, which
+ * the discrimination gate then refuses — and "keep it short" is one of the most
+ * ordinary corrections there is. Trusted code adds the floor of one the model
+ * left out. A check with only a minimum is left alone: nothing passes it for free.
+ */
+export function boundedLength(check: ProcedureCheck): ProcedureCheck {
+  const bounded =
+    check.kind === 'word_count' || check.kind === 'char_count' || check.kind === 'line_count';
+  if (!bounded || check.min !== undefined || check.max === undefined) return check;
+  return { ...check, min: 1 };
+}
+
 /** A4, with the verbatim fallback: the step as written, or the owner's quote, or nothing. */
 function supportedStep(text: string, evidence: ProcedureStepEvidence): ProcedureStep {
   const { fallback: _ignored, ...span } = evidence;
@@ -591,7 +604,8 @@ export function admitProposal(
 
   if (proposal.checks.length > MAX_CHECKS)
     refuse('check_unsupported', 'A procedure declares at most six checks.');
-  for (const check of proposal.checks) {
+  const checks = proposal.checks.map(boundedLength);
+  for (const check of checks) {
     if (check.kind === 'records_expected_order' && !context.bundledSuite)
       refuse('check_unsupported', 'Only a bundled suite may assert fixture row identities.');
     // Punctuation normalises away, and an empty phrase is found in every output.
@@ -624,7 +638,7 @@ export function admitProposal(
     change: { target: 'skill_body', steps, variant_objectives: variants },
     body,
     triggers,
-    checks: proposal.checks,
+    checks,
     evidence: [...steps.map((step) => step.evidence), ...triggers.map((item) => item.evidence)],
     tests: [...GENERAL_TESTS],
     predictedBenefit: GENERAL_BENEFIT,
