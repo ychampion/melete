@@ -323,7 +323,10 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         streaming: item.status === 'streaming' ? turn.streaming : false,
         // Nothing is under way once the turn stops running, whatever the last entry said.
         live: UNDER_WAY.has(item.status) ? turn.live : null,
-        turn: { ...turn.turn, status: item.status },
+        // A turn read while still queued says "sending"; once the service moves it on, it was sent.
+        ...(turn.delivery === 'sending' && item.status !== 'queued'
+          ? { delivery: null, turn: { ...turn.turn, status: item.status, delivery: null } }
+          : { turn: { ...turn.turn, status: item.status } }),
       }));
     }
     case 'tool': {

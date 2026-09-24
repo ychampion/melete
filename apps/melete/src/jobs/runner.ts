@@ -698,6 +698,15 @@ export class AttemptRunner {
         leaseExpiresAt: null,
       })
       .where(eq(attempt.id, attemptId));
+    // Where the turn ends up, decided once: the saved turn takes it, and the
+    // event carries it so the conversation's stream says the same thing.
+    const turnStatus = row.currentTurnId
+      ? outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
+        ? 'done'
+        : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
+          ? 'failed'
+          : 'needs_you'
+      : null;
     await appendEvent(tx, {
       jobId: row.id,
       attemptId,
@@ -707,6 +716,7 @@ export class AttemptRunner {
         ...(['chat', 'routine'].includes(row.kind)
           ? { experience_completed: completionVerified }
           : {}),
+        ...(turnStatus ? { turn_status: turnStatus } : {}),
       },
       dedupKey: `${attemptId}:ended`,
     });
@@ -724,16 +734,11 @@ export class AttemptRunner {
     await captureCompletedEpisode(tx, updated, outcome, attemptId);
     for (const handler of this.onFinished)
       await handler(tx, updated, outcome, attemptId, { questions: carried, result });
-    if (row.currentTurnId)
+    if (row.currentTurnId && turnStatus)
       await tx
         .update(experienceTurn)
         .set({
-          status:
-            outcome.kind === 'completed' && (row.kind !== 'chat' || chatComplete)
-              ? 'done'
-              : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
-                ? 'failed'
-                : 'needs_you',
+          status: turnStatus,
           ...('summary' in outcome
             ? { answer: outcome.summary }
             : outcome.kind === 'waiting_for_input' && outcome.draft

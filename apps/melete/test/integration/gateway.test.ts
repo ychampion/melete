@@ -143,7 +143,7 @@ databaseTest(
       ]);
       const finalStream = await second.text();
       expect(second.status).toBe(200);
-      expect(finalStream).toContain('The scripted action has a recorded receipt.');
+      expect(finalStream).toContain('This is a walkthrough answer from the scripted model.');
       const [attempt] =
         await s.sql`select provider, model, model_actual, usage from attempt where id = ${s.claims.attempt_id}`;
       expect(attempt?.provider).toBe('fake');

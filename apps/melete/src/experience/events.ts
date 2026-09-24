@@ -47,6 +47,8 @@ import {
 } from './tools.ts';
 
 type EventRow = typeof event.$inferSelect;
+/** The statuses the runner can leave a turn in when an attempt ends. */
+const TURN_ENDINGS = new Set(['done', 'failed', 'needs_you']);
 /** The trail already tells broker actions, grouped; the model itself and retries stay off it. */
 const offTrail = (tool: ToolCall) =>
   tool.id.startsWith('action:') || tool.kind === 'model' || tool.kind === 'retry';
@@ -428,6 +430,11 @@ export class ExperienceEvents {
               ? await tx.select().from(attempt).where(eq(attempt.id, source.attemptId))
               : [];
             const outcome = object(payload.outcome);
+            // Where the runner left this conversation's turn, as its saved copy has it.
+            const settled =
+              source.jobId === id && TURN_ENDINGS.has(String(payload.turn_status))
+                ? (payload.turn_status as 'done' | 'failed' | 'needs_you')
+                : null;
             if (outcome.kind === 'completed' && payload.experience_completed !== false) {
               const effects = await tx
                 .select({ action, connection })
@@ -466,13 +473,19 @@ export class ExperienceEvents {
                   { type: 'card', card: projectArtifact(file) },
                   `file:${file.id}`,
                 );
-            } else if (payload.experience_completed === false)
-              await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
-            else if (outcome.kind === 'failed')
+            } else if (payload.experience_completed === false) {
+              if (!settled)
+                await emit(source, { type: 'status', status: 'needs_you', composer: 'send' });
+            } else if (outcome.kind === 'failed')
               await emit(source, {
                 type: 'note',
                 text: 'I stopped before finishing. Your progress is saved.',
               });
+            // The turn settles on the stream as its saved copy does, so a page
+            // that followed it live reads what a reload would.
+            if (settled) await emit(source, { type: 'status', status: settled, composer: 'send' });
+          } else if (source.type === 'attempt_started' && source.jobId === id) {
+            await emit(source, { type: 'status', status: 'working', composer: 'pause' });
           } else if (
             payload.kind === 'experience_stopped' ||
             payload.kind === 'experience_paused' ||
