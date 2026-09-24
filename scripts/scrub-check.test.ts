@@ -3,7 +3,15 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pathViolation, releasing, report, scanText, scrub, violation } from './scrub-check.ts';
+import {
+  invalidUtf8,
+  pathViolation,
+  releasing,
+  report,
+  scanText,
+  scrub,
+  violation,
+} from './scrub-check.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 /** Any tracked path that is neither this file nor the check itself. */
@@ -159,6 +167,105 @@ describe('a release refuses the placeholder link', () => {
         { file: 'README.md', line: 3, text: link, rule: 'release placeholder' },
       ]);
       expect(report(findings)).toContain('live address');
+    } finally {
+      await rm(tree, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a text file the linter cannot read is refused', () => {
+  const bytes = (...values: number[]) => new Uint8Array(values);
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+
+  test('valid UTF-8, including characters outside ASCII, passes', () => {
+    expect(invalidUtf8(utf8('plain'))).toBe(-1);
+    expect(invalidUtf8(utf8('a dash \u2014, an ellipsis \u2026, an emoji \u{1f600}'))).toBe(-1);
+    expect(invalidUtf8(bytes())).toBe(-1);
+  });
+
+  test('a stray byte, a cut sequence, an overlong form or a surrogate is found where it sits', () => {
+    // 0x85 is the ellipsis a Windows code page writes where UTF-8 has three bytes.
+    expect(invalidUtf8(bytes(0x61, 0x3d, 0x85, 0x62))).toBe(2);
+    expect(invalidUtf8(bytes(0x61, 0xe2, 0x80))).toBe(1);
+    expect(invalidUtf8(bytes(0xc0, 0xaf))).toBe(0);
+    expect(invalidUtf8(bytes(0xe0, 0x80, 0xaf))).toBe(0);
+    expect(invalidUtf8(bytes(0xf0, 0x80, 0x80, 0xaf))).toBe(0);
+    expect(invalidUtf8(bytes(0xed, 0xa0, 0x80))).toBe(0);
+    expect(invalidUtf8(bytes(0xf4, 0x90, 0x80, 0x80))).toBe(0);
+  });
+
+  test('a tracked file carrying one fails the scan with its line', async () => {
+    const tree = await mkdtemp(join(tmpdir(), 'melete-utf8-scan-'));
+    try {
+      await writeFile(join(tree, 'good.ts'), 'export const dash = "\u2014";\n');
+      await writeFile(
+        join(tree, 'bad.ts'),
+        Buffer.concat([
+          Buffer.from('const a = 1;\n// Matrix parameters (`;x='),
+          Buffer.from([0x85]),
+          Buffer.from('`)\n'),
+        ]),
+      );
+      for (const command of [
+        ['init', '-q'],
+        ['add', 'good.ts', 'bad.ts'],
+      ])
+        expect(Bun.spawnSync(['git', ...command], { cwd: tree }).exitCode).toBe(0);
+      const { findings } = await scrub(`${tree}/`);
+      expect(findings).toEqual([
+        { file: 'bad.ts', line: 2, text: 'a byte that is not UTF-8 (0x85)', rule: 'not utf-8' },
+      ]);
+      expect(report(findings)).toContain('saved as UTF-8');
+    } finally {
+      await rm(tree, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a source file cannot hide from the rules behind its bytes', () => {
+  test('a NUL or a wide byte order mark is refused, and the file is still read', async () => {
+    const tree = await mkdtemp(join(tmpdir(), 'melete-wide-scan-'));
+    const planted = '// W2 admits the effect.\n';
+    try {
+      await writeFile(
+        join(tree, 'zero.ts'),
+        Buffer.concat([
+          Buffer.from('const a = 1;\n'),
+          Buffer.from([0]),
+          Buffer.from(`\n${planted}`),
+        ]),
+      );
+      await writeFile(
+        join(tree, 'wide.ts'),
+        Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(planted, 'utf16le')]),
+      );
+      const wide32 = Buffer.alloc(4 + planted.length * 4);
+      wide32.writeUInt32LE(0xfeff, 0);
+      for (const [index, character] of [...planted].entries())
+        wide32.writeUInt32LE(character.codePointAt(0) ?? 0, 4 + index * 4);
+      await writeFile(join(tree, 'wide32.md'), wide32);
+      await writeFile(
+        join(tree, 'bom.ts'),
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('export const ok = 1;\n')]),
+      );
+      // Not a text file: still skipped as binary, as screenshots are.
+      await writeFile(join(tree, 'image.png'), Buffer.from([0x89, 0x50, 0, 0x57, 0x32]));
+      for (const command of [
+        ['init', '-q'],
+        ['add', 'zero.ts', 'wide.ts', 'wide32.md', 'bom.ts', 'image.png'],
+      ])
+        expect(Bun.spawnSync(['git', ...command], { cwd: tree }).exitCode).toBe(0);
+      const { findings } = await scrub(`${tree}/`);
+      expect(findings.map((finding) => [finding.file, finding.line, finding.rule])).toEqual([
+        ['wide.ts', null, 'not utf-8'],
+        ['wide.ts', 1, 'work code'],
+        ['wide32.md', null, 'not utf-8'],
+        ['wide32.md', 1, 'work code'],
+        ['zero.ts', 2, 'not plain text'],
+        ['zero.ts', 3, 'work code'],
+      ]);
+      expect(findings.find((finding) => finding.file === 'wide.ts')?.text).toContain('utf-16le');
+      expect(findings.find((finding) => finding.file === 'wide32.md')?.text).toContain('utf-32le');
     } finally {
       await rm(tree, { recursive: true, force: true });
     }

@@ -8,6 +8,9 @@
  * readily as a line — more readily, because it is read before the file is
  * opened — and a name is checked even when the bytes are binary.
  *
+ * A text file that is not valid UTF-8 is refused too. The linter skips such a file whole, with
+ * only a warning, so one stray byte would otherwise take a source file out of every lint rule.
+ *
  * With `MELETE_RELEASE=1`, which `bun run release:check` sets, it also refuses
  * a placeholder that must be replaced before a release goes out: the
  * `(TRYIT_URL)` link target in README.
@@ -68,6 +71,10 @@ const GUIDANCE: Record<string, string> = {
   'work code':
     'A work code named a piece of work while the project was being built and means nothing to a reader. Say what the thing is — the service, the broker, the memory core — not the item it came from.',
   'release placeholder': 'Replace the placeholder link with the live address before releasing.',
+  'not utf-8':
+    'The linter skips a file it cannot read as UTF-8. Replace the byte with the character it was meant to be, saved as UTF-8.',
+  'not plain text':
+    'A source or text file must not carry a NUL byte: it is read as binary and skipped. Remove the byte.',
 };
 
 /**
@@ -143,6 +150,83 @@ export function report(findings: Finding[]): string {
   return `${lines.join('\n')}\n`;
 }
 
+/**
+ * Where the first byte that is not valid UTF-8 sits, or -1 when every byte is. Overlong forms,
+ * surrogates and values past U+10FFFF are refused as a strict decoder refuses them.
+ */
+export function invalidUtf8(bytes: Uint8Array): number {
+  let index = 0;
+  while (index < bytes.length) {
+    const lead = bytes[index] ?? 0;
+    if (lead < 0x80) {
+      index += 1;
+      continue;
+    }
+    const length =
+      lead >= 0xc2 && lead <= 0xdf
+        ? 2
+        : lead >= 0xe0 && lead <= 0xef
+          ? 3
+          : lead >= 0xf0 && lead <= 0xf4
+            ? 4
+            : 0;
+    if (length === 0 || index + length > bytes.length) return index;
+    const second = bytes[index + 1] ?? 0;
+    const low = lead === 0xe0 ? 0xa0 : lead === 0xf0 ? 0x90 : 0x80;
+    const high = lead === 0xed ? 0x9f : lead === 0xf4 ? 0x8f : 0xbf;
+    if (second < low || second > high) return index;
+    for (let next = 2; next < length; next += 1) {
+      const byte = bytes[index + next] ?? 0;
+      if (byte < 0x80 || byte > 0xbf) return index;
+    }
+    index += length;
+  }
+  return -1;
+}
+
+/**
+ * Source and text files, which are read whatever bytes they carry. Elsewhere a NUL in the first
+ * bytes marks a binary file whose contents are skipped; here that would take a file out of every
+ * rule, so a NUL, or a UTF-16 or UTF-32 byte order mark, is refused instead. A UTF-8 byte order
+ * mark is allowed.
+ */
+const TEXT_FILE = /\.(?:ts|tsx|js|mjs|json|md|ya?ml|sql|css|html)$/i;
+
+type WideEncoding = 'utf-32le' | 'utf-32be' | 'utf-16le' | 'utf-16be';
+
+/** The encoding a UTF-16 or UTF-32 byte order mark announces, or null. UTF-32 is tried first. */
+export function wideEncoding(bytes: Uint8Array): WideEncoding | null {
+  const [a, b, c, d] = bytes;
+  if (a === 0xff && b === 0xfe && c === 0 && d === 0) return 'utf-32le';
+  if (a === 0 && b === 0 && c === 0xfe && d === 0xff) return 'utf-32be';
+  if (a === 0xff && b === 0xfe) return 'utf-16le';
+  if (a === 0xfe && b === 0xff) return 'utf-16be';
+  return null;
+}
+
+/** A wide file's text, so its contents are still checked against every rule. */
+function decodeWide(bytes: Uint8Array, encoding: WideEncoding): string {
+  if (encoding.startsWith('utf-16')) return new TextDecoder(encoding).decode(bytes);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const points: number[] = [];
+  for (let offset = 4; offset + 4 <= bytes.length; offset += 4) {
+    const point = view.getUint32(offset, encoding === 'utf-32le');
+    points.push(point <= 0x10ffff ? point : 0xfffd);
+  }
+  return String.fromCodePoint(...points);
+}
+
+const STRICT = new TextDecoder('utf-8', { fatal: true });
+
+function readsAsUtf8(bytes: Uint8Array): boolean {
+  try {
+    STRICT.decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The tracked files, minus the lockfile. */
 export function trackedFiles(root: string): string[] {
   const listed = Bun.spawnSync(['git', 'ls-files', '-z', '--', '.', ':!bun.lock'], { cwd: root });
@@ -166,8 +250,27 @@ export async function scrub(
   for (const file of files) {
     const named = pathViolation(file);
     if (named) findings.push({ file, line: null, text: 'the file name itself', rule: named });
-    const bytes = await Bun.file(`${root}${file}`).arrayBuffer();
-    if (new Uint8Array(bytes.slice(0, 8192)).includes(0)) continue;
+    const bytes = new Uint8Array(await Bun.file(`${root}${file}`).arrayBuffer());
+    if (TEXT_FILE.test(file)) {
+      const wide = wideEncoding(bytes);
+      if (wide) {
+        findings.push({ file, line: null, text: `a ${wide} byte order mark`, rule: 'not utf-8' });
+        findings.push(...scanText(file, decodeWide(bytes, wide), release));
+        continue;
+      }
+      const nul = bytes.indexOf(0);
+      if (nul >= 0) {
+        const line = bytes.slice(0, nul).filter((byte) => byte === 0x0a).length + 1;
+        findings.push({ file, line, text: 'a NUL byte', rule: 'not plain text' });
+      }
+    } else if (bytes.slice(0, 8192).includes(0)) continue;
+    // The strict decoder is native and quick; the byte walk runs only to say where it failed.
+    const bad = readsAsUtf8(bytes) ? -1 : invalidUtf8(bytes);
+    if (bad >= 0) {
+      const line = bytes.slice(0, bad).filter((byte) => byte === 0x0a).length + 1;
+      const text = `a byte that is not UTF-8 (0x${(bytes[bad] ?? 0).toString(16).padStart(2, '0')})`;
+      findings.push({ file, line, text, rule: 'not utf-8' });
+    }
     findings.push(...scanText(file, new TextDecoder().decode(bytes), release));
   }
   return { files, findings };
