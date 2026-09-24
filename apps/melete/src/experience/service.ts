@@ -250,7 +250,7 @@ export class ExperienceService {
           conversation_id: row.jobId,
           agent_id: row.agentId,
           text: row.text,
-          answer: answerText(row.answer),
+          answer: answerText(row.answer).trimStart(),
           status: row.status,
           delivery: row.status === 'queued' ? 'sending' : null,
           created_at: row.createdAt.toISOString(),
