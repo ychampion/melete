@@ -45,25 +45,37 @@
       "text": "Sent from your address. I will watch the thread and follow up if nothing comes back."
     },
     {
-      "step": "notice",
+      "step": "tool",
       "delay_ms": 900,
-      "level": "info",
-      "title": "Reply received",
-      "body": "Two days later they replied: the refund was not raised and they have raised it now."
+      "name": "email.search",
+      "arguments": { "query": "company thread" },
+      "result": { "matches": 1 },
+      "title": "Read their reply",
+      "active_title": "Reading their reply",
+      "meta": "Two days later: the refund was not raised, and they have raised it now",
+      "sources": [{ "app": "gmail", "label": "Their reply" }]
     },
     {
-      "step": "notice",
+      "step": "tool",
       "delay_ms": 900,
-      "level": "attention",
-      "title": "Followed up",
-      "body": "Five days on, nothing had arrived, so I replied again with the reference and asked for a date."
+      "name": "email.search",
+      "arguments": { "query": "company thread" },
+      "result": { "matches": 1 },
+      "title": "Followed up with the reference",
+      "active_title": "Following up with the reference",
+      "meta": "Five days on nothing had arrived, so it asked for a date",
+      "sources": [{ "app": "gmail", "label": "Your follow-up, from your address" }]
     },
     {
-      "step": "notice",
+      "step": "tool",
       "delay_ms": 900,
-      "level": "info",
-      "title": "They gave a date",
-      "body": "They confirmed the refund was sent on the eighth day and gave the reference TC-RF-88412."
+      "name": "email.search",
+      "arguments": { "query": "company thread" },
+      "result": { "matches": 1 },
+      "title": "Read their confirmation",
+      "active_title": "Reading their confirmation",
+      "meta": "Refund sent on the eighth day, reference TC-RF-88412",
+      "sources": [{ "app": "gmail", "label": "Their confirmation" }]
     },
     {
       "step": "say",

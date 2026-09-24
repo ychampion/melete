@@ -42,9 +42,10 @@ type Chat = {
   /**
    * A company job: the address it writes from, shown on the approval, and the
    * promise that the script keeps going after the send — the reply, the
-   * follow-up and the ending are steps that come after it.
+   * follow-up and the ending are steps that come after it. `settle` marks the
+   * ledger item settled when the script completes.
    */
-  follow?: { from: string };
+  follow?: { from: string; settle?: () => void };
 };
 type Proposal = {
   ref: string;
@@ -966,6 +967,7 @@ export class ExperienceMock {
         text: plainText(step.body || step.title, 'There is an update.'),
       });
     else if (step.step === 'complete') {
+      chat.follow?.settle?.();
       const reacted = chat.script?.steps.some((entry) => entry.step === 'react');
       this.finish(
         chat,

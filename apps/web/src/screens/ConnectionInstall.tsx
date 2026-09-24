@@ -5,6 +5,7 @@
  * here without a change to this file.
  */
 import { useState } from 'react';
+import { Icon } from '../design/icons.tsx';
 import { Badge, Button, Checkbox, Field, Input, Select } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
 import {
@@ -18,6 +19,7 @@ import {
 import { useLoad } from '../experience/hooks.ts';
 import type { ConnectionItemField, ConnectionKind } from '../experience/types.ts';
 import { toast } from '../shell/Shell.tsx';
+import { APP_PASSWORD } from './app-passwords.ts';
 
 const INPUT_TYPE: Partial<Record<ConnectionItemField['input'], string>> = {
   email: 'email',
@@ -81,7 +83,47 @@ function Control({
   );
 }
 
-export function KindForm({ kind, onDone }: { kind: ConnectionKind; onDone: () => void }) {
+/** Why a mail kind asks for an app password, and where to make one. Stated as fact, once. */
+export function AppPasswordExplainer({ kindId }: { kindId: string }) {
+  const note = APP_PASSWORD[kindId];
+  if (!note) return null;
+  return (
+    <div
+      className="col"
+      style={{
+        gap: 6,
+        padding: '12px 14px',
+        borderRadius: 12,
+        background: 'var(--soft)',
+        border: '1px solid var(--line)',
+      }}
+    >
+      <span
+        className="row"
+        style={{ gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--heading)' }}
+      >
+        <Icon name="lock" size={14} />
+        {note.title}
+      </span>
+      {note.lines.map((line) => (
+        <p key={line} style={{ fontSize: 13, lineHeight: '19px', color: 'var(--secondary)' }}>
+          {line}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+export function KindForm({
+  kind,
+  onDone,
+  onInstalled,
+}: {
+  kind: ConnectionKind;
+  onDone: () => void;
+  /** Called only when the connection was saved, before `onDone`. */
+  onInstalled?: () => void;
+}) {
   const [values, setValues] = useState<FormValues>(() => emptyForm(kind));
   const [sending, setSending] = useState(false);
   const gap = missing(kind, values);
@@ -111,6 +153,7 @@ export function KindForm({ kind, onDone }: { kind: ConnectionKind; onDone: () =>
             sub: check.detail,
           });
         else toast({ kind: 'ok', title: `${values.label} is connected` });
+        onInstalled?.();
         onDone();
       })
       .finally(() => setSending(false));
@@ -131,6 +174,7 @@ export function KindForm({ kind, onDone }: { kind: ConnectionKind; onDone: () =>
           {kind.description}
         </span>
       </div>
+      <AppPasswordExplainer kindId={kind.id} />
       <Field label="Name">
         <Input
           value={values.label}
