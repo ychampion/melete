@@ -58,7 +58,7 @@ succeeded and the job continues`.
 | Exec | `exec.run` and `exec.python` carried out inside the cell against a broker-reserved action, with the finished record settled afterwards | `the exec manifest parses and declares in-cell execution with a record schema`; `execution-admission.test.ts` |
 | Artifacts | Declared writes become artifact records with deterministic checks; publishing to the space or by email is an approved external effect | `artifacts.test.ts` |
 | Generation (speech) | `audio.synthesize` as a `spend` capability with approval, reservation, receipt and an authenticated artifact endpoint | `is a real RIFF/WAVE file, not a placeholder string`; `speech-broker.test.ts` |
-| MCP | HTTP servers behind the broker, with the effect classes, scopes and audience the installation declares | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
+| MCP | HTTP servers, and stdio servers in containers of their own, behind the broker, with the effect classes, scopes and audience the installation declares | `MCP config is strict, operator scoped, and defaults unclassified tools to external writes`; `MCP worker and server claims cannot make an ungranted tool callable` |
 | Browser | Semantic observe, open, fill, click, select, read and an approved `browser.submit`, carried out by a worker process outside the cell with epoch-fenced takeover; a person signs in to a site themselves through a live view of the worker's page, and signs the space out of a site again | `approval binds the exact browser intent and repeated proposals dispatch one effect`; `an unapproved submit has no external effects and its warning identifies the observed destination`; `no persisted event contains the typed secret or the identity-provider host`; `forgetting a site removes its cookies and the profile row`; see [the browser worker](browser-worker.md) |
 
 The code paths are in [the connector directory](../apps/melete/src/connectors).
@@ -85,8 +85,8 @@ does not depend on isolation the running deployment lacks.
 | Speech | `audio.synthesize` | only while a speech-capable provider is configured; a `spend`, so every call needs approval and a budget reservation |
 | Code in the workspace | `exec.run`, `exec.python` | only while attempts run in a container (`MELETE_RUNTIME_ADAPTER=docker`, or the Hermes adapter with `MELETE_RUNTIME_SUPERVISOR=docker`); under the process supervisor the row offers nothing |
 
-Mail, calendars, MCP servers and the browser worker need a credential or an
-endpoint and are never defaults. The test destination is a fixture and is never
+Mail, calendars, MCP servers, plugins and the browser worker need a credential,
+an endpoint or a person's choice and are never defaults. The test destination is a fixture and is never
 a default. `react`, `job.wait`, `search_tools` and `load_tool` belong to the
 broker and need no connection.
 
@@ -136,6 +136,7 @@ passwords. `POST /connections` takes exactly one configuration block:
 | CalDAV | `caldav` | `caldav`: an account name and either one HTTPS calendar collection address or the HTTPS address of the calendar service | `credentials.password` | `calendar.list`, `calendar.create`, `calendar.update`, `calendar.delete` |
 | Calendar feed (ICS address) | `caldav` | `ics`: one HTTPS or `webcal` address | the address itself | `calendar.list` |
 | MCP over HTTP | `mcp` | `mcp`: see [Installed MCP servers](#installed-mcp-servers) | optional token fields | declared in the block |
+| MCP from a package or image | `mcp` | `mcp_stdio`: see [the advanced path](#the-advanced-path) | `mcp_stdio.secret_env` | declared in the block |
 
 `scopes` may narrow the grants of the first three kinds; left empty it means all
 of them, and a scope outside the kind is refused. `space_id` may be left out, in
@@ -489,15 +490,15 @@ shared budgets. There is one public attempt outcome; model-written
 
 ## Installed MCP servers
 
-The worker in `apps/melete/src/connectors/mcp.ts` takes a policy with a stdio
-command and arguments or an HTTP URL, allowed scopes, an `owner` audience, and
+The worker in `apps/melete/src/connectors/mcp.ts` takes a policy with an HTTP
+URL, a container launch, or, for test fixtures, a stdio command and arguments, allowed scopes, an `owner` audience, and
 an explicit list of exposed tools. For each tool the installation chooses a
 local alias, required scopes and an effect class. The default is
 `write_external`. Server annotations such as `readOnlyHint` never determine
 policy, and a server tool the policy does not name is ignored.
 
-The worker runs outside the runtime cell. Its stdio transport uses a filtered
-environment and its own temporary working directory. It receives neither vault
+The worker runs outside the runtime cell. Its test stdio transport uses a
+filtered environment and its own temporary working directory. It receives neither vault
 credentials nor database, broker or provider keys. It offers the server no
 roots, sampling or other client capabilities. HTTP redirects, automatic call
 replay and unbounded responses are refused. Results retain external-content
@@ -550,12 +551,177 @@ dialect explicitly. Unsupported dialects or unresolved references fail validatio
 Shutdown disposes HTTP sessions. This implementation does not configure server
 authentication or resume disconnected sessions; it sends no service secrets.
 
-**Production stdio launch is refused before spawning.** A filtered environment
-leaves a same-account process able to read service-readable files and use host
-networking, so a local server needs its own OS identity or sandbox and a
-production MCP server is an HTTP endpoint. The real stdio integration fixture
-uses the same `mcp` provider and broker adapter, with process launch limited to
-tests.
+A stdio MCP server never runs under the service's own identity. The stdio
+fixture above is launched only by tests; a server a person installs runs in a
+container of its own, described next.
+
+## Plugins and stdio MCP servers
+
+A plugin is a stdio MCP server Melete runs for a person. `GET /plugins` lists
+the starter catalog; adding one is `POST /plugins/{id}` with the few values the
+entry asks for, which is one tap for most:
+
+| Plugin | Runs | Reaches | Asks for |
+| --- | --- | --- | --- |
+| Files | `@modelcontextprotocol/server-filesystem@2026.8.31` with `npx` | nothing | nothing |
+| Fetch a page | `mcp-server-fetch==2026.8.18` with `uvx` | any public HTTPS site, or only the sites the person lists | nothing; sites to keep it to, if the person wants |
+| Time and time zones | `mcp-server-time==2026.8.18` with `uvx` | nothing | nothing |
+| GitHub | `ghcr.io/github/github-mcp-server:v1.12.2`, pinned by digest | `api.github.com` | a GitHub token |
+
+Each entry names the tools it offers and how far each may act. Reading is
+admitted within scope; saving into the plugin's own folder is a reversible
+write; opening or changing a GitHub issue is an external write that waits for
+the person's approval every time. A value the entry marks secret, such as the
+GitHub token, is sealed on arrival and given to that plugin's container only.
+What is missing or malformed is answered with `400` and a sentence naming the
+field. The same plugin is added once per space; a second request answers
+`409`. Adding a plugin is a new route and a new response shape; nothing an
+existing client reads changes.
+
+The catalog pins versions. When a release pins a newer one, the service moves
+an installed plugin to it at start: it starts the new version once, records
+the tools it describes, and keeps the plugin on the version it had if the new
+one will not start (`a plugin moves to the version a release pins, and stays
+put if that version will not start`). The tools, their grants and the person's
+values stay as they were installed.
+
+Plugin tool calls are broker actions, so they appear in the conversation's
+trail like every other connector call, under the plugin's name.
+
+### The advanced path
+
+The owner of a space can also install a server by hand with `POST /connections`
+and an `mcp_stdio` block, which `GET /connection-kinds` describes as the
+advanced kind:
+
+```json
+{
+  "provider": "mcp",
+  "label": "Notes server",
+  "mcp_stdio": {
+    "id": "notes",
+    "runner": "npx",
+    "source": "@example/notes-server@1.0.0",
+    "args": ["/data/home"],
+    "egress": ["api.example.com"],
+    "secret_env": [{ "name": "NOTES_TOKEN", "value": "…" }],
+    "allowed_scopes": ["mcp_notes.lookup"],
+    "audience": "owner",
+    "tools": [
+      { "name": "lookup", "alias": "lookup", "required_scopes": ["mcp_notes.lookup"], "effect_class": "read" }
+    ]
+  }
+}
+```
+
+`runner` is `npx` for an npm package, `uvx` for a PyPI package, or `image` for
+a container image. `source` is a registry name with an optional version, or an
+image reference; a URL, a git remote, a local path or anything shaped like a
+flag is refused. `command` names a package's program or overrides an image's
+entry command. `egress` lists HTTPS host names, each with an optional port, or
+`*` for any public HTTPS site. Plain HTTP is refused either way, and so is any
+name that resolves to a private, loopback or link-local address.
+Each `secret_env` value is sealed together with the others; the row keeps only
+the names, and a name the launcher sets itself, such as `PATH` or
+`HTTPS_PROXY`, is refused. The policy fields are those of an HTTP installation,
+and an unclassified tool is an external write.
+
+### Where a server runs
+
+Stdio servers run only where attempts run in containers
+(`MELETE_RUNTIME_ADAPTER=docker`); elsewhere the kind and the catalog are not
+offered and installation answers `400`. The service reaches the Docker engine
+through the socket its runtime supervisor already uses and gives each
+connection:
+
+- one container at a time, as uid 10001, on a read-only root filesystem, with
+  every capability dropped, `no-new-privileges`, Docker's default seccomp
+  profile, 512 MiB of memory without swap, 128 processes, one CPU and a 64 MiB
+  `/tmp`;
+- its own volume, mounted at `/data`, kept between runs and removed with the
+  connection, and for a package runner the prepared package, mounted read-only
+  at `/pkg`. Those are its only mounts: no host path, no Docker socket, nothing
+  of the service. Any volume the image itself declares is anonymous and is
+  removed with the container;
+- no network at all when `egress` is empty. With destinations named, an
+  internal network whose only other member is the service's container. There
+  the server can open the service's listeners on that network, and nothing
+  else: the egress proxy, which needs the token its start was given and opens
+  HTTPS tunnels to the named hosts alone, and only when every address a name
+  resolves to is public; and the broker, which answers only a request carrying
+  an attempt's capability. The owner API does not listen there, and names
+  outside the network do not resolve;
+- an environment of its home, its `/tmp` and the sealed variables, and no
+  container log: what the server says is read from its attached output and
+  kept nowhere else.
+
+The service speaks to the server over the container's attached standard input
+and output, so a server with no network is still reachable. Before a container
+starts, the service reads back what the engine recorded for it (the user, the
+read-only root, the dropped capabilities, `no-new-privileges`, that it is not
+privileged, its process and memory limits, its network and each mount) and
+removes it unstarted if any of these is less than asked. A network the engine
+did not record as internal is removed before anything joins it.
+
+An image names its registry and pins its digest (`ghcr.io/org/server:1.0@sha256:…`),
+and it runs only if the image on the host carries that digest. The registry is
+named by its DNS name: an address, `localhost` or a `.localhost` name is
+refused, since the engine pulls from the host's own network. The runners' own
+images are pinned the same way.
+
+A package runner is prepared in a separate container that holds no secret and
+may reach only its registry (`registry.npmjs.org`, or `pypi.org` and
+`files.pythonhosted.org`). Preparation writes the package into a volume of its
+own, keeps its home and caches in memory, and reads no user, global or project
+configuration (npm's user and global files point into its empty `/tmp`, and
+`UV_NO_CONFIG=1`), with uv
+held to the image's own Python. It never sees the server's `/data`, and the
+server can only read what it prepared, so nothing a server writes reaches the
+next preparation or changes what runs. The server then runs offline from the
+package volume. Preparation happens once per service start.
+
+A server with destinations, and any package runner, needs the service to run
+in its Compose container, since the proxy lives there. Images are pulled
+without registry credentials, so an image must be public or already on the
+host. At most sixteen servers run at once across the deployment; a start
+beyond that is refused, in plain words, without counting against the server.
+`MELETE_MCP_NODE_IMAGE` and `MELETE_MCP_PYTHON_IMAGE` choose the runners'
+images, `MELETE_MCP_EGRESS_PORT` the proxy's port inside the service
+container, and `MELETE_MCP_IDLE_MS` how long a server may sit unused.
+
+### Start, stop and failure
+
+Installation starts the server once, so the tools it describes are recorded;
+the row keeps them, and the service starts afterwards without running the
+server. A server starts for the first call the broker has admitted, is stopped
+after ten idle minutes, and starts again for the next call. A restarted server
+that describes different tools is refused and stopped. Three crashes, or
+starts that never reach a working session, within ten minutes leave the server
+stopped: calls fail without a start and say so in plain words, until the owner
+tests the connection with `POST /connections/{id}/health`, which is one
+deliberate retry. When a connection goes, whether revoked by its owner or
+removed with its space, the registry retires its connector: the container
+stops at once and the volume is removed. Shutting the service down only stops
+the containers. At start the service removes any server container an
+earlier process left behind, and the volume of any connection that no longer
+exists.
+
+Evidence: `a stdio server starts for its first call, stops when idle, and
+starts again`, `a server that keeps crashing is left stopped until its owner
+tests it`, `a restarted server that describes different tools is refused and
+stopped` and `a server's annotations and results never change what a tool may
+do` in `mcp-stdio.test.ts`; the container's restrictions against a recording
+engine in `mcp-stdio-docker.test.ts`; the proxy's grants in `mcp-egress.test.ts`;
+and, through the API, broker and registry with a fake launcher, `sealed
+variables reach only the server; its tools are admitted by the broker like any
+other`, `a restarted service offers the recorded tools and starts nothing until
+a call needs it`, `a server that crashes on every start is refused without
+starting, until its owner tests it`, `a plugin is added with one tap from the
+catalog, with only the values it asks for` and `revoking the connection stops
+its server and removes what it kept` in
+[mcp-stdio.test.ts](../apps/melete/test/integration/mcp-stdio.test.ts). The
+same restrictions are observed from inside real containers by
+[conformance 10](../conformance/README.md), which CI runs on every pull request.
 
 ## Composing read results
 

@@ -6,12 +6,20 @@ import { publicOnlyFetch } from './public-fetch.ts';
 import type { SealedSecretStore } from './secrets.ts';
 import type { Connector, ConnectorContext } from './types.ts';
 
+/** How a connector brings a server up for a call it has already authorized, and lets it go after. */
+export type McpSessionHooks = {
+  /** Undefined when the session is ready; otherwise why the call is refused without dispatch. */
+  ready(): Promise<string | undefined>;
+  done(): void;
+};
+
 /** Service-side adapter; only the transport receives remote data or launches a worker. */
 export function mcpConnector(
   worker: McpWorker,
   binding: { connectionId: string; spaceId: string },
   sql: Sql,
   credentials?: ReturnType<typeof mcpCredentialAccess>,
+  session?: McpSessionHooks,
 ): Connector {
   async function granted(action: Action, context: ConnectorContext) {
     const [row] = await sql`select c.scopes, s.audience, j.constraints from connection c
@@ -52,11 +60,18 @@ export function mcpConnector(
           retryable: false,
         };
       }
-      return worker.execute(action, {
-        ...context,
-        audience: row.audience,
-        scopes: row.scopes,
-      });
+      // A server started on demand starts only for a call that is already authorized.
+      const refused = await session?.ready();
+      if (refused) return { outcome: 'failed', reason: refused, retryable: false };
+      try {
+        return await worker.execute(action, {
+          ...context,
+          audience: row.audience,
+          scopes: row.scopes,
+        });
+      } finally {
+        session?.done();
+      }
     },
     verify: () => worker.verify(),
     async reconnect(action, context) {
@@ -92,7 +107,8 @@ export async function openConfiguredMcpConnector(
   sql: Sql,
   secrets?: SealedSecretStore,
 ): Promise<Connector> {
-  if (config.endpoint.transport === 'stdio') {
+  // A container server is opened with its launcher in mcp-stdio.ts; nothing here can start one.
+  if (config.endpoint.transport !== 'http') {
     throw new Error('MCP stdio requires an isolated OS launcher; service launch is disabled');
   }
   const [row] = await sql`select secret_ref from connection where id = ${binding.connectionId}`;

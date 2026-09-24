@@ -71,12 +71,25 @@ function typed(field: ConnectionItemField, value: FieldValue | undefined): unkno
   return field.secret && typeof value === 'string' ? value : text;
 }
 
+/** A row of an optional list left entirely blank is no row at all. */
+const blankRow = (items: readonly ConnectionItemField[], row: RowValues): boolean =>
+  items.every(
+    (item) =>
+      item.input === 'select' ||
+      item.input === 'checkbox' ||
+      typed(item, row[item.path]) === undefined,
+  );
+const rowsOf = (field: ConnectionKind['fields'][number], values: FormValues): RowValues[] =>
+  (values.lists[field.path] ?? []).filter(
+    (row) => field.required || !blankRow(field.item_fields ?? [], row),
+  );
+
 /** The first thing still missing, in the field's own words, or null when the form can be sent. */
 export function missing(kind: ConnectionKind, values: FormValues): string | null {
   if (!values.label.trim()) return 'Give the connection a name.';
   for (const field of kind.fields) {
     if (field.input === 'list') {
-      const rows = values.lists[field.path] ?? [];
+      const rows = rowsOf(field, values);
       if (field.required && rows.length === 0) return `Add at least one row under ${field.label}.`;
       for (const row of rows)
         for (const item of field.item_fields ?? [])
@@ -98,7 +111,9 @@ export function requestBody(kind: ConnectionKind, values: FormValues): Record<st
   for (const fixed of kind.fixed) put(body, fixed.path, fixed.value);
   for (const field of kind.fields) {
     if (field.input === 'list') {
-      const rows = (values.lists[field.path] ?? []).map((row) => {
+      const listed = rowsOf(field, values);
+      if (!listed.length && !field.required) continue;
+      const rows = listed.map((row) => {
         const entry: Record<string, unknown> = {};
         for (const item of field.item_fields ?? []) {
           const value = typed(item, row[item.path]);

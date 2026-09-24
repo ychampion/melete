@@ -60,11 +60,34 @@ const mcp = {
   },
 };
 
+const mcpStdio = {
+  space_id: SPACE,
+  provider: 'mcp',
+  label: 'Files',
+  mcp_stdio: {
+    id: 'files',
+    runner: 'npx',
+    source: '@modelcontextprotocol/server-filesystem@2026.1.14',
+    args: ['/data'],
+    secret_env: [{ name: 'FILES_TOKEN', value: 'sealed-on-arrival' }],
+    allowed_scopes: ['mcp_files.read'],
+    audience: 'owner',
+    tools: [
+      {
+        name: 'read_file',
+        alias: 'read',
+        required_scopes: ['mcp_files.read'],
+        effect_class: 'read',
+      },
+    ],
+  },
+};
+
 const resolve = (input: unknown) => connectionInstallation(createConnectionRequest.parse(input));
 
 describe('connection installation requests', () => {
   test('each credentialed kind resolves to its provider, configuration and default scopes', () => {
-    const resolved = [mail, caldav, ics, mcp].map(resolve);
+    const resolved = [mail, caldav, ics, mcp, mcpStdio].map(resolve);
     expect(
       resolved.map((item) => (item.ok ? [item.value.kind, item.value.provider] : item)),
     ).toEqual([
@@ -72,6 +95,7 @@ describe('connection installation requests', () => {
       ['caldav', 'caldav'],
       ['ics', 'caldav'],
       ['mcp', 'mcp'],
+      ['mcp_stdio', 'mcp'],
     ]);
     const [first, second, third] = resolved;
     expect(first?.ok && first.value.kind === 'mail' && first.value.scopes).toEqual([
@@ -110,6 +134,84 @@ describe('connection installation requests', () => {
     expect(resolve({ ...mail, credentials: { password: 'x', token: 'y' } }).ok).toBe(false);
     expect(resolve({ ...caldav, credentials: {} }).ok).toBe(false);
     expect(resolve({ ...ics, credentials: { password: 'unused' } }).ok).toBe(false);
+  });
+
+  test('a stdio MCP launch names only a registry package or an image, never a flag, URL or path', () => {
+    const parse = (patch: Record<string, unknown>) =>
+      createConnectionRequest.safeParse({
+        ...mcpStdio,
+        mcp_stdio: { ...mcpStdio.mcp_stdio, ...patch },
+      }).success;
+    expect(parse({})).toBe(true);
+    for (const source of [
+      'mcp-server-fetch',
+      'mcp-server-fetch==2026.1.1',
+      'mcp-server-git[extra]>=1.0,<2',
+      'mcp-server-time@2026.1.0',
+    ])
+      expect([source, parse({ runner: 'uvx', source })]).toEqual([source, true]);
+    expect(
+      parse({ runner: 'image', source: `ghcr.io/example/server:1.0@sha256:${'a'.repeat(64)}` }),
+    ).toBe(true);
+    // A tag alone can move, and a name without a registry host is resolved by whoever configured the engine.
+    expect(parse({ runner: 'image', source: 'ghcr.io/example/server:1.0' })).toBe(false);
+    expect(parse({ runner: 'image', source: `server@sha256:${'a'.repeat(64)}` })).toBe(false);
+    expect(
+      parse({ runner: 'image', source: `registry.local:5000/server@sha256:${'a'.repeat(64)}` }),
+    ).toBe(true);
+    // The engine pulls from the host, so a registry given as an address or as the host itself
+    // would point it at the host's own or private ports.
+    for (const registry of [
+      'localhost:5000',
+      'localhost',
+      'registry.localhost:5000',
+      '127.0.0.1:5000',
+      '127.1.2.3',
+      '10.0.0.5:5000',
+      '172.17.0.1:2375',
+      '192.168.1.20',
+      '169.254.169.254',
+      '93.184.216.34',
+    ])
+      expect([
+        registry,
+        parse({ runner: 'image', source: `${registry}/server@sha256:${'a'.repeat(64)}` }),
+      ]).toEqual([registry, false]);
+    for (const source of [
+      '--registry=https://evil.example',
+      'git+https://example.test/repo.git',
+      'user/repo',
+      'file:../local',
+      'https://example.test/pkg.tgz',
+      'npm:other@1',
+      'name with space',
+    ])
+      expect([source, parse({ source })]).toEqual([source, false]);
+    expect(parse({ runner: 'uvx', source: '--with=evil' })).toBe(false);
+    expect(parse({ runner: 'image', source: 'Uppercase/Image' })).toBe(false);
+    expect(parse({ command: '--eval' })).toBe(false);
+    expect(parse({ egress: ['api.example.com', 'api.example.com:8443'] })).toBe(true);
+    for (const egress of [
+      ['localhost'],
+      ['10.0.0.1'],
+      ['api.example.com:0'],
+      ['a.b', 'a.b'],
+      ['*.example.com'],
+    ])
+      expect([egress, parse({ egress })]).toEqual([egress, false]);
+    for (const name of ['HOME', 'HTTPS_PROXY', 'lower', 'A-B'])
+      expect([name, parse({ secret_env: [{ name, value: 'x' }] })]).toEqual([name, false]);
+    expect(
+      parse({
+        secret_env: [
+          { name: 'TOKEN', value: 'x' },
+          { name: 'TOKEN', value: 'y' },
+        ],
+      }),
+    ).toBe(false);
+    // Its secrets are named variables in the block; the generic credentials record is refused.
+    expect(resolve({ ...mcpStdio, credentials: { password: 'x' } }).ok).toBe(false);
+    expect(resolve({ ...mcpStdio, scopes: ['mcp_files.read'] }).ok).toBe(false);
   });
 
   test('endpoints are validated per kind', () => {
@@ -168,7 +270,10 @@ function filled(descriptor: ConnectionKindDescriptor): Record<string, unknown> {
     if (field.input === 'checkbox') return true;
     if (field.input === 'email') return 'owner@example.test';
     if (field.input === 'url') return 'https://service.example.test/path/';
+    if (field.path.endsWith('egress')) return ['registry.example.test'];
     if (field.input === 'string_list') return ['mcp_notes.search'];
+    if (field.path.endsWith('source')) return '@example/notes-server';
+    if (field.path === 'name') return 'NOTES_TOKEN';
     return field.path.endsWith('id') || field.path === 'alias' ? 'notes' : 'value';
   };
   for (const item of descriptor.fixed) put(body, item.path, item.value);
@@ -192,16 +297,27 @@ describe('connection kind descriptors', () => {
       'ics',
       'mail',
       'mcp',
+      'mcp_stdio',
     ]);
     const ids = parsed.kinds.map((kind) => kind.id);
     expect(new Set(ids).size).toBe(ids.length);
     // Every kind keeps an entry for a server no provider entry names.
-    for (const kind of ['caldav', 'ics', 'mail', 'mcp']) expect(ids).toContain(kind);
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio']) expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
-      const secrets = kind.fields.filter((field) => field.secret).map((field) => field.path);
-      expect(secrets.every((path) => path.startsWith('credentials.') || path === 'ics.url')).toBe(
-        true,
-      );
+      const secrets = kind.fields.flatMap((field) => [
+        ...(field.secret ? [field.path] : []),
+        ...(field.item_fields ?? [])
+          .filter((item) => item.secret)
+          .map((item) => `${field.path}.${item.path}`),
+      ]);
+      expect(
+        secrets.every(
+          (path) =>
+            path.startsWith('credentials.') ||
+            path === 'ics.url' ||
+            path === 'mcp_stdio.secret_env.value',
+        ),
+      ).toBe(true);
     }
   });
 
@@ -217,7 +333,8 @@ describe('connection kind descriptors', () => {
 
   test('offered scopes are exactly the scopes the kind may be granted', () => {
     for (const descriptor of CONNECTION_KIND_DESCRIPTORS) {
-      if (descriptor.kind === 'mcp') expect(descriptor.scopes).toEqual([]);
+      if (descriptor.kind === 'mcp' || descriptor.kind === 'mcp_stdio')
+        expect(descriptor.scopes).toEqual([]);
       else
         expect(descriptor.scopes.map((scope) => scope.scope)).toEqual([
           ...CONNECTION_KIND_SCOPES[descriptor.kind],

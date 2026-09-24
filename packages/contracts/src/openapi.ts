@@ -103,6 +103,7 @@ import {
   recallResult,
   sourceEvidenceResponse,
 } from './memory.ts';
+import { installPluginRequest, installPluginResponse, pluginListResponse } from './plugins.ts';
 import {
   createPrincipalRequest,
   createSharedSpaceRequest,
@@ -1345,6 +1346,43 @@ export function buildOpenApiDocument() {
               '400': problem('Invalid request'),
               '403': problem('Space owner and matching audience required'),
               '409': problem('MCP installation name already exists'),
+            },
+          },
+        },
+
+        '/plugins': {
+          get: {
+            tags: ['connections'],
+            summary: 'List the plugins that can be added with one tap',
+            description:
+              'Each plugin is a tool server Melete runs in a container of its own, at a pinned ' +
+              'version. `fields` are the few values a person supplies; `installed` names the ' +
+              'connection already running it in the space. Empty when this service does not run ' +
+              'plugin containers.',
+            requestParams: {
+              query: z.object({ space_id: z.string().optional() }),
+            },
+            responses: { '200': jsonResponse('Plugins', pluginListResponse) },
+          },
+        },
+
+        '/plugins/{pluginId}': {
+          post: {
+            tags: ['connections'],
+            summary: 'Add a plugin from the catalog',
+            description:
+              'Builds the installation from the catalog entry and the supplied values, then installs ' +
+              'it exactly as `POST /connections` does. Secret values are sealed on arrival and given ' +
+              'only to the plugin. The service starts it when a tool is first used, stops it when ' +
+              'idle, and moves it to the pinned version of each release.',
+            requestParams: idParam('pluginId', 'Catalog entry id'),
+            requestBody: json(installPluginRequest),
+            responses: {
+              '201': jsonResponse('Added', installPluginResponse),
+              '400': problem('A value is missing or invalid'),
+              '403': problem('Space owner and matching audience required'),
+              '404': problem('No such plugin'),
+              '409': problem('The plugin is already added to this space'),
             },
           },
         },

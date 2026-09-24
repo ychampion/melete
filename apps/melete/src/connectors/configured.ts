@@ -18,6 +18,13 @@ import { createFilesConnector } from './files.ts';
 import { IcsFeedConnector } from './ics-feed.ts';
 import { mcpServerConfig } from './mcp.ts';
 import { openConfiguredMcpConnector } from './mcp-connector.ts';
+import {
+  openStdioMcpConnector,
+  openStoredStdioConnector,
+  type StdioLauncher,
+  type StdioLifecycleOptions,
+  storedStdioConnection,
+} from './mcp-stdio.ts';
 import { ConnectorRegistry } from './registry.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
@@ -157,6 +164,9 @@ export type ConnectorOptions = {
   cellIsolated?: boolean;
   /** Plaintext mail and CalDAV to a loopback protocol fixture. Never set from a request. */
   insecureLocalFixtures?: boolean;
+  /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
+  stdioLauncher?: StdioLauncher;
+  stdioLifecycle?: StdioLifecycleOptions;
 };
 
 /** What a connector is built from: the persisted row, never a request payload. */
@@ -309,6 +319,30 @@ export class ConnectorFactory {
           this.secrets,
         ),
       );
+    if (
+      row.provider === 'mcp' &&
+      setting?.kind === 'mcp' &&
+      setting.server.endpoint.transport === 'container'
+    ) {
+      if (!options.stdioLauncher) return undefined;
+      // The catalog recorded at installation lets the service start without running the server.
+      if (!this.overrides.has(row.id) && storedStdioConnection.safeParse(row.configuration).success)
+        return openStoredStdioConnector(
+          row,
+          options.sql,
+          this.secrets,
+          options.stdioLauncher,
+          options.stdioLifecycle,
+        );
+      return openStdioMcpConnector(
+        setting.server,
+        { connectionId: row.id, spaceId: row.spaceId },
+        options.sql,
+        this.secrets,
+        options.stdioLauncher,
+        options.stdioLifecycle,
+      );
+    }
     if (row.provider === 'mcp' && setting?.kind === 'mcp')
       return openConfiguredMcpConnector(
         setting.server,
@@ -354,12 +388,20 @@ export function connectorFactoryFor(
 /** Bind a registry to a factory built elsewhere, as a protocol fixture does. */
 export function useConnectorFactory(registry: ConnectorRegistry, factory: ConnectorFactory): void {
   factories.set(registry, factory);
+  keepReleasing(registry, factory.options);
+}
+
+/** A stdio server's volumes outlive its connector; a gone connection's are removed all the same. */
+function keepReleasing(registry: ConnectorRegistry, options: ConnectorOptions): void {
+  const launcher = options.stdioLauncher;
+  if (launcher) registry.addReleaser((connectionId) => launcher.destroy(connectionId));
 }
 
 export async function configuredConnectors(options: ConnectorOptions) {
   const registry = new ConnectorRegistry();
   const factory = new ConnectorFactory(options);
   factories.set(registry, factory);
+  keepReleasing(registry, options);
   // Publishing by email uses the mailbox the owner already configured. The
   // artifacts connector is therefore registered after the loop, so the order
   // connections happen to appear in does not decide whether it can mail.
@@ -414,10 +456,17 @@ export async function configuredConnectors(options: ConnectorOptions) {
 }
 
 /** The connector options a validated environment implies. */
+type ConnectorExtras = {
+  connections?: ConfiguredConnection[];
+  browserSessions?: BrowserSessionService;
+  stdioLauncher?: StdioLauncher;
+  stdioLifecycle?: StdioLifecycleOptions;
+};
+
 export function connectorOptionsFromEnv(
   sql: Sql,
   env: Env,
-  extra: { connections?: ConfiguredConnection[]; browserSessions?: BrowserSessionService } = {},
+  extra: ConnectorExtras = {},
 ): ConnectorOptions {
   return {
     sql,
@@ -427,6 +476,8 @@ export function connectorOptionsFromEnv(
     connections: extra.connections,
     enableTestConnector: env.MELETE_ENABLE_TEST_CONNECTOR,
     browserSessions: extra.browserSessions,
+    stdioLauncher: extra.stdioLauncher,
+    stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     cellIsolated: builtinEnvironment(env).cellIsolated,
     env: {
       OPENAI_API_KEY: env.OPENAI_API_KEY,
@@ -439,11 +490,7 @@ export function connectorOptionsFromEnv(
 }
 
 /** Both listeners build catalogs from the validated startup environment. */
-export async function connectorsFromEnv(
-  sql: Sql,
-  env: Env,
-  extra: { connections?: ConfiguredConnection[]; browserSessions?: BrowserSessionService } = {},
-) {
+export async function connectorsFromEnv(sql: Sql, env: Env, extra: ConnectorExtras = {}) {
   return configuredConnectors(
     connectorOptionsFromEnv(sql, env, {
       ...extra,

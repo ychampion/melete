@@ -1,5 +1,5 @@
 /**
- * The conformance suite. Nine scenarios that prove the properties this release
+ * The conformance suite. Ten scenarios that prove the properties this release
  * claims, run against a compose stack with the `test` connector and a scripted
  * model, so the suite is deterministic and costs nothing.
  *
@@ -153,6 +153,27 @@ export const SCENARIOS: readonly Scenario[] = [
       'with the provider refusing, the removal ends blocked, the space remains, and nothing says it was deleted',
       'a personal space keeps its id, its account stays signed in, and every content table for it is empty',
       'a member is refused, and the granted tool catalog contains no tool that reaches removal',
+    ],
+  },
+  {
+    id: 10,
+    slug: 'stdio-mcp',
+    title:
+      'A stdio MCP server runs in a container of its own and reaches only what its owner named',
+    text:
+      'Start stdio MCP servers through the Docker launcher on a real engine: a probe image with no ' +
+      'destinations, the same probe with one named destination, a server that exits on its own, and ' +
+      'a real npm package fetched by npx.',
+    assertions: [
+      'the server runs as uid 10001 with no capabilities, no new privileges, a seccomp filter and a read-only root',
+      'its only writable place is its own volume, and the Docker socket is absent',
+      'with no destination named it has only a loopback interface, no route and no DNS, and reaches nothing',
+      'its environment holds its sealed variable and nothing of the service',
+      'with one destination named it reaches that destination through the proxy and nothing else',
+      'on the service it can open only the proxy and the broker; external names, the host gateway and other ports fail',
+      'a server that exits on its own leaves no container behind, and removal takes its volume',
+      'an npm package is fetched once through the registry grant and then runs with no network',
+      'the server can write its own volume but not the package it runs from',
     ],
   },
 ];

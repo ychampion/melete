@@ -85,7 +85,11 @@ test('Compose runtime selection boots the service and initializes its Docker sup
     expect(service.broker).toBeDefined();
     expect(service.effectBoundary?.server.listening).toBe(true);
     expect((await service.app.request('/jobs')).status).toBe(401);
-    expect(calls).toHaveLength(6);
+    // Six for the attempt supervisor; three for the plugin launcher looking for leftovers.
+    expect(calls).toHaveLength(9);
+    expect(
+      calls.filter((call) => decodeURIComponent(call.path).includes('com.melete.mcp-launcher=v1')),
+    ).toHaveLength(3);
     expect(calls[0]).toEqual({ method: 'GET', path: '/version' });
     expect(calls.every((call) => call.method === 'GET')).toBe(true);
   } finally {

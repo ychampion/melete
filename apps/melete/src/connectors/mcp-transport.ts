@@ -101,55 +101,46 @@ async function removeWorkerDirectory(directory: string): Promise<void> {
   await rm(absolute, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }
 
-/** Local subprocess seam; production must additionally supply OS-level worker isolation. */
-export async function openStdioMcpTransport(
-  endpoint: Extract<McpEndpoint, { transport: 'stdio' }>,
+/**
+ * A server's standard input and output, wherever the server runs. The
+ * transport writes newline-delimited JSON-RPC to it and reads the same back;
+ * the channel's owner decides how the server is started and stopped.
+ */
+export interface StdioChannel {
+  write(text: string): void;
+  onData(listener: (text: string) => void): void;
+  /** The server ended or the stream broke. Called at most once. */
+  onClose(listener: () => void): void;
+  /** Stop the server; settles once it is gone. */
+  close(): Promise<void>;
+}
+
+/** Newline-delimited JSON-RPC over a channel, refusing every client-side capability. */
+export function openLineMcpTransport(
+  channel: StdioChannel,
   options: McpTransportOptions = {},
-): Promise<McpTransport> {
-  if (process.env.NODE_ENV !== 'test') {
-    throw new Error('MCP stdio requires an isolated OS launcher; only test fixtures may spawn');
-  }
+): McpTransport {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
-  const token = await options.accessToken?.();
-  const directory = await mkdtemp(join(await realpath(tmpdir()), TEMP_PREFIX));
-  const child = spawn(endpoint.command, endpoint.args, {
-    cwd: directory,
-    env: {
-      ...filteredMcpEnvironment(process.env, directory),
-      ...(token ? { MELETE_MCP_ACCESS_TOKEN: token } : {}),
-    },
-    shell: false,
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'ignore'],
-  });
   let closed = false;
   let failure: Error | undefined;
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopping: Promise<void> | undefined;
   let counter = 0;
   let buffer = '';
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
-  const exited = new Promise<void>((done) =>
-    child.once('close', () => {
-      clearTimeout(killTimer);
-      done();
-    }),
-  );
+  const stop = () => {
+    stopping ??= channel.close().catch(() => {});
+    return stopping;
+  };
   const fail = (error: Error) => {
     failure ??= error;
     for (const item of pending.values()) item.reject(error);
     pending.clear();
-    if (child.pid && child.exitCode === null && child.signalCode === null) {
-      child.kill();
-      // A server cannot hold service shutdown open by ignoring termination.
-      killTimer ??= setTimeout(() => child.kill('SIGKILL'), 250);
-    }
+    void stop();
   };
-  child.on('error', () => fail(new Error('MCP worker could not start')));
-  child.on('exit', () => fail(new Error('MCP worker exited')));
-  child.stdin.on('error', () => fail(new Error('MCP worker input closed')));
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
+  channel.onClose(() => fail(new Error('MCP worker exited')));
+  channel.onData((chunk) => {
+    if (failure) return;
     try {
       buffer += chunk;
       for (;;) {
@@ -161,7 +152,7 @@ export async function openStdioMcpTransport(
         const message = parseMessage(line);
         if (typeof message.method === 'string') {
           if (typeof message.id === 'number' || typeof message.id === 'string') {
-            child.stdin.write(`${JSON.stringify(unsupported(message.id))}\n`);
+            channel.write(`${JSON.stringify(unsupported(message.id))}\n`);
           }
           // Notifications cannot mutate a pinned catalog or grant new capabilities.
           continue;
@@ -214,21 +205,82 @@ export async function openStdioMcpTransport(
           },
         });
         signal?.addEventListener('abort', aborted, { once: true });
-        child.stdin.write(`${serialized}\n`);
+        channel.write(`${serialized}\n`);
       });
     },
     async notify(method) {
       if (closed || failure) throw failure ?? new Error('MCP transport closed');
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`);
+      channel.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`);
     },
     async close() {
       if (closed) return;
       closed = true;
       fail(new Error('MCP transport closed'));
-      await exited;
-      await removeWorkerDirectory(directory);
+      await stop();
     },
   };
+}
+
+/** Local subprocess seam; production must additionally supply OS-level worker isolation. */
+export async function openStdioMcpTransport(
+  endpoint: Extract<McpEndpoint, { transport: 'stdio' }>,
+  options: McpTransportOptions = {},
+): Promise<McpTransport> {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('MCP stdio requires an isolated OS launcher; only test fixtures may spawn');
+  }
+  const token = await options.accessToken?.();
+  const directory = await mkdtemp(join(await realpath(tmpdir()), TEMP_PREFIX));
+  const child = spawn(endpoint.command, endpoint.args, {
+    cwd: directory,
+    env: {
+      ...filteredMcpEnvironment(process.env, directory),
+      ...(token ? { MELETE_MCP_ACCESS_TOKEN: token } : {}),
+    },
+    shell: false,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  let ended: (() => void) | undefined;
+  const end = () => {
+    const listener = ended;
+    ended = undefined;
+    listener?.();
+  };
+  const exited = new Promise<void>((done) =>
+    child.once('close', () => {
+      clearTimeout(killTimer);
+      done();
+    }),
+  );
+  child.on('error', end);
+  child.on('exit', end);
+  child.stdin.on('error', end);
+  child.stdout.setEncoding('utf8');
+  return openLineMcpTransport(
+    {
+      write: (text) => {
+        child.stdin.write(text);
+      },
+      onData: (listener) => {
+        child.stdout.on('data', listener);
+      },
+      onClose: (listener) => {
+        ended = listener;
+      },
+      async close() {
+        if (child.pid && child.exitCode === null && child.signalCode === null) {
+          child.kill();
+          // A server cannot hold service shutdown open by ignoring termination.
+          killTimer ??= setTimeout(() => child.kill('SIGKILL'), 250);
+        }
+        await exited;
+        await removeWorkerDirectory(directory);
+      },
+    },
+    options,
+  );
 }
 
 /** HTTP transport uses only the configured endpoint; redirects and client capabilities are refused. */

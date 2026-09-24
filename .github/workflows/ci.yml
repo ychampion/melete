@@ -128,6 +128,29 @@ jobs:
           MELETE_BROWSER_SANDBOX_PROOF: '1'
         run: bun test apps/melete/test/integration/browser-sandbox.test.ts --max-concurrency=1
 
+  mcp-stdio:
+    name: Stdio MCP servers in their own containers (conformance 10)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # The scenario runs in a container with the Docker socket, as the service does, because a
+      # server with named destinations reaches them through the proxy in that container.
+      - name: Start real servers through the Docker launcher
+        run: |
+          docker version
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/repo -w /repo \
+            -e MELETE_CONFORMANCE_DOCKER=1 \
+            "oven/bun:$(cat .bun-version)" \
+            bun test conformance/scenarios/10-stdio-mcp.test.ts --timeout=300000
+
   images:
     name: Build the shipped images
     runs-on: ubuntu-24.04

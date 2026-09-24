@@ -9,6 +9,8 @@ import { newId } from '../../apps/melete/src/ids.ts';
 import { parseEnvFile } from '../../deploy/scripts/provider-settings.ts';
 
 export const composeEnabled = process.env.MELETE_CONFORMANCE_COMPOSE === '1';
+/** Scenario 9 needs a Docker engine and the socket, and runs inside a container of its own. */
+export const dockerEnabled = process.env.MELETE_CONFORMANCE_DOCKER === '1';
 export const repositoryRoot = resolve(import.meta.dir, '../..');
 export const composeFile = resolve(repositoryRoot, 'deploy/docker-compose.yml');
 export const apiBase = process.env.MELETE_CONFORMANCE_API ?? 'http://127.0.0.1:3101/api';

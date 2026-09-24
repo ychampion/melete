@@ -127,6 +127,8 @@ export type RuntimeHomeTeardown = {
 export type ConnectorReleases = {
   get(connectionId: string): Connector | undefined;
   remove(connectionId: string, expected: Connector): Promise<void>;
+  /** Retires the connector and releases what was kept for the connection, served or not. */
+  release?(connectionId: string): Promise<void>;
 };
 
 export type RemovalDeps = {
@@ -652,6 +654,10 @@ export class SpaceRemovalService {
     const registry = this.deps.connectors;
     if (!registry) return;
     for (const id of connectionIds) {
+      if (registry.release) {
+        await registry.release(id);
+        continue;
+      }
       const connector = registry.get(id);
       if (connector) await registry.remove(id, connector);
     }

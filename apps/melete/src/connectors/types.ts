@@ -63,6 +63,12 @@ export interface Connector {
    */
   routes?(action: Action, ctx: ConnectorContext): Promise<string[]>;
   close?(): Promise<void>;
+  /**
+   * In place of `close` when the connection itself is gone: stop, then
+   * release what only this connection owned, such as its kept data. The
+   * registry calls it on removal; shutdown never does.
+   */
+  retire?(): Promise<void>;
 }
 
 /** An operator's owner-only installation is unavailable to public compartments. */

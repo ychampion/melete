@@ -159,6 +159,15 @@ describe('the continuous integration workflow', () => {
     expect(suite?.steps?.some((step) => step.run?.includes('libpq5'))).toBe(true);
   });
 
+  test('proves stdio MCP servers on a real engine, from a container holding the socket', () => {
+    const job = ci.workflow.jobs?.['mcp-stdio'];
+    const run = job?.steps?.map((step) => step.run ?? '').join(' ') ?? '';
+    expect(run).toContain('-v /var/run/docker.sock:/var/run/docker.sock');
+    expect(run).toContain('MELETE_CONFORMANCE_DOCKER=1');
+    expect(run).toContain('conformance/scenarios/10-stdio-mcp.test.ts');
+    expect(existsSync(join(root, 'conformance/scenarios/10-stdio-mcp.test.ts'))).toBe(true);
+  });
+
   test('builds every shipped image from a file that exists, without pushing', () => {
     const images = ci.named.find(([name]) => name === 'images')?.[1];
     const builds = (images?.steps ?? [])

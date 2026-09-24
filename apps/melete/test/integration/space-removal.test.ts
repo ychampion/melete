@@ -36,6 +36,7 @@ import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { webManifest } from '../../src/connectors/web.ts';
 import { job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
@@ -50,6 +51,7 @@ import {
   SpaceRemovalService,
 } from '../../src/spaces/removal.ts';
 import { BrowserSiteService } from '../../src/workers/browser/sites.ts';
+import { FakeStdioLauncher } from '../fixtures/stdio-launcher.ts';
 import { testDatabase } from '../helpers/database.ts';
 import { type SeededSpace, seedFiles, seedSpace } from './space-removal-fixture.ts';
 
@@ -1421,6 +1423,36 @@ describe.if(handle !== null)('removing a space', () => {
     const finished = await removals.run(fenced.id);
     expect(outcome(finished)).toBe('complete');
     expect(finished.counts).toMatchObject({ providers: { connectors_served: 0 } });
+  });
+
+  test('plugin_servers_go_with_the_space — a running one is retired, and a stopped one’s data goes too', async () => {
+    const seeded = await seed('shared');
+    const served = newId('conn');
+    const unserved = newId('conn');
+    for (const id of [served, unserved])
+      await sql`insert into connection (id, space_id, provider, label, scopes)
+        values (${id}, ${seeded.spaceId}, 'mcp', 'A plugin', '[]'::jsonb)`;
+    // The service's own wiring: a launcher that keeps volumes, and a registry that releases them.
+    const launcher = new FakeStdioLauncher();
+    const registry = new ConnectorRegistry().addReleaser((id) => launcher.destroy(id));
+    const retired: string[] = [];
+    registry.register(served, {
+      manifest: emailManifest,
+      retire: async () => {
+        retired.push(served);
+      },
+    } as never);
+
+    const removals = await service({ connectors: registry });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const finished = await removals.run(fenced.id);
+    expect(outcome(finished)).toBe('complete');
+    // The running server is retired, which stops its container, and both connections' kept
+    // volumes are released, the one no connector was serving included.
+    expect(retired).toEqual([served]);
+    // Every connection the space had is released; these two are the plugin's.
+    expect(launcher.destroyed).toEqual(expect.arrayContaining([served, unserved]));
+    expect(registry.get(served)).toBeUndefined();
   });
 
   // ------------------------------------------------------------------

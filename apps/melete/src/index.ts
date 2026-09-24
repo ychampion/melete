@@ -48,6 +48,7 @@ import {
   connectorsFromEnv,
   readConnectionConfig,
 } from './connectors/configured.ts';
+import { DockerStdioLauncher } from './connectors/mcp-stdio-docker.ts';
 import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
@@ -220,7 +221,7 @@ export function createApp(deps: AppDeps) {
   } else if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
-  if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs));
+  if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs), deps.registry);
   const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);
   if (deps.jobs && attention) mountAttention(app, attention);
   if (deps.jobs) {
@@ -390,6 +391,7 @@ export async function bootstrap(
   let removals: SpaceRemovalService | undefined;
   let supervisor: RuntimeSupervisor | undefined;
   let registry: ConnectorRegistry | undefined;
+  let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let signIn: ProviderSignIn | undefined;
   const close = async () => {
@@ -418,6 +420,8 @@ export async function bootstrap(
       () => memory?.stop(),
       () => deploymentMemory?.close(),
       () => effectBoundary?.close(),
+      // After the registry: each server's container is removed by its connector first.
+      () => stdioLauncher?.close(),
       () => browser?.pool.close(),
       () => queue?.stop(),
       () => handle?.close(),
@@ -449,11 +453,28 @@ export async function bootstrap(
       await ensureBuiltinConnections(handle.sql, builtinEnvironment(env));
       connections = await readConnectionConfig(env.MELETE_CONNECTIONS_FILE);
       browser = await configuredBrowserSessions({ sql: handle.sql, env, connections });
+      // Stdio MCP servers run in containers through the same socket as the attempts.
+      if (env.MELETE_RUNTIME_ADAPTER === 'docker' && !options.runtime) {
+        const hostname = process.env.HOSTNAME ?? '';
+        stdioLauncher = new DockerStdioLauncher({
+          project: env.MELETE_COMPOSE_PROJECT,
+          socket: env.MELETE_DOCKER_SOCKET,
+          selfId: /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(hostname) ? hostname : undefined,
+          egressPort: env.MELETE_MCP_EGRESS_PORT,
+          nodeImage: env.MELETE_MCP_NODE_IMAGE,
+          pythonImage: env.MELETE_MCP_PYTHON_IMAGE,
+        });
+        // No server survives the process that started it; a removed installation's data goes too.
+        const kept = await handle.sql`select id from connection
+          where provider = 'mcp' and status <> 'revoked'`;
+        await stdioLauncher.reconcile(new Set(kept.map((row) => String(row.id))));
+      }
       // One connector registry serves the API catalog, the effect boundary and
       // the experience routes; the boundary builds the one configured broker.
       registry = await connectorsFromEnv(handle.sql, env, {
         connections,
         browserSessions: browser?.sessions,
+        stdioLauncher,
       });
       catalog = new RuntimeCatalog(handle.db, registry);
     }
