@@ -315,7 +315,9 @@ const variables = z.object({
   /**
    * How long Modal keeps a workspace snapshot this service never deletes. It
    * must outlast the retention period, or a workspace would be offered a
-   * snapshot the provider has already collected.
+   * snapshot the provider has already collected. A snapshot deletion the
+   * provider acknowledged is not re-checked; anything it missed expires with
+   * the snapshot TTL (MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS).
    */
   MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS: z.coerce
     .number()
