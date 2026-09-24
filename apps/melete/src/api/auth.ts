@@ -195,7 +195,7 @@ export function mountAuth(
       return c.json({ error: { code: 'origin_rejected', message: 'Use the same origin.' } }, 403);
     }
     const publicRoute =
-      (c.req.method === 'GET' && c.req.path === '/health') ||
+      (c.req.method === 'GET' && (c.req.path === '/health' || c.req.path === '/setup')) ||
       (c.req.method === 'POST' &&
         [
           '/setup',
@@ -281,6 +281,22 @@ export function mountAuth(
     if (db && token) await db.delete(session).where(eq(session.tokenHash, tokenHash(token)));
     deleteCookie(c, SESSION_COOKIE, { path: '/' });
     return c.json({ status: 'ok' });
+  });
+
+  /**
+   * Whether the first account still needs to be created. Public, so a browser
+   * with no session can show "Create your account" on a fresh install and
+   * sign-in everywhere else. It says only whether an owner exists.
+   */
+  app.get('/setup', async (c) => {
+    if (!db) {
+      return c.json(
+        { error: { code: 'database_unavailable', message: 'Configure Postgres.' } },
+        503,
+      );
+    }
+    const [installed] = await db.select({ id: owner.id }).from(owner).limit(1);
+    return c.json({ needed: !installed });
   });
 
   app.post('/setup', async (c) => {

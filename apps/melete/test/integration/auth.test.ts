@@ -116,10 +116,22 @@ describeWithDb('single-owner authentication against Postgres', () => {
     expect(Object.keys(body.owner).sort()).toEqual(['created_at', 'email', 'id']);
   });
 
-  test('all other routes require a valid cookie while health stays public', async () => {
+  test('setup says it is needed until the owner exists, with no session either way', async () => {
+    const api = app();
+    const before = await api.request('/setup');
+    expect(before.status).toBe(200);
+    expect(await before.json()).toEqual({ needed: true });
+    expect((await api.request('/setup', credentials())).status).toBe(201);
+    const after = await api.request('/setup');
+    expect(after.status).toBe(200);
+    expect(await after.json()).toEqual({ needed: false });
+  });
+
+  test('all other routes require a valid cookie while health and setup status stay public', async () => {
     const api = app();
     expect((await api.request('/health')).status).toBe(200);
-    for (const path of ['/me', '/spaces', '/jobs', '/events', '/setup', '/missing']) {
+    expect((await api.request('/setup')).status).toBe(200);
+    for (const path of ['/me', '/spaces', '/jobs', '/events', '/missing']) {
       expect((await api.request(path)).status).toBe(401);
     }
     expect((await api.request('/jobs', { method: 'POST' })).status).toBe(401);

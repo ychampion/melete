@@ -292,7 +292,9 @@ bun run dev:web
 ```
 
 Then open http://localhost:5180. [Building a client](docs/CLIENT.md) describes
-the scenarios the mock plays and the rules the web app follows.
+the scenarios the mock plays and the rules the web app follows. Set
+`MELETE_MOCK_SETUP=needed` to start the mock as a fresh install that asks for
+its first account.
 
 ### Run the agent runtime locally
 

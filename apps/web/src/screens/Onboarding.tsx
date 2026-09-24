@@ -34,15 +34,24 @@ const ATLAS = { color: '#ec8a2b', eyes: 'white', shape: 'diamond', image: null }
 /* ---------- sign in ---------- */
 
 export function SignInScreen({ signedIn }: { signedIn: boolean }) {
-  const { refreshProfile } = useApp();
+  const { refreshProfile, setOnboarded } = useApp();
   const route = useRoute();
+  // A fresh install has no account yet: it offers "Create your account"
+  // instead of sign-in. Until the service answers, it is sign-in.
+  const [creating, setCreating] = useState(false);
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [linking, setLinking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [google, setGoogle] = useState<boolean | null>(null);
   const [apple, setApple] = useState<boolean | null>(null);
   const phone = useMedia('(max-width: 900px)');
+
+  useEffect(() => {
+    void adapter.setupStatus().then((r) => setCreating(r.data?.needed === true));
+  }, []);
 
   // The OAuth buttons are drawn only when the service says they work.
   useEffect(() => {
@@ -66,11 +75,57 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
       toast({ kind: 'err', title: 'Enter the email address to send the link to.' });
       return;
     }
-    setBusy(true);
+    setLinking(true);
+    setNotice(null);
     const result = await adapter.magicLink(email);
-    setBusy(false);
+    setLinking(false);
     if (result.data) setSent(true);
     else setNotice(result.error ?? result.unavailable ?? 'Couldn’t send the link.');
+  };
+
+  const submit = async () => {
+    if (!email.includes('@')) {
+      toast({ kind: 'err', title: 'Enter your email address.' });
+      return;
+    }
+    if (password.length < 8) {
+      toast({ kind: 'err', title: 'The password needs at least 8 characters.' });
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
+    if (creating) {
+      const made = await adapter.createAccount(email, password);
+      if (made.data) {
+        // Setup signs this browser in; sign in here only if it did not.
+        const me = await adapter.profile();
+        const session =
+          me.error !== null && me.unauthorized ? await adapter.logIn(email, password) : me;
+        setBusy(false);
+        if (session.data === null) {
+          setNotice(
+            session.error ?? session.unavailable ?? 'Your account is made. Sign in to continue.',
+          );
+          setCreating(false);
+          return;
+        }
+        setOnboarded(false);
+        navigate('/setup');
+        refreshProfile();
+        return;
+      }
+      setBusy(false);
+      // Someone else finished setup first: this installation now signs in.
+      if (made.error !== null && /already/i.test(made.error)) setCreating(false);
+      setNotice(made.error ?? made.unavailable ?? 'Couldn’t create the account.');
+      return;
+    }
+    const result = await adapter.logIn(email, password);
+    setBusy(false);
+    if (result.data) {
+      if (route.parts[0] === 'welcome') navigate('/');
+      refreshProfile();
+    } else setNotice(result.error ?? result.unavailable ?? 'Couldn’t sign in.');
   };
 
   const kcard = (inner: ReactNode, width = 320, extra?: React.CSSProperties) => (
@@ -325,10 +380,12 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 paddingTop: 6,
               }}
             >
-              Welcome to Melete
+              {creating ? 'Create your account' : 'Welcome to Melete'}
             </h1>
             <p style={{ fontSize: 15, lineHeight: '22px', color: 'var(--muted)' }}>
-              Sign in or create your account. No password to remember.
+              {creating
+                ? 'This is the first account on this installation. Your agents come next.'
+                : 'Sign in with your email and password.'}
             </p>
           </div>
           {signedIn ? (
@@ -352,7 +409,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
             </div>
           ) : (
             <>
-              {google || apple ? (
+              {!creating && (google || apple) ? (
                 <div className="col" style={{ gap: 10 }}>
                   {google ? (
                     <button
@@ -400,7 +457,7 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                 style={{ gap: 12 }}
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void sendLink();
+                  void submit();
                 }}
               >
                 <Field label="Email">
@@ -415,9 +472,32 @@ export function SignInScreen({ signedIn }: { signedIn: boolean }) {
                     autoComplete="email"
                   />
                 </Field>
-                <Button size="lg" icon="send" block type="submit" loading={busy}>
-                  Send me a sign-in link
+                <Field label="Password">
+                  <Input
+                    type="password"
+                    icon="lock"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder={creating ? 'At least 8 characters' : undefined}
+                    width="100%"
+                    height={44}
+                    autoComplete={creating ? 'new-password' : 'current-password'}
+                  />
+                </Field>
+                <Button size="lg" icon="chevronRight" block type="submit" loading={busy}>
+                  {creating ? 'Create account' : 'Sign in'}
                 </Button>
+                {creating ? null : (
+                  <Button
+                    variant="ghost"
+                    icon="send"
+                    block
+                    loading={linking}
+                    onClick={() => void sendLink()}
+                  >
+                    Email me a link instead
+                  </Button>
+                )}
               </form>
               {notice ? (
                 <div

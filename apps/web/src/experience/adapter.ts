@@ -52,6 +52,9 @@ import type {
 } from './types.ts';
 import { isNotAvailable } from './types.ts';
 
+/** The account a sign-in or first setup answers with. */
+type SignedInOwner = { id: string; email: string; created_at: string };
+
 export type Result<T> =
   | { data: T; error: null; unavailable: null }
   | { data: null; error: string; unavailable: null; unauthorized?: boolean }
@@ -105,6 +108,13 @@ export const adapter = {
   profile: () => guard<{ profile: Profile }>(() => api.GET('/profile')),
   saveProfile: (profile: ProfileInput) =>
     guard<{ profile: Profile }>(() => api.PATCH('/profile', { body: profile })),
+  /** Whether this installation still needs its first account. Public. */
+  setupStatus: () => guard<{ needed: boolean }>(() => api.GET('/setup')),
+  /** Creates the first account and signs this browser in. */
+  createAccount: (email: string, password: string) =>
+    guard<{ owner: SignedInOwner }>(() => api.POST('/setup', { body: { email, password } })),
+  logIn: (email: string, password: string) =>
+    guard<{ owner: SignedInOwner }>(() => api.POST('/login', { body: { email, password } })),
   magicLink: (email: string) =>
     guard<{ status: 'ok' }>(() => api.POST('/signin/magic-link', { body: { email } })),
   consumeMagicLink: (token: string) =>
