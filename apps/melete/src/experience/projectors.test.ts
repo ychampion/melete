@@ -112,7 +112,10 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
     connection: { ...mailbox, sender: 'jo@example.test' },
     reasons: ['This change needs your permission before it happens.'],
     canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
   });
+  // The queue is oldest first, so the card says when it was asked.
+  expect(shown.created_at).toBe('2026-09-24T08:00:00.000Z');
   expect(shown.preview?.facts.slice(0, 2)).toEqual([
     { label: 'From', value: 'jo@example.test' },
     { label: 'To', value: 'support@acme.test' },
@@ -125,6 +128,7 @@ test('a permission to send shows the mailbox it leaves from above the recipient'
     connection: mailbox,
     reasons: ['This change needs your permission before it happens.'],
     canAlways: true,
+    requestedAt: new Date('2026-09-24T08:00:00.000Z'),
   });
   expect(withoutSender.preview?.facts.map((fact) => fact.label)).toEqual([
     'To',

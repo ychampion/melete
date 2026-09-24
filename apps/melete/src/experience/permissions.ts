@@ -67,6 +67,7 @@ export class ExperiencePermissions {
       },
       reasons,
       canAlways: warnings.length === 0 && Boolean(ruleKinds[action.kind]),
+      requestedAt: new Date(row.requested_at),
     });
   }
 

@@ -10704,6 +10704,7 @@ export interface components {
         };
         __schema164: {
             conversation_id: components["schemas"]["__schema149"];
+            created_at: components["schemas"]["__schema153"];
             draft?: components["schemas"]["__schema166"];
             id: components["schemas"]["__schema149"];
             options: components["schemas"]["__schema165"][];
@@ -10729,6 +10730,7 @@ export interface components {
         };
         __schema167: {
             conversation_id: components["schemas"]["__schema149"] | null;
+            created_at: components["schemas"]["__schema153"];
             id: components["schemas"]["__schema149"];
             if_ignored: components["schemas"]["__schema150"];
             options: components["schemas"]["__schema168"];

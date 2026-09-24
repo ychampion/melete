@@ -414,6 +414,10 @@ withDb('experience rows and authenticated scope', () => {
         .find((item) => item.conversation_id === chat.id),
     );
     expect(question.options).toHaveLength(2);
+    // The queue is oldest first, and each entry says when it was asked.
+    const [asked] = await required(handle)
+      .sql`select created_at from question where id = ${question.id}`;
+    expect(question.created_at).toBe(new Date(asked?.created_at).toISOString());
     expect(question.why).toEqual(['For Dinner.']);
     expect(
       (await request(`/quick-answers/${question.id}`, 'POST', { option_id: 'invented' })).status,

@@ -357,6 +357,8 @@ export function projectPermission(input: {
   connection: ConnectionRow & { sender?: string | null };
   reasons: string[];
   canAlways: boolean;
+  /** When permission was asked for. */
+  requestedAt: Date;
 }) {
   const payload = object(input.action.canonicalPayload);
   const isSend = input.action.kind.endsWith('.send');
@@ -422,6 +424,7 @@ export function projectPermission(input: {
         ? ['allow_once', 'always', 'deny']
         : ['allow_once', 'deny'],
     version: input.version,
+    created_at: input.requestedAt.toISOString(),
     preview: {
       id: input.id,
       title: what,

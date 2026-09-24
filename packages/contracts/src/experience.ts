@@ -104,6 +104,8 @@ export const experienceQuestion = z.strictObject({
   why: z.array(text),
   if_ignored: text,
   options: quickOptions,
+  /** When it was asked; the queue is oldest first. */
+  created_at: date,
 });
 
 /** Every bound is required. The recipient is resolved from trusted evidence by the service. */
@@ -140,6 +142,8 @@ export const permissionCard = z.strictObject({
   version: id,
   preview: resultCard.nullable(),
   draft: experienceDraft.optional(),
+  /** When permission was asked for; the queue is oldest first. */
+  created_at: date,
 });
 export type PermissionCard = z.infer<typeof permissionCard>;
 export const permissionDecision = z.discriminatedUnion('option', [

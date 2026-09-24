@@ -17668,6 +17668,9 @@
           },
           "draft": {
             "$ref": "#/components/schemas/__schema166"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema153"
           }
         },
         "required": [
@@ -17677,7 +17680,8 @@
           "why",
           "options",
           "version",
-          "preview"
+          "preview",
+          "created_at"
         ],
         "additionalProperties": false
       },
@@ -17780,6 +17784,9 @@
           },
           "options": {
             "$ref": "#/components/schemas/__schema168"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/__schema153"
           }
         },
         "required": [
@@ -17788,7 +17795,8 @@
           "text",
           "why",
           "if_ignored",
-          "options"
+          "options",
+          "created_at"
         ],
         "additionalProperties": false
       },

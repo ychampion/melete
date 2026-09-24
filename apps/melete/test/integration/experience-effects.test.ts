@@ -257,6 +257,9 @@ databaseTest(
       payload: { summary: 'Dinner', start: '2026-09-13T18:00:00Z', end: '2026-09-13T19:00:00Z' },
     });
     const card = await s.permissions.card(s.claims.space_id, proposed.approval_id ?? '');
+    // The card says when permission was asked for, which orders the queue.
+    const [asked] = await s.sql`select requested_at from approval where id = ${card.id}`;
+    expect(card.created_at).toBe(new Date(asked?.requested_at).toISOString());
     await s.permissions.decide(s.claims.space_id, card.id, {
       option: 'allow_once',
       version: card.version,

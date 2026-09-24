@@ -769,6 +769,7 @@ export class ExperienceMock {
         text: plainText(step.question, 'What should happen next?'),
         why: ['Your answer decides the next step.'],
         if_ignored: 'This conversation waits for your answer.',
+        created_at: this.now(),
         options: step.options.map((option, index) => ({
           id: `option-${index + 1}`,
           label: option.description
@@ -824,6 +825,7 @@ export class ExperienceMock {
           options: ['allow_once', 'always', 'deny'],
           version: newId('v'),
           preview: chat.lastCard,
+          created_at: this.now(),
         });
         proposal.permissionId = permission.id;
         this.permissions.set(permission.id, permission);
@@ -951,6 +953,7 @@ export class ExperienceMock {
         text: plainText(step.question, 'What should happen next?'),
         why: ['Your answer is needed to continue.'],
         if_ignored: 'This conversation waits for your answer.',
+        created_at: this.now(),
         options: [
           { id: 'continue', label: 'Continue' },
           { id: 'stop', label: 'Stop here' },
@@ -1221,6 +1224,7 @@ export class ExperienceMock {
       version: newId('v'),
       draft,
       preview: chat.cards.find((card) => card.id === id) ?? null,
+      created_at: this.now(),
     });
     this.permissions.set(permission.id, permission);
     this.permissionDrafts.set(permission.id, id);

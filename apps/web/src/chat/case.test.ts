@@ -64,6 +64,7 @@ const PERMISSION: Permission = {
   version: 'v_1',
   preview: null,
   draft: DRAFT,
+  created_at: '2026-09-24T08:00:00.000Z',
 };
 
 const RECEIPT: Receipt = {
