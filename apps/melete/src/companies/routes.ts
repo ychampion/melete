@@ -214,6 +214,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
         owner,
         now: now(),
         scan: record,
+        timeZone: await profileTimeZone(deps.db, owner.spaceId),
       });
     });
     return c.json({ scan_id: record.id, status: 'running' as const }, 202);

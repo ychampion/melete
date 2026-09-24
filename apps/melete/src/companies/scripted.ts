@@ -16,6 +16,7 @@
  */
 
 import type { LedgerDirection, LedgerItemKind } from '@melete/contracts';
+import { calendarDay } from '../dates.ts';
 import { tier0Values } from '../memory/tier0.ts';
 import type { CompanyExtractor, ExtractedItem, ExtractionRequest } from './extract.ts';
 
@@ -208,7 +209,16 @@ const NUMBER_WORDS: Record<string, number> = {
  * long. Working and business days skip Saturday and Sunday; bank holidays are
  * not known here, so a working-day date can be a day or two early.
  */
-export function dueFromPeriod(text: string, receivedAt: string): string | null {
+/** The calendar day an instant falls on where the person lives, or in UTC if the zone is unknown. */
+function localDay(at: Date, timeZone = 'UTC'): string {
+  try {
+    return calendarDay(at, timeZone);
+  } catch {
+    return calendarDay(at, 'UTC');
+  }
+}
+
+export function dueFromPeriod(text: string, receivedAt: string, timeZone = 'UTC'): string | null {
   const match =
     /\bwithin (\d{1,3}|[a-z]+)(?:\s*(?:-|–|to)\s*(\d{1,3}|[a-z]+))? (working |business )?days?\b/i.exec(
       text,
@@ -223,8 +233,8 @@ export function dueFromPeriod(text: string, receivedAt: string): string | null {
   const days = count(match[2]) ?? count(match[1]);
   const start = Date.parse(receivedAt);
   if (!days || days > 366 || !Number.isFinite(start)) return null;
-  const day = new Date(start);
-  day.setUTCHours(0, 0, 0, 0);
+  // The day it came is the person's own calendar day, not the day in UTC.
+  const day = new Date(`${localDay(new Date(start), timeZone)}T00:00:00.000Z`);
   if (!match[3]) {
     day.setUTCDate(day.getUTCDate() + days);
     return day.toISOString().slice(0, 10);
@@ -251,7 +261,11 @@ export function scriptedItems(request: ExtractionRequest): ExtractedItem[] {
   for (const segment of segments(request.text)) {
     const rule = RULES.find((entry) => entry.pattern.test(segment.text));
     if (!rule) continue;
-    const values = tier0Values(segment.text, { eventAt: request.receivedAt }, segment.start);
+    const values = tier0Values(
+      segment.text,
+      { eventAt: request.receivedAt, ...(request.timeZone ? { timeZone: request.timeZone } : {}) },
+      segment.start,
+    );
     const amount = values.find((value) => value.type === 'amount');
     const date = values.find((value) => value.type === 'date');
     const minor = amount ? minorUnits(amount.value) : null;
@@ -270,9 +284,9 @@ export function scriptedItems(request: ExtractionRequest): ExtractedItem[] {
         rule.kind === 'subscription'
           ? null
           : !date
-            ? dueFromPeriod(segment.text, request.receivedAt)
+            ? dueFromPeriod(segment.text, request.receivedAt, request.timeZone)
             : date.granularity === 'day'
-              ? date.value.slice(0, 10)
+              ? localDay(new Date(date.value), request.timeZone)
               : date.value,
       confidence: rule.confidence ?? (money || date ? 'high' : 'medium'),
       suggested_playbook: rule.playbook,

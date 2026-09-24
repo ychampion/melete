@@ -6,7 +6,7 @@ import { scriptedItems } from './scripted.ts';
 const RECEIVED = '2026-09-18T09:00:00.000Z';
 
 /** What the scripted extractor reads out of one short message. */
-function read(text: string, receivedAt = RECEIVED) {
+function read(text: string, receivedAt = RECEIVED, timeZone?: string) {
   const message = {
     messageId: '<m@acme.example>',
     from: 'Acme <billing@acme.example>',
@@ -25,6 +25,7 @@ function read(text: string, receivedAt = RECEIVED) {
       subject: message.subject,
       receivedAt,
       text: messageText(message),
+      ...(timeZone ? { timeZone } : {}),
     }),
   };
 }
@@ -61,4 +62,15 @@ test('a period the email gives is a due day, counted from the day the email came
   expect(
     due('A refund of GBP 12.00 will be paid on 30 September 2026, within 5 working days.'),
   ).toEqual(['2026-09-30']);
+});
+
+test('the period counts from the day the email came where the person lives', () => {
+  // 02:00 UTC on Saturday 19 September is still Friday the 18th in New York,
+  // and already Saturday morning in Kolkata.
+  const at = '2026-09-19T02:00:00.000Z';
+  const text = 'We will pay the refund of GBP 640.00 within 14 days of this email.';
+  expect(read(text, at, 'America/New_York').items.map((item) => item.due_at)).toEqual([
+    '2026-10-02',
+  ]);
+  expect(read(text, at, 'Asia/Kolkata').items.map((item) => item.due_at)).toEqual(['2026-10-03']);
 });
