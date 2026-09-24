@@ -600,10 +600,18 @@ withDb('each account acts only inside its own space', () => {
       version: pending.version,
     });
     expect(allowed.status).toBe(409);
+    expect(await json<unknown>(allowed)).toEqual({
+      error: { code: 'permission_replaced', message: 'Your new message replaced this request.' },
+    });
     expect(calls.filter((entry) => entry.kind === 'email.send')).toHaveLength(sendsBefore);
     const [row] = await sql`select a.status, p.decision, p.decided_by from approval p
       join action a on a.id = p.action_id where p.id = ${pending.id}`;
-    expect(row).toMatchObject({ status: 'denied', decision: 'denied', decided_by: 'system' });
+    expect(row).toMatchObject({ status: 'denied', decision: 'denied', decided_by: 'replaced' });
+    // The action's move is on the record the broker keeps for every status change.
+    const moved = await sql`select payload from event
+      where type = 'action_status_changed' and payload->>'to' = 'denied'
+        and payload->>'action_id' = (select action_id from approval where id = ${pending.id})`;
+    expect(moved).toHaveLength(1);
     const stream = await json<{
       events: { item: { type: string; decision?: { id: string; outcome: string } } }[];
     }>(await call(actor.cookie, `/conversations/${actor.conversationId}/events?limit=200`));

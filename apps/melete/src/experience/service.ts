@@ -59,9 +59,9 @@ export function conversationView(
 /**
  * A new message in a conversation changes what was asked for, so every
  * permission still waiting in it is stale: the draft it would send was written
- * for the request before this one. Each is decided as denied, noted as
- * replaced, in the same transaction that accepts the message, so it can never
- * be allowed afterwards and nothing it covered is sent. That includes the
+ * for the request before this one. Each is decided as denied by `replaced`, in
+ * the same transaction that accepts the message, so it can never be allowed
+ * afterwards and nothing it covered is sent. That includes the
  * send of a reviewed draft, which runs as a command job under the conversation.
  */
 export async function supersedePendingPermissions(tx: Transaction, conversationId: string) {
@@ -81,9 +81,17 @@ export async function supersedePendingPermissions(tx: Transaction, conversationI
   for (const { approval: stale, action: effect } of pending) {
     await tx
       .update(approval)
-      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: 'system' })
+      .set({ decision: 'denied', decidedAt: new Date(), decidedBy: SUPERSEDED_NOTE })
       .where(eq(approval.id, stale.id));
     await tx.update(action).set({ status: 'denied' }).where(eq(action.id, effect.id));
+    // The same record the broker keeps for every status an action moves through.
+    await appendEvent(tx, {
+      jobId: effect.jobId,
+      attemptId: effect.attemptId,
+      type: 'action_status_changed',
+      payload: { action_id: effect.id, from: effect.status, to: 'denied' },
+      dedupKey: `${stale.id}:${SUPERSEDED_NOTE}:status`,
+    });
     await appendEvent(tx, {
       jobId: effect.jobId,
       attemptId: effect.attemptId,
