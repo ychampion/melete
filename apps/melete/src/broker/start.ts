@@ -13,7 +13,7 @@ import type { DatabaseHandle } from '../db/client.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
 import {
   recordChaseScope,
-  resolveChaseGrant,
+  resolveChaseScopedGrant,
   resolvePersonGrant,
 } from '../experience/chase-scope.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
@@ -112,7 +112,7 @@ export async function startEffectBoundary(
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
       resolveStandingGrant: resolvePersonGrant,
-      resolveScopedGrant: resolveChaseGrant,
+      resolveScopedGrant: resolveChaseScopedGrant,
       recordStandingScope: recordChaseScope,
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,

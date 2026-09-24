@@ -124,7 +124,7 @@ export type BrokerOptions = {
    * went to. It is the only grant asked when a payload carries doubts, and it
    * is told what they are.
    */
-  resolveScopedGrant?: StandingGrantResolver;
+  resolveScopedGrant?: ScopedGrantResolver;
   /** Called in the transaction that records an action as succeeded. */
   recordStandingScope?: (tx: Query, action: Action) => Promise<void>;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
@@ -161,6 +161,12 @@ export type StandingGrantInput = {
   warnings?: OriginWarning[];
 };
 export type StandingGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<boolean>;
+/**
+ * A grant scoped to one job answers with the approval that authorizes the
+ * effect: the person's decision on values they already saw, whose recorded
+ * doubts must be exactly this payload's. Null is no grant.
+ */
+export type ScopedGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<string | null>;
 
 /** What admission decided about one action before it reserved anything. */
 type Admissibility = {
@@ -168,6 +174,8 @@ type Admissibility = {
   warnings_hash: string;
   standing_grant: boolean;
   requires_approval: boolean;
+  /** The approval a scoped grant rests on, which admission records as the authorization. */
+  authorized_by: string | null;
 };
 
 const question =
@@ -483,17 +491,23 @@ export class BrokerService implements BrokerOperations {
     // standing grant never covers a value whose origin Melete cannot vouch for;
     // only a grant scoped to this job, over values the person approved in it,
     // is asked when there are doubts, and it is told exactly what they are.
-    const resolver =
-      warnings.length === 0 ? this.options.resolveStandingGrant : this.options.resolveScopedGrant;
+    const input = { job, action, tool, phase, warnings };
+    const authorizedBy =
+      requiresApproval && warnings.length > 0 && this.options.resolveScopedGrant
+        ? await this.options.resolveScopedGrant(tx, input)
+        : null;
     const granted =
-      requiresApproval && resolver
-        ? await resolver(tx, { job, action, tool, phase, warnings })
-        : false;
+      authorizedBy !== null ||
+      (requiresApproval &&
+        warnings.length === 0 &&
+        this.options.resolveStandingGrant !== undefined &&
+        (await this.options.resolveStandingGrant(tx, input)));
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
       requires_approval: requiresApproval && !granted,
+      authorized_by: authorizedBy,
     };
   }
 
@@ -930,7 +944,7 @@ export class BrokerService implements BrokerOperations {
             throw new BrokerFault('approval_required', 'Approval expired');
           authorization = approval.id;
           expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
-        }
+        } else authorization = classified.authorized_by;
         if (!['proposed', 'approved'].includes(action.status))
           throw new BrokerFault('action_not_admissible');
         const authority = await resolveEffectAuthority(

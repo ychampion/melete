@@ -13,9 +13,13 @@
  * covers is still an action with its own receipt.
  */
 
-import type { Action } from '@melete/contracts';
+import { type Action, hashOriginWarnings, originWarnings } from '@melete/contracts';
 import type { Query } from '../broker/records.ts';
-import type { StandingGrantResolver } from '../broker/service.ts';
+import type {
+  ScopedGrantResolver,
+  StandingGrantInput,
+  StandingGrantResolver,
+} from '../broker/service.ts';
 import { recipientText } from './projectors.ts';
 import { resolveExperienceGrant, ruleKinds, ruleRecipient } from './rules.ts';
 
@@ -110,38 +114,53 @@ export async function recordChaseScope(tx: Query, action: Action): Promise<void>
 }
 
 /**
- * Whether this job's chase scope covers the action. Doubts about the payload
- * are allowed only on the recipient, which is then the address the person
- * already approved in this job; the rest of the check is `followUpRefusal`.
+ * The approval that covers this action under its job's chase scope, or null.
+ * Doubts about the payload are allowed only on the recipient, and only the
+ * very doubts the person saw and approved on the chase's first message; the
+ * rest of the check is `followUpRefusal`.
  */
-export const resolveChaseGrant: StandingGrantResolver = async (tx, input) => {
+async function chaseCover(tx: Query, input: StandingGrantInput): Promise<string | null> {
   const { action, job, phase } = input;
-  if (ruleKinds[action.kind] !== 'send_message') return false;
-  if ((input.warnings ?? []).some((warning) => !/^to(?:\[\d+\])?$/.test(warning.field)))
-    return false;
+  const warnings = input.warnings ?? [];
+  if (ruleKinds[action.kind] !== 'send_message') return null;
+  if (warnings.some((warning) => !/^to(?:\[\d+\])?$/.test(warning.field))) return null;
   // A reviewed action keeps the approval it was reviewed under.
   const [review] = await tx`select id from approval where action_id = ${action.id} limit 1`;
-  if (review) return false;
+  if (review) return null;
   const [rule] = await tx`select * from experience_rule where job_id = ${job.id}
     and origin_trust = ${CHASE_SCOPE_ORIGIN} and connection_id = ${action.connection_id}
     and tool_kind = ${action.kind} and source_action_id <> ${action.id}
     and revoked_at is null and expires_at > now()
     and created_at + reconsent_after_days * interval '1 day' > now()
     for update`;
-  if (!rule) return false;
+  if (!rule) return null;
   const [used] = await tx`select rule_id from experience_rule_use where action_id = ${action.id}`;
-  if (used ? used.rule_id !== rule.id : Number(rule.used) >= Number(rule.count_cap)) return false;
-  const [source] =
-    await tx`select canonical_payload from action where id = ${rule.source_action_id}`;
-  if (!source) return false;
-  if (followUpRefusal(source.canonical_payload, action.canonical_payload) !== null) return false;
-  if (phase === 'execution' && !used) return false;
+  if (used ? used.rule_id !== rule.id : Number(rule.used) >= Number(rule.count_cap)) return null;
+  const [source] = await tx`select a.canonical_payload, p.id as approval_id, p.origin_warnings
+    from action a join approval p on p.action_id = a.id and p.decision = 'approved'
+    where a.id = ${rule.source_action_id}`;
+  if (!source) return null;
+  if (followUpRefusal(source.canonical_payload, action.canonical_payload) !== null) return null;
+  if (
+    warnings.length > 0 &&
+    hashOriginWarnings(originWarnings.parse(source.origin_warnings ?? [])) !==
+      hashOriginWarnings(warnings)
+  )
+    return null;
+  if (phase === 'execution' && !used) return null;
   if (phase === 'admission' && !used) {
     await tx`insert into experience_rule_use (action_id, rule_id) values (${action.id}, ${rule.id})`;
     await tx`update experience_rule set used = used + 1 where id = ${rule.id}`;
   }
-  return true;
-};
+  return String(source.approval_id);
+}
+
+/** Whether the chase scope covers an action nothing is in doubt about. */
+export const resolveChaseGrant: StandingGrantResolver = async (tx, input) =>
+  (await chaseCover(tx, input)) !== null;
+
+/** The chase scope asked about a payload with doubts: the approval it rests on, or null. */
+export const resolveChaseScopedGrant: ScopedGrantResolver = chaseCover;
 
 /** A person's standing rules first, then the chase scope of the job. */
 export const resolvePersonGrant: StandingGrantResolver = async (tx, input) =>

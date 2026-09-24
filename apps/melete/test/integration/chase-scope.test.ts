@@ -19,7 +19,7 @@ import { connection, experienceRule, owner, space } from '../../src/db/schema.ts
 import {
   CHASE_FOLLOW_UP_CAP,
   recordChaseScope,
-  resolveChaseGrant,
+  resolveChaseScopedGrant,
   resolvePersonGrant,
 } from '../../src/experience/chase-scope.ts';
 import { newId } from '../../src/ids.ts';
@@ -194,7 +194,7 @@ withDb('what one "Allow once" on a chase covers', () => {
       // Nothing is vouched for: a company's address came out of its own email.
       resolveTrust: createTableTrustResolver({}),
       resolveStandingGrant: resolvePersonGrant,
-      resolveScopedGrant: resolveChaseGrant,
+      resolveScopedGrant: resolveChaseScopedGrant,
       recordStandingScope: recordChaseScope,
     });
     store = new PostgresCompanyStore(handle.db);
