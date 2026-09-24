@@ -9,6 +9,9 @@ import {
   type StyleViolation,
   styleViolations as styleViolationsSchema,
 } from '@melete/contracts';
+import { lockJob } from '../broker/records.ts';
+import { memoryKeyLabel } from '../experience/evidence.ts';
+import { appendMemoryTool } from '../experience/tools.ts';
 import { buildBundle } from '../jobs/bundle.ts';
 import { withStyleCheck } from '../runtime/style.ts';
 import { eligibleRevision } from './claims.ts';
@@ -23,8 +26,9 @@ export async function recordAttemptContext(
   attemptId: string,
   jobId: string,
   result: RecallResult,
+  startedAt?: Date,
 ): Promise<ContextRecord> {
-  return sql.begin(async (tx) => {
+  const context = await sql.begin(async (tx) => {
     const space = await lockSpace(tx, scope, false);
     const audience = await effectiveAudience(tx, scope, jobId);
     const [attempt] =
@@ -89,6 +93,49 @@ export async function recordAttemptContext(
     }
     return context;
   });
+  if (context.items.length) await recordRecallEntry(sql, jobId, attemptId, context, startedAt);
+  return context;
+}
+
+/**
+ * The tool entry is written after the context commits, in its own short
+ * transaction, so an event write never runs under the space lock. It takes the
+ * job the way every event writer does (the event order lock, then the job row),
+ * so a stream cursor cannot pass it. It only describes the recall: a failure is
+ * logged and the attempt goes on with the context it already has.
+ */
+async function recordRecallEntry(
+  sql: MemorySql,
+  jobId: string,
+  attemptId: string,
+  context: ContextRecord,
+  startedAt?: Date,
+) {
+  try {
+    await sql.begin(async (tx) => {
+      await lockJob(tx, jobId);
+      // Details are named only in a personal space, to the person it belongs to.
+      // In a shared space a detail may be someone else's, so only the count is told.
+      const [owned] = await tx`select (s.kind = 'personal' and (j.principal_id is null
+          or j.principal_id = coalesce(s.owner_principal_id, (select id from owner limit 1)))) as mine
+        from job j join space s on s.id = j.space_id where j.id = ${jobId}`;
+      await appendMemoryTool(tx, jobId, attemptId, {
+        op: 'recall',
+        id: `recall:${attemptId}`,
+        status: 'done',
+        started_at: startedAt?.toISOString() ?? context.created_at,
+        ended_at: context.created_at,
+        count: context.items.length,
+        labels: owned?.mine ? context.items.map((item) => memoryKeyLabel(item.key)) : [],
+        value: null,
+        memory_item_id: null,
+        parent: null,
+      });
+    });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : 'error';
+    process.stderr.write(`memory: recall entry for ${attemptId} was not written (${name})\n`);
+  }
 }
 /**
  * Write down how the attempt talked. Measured, never enforced: the update runs
@@ -163,6 +210,7 @@ export async function assembleAttemptKnowledge(
   options: RecallOptions = {},
 ) {
   for (let retry = 0; retry < 3; retry++) {
+    const startedAt = new Date();
     const result = await recall(
       sql,
       scope,
@@ -173,7 +221,7 @@ export async function assembleAttemptKnowledge(
       },
     );
     try {
-      const context = await recordAttemptContext(sql, scope, attemptId, jobId, result);
+      const context = await recordAttemptContext(sql, scope, attemptId, jobId, result, startedAt);
       return { knowledge: result.items.map(asKnowledge), context, recall: result };
     } catch (error) {
       if (!(error instanceof MemoryError) || error.code !== 'stale_context' || retry === 2)
@@ -208,6 +256,7 @@ export function withMemoryRuntime(
             options,
           );
         for (let retry = 0; retry < 3; retry++) {
+          const startedAt = new Date();
           const built = await buildBundle(bundle, { sql, scope, catalog: options.catalog });
           try {
             const context = await recordAttemptContext(
@@ -216,6 +265,7 @@ export function withMemoryRuntime(
               bundle.attempt.id,
               bundle.attempt.job_id,
               built.recall,
+              startedAt,
             );
             assembled = built.bundle;
             return { knowledge: built.bundle.knowledge, context, recall: built.recall };

@@ -152,6 +152,22 @@ test('experience scenario drafts first, reviews an explicit send, and replays sa
     (await call(mock, `/conversations/${chat.id}/events?since=0`)).body,
   );
   expect(page.events.some((event) => event.item.type === 'action')).toBe(true);
+  // Memory and each scripted tool reach the conversation as tool entries, start and end.
+  const tools = page.events.flatMap((event) =>
+    event.item.type === 'tool' ? [event.item.tool] : [],
+  );
+  expect(tools.some((tool) => tool.kind === 'memory_recall' && tool.status === 'done')).toBe(true);
+  for (const id of new Set(tools.map((tool) => tool.id)))
+    expect(tools.filter((tool) => tool.id === id).map((tool) => tool.status)).toEqual([
+      'running',
+      'done',
+    ]);
+  // Home reads the finished turn's steps; nothing is under way once it is done.
+  const view = C.conversationResponse.parse(
+    (await call(mock, `/conversations/${chat.id}`)).body,
+  ).conversation;
+  expect(view.progress?.steps_done).toBeGreaterThan(0);
+  expect(view.progress?.current).toBeNull();
   expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
   expect(
     C.experienceEventPage.parse(

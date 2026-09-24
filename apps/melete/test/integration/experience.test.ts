@@ -764,8 +764,12 @@ withDb('experience rows and authenticated scope', () => {
     });
     const projection = new ExperienceEvents(required(handle).db);
     const page = await projection.page(spaceId, 0, chat.id);
-    expect(page.events.filter((item) => item.item.type === 'action')).toHaveLength(1);
-    const step = page.events.find((item) => item.item.type === 'action')?.item;
+    // The connected-app reads group into one step. Steps carrying a single tool
+    // entry, such as the skills the attempt was given, sit beside it.
+    const grouped = (item: (typeof page.events)[number]) =>
+      item.item.type === 'action' && item.item.tool === undefined;
+    expect(page.events.filter(grouped)).toHaveLength(1);
+    const step = page.events.find(grouped)?.item;
     if (step?.type !== 'action') throw new Error('Missing action');
     expect(step.sources.map((source) => source.connection_id)).toEqual([
       calendarId,

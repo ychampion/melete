@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   agentResponse,
   type Conversation,
+  type ConversationProgress,
   conversation,
   conversationCreate,
   conversationMessage,
@@ -25,6 +26,7 @@ export const experienceMissing = () => new ServiceError('not_found', 'That item 
 export function conversationView(
   row: JobRow,
   turn?: typeof experienceTurn.$inferSelect | null,
+  progress?: ConversationProgress,
 ): Conversation {
   const status = row.paused
     ? 'paused'
@@ -45,6 +47,7 @@ export function conversationView(
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
     plan_id: row.planId,
+    ...(progress ? { progress } : {}),
   });
 }
 
@@ -54,6 +57,13 @@ export class ExperienceService {
     readonly jobs?: JobService,
     readonly submissions?: SubmissionService,
     readonly runner?: AttemptRunner,
+    /** Where a turn has got, when the event projection is mounted beside this service. */
+    public progress?: (
+      spaceId: string,
+      jobId: string,
+      turnId: string,
+      stage: 'under_way' | 'waiting' | 'ended',
+    ) => Promise<ConversationProgress>,
   ) {
     if (submissions) {
       const prior = submissions.onAccepted;
@@ -157,7 +167,25 @@ export class ExperienceService {
           .from(experienceTurn)
           .where(and(eq(experienceTurn.id, row.currentTurnId), eq(experienceTurn.jobId, row.id)))
       : [];
-    return conversationView(row, turn);
+    // A turn under way, or one that finished within the day, reports its steps.
+    const stage = !turn
+      ? 'ended'
+      : ['queued', 'working', 'streaming', 'paused'].includes(turn.status)
+        ? 'under_way'
+        : turn.status === 'needs_you'
+          ? 'waiting'
+          : 'ended';
+    const recent =
+      turn && (stage !== 'ended' || Date.now() - row.updatedAt.getTime() < 24 * 60 * 60 * 1000);
+    const progress =
+      recent && this.progress
+        ? await this.progress(row.spaceId, row.id, turn.id, stage)
+        : undefined;
+    return conversationView(
+      row,
+      turn,
+      progress && (progress.steps_done > 0 || progress.current) ? progress : undefined,
+    );
   }
 
   async conversations(spaceId: string) {

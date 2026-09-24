@@ -99,8 +99,46 @@ const LABELS: Record<string, string> = {
   'test.read': 'Checked the connected app',
   'test.send': 'Sent a message',
 };
-export function actionLabel(row: ActionRow): string {
-  return LABELS[row.kind] ?? 'Completed a step';
+/** How each connector verb reads while it runs and once it is done. */
+export const ACTION_VERBS: Record<string, [doing: string, done: string]> = {
+  'calendar.list': ['Checking your calendar', 'Checked your calendar'],
+  'calendar.create': ['Adding an event', 'Added an event'],
+  'calendar.update': ['Updating an event', 'Updated an event'],
+  'calendar.delete': ['Removing an event', 'Removed an event'],
+  'email.search': ['Searching your mail', 'Searched your mail'],
+  'email.read': ['Reading a message', 'Read a message'],
+  'email.draft': ['Drafting a message', 'Drafted a message'],
+  'email.send': ['Sending the email', 'Sent the email'],
+  'email.discard': ['Discarding a draft', 'Discarded a draft'],
+  'files.list': ['Looking through your files', 'Looked through your files'],
+  'files.read': ['Reading a file', 'Read a file'],
+  'files.write': ['Saving a file', 'Saved a file'],
+  'files.move': ['Moving a file', 'Moved a file'],
+  'files.restore': ['Restoring a file', 'Restored a file'],
+  'web.fetch': ['Reading a web page', 'Read a web page'],
+  'exec.run': ['Running a command', 'Ran a command'],
+  'exec.python': ['Running code', 'Ran code'],
+  'terminal.run': ['Running a command', 'Ran a command'],
+  'browser.open': ['Opening a page', 'Opened a page'],
+  'browser.observe': ['Looking at the page', 'Looked at the page'],
+  'browser.fill': ['Filling in a form', 'Filled in a form'],
+  'browser.click': ['Clicking on the page', 'Clicked on the page'],
+  'browser.select': ['Choosing an option', 'Chose an option'],
+  'browser.read': ['Reading the page', 'Read the page'],
+  'browser.submit': ['Submitting a form', 'Submitted a form'],
+  'artifact.publish': ['Publishing a file', 'Published a file'],
+  'audio.synthesize': ['Making audio', 'Made audio'],
+  'test.read': ['Checking the connected app', 'Checked the connected app'],
+  'test.send': ['Sending a message', 'Sent a message'],
+};
+export function actionLabel(row: ActionRow, connection?: ConnectionRow): string {
+  return (
+    LABELS[row.kind] ??
+    ACTION_VERBS[row.kind]?.[1] ??
+    (connection
+      ? `Used ${plainText(connection.label, appName(connection), 60)}`
+      : 'Completed a step')
+  );
 }
 
 export function actionSources(row: ActionRow, connection: ConnectionRow): ExperienceSource[] {
@@ -175,7 +213,9 @@ export function projectActionGroup(
 ): Extract<TrailStep, { type: 'action' }> | null {
   const succeeded = rows.filter(({ action }) => action.status === 'succeeded');
   if (!succeeded.length) return null;
-  const labels = [...new Set(succeeded.map(({ action }) => actionLabel(action)))];
+  const labels = [
+    ...new Set(succeeded.map(({ action, connection }) => actionLabel(action, connection))),
+  ];
   const sources = succeeded.flatMap(({ action, connection }) => actionSources(action, connection));
   return {
     type: 'action',

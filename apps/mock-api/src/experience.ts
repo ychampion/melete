@@ -37,6 +37,8 @@ type Chat = {
   proposals: Map<string, Proposal>;
   /** The last card a scenario drew, which a following proposal shows as its preview. */
   lastCard: C.ResultCard | null;
+  /** The tool entry under way, finished when the next step starts or the turn ends. */
+  openTool?: { finished: C.ToolCall; trail: boolean };
   /**
    * A company job: the address it writes from, shown on the approval, and the
    * promise that the script keeps going after the send — the reply, the
@@ -560,6 +562,7 @@ export class ExperienceMock {
   }
   /** End the turn. An empty summary means the agent said nothing in words (it reacted instead). */
   finish(chat: Chat, summary: string) {
+    this.settleTool(chat);
     this.flush(chat);
     const turn = chat.turns.at(-1);
     if (turn && !turn.answer && summary) {
@@ -581,12 +584,105 @@ export class ExperienceMock {
     });
     this.state(chat, 'done');
   }
+  /**
+   * One tool entry as the service tells it: a running copy, then a finished one
+   * under the same id, and a trail step when the trail does not already carry it.
+   */
+  tool(chat: Chat, done: Omit<C.ToolCall, 'status' | 'ended_at'>, doing: string, trail = true) {
+    this.settleTool(chat);
+    const finished = C.toolCall.parse({ ...done, status: 'done', ended_at: null });
+    this.event(chat, {
+      type: 'tool',
+      tool: { ...finished, title: doing, status: 'running', output_summary: null },
+    });
+    chat.openTool = { finished, trail };
+    chat.view.progress = { steps_done: chat.view.progress?.steps_done ?? 0, current: doing };
+  }
+  /** Finish the entry under way: its done copy, its trail step, and one more step done. */
+  settleTool(chat: Chat) {
+    const open = chat.openTool;
+    if (!open) return;
+    chat.openTool = undefined;
+    const finished = C.toolCall.parse({ ...open.finished, ended_at: this.now() });
+    this.event(chat, { type: 'tool', tool: finished });
+    if (open.trail)
+      this.event(chat, {
+        type: 'action',
+        label: finished.title,
+        meta: finished.output_summary?.text ?? '',
+        sources: [],
+        tool: finished,
+      });
+    chat.view.progress = {
+      steps_done: (chat.view.progress?.steps_done ?? 0) + (finished.kind === 'model' ? 0 : 1),
+      current: null,
+    };
+  }
+  /** What memory gave the turn, named by the person's own saved details. */
+  recall(chat: Chat) {
+    // Named the way the service names them: plain labels, three at most, the rest counted.
+    const labels = [...this.memories.values()].map((item) =>
+      plainText(item.key, 'Saved detail', 40),
+    );
+    if (!labels.length) return;
+    const named = labels.slice(0, 3);
+    const more = labels.length - named.length;
+    this.tool(
+      chat,
+      {
+        id: `memory:recall:${newId('att')}`,
+        kind: 'memory_recall',
+        title: `Used what you told me: ${named.join(', ')}${more ? ` and ${more} more` : ''}`.slice(
+          0,
+          C.TOOL_TITLE_LIMIT,
+        ),
+        started_at: this.now(),
+        input_summary: null,
+        output_summary: {
+          text: `${labels.length} saved ${labels.length === 1 ? 'detail' : 'details'}`,
+        },
+        detail: null,
+        parent: null,
+      },
+      'Checking what I remember',
+    );
+  }
   step(chat: Chat) {
     if (chat.paused || chat.stopped) return;
+    this.settleTool(chat);
+    if (chat.position === 0) this.recall(chat);
     const step = chat.script?.steps[chat.position++];
     if (!step) {
       this.finish(chat, 'Your request is ready.');
       return;
+    }
+    if (step.step === 'tool') {
+      const kind: C.ToolKind = step.name.startsWith('skills.')
+        ? 'skill'
+        : step.name.startsWith('browser')
+          ? 'browser'
+          : /^(exec|terminal|python)/.test(step.name)
+            ? 'sandbox'
+            : step.name.startsWith('web')
+              ? 'web'
+              : 'connector';
+      const title = plainText(step.title, 'Used a tool', C.TOOL_TITLE_LIMIT);
+      this.tool(
+        chat,
+        {
+          id: `call:${newId('call')}`,
+          kind,
+          title,
+          started_at: this.now(),
+          input_summary: null,
+          output_summary: step.meta ? { text: step.meta.slice(0, C.TOOL_SUMMARY_LIMIT) } : null,
+          detail: null,
+          parent: null,
+        },
+        plainText(step.active_title, title, C.TOOL_TITLE_LIMIT),
+        // Evidence-bearing and connector steps already reach the trail as a grouped action.
+        kind !== 'connector' && kind !== 'web' && !step.sources.length,
+      );
     }
     if (step.step === 'say') {
       this.flush(chat);
@@ -908,6 +1004,7 @@ export class ExperienceMock {
       created_at: this.now(),
     });
     chat.turns.push(turn);
+    chat.view.progress = undefined;
     // The person's message is an event too, so a reaction can land on it.
     const spoken = this.deps.store.append({
       type: 'notice',

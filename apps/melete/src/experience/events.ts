@@ -1,8 +1,18 @@
-import { type ExperienceEvent, experienceEvent, type TrailStep } from '@melete/contracts';
-import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
+import {
+  type ConversationProgress,
+  conversationProgress,
+  type ExperienceEvent,
+  experienceEvent,
+  MEMORY_TOOL_NOTICE,
+  TOOL_TRACE_NOTICE,
+  type ToolCall,
+  type TrailStep,
+  toolCall,
+} from '@melete/contracts';
+import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { action, artifact, attempt, connection, event, job } from '../db/schema.ts';
-import { serviceTransaction } from '../db/transaction.ts';
+import { action, approval, artifact, attempt, connection, event, job } from '../db/schema.ts';
+import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
 import {
@@ -14,6 +24,164 @@ import {
   projectCards,
   projectReceipt,
 } from './projectors.ts';
+import {
+  actionCall,
+  memoryCall,
+  modelCall,
+  retryCall,
+  runtimeCall,
+  toolId,
+  traceCall,
+} from './tools.ts';
+
+type EventRow = typeof event.$inferSelect;
+/** The trail already tells broker actions, grouped; the model itself and retries stay off it. */
+const offTrail = (tool: ToolCall) =>
+  tool.id.startsWith('action:') || tool.kind === 'model' || tool.kind === 'retry';
+
+/**
+ * The tool entries one raw event changes. Each is a whole copy of the entry as
+ * of that event, built from the durable rows the event names, so projecting
+ * late or twice tells the same story.
+ */
+async function toolCalls(
+  tx: Transaction,
+  source: EventRow,
+  jobs: string[],
+  spaceId: string,
+): Promise<ToolCall[]> {
+  const payload = object(source.payload);
+  const effect = async (actionId: unknown) => {
+    if (typeof actionId !== 'string') return undefined;
+    const [row] = await tx
+      .select({ action, connection })
+      .from(action)
+      .innerJoin(connection, eq(connection.id, action.connectionId))
+      .where(
+        and(eq(action.id, actionId), inArray(action.jobId, jobs), eq(connection.spaceId, spaceId)),
+      );
+    return row;
+  };
+  if (source.type === 'action_requested' || source.type === 'action_status_changed') {
+    const row = await effect(payload.action_id);
+    if (!row) return [];
+    const raw = source.type === 'action_requested' ? 'proposed' : String(payload.to ?? '');
+    const [pending] =
+      raw === 'needs_approval'
+        ? await tx
+            .select({ id: approval.id })
+            .from(approval)
+            .where(eq(approval.actionId, row.action.id))
+            .orderBy(desc(approval.requestedAt))
+            .limit(1)
+        : [];
+    return [actionCall({ ...row, raw, at: source.createdAt, approvalId: pending?.id })];
+  }
+  if (source.type === 'notice' && payload.phase === 'admission_rejected') {
+    const row = await effect(payload.action_id);
+    return row ? [actionCall({ ...row, raw: 'failed', at: source.createdAt })] : [];
+  }
+  if (source.type === 'notice' && payload.phase === 'repair_parked') {
+    const row = await effect(payload.action_id);
+    return row
+      ? [
+          retryCall(
+            toolId('action', row.action.id),
+            `${row.action.id}:${source.seq}`,
+            source.createdAt,
+          ),
+        ]
+      : [];
+  }
+  if (source.type === 'tool_call_proposed' && source.attemptId) {
+    const call = runtimeCall({
+      attemptId: source.attemptId,
+      callId: String(payload.call_id ?? ''),
+      tool: String(payload.tool ?? ''),
+      arguments: payload.arguments,
+      proposedAt: source.createdAt,
+    });
+    return call ? [call] : [];
+  }
+  if (source.type === 'tool_result' && source.attemptId && typeof payload.call_id === 'string') {
+    const [proposal] = await tx
+      .select()
+      .from(event)
+      .where(
+        and(
+          eq(event.attemptId, source.attemptId),
+          eq(event.type, 'tool_call_proposed'),
+          sql`${event.payload}->>'call_id' = ${payload.call_id}`,
+        ),
+      )
+      .orderBy(asc(event.seq))
+      .limit(1);
+    if (!proposal) return [];
+    const proposed = object(proposal.payload);
+    const call = runtimeCall({
+      attemptId: source.attemptId,
+      callId: payload.call_id,
+      tool: String(proposed.tool ?? ''),
+      arguments: proposed.arguments,
+      proposedAt: proposal.createdAt,
+      result: { ok: payload.ok === true, at: source.createdAt },
+    });
+    return call ? [call] : [];
+  }
+  if (source.type === 'notice' && payload.phase === 'model_request')
+    return typeof payload.reservation_id === 'string'
+      ? [modelCall({ reservationId: payload.reservation_id, requestedAt: source.createdAt })]
+      : [];
+  if (source.type === 'notice' && payload.phase === 'model_receipt') {
+    if (typeof payload.reservation_id !== 'string' || !source.jobId) return [];
+    const [request] = await tx
+      .select({ createdAt: event.createdAt })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, source.jobId),
+          sql`${event.payload}->>'phase' = 'model_request'`,
+          sql`${event.payload}->>'reservation_id' = ${payload.reservation_id}`,
+        ),
+      )
+      .limit(1);
+    return [
+      modelCall({
+        reservationId: payload.reservation_id,
+        requestedAt: request?.createdAt ?? source.createdAt,
+        receipt: { status: payload.status, latencyMs: payload.latency_ms, at: source.createdAt },
+      }),
+    ];
+  }
+  if (source.type === 'notice' && payload.kind === TOOL_TRACE_NOTICE) {
+    const call = traceCall(payload.call);
+    return call ? [call] : [];
+  }
+  if (source.type === 'notice' && payload.kind === MEMORY_TOOL_NOTICE) {
+    const call = memoryCall(payload);
+    return call ? [call] : [];
+  }
+  return [];
+}
+
+/** The copy of a tool entry this conversation last showed, as a live entry or a trail step. */
+async function shownTool(tx: Transaction, jobId: string, id: string, item: 'tool' | 'action') {
+  const [row] = await tx
+    .select({ payload: event.payload })
+    .from(event)
+    .where(
+      and(
+        eq(event.jobId, jobId),
+        sql`${event.payload}->>'kind' = 'experience'`,
+        sql`${event.payload}->'item'->>'type' = ${item}`,
+        sql`${event.payload}->'item'->'tool'->>'id' = ${id}`,
+      ),
+    )
+    .orderBy(desc(event.seq))
+    .limit(1);
+  const parsed = toolCall.safeParse(object(object(row?.payload).item).tool);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /** Projection has its own durable rows on the existing stream; reconnects never re-label history. */
 export class ExperienceEvents {
@@ -131,6 +299,28 @@ export class ExperienceEvents {
         };
         for (const source of raw) {
           const payload = object(source.payload);
+          for (const tool of await toolCalls(tx, source, jobs, spaceId)) {
+            const shown = await shownTool(tx, id, tool.id, 'tool');
+            if (JSON.stringify(shown) !== JSON.stringify(tool))
+              await emit(source, { type: 'tool', tool }, `tool:${tool.id}`);
+            // The trail keeps one finished step for each entry it does not already tell.
+            if (
+              ['done', 'failed', 'unknown'].includes(tool.status) &&
+              !offTrail(tool) &&
+              !(await shownTool(tx, id, tool.id, 'action'))
+            )
+              await emit(
+                source,
+                {
+                  type: 'action',
+                  label: tool.title,
+                  meta: tool.output_summary?.text ?? '',
+                  sources: [],
+                  tool,
+                },
+                `trail:${tool.id}`,
+              );
+          }
           const boundary =
             source.type === 'turn_started' ||
             source.type === 'attempt_ended' ||
@@ -265,6 +455,60 @@ export class ExperienceEvents {
           })
           .where(eq(job.id, id));
       });
+  }
+
+  /**
+   * How far a conversation's current turn has got, told from its tool entries:
+   * the steps that finished and the one under way. The model's own thinking
+   * and retries are not steps; thinking can still be the step under way.
+   */
+  async progress(
+    spaceId: string,
+    jobId: string,
+    turnId: string,
+    stage: 'under_way' | 'waiting' | 'ended',
+    principalId = requestPrincipal(),
+  ): Promise<ConversationProgress> {
+    await this.sync(spaceId, jobId, principalId);
+    const rows = await this.db
+      .select({ payload: event.payload })
+      .from(event)
+      .where(
+        and(
+          eq(event.jobId, jobId),
+          sql`${event.payload}->>'kind' = 'experience'`,
+          sql`${event.payload}->>'turn_id' = ${turnId}`,
+          sql`${event.payload}->'item'->>'type' = 'tool'`,
+        ),
+      )
+      .orderBy(asc(event.seq));
+    const latest = new Map<string, ToolCall>();
+    for (const row of rows) {
+      const parsed = toolCall.safeParse(object(object(row.payload).item).tool);
+      if (!parsed.success) continue;
+      // Re-inserting keeps the map in order of each entry's latest change.
+      latest.delete(parsed.data.id);
+      latest.set(parsed.data.id, parsed.data);
+    }
+    const calls = [...latest.values()];
+    // While the turn runs, the latest running or waiting entry is the step under
+    // way. While it waits on the person, only the entry asking for approval is.
+    // Once it has ended nothing is under way, whatever was left running.
+    const live =
+      stage === 'under_way'
+        ? ['running', 'needs_approval']
+        : stage === 'waiting'
+          ? ['needs_approval']
+          : [];
+    const current = [...calls].reverse().find((call) => live.includes(call.status));
+    return conversationProgress.parse({
+      steps_done: calls.filter(
+        (call) =>
+          !['model', 'retry'].includes(call.kind) &&
+          ['done', 'failed', 'unknown'].includes(call.status),
+      ).length,
+      current: current?.title ?? null,
+    });
   }
 
   async page(
