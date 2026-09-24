@@ -383,12 +383,16 @@ export async function configuredConnectors(options: ConnectorOptions) {
       };
       // One connection that cannot be opened is that connection's problem, not
       // the service's: it is marked failing, as a failed installation is, and
-      // testing it again reopens it. Nothing it threw is written anywhere.
+      // testing it again reopens it. Nothing it threw is written anywhere. A
+      // connection the operator configured is the deployment's own setting, so
+      // a refusal there (an unisolated stdio launch, say) still stops the start.
+      const operatorConfigured = options.connections?.some((entry) => entry.id === source.id);
       const open = async () => {
         let connector: Connector | undefined;
         try {
           connector = await factory.open(source);
-        } catch {
+        } catch (error) {
+          if (operatorConfigured) throw error;
           await options.sql`update connection set status = 'error', setup_state = 'error',
             health = 'failing', last_checked_at = now()
             where id = ${source.id} and status = 'active'`;
