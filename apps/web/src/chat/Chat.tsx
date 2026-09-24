@@ -67,6 +67,9 @@ import {
 } from './parts.tsx';
 import './chat.css';
 
+/** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
+const QUICK_EDITS = ['Make it firmer', 'Shorter'] as const;
+
 const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
 
@@ -595,6 +598,12 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const title = conversation?.title ?? 'New chat';
   const found = useCase(conversationId, transcript.status);
+  // A draft waiting on a decision can be changed in one tap before it goes.
+  const draftWaiting = transcript.turns.some((turn) =>
+    turn.blocks.some(
+      (block) => block.type === 'permission' && block.decided === null && block.permission.draft,
+    ),
+  );
   const pending = touch
     ? transcript.turns
         .flatMap((turn) => turn.blocks)
@@ -777,6 +786,21 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <Icon name="arrowDown" size={14} />
                   {working ? 'Melete is working' : 'Jump to latest'}
                 </button>
+              ) : null}
+              {draftWaiting && conversationId && composerState === 'send' ? (
+                <div className="suggestions" style={{ marginBottom: 10 }}>
+                  {QUICK_EDITS.map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="suggestion"
+                      onClick={() => void send(label)}
+                    >
+                      <Icon name="pencil" size={14} />
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
               ) : null}
               <Composer
                 value={text}
