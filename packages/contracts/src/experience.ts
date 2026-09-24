@@ -85,7 +85,7 @@ export const experienceDraft = z.strictObject({
   body: z.string().max(100000),
   subject: z.string().max(1000).optional(),
   connection_id: id,
-  status: z.enum(['draft', 'awaiting_permission', 'sent', 'discarded']),
+  status: z.enum(['draft', 'awaiting_permission', 'denied', 'sent', 'discarded']),
 });
 export type ExperienceDraft = z.infer<typeof experienceDraft>;
 
@@ -378,7 +378,8 @@ export const agentInput = z.strictObject({
   eye_colour: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   tone: z.string().max(80),
   standing_instruction: z.string().max(200),
-  allowed_connection_ids: z.array(id).max(50),
+  /** Null means every connection in the space, including ones connected later. */
+  allowed_connection_ids: z.array(id).max(50).nullable(),
   asks_before_acting: z.boolean(),
   face_image: url.optional(),
 });

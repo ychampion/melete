@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { connectionListResponse } from '@melete/contracts';
 import { BrokerService } from '../../src/broker/service.ts';
+import { emailManifest } from '../../src/connectors/email.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { bootstrap } from '../../src/index.ts';
@@ -69,6 +70,7 @@ const names = (tools: readonly { name: string }[]) => tools.map((tool) => tool.n
 const fresh = await database();
 const existing = fresh ? await database() : null;
 const late = existing ? await database() : null;
+const journey = late ? await database() : null;
 
 (fresh ? test : test.skip)(
   'a fresh installation offers a useful catalog without any hand-made connection',
@@ -472,6 +474,83 @@ const skilled = late ? await database() : null;
       expect(
         skillNames(await claimIn(running, space.id, 'Research standing desks and cite sources')),
       ).toEqual(['research-with-sources']);
+    } finally {
+      await running.close();
+    }
+  },
+  120_000,
+);
+
+(journey ? test : test.skip)(
+  'a new agent reaches the files the space set up, and a mailbox connected later',
+  async () => {
+    const fixture = journey;
+    if (!fixture) throw new Error('Postgres unavailable');
+    const running = await service(fixture.url);
+    try {
+      const setup = await running.app.request('/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'journey@example.test',
+          password: 'journey-install-password',
+        }),
+      });
+      expect(setup.status).toBe(201);
+      const cookie = setup.headers.get('set-cookie')?.split(';')[0] ?? '';
+      const call = async (path: string, method = 'GET', body?: unknown) =>
+        running.app.request(path, {
+          method,
+          headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+      // The agent a person takes straight from a template, without touching access.
+      const { templates } = (await (await call('/agents/templates')).json()) as {
+        templates: Array<{ agent: Record<string, unknown> }>;
+      };
+      const made = await call('/agents', 'POST', templates[0]?.agent);
+      expect(made.status).toBeLessThan(300);
+      const { agent } = (await made.json()) as { agent: { id: string } };
+      if (!running.registry || !running.jobs || !running.runner) throw new Error('Missing runtime');
+      const broker = new BrokerService({ sql: fixture.sql, connectors: running.registry });
+      const ask = async (text: string) => {
+        const started = await call('/conversations', 'POST', { title: text, agent_id: agent.id });
+        const { conversation } = (await started.json()) as { conversation: { id: string } };
+        expect(
+          (await call(`/conversations/${conversation.id}/messages`, 'POST', { text })).status,
+        ).toBeLessThan(300);
+        const row = await running.jobs?.get(conversation.id);
+        if (!row) throw new Error('Missing conversation job');
+        const claimed = await running.runner?.claim({
+          job_id: row.id,
+          expected_epoch: row.leaseEpoch,
+          expected_version: row.stateVersion,
+          reason: 'input',
+        });
+        if (!claimed) throw new Error('Turn was not claimed');
+        return names(await broker.discovery.available(claimed.claims));
+      };
+      expect(await ask('List my files')).toContain('files.list');
+
+      // A mailbox connected after the agent was made reaches it too.
+      const [space] = await fixture.sql`select id from space where kind = 'personal'`;
+      const mailbox = newId('conn');
+      running.registry.register(mailbox, {
+        manifest: emailManifest,
+        async execute() {
+          throw new Error('not dispatched here');
+        },
+        async verify() {
+          return { decision: 'unsupported', reason: 'fixture' };
+        },
+        async health() {
+          return { status: 'ok', detail: 'fixture', checked_at: new Date().toISOString() };
+        },
+      });
+      await fixture.sql`insert into connection (id, space_id, provider, label, scopes, status)
+        values (${mailbox}, ${space?.id}, ${emailManifest.provider}, 'Mail',
+          ${JSON.stringify(emailManifest.tools.map((tool) => tool.name))}::jsonb, 'active')`;
+      expect(await ask('Draft a note to Alex')).toContain('email.draft');
     } finally {
       await running.close();
     }

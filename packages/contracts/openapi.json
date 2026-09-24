@@ -13887,11 +13887,18 @@
             "maxLength": 200
           },
           "allowed_connection_ids": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/__schema12"
-            }
+            "anyOf": [
+              {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/__schema12"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "asks_before_acting": {
             "type": "boolean"
@@ -18202,6 +18209,7 @@
             "enum": [
               "draft",
               "awaiting_permission",
+              "denied",
               "sent",
               "discarded"
             ]
@@ -18481,11 +18489,18 @@
         "maxLength": 200
       },
       "__schema193": {
-        "maxItems": 50,
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/__schema162"
-        }
+        "anyOf": [
+          {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/__schema162"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ]
       },
       "__schema194": {
         "type": "boolean"

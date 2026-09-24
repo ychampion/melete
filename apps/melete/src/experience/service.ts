@@ -123,18 +123,14 @@ export class ExperienceService {
 
   async saveAgent(spaceId: string, raw: unknown, id?: string) {
     const values = agentValues(raw);
-    const found = values.allowedConnectionIds.length
+    const chosen = values.allowedConnectionIds ?? [];
+    const found = chosen.length
       ? await this.db
           .select({ id: connection.id })
           .from(connection)
-          .where(
-            and(
-              eq(connection.spaceId, spaceId),
-              inArray(connection.id, values.allowedConnectionIds),
-            ),
-          )
+          .where(and(eq(connection.spaceId, spaceId), inArray(connection.id, chosen)))
       : [];
-    if (new Set(values.allowedConnectionIds).size !== found.length)
+    if (new Set(chosen).size !== found.length)
       throw new ServiceError('invalid_request', 'Choose connections from this space.', 400);
     const [row] = id
       ? await this.db
@@ -250,7 +246,7 @@ export class ExperienceService {
           conversation_id: row.jobId,
           agent_id: row.agentId,
           text: row.text,
-          answer: answerText(row.answer),
+          answer: answerText(row.answer).trimStart(),
           status: row.status,
           delivery: row.status === 'queued' ? 'sending' : null,
           created_at: row.createdAt.toISOString(),

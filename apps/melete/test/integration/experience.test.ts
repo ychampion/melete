@@ -381,6 +381,43 @@ withDb('experience rows and authenticated scope', () => {
       ).status,
     ).toBe(200);
   });
+  test('a streamed turn ends done, with its answer free of leading blank lines', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Draft it' }, 'stream-one');
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const attemptId = claimed.claims.attempt_id;
+    const text = '\n\nI drafted the email for you to review.';
+    await required(runner).emit(claimed.claims, {
+      type: 'text_delta',
+      attempt_id: attemptId,
+      local_seq: 1,
+      dedup_key: dedupKey(attemptId, 1),
+      at: new Date().toISOString(),
+      text,
+    });
+    const during = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(during.turns[0]?.status).toBe('streaming');
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: text,
+      evidence: [],
+    });
+    const after = turnList.parse(
+      await (await request(`/conversations/${chat.id}/messages`)).json(),
+    );
+    expect(after.turns[0]?.status).toBe('done');
+    expect(after.turns[0]?.answer).toBe('I drafted the email for you to review.');
+  });
   test('quick answers persist the offered choices and reject invented option ids', async () => {
     const chat = await createConversation();
     await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Find dinner' });

@@ -330,6 +330,20 @@
       "when": 1789232400026,
       "tag": "0046_memory_work_backoff",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1789232400027,
+      "tag": "0047_mail_discard_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1789232400028,
+      "tag": "0048_agent_all_connections",
+      "breakpoints": true
     }
   ]
 }

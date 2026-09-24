@@ -120,7 +120,7 @@ export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
-  mail: ['email.search', 'email.read', 'email.draft', 'email.send'],
+  mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
@@ -395,6 +395,13 @@ const MAIL_SCOPES: KindScopes = [
   {
     scope: 'email.draft',
     label: 'Prepare a draft',
+    effect_class: 'write_reversible',
+    asks_first: false,
+    default: true,
+  },
+  {
+    scope: 'email.discard',
+    label: 'Discard a draft',
     effect_class: 'write_reversible',
     asks_first: false,
     default: true,

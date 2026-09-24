@@ -37,6 +37,16 @@ and an installation that loses it authenticates the node again with a fresh auth
 key and comes back at the same address. Keep it if you would rather not repeat
 that step.
 
+### Agents and their connections
+
+From the release after v0.2.0, an agent can reach every connection in its space,
+including ones connected later, and ticking connections in the agent's settings
+narrows it. The upgrade applies this to the agents already there:
+
+- Agents in personal spaces that had no connections now use every connection in
+  their space; untick them in the agent's settings to narrow it.
+- Agents in shared spaces keep no connections until you tick them.
+
 ## Before you start
 
 You need what the [install](../README.md#install-on-a-linux-docker-host) needs:

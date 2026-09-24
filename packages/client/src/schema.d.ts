@@ -10199,7 +10199,7 @@ export interface components {
         /** Format: date-time */
         __schema15: string;
         __schema16: {
-            allowed_connection_ids: components["schemas"]["__schema12"][];
+            allowed_connection_ids: components["schemas"]["__schema12"][] | null;
             asks_before_acting: boolean;
             colour: string;
             eye_colour: string;
@@ -10970,7 +10970,7 @@ export interface components {
             id: components["schemas"]["__schema162"];
             recipient: components["schemas"]["__schema163"];
             /** @enum {string} */
-            status: "draft" | "awaiting_permission" | "sent" | "discarded";
+            status: "draft" | "awaiting_permission" | "denied" | "sent" | "discarded";
             subject?: string;
         };
         __schema180: {
@@ -11031,7 +11031,7 @@ export interface components {
         __schema190: string;
         __schema191: string;
         __schema192: string;
-        __schema193: components["schemas"]["__schema162"][];
+        __schema193: components["schemas"]["__schema162"][] | null;
         __schema194: boolean;
         __schema195: components["schemas"]["__schema170"];
         __schema196: {

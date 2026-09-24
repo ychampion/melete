@@ -15,7 +15,7 @@ import { lookOf, messageKey, useApp, useLoad, useMedia } from '../experience/hoo
 import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
-import { blankAgent, LookFields } from './Agents.tsx';
+import { blankAgent, LookFields, reaches, toggleReach } from './Agents.tsx';
 import { ConnectionCard } from './Settings.tsx';
 
 const studio = {
@@ -1512,7 +1512,7 @@ export function OnboardingScreen() {
               <Field label="May use">
                 <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                   {list.map((connection) => {
-                    const on = agent.allowed_connection_ids.includes(connection.id);
+                    const on = reaches(agent.allowed_connection_ids, connection.id);
                     return (
                       <Chip
                         key={connection.id}
@@ -1520,9 +1520,12 @@ export function OnboardingScreen() {
                         onClick={() =>
                           setAgent({
                             ...agent,
-                            allowed_connection_ids: on
-                              ? agent.allowed_connection_ids.filter((id) => id !== connection.id)
-                              : [...agent.allowed_connection_ids, connection.id],
+                            allowed_connection_ids: toggleReach(
+                              agent.allowed_connection_ids,
+                              connection.id,
+                              !on,
+                              list.map((item) => item.id),
+                            ),
                           })
                         }
                       >

@@ -139,14 +139,8 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
     const budget: RunBudget = { turns: 0, outputTokens: 0, deadline };
+    // renderInput already carries the recorded prior context, tool-call fields included.
     let input = this.client.renderInput(bundle);
-    if (bundle.transcript.length) {
-      // The broker's prior context is persisted as part of this first input.
-      // Subsequent runs hydrate the same session's native history. The pin's
-      // explicit conversation_history parser strips tool-call fields, whereas
-      // session hydration preserves them and keeps provider history append-only.
-      input += `\n\n## Recorded prior context\n\n${JSON.stringify(bundle.transcript)}`;
-    }
     let catalog = bundle.tools;
     let runId: string | undefined;
     let final: AttemptOutcome = exhausted('The attempt reached its turn limit.');

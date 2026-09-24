@@ -128,6 +128,23 @@ describe('email connector', () => {
     expect(loaded).toBe(false);
   });
 
+  test('discarding a draft is local and never loads credentials or calls SMTP', async () => {
+    const connector = new EmailConnector(config, {
+      withSecret: async () => {
+        throw new Error('Unexpected secret read');
+      },
+    });
+    expect(emailManifest.tools.find((tool) => tool.name === 'email.discard')).toMatchObject({
+      effect_class: 'write_reversible',
+      requires_approval: false,
+    });
+    const result = await connector.execute(
+      mailAction('email.discard', { draft_id: 'act_01J8ZP3QWABCDEFGHJKMNPQRST' }),
+      mailContext(),
+    );
+    expect(result.outcome).toBe('succeeded');
+  });
+
   test('accepted send with lost acknowledgement is unknown, then verified without resending', async () => {
     const fake = new MailDouble();
     fake.dropAck = true;

@@ -15,7 +15,7 @@ export async function agentAccess(tx: Query, jobId: string) {
     paused: row?.paused === true,
     missingAgent: Boolean(row?.bound_agent_id && !row?.id),
     agentId: row?.id as string | undefined,
-    allowed: row?.allowed_connection_ids as string[] | undefined,
+    allowed: (row?.allowed_connection_ids ?? undefined) as string[] | undefined,
     asksBeforeActing: row?.asks_before_acting !== false,
   };
 }
