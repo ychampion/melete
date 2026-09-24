@@ -1,7 +1,34 @@
 import { actionListQuery, actionListResponse } from '@melete/contracts';
+import { sql as query } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { actionFromRow } from '../broker/records.ts';
+import type { Database } from '../db/client.ts';
+import { visibleJob } from '../principals/authority.ts';
+import { ServiceError } from './errors.ts';
+
+/**
+ * The same ledger read on the owner API, for a conversation's unconfirmed
+ * effects. It returns only actions on jobs the caller owns, in spaces they can
+ * see; a space member never reads another person's ledger through it.
+ */
+export function mountActions(app: Hono, db: Database) {
+  app.get('/actions', async (c) => {
+    const parsed = actionListQuery.safeParse(c.req.query());
+    if (!parsed.success) throw new ServiceError('invalid_query', 'Invalid action query', 400);
+    const filter = parsed.data;
+    const own = visibleJob(query`a.job_id`);
+    // Job cancellation is intent, not delivery evidence. Never filter on job.state.
+    const rows = await db.execute<Record<string, unknown>>(query`select a.* from action a
+      where (${filter.job_id ?? null}::text is null or a.job_id = ${filter.job_id ?? null})
+        and (${filter.status ?? null}::text is null or a.status = ${filter.status ?? null})
+        and (${filter.effect_class ?? null}::text is null or a.effect_class = ${filter.effect_class ?? null})
+        ${own ? query`and ${own}` : query``}
+      order by (a.status in ('unknown', 'unresolved')) desc, a.created_at desc, a.id
+      limit ${filter.limit}`);
+    return c.json(actionListResponse.parse({ actions: [...rows].map(actionFromRow) }));
+  });
+}
 
 /** The service supplies owner authentication and a selected space; runtime capabilities cannot read here. */
 export function createActionReadApi(options: {

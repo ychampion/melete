@@ -417,7 +417,9 @@ export class ExperienceEvents {
             if (effect) {
               const receipt = projectReceipt(effect.action, effect.connection);
               if (receipt) await emit(source, { type: 'receipt', receipt });
-              for (const card of projectCards(effect.action, effect.connection))
+              // A card is projected once, when its draft is freshly prepared; its
+              // later status reaches the person through the conversation's drafts.
+              for (const card of projectCards(effect.action, effect.connection, 'draft'))
                 await emit(source, { type: 'card', card }, `card:${card.id}`);
               if (source.jobId !== id) await flush(source);
             }

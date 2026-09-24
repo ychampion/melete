@@ -26,6 +26,7 @@ import {
   artifact,
   connection,
   event,
+  experienceDraftSend,
   experienceTurn,
   job,
   owner,
@@ -1026,6 +1027,77 @@ withDb('experience rows and authenticated scope', () => {
     const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
     expect(page.events.filter((event) => event.item.type === 'card')).toHaveLength(5);
     expect(JSON.stringify(page)).not.toMatch(BACKEND_VOCABULARY);
+  });
+
+  test('a prepared draft card offers sending until the draft has been sent', async () => {
+    const chat = await createConversation();
+    await request(`/conversations/${chat.id}/messages`, 'POST', { text: 'Write to Alex' });
+    const row = await required(jobs).get(chat.id);
+    const claimed = required(
+      await required(runner).claim({
+        job_id: row.id,
+        expected_epoch: row.leaseEpoch,
+        expected_version: row.stateVersion,
+        reason: 'input',
+      }),
+    );
+    const connectionId = newId('conn');
+    await required(handle)
+      .db.insert(connection)
+      .values({ id: connectionId, spaceId, label: 'Mail', provider: 'imap' });
+    const recorded = async (kind: string) => {
+      const id = newId('act');
+      await required(handle)
+        .db.insert(action)
+        .values({
+          id,
+          jobId: chat.id,
+          attemptId: claimed.claims.attempt_id,
+          connectionId,
+          kind,
+          effectClass: kind === 'email.draft' ? 'write_reversible' : 'external_irreversible',
+          canonicalPayload: { to: 'alex@example.test', subject: 'Dinner', body: 'At seven?' },
+          payloadHash: 'a'.repeat(64),
+          idempotencyKey: id,
+          status: 'succeeded',
+          receipt: { detail: {} },
+          resolvedAt: new Date(),
+        });
+      return id;
+    };
+    const draftId = await recorded('email.draft');
+    await required(handle)
+      .db.insert(event)
+      .values({
+        jobId: chat.id,
+        attemptId: claimed.claims.attempt_id,
+        type: 'action_status_changed',
+        payload: { action_id: draftId, to: 'succeeded' },
+        dedupKey: `send-card-fixture:${draftId}`,
+      });
+    await required(runner).commitOutcome(claimed.claims, {
+      kind: 'completed',
+      summary: 'The draft is ready.',
+      evidence: [],
+    });
+    const cards = async () =>
+      experienceOperations['GET /conversations/{id}/cards'].response.parse(
+        await (await request(`/conversations/${chat.id}/cards`)).json(),
+      ).cards;
+    // The handle is the draft's id, which is what the send route takes.
+    const send = { kind: 'send' as const, label: 'Review and send', handle: draftId };
+    expect((await cards()).find((card) => card.title === 'Dinner')?.primary_action).toEqual(send);
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id);
+    const streamed = page.events.flatMap((entry) =>
+      entry.item.type === 'card' ? [entry.item.card] : [],
+    );
+    expect(streamed.find((card) => card.title === 'Dinner')?.primary_action).toEqual(send);
+    // Once the person has asked to send it, the card no longer offers to.
+    const sendId = await recorded('email.send');
+    await required(handle)
+      .db.insert(experienceDraftSend)
+      .values({ draftActionId: draftId, sendActionId: sendId });
+    expect((await cards()).find((card) => card.title === 'Dinner')?.primary_action).toBeNull();
   });
 });
 

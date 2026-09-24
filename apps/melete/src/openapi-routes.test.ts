@@ -12,12 +12,12 @@ import { type AppDeps, createApp } from './index.ts';
 import { eventDelivery } from './jobs/triggers.ts';
 
 /**
- * Documented, but not served by the owner API on port 8787. The action reads
- * and the execution claims are answered on the effect listener, which only the
- * runtime network reaches; the attempt reads and space creation have no route.
+ * Documented, but not served by the owner API on port 8787. The owner API lists
+ * a person's own actions; reading one, resolving one and the execution claims
+ * are answered on the effect listener, which only the runtime network reaches;
+ * the attempt reads and space creation have no route.
  */
 const DOCUMENTED_ELSEWHERE = [
-  'GET /actions',
   'GET /actions/{}',
   'POST /actions/{}/resolve',
   'POST /actions/{}/execution/start',

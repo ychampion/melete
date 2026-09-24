@@ -187,3 +187,32 @@ test('a permission a later message made stale reads as replaced, not as a refusa
     }).outcome,
   ).toBe('replaced');
 });
+
+test('a draft card offers sending only while its draft can still be sent', () => {
+  const mail = { id: 'mail-connection', label: 'My mail', provider: 'imap' };
+  const draft: ActionRow = {
+    ...base,
+    id: 'act_draft',
+    connectionId: mail.id,
+    kind: 'email.draft',
+    effectClass: 'write_reversible',
+    canonicalPayload: { to: 'alex@example.test', subject: 'Dinner', body: 'At seven?' },
+    receipt: { detail: {} },
+  };
+  const action = (status?: Parameters<typeof projectCards>[2]) =>
+    projectCards(draft, mail, status)[0]?.primary_action ?? null;
+  const send = { kind: 'send' as const, label: 'Review and send', handle: 'act_draft' };
+  expect(action('draft')).toEqual(send);
+  // A send the person refused leaves the draft theirs to send again.
+  expect(action('denied')).toEqual(send);
+  for (const status of ['awaiting_permission', 'sent', 'discarded', undefined] as const)
+    expect(action(status)).toBeNull();
+  // A draft that cannot be shown in full cannot be reviewed, so it is never offered.
+  const hidden = {
+    ...draft,
+    canonicalPayload: { to: 'alex@example.test', body: 'x'.repeat(200_001) },
+  };
+  expect(projectCards(hidden, mail, 'draft')[0]?.primary_action ?? null).toBeNull();
+  // Other actions keep their own primary action.
+  expect(projectCards(base, mail, 'draft')[0]?.primary_action ?? null).toBeNull();
+});
