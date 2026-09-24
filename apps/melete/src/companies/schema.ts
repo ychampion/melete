@@ -122,6 +122,8 @@ export const ledgerItem = pgTable(
   (table) => [
     index('ledger_item_owner_idx').on(table.spaceId, table.principalId, table.status),
     uniqueIndex('ledger_item_dedupe_idx').on(table.spaceId, table.principalId, table.dedupeKey),
+    // A finishing chase finds the item it was handling by this.
+    index('ledger_item_job_idx').on(table.jobId).where(sql`${table.jobId} is not null`),
     check(
       'ledger_item_amount_nonnegative',
       sql`${table.amountMinor} is null or ${table.amountMinor} >= 0`,
