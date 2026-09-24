@@ -142,12 +142,12 @@ export class ExperienceEffects {
       if (existing) return String(existing.id);
       if (source.kind === 'email.draft') {
         const opposite = `${source.id}:${verb === 'send' ? 'undo' : 'send'}`;
-        // A send the owner refused leaves the draft free to discard.
+        // Sends the owner refused leave the draft free to discard.
         const [other] =
           await tx`select j.id from job j where (j.experience_command_key = ${opposite}
-          or j.experience_command_key like ${`${opposite}:%`}) and not exists (select 1
-          from experience_draft_send s join action a on a.id = s.send_action_id
-          where s.draft_action_id = ${source.id} and a.job_id = j.id and a.status = 'denied')`;
+          or j.experience_command_key like ${`${opposite}:%`}) and not (
+            exists (select 1 from action a where a.job_id = j.id)
+            and not exists (select 1 from action a where a.job_id = j.id and a.status <> 'denied'))`;
         if (other)
           throw new ServiceError(
             'draft_changed',

@@ -362,6 +362,24 @@ databaseTest('a denied send says so on the draft and can be asked for again', as
   expect(s.calls.filter((call) => call.kind === 'email.send')).toHaveLength(1);
 });
 
+databaseTest('a draft refused twice can still be discarded', async () => {
+  const s = await setup();
+  const id = await s.draft();
+  for (let refusal = 0; refusal < 2; refusal++) {
+    const asked = await s.permissions.send(s.claims.space_id, id);
+    if ('reason' in asked || !asked.permission) throw new Error('Expected permission');
+    await s.permissions.decide(s.claims.space_id, asked.permission.id, {
+      option: 'deny',
+      version: asked.permission.version,
+    });
+  }
+  const undone = await s.effects.undo(s.claims.space_id, id);
+  if ('reason' in undone) throw new Error(undone.reason);
+  const draft = await s.effects.draft(s.claims.space_id, id);
+  expect('status' in draft && draft.status).toBe('discarded');
+  expect(s.calls.filter((call) => call.kind === 'email.send')).toHaveLength(0);
+});
+
 databaseTest('revoking an admitted standing permission prevents dispatch', async () => {
   const s = await setup();
   const initial = await s.permissions.send(s.claims.space_id, await s.draft());
