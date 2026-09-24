@@ -25,6 +25,7 @@
  * attempt having started the process. Only what fails before a request is sent
  * counts as a refusal here.
  */
+import { createHash } from 'node:crypto';
 import type { ContainerProcess, ModalClient, ModalClientParams, Profile, Sandbox } from 'modal';
 import { SandboxAdapterRefusal } from '../types.ts';
 import {
@@ -190,6 +191,8 @@ export async function openModalClient(
 
 export function createModalSdkTransport(options: ModalSdkOptions): ModalTransport {
   let pending: Promise<ModalClient> | null = null;
+  /** A digest of the token the client in `pending` was opened with. */
+  let pendingToken: string | null = null;
   let secrets: string[] = [];
   let closed = false;
   const sandboxes = new Map<string, Sandbox>();
@@ -201,11 +204,27 @@ export function createModalSdkTransport(options: ModalSdkOptions): ModalTranspor
     return opened.client;
   }
 
-  function client(): Promise<ModalClient> {
-    if (closed) return Promise.reject(new SandboxAdapterRefusal('the Modal transport is closed'));
+  /**
+   * The client for the token lent now. The token is asked for on every call:
+   * a key switch replaces it in place, and a client opened with the one before
+   * must not go on serving, so a changed token closes the old client, with the
+   * sandbox handles it held, and opens another.
+   */
+  async function client(): Promise<ModalClient> {
+    if (closed) throw new SandboxAdapterRefusal('the Modal transport is closed');
+    const token = await options.credential(async (lent) =>
+      createHash('sha256').update(`${lent.tokenId}\0${lent.tokenSecret}`).digest('hex'),
+    );
+    if (pending && pendingToken !== token) {
+      for (const id of [...sandboxes.keys()]) forget(id);
+      const previous = pending;
+      pending = null;
+      void previous.then((modal) => modal.close()).catch(() => {});
+    }
     if (!pending) {
       const opening = open();
       pending = opening;
+      pendingToken = token;
       opening.catch(() => {
         if (pending === opening) pending = null;
       });

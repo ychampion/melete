@@ -415,6 +415,8 @@ function sdkDouble(behaviour: {
   missingImage?: boolean;
 }) {
   const calls: { method: string; args: unknown[] }[] = [];
+  /** The token id each client was built with, in order. */
+  const tokens: unknown[] = [];
   const bytes = (text: string) =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -480,6 +482,7 @@ function sdkDouble(behaviour: {
     };
     constructor(params: Record<string, unknown>) {
       calls.push({ method: 'new', args: [Object.keys(params).sort()] });
+      tokens.push(params.tokenId);
       this.profile = {
         serverUrl: MODAL_SERVER,
         tokenId: params.tokenId,
@@ -493,7 +496,7 @@ function sdkDouble(behaviour: {
     }
     close() {}
   }
-  return { calls, load: async () => ({ ModalClient }) as never };
+  return { calls, tokens, load: async () => ({ ModalClient }) as never };
 }
 
 test('the SDK transport asks Modal for deny-all without an identity token, and reads a process to its end', async () => {
@@ -777,6 +780,41 @@ test('with no Modal environment and no config file, the SDK client takes everyth
     await rm(home, { recursive: true, force: true });
   }
 }, 60_000);
+
+test('a key switch reaches the Modal client: the next request goes with the new token', async () => {
+  const double = sdkDouble({});
+  const rotated: ModalToken = {
+    tokenId: 'ak-standinRotatedTokenId000000000000',
+    tokenSecret: 'as-standinRotatedTokenSecret00000000',
+  };
+  // The connection's key, as the row holds it at each call.
+  let current = TOKEN;
+  const transport = createModalSdkTransport({
+    credential: (use) => use(current),
+    load: double.load,
+  });
+  const input = {
+    appName: APP,
+    image: 'debian:bookworm-slim',
+    imageKind: 'registry' as const,
+    cpu: 0.125,
+    memoryMiB: 128,
+    timeoutMs: 300_000,
+    idleTimeoutMs: null,
+    blockNetwork: true,
+    outboundCidrAllowlist: null,
+    env: {},
+    tags: {},
+  };
+  await transport.create(input, signal());
+  await transport.create(input, signal());
+  // One client while the key stays the same.
+  expect(double.tokens).toEqual([TOKEN.tokenId]);
+  current = rotated;
+  await transport.create(input, signal());
+  expect(double.tokens).toEqual([TOKEN.tokenId, rotated.tokenId]);
+  transport.close();
+});
 
 test('the SDK transport snapshots with an explicit expiry, resumes from the image, and reports a missing image as not found', async () => {
   const double = sdkDouble({});
