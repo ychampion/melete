@@ -109,9 +109,18 @@ type ProviderFor = (adapter: string, connectionId: string) => SandboxProvider | 
 type Query = Sql | TransactionSql;
 type Row = Record<string, unknown>;
 
-/** The driver may hand back a timestamp as a Date or as Postgres text. */
+/**
+ * The driver may hand back a timestamp as a Date or as Postgres text. Postgres
+ * writes a whole-hour offset as `+00`, which Date cannot read; `+00:00` it can.
+ */
 const toDate = (value: unknown): Date =>
-  value instanceof Date ? value : new Date(String(value).replace(' ', 'T'));
+  value instanceof Date
+    ? value
+    : new Date(
+        String(value)
+          .replace(' ', 'T')
+          .replace(/([+-]\d\d)$/, '$1:00'),
+      );
 
 const toRow = (row: Row): SessionRow => ({
   id: row.id as string,
