@@ -263,16 +263,20 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   });
 
   // Stopping hands the item back: the chase ends, and it can be handled again later.
+  // It runs in the same section as Handle it, so a stop and a press never interleave.
   app.post('/ledger/:id/stop', async (c) => {
-    const found = await findItem(deps, c.req.param('id'), c.req.query('space_id'));
-    if (found.item.status === 'settled' || found.item.status === 'dropped')
-      throw new ServiceError('not_handling', 'This item is already closed.', 409);
-    if (found.item.job_id) {
-      if (!deps.cancelJob)
-        throw new ServiceError('not_connected', 'Stopping is not connected yet.', 503);
-      await deps.cancelJob(found.item.job_id, 'The owner stopped handling this item.');
-    }
-    const released = await deps.store.release(found.owner, found.item.id);
+    const id = c.req.param('id');
+    const released = await exclusively(`ledger:${id}`, async (store) => {
+      const found = await findItem(deps, id, c.req.query('space_id'), store);
+      if (found.item.status === 'settled' || found.item.status === 'dropped')
+        throw new ServiceError('not_handling', 'This item is already closed.', 409);
+      if (found.item.job_id) {
+        if (!deps.cancelJob)
+          throw new ServiceError('not_connected', 'Stopping is not connected yet.', 503);
+        await deps.cancelJob(found.item.job_id, 'The owner stopped handling this item.');
+      }
+      return store.release(found.owner, found.item.id);
+    });
     if (!released) throw new ServiceError('not_found', 'Not found.', 404);
     return c.json(ledgerItemContract.parse(released));
   });
