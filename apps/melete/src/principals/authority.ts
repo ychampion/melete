@@ -60,6 +60,30 @@ export function ownedSpace(spaceId: SQLWrapper, principalId = requestPrincipal()
     and coalesce(authority_space.owner_principal_id, (select id from owner limit 1)) = ${principalId})`;
 }
 
+/**
+ * The role `spaceAuthority` gives a principal, for code that holds a raw SQL
+ * connection rather than the typed one: the owner of a personal space (the
+ * installation's owner when the space predates principals), the membership role
+ * in a shared space, and nothing for a space under removal or a principal it
+ * does not admit. The two must agree; the broker's skill reads rely on it.
+ */
+export async function spaceRole(
+  query: Sql | TransactionSql,
+  spaceId: string,
+  principalId: string | null,
+): Promise<'owner' | 'member' | null> {
+  const [parent] = await query`select kind, removed_at,
+    coalesce(owner_principal_id, (select id from owner limit 1)) as owner_id
+    from space where id = ${spaceId}`;
+  if (!parent || parent.removed_at) return null;
+  const actor = principalId ?? parent.owner_id ?? null;
+  if (parent.kind === 'personal') return actor === parent.owner_id ? 'owner' : null;
+  if (!actor) return null;
+  const [membership] = await query`select role from space_membership
+    where space_id = ${spaceId} and principal_id = ${actor} and revoked_at is null`;
+  return membership ? (membership.role as 'owner' | 'member') : null;
+}
+
 /** What anyone asking a space under removal for anything is told. */
 export const SPACE_BEING_CLEARED = 'This space is being cleared.';
 

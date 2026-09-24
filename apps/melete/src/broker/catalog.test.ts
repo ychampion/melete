@@ -5,6 +5,8 @@ import {
   type CatalogItem,
   META_TOOLS,
   manifestEntry,
+  readableSkills,
+  type SourcedSkill,
   schemaFingerprint,
   selectCore,
   toolTokens,
@@ -216,4 +218,50 @@ test('every unloaded tool is named in a bounded index on load_tool', () => {
   for (const name of core) expect(index).not.toContain(`${name} (`);
   const only = many[0] as CatalogItem;
   expect(selectCore([only])).toEqual([...META_TOOLS, only.tool]);
+});
+
+test('the skill reader is pinned when the attempt has skills to read', () => {
+  const files = Array.from({ length: 12 }, (_, i) =>
+    item(`files.t${String(i).padStart(2, '0')}`, { core: true }),
+  );
+  const reader = item('skills.read', { core: true });
+  const budget = toolTokens([...META_TOOLS, reader.tool]);
+  expect(names(selectCore([...files, reader], budget, {}, 0))).not.toContain('skills.read');
+  expect(names(selectCore([...files, reader], budget, { readable: true }, 0))).toEqual([
+    'search_tools',
+    'load_tool',
+    'skills.read',
+  ]);
+});
+
+test('a skill is readable only within scope, and a space skill only by its audience', () => {
+  const skill = (
+    name: string,
+    source: 'builtin' | 'space',
+    extra: { tools?: string[]; audience?: string } = {},
+  ): SourcedSkill => ({
+    path: `${name}/SKILL.md`,
+    body: 'Do it.',
+    source,
+    frontmatter: {
+      name,
+      description: name,
+      triggers: [name],
+      tools: extra.tools ?? [],
+      max_tokens: 400,
+      ...(extra.audience ? { audience: extra.audience } : {}),
+    },
+  });
+  const skills = [
+    skill('built-in', 'builtin'),
+    skill('needs-mail', 'builtin', { tools: ['email.send'] }),
+    skill('owners-own', 'space'),
+    skill('for-members', 'space', { audience: 'space' }),
+  ];
+  const read = (owner: boolean) =>
+    readableSkills(skills, { spaceId: 'sp_x', scopes: ['files.read'], owner }).map(
+      (entry) => entry.frontmatter.name,
+    );
+  expect(read(true)).toEqual(['built-in', 'owners-own', 'for-members']);
+  expect(read(false)).toEqual(['built-in', 'for-members']);
 });

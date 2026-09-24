@@ -33,7 +33,7 @@ describe('a built-in skill beside a delivered procedure', () => {
     expect(overlapsProcedure(['email'], { ...message, learnedFrom: [] })).toBe(true);
   });
 
-  test('overlaps when it would have been chosen for the request the procedure was learned on', () => {
+  test('overlaps when any of its triggers occurs in the request the procedure was learned on', () => {
     // "draft a" shares no phrase with "follow-up email", but it was in play when the person corrected the format.
     expect(overlapsProcedure(['draft a', 'rewrite'], message)).toBe(true);
     expect(

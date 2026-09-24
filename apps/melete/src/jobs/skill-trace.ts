@@ -26,7 +26,7 @@ export type SkillTraceCall = {
 const LEARNED = 'a way of working you showed me';
 
 /** "research-with-sources" reads as "Research with sources". */
-const plain = (name: string) => {
+export const plainSkillTitle = (name: string): string => {
   if (name.startsWith('procedure:')) return LEARNED;
   const words = name.replace(/[-_]+/g, ' ').trim();
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
@@ -41,7 +41,7 @@ export function skillTraceCall(
   at: Date,
 ): SkillTraceCall | null {
   if (skills.length === 0) return null;
-  const names = skills.map((skill) => plain(skill.name));
+  const names = skills.map((skill) => plainSkillTitle(skill.name));
   const [only] = names;
   const title =
     names.length === 1 && only

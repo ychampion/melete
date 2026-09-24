@@ -458,15 +458,22 @@ revision and scopes. Loading a schema never grants a scope or changes an effect
 class; ordinary execution still uses `POST /actions`.
 
 Installed skills enter discovery as `skills.<name>` read tools.
-The skills placed in an attempt's instructions are chosen by whole-word trigger
-matches against the objective and the latest owner message, at most three, and
-only from skills whose every named tool the attempt can reach: its granted
-connections plus the broker's own `job.wait`. A skill the attempt cannot use
-takes no place from one it can. The last word of a trigger may carry an ending,
+Every attempt carries a skill index: each skill it may use, by name and one
+line, within 500 estimated tokens, with no instructions. A skill it may use is
+one whose every named tool it can reach (its granted connections plus the
+broker's own `job.wait`) and, for a skill a person added to the space, whose
+audience admits the attempt's principal; a space skill with no audience is its
+owner's alone. The attempt reads any indexed skill with the broker's own
+`skills.read`, which is in the first catalog whenever there is a skill to
+read; each read is recorded once as a `tool_trace` notice that the
+conversation shows as "Used the skill: …". Triggers only rank: up to three
+skills whose whole-word triggers match the objective or the latest owner
+message are given in full ahead of time and left out of the index, and the
+rest of the index is ordered with the matching ones first. The last word of a trigger may carry an ending,
 so "booked" and "replies" match "book" and "reply". A learned procedure the
 person taught comes first, and a built-in skill covering the same work is left
 out beside it: one whose trigger and the procedure's trigger are the same words
-or one holds the other, or one that would have been chosen for the request the
+or one holds the other, or one with any trigger that occurs in the request the
 procedure was learned on. A built-in covering other work may fill a free place. Each attempt that follows skills records one
 `tool_trace` notice naming them, which the conversation shows as a tool entry;
 the notice carries names, never a skill's instructions. Their content

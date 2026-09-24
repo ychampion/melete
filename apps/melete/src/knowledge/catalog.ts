@@ -1,4 +1,5 @@
 import { CONTEXT_LIMITS, type ToolSpec } from '@melete/contracts';
+import { chooseSkills, indexSkills } from '@melete/skills';
 import { and, eq } from 'drizzle-orm';
 import { RUNTIME_WAIT_TOOL } from '../broker/runtime-wait.ts';
 import { type ConnectorLookup, grantedToolCatalog } from '../connectors/catalog.ts';
@@ -7,7 +8,7 @@ import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
 import { procedureReach } from '../learning/selection.ts';
-import { selectedSkills } from '../principals/context.ts';
+import { skillPayloadOf, usableSkills } from '../principals/context.ts';
 
 /**
  * Every tool name an attempt can reach: all it was granted, not the first few
@@ -49,24 +50,33 @@ export class RuntimeCatalog {
     // The same selection bundle construction made, with its audience rules, now
     // over only the skills this attempt can use: one it cannot would otherwise
     // take a place and then be dropped. Evaluated procedures keep their place.
-    const chosen = await selectedSkills(
+    const objective = bundle.job.objective;
+    const latest = bundle.inputs.new_user_messages.at(-1)?.content ?? '';
+    const procedures = bundle.skills.filter((skill) => skill.name.startsWith('procedure:'));
+    const usable = await usableSkills(
       tx,
       claims.space_id,
       bundle.principal_id ?? null,
-      bundle.job.objective,
-      bundle.inputs.new_user_messages.at(-1)?.content ?? '',
       bundle.job.constraints.public_compartment === true,
       (needed) => needed.every((tool) => reachable.has(tool)),
-      await procedureReach(
-        tx,
-        bundle.skills.filter((skill) => skill.name.startsWith('procedure:')),
-      ),
+      await procedureReach(tx, procedures),
     );
-    const procedures = bundle.skills.filter((skill) => skill.name.startsWith('procedure:'));
+    // Triggers now only rank: the likeliest few are given in full, and every
+    // other usable skill is named in the index for the attempt to read itself.
+    const chosen = chooseSkills(objective, latest, usable, 3).map(({ skill }) =>
+      skillPayloadOf(skill, claims.space_id),
+    );
     const skills = [
       ...procedures,
       ...chosen.filter((skill) => !procedures.some((kept) => kept.name === skill.name)),
     ].slice(0, CONTEXT_LIMITS.max_skills);
-    return { tools, skills };
+    const given = new Set(skills.map((skill) => skill.name));
+    const skill_index = indexSkills(
+      objective,
+      latest,
+      usable.filter((skill) => !given.has(skill.frontmatter.name)),
+      CONTEXT_LIMITS.skill_index_tokens,
+    );
+    return { tools, skills, skill_index };
   };
 }

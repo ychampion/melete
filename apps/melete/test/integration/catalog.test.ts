@@ -453,6 +453,107 @@ dbTest('skills are scoped read content and cannot grant their named tool scopes'
   ).toMatchObject({ code: 'unknown_tool' });
 });
 
+dbTest('skills.read reads an indexed skill by name, once per read, with a tool entry', async () => {
+  const skill = (name: string, tools: string[]) => ({
+    path: `${name}/SKILL.md`,
+    body: `The ${name} procedure.`,
+    source: 'builtin' as const,
+    frontmatter: {
+      name,
+      tools,
+      description: `The ${name} skill`,
+      triggers: [name],
+      max_tokens: 400,
+    },
+  });
+  const s = await setup({
+    skills: [skill('receipts', ['test.invoice']), skill('vault', ['vault.export'])],
+  });
+  // With a skill to read, the reader is in the first catalog; no load is needed.
+  expect((await s.broker.catalog(s.claims)).map((tool) => tool.name)).toContain('skills.read');
+  expect(await s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts' })).toEqual(
+    { name: 'receipts', body: 'The receipts procedure.' },
+  );
+  // A skill outside the attempt's scopes, or one that does not exist, cannot be read.
+  for (const name of ['vault', 'nothing-here'])
+    expect(
+      await rejectionOf(s.broker.discovery.callSkill(s.claims, 'skills.read', { name })),
+    ).toMatchObject({ code: 'unknown_tool' });
+  expect(
+    await rejectionOf(
+      s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'receipts', extra: 1 }),
+    ),
+  ).toBeDefined();
+  const traced = await s.sql`select payload from event where attempt_id = ${s.claims.attempt_id}
+    and type = 'notice' and payload->>'kind' = 'tool_trace'`;
+  expect(traced.map((row) => row.payload.call)).toEqual([
+    expect.objectContaining({
+      id: `skill-read:${s.claims.attempt_id}:receipts`,
+      kind: 'skill',
+      title: 'Used the skill: Receipts',
+      status: 'done',
+    }),
+  ]);
+});
+
+dbTest('a private space skill is read by the space owners and never by a member', async () => {
+  const s = await setup({
+    skills: [
+      {
+        path: 'private-way/SKILL.md',
+        body: 'The private way.',
+        source: 'space',
+        frontmatter: {
+          name: 'private-way',
+          tools: [],
+          description: 'How the owner likes it done',
+          triggers: ['private way'],
+          max_tokens: 400,
+        },
+      } as Skill,
+    ],
+  });
+  const readable = async () => {
+    // Each principal starts from a fresh first catalog, as a new attempt would.
+    await s.sql`delete from attempt_tool_context where attempt_id = ${s.claims.attempt_id}`;
+    return s.broker.discovery.callSkill(s.claims, 'skills.read', { name: 'private-way' }).then(
+      (result) => result.body,
+      (error: { code?: string }) => error.code,
+    );
+  };
+
+  // A space from before principals belongs to the installation's owner.
+  await s.sql`insert into owner (id, email) values (${recordId('own')}, 'legacy-owner@example.test')
+    on conflict do nothing`;
+  const [installation] = await s.sql`select id from owner limit 1`;
+  s.claims.principal_id = String(installation?.id);
+  expect(await readable()).toBe('The private way.');
+
+  // In a shared space a co-owner reads it as the owner does; a member does not.
+  const owner = recordId('prn');
+  const coOwner = recordId('prn');
+  const member = recordId('prn');
+  for (const id of [owner, coOwner, member])
+    await s.sql`insert into principal (id, email) values (${id}, ${`${id}@example.test`})`;
+  await s.sql`update space set kind = 'shared', owner_principal_id = ${owner} where id = ${s.claims.space_id}`;
+  for (const [id, role] of [
+    [owner, 'owner'],
+    [coOwner, 'owner'],
+    [member, 'member'],
+  ] as const)
+    await s.sql`insert into space_membership (principal_id, space_id, role, generation)
+      values (${id}, ${s.claims.space_id}, ${role}, 0)`;
+  const as = async (principal: string | undefined) => {
+    await s.sql`update job set principal_id = ${principal ?? null} where id = ${s.claims.job_id}`;
+    s.claims.principal_id = principal;
+    s.claims.membership_generation = 0;
+    return readable();
+  };
+  expect(await as(owner)).toBe('The private way.');
+  expect(await as(coOwner)).toBe('The private way.');
+  expect(await as(member)).toBe('unknown_tool');
+});
+
 dbTest(
   'HTTP discovery rejects unauthenticated, forged schemas and extra authority fields',
   async () => {
