@@ -951,6 +951,8 @@ export function OnboardingScreen() {
   const [kept, setKept] = useState<MemoryItem[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  // An answer that did not save stays on screen with the reason and a retry.
+  const [unsaved, setUnsaved] = useState<{ choice: string; reason: string } | null>(null);
   // Keep accepted steps across a failed welcome request so retrying cannot
   // create a second agent, conversation, or first message.
   const completed = useRef({ agentId: '', chatId: '', messageKey: messageKey(), brief: false });
@@ -960,6 +962,7 @@ export function OnboardingScreen() {
     const question = QUESTIONS[asked];
     if (!question || saving) return;
     setSaving(true);
+    setUnsaved(null);
     setLog((previous) => [...previous, exchange('you', choice)]);
     const saved = await adapter.createMemoryItem({
       key: question.key,
@@ -968,12 +971,10 @@ export function OnboardingScreen() {
     });
     setSaving(false);
     if (saved.data === null) {
-      toast({
-        kind: 'err',
-        title: 'Couldn’t save that',
-        sub: saved.error ?? saved.unavailable ?? '',
-      });
+      const reason = saved.error ?? saved.unavailable ?? 'Something went wrong.';
+      toast({ kind: 'err', title: 'Couldn’t save that', sub: reason });
       setLog((previous) => previous.slice(0, -1));
+      setUnsaved({ choice, reason });
       return;
     }
     const item = saved.data.item;
@@ -1364,6 +1365,20 @@ export function OnboardingScreen() {
                 </div>
               ),
             )}
+            {question && unsaved ? (
+              <div
+                role="alert"
+                className="row"
+                style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingLeft: 34 }}
+              >
+                <span style={{ fontSize: 13 }}>
+                  Couldn’t save “{unsaved.choice}”: {unsaved.reason}
+                </span>
+                <Chip disabled={saving} onClick={() => void answer(unsaved.choice)}>
+                  Retry
+                </Chip>
+              </div>
+            ) : null}
             {question ? (
               <div className="row" style={{ gap: 6, flexWrap: 'wrap', paddingLeft: 34 }}>
                 {question.choices.map((choice) => (
