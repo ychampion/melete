@@ -121,6 +121,9 @@ import { mountBrowserSites } from './workers/browser/sites.ts';
 
 export const VERSION = '0.1.0-pre';
 
+/** What the test connector grants every attempt when it is enabled. */
+const TEST_CONNECTOR_SCOPES = ['test.send', 'test.read'];
+
 export type AppDeps = {
   env: Env;
   db: Database | null;
@@ -649,16 +652,22 @@ export async function bootstrap(
         provider: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'stub' : env.MELETE_DEFAULT_PROVIDER,
         model: env.MELETE_RUNTIME_ADAPTER === 'stub' ? 'script' : env.MELETE_DEFAULT_MODEL,
         loadCatalog: catalog?.forAttempt,
-        // The test connector's fixed scopes when it is enabled; otherwise the
-        // scopes the space's active connections actually grant.
-        scopes: env.MELETE_ENABLE_TEST_CONNECTOR ? ['test.send', 'test.read'] : undefined,
         liveConnectionScopes: !env.MELETE_ENABLE_TEST_CONNECTOR,
+        // The scopes the space's active connections grant, and the lifecycle
+        // wait. The test connector's scopes are added beside them when it is
+        // enabled, so a `--fake` installation keeps its default tools.
         scopesForJob: async (tx, row) => {
           const granted = await tx
             .select({ scopes: connection.scopes })
             .from(connection)
             .where(and(eq(connection.spaceId, row.spaceId), eq(connection.status, 'active')));
-          return [...new Set([...granted.flatMap((entry) => entry.scopes), 'job.wait'])].sort();
+          return [
+            ...new Set([
+              ...granted.flatMap((entry) => entry.scopes),
+              'job.wait',
+              ...(env.MELETE_ENABLE_TEST_CONNECTOR ? TEST_CONNECTOR_SCOPES : []),
+            ]),
+          ].sort();
         },
       });
       if (browser)
