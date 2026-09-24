@@ -15,6 +15,7 @@ import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { ZodError } from 'zod';
+import { mountActions } from './api/actions.ts';
 import { mountApprovals } from './api/approvals.ts';
 import { mountArtifacts } from './api/artifacts.ts';
 import { mountAttention } from './api/attention.ts';
@@ -225,6 +226,7 @@ export function createApp(deps: AppDeps) {
     mountLearned(app, new LearnedService(deps.jobs, procedures, episodes));
   } else if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);
+  if (db) mountActions(app, db);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs), deps.registry);
   const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);

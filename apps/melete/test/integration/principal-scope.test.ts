@@ -350,6 +350,8 @@ async function isolated(cookie: string, other: Seeded, ownAgentId = other.agentI
     ['/quick-answers', other.conversationId],
     ['/automations', other.label],
     ['/rules', other.label],
+    ['/actions', other.draftId],
+    [`/actions?job_id=${other.conversationId}`, other.draftId],
   ];
   for (const [path, marker] of lists) {
     const response = await call(cookie, path);
@@ -487,6 +489,12 @@ withDb('each account acts only inside its own space', () => {
       const homeBody = await json<{ upcoming: unknown; tasks: { id: string }[] }>(home);
       expect(Array.isArray(homeBody.upcoming)).toBe(true);
       expect(homeBody.tasks.map((entry) => entry.id)).toContain(actor.taskId);
+      // A conversation's own ledger reads through the owner API, for its unconfirmed effects.
+      const ledger = await call(actor.cookie, `/actions?job_id=${actor.conversationId}`);
+      expect(ledger.status).toBe(200);
+      expect(
+        (await json<{ actions: { id: string }[] }>(ledger)).actions.map((entry) => entry.id),
+      ).toContain(actor.draftId);
       const listed = await json<{ permissions: { id: string; version: string }[] }>(
         await call(actor.cookie, '/permissions'),
       );
