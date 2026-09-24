@@ -557,3 +557,32 @@ const skilled = late ? await database() : null;
   },
   120_000,
 );
+
+const demo = late ? await database() : null;
+
+(demo ? test : test.skip)(
+  'the test connector adds its grants beside the default tools instead of replacing them',
+  async () => {
+    const fixture = demo;
+    if (!fixture) throw new Error('Postgres unavailable');
+    const running = await service(fixture.url, { MELETE_ENABLE_TEST_CONNECTOR: 'true' });
+    try {
+      const setup = await running.app.request('/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'demo@example.test', password: 'demo-install-password' }),
+      });
+      expect(setup.status).toBe(201);
+      const [space] = await fixture.sql`select id from space where kind = 'personal'`;
+      if (!space) throw new Error('Missing personal space');
+      const claimed = await claimIn(running, space.id, 'Research standing desks and cite sources');
+      expect(claimed.claims.scopes).toEqual(
+        expect.arrayContaining([...DEFAULT_TOOLS, 'job.wait', 'test.send', 'test.read']),
+      );
+      expect(claimed.bundle.skills.map((skill) => skill.name)).toContain('research-with-sources');
+    } finally {
+      await running.close();
+    }
+  },
+  120_000,
+);
