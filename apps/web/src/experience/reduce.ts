@@ -51,6 +51,10 @@ export type TranscriptTurn = {
   delivery: Turn['delivery'];
   /** The first identified, nonempty text event in the answer, never a card or status. */
   messageSeq: number | null;
+  /** The tool entry under way, from the stream's `tool` items: what is happening now. */
+  live: { id: string; title: string } | null;
+  /** Started elsewhere and drawn from its events; its saved text is still to be read. */
+  unread?: boolean;
 };
 
 export type ReactionMessage = {
@@ -96,6 +100,7 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   streaming: false,
   delivery: turn.delivery,
   messageSeq: null,
+  live: null,
 });
 
 export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnStatus): Transcript {
@@ -137,7 +142,56 @@ const blockId = (block: TurnBlock): string =>
 const hasBlock = (transcript: Transcript, id: string): boolean =>
   transcript.turns.some((turn) => turn.blocks.some((block) => blockId(block) === id));
 
+/**
+ * A turn this page did not start: a message sent from another tab, another
+ * device or the service itself. Its events arrive before its saved text is
+ * read, so it starts with no text and `unread`, and the text is filled in by
+ * `fillTurns` once the saved turn is read.
+ */
+function ensureTurn(transcript: Transcript, event: ExperienceEvent): Transcript {
+  const turnId = event.turn_id;
+  if (!turnId || transcript.turns.some((turn) => turn.id === turnId)) return transcript;
+  const turn: Turn = {
+    id: turnId,
+    conversation_id: event.conversation_id,
+    agent_id: transcript.turns.at(-1)?.turn.agent_id ?? '',
+    text: '',
+    answer: '',
+    status: 'queued',
+    delivery: null,
+    created_at: event.created_at,
+  };
+  return { ...transcript, turns: [...transcript.turns, { ...fromTurn(turn), unread: true }] };
+}
+
+/** The ids of turns whose saved text has not been read yet. */
+export const unreadTurns = (transcript: Transcript): string[] =>
+  transcript.turns.filter((turn) => turn.unread).map((turn) => turn.id);
+
+/** Fill in turns started elsewhere from their saved copies: the message, and who answers it. */
+export function fillTurns(transcript: Transcript, saved: Turn[]): Transcript {
+  return {
+    ...transcript,
+    turns: transcript.turns.map((turn) => {
+      const copy = turn.unread ? saved.find((entry) => entry.id === turn.id) : undefined;
+      return copy
+        ? {
+            ...turn,
+            unread: false,
+            turn: {
+              ...turn.turn,
+              text: copy.text,
+              agent_id: copy.agent_id,
+              created_at: copy.created_at,
+            },
+          }
+        : turn;
+    }),
+  };
+}
+
 export function applyEvent(transcript: Transcript, event: ExperienceEvent): Transcript {
+  transcript = ensureTurn(transcript, event);
   const lastSeq = Math.max(transcript.lastSeq, event.seq);
   const item = event.item;
   let base = { ...transcript, lastSeq };
@@ -202,6 +256,9 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
   return applyItem(waited, event);
 }
 
+/** The turn statuses in which a tool entry can still be under way. */
+const UNDER_WAY = new Set<TurnStatus>(['queued', 'working', 'streaming', 'paused']);
+
 function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
   const item = event.item;
   switch (item.type) {
@@ -259,7 +316,21 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         ...turn,
         status: item.status,
         streaming: item.status === 'streaming' ? turn.streaming : false,
+        // Nothing is under way once the turn stops running, whatever the last entry said.
+        live: UNDER_WAY.has(item.status) ? turn.live : null,
         turn: { ...turn.turn, status: item.status },
+      }));
+    }
+    case 'tool': {
+      const tool = item.tool;
+      const underWay = tool.status === 'running' || tool.status === 'needs_approval';
+      return patchTurn(base, event.turn_id, (turn) => ({
+        ...turn,
+        live: underWay
+          ? { id: tool.id, title: tool.title }
+          : turn.live?.id === tool.id
+            ? null
+            : turn.live,
       }));
     }
     default:
@@ -305,18 +376,35 @@ export function acceptLocalTurn(
   turnId: string,
   receivedAt: string,
 ): Transcript {
+  // The stream can deliver this turn's first events before the send is
+  // answered; they started a turn of their own under the same id, which the
+  // local turn takes over so nothing is drawn twice.
+  const early = transcript.turns.find((t) => t.id === turnId && t.unread);
   return {
     ...transcript,
-    turns: transcript.turns.map((t) =>
-      t.id === localId
-        ? {
-            ...t,
-            id: turnId,
-            delivery: null,
-            turn: { ...t.turn, id: turnId, delivery: null, created_at: receivedAt },
-          }
-        : t,
-    ),
+    turns: transcript.turns
+      .filter((t) => t !== early)
+      .map((t) =>
+        t.id === localId
+          ? {
+              ...t,
+              ...(early
+                ? {
+                    streamed: early.streamed,
+                    status: early.status,
+                    trail: early.trail,
+                    blocks: early.blocks,
+                    streaming: early.streaming,
+                    messageSeq: early.messageSeq,
+                    live: early.live,
+                  }
+                : {}),
+              id: turnId,
+              delivery: null,
+              turn: { ...t.turn, id: turnId, delivery: null, created_at: receivedAt },
+            }
+          : t,
+      ),
   };
 }
 

@@ -5,7 +5,7 @@
  * person makes: Enter held down, a number pressed twice, a double tap.
  */
 import { expect, test } from 'bun:test';
-import { type CardKeys, decisionKey, InFlight, type KeyPress } from './decide.ts';
+import { type CardKeys, decisionKey, InFlight, type KeyPress, TapOnce } from './decide.ts';
 
 const onCard = (key: string): KeyPress => ({ key, onCard: true, inField: false });
 const PERMISSION: CardKeys = { allow: true, deny: true, read: true };
@@ -102,4 +102,32 @@ test('a question answers its number keys, and the key after them opens its own a
   expect(decisionKey(onCard('4'), QUESTION)).toEqual({ kind: 'own' });
   expect(decisionKey(onCard('5'), QUESTION)).toBeNull();
   expect(decisionKey(onCard('Enter'), QUESTION)).toBeNull();
+});
+
+test('a quick edit tapped twice is sent once, and comes free when the conversation moves on', () => {
+  const quick = new TapOnce<string>();
+  const sent: string[] = [];
+  const tap = (label: string, state: string) => {
+    if (quick.tap(state)) sent.push(label);
+  };
+  tap('Shorter', 'send');
+  tap('Shorter', 'send');
+  tap('Make it firmer', 'send');
+  expect(sent).toEqual(['Shorter']);
+  expect(quick.spent).toBe(true);
+  // Still the same state: nothing has moved, so the chips stay spent.
+  quick.settle('send');
+  expect(quick.spent).toBe(true);
+  // The agent picks the message up; once it is back with the person, a new edit can go.
+  quick.settle('pause');
+  expect(quick.spent).toBe(false);
+  tap('Make it firmer', 'send');
+  expect(sent).toEqual(['Shorter', 'Make it firmer']);
+});
+
+test('a quick edit whose send failed can be tapped again', () => {
+  const quick = new TapOnce<string>();
+  expect(quick.tap('send')).toBe(true);
+  quick.release();
+  expect(quick.tap('send')).toBe(true);
 });

@@ -614,6 +614,8 @@ function DayGrid({ events, now }: { events: CalendarEvent[]; now: number }) {
         );
       })}
       {nowTop !== null ? <div className="day-past" style={{ height: nowTop }} /> : null}
+      {/* The now line runs under the events, so an event under way stays readable. */}
+      {nowTop !== null ? <div className="day-now" style={{ top: nowTop - 1 }} /> : null}
       {todays.map((event, index) => {
         const start = new Date(event.starts_at);
         const end = new Date(event.ends_at);
@@ -645,12 +647,9 @@ function DayGrid({ events, now }: { events: CalendarEvent[]; now: number }) {
         );
       })}
       {nowTop !== null ? (
-        <>
-          <div className="day-now" style={{ top: nowTop - 1 }} />
-          <span className="day-now-tag" style={{ top: nowTop - 9 }}>
-            {clockOf(today).replace(/\s?[AP]M$/, '')}
-          </span>
-        </>
+        <span className="day-now-tag" style={{ top: nowTop - 9 }}>
+          {clockOf(today).replace(/\s?[AP]M$/, '')}
+        </span>
       ) : null}
     </div>
   );

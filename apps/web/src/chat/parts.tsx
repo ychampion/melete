@@ -93,6 +93,8 @@ export function UserBubble({
   onRetry?: () => void;
 }) {
   const delivery = turn.delivery;
+  // A turn started elsewhere is drawn from its events before its message is read.
+  if (!turn.turn.text) return null;
   return (
     <div className="bubble-wrap">
       <div className="bubble" data-pending={delivery ? 'true' : undefined}>
@@ -218,13 +220,19 @@ const RUNNING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 
 export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
   const running = RUNNING.includes(turn.status);
-  const doneStep = turn.trail.find(
+  const dones = turn.trail.filter(
     (s): s is Extract<TrailStep, { type: 'done' }> => s.type === 'done',
   );
+  // A job that keeps going after it first settles (a chase: the send, then the
+  // reply and the follow-up) is read from its last resting line, and stays open
+  // so what it did after the send is in view.
+  const doneStep = running ? undefined : dones.at(-1);
+  const continued =
+    turn.trail.findIndex((s) => s.type === 'done') < turn.trail.length - 1 && dones.length > 0;
   const [open, setOpen] = useState<boolean | null>(null);
   const steps = turn.trail.filter((s) => s.type !== 'done');
   if (turn.trail.length === 0) return null;
-  const expanded = open ?? !doneStep;
+  const expanded = open ?? (!doneStep || continued);
   const elapsed = doneStep
     ? Math.max(1, Math.round(doneStep.elapsed_ms / 1000))
     : Math.max(0, Math.round((now - new Date(turn.turn.created_at).getTime()) / 1000));
@@ -339,7 +347,7 @@ export function Trail({ turn, now }: { turn: TranscriptTurn; now: number }) {
                 </span>
               </span>
               <span style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
-                {turn.status === 'paused' ? 'Paused' : 'Still working'}
+                {turn.status === 'paused' ? 'Paused' : (turn.live?.title ?? 'Still working')}
               </span>
             </div>
           ) : null}

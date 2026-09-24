@@ -20,7 +20,7 @@ import {
   Popover,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { useInFlight } from '../experience/decide.ts';
+import { useInFlight, useTapOnce } from '../experience/decide.ts';
 import {
   agentById,
   lookOf,
@@ -66,6 +66,9 @@ import {
   UserBubble,
 } from './parts.tsx';
 import './chat.css';
+
+/** One-tap changes to a draft waiting on a decision; each is sent as the person's next message. */
+const QUICK_EDITS = ['Make it firmer', 'Shorter'] as const;
 
 const WORKING: TurnStatus[] = ['queued', 'working', 'streaming', 'paused'];
 const FINISHED: TurnStatus[] = ['done', 'stopped', 'failed'];
@@ -348,12 +351,16 @@ export function ChatScreen({ id }: { id: string | null }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
   const flight = useInFlight();
+  // A quick edit is sent once: its chips stay disabled until the conversation moves on.
+  const quick = useTapOnce<string>();
   const wide = useMedia('(min-width: 1180px)');
   // The case panel follows the width until the person opens or closes it.
   const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
 
   const last = latestTurn(transcript);
   const composerState = transcript.composer;
+  // A spent quick edit comes free once the conversation moves on.
+  useEffect(() => quick.settle(composerState), [quick, composerState]);
   const working = WORKING.includes(transcript.status);
   const now = useNow(Boolean(last && WORKING.includes(last.status)));
 
@@ -446,9 +453,10 @@ export function ChatScreen({ id }: { id: string | null }) {
   };
 
   const send = useCallback(
-    async (body: string) => {
+    /** Resolves true once the service has the message (or will, when back online). */
+    async (body: string): Promise<boolean> => {
       const clean = body.trim();
-      if (!clean) return;
+      if (!clean) return false;
       setText('');
       const agent = agentId ?? agents[0]?.id;
       if (!agent) {
@@ -457,7 +465,7 @@ export function ChatScreen({ id }: { id: string | null }) {
           title: 'Create an agent first',
           sub: 'Every chat is handled by one.',
         });
-        return;
+        return false;
       }
       if (!conversationId) {
         const created = await adapter.createConversation({
@@ -471,7 +479,7 @@ export function ChatScreen({ id }: { id: string | null }) {
             sub: created.error ?? created.unavailable ?? '',
           });
           setText(clean);
-          return;
+          return false;
         }
         const accepted = await adapter.send(created.data.conversation.id, clean, messageKey());
         if (accepted.data === null)
@@ -482,11 +490,11 @@ export function ChatScreen({ id }: { id: string | null }) {
           });
         refreshConversations();
         navigate(`/chat/${created.data.conversation.id}`);
-        return;
+        return accepted.data !== null;
       }
       const localId = state.local(clean, agent, navigator.onLine ? 'sending' : 'queued_offline');
       const key = messageKey();
-      const attempt = async () => {
+      const attempt = async (): Promise<boolean> => {
         const accepted = await adapter.send(conversationId, clean, key);
         if (accepted.data === null) {
           state.settle(localId, 'failed_retry');
@@ -497,10 +505,11 @@ export function ChatScreen({ id }: { id: string | null }) {
             action: 'Retry',
             onAction: () => void attempt(),
           });
-          return;
+          return false;
         }
         state.accepted(localId, accepted.data.turn_id, accepted.data.receipt.received_at);
         refreshConversations();
+        return true;
       };
       if (!navigator.onLine) {
         const onOnline = () => {
@@ -509,9 +518,9 @@ export function ChatScreen({ id }: { id: string | null }) {
           void attempt();
         };
         window.addEventListener('online', onOnline);
-        return;
+        return true;
       }
-      await attempt();
+      return attempt();
     },
     [conversationId, agentId, agents, state, refreshConversations],
   );
@@ -595,6 +604,12 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const title = conversation?.title ?? 'New chat';
   const found = useCase(conversationId, transcript.status);
+  // A draft waiting on a decision can be changed in one tap before it goes.
+  const draftWaiting = transcript.turns.some((turn) =>
+    turn.blocks.some(
+      (block) => block.type === 'permission' && block.decided === null && block.permission.draft,
+    ),
+  );
   const pending = touch
     ? transcript.turns
         .flatMap((turn) => turn.blocks)
@@ -777,6 +792,27 @@ export function ChatScreen({ id }: { id: string | null }) {
                   <Icon name="arrowDown" size={14} />
                   {working ? 'Melete is working' : 'Jump to latest'}
                 </button>
+              ) : null}
+              {draftWaiting && conversationId && composerState === 'send' ? (
+                <div className="suggestions" style={{ marginBottom: 10 }}>
+                  {QUICK_EDITS.map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="suggestion"
+                      disabled={quick.spent}
+                      onClick={() => {
+                        if (quick.tap(composerState))
+                          void send(label).then((sent) => {
+                            if (!sent) quick.release();
+                          });
+                      }}
+                    >
+                      <Icon name="pencil" size={14} />
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
               ) : null}
               <Composer
                 value={text}

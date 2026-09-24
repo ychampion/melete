@@ -43,6 +43,52 @@ export class InFlight {
   }
 }
 
+/**
+ * A one-tap control that stays spent until the conversation moves on. The
+ * first tap is taken and remembers the composer state it was made in; later
+ * taps are refused until the composer state changes, so a double click on a
+ * quick edit sends one message.
+ */
+export class TapOnce<S> {
+  private heldAt: S | null = null;
+
+  constructor(private readonly changed: () => void = () => {}) {}
+
+  get spent(): boolean {
+    return this.heldAt !== null;
+  }
+
+  /** Take a tap made while the composer is in `state`. False when one is already held. */
+  tap(state: S): boolean {
+    if (this.heldAt !== null) return false;
+    this.heldAt = state;
+    this.changed();
+    return true;
+  }
+
+  /** The composer is now in `state`: a tap made in another state is released. */
+  settle(state: S) {
+    if (this.heldAt === null || this.heldAt === state) return;
+    this.heldAt = null;
+    this.changed();
+  }
+
+  /** Let the next tap through, for a send that did not go. */
+  release() {
+    if (this.heldAt === null) return;
+    this.heldAt = null;
+    this.changed();
+  }
+}
+
+/** A TapOnce that re-renders its component when it is taken or released. */
+export function useTapOnce<S>(): TapOnce<S> {
+  const [, setTick] = useState(0);
+  const ref = useRef<TapOnce<S> | null>(null);
+  if (ref.current === null) ref.current = new TapOnce<S>(() => setTick((n) => n + 1));
+  return ref.current;
+}
+
 /** An InFlight that re-renders its component when a call starts or settles. */
 export function useInFlight(): InFlight {
   const [, setTick] = useState(0);
