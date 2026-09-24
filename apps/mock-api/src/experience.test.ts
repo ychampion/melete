@@ -372,6 +372,7 @@ test('a new message makes a pending draft send stale, as the service does', asyn
     version: permission.version,
   });
   expect(allowed.response.status).toBe(409);
+  expect((allowed.body as { error: { code: string } }).error.code).toBe('permission_replaced');
   expect(
     C.experienceOperations['GET /conversations/{id}/receipts'].response.parse(
       (await call(mock, `/conversations/${chat.id}/receipts`)).body,

@@ -1262,7 +1262,11 @@ export class ExperienceMock {
   decide(id: string, raw: unknown) {
     const input = C.permissionDecision.parse(raw);
     if (this.replaced.has(id))
-      throw new MockExperienceError(409, 'A later message replaced this request.');
+      throw new MockExperienceError(
+        409,
+        'Your new message replaced this request.',
+        'permission_replaced',
+      );
     if (this.permissionProposals.has(id)) {
       const permission = this.permissions.get(id);
       if (!permission) throw new MockExperienceError(409, 'This request was already answered.');

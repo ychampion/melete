@@ -11,6 +11,7 @@ import {
   plainText,
   projectPermission,
   recipientText,
+  SUPERSEDED_NOTE,
   senderAddress,
 } from './projectors.ts';
 import { permissionVersion, ruleKinds, ruleRecipient, ruleView } from './rules.ts';
@@ -92,6 +93,13 @@ export class ExperiencePermissions {
         payload_hash: String(row.payload_hash),
       },
       async (tx, job, action, approval) => {
+        // Checked under the approval's lock, so a message that arrives meanwhile is seen.
+        if (approval.decided_by === SUPERSEDED_NOTE)
+          throw new ServiceError(
+            'permission_replaced',
+            'Your new message replaced this request.',
+            409,
+          );
         if (job.space_id !== spaceId || permissionVersion(approval) !== input.version)
           throw new ServiceError('stale_permission', 'This request changed. Review it again.', 409);
         if (
