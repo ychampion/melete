@@ -15,7 +15,9 @@ import { z } from 'zod';
 import { MAX_TOOL_SCHEMA_BYTES, toolSchemaFits } from '../connectors/schema-budget.ts';
 import { type Connector, connectorAllowsAudience } from '../connectors/types.ts';
 import { type AgentAccess, agentAccess, directSend } from '../experience/access.ts';
+import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
+import { spaceRole } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -351,10 +353,16 @@ export class ToolCatalog {
   ): Promise<readonly SourcedSkill[]> {
     if (job.constraints.public_compartment) return [];
     const skills = (await this.options.skills?.(job.space_id)) ?? [];
-    const [space] = await tx`select owner_principal_id from space where id = ${job.space_id}`;
-    const owner =
-      claims.principal_id === undefined || space?.owner_principal_id === claims.principal_id;
-    return readableSkills(skills, { spaceId: job.space_id, scopes: claims.scopes, owner });
+    // The rule every other surface uses: a co-owner is an owner, and a space
+    // from before principals belongs to the installation's owner. A principal
+    // the space does not admit reads nothing.
+    const role = await spaceRole(tx, job.space_id, claims.principal_id ?? null);
+    if (!role) return [];
+    return readableSkills(skills, {
+      spaceId: job.space_id,
+      scopes: claims.scopes,
+      owner: role === 'owner',
+    });
   }
 
   private async scoped(
@@ -781,9 +789,11 @@ export class ToolCatalog {
 
   async callSkill(claims: CapabilityClaims, name: string, args: JsonObject): Promise<JsonObject> {
     const reading = name === SKILL_READ_TOOL.name;
+    // A skill's own tool takes no arguments; the reader takes the name to read.
     const asked = reading
       ? z.strictObject({ name: z.string().min(1).max(80) }).parse(args).name
-      : (z.object({}).strict().parse(args), null);
+      : null;
+    if (!reading) z.object({}).strict().parse(args);
     return this.within(claims, async (tx, job, items, context) => {
       if (
         !this.current(context, items).some(
@@ -800,7 +810,7 @@ export class ToolCatalog {
       // The conversation shows the read as a tool entry naming the skill.
       const at = new Date().toISOString();
       const title = plainSkillTitle(skill.frontmatter.name);
-      const call = {
+      await appendToolTrace(tx, job.id, claims.attempt_id, {
         id: `skill-read:${claims.attempt_id}:${skill.frontmatter.name}`,
         kind: 'skill',
         title: `Used the skill: ${title}`,
@@ -811,15 +821,7 @@ export class ToolCatalog {
         output_summary: { text: title },
         detail: null,
         parent: null,
-      };
-      await appendEvent(
-        tx,
-        job.id,
-        claims.attempt_id,
-        'notice',
-        { kind: 'tool_trace', call },
-        `tool:${call.id}:${call.status}`,
-      );
+      });
       await appendEvent(tx, job.id, claims.attempt_id, 'notice', {
         phase: 'skill_read',
         name,
