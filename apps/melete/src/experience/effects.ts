@@ -131,17 +131,23 @@ export class ExperienceEffects {
     });
   }
 
-  private async command(spaceId: string, source: Action, verb: string) {
+  private async command(spaceId: string, source: Action, verb: string, retry?: string) {
     return this.sql.begin(async (tx) => {
       const [parent] = await tx`select j.* from job j where j.id = ${source.job_id}
         and j.space_id = ${spaceId} ${ownJobClause(tx, 'j')} for update`;
       if (!parent) throw experienceMissing();
-      const key = `${source.id}:${verb}`;
+      // A retry after a refusal is a new request, keyed by the action it follows.
+      const key = retry ? `${source.id}:${verb}:${retry}` : `${source.id}:${verb}`;
       const [existing] = await tx`select id from job where experience_command_key = ${key}`;
       if (existing) return String(existing.id);
       if (source.kind === 'email.draft') {
+        const opposite = `${source.id}:${verb === 'send' ? 'undo' : 'send'}`;
+        // A send the owner refused leaves the draft free to discard.
         const [other] =
-          await tx`select id from job where experience_command_key = ${`${source.id}:${verb === 'send' ? 'undo' : 'send'}`}`;
+          await tx`select j.id from job j where (j.experience_command_key = ${opposite}
+          or j.experience_command_key like ${`${opposite}:%`}) and not exists (select 1
+          from experience_draft_send s join action a on a.id = s.send_action_id
+          where s.draft_action_id = ${source.id} and a.job_id = j.id and a.status = 'denied')`;
         if (other)
           throw new ServiceError(
             'draft_changed',
@@ -193,10 +199,17 @@ export class ExperienceEffects {
     };
   }
 
-  async execute(spaceId: string, source: Action, verb: string, kind: string, payload: JsonObject) {
+  async execute(
+    spaceId: string,
+    source: Action,
+    verb: string,
+    kind: string,
+    payload: JsonObject,
+    retry?: string,
+  ) {
     if (!(await this.supports(spaceId, source.connection_id, kind)))
       return unavailable('This connection does not support that change with its current access.');
-    const jobId = await this.command(spaceId, source, verb);
+    const jobId = await this.command(spaceId, source, verb, retry);
     const claims = await this.claims(jobId, source.connection_id);
     const proposed = await this.broker.propose(claims, {
       connection_id: source.connection_id,
@@ -320,9 +333,11 @@ export class ExperienceEffects {
         ? ('discarded' as const)
         : sent?.status === 'succeeded'
           ? ('sent' as const)
-          : sent?.send_action_id
-            ? ('awaiting_permission' as const)
-            : ('draft' as const),
+          : sent?.status === 'denied'
+            ? ('denied' as const)
+            : sent?.send_action_id
+              ? ('awaiting_permission' as const)
+              : ('draft' as const),
     };
   }
 
@@ -332,12 +347,25 @@ export class ExperienceEffects {
     if ('reason' in draft) return draft;
     if (draft.status === 'discarded')
       throw new ServiceError('invalid_request', 'This draft was discarded.', 409);
+    // Sending continues the request on record; after a refusal it starts a new one.
+    const [recorded] = await this.sql`select s.send_action_id, a.status, j.experience_command_key
+      from experience_draft_send s join action a on a.id = s.send_action_id join job j on j.id = a.job_id
+      where s.draft_action_id = ${id}`;
+    const retried = `${id}:send:`;
+    const retry = !recorded
+      ? undefined
+      : recorded.status === 'denied'
+        ? String(recorded.send_action_id)
+        : String(recorded.experience_command_key).startsWith(retried)
+          ? String(recorded.experience_command_key).slice(retried.length)
+          : undefined;
     const effect = await this.execute(
       spaceId,
       source,
       'send',
       'email.send',
       source.canonical_payload,
+      retry,
     );
     if ('reason' in effect) return effect;
     await this.sql`insert into experience_draft_send (draft_action_id, send_action_id)

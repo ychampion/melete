@@ -336,6 +336,32 @@ databaseTest('undo on a draft discards it, once, with a receipt', async () => {
   expect('status' in draft && draft.status).toBe('discarded');
 });
 
+databaseTest('a denied send says so on the draft and can be asked for again', async () => {
+  const s = await setup();
+  const id = await s.draft();
+  const first = await s.permissions.send(s.claims.space_id, id);
+  if ('reason' in first || !first.permission) throw new Error('Expected permission');
+  await s.permissions.decide(s.claims.space_id, first.permission.id, {
+    option: 'deny',
+    version: first.permission.version,
+  });
+  const refused = await s.effects.draft(s.claims.space_id, id);
+  expect('status' in refused && refused.status).toBe('denied');
+  // Sending again asks again: a new permission, not the refused one.
+  const again = await s.permissions.send(s.claims.space_id, id);
+  if ('reason' in again || !again.permission) throw new Error('Expected a new permission');
+  expect(again.permission.id).not.toBe(first.permission.id);
+  expect(again.draft.status).toBe('awaiting_permission');
+  await s.permissions.decide(s.claims.space_id, again.permission.id, {
+    option: 'allow_once',
+    version: again.permission.version,
+  });
+  const sent = await s.permissions.send(s.claims.space_id, id);
+  if ('reason' in sent) throw new Error(sent.reason);
+  expect(sent.draft.status).toBe('sent');
+  expect(s.calls.filter((call) => call.kind === 'email.send')).toHaveLength(1);
+});
+
 databaseTest('revoking an admitted standing permission prevents dispatch', async () => {
   const s = await setup();
   const initial = await s.permissions.send(s.claims.space_id, await s.draft());

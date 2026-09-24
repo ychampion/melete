@@ -18202,6 +18202,7 @@
             "enum": [
               "draft",
               "awaiting_permission",
+              "denied",
               "sent",
               "discarded"
             ]

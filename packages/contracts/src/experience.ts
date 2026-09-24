@@ -85,7 +85,7 @@ export const experienceDraft = z.strictObject({
   body: z.string().max(100000),
   subject: z.string().max(1000).optional(),
   connection_id: id,
-  status: z.enum(['draft', 'awaiting_permission', 'sent', 'discarded']),
+  status: z.enum(['draft', 'awaiting_permission', 'denied', 'sent', 'discarded']),
 });
 export type ExperienceDraft = z.infer<typeof experienceDraft>;
 

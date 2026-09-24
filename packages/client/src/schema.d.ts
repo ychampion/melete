@@ -10970,7 +10970,7 @@ export interface components {
             id: components["schemas"]["__schema162"];
             recipient: components["schemas"]["__schema163"];
             /** @enum {string} */
-            status: "draft" | "awaiting_permission" | "sent" | "discarded";
+            status: "draft" | "awaiting_permission" | "denied" | "sent" | "discarded";
             subject?: string;
         };
         __schema180: {
