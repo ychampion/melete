@@ -6,6 +6,7 @@ import {
   type CanonicalMessage,
   CONTEXT_LIMITS,
   type ContextGenerations,
+  canonicalTimeZone,
   type Deliverable,
   describeTrigger,
   inputTokenCeiling,
@@ -498,7 +499,7 @@ export async function buildAttemptSkeleton(
     .where(eq(experienceProfile.spaceId, row.spaceId));
   return responsibilityAttemptBundle.parse({
     ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
-    ...(profile?.timeZone ? { time_zone: profile.timeZone } : {}),
+    ...(profile?.timeZone ? { time_zone: canonicalTimeZone(profile.timeZone) } : {}),
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
       : {}),

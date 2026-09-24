@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { type AttemptBundle, prefixedId } from '@melete/contracts';
+import { type AttemptBundle, canonicalTimeZone, prefixedId } from '@melete/contracts';
 import {
   engineSettingsFromEnvironment,
   HERMES_PINNED_COMMIT,
@@ -34,7 +34,8 @@ export type RuntimeInstance = {
   coldStartMs: number;
   /**
    * The workspace as the engine sees it: the job's own directory for a process
-   * engine, `/work` inside a container. The instructions name this path.
+   * engine, `/work` inside a container. For the service's own use; the prompt
+   * never carries a host path (see `promptWorkspace`).
    */
   workspace: string;
   stop(): Promise<void>;
@@ -100,7 +101,7 @@ export function attemptEnvironment(
     MELETE_MODEL_API_MODE: modelApiMode(bundle.model.provider, bundle.model.model),
     // The engine dates the conversation in this zone, read before its config.
     // A space with no profile is UTC, never the host's zone.
-    HERMES_TIMEZONE: bundle.time_zone ?? 'UTC',
+    HERMES_TIMEZONE: canonicalTimeZone(bundle.time_zone),
     PYTHONUNBUFFERED: '1',
     PYTHONDONTWRITEBYTECODE: '1',
   };

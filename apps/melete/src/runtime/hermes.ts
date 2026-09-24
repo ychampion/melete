@@ -18,6 +18,17 @@ import type { RuntimeSupervisor } from './supervisor.ts';
 
 export type AttemptTiming = { attemptId: string; coldStartMs: number; wallMs: number };
 
+/**
+ * How the prompt names the workspace. A process engine runs with its working
+ * directory set to the job's own directory, so it is named as that, never by a
+ * host path; a container engine is told the bundle's `/work`, where the job's
+ * directory is mounted.
+ */
+export const promptWorkspace = (kind: RuntimeSupervisor['kind']): string | undefined =>
+  kind === 'process' ? PROCESS_WORKSPACE : undefined;
+
+export const PROCESS_WORKSPACE = 'the current directory (.)';
+
 /** One engine per attempt; only the service can inspect the parked-action ledger. */
 export class SupervisedHermesRuntime implements RuntimeAdapter {
   constructor(
@@ -53,8 +64,8 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
       const adapter = new HermesRuntimeAdapter({
         baseUrl: instance.baseUrl,
         token: instance.token,
-        // The instructions name the path this engine can actually write to.
-        workspace: instance.workspace,
+        // Where the prompt says the attempt may write, never a host path.
+        workspace: promptWorkspace(this.supervisor.kind),
         pendingWait: (current) => pendingRuntimeWait(this.sql, current),
         // Loading a tool updates broker state; the next Hermes run must hydrate
         // that state before the newly disclosed schema can reach the provider.

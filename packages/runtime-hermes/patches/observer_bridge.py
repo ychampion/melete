@@ -48,12 +48,13 @@ PATCHES = {
              """def _host_prompt(agent: Any) -> bool:  # Melete prompt seam
     \"\"\"``agent.host_prompt`` (default true). False leaves out the blocks that
     describe the engine's own install rather than the run: the product pointer,
-    the profile line and the host runtime environment.\"\"\"
+    the profile line and the host runtime environment. A configuration that
+    cannot be read leaves them out too: they are never shown by accident.\"\"\"
     try:
         from hermes_cli.config import load_config_readonly
         section = load_config_readonly().get("agent") or {}
     except Exception:
-        return True
+        return False
     return bool(section.get("host_prompt", True)) if isinstance(section, dict) else True
 
 

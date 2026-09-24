@@ -43,6 +43,36 @@ def test_the_seam_applies_to_the_pinned_source_and_again_to_its_own_result():
     assert module.patched(once, expected_hash, changes) == once
 
 
+def test_an_unreadable_configuration_keeps_the_host_blocks_out(monkeypatch):
+    """The seam's own reader, run as it is inserted: a configuration that cannot
+    be read leaves the host blocks out; an unset key keeps them; false drops them."""
+    import sys
+    import types
+    from typing import Any
+
+    module = bridge()
+    _, changes = module.PATCHES[SEAM_FILE]
+    helper = changes[0][1].split("def _join_tier", 1)[0]
+    config = types.ModuleType("hermes_cli.config")
+    package = types.ModuleType("hermes_cli")
+    package.config = config
+    monkeypatch.setitem(sys.modules, "hermes_cli", package)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", config)
+    scope: dict = {"Any": Any}
+    exec(compile(helper, "system_prompt.py", "exec"), scope)
+    host_prompt = scope["_host_prompt"]
+
+    def unreadable():
+        raise OSError("config.yaml is unreadable")
+
+    config.load_config_readonly = unreadable
+    assert host_prompt(object()) is False
+    config.load_config_readonly = lambda: {}
+    assert host_prompt(object()) is True
+    config.load_config_readonly = lambda: {"agent": {"host_prompt": False}}
+    assert host_prompt(object()) is False
+
+
 def test_a_source_that_is_not_the_audited_pin_is_refused():
     module = bridge()
     expected_hash, changes = module.PATCHES[SEAM_FILE]

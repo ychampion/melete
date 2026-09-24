@@ -220,6 +220,13 @@ server.serve_forever()
       'api-secret',
     );
     expect(astra.MELETE_MODEL_API_MODE).toBe('codex_responses');
+    // The engine is given a zone name in canonical spelling, never an offset.
+    const zone = (time_zone?: string) =>
+      attemptEnvironment({ ...bundle, time_zone }, options.brokerUrl, 'api-secret').HERMES_TIMEZONE;
+    expect(zone('utc')).toBe('UTC');
+    expect(zone('+05:30')).toBe('UTC');
+    expect(zone(undefined)).toBe('UTC');
+    expect(zone('europe/london')).toBe('Europe/London');
   });
   test('Docker mounts only this job subdirectory and never passes secrets in arguments', () => {
     const env = attemptEnvironment(bundle, options.brokerUrl, 'api-secret');

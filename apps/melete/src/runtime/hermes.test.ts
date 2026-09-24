@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
 import type { MemorySql } from '../memory/db.ts';
-import { SupervisedHermesRuntime } from './hermes.ts';
+import { PROCESS_WORKSPACE, promptWorkspace, SupervisedHermesRuntime } from './hermes.ts';
 
 test('an oversized assembled prompt is refused before launching an engine', async () => {
   let launched = false;
@@ -188,4 +188,11 @@ test("a job's output budget above the window does not stop an ordinary prompt fr
   }
   expect(failure).toBeInstanceOf(Error);
   expect((failure as Error).message).toBe('launched');
+});
+
+test('a process engine is told its workspace is the current directory, never a host path', () => {
+  expect(promptWorkspace('process')).toBe(PROCESS_WORKSPACE);
+  expect(PROCESS_WORKSPACE).toBe('the current directory (.)');
+  // A container engine keeps the bundle's /work, where the job's directory is mounted.
+  expect(promptWorkspace('docker')).toBeUndefined();
 });

@@ -1,12 +1,41 @@
 import { describe, expect, test } from 'bun:test';
 import {
   agentFaceState,
+  canonicalTimeZone,
   conversationCreate,
   experienceOperations,
   permissionDecision,
+  profileInput,
   quickOptions,
   standingRuleBounds,
 } from './experience.ts';
+
+describe("a person's time zone", () => {
+  test('is an IANA name in its canonical spelling, and anything else is UTC', () => {
+    expect(canonicalTimeZone('utc')).toBe('UTC');
+    expect(canonicalTimeZone('europe/london')).toBe('Europe/London');
+    expect(canonicalTimeZone('Pacific/Chatham')).toBe('Pacific/Chatham');
+    // An offset names no place and follows no daylight rules.
+    expect(canonicalTimeZone('+05:30')).toBe('UTC');
+    expect(canonicalTimeZone('-0800')).toBe('UTC');
+    expect(canonicalTimeZone('Not/AZone')).toBe('UTC');
+    expect(canonicalTimeZone(undefined)).toBe('UTC');
+    expect(canonicalTimeZone('')).toBe('UTC');
+  });
+
+  test('is saved only by its name', () => {
+    const profile = (time_zone: string) =>
+      profileInput.safeParse({
+        name: 'Alex',
+        time_zone,
+        day_hours: { start: '08:00', end: '22:00' },
+      }).success;
+    expect(profile('+05:30')).toBe(false);
+    expect(profile('Not/AZone')).toBe(false);
+    expect(profile('Asia/Kolkata')).toBe(true);
+    expect(profile('utc')).toBe(true);
+  });
+});
 
 describe('experience contracts', () => {
   test('all fifteen surfaces have explicit operations', () => {
