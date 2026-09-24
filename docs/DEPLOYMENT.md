@@ -668,12 +668,15 @@ for this (a smaller one is usually enough), with `MELETE_MEMORY_PROVIDER` when i
 is served by another provider; `MELETE_MEMORY_MODEL=off` stops model reads and
 keeps structured observations only. `MELETE_MEMORY_DAILY_CALLS` (default `200`)
 is how many reads one person's memory may make in a day; raise or lower it for
-your provider's cost. A call the provider refuses or never answers does not
-count. When the budget is spent or the provider fails, the conversation carries
-on and the message waits unread: it is tried again 30 seconds later, then after
-a gap that doubles each time, up to 30 minutes, until it is read. The service
-log records `memory: memory_daily_budget` or
-`memory: extraction_provider_unavailable` on each try.
+your provider's cost. A call the provider answers with an error does not count;
+a call that was sent and timed out does. When the budget is spent, or the
+provider fails, limits or times out, the conversation carries on and the message
+waits unread: it is tried again 30 seconds later, then after a gap that doubles
+each time, up to 30 minutes, for at most 8 tries or a day. A call that asking
+again cannot fix (too large for the model, or a request the provider refuses,
+such as a model name it does not serve) ends the message at once. The service
+log records each of these as `memory: <reason>`, and `/health` reports
+`memory.waiting` and `memory.failed` (messages given up in the last day).
 
 ## Engine limits
 

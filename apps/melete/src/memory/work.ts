@@ -153,27 +153,43 @@ export async function refundExtractionCall(
     reserved_usd = greatest(reserved_usd::numeric - ${EXTRACTION_LIMITS.call_usd}, 0)::text
     where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
 }
-/** The longest a message waits between tries while the model provider is failing. */
-export const PROVIDER_BACKOFF = { first_seconds: 30, max_seconds: 1800 } as const;
 /**
- * Put work back unread until the provider is likely to answer again: 30 s after
- * the first failure, doubling each time, never more than 30 min apart. Nothing
- * is rejected, however long the outage lasts.
+ * How a message waits while the model provider is failing: 30 s after the first
+ * failure, doubling, never more than 30 min apart, and at most 8 tries or a day,
+ * after which it is given up with a recorded fault.
  */
+export const PROVIDER_BACKOFF = {
+  first_seconds: 30,
+  max_seconds: 1800,
+  max_failures: 8,
+  max_hours: 24,
+} as const;
+/** Put work back unread until the provider is likely to answer again, or give it up. */
 export async function deferWork(
   sql: MemorySql,
   scope: MemoryScope,
   batch: ExtractionBatch,
   code: string,
-) {
-  await sql.begin(async (tx) => {
+): Promise<'deferred' | 'given_up'> {
+  return sql.begin(async (tx) => {
     await lockSpace(tx, scope);
+    const [work] = await tx`select provider_failures,
+        created_at < clock_timestamp() - ${PROVIDER_BACKOFF.max_hours} * interval '1 hour' as stale
+      from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}
+        and fence = ${batch.work.fence} and status = 'leased'`;
+    if (!work) return 'deferred';
+    if (work.stale || Number(work.provider_failures) + 1 >= PROVIDER_BACKOFF.max_failures) {
+      await tx`update memory_work set provider_failures = provider_failures + 1 where id = ${batch.work.id}`;
+      await finishWork(tx, batch, 'rejected', `${code}:given_up`);
+      return 'given_up';
+    }
     await tx`update memory_work set status = 'pending', lease_until = null, error_code = ${code},
       provider_failures = provider_failures + 1,
       retry_at = clock_timestamp() + least(
         ${PROVIDER_BACKOFF.max_seconds} * interval '1 second',
         ${PROVIDER_BACKOFF.first_seconds} * power(2, least(provider_failures, 16)) * interval '1 second')
       where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+    return 'deferred';
   });
 }
 /** Only committed terminal segments count toward the independently locked stream cursor. */

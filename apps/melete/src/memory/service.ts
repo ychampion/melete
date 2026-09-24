@@ -88,10 +88,15 @@ export async function runExtractionWork(options: MemoryServiceOptions, workId: s
     const code = error instanceof MemoryError ? error.code : 'extraction_failed';
     // The provider did not answer, or today's reads are spent: the message stays
     // unread and is tried again later, with a growing gap.
-    if (['extraction_provider_unavailable', 'memory_daily_budget'].includes(code))
-      await deferWork(options.sql, scope, batch, code);
-    // Out of answered calls for this one message: retrying would ask again.
-    else if (code === 'extraction_budget') {
+    if (['extraction_provider_unavailable', 'memory_daily_budget'].includes(code)) {
+      if ((await deferWork(options.sql, scope, batch, code)) === 'given_up')
+        options.onError?.(`${code}:given_up`);
+    }
+    // Out of answered calls for this one message, or a call that can never
+    // succeed (too large, or refused by the provider): asking again would not help.
+    else if (
+      ['extraction_budget', 'extraction_call_refused', 'extraction_provider_refused'].includes(code)
+    ) {
       await options.sql.begin(async (tx) => {
         await lockSpace(tx, scope);
         await checkLease(tx, scope, batch);

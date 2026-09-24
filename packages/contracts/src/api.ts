@@ -28,12 +28,14 @@ export const healthResponse = z.object({
   /**
    * Whether automatic memory is reading what people say. `waiting` counts
    * messages held back, and `reason` says why: the memory model's provider is
-   * not answering, or people's daily reads are spent. Counts only; no content.
+   * not answering, or people's daily reads are spent. `failed` counts messages
+   * given up in the last day. Counts only; no content.
    */
   memory: z
     .object({
       status: z.enum(['ok', 'waiting']),
       waiting: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
       reason: z.enum(['provider_unavailable', 'daily_budget']).nullable(),
     })
     .optional(),

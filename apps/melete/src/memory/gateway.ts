@@ -43,11 +43,16 @@ export type MemoryGatewayOptions = {
   dailyCalls: number;
   fake?: GatewayOptions['fake'];
   fetch?: GatewayOptions['fetch'];
+  /** How long one call may take; the extraction limit unless a test shortens it. */
+  timeoutMs?: number;
 };
 
 export async function openMemoryGateway(options: MemoryGatewayOptions) {
   const tokens = new Map<string, ExtractionCall>();
-  const principals = new WeakMap<GatewayPrincipal, ExtractionCall>();
+  const principals = new WeakMap<GatewayPrincipal, ExtractionCall & { token: string }>();
+  const reservations = new Map<string, string>();
+  /** What the provider answered for each call, read back when the call fails. */
+  const upstream = new Map<string, number | null>();
   const budget: GatewayBudget = {
     async reserve(request) {
       const call = principals.get(request.principal);
@@ -62,20 +67,25 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         // One person's calls are counted under one lock, so two workers cannot
         // both take the last call of the day.
         await tx`select pg_advisory_xact_lock(hashtext(${`memory-calls:${call.ownerId}`}))`;
-        // A call the provider refused, or that never reached it, is not a read.
+        // A call the provider answered with an error generated nothing and is
+        // not a read. Every other call that was sent counts, a timeout included:
+        // the provider may have done the work.
         const [used] = await tx`select count(*)::int as calls from memory_model_calls
           where owner_id = ${call.ownerId} and created_at > clock_timestamp() - interval '1 day'
-            and not coalesce(settlement->>'status' = 'failed'
-              or (settlement->>'status' = 'unknown' and settlement->>'httpStatus' is null), false)`;
+            and coalesce(settlement->>'status', '') <> 'failed'`;
         if (Number(used?.calls ?? 0) >= options.dailyCalls)
           throw new GatewayError(429, 'memory_daily_budget');
         const id = randomUUID();
         await tx`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
           values (${id}, ${call.ownerId}, ${call.spaceId}, ${call.workId}, ${options.provider}, ${options.model}, ${request.estimatedTokens})`;
+        reservations.set(id, call.token);
         return { id };
       });
     },
     async settle(reservation, settlement) {
+      const token = reservations.get(reservation.id);
+      reservations.delete(reservation.id);
+      if (token) upstream.set(token, settlement.httpStatus);
       await options.sql`update memory_model_calls set settlement = ${JSON.stringify(settlement)}::text::jsonb
         where id = ${reservation.id}`;
     },
@@ -86,7 +96,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
     fake: options.fake,
     fetch: options.fetch,
     defaultProvider: options.provider,
-    timeoutMs: EXTRACTION_LIMITS.timeout_ms,
+    timeoutMs: options.timeoutMs ?? EXTRACTION_LIMITS.timeout_ms,
     maxRequestBytes: 256 * 1024,
     maxResponseBytes: 128 * 1024,
     async authenticate(token) {
@@ -101,7 +111,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
         maxTokens: INPUT_TOKENS + EXTRACTION_LIMITS.output_tokens,
         allowedModels: [{ provider: options.provider, model: options.model }],
       };
-      principals.set(principal, call);
+      principals.set(principal, { ...call, token });
       return principal;
     },
   });
@@ -143,15 +153,10 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
           redirect: 'error',
           signal,
         });
-        if (response.status === 429) {
-          const text = await response.text();
+        if (!response.ok)
           throw new MemoryError(
-            text.includes('memory_daily_budget')
-              ? 'memory_daily_budget'
-              : 'extraction_gateway_failure',
+            failureCode(response.status, await response.text(), upstream.get(token)),
           );
-        }
-        if (!response.ok) throw new MemoryError('extraction_gateway_failure');
         const result = await response.json();
         return protocol === 'responses'
           ? responsesReply
@@ -169,6 +174,7 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
             : (chatReply.parse(result).choices[0]?.message.content ?? '');
       } finally {
         tokens.delete(token);
+        upstream.delete(token);
       }
     },
   };
@@ -181,6 +187,24 @@ export async function openMemoryGateway(options: MemoryGatewayOptions) {
       );
     },
   };
+}
+
+/**
+ * Why a call failed, in the three kinds the worker treats differently:
+ * - `memory_daily_budget`: the person's reads are spent; wait for tomorrow's;
+ * - `extraction_call_refused` / `extraction_provider_refused`: asking again
+ *   cannot succeed (the call is too large for the gateway or the model, or the
+ *   provider rejected the request itself, a wrong model name for one); stop;
+ * - `extraction_gateway_failure`: the provider is failing, limiting or out of
+ *   reach, or the call timed out; wait and try again.
+ */
+export function failureCode(status: number, body: string, provider: number | null | undefined) {
+  if (body.includes('memory_daily_budget')) return 'memory_daily_budget';
+  if (status === 413 || /memory_call_too_large|input_context_exceeded/.test(body))
+    return 'extraction_call_refused';
+  if (typeof provider === 'number' && provider >= 400 && provider < 500 && provider !== 429)
+    return 'extraction_provider_refused';
+  return 'extraction_gateway_failure';
 }
 
 /**

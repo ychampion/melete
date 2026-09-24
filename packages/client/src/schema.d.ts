@@ -3009,6 +3009,7 @@ export interface paths {
                             /** @enum {string} */
                             database: "ok" | "unreachable" | "not_configured";
                             memory?: {
+                                failed: number;
                                 reason: ("provider_unavailable" | "daily_budget") | null;
                                 /** @enum {string} */
                                 status: "ok" | "waiting";
