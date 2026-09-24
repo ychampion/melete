@@ -42,3 +42,23 @@ test('an overcharge is read, and read as a charge that looks wrong', () => {
     ]);
   }
 });
+
+test('a period the email gives is a due day, counted from the day the email came', () => {
+  // Received Friday 18 September 2026.
+  const due = (text: string) => read(text).items.map((item) => item.due_at);
+  expect(due('Your payment of GBP 534.50 will be refunded within 5 working days.')).toEqual([
+    '2026-09-25',
+  ]);
+  // A range is kept to its far end: the company said it could take that long.
+  expect(due('We will refund you GBP 49.99 within 5-7 working days.')).toEqual(['2026-09-29']);
+  expect(due('We will pay the refund of GBP 640.00 within 14 days of this email.')).toEqual([
+    '2026-10-02',
+  ]);
+  expect(due('A refund of GBP 84.40 will reach your account within ten business days.')).toEqual([
+    '2026-10-02',
+  ]);
+  // A date the email states outright wins over any period beside it.
+  expect(
+    due('A refund of GBP 12.00 will be paid on 30 September 2026, within 5 working days.'),
+  ).toEqual(['2026-09-30']);
+});
