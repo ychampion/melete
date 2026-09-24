@@ -116,6 +116,7 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
+import { sandboxKeyCheck } from './sandbox/connection.ts';
 import { type SandboxWiring, sandboxKeyChange, startSandboxesFromEnv } from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
@@ -713,7 +714,10 @@ export async function bootstrap(
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
-      policy = new PolicyService(jobs, runner, { beforeKeyChange: releaseSandboxes });
+      policy = new PolicyService(jobs, runner, {
+        beforeKeyChange: releaseSandboxes,
+        ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
+      });
       attention = new AttentionService(jobs, runner);
       // A memory question is answered by settling the key it disputes, which
       // only memory can do, so the queue is handed that one capability.

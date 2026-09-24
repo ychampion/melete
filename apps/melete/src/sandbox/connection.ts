@@ -17,6 +17,7 @@ import {
   type SandboxConnectionConfig,
   sandboxAdapter,
   sandboxConnectionConfig,
+  sandboxCredentialRefusal,
   sandboxCredentials,
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
@@ -189,6 +190,11 @@ export type SandboxTeardownOptions = Omit<SandboxProviderOptions, 'credential'> 
  */
 export function sandboxTeardownProviders(options: SandboxTeardownOptions): {
   providerFor(adapter: string, connectionId: string): SandboxProvider;
+  /**
+   * A provider lent one given key rather than the connection's: the key a
+   * switch is about to install, asked before it replaces the one in place.
+   */
+  withKey(adapter: string, secretRef: string, spaceId: string): OpenedSandboxProvider;
   close(): Promise<void>;
 } {
   const opened = new Map<string, OpenedSandboxProvider>();
@@ -242,6 +248,21 @@ export function sandboxTeardownProviders(options: SandboxTeardownOptions): {
         },
       });
     },
+    withKey(name, secretRef, spaceId) {
+      const adapter = sandboxAdapter.parse(name);
+      if (adapter === 'modal' && options.modalRefusal) throw new Error(options.modalRefusal);
+      const { sql: _sql, secrets, modalRefusal: _refusal, open, ...settings } = options;
+      return (open ?? createSandboxProvider)(
+        { adapter },
+        {
+          ...settings,
+          credential: (use) =>
+            secrets.withSecret(secretRef, spaceId, (sealed) =>
+              use(sandboxCredentialValue(adapter, sealed)),
+            ),
+        },
+      );
+    },
     async close() {
       const all = [...opened.values()];
       opened.clear();
@@ -250,17 +271,56 @@ export function sandboxTeardownProviders(options: SandboxTeardownOptions): {
   };
 }
 
+/**
+ * Whether a sandbox connection may switch to this secret: it must hold a key
+ * in the shape the connection's adapter reads, and the provider must accept
+ * it. Returns the reason it may not, or null. Asked before anything is torn
+ * down or replaced, so a secret meant for something else never reaches the
+ * provider as a key and never ends a sandbox.
+ */
+export function sandboxKeyCheck(teardown: ReturnType<typeof sandboxTeardownProviders>) {
+  return async (
+    connection: { provider: string; spaceId: string; configuration: unknown },
+    secretRef: string,
+    signal: AbortSignal = AbortSignal.timeout(20_000),
+  ): Promise<string | null> => {
+    if (connection.provider !== 'sandbox') return null;
+    const stored = storedSandboxConnection.safeParse(connection.configuration);
+    if (!stored.success) return 'this connection holds no sandbox configuration';
+    const opened = teardown.withKey(stored.data.sandbox.adapter, secretRef, connection.spaceId);
+    try {
+      return (await probeSandboxProvider(opened.provider, signal)) === 'ok'
+        ? null
+        : 'the provider did not accept this secret as a key for this connection';
+    } finally {
+      await opened.close();
+    }
+  };
+}
+
 /** The sealed credential, read as the adapter that needs it. Never logged. */
 export function sandboxCredentialValue(
   adapter: SandboxAdapter,
   sealed: string,
 ): SandboxCredentialValue {
-  const { api_key } = sandboxCredentials.parse(JSON.parse(sealed) as unknown);
+  // Every way a secret can fail to be this adapter's key ends in the same
+  // sentence: a parse error would quote the secret it could not read.
+  let api_key: string;
+  try {
+    ({ api_key } = sandboxCredentials.parse(JSON.parse(sealed) as unknown));
+  } catch {
+    throw new Error(NOT_A_SANDBOX_KEY);
+  }
+  if (sandboxCredentialRefusal(adapter, api_key)) throw new Error(NOT_A_SANDBOX_KEY);
   if (adapter === 'e2b') return { api_key };
   const parts = modalTokenParts(api_key);
-  if (!parts) throw new Error('this connection holds no Modal token');
+  if (!parts) throw new Error(NOT_A_SANDBOX_KEY);
   return parts;
 }
+
+/** The one sentence a secret that is not a sandbox key is refused with. */
+export const NOT_A_SANDBOX_KEY =
+  'this secret does not hold a provider key in the shape its adapter reads';
 
 /**
  * Which environment settings could put something between this service and

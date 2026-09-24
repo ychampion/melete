@@ -26,7 +26,7 @@ import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
-import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
+import { sandboxKeyCheck, sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { SandboxRefusal } from '../../src/sandbox/manifest.ts';
 import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
@@ -202,6 +202,7 @@ async function harness() {
     secrets: factory.secrets,
     served: factory.sandboxProviders,
     sentKeys,
+    sandboxFetch,
     onHandshake: (hook: () => Promise<boolean>) => {
       duringHandshake = hook;
     },
@@ -704,5 +705,57 @@ withDb('the sandbox connection kind', () => {
       .catch((error: unknown) => String(error));
     expect(String(refused)).toContain('no longer holds a provider key');
     expect(h.sentKeys).toEqual([]);
+  }, 120_000);
+  test('a switch to a secret that is not a key the provider accepts is refused before anything ends', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, provider, teardown, opened } = await revocationSetup();
+    const [before] = await h.sql`select secret_ref from connection where id = ${id}`;
+    // The check asks the documented-API stand-in, which accepts one key only.
+    const checking = sandboxTeardownProviders({
+      sql: h.sql,
+      secrets: h.secrets,
+      project: PROJECT,
+      ...(h.sandboxFetch ? { fetch: h.sandboxFetch } : {}),
+    });
+    const policy = new PolicyService(h.jobs, undefined, {
+      checkKeyChange: sandboxKeyCheck(checking),
+      beforeKeyChange: sandboxKeyChange({
+        sessions: h.sessions,
+        providerFor: teardown.providerFor,
+        log: () => {},
+      }),
+    });
+    const password = 'CorrectHorseBatteryStaple2026';
+    for (const sealed of [
+      password,
+      JSON.stringify({ api_key: 'e2b_rejected_key_000000000000000' }),
+    ]) {
+      const secretRef = await h.secrets.put(h.spaceId, sealed);
+      const [row] = await h.sql`select generation from connection where id = ${id}`;
+      const refused = await policy
+        .changeConnection(id, {
+          kind: 'switch',
+          secret_ref: secretRef,
+          expected_generation: Number(row?.generation),
+        })
+        .then(
+          () => 'switched',
+          (error: unknown) => error,
+        );
+      expect(refused).toMatchObject({ code: 'invalid_credential' });
+      expect(String((refused as Error).message).includes(password)).toBe(false);
+    }
+    // Nothing was torn down, and the connection kept its key.
+    for (const session of opened) {
+      expect((await h.sessions.get(session.id))?.status).toBe('ready');
+      expect(await provider.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'running',
+      );
+    }
+    const [after] = await h.sql`select status, secret_ref from connection where id = ${id}`;
+    expect(after).toMatchObject({ status: 'active', secret_ref: before?.secret_ref });
+    await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
+    await checking.close();
+    await teardown.close();
   }, 120_000);
 });

@@ -42,6 +42,14 @@ export class PolicyService {
         connection: { id: string; provider: string },
         change: 'revoke' | 'switch',
       ) => Promise<void>;
+      /**
+       * Asked before a switch, and before anything is torn down: the reason
+       * this connection may not take that secret as its key, or null.
+       */
+      checkKeyChange?: (
+        connection: { provider: string; spaceId: string; configuration: unknown },
+        secretRef: string,
+      ) => Promise<string | null>;
     } = {},
   ) {}
 
@@ -244,6 +252,15 @@ export class PolicyService {
             'Choose a credential in the same space.',
             400,
           );
+        const refused = await this.options.checkKeyChange?.(
+          {
+            provider: source.provider,
+            spaceId: source.spaceId,
+            configuration: source.configuration,
+          },
+          request.secret_ref,
+        );
+        if (refused) throw new ServiceError('invalid_credential', refused, 400);
       }
       if (
         (request.kind === 'revoke' && source.status !== 'revoked') ||
