@@ -373,7 +373,7 @@ async function supersedeSameName(tx: Transaction, candidate: Candidate, actor: s
 }
 
 /** What the intake refused outright, as opposed to what the owner later stopped. */
-const isRefusal = (reason: string) =>
+export const isRefusal = (reason: string) =>
   reason.startsWith('credential_material') || REFUSALS.includes(reason);
 
 export type EngineSkillView = {
@@ -615,7 +615,19 @@ export class EngineSkillService {
     reason: string,
     message: string,
   ) {
-    return this.jobs.transaction(async (tx) => {
+    return this.jobs.transaction((tx) => this.eraseIn(tx, ownerId, spaceId, id, reason, message));
+  }
+
+  /** The erase, inside a transaction the caller already holds. */
+  async eraseIn(
+    tx: Transaction,
+    ownerId: string,
+    spaceId: string,
+    id: string,
+    reason: string,
+    message: string,
+  ) {
+    {
       const candidate = await this.locked(tx, ownerId, spaceId, id);
       await tx
         .update(procedureCandidate)
@@ -632,7 +644,7 @@ export class EngineSkillService {
       return engineSkillView(
         await transitionProcedure(tx, candidate, 'reverted', ownerId, message),
       );
-    });
+    }
   }
 
   /** Paused skills are not delivered; the next attempt sees nothing. */
@@ -651,15 +663,27 @@ export class EngineSkillService {
     pausedAt: Date | null,
     message: string,
   ) {
-    return this.jobs.transaction(async (tx) => {
-      const candidate = await this.locked(tx, ownerId, spaceId, id);
-      if (candidate.rejectionReason || candidate.state !== 'enabled_canary')
-        throw new ServiceError('invalid_procedure_state', 'Only a live skill can be paused.');
-      await tx.update(procedureCandidate).set({ pausedAt }).where(eq(procedureCandidate.id, id));
-      return engineSkillView(
-        await transitionProcedure(tx, candidate, candidate.state, ownerId, message),
-      );
-    });
+    return this.jobs.transaction((tx) =>
+      this.setPausedIn(tx, ownerId, spaceId, id, pausedAt, message),
+    );
+  }
+
+  /** Pause or resume, inside a transaction the caller already holds. */
+  async setPausedIn(
+    tx: Transaction,
+    ownerId: string,
+    spaceId: string,
+    id: string,
+    pausedAt: Date | null,
+    message: string,
+  ) {
+    const candidate = await this.locked(tx, ownerId, spaceId, id);
+    if (candidate.rejectionReason || candidate.state !== 'enabled_canary')
+      throw new ServiceError('invalid_procedure_state', 'Only a live skill can be paused.');
+    await tx.update(procedureCandidate).set({ pausedAt }).where(eq(procedureCandidate.id, id));
+    return engineSkillView(
+      await transitionProcedure(tx, candidate, candidate.state, ownerId, message),
+    );
   }
 
   /**

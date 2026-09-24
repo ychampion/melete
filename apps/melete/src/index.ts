@@ -79,6 +79,7 @@ import { EngineSkillService } from './learning/engine-skills.ts';
 import { EpisodeService } from './learning/episodes.ts';
 import { ProcedureEvaluator } from './learning/evaluator.ts';
 import { LearnedService } from './learning/learned.ts';
+import { EngineSource } from './learning/learned-engine.ts';
 import { mountLearned } from './learning/learned-routes.ts';
 import { mountProcedures } from './learning/procedure-routes.ts';
 import { ProcedureService } from './learning/procedures.ts';
@@ -221,8 +222,12 @@ export function createApp(deps: AppDeps) {
     const procedures = new ProcedureService(deps.jobs);
     mountLearning(app, episodes);
     if (deps.proposer) mountProposals(app, deps.proposer);
-    mountProcedures(app, procedures, deps.evaluator, new EngineSkillService(deps.jobs));
-    mountLearned(app, new LearnedService(deps.jobs, procedures, episodes));
+    const engine = new EngineSkillService(deps.jobs);
+    mountProcedures(app, procedures, deps.evaluator, engine);
+    mountLearned(
+      app,
+      new LearnedService(deps.jobs, procedures, episodes, [new EngineSource(engine)]),
+    );
   } else if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
