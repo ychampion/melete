@@ -1170,6 +1170,31 @@ describe.if(handle !== null)('removing a space', () => {
     },
   );
 
+  test.if(canHold)("a cleaning retry leaves a newly created job's workspace alone", async () => {
+    const seeded = await seed('personal');
+    const release = await holdDirectory(join(workRoot, seeded.jobId));
+    const removals = await service({ retryMs: 60_000 });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    // A job the person starts once the space is open again, with its own workspace.
+    const fresh = join(workRoot, `job_${crypto.randomUUID().replaceAll('-', '')}`);
+    try {
+      expect((await removals.run(fenced.id)).state).toBe('cleaning');
+      await mkdir(fresh, { recursive: true });
+      await writeFile(join(fresh, 'notes.md'), 'new work');
+
+      const again = await removals.run(fenced.id);
+      expect(again.state).toBe('cleaning');
+      expect(again.blockedReason ?? '').not.toContain(fresh);
+      expect(await exists(join(fresh, 'notes.md'))).toBe(true);
+    } finally {
+      await release();
+    }
+    const finished = await removals.run(fenced.id);
+    expect(outcome(finished)).toBe('complete');
+    expect(await exists(join(workRoot, seeded.jobId))).toBe(false);
+    expect(await exists(join(fresh, 'notes.md'))).toBe(true);
+  });
+
   test.if(canHold)(
     'a_removal_that_could_not_finish_is_tried_again_soon — by the running service, without a restart',
     async () => {

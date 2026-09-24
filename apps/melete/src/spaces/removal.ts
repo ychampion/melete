@@ -14,7 +14,8 @@
  * claimed to clear and finds nothing. A phase that could not be reached is not
  * a zero, and a removal carrying one reports itself blocked instead.
  */
-import { resolve, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   EMPTY_COUNTS,
   type RemovalCounts,
@@ -788,18 +789,8 @@ export class SpaceRemovalService {
     return new Date(Date.now() + pause);
   }
 
-  /**
-   * Nothing is left of an emptied space but workspaces that stopped work still
-   * holds open. The space can open again: its rows and its directory have
-   * gone, and those workspaces belong to jobs it no longer has.
-   */
   private onlyWorkspacesLeft(row: SpaceRemovalRow, counts: RemovalCounts): boolean {
-    if (row.kind !== 'emptied' || counts.paths.length === 0) return false;
-    const workRoot = resolve(this.deps.roots.workRoot) + sep;
-    return (
-      counts.paths.every((path) => resolve(path).startsWith(workRoot)) &&
-      removalIsClear({ ...counts, paths: [] })
-    );
+    return onlyHeldWorkspacesLeft(row, this.deps.roots.workRoot, counts);
   }
 
   /**
@@ -911,6 +902,38 @@ export class SpaceRemovalService {
     clearInterval(this.timer);
     this.timer = undefined;
   }
+}
+
+/**
+ * Nothing is left of an emptied space but workspaces that stopped work still
+ * holds open, so the space can open again: its rows and its directory have
+ * gone, and those workspaces belong to jobs it no longer has.
+ *
+ * Each leftover has to be exactly the workspace of one of the jobs captured at
+ * the fence. Anything else under the work root, a job created in the reopened
+ * space included, is not this removal's to wait for. The work root is matched
+ * as written and as it really resolves, since the recount names a workspace
+ * one way and the removal the other.
+ */
+export function onlyHeldWorkspacesLeft(
+  removal: Pick<SpaceRemovalRow, 'kind' | 'jobIds'>,
+  workRoot: string,
+  counts: RemovalCounts,
+): boolean {
+  if (removal.kind !== 'emptied' || counts.paths.length === 0) return false;
+  const roots = new Set([resolve(workRoot)]);
+  try {
+    roots.add(realpathSync(workRoot));
+  } catch {
+    // A work root that does not exist holds no workspace; the written form is enough.
+  }
+  const workspaces = new Set(
+    removal.jobIds.flatMap((id) => [...roots].map((root) => join(root, id))),
+  );
+  return (
+    counts.paths.every((path) => workspaces.has(resolve(path))) &&
+    removalIsClear({ ...counts, paths: [] })
+  );
 }
 
 /**
