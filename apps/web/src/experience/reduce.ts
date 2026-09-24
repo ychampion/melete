@@ -51,6 +51,8 @@ export type TranscriptTurn = {
   delivery: Turn['delivery'];
   /** The first identified, nonempty text event in the answer, never a card or status. */
   messageSeq: number | null;
+  /** The tool entry under way, from the stream's `tool` items: what is happening now. */
+  live: { id: string; title: string } | null;
 };
 
 export type ReactionMessage = {
@@ -96,6 +98,7 @@ const fromTurn = (turn: Turn): TranscriptTurn => ({
   streaming: false,
   delivery: turn.delivery,
   messageSeq: null,
+  live: null,
 });
 
 export function fromTurns(turns: Turn[], composer: ComposerState, status: TurnStatus): Transcript {
@@ -260,6 +263,18 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         status: item.status,
         streaming: item.status === 'streaming' ? turn.streaming : false,
         turn: { ...turn.turn, status: item.status },
+      }));
+    }
+    case 'tool': {
+      const tool = item.tool;
+      const underWay = tool.status === 'running' || tool.status === 'needs_approval';
+      return patchTurn(base, event.turn_id, (turn) => ({
+        ...turn,
+        live: underWay
+          ? { id: tool.id, title: tool.title }
+          : turn.live?.id === tool.id
+            ? null
+            : turn.live,
       }));
     }
     default:
