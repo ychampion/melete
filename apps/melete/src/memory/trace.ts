@@ -125,11 +125,14 @@ export function memoryReply(input: {
   };
 }
 
-/** The conversation's dedup key: one entry per job for the same id, status and content. */
+/**
+ * The conversation's dedup key: one entry per job, id and status. The times are
+ * left out, so an append retried a moment later still lands once.
+ */
 const dedupKey = (jobId: string, notice: MemoryToolNotice | MemoryReplyNotice) => {
   const { id, status } = 'call' in notice ? notice.call : notice;
   const digest = createHash('sha256')
-    .update(JSON.stringify([id, status, notice]))
+    .update(JSON.stringify([id, status]))
     .digest('hex')
     .slice(0, 32);
   return `memory-tool:${jobId}:${digest}`;

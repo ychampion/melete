@@ -21,6 +21,7 @@ import { failureCode, openMemoryGateway } from '../../src/memory/gateway.ts';
 import { memoryHealth } from '../../src/memory/health.ts';
 import { attemptRecallQuery, recall } from '../../src/memory/recall.ts';
 import { runExtractionWork } from '../../src/memory/service.ts';
+import { appendMemoryNotices, memoryNotice } from '../../src/memory/trace.ts';
 import { buildViews } from '../../src/memory/views.ts';
 import { principalContext } from '../../src/principals/authority.ts';
 import { createJournal } from './lifecycle-fixtures.ts';
@@ -719,6 +720,99 @@ withDb('asking to forget in plain words', () => {
     } finally {
       await journal.close();
     }
+  });
+});
+
+withDb('spent daily reads', () => {
+  test('a message waiting on spent reads is never given up, and is read once a read frees', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const journal = await createJournal();
+    const answers = createScriptedProvider(
+      Array.from({ length: 20 }, () => ({ text: '{"proposals":[]}' })),
+    );
+    const opened = await openMemoryGateway({
+      sql: db.sql,
+      provider: 'fake',
+      model: 'fake-scripted-v1',
+      providers: [fakeProvider],
+      fake: answers,
+      dailyCalls: 1,
+    });
+    const service = {
+      sql: db.sql,
+      boss: db.boss,
+      journal: journal.journal,
+      gateway: opened.gateway,
+    };
+    const message = async (identity: string, text: string) => {
+      const evidence = await ingest(db.sql, scope, {
+        stream: 'chat',
+        source_identity: identity,
+        source_version: '1',
+        source_type: 'message',
+        author: 'owner',
+        event_at: '2026-08-02T09:00:00Z',
+        text,
+      });
+      const [work] =
+        await db.sql`select id from memory_work where source_id = ${evidence.source.source_id}`;
+      return work?.id as string;
+    };
+    const state = async (id: string) => {
+      const [row] = await db.sql`select status, provider_failures,
+        extract(epoch from (retry_at - clock_timestamp()))::float as wait from memory_work where id = ${id}`;
+      return row as { status: string; provider_failures: number; wait: number | null };
+    };
+    // Scopes in this file share one owner: start this person's day with no reads.
+    await db.sql`delete from memory_model_calls where owner_id = ${scope.ownerId}`;
+    try {
+      const first = await message('first', 'I prefer an aisle seat.');
+      await runExtractionWork(service, first);
+      expect((await state(first)).status).toBe('done');
+      // The one read of the day is spent: the second message waits, far past
+      // the eight tries an outage gets, and is never given up.
+      const second = await message('second', 'Maya is on +351 912 345 678.');
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await runExtractionWork(service, second);
+        const after = await state(second);
+        expect([after.status, after.provider_failures]).toEqual(['pending', 0]);
+        // It waits for the day's oldest read to age out, checking at least every 30 minutes.
+        expect(Math.round(after.wait ?? 0)).toBeLessThanOrEqual(1800);
+        expect(Math.round(after.wait ?? 0)).toBeGreaterThan(1700);
+        await db.sql`update memory_work set retry_at = clock_timestamp() - interval '1 second' where id = ${second}`;
+      }
+      // A read frees when the oldest one leaves the day: the message is read.
+      await db.sql`update memory_model_calls set created_at = clock_timestamp() - interval '25 hours'
+        where owner_id = ${scope.ownerId}`;
+      await runExtractionWork(service, second);
+      expect((await state(second)).status).toBe('done');
+    } finally {
+      await opened.close();
+      await journal.close();
+    }
+  });
+});
+
+withDb('memory notices', () => {
+  test('a notice appended again a moment later lands once', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const chat = await conversation(db, scope);
+    const notice = (at: Date) =>
+      memoryNotice({
+        op: 'write',
+        id: 'write:k_retry@1',
+        keys: ['pref.travel.seat'],
+        value: 'aisle seat',
+        claimId: 'k_retry',
+        at,
+      });
+    await appendMemoryNotices(db.sql, chat, [notice(new Date('2026-08-02T09:00:00Z'))]);
+    await appendMemoryNotices(db.sql, chat, [notice(new Date('2026-08-02T09:00:05Z'))]);
+    expect(await traces(db, chat)).toEqual([
+      { op: 'write', labels: ['travel: seat'], value: 'aisle seat' },
+    ]);
   });
 });
 

@@ -156,7 +156,8 @@ export async function refundExtractionCall(
 /**
  * How a message waits while the model provider is failing: 30 s after the first
  * failure, doubling, never more than 30 min apart, and at most 8 tries or a day,
- * after which it is given up with a recorded fault.
+ * after which it is given up with a recorded fault. Spent daily reads are not a
+ * failure: that wait has no limit.
  */
 export const PROVIDER_BACKOFF = {
   first_seconds: 30,
@@ -173,6 +174,20 @@ export async function deferWork(
 ): Promise<'deferred' | 'given_up'> {
   return sql.begin(async (tx) => {
     await lockSpace(tx, scope);
+    if (code === 'memory_daily_budget') {
+      // Spent reads are not a failure and are never given up on: the message
+      // waits until the person's oldest counted read leaves the day's window,
+      // checking again at least every 30 minutes.
+      await tx`update memory_work set status = 'pending', lease_until = null, error_code = ${code},
+        retry_at = least(
+          clock_timestamp() + ${PROVIDER_BACKOFF.max_seconds} * interval '1 second',
+          coalesce((select min(created_at) + interval '1 day' from memory_model_calls
+            where owner_id = ${scope.ownerId} and created_at > clock_timestamp() - interval '1 day'
+              and coalesce(settlement->>'status', '') <> 'failed'),
+            clock_timestamp() + ${PROVIDER_BACKOFF.first_seconds} * interval '1 second'))
+        where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+      return 'deferred';
+    }
     const [work] = await tx`select provider_failures,
         created_at < clock_timestamp() - ${PROVIDER_BACKOFF.max_hours} * interval '1 hour' as stale
       from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}
