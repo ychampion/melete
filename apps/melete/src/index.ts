@@ -91,6 +91,7 @@ import { memoryScopeForSpace } from './memory/broker-trust.ts';
 import { withMemoryRuntime } from './memory/context.ts';
 import { createDisputeSettler } from './memory/disputes.ts';
 import { configuredMemoryGateway } from './memory/gateway.ts';
+import { type MemoryHealth, memoryHealth } from './memory/health.ts';
 import { createMemoryRouter, type MemoryRouteOptions } from './memory/routes.ts';
 import { startServiceMemory } from './memory/start.ts';
 import {
@@ -144,6 +145,8 @@ export type AppDeps = {
   proposer?: ProcedureProposer;
   evaluator?: ProcedureEvaluator;
   checkDatabase: () => Promise<'ok' | 'unreachable' | 'not_configured'>;
+  /** Whether automatic memory is reading what people say, for the operator. */
+  checkMemory?: () => Promise<MemoryHealth | null>;
   /** Left out, the authenticated owner's database catalog resolves volume spaces. */
   knowledge?: KnowledgeDeps;
   memory?: MemoryRouteOptions;
@@ -293,6 +296,9 @@ export function createApp(deps: AppDeps) {
       runtime_adapter: deps.runtimeAdapter,
       runtime_supervisor:
         deps.runtimeAdapter === 'hermes' ? deps.env.MELETE_RUNTIME_SUPERVISOR : null,
+      ...(database === 'ok' && deps.checkMemory
+        ? { memory: (await deps.checkMemory().catch(() => null)) ?? undefined }
+        : {}),
       time: new Date().toISOString(),
     });
   });
@@ -784,6 +790,7 @@ export async function bootstrap(
       if (!handle) return 'not_configured';
       return (await pingDatabase(handle)) ? 'ok' : 'unreachable';
     },
+    ...(handle ? { checkMemory: () => memoryHealth(handle.sql) } : {}),
   });
 
   return {

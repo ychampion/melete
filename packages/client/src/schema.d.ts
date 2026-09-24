@@ -3008,6 +3008,12 @@ export interface paths {
                         "application/json": {
                             /** @enum {string} */
                             database: "ok" | "unreachable" | "not_configured";
+                            memory?: {
+                                reason: ("provider_unavailable" | "daily_budget") | null;
+                                /** @enum {string} */
+                                status: "ok" | "waiting";
+                                waiting: number;
+                            };
                             runtime_adapter?: string;
                             runtime_supervisor?: ("process" | "docker") | null;
                             /** @enum {string} */

@@ -8152,6 +8152,43 @@
                         }
                       ]
                     },
+                    "memory": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "waiting"
+                          ]
+                        },
+                        "waiting": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reason": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "provider_unavailable",
+                                "daily_budget"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "waiting",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
                     "time": {
                       "$ref": "#/components/schemas/__schema109"
                     }

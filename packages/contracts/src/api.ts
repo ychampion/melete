@@ -25,6 +25,18 @@ export const healthResponse = z.object({
   database: z.enum(['ok', 'unreachable', 'not_configured']),
   runtime_adapter: z.string().optional(),
   runtime_supervisor: z.enum(['process', 'docker']).nullable().optional(),
+  /**
+   * Whether automatic memory is reading what people say. `waiting` counts
+   * messages held back, and `reason` says why: the memory model's provider is
+   * not answering, or people's daily reads are spent. Counts only; no content.
+   */
+  memory: z
+    .object({
+      status: z.enum(['ok', 'waiting']),
+      waiting: z.number().int().nonnegative(),
+      reason: z.enum(['provider_unavailable', 'daily_budget']).nullable(),
+    })
+    .optional(),
   time: timestamp,
 });
 export type HealthResponse = z.infer<typeof healthResponse>;
