@@ -126,6 +126,8 @@ export type HermesClientOptions = {
   baseUrl: string;
   /** The API server's bearer, when one is configured (`API_SERVER_KEY`). */
   token?: string;
+  /** The workspace path this engine writes to, when it is not the bundle's. */
+  workspace?: string;
 };
 
 /** Internal continuation state; it does not extend the frozen attempt contract. */
@@ -139,10 +141,12 @@ const trimSlash = (s: string): string => s.replace(/\/+$/, '');
 export class HermesClient {
   private readonly baseUrl: string;
   private readonly token: string | undefined;
+  private readonly workspace: string | undefined;
 
   constructor(options: HermesClientOptions) {
     this.baseUrl = trimSlash(options.baseUrl);
     this.token = options.token;
+    this.workspace = options.workspace;
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -176,7 +180,7 @@ export class HermesClient {
   startRun(bundle: AttemptBundle, continuation: HermesContinuation = {}): HermesRequest {
     const body = {
       input: continuation.input ?? renderInput(bundle),
-      instructions: renderInstructions(bundle),
+      instructions: renderInstructions(bundle, { workspace: this.workspace }),
       session_id: bundle.attempt.job_id,
       model: bundle.model.model,
     };
@@ -236,7 +240,7 @@ export class HermesClient {
 
   /** Kept as methods so a caller can see what a run will be told without sending it. */
   renderSystem(bundle: AttemptBundle): string {
-    return renderInstructions(bundle);
+    return renderInstructions(bundle, { workspace: this.workspace });
   }
 
   renderInput(bundle: AttemptBundle): string {

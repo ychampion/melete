@@ -53,6 +53,8 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
       const adapter = new HermesRuntimeAdapter({
         baseUrl: instance.baseUrl,
         token: instance.token,
+        // The instructions name the path this engine can actually write to.
+        workspace: instance.workspace,
         pendingWait: (current) => pendingRuntimeWait(this.sql, current),
         // Loading a tool updates broker state; the next Hermes run must hydrate
         // that state before the newly disclosed schema can reach the provider.

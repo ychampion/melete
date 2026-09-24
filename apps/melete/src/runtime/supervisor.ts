@@ -32,6 +32,11 @@ export type RuntimeInstance = {
   baseUrl: string;
   token: string;
   coldStartMs: number;
+  /**
+   * The workspace as the engine sees it: the job's own directory for a process
+   * engine, `/work` inside a container. The instructions name this path.
+   */
+  workspace: string;
   stop(): Promise<void>;
 };
 export interface RuntimeSupervisor {
@@ -391,6 +396,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
           baseUrl,
           token,
           coldStartMs: Date.now() - started,
+          workspace,
           stop: async () => {
             signal.removeEventListener('abort', abort);
             await stop();
@@ -575,6 +581,8 @@ export class DockerRuntimeSupervisor implements RuntimeSupervisor {
         baseUrl,
         token,
         coldStartMs: Date.now() - started,
+        // The job's directory is mounted at /work, which is also the workdir.
+        workspace: '/work',
         stop: async () => {
           signal.removeEventListener('abort', abort);
           await stop();

@@ -103,6 +103,8 @@ server.serve_forever()
       );
       const response = await fetch(`${instance.baseUrl}/config`);
       const config = parse(await response.text());
+      // The engine's workspace is the job's own directory on this path.
+      expect(instance.workspace).toBe(await realpath(join(root, 'work', bundle.attempt.job_id)));
       // Melete's identity takes the engine's identity slot, and the engine
       // dates the conversation in the person's zone.
       expect(await (await fetch(`${instance.baseUrl}/soul`)).text()).toBe(renderSoul());

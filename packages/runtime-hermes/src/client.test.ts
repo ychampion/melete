@@ -347,6 +347,16 @@ describe('context assembly', () => {
     expect(IDENTITY).toContain('receipt');
   });
 
+  test('the run names the workspace the launched engine writes to', () => {
+    const processPath = 'C:/melete/work/job_01J00000000000000000000000';
+    const placed = new HermesClient({ baseUrl: 'http://127.0.0.1:1', workspace: processPath });
+    const body = JSON.parse(placed.startRun(bundle).body ?? '{}') as { instructions: string };
+    expect(body.instructions).toContain(`Workspace: ${processPath}.`);
+    expect(body.instructions).not.toContain('Workspace: /work.');
+    // A container engine is told the bundle's own path.
+    expect(client.renderSystem(bundle)).toContain('Workspace: /work.');
+  });
+
   test("the identity is the engine home's SOUL.md, whole, and the instructions do not repeat it", () => {
     expect(renderSoul()).toBe(`${IDENTITY}\n`);
     const system = client.renderSystem(bundle);

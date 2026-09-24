@@ -37,8 +37,17 @@ export const IDENTITY: string = loadIdentity();
  */
 export const renderSoul = (): string => `${IDENTITY}\n`;
 
+/** Facts about where the attempt runs, known only once its engine is launched. */
+export type RunPlacement = {
+  /**
+   * The workspace as the engine sees it. The bundle names the container path;
+   * an engine run as a process writes to the job's own directory instead.
+   */
+  workspace?: string;
+};
+
 /** A run's `instructions`: persona, then procedure, then what is already known. */
-export function renderInstructions(bundle: AttemptBundle): string {
+export function renderInstructions(bundle: AttemptBundle, placement: RunPlacement = {}): string {
   const parts: string[] = [];
   if (bundle.identity) {
     if (estimateTokens(bundle.identity) > 250)
@@ -80,7 +89,7 @@ export function renderInstructions(bundle: AttemptBundle): string {
     );
   }
 
-  parts.push(WORKSPACE_NOTE(bundle));
+  parts.push(WORKSPACE_NOTE(bundle, placement.workspace ?? bundle.workspace.mount));
   return parts.join('\n\n');
 }
 
@@ -88,11 +97,11 @@ export function renderInstructions(bundle: AttemptBundle): string {
  * The one thing about the environment the model cannot infer: the workspace is
  * the only writable place, and the broker is the only way out.
  */
-const WORKSPACE_NOTE = (bundle: AttemptBundle): string =>
+const WORKSPACE_NOTE = (bundle: AttemptBundle, workspace: string): string =>
   [
     '# This attempt',
     '',
-    `Workspace: ${bundle.workspace.mount}. It is the only path you can write to.`,
+    `Workspace: ${workspace}. It is the only path you can write to.`,
     `Budget: at most ${bundle.budget.max_turns} turns and ${bundle.budget.max_actions} actions.`,
     'Every tool call is proposed to the broker, which records it and may need the',
     "owner's approval. A tool that answers `needs_approval` has NOT happened: stop,",

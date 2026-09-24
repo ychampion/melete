@@ -94,6 +94,7 @@ test('an engine that fails to stop after completing keeps the completed outcome'
           baseUrl: `http://127.0.0.1:${server.port}`,
           token: 'engine-key',
           coldStartMs: 1,
+          workspace: '/work',
           stop: async () => {
             throw new Error('Runtime process tree did not stop');
           },
