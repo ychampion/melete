@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createServer } from 'node:http';
 import { connectorManifest } from '@melete/contracts';
+import { selfSignedPair } from '../gateway/fixtures/self-signed.ts';
 import { connectorAction, connectorContext } from './test-fixtures.ts';
 import {
   createWebConnector,
@@ -169,5 +170,33 @@ test('real pinned transport uses the supplied IP while preserving Host and query
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
+  }
+});
+
+test('a refused certificate is one rejection, with no stray error left behind', async () => {
+  const stray: unknown[] = [];
+  const count = (error: unknown) => stray.push(error);
+  process.on('uncaughtException', count);
+  const { cert, key } = selfSignedPair('pinned.example.test');
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    tls: { cert, key },
+    fetch: () => new Response('ok'),
+  });
+  try {
+    await expect(
+      pinnedWebRequest(
+        new URL(`https://pinned.example.test:${server.port}/`),
+        { address: '127.0.0.1', family: 4 },
+        { maxBytes: 1000, timeoutMs: 2000 },
+      ),
+    ).rejects.toBeDefined();
+    // The socket reports the failure again after the request has; nobody may be left to hear it alone.
+    await Bun.sleep(300);
+    expect(stray).toEqual([]);
+  } finally {
+    process.off('uncaughtException', count);
+    server.stop(true);
   }
 });

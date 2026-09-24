@@ -671,4 +671,112 @@ withDb('each account acts only inside its own space', () => {
       { kind: 'user_message', text: 'From the owner', principal_id: first.principalId },
     ]);
   }, 60_000);
+
+  test('triggers and event deliveries answer only to the job owner and the setup owner', async () => {
+    const { sql } = database();
+    const [mail] = await sql`select id from connection where space_id = ${first.spaceId}
+      and provider = ${emailManifest.provider} order by id limit 1`;
+    const connection = String(mail?.id);
+    // No trigger watches this one, so nothing downstream of the route has a job
+    // to refuse on: only the route's own guard stands between a stranger and it.
+    const [unwatched] = await sql`select id from connection where space_id = ${first.spaceId}
+      and provider = ${calendarManifest.provider} order by id limit 1`;
+    const quiet = String(unwatched?.id);
+    const watch = (connectionId: string) => ({
+      kind: 'event',
+      connection_id: connectionId,
+      event_name: 'mail.new',
+    });
+    const delivery = (key: string, connectionId = connection) => ({
+      connection_id: connectionId,
+      event_name: 'mail.new',
+      cursor: key,
+      dedup_key: key,
+      payload: { subject: 'hello' },
+    });
+    const count = async () =>
+      Number(
+        (
+          await sql`select count(*)::int as n from trigger where job_id = ${first.conversationId}`
+        )[0]?.n,
+      );
+
+    // The job's own principal can watch its own connection, and the setup owner can deliver.
+    expect(
+      (
+        await call(
+          first.cookie,
+          `/jobs/${first.conversationId}/triggers`,
+          'POST',
+          watch(connection),
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (await call(first.cookie, '/internal/events/deliver', 'POST', delivery('own'))).status,
+    ).toBe(202);
+    const triggersBefore = await count();
+
+    // Another account can do neither against the first account's job or connection.
+    expect(
+      (
+        await call(
+          second.cookie,
+          `/jobs/${first.conversationId}/triggers`,
+          'POST',
+          watch(connection),
+        )
+      ).status,
+    ).toBe(403);
+    for (const target of [connection, quiet]) {
+      expect(
+        (
+          await call(
+            second.cookie,
+            '/internal/events/deliver',
+            'POST',
+            delivery('stranger', target),
+          )
+        ).status,
+      ).toBe(403);
+      // An event written here would also make the real one with this key a duplicate.
+      expect(
+        await sql`select 1 from event where dedup_key = ${`connector:${target}:stranger`}`,
+      ).toHaveLength(0);
+    }
+    expect(await count()).toBe(triggersBefore);
+
+    // A member of a shared space cannot add a trigger to the space owner's job there.
+    const club = (
+      await json<{ space: { id: string } }>(
+        await call(first.cookie, '/spaces/shared', 'POST', { name: 'Club' }),
+      )
+    ).space.id;
+    expect(
+      (
+        await call(first.cookie, `/spaces/${club}/memberships`, 'POST', {
+          principal_id: second.principalId,
+        })
+      ).status,
+    ).toBe(201);
+    const ownersJob = recordId('job');
+    await sql`insert into job (id, space_id, principal_id, title, objective, kind, budget)
+      values (${ownersJob}, ${club}, ${first.principalId}, 'Club chat', 'Private', 'chat',
+        ${JSON.stringify(defaultBudget)}::jsonb)`;
+    const clubMail = recordId('conn');
+    await sql`insert into connection (id, space_id, provider, label, scopes)
+      values (${clubMail}, ${club}, ${emailManifest.provider}, 'Club mail', '["email.search"]'::jsonb)`;
+    const member = await login('second@example.test');
+    expect(
+      (await call(member, `/jobs/${ownersJob}/triggers`, 'POST', watch(clubMail))).status,
+    ).toBe(403);
+    expect(await sql`select 1 from trigger where job_id = ${ownersJob}`).toHaveLength(0);
+    // Nor can a member deliver an event on the shared space's own connection.
+    expect(
+      (await call(member, '/internal/events/deliver', 'POST', delivery('member', clubMail))).status,
+    ).toBe(403);
+    expect(
+      await sql`select 1 from event where dedup_key = ${`connector:${clubMail}:member`}`,
+    ).toHaveLength(0);
+  }, 60_000);
 });

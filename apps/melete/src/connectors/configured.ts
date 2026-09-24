@@ -381,8 +381,21 @@ export async function configuredConnectors(options: ConnectorOptions) {
         secretRef: row.secret_ref,
         configuration: row.configuration,
       };
+      // One connection that cannot be opened is that connection's problem, not
+      // the service's: it is marked failing, as a failed installation is, and
+      // testing it again reopens it. Nothing it threw is written anywhere.
       const open = async () => {
-        const connector = await factory.open(source);
+        let connector: Connector | undefined;
+        try {
+          connector = await factory.open(source);
+        } catch {
+          await options.sql`update connection set status = 'error', setup_state = 'error',
+            health = 'failing', last_checked_at = now()
+            where id = ${source.id} and status = 'active'`;
+          process.stderr.write(`connection ${source.id} could not be opened and is marked failing
+`);
+          return;
+        }
         if (connector) factory.register(registry, source.id, connector);
       };
       if (row.provider === 'artifacts') pending.push(open);

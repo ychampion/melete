@@ -135,6 +135,29 @@ describeWithDb('single-owner authentication against Postgres', () => {
     ).toBe(401);
   });
 
+  test('a signed-in body is counted as it arrives and dropped at its limit', async () => {
+    const api = app();
+    const session = cookie(await api.request('/setup', credentials()));
+    const chunk = new Uint8Array(256 * 1024).fill(0x20);
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 64 * 1024 * 1024) return controller.close();
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    // Provisioning an account reads its body, so without a limit this parses all of it.
+    const response = await api.request('/principals', {
+      method: 'POST',
+      headers: { Cookie: session, 'Content-Type': 'application/json' },
+      body,
+      duplex: 'half',
+    } as RequestInit);
+    expect(response.status).toBe(413);
+    expect(pulled).toBeLessThan(9 * 1024 * 1024);
+  });
+
   test('the setup cookie reads the seeded personal space using the frozen response contract', async () => {
     const api = app();
     const setup = await api.request('/setup', credentials());

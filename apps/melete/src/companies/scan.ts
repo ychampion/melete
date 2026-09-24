@@ -12,8 +12,8 @@
  */
 
 import type { LedgerItem } from '@melete/contracts';
-import type { CompanyExtractor } from './extract.ts';
-import type { ScanMailbox } from './mailbox.ts';
+import type { CompanyExtractor, ScanExtractor } from './extract.ts';
+import { MAILBOX_UNREADABLE, MailboxUnreadable, type ScanMailbox } from './mailbox.ts';
 import { messageText, type ScanMessage } from './messages.ts';
 import { prefilter } from './prefilter.ts';
 import type { CompanyStore, Owner, ScanRecord, StoredMessage } from './repository.ts';
@@ -38,9 +38,27 @@ export type ScanOptions = {
    * rather than starting a second one.
    */
   scan?: ScanRecord;
+  /**
+   * Model calls this person's scans may make in a day, across all their spaces.
+   * Left out, a scan makes as many as it has messages to read.
+   */
+  dailyCalls?: number;
 };
 
+/** The window a daily allowance counts over. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export type ScanOutcome = ScanRecord & { counts: Record<string, number> };
+
+/** Why a scan failed: the mailbox could not be read, or something after it went wrong. */
+/**
+ * What a failed scan says, from a fixed set. The mailbox's own sentence when it
+ * said why it could not be read; otherwise one of these.
+ */
+export const SCAN_FAILED = {
+  mailbox: "I couldn't read your mailbox.",
+  after: 'This scan stopped before it finished. Scan again.',
+} as const;
 
 /**
  * Run the scan. Failures are recorded on the scan row rather than thrown at the
@@ -54,8 +72,12 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
   const counts: Record<string, number> = { ...noDrops() };
   let seen = 0;
   let found = 0;
+  let reason: string = SCAN_FAILED.mailbox;
+  let session: ScanExtractor | undefined;
+  let calls = 0;
   try {
     const messages = await options.mailbox.recent(options.readLimit ?? 50);
+    reason = SCAN_FAILED.after;
     const grouped = prefilter(messages, {
       now,
       windowDays,
@@ -82,6 +104,28 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
     }
     await options.store.saveMessages(options.owner, record.id, stored);
 
+    // A live extractor spends against a budget; this scan gets one of its own,
+    // so no other scan, and no other person's, can use it up.
+    session = await options.extractor.forScan?.();
+    const extractor = session ?? options.extractor;
+    // A message a model has already answered for is not asked about again: what
+    // it said is in the store, and asking twice only spends twice.
+    const alreadyRead = await options.store.extractedMessageIds(
+      options.owner,
+      stored.map((message) => message.messageId),
+    );
+    const allowance =
+      options.dailyCalls === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.max(
+            0,
+            options.dailyCalls -
+              (await options.store.modelCallsSince(
+                options.owner.principalId,
+                new Date(now.getTime() - DAY_MS),
+              )),
+          );
+    const answered: string[] = [];
     const admitted: LedgerItem[] = [];
     for (const group of grouped.companies) {
       if (!group.candidates.length) continue;
@@ -105,9 +149,18 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         // about a bad span: drop the one thing, count it, and keep the rest,
         // because a person is better served by most of their companies than by
         // an error where a map should be.
+        if (alreadyRead.has(message.messageId)) {
+          counts.already_read = (counts.already_read ?? 0) + 1;
+          continue;
+        }
+        if (calls >= allowance) {
+          counts.daily_allowance_reached = (counts.daily_allowance_reached ?? 0) + 1;
+          continue;
+        }
+        calls += 1;
         let items: Awaited<ReturnType<CompanyExtractor['extract']>> = [];
         try {
-          items = await options.extractor.extract({
+          items = await extractor.extract({
             messageId: message.messageId,
             companyName: group.name,
             domain: group.domain,
@@ -120,6 +173,8 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
           counts.extractor_failed = (counts.extractor_failed ?? 0) + 1;
           continue;
         }
+        // A call the provider never answered is asked again next time.
+        if (!session?.unanswered?.has(message.messageId)) answered.push(message.messageId);
         for (const candidate of items)
           proposed.push({
             candidate,
@@ -166,24 +221,28 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
         });
     }
     found = await options.store.saveItems(options.owner, record.id, admitted);
+    await options.store.markExtracted(options.owner, answered);
     counts.proposed = admitted.length;
     await options.store.closeScan(options.owner, record.id, {
       status: 'done',
       messagesSeen: seen,
       itemsFound: found,
       counts,
+      modelCalls: session ? calls : 0,
     });
     return { ...record, status: 'done', messagesSeen: seen, itemsFound: found, counts };
   } catch (error) {
-    // The reason is a short phrase for the person, never a stack or a sentence
-    // out of somebody's mail.
-    const reason = error instanceof Error ? error.message.slice(0, 200) : 'scan failed';
+    // The reason comes from a fixed set of the scan's own sentences. What a
+    // transport or a store threw can carry a server's reply, an account name or
+    // a sentence out of somebody's mail, and none of that is kept or shown.
+    if (error instanceof MailboxUnreadable) reason = MAILBOX_UNREADABLE[error.reason];
     await options.store.closeScan(options.owner, record.id, {
       status: 'failed',
       messagesSeen: seen,
       itemsFound: found,
       counts,
       error: reason,
+      modelCalls: session ? calls : 0,
     });
     return {
       ...record,
@@ -193,6 +252,8 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
       counts,
       error: reason,
     };
+  } finally {
+    await session?.close().catch(() => undefined);
   }
 }
 

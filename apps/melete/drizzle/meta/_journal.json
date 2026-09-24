@@ -309,6 +309,13 @@
       "when": 1789232400023,
       "tag": "0043_space_removal_cleaning",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1789232400024,
+      "tag": "0044_companies_extraction",
+      "breakpoints": true
     }
   ]
 }

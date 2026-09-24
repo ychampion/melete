@@ -48,6 +48,8 @@ export function mcpCredentialAccess(
   store: SealedSecretStore,
   binding: { connectionId: string; spaceId: string },
   resource?: string,
+  /** How the refresh is sent. The connector supplies the public-only fetch where it must. */
+  fetcher: (url: string, init: RequestInit) => Promise<Response> = fetch,
 ) {
   let refreshing: Promise<boolean> | undefined;
   async function read() {
@@ -89,12 +91,12 @@ export function mcpCredentialAccess(
           ...(credential.client_id ? { client_id: credential.client_id } : {}),
           ...(credential.client_secret ? { client_secret: credential.client_secret } : {}),
         });
-        const response = await fetch(credential.token_url, {
+        const response = await fetcher(credential.token_url, {
           method: 'POST',
           redirect: 'error',
           keepalive: false,
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: form,
+          body: form.toString(),
           signal: AbortSignal.timeout(5000),
         });
         if (!response.ok || !response.body) {

@@ -14,46 +14,74 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { Database } from '../db/client.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
+import type { GatewayOptions } from '../gateway/index.ts';
+import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
-import type { CompanyExtractor } from './extract.ts';
+import type { CompanyExtractor, ScanExtractor } from './extract.ts';
 import { DEFAULT_EXTRACTION_MODEL, openExtractionGateway } from './gateway.ts';
 import { playbookHandler } from './handler.ts';
-import { connectorMailbox, type ScanMailbox } from './mailbox.ts';
+import { connectorMailbox, MAILBOX_READ_LIMIT, type ScanMailbox } from './mailbox.ts';
 import { type Owner, PostgresCompanyStore } from './repository.ts';
 import type { CompaniesDeps } from './routes.ts';
 import { scriptedExtractor } from './scripted.ts';
 
-/** Calls one process will admit before it must be restarted. A scan reads at most fifty messages. */
-const GATEWAY_CALL_CEILING = 5_000;
+/** Calls one scan's gateway admits: one per message, and a scan reads at most this many. */
+export const SCAN_CALL_CEILING = MAILBOX_READ_LIMIT;
 
 /**
- * The live extractor, opened on the first call and kept for the process. A
- * gateway is a loopback listener; opening one per scan would be a listener per
- * click, and closing one mid-scan would fail the call in flight.
+ * The live extractor. Each scan opens a gateway of its own with its own call
+ * budget and closes it when the scan ends, as `openExtractionGateway` is built
+ * to be used, so one person's scans can never spend another's. A call made
+ * outside a scan gets a gateway for that call alone.
  */
-function lazyGatewayExtractor(options: {
+export function gatewayExtractor(options: {
   provider: string;
   model: string;
-  env: Env;
-  sql?: Sql;
+  providers: GatewayProvider[];
+  fetch?: GatewayOptions['fetch'];
 }): CompanyExtractor {
-  let opened: Promise<{ extractor: CompanyExtractor }> | undefined;
+  const open = async (): Promise<ScanExtractor> => {
+    const gateway = await openExtractionGateway({
+      provider: options.provider,
+      model: options.model,
+      providers: options.providers,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      maxCalls: SCAN_CALL_CEILING,
+    });
+    return {
+      extract: (request) => gateway.extractor.extract(request),
+      close: gateway.close,
+      unanswered: gateway.unanswered,
+    };
+  };
   return {
     async extract(request) {
-      opened ??= openExtractionGateway({
-        provider: options.provider,
-        model: options.model,
-        providers: configuredProviders(
-          options.env,
-          () => {},
-          options.sql ? providerSignIn(options.sql, options.env) : undefined,
-        ),
-        maxCalls: GATEWAY_CALL_CEILING,
-      });
-      return (await opened).extractor.extract(request);
+      const once = await open();
+      try {
+        return await once.extract(request);
+      } finally {
+        await once.close();
+      }
     },
+    forScan: open,
   };
+}
+
+/** Model calls one person's scans may make in a day when the operator sets none. */
+export const DEFAULT_DAILY_SCAN_CALLS = 500;
+
+/**
+ * The daily allowance of model calls per person, when a live model runs.
+ * `MELETE_COMPANIES_DAILY_CALLS` sets it; a scripted scan spends nothing and has none.
+ */
+export function configuredDailyCalls(): number | undefined {
+  if (!process.env.MELETE_COMPANIES_MODEL?.trim()) return undefined;
+  // An empty value is an unset one: `Number('')` is 0, which would stop every scan.
+  const written = process.env.MELETE_COMPANIES_DAILY_CALLS?.trim();
+  if (!written) return DEFAULT_DAILY_SCAN_CALLS;
+  const raw = Number(written);
+  return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_DAILY_SCAN_CALLS;
 }
 
 /**
@@ -65,11 +93,10 @@ export function configuredExtractor(env: Env, sql?: Sql): CompanyExtractor {
   const model = process.env.MELETE_COMPANIES_MODEL?.trim();
   if (!model) return scriptedExtractor();
   const provider = process.env.MELETE_COMPANIES_PROVIDER?.trim() ?? env.MELETE_DEFAULT_PROVIDER;
-  return lazyGatewayExtractor({
+  return gatewayExtractor({
     provider,
     model: model === 'default' ? DEFAULT_EXTRACTION_MODEL : model,
-    env,
-    sql,
+    providers: configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined),
   });
 }
 
@@ -128,6 +155,7 @@ export function companiesDeps(options: {
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
     extractor: configuredExtractor(options.env, options.sql),
+    ...(configuredDailyCalls() === undefined ? {} : { dailyCalls: configuredDailyCalls() }),
     // Without a job service there is nothing to create a job on, and the route's
     // stub refuses. The route records `job_id` and `handling` itself once this
     // returns an id, so the handler is given no `onStatusChange` of its own.

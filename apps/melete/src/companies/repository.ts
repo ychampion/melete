@@ -10,7 +10,7 @@
  */
 
 import type { Company, CompanyMap, LedgerItem, LedgerItemStatus } from '@melete/contracts';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { newId } from '../ids.ts';
@@ -60,9 +60,17 @@ export interface CompanyStore {
       itemsFound: number;
       counts: Record<string, number>;
       error?: string;
+      /** Model calls the scan made. */
+      modelCalls?: number;
     },
   ): Promise<void>;
   scan(owner: Owner, scanId: string): Promise<ScanRecord | null>;
+  /** Of these message ids, the ones an extraction call has already answered for. */
+  extractedMessageIds(owner: Owner, messageIds: readonly string[]): Promise<Set<string>>;
+  /** Record that an extraction call answered for these messages. */
+  markExtracted(owner: Owner, messageIds: readonly string[]): Promise<void>;
+  /** Model calls a person's scans made since a moment, across all their spaces. */
+  modelCallsSince(principalId: string, since: Date): Promise<number>;
   /**
    * Messages and companies are written for a scan, and only while that scan's
    * row is there. Removing a space deletes its scans first, so a scan still
@@ -81,6 +89,12 @@ export interface CompanyStore {
   item(owner: Owner, id: string): Promise<LedgerDetail | null>;
   setStatus(owner: Owner, id: string, status: LedgerItemStatus): Promise<LedgerItem | null>;
   setJob(owner: Owner, id: string, jobId: string): Promise<LedgerItem | null>;
+  /**
+   * Run `work` as the only holder of `key` across every process that shares
+   * this store, with a store bound to that exclusive section. A check followed
+   * by a write inside it cannot be interleaved with the same check elsewhere.
+   */
+  exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T>;
 }
 
 const iso = (value: Date | string): string =>
@@ -201,6 +215,17 @@ export async function closeInterruptedScans(db: Database): Promise<number> {
 export class PostgresCompanyStore implements CompanyStore {
   constructor(private readonly db: Database) {}
 
+  /** A transaction-scoped advisory lock on the key, released when the work commits or fails. */
+  async exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      // A section held too long, by a stalled process or a lost connection, fails
+      // this request rather than queueing every press behind it indefinitely.
+      await tx.execute(sql`set local lock_timeout = '15s'`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`companies:${key}`}))`);
+      return work(new PostgresCompanyStore(tx as unknown as Database));
+    });
+  }
+
   async runningScan(owner: Owner): Promise<ScanRecord | null> {
     const [row] = await this.db
       .select()
@@ -233,9 +258,48 @@ export class PostgresCompanyStore implements CompanyStore {
         itemsFound: result.itemsFound,
         counts: result.counts,
         error: result.error ?? null,
+        modelCalls: result.modelCalls ?? 0,
         finishedAt: new Date(),
       })
       .where(and(ownedScan(owner), eq(companyScan.id, scanId)));
+  }
+
+  async extractedMessageIds(owner: Owner, messageIds: readonly string[]): Promise<Set<string>> {
+    if (!messageIds.length) return new Set();
+    const rows = await this.db
+      .select({ messageId: companyMessage.messageId })
+      .from(companyMessage)
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          inArray(companyMessage.messageId, [...messageIds]),
+          isNotNull(companyMessage.extractedAt),
+        ),
+      );
+    return new Set(rows.map((row) => row.messageId));
+  }
+
+  async markExtracted(owner: Owner, messageIds: readonly string[]): Promise<void> {
+    if (!messageIds.length) return;
+    await this.db
+      .update(companyMessage)
+      .set({ extractedAt: new Date() })
+      .where(
+        and(
+          eq(companyMessage.spaceId, owner.spaceId),
+          ownJob(companyMessage.principalId, owner.principalId),
+          inArray(companyMessage.messageId, [...messageIds]),
+        ),
+      );
+  }
+
+  async modelCallsSince(principalId: string, since: Date): Promise<number> {
+    const [row] = await this.db
+      .select({ calls: sql<number>`coalesce(sum(${companyScan.modelCalls}), 0)::int` })
+      .from(companyScan)
+      .where(and(eq(companyScan.principalId, principalId), gte(companyScan.startedAt, since)));
+    return Number(row?.calls ?? 0);
   }
 
   async scan(owner: Owner, scanId: string): Promise<ScanRecord | null> {
@@ -472,6 +536,21 @@ export class MemoryCompanyStore implements CompanyStore {
   private key(owner: Owner, suffix: string) {
     return `${owner.spaceId}|${owner.principalId}|${suffix}`;
   }
+  private readonly held = new Map<string, Promise<unknown>>();
+  /** One process holds all of this store, so a queue per key is the whole of exclusivity. */
+  async exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T> {
+    const run = (this.held.get(key) ?? Promise.resolve()).then(
+      () => work(this),
+      () => work(this),
+    );
+    const tail = run.catch(() => undefined);
+    this.held.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.held.get(key) === tail) this.held.delete(key);
+    }
+  }
   private mine(owner: Owner, row: Owner) {
     return row.spaceId === owner.spaceId && row.principalId === owner.principalId;
   }
@@ -511,6 +590,22 @@ export class MemoryCompanyStore implements CompanyStore {
       error: result.error ?? null,
       finishedAt: new Date().toISOString(),
     });
+    this.calls.set(scanId, result.modelCalls ?? 0);
+  }
+  private readonly calls = new Map<string, number>();
+  private readonly extracted = new Set<string>();
+  async extractedMessageIds(owner: Owner, messageIds: readonly string[]): Promise<Set<string>> {
+    return new Set(messageIds.filter((id) => this.extracted.has(this.key(owner, id))));
+  }
+  async markExtracted(owner: Owner, messageIds: readonly string[]): Promise<void> {
+    for (const id of messageIds) this.extracted.add(this.key(owner, id));
+  }
+  async modelCallsSince(principalId: string, since: Date): Promise<number> {
+    let total = 0;
+    for (const row of this.scans.values())
+      if (row.principalId === principalId && Date.parse(row.startedAt) >= since.getTime())
+        total += this.calls.get(row.id) ?? 0;
+    return total;
   }
   async scan(owner: Owner, scanId: string): Promise<ScanRecord | null> {
     const row = this.scans.get(scanId);

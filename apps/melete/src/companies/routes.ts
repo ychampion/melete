@@ -27,7 +27,7 @@ import { requestPrincipal, spaceAuthority } from '../principals/authority.ts';
 import type { CompanyExtractor } from './extract.ts';
 import { HandlerUnavailable, type LedgerItemHandler, stubLedgerItemHandler } from './handler.ts';
 import type { ScanMailbox } from './mailbox.ts';
-import type { CompanyStore, LedgerDetail, Owner } from './repository.ts';
+import type { CompanyStore, LedgerDetail, Owner, ScanRecord } from './repository.ts';
 import { runScan } from './scan.ts';
 
 export const ledgerStatusChange = z.strictObject({ status: z.enum(['dropped', 'settled']) });
@@ -52,6 +52,8 @@ export type CompaniesDeps = {
    */
   schedule?: (work: () => Promise<void>) => void | Promise<void>;
   now?: () => Date;
+  /** Model calls one person's scans may make in a day. Left out, there is no daily limit. */
+  dailyCalls?: number;
 };
 
 /**
@@ -104,6 +106,7 @@ async function findItem(
   deps: CompaniesDeps,
   id: string,
   spaceHint?: string,
+  store: CompanyStore = deps.store,
 ): Promise<LedgerDetail & { owner: Owner }> {
   const owners: Owner[] = [];
   if (spaceHint) owners.push(await ownerFor(deps.db, spaceHint));
@@ -114,13 +117,67 @@ async function findItem(
         owners.push({ spaceId, principalId });
   }
   for (const owner of owners) {
-    const found = await deps.store.item(owner, id);
+    const found = await store.item(owner, id);
     if (found) return { ...found, owner };
   }
   throw new ServiceError('not_found', 'Not found.', 404);
 }
 
+/**
+ * Work that must see the result of the last request for the same thing before
+ * it decides anything. A check followed by a write is only as good as the gap
+ * between them, and a doubled click lands in that gap.
+ *
+ * The store holds the key for the whole section, across every process that
+ * shares its database. In front of that, a queue per key keeps a second request
+ * in this process from holding a database connection while it waits, and at
+ * most a few sections run at once, so the connections the work itself needs,
+ * such as creating a job, are always there to be had.
+ */
+const SECTIONS_AT_ONCE = 4;
+function sections(store: CompanyStore) {
+  const tails = new Map<string, Promise<unknown>>();
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const bounded = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (active >= SECTIONS_AT_ONCE) await new Promise<void>((resolve) => waiting.push(resolve));
+    active += 1;
+    try {
+      return await work();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
+  return async <T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T> => {
+    const section = () => bounded(() => store.exclusive(key, work));
+    const run = (tails.get(key) ?? Promise.resolve()).then(section, section);
+    const tail = run.catch(() => undefined);
+    tails.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (tails.get(key) === tail) tails.delete(key);
+    }
+  };
+}
+
+/** What a scan that stopped at the day's allowance says about the messages it left. */
+export const SCAN_ALLOWANCE_NOTE = 'Some messages will be read on your next scan tomorrow.';
+
+/** One scan as its person sees it. The note is additive: a scan that read everything has none. */
+export function scanView(record: ScanRecord) {
+  return {
+    status: record.status,
+    messages_seen: record.messagesSeen,
+    items_found: record.itemsFound,
+    ...(record.error ? { error: record.error } : {}),
+    ...((record.counts.daily_allowance_reached ?? 0) > 0 ? { note: SCAN_ALLOWANCE_NOTE } : {}),
+  };
+}
+
 export function mountCompanies(app: Hono, deps: CompaniesDeps) {
+  const exclusively = sections(deps.store);
   const handler = deps.handler ?? stubLedgerItemHandler();
   const now = deps.now ?? (() => new Date());
   const schedule =
@@ -132,18 +189,28 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   app.post('/spaces/:spaceId/companies/scan', async (c) => {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
     // One scan at a time. Asking again while one runs hands back the one that is
-    // running, so a doubled click does not read the mailbox twice.
-    const running = await deps.store.runningScan(owner);
-    if (running) return c.json({ scan_id: running.id, status: 'running' as const }, 200);
-    const mailbox = await deps.mailbox(owner);
-    if (!mailbox)
-      throw new ServiceError('not_connected', 'No mailbox is connected to this space.', 409);
-    const record = await deps.store.openScan(owner);
+    // running, so a doubled click does not read the mailbox twice. The check and
+    // the opening happen in one turn, so a second click cannot land between them.
+    const opened = await exclusively(
+      `scan:${owner.spaceId}:${owner.principalId}`,
+      async (store) => {
+        const running = await store.runningScan(owner);
+        if (running) return { running, started: null };
+        const mailbox = await deps.mailbox(owner);
+        if (!mailbox)
+          throw new ServiceError('not_connected', 'No mailbox is connected to this space.', 409);
+        return { running: null, started: { mailbox, record: await store.openScan(owner) } };
+      },
+    );
+    if (!opened.started)
+      return c.json({ scan_id: opened.running.id, status: 'running' as const }, 200);
+    const { mailbox, record } = opened.started;
     await schedule(async () => {
       await runScan({
         store: deps.store,
         mailbox,
         extractor: deps.extractor,
+        ...(deps.dailyCalls === undefined ? {} : { dailyCalls: deps.dailyCalls }),
         owner,
         now: now(),
         scan: record,
@@ -156,12 +223,7 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
     const owner = await ownerFor(deps.db, c.req.param('spaceId'));
     const record = await deps.store.scan(owner, c.req.param('scanId'));
     if (!record) throw new ServiceError('not_found', 'No such scan.', 404);
-    return c.json({
-      status: record.status,
-      messages_seen: record.messagesSeen,
-      items_found: record.itemsFound,
-      ...(record.error ? { error: record.error } : {}),
-    });
+    return c.json(scanView(record));
   });
 
   app.get('/spaces/:spaceId/companies', async (c) => {
@@ -196,31 +258,36 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
   });
 
   app.post('/ledger/:id/handle', async (c) => {
-    const found = await findItem(deps, c.req.param('id'), c.req.query('space_id'));
-    // Handling an item twice would write to a company twice. An item that
-    // already names a job is already being handled, so the job it names is the
-    // answer and the playbook is not asked again — the same rule the rest of
-    // the product follows about never saying the same thing twice.
-    if (found.item.job_id) return c.json({ job_id: found.item.job_id }, 200);
-    // Which mailbox the message would leave from is the installation's to decide,
-    // not the caller's: it is looked up from the space the item was found in.
-    const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
-    let result: Awaited<ReturnType<LedgerItemHandler['handleLedgerItem']>>;
-    try {
-      result = await handler.handleLedgerItem({
-        item: found.item,
-        company: found.company,
-        messageText: found.message?.text ?? null,
-        principalId: found.owner.principalId,
-        spaceId: found.owner.spaceId,
-        ...(connectionId ? { connectionId } : {}),
-      });
-    } catch (error) {
-      if (error instanceof HandlerUnavailable)
-        throw new ServiceError('not_connected', error.message, 503);
-      throw error;
-    }
-    await deps.store.setJob(found.owner, found.item.id, result.job_id);
-    return c.json({ job_id: result.job_id }, 201);
+    const id = c.req.param('id');
+    // A second press waits for the first, then reads the item it left behind.
+    const answer = await exclusively(`ledger:${id}`, async (store) => {
+      const found = await findItem(deps, id, c.req.query('space_id'), store);
+      // Handling an item twice would write to a company twice. An item that
+      // already names a job is already being handled, so the job it names is the
+      // answer and the playbook is not asked again — the same rule the rest of
+      // the product follows about never saying the same thing twice.
+      if (found.item.job_id) return { job_id: found.item.job_id, status: 200 as const };
+      // Which mailbox the message would leave from is the installation's to decide,
+      // not the caller's: it is looked up from the space the item was found in.
+      const connectionId = (await deps.sendConnection?.(found.owner)) ?? null;
+      let result: Awaited<ReturnType<LedgerItemHandler['handleLedgerItem']>>;
+      try {
+        result = await handler.handleLedgerItem({
+          item: found.item,
+          company: found.company,
+          messageText: found.message?.text ?? null,
+          principalId: found.owner.principalId,
+          spaceId: found.owner.spaceId,
+          ...(connectionId ? { connectionId } : {}),
+        });
+      } catch (error) {
+        if (error instanceof HandlerUnavailable)
+          throw new ServiceError('not_connected', error.message, 503);
+        throw error;
+      }
+      await store.setJob(found.owner, found.item.id, result.job_id);
+      return { job_id: result.job_id, status: 201 as const };
+    });
+    return c.json({ job_id: answer.job_id }, answer.status);
   });
 }

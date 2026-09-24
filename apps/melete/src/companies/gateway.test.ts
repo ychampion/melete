@@ -234,6 +234,22 @@ describe('what comes back', () => {
     expect(items).toEqual([]);
   });
 
+  test('a message the provider never answered is marked to be asked again; a bad reply is not', async () => {
+    const refused = await withGateway(responder(oneItem, [], 500), async (gateway) => {
+      await gateway.extractor.extract(request);
+      return [...gateway.unanswered];
+    });
+    expect(refused).toEqual([request.messageId]);
+    const malformed = await withGateway(
+      responder({ items: [{ kind: 'not_a_kind', kind_of_thing: true }] }),
+      async (gateway) => {
+        await gateway.extractor.extract(request);
+        return [...gateway.unanswered];
+      },
+    );
+    expect(malformed).toEqual([]);
+  });
+
   test('an item over the schema ceiling is refused whole', () => {
     const tooMany = { items: Array.from({ length: 13 }, () => oneItem.items[0]) };
     expect(parseExtractionReply(tooMany)).toEqual([]);

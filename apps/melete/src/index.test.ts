@@ -49,6 +49,30 @@ describe('health', () => {
     expect(body.status).toBe('degraded');
   });
 
+  test('a sign-in request is dropped once its body is too big, not read whole', async () => {
+    // A streamed body declares no length, so only the bytes that arrive can stop it.
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 32 * 1024 * 1024) return controller.close();
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    const res = await testApp().request('/signin/magic-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      duplex: 'half',
+    } as RequestInit);
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe(
+      'request_too_large',
+    );
+    expect(pulled).toBeLessThan(1024 * 1024);
+  });
+
   test('a protected endpoint requires a session', async () => {
     const res = await testApp().request('/jobs');
     expect(res.status).toBe(401);

@@ -127,7 +127,7 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
           }
           chunks.push(Buffer.from(chunk));
         });
-        response.once('error', reject);
+        response.on('error', reject);
         response.once('end', () => {
           const headers: Record<string, string> = {};
           for (const [name, value] of Object.entries(response.headers)) {
@@ -147,7 +147,9 @@ export const pinnedWebRequest: WebTransport = (url, address, options) =>
       options.timeoutMs,
     );
     req.once('close', () => clearTimeout(timer));
-    req.once('error', reject);
+    // A refused certificate or a reset is reported by the request and again by
+    // its socket; the second must land on a listener, not end the process.
+    req.on('error', reject);
     req.end();
   });
 

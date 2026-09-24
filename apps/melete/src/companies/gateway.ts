@@ -70,6 +70,7 @@ export type ExtractionGatewayOptions = {
  */
 export async function openExtractionGateway(options: ExtractionGatewayOptions) {
   let spent = 0;
+  const unanswered = new Set<string>();
   const tokens = new Set<string>();
   const budget: GatewayBudget = {
     async reserve(request) {
@@ -155,6 +156,7 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
                 },
               },
             };
+      let answered = false;
       try {
         const response = await fetch(`${base}/providers/${options.provider}/v1/${protocol}`, {
           method: 'POST',
@@ -167,7 +169,11 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
           redirect: 'error',
           signal: AbortSignal.timeout(EXTRACTION_LIMITS.timeout_ms + 1000),
         });
-        if (!response.ok) return [];
+        if (!response.ok) {
+          unanswered.add(request.messageId);
+          return [];
+        }
+        answered = true;
         const result = await response.json();
         const text =
           protocol === 'responses'
@@ -181,6 +187,9 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
         // A reply that is not the schema yields no items. It never yields a guess.
         return parseExtractionReply(JSON.parse(text));
       } catch {
+        // Nothing came back at all: ask again another time. A reply that came
+        // back but was not the schema was an answer, and is not paid for twice.
+        if (!answered) unanswered.add(request.messageId);
         return [];
       } finally {
         tokens.delete(token);
@@ -190,6 +199,8 @@ export async function openExtractionGateway(options: ExtractionGatewayOptions) {
 
   return {
     extractor,
+    /** Messages whose call got no answer from the provider, for the scan to ask again. */
+    unanswered: unanswered as ReadonlySet<string>,
     get callsSpent() {
       return spent;
     },

@@ -5146,8 +5146,8 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            company: components["schemas"]["__schema374"];
-                            item: components["schemas"]["__schema377"];
+                            company: components["schemas"]["__schema375"];
+                            item: components["schemas"]["__schema378"];
                             message: {
                                 from: string;
                                 id: string;
@@ -5202,7 +5202,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema377"];
+                        "application/json": components["schemas"]["__schema378"];
                     };
                 };
                 /** @description No such item for this person */
@@ -6594,7 +6594,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema379"];
+                        "application/json": components["schemas"]["__schema380"];
                     };
                 };
                 /** @description Only the setup owner manages model sign-in */
@@ -6742,7 +6742,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema379"];
+                        "application/json": components["schemas"]["__schema380"];
                     };
                 };
                 /** @description Only the setup owner manages model sign-in */
@@ -6817,7 +6817,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["__schema379"];
+                        "application/json": components["schemas"]["__schema380"];
                     };
                 };
                 /** @description The code has not been entered yet */
@@ -6910,7 +6910,7 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            providers: components["schemas"]["__schema379"][];
+                            providers: components["schemas"]["__schema380"][];
                         };
                     };
                 };
@@ -9529,13 +9529,13 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            companies: components["schemas"]["__schema374"][];
-                            currency: components["schemas"]["__schema376"];
-                            items: components["schemas"]["__schema377"][];
+                            companies: components["schemas"]["__schema375"][];
+                            currency: components["schemas"]["__schema377"];
+                            items: components["schemas"]["__schema378"][];
                             totals: {
                                 data_holders: number;
-                                monthly_spend_minor: components["schemas"]["__schema375"];
-                                owed_to_you_minor: components["schemas"]["__schema375"];
+                                monthly_spend_minor: components["schemas"]["__schema376"];
+                                owed_to_you_minor: components["schemas"]["__schema376"];
                                 price_rises: number;
                                 promises_in_force: number;
                                 promises_lapsed: number;
@@ -9673,6 +9673,8 @@ export interface paths {
                             error?: string;
                             items_found: number;
                             messages_seen: number;
+                            /** @description Present when the scan stopped at the daily allowance; the rest are read on a later scan */
+                            note?: components["schemas"]["__schema374"];
                             /** @enum {string} */
                             status: "running" | "done" | "failed";
                         };
@@ -11473,34 +11475,35 @@ export interface components {
         __schema372: string;
         /** @constant */
         __schema373: true;
-        __schema374: {
+        __schema374: string;
+        __schema375: {
             /** @default null */
-            currency: components["schemas"]["__schema376"] | null;
+            currency: components["schemas"]["__schema377"] | null;
             domain: string;
             first_seen_at: components["schemas"]["__schema96"];
             id: string;
             last_seen_at: components["schemas"]["__schema96"];
             message_count: number;
             /** @default null */
-            monthly_spend_minor: components["schemas"]["__schema375"] | null;
+            monthly_spend_minor: components["schemas"]["__schema376"] | null;
             name: string;
             space_id: string;
         };
-        __schema375: number;
-        __schema376: string;
-        __schema377: {
+        __schema376: number;
+        __schema377: string;
+        __schema378: {
             /** @default null */
-            amount_minor: components["schemas"]["__schema375"] | null;
+            amount_minor: components["schemas"]["__schema376"] | null;
             company_id: string;
             confidence: components["schemas"]["__schema343"];
             /** @default null */
-            currency: components["schemas"]["__schema376"] | null;
+            currency: components["schemas"]["__schema377"] | null;
             /** @enum {string} */
             direction: "owed_to_you" | "you_pay" | "you_owe" | "info";
             /** @default null */
             due_at: components["schemas"]["__schema96"] | null;
             due_date_only?: boolean;
-            evidence: components["schemas"]["__schema378"][];
+            evidence: components["schemas"]["__schema379"][];
             id: string;
             /** @default null */
             job_id: string | null;
@@ -11514,56 +11517,56 @@ export interface components {
             suggested_playbook: string | null;
             summary: string;
         };
-        __schema378: {
+        __schema379: {
             end: number;
             message_id: string;
             quote: string;
             start: number;
         };
-        __schema379: {
+        __schema380: {
             /** @description The signed-in account, when the provider names one */
-            account: components["schemas"]["__schema380"] | null;
+            account: components["schemas"]["__schema381"] | null;
             /** @description When the current access token expires. The gateway refreshes before then. */
             expires_at: components["schemas"]["__schema96"] | null;
             /** @description The provider as the person knows it, for a "Sign in with" button */
             label: string;
             /** @description What happened and what to do, in plain words, whenever the person has something to do; null when signed in or signed out. */
-            message: components["schemas"]["__schema382"] | null;
+            message: components["schemas"]["__schema383"] | null;
             methods: ("device" | "browser")[];
             /** @enum {string} */
             provider: "chatgpt" | "openai-compatible";
             /** @description Why a new sign-in is needed */
-            reason: components["schemas"]["__schema381"] | null;
+            reason: components["schemas"]["__schema382"] | null;
             /**
              * @description `sign_in_required` means the provider refused a refresh; model calls to it are refused with `provider_sign_in_required` until the owner signs in again.
              * @enum {string}
              */
             state: "signed_out" | "pending" | "signed_in" | "sign_in_required";
         };
-        __schema380: string;
+        __schema381: string;
         /** @enum {string} */
-        __schema381: "refresh_expired" | "refresh_reused" | "refresh_revoked" | "refresh_refused" | "access_expired";
-        __schema382: string;
+        __schema382: "refresh_expired" | "refresh_reused" | "refresh_revoked" | "refresh_refused" | "access_expired";
         __schema383: string;
-        __schema384: number;
-        __schema385: string;
+        __schema384: string;
+        __schema385: number;
         __schema386: string;
+        __schema387: string;
         /** @enum {string} */
-        __schema387: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
-        __schema388: string | null;
-        __schema389: {
+        __schema388: "on_session_start" | "on_session_end" | "on_session_finalize" | "on_session_reset" | "pre_llm_call" | "post_llm_call" | "pre_tool_call" | "post_tool_call" | "pre_api_request" | "post_api_request" | "api_request_error" | "pre_approval_request" | "post_approval_response" | "subagent_start" | "subagent_stop" | "on_skill_lifecycle" | "on_stream_start" | "on_stream_end" | "pre_verify" | "on_compaction" | "runtime_error";
+        __schema389: string | null;
+        __schema390: {
             captured_at: components["schemas"]["__schema96"];
             duration_ms: number | null;
         };
         /** @enum {string} */
-        __schema390: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
-        __schema391: string | null;
-        __schema392: {
+        __schema391: "started" | "succeeded" | "failed" | "interrupted" | "observed" | "unknown";
+        __schema392: string | null;
+        __schema393: {
             compression_count?: number;
             in_place?: boolean;
             used_fallback?: boolean;
         };
-        __schema393: string;
+        __schema394: string;
         Action: {
             attempt_id: components["schemas"]["__schema286"];
             authorization_ref: components["schemas"]["__schema290"];
@@ -11676,13 +11679,13 @@ export interface components {
             type: components["schemas"]["__schema276"];
         };
         HookObservation: {
-            capture_id: components["schemas"]["__schema386"];
-            detail?: components["schemas"]["__schema392"];
-            name: components["schemas"]["__schema387"];
-            outcome: components["schemas"]["__schema390"];
-            redacted_args_digest: components["schemas"]["__schema391"];
-            timing: components["schemas"]["__schema389"];
-            tool_name: components["schemas"]["__schema388"];
+            capture_id: components["schemas"]["__schema387"];
+            detail?: components["schemas"]["__schema393"];
+            name: components["schemas"]["__schema388"];
+            outcome: components["schemas"]["__schema391"];
+            redacted_args_digest: components["schemas"]["__schema392"];
+            timing: components["schemas"]["__schema390"];
+            tool_name: components["schemas"]["__schema389"];
         };
         Job: {
             budget: components["schemas"]["__schema205"];
@@ -11771,66 +11774,66 @@ export interface components {
         };
         RuntimeEvent: {
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            capture_id: components["schemas"]["__schema386"];
-            dedup_key: components["schemas"]["__schema385"];
-            detail?: components["schemas"]["__schema392"];
-            local_seq: components["schemas"]["__schema384"];
-            name: components["schemas"]["__schema387"];
-            outcome: components["schemas"]["__schema390"];
-            redacted_args_digest: components["schemas"]["__schema391"];
-            timing: components["schemas"]["__schema389"];
-            tool_name: components["schemas"]["__schema388"];
+            attempt_id: components["schemas"]["__schema384"];
+            capture_id: components["schemas"]["__schema387"];
+            dedup_key: components["schemas"]["__schema386"];
+            detail?: components["schemas"]["__schema393"];
+            local_seq: components["schemas"]["__schema385"];
+            name: components["schemas"]["__schema388"];
+            outcome: components["schemas"]["__schema391"];
+            redacted_args_digest: components["schemas"]["__schema392"];
+            timing: components["schemas"]["__schema390"];
+            tool_name: components["schemas"]["__schema389"];
             /** @constant */
             type: "hook_event";
         } | {
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            capture_id: components["schemas"]["__schema386"];
-            dedup_key: components["schemas"]["__schema385"];
-            detail?: components["schemas"]["__schema392"];
+            attempt_id: components["schemas"]["__schema384"];
+            capture_id: components["schemas"]["__schema387"];
+            dedup_key: components["schemas"]["__schema386"];
+            detail?: components["schemas"]["__schema393"];
             /** @enum {string} */
             error_code: "observer_failed" | "delivery_failed" | "capture_gap";
-            local_seq: components["schemas"]["__schema384"];
-            name: components["schemas"]["__schema387"];
-            outcome: components["schemas"]["__schema390"];
-            redacted_args_digest: components["schemas"]["__schema391"];
-            timing: components["schemas"]["__schema389"];
-            tool_name: components["schemas"]["__schema388"];
+            local_seq: components["schemas"]["__schema385"];
+            name: components["schemas"]["__schema388"];
+            outcome: components["schemas"]["__schema391"];
+            redacted_args_digest: components["schemas"]["__schema392"];
+            timing: components["schemas"]["__schema390"];
+            tool_name: components["schemas"]["__schema389"];
             /** @constant */
             type: "hook_error";
         } | {
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            dedup_key: components["schemas"]["__schema385"];
-            local_seq: components["schemas"]["__schema384"];
+            attempt_id: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
+            local_seq: components["schemas"]["__schema385"];
             turn: number;
             /** @constant */
             type: "turn_started";
         } | {
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            dedup_key: components["schemas"]["__schema385"];
-            local_seq: components["schemas"]["__schema384"];
+            attempt_id: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
+            local_seq: components["schemas"]["__schema385"];
             text: string;
             /** @constant */
             type: "text_delta";
         } | {
             arguments: components["schemas"]["__schema221"];
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
+            attempt_id: components["schemas"]["__schema384"];
             call_id: string;
-            dedup_key: components["schemas"]["__schema385"];
-            local_seq: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
+            local_seq: components["schemas"]["__schema385"];
             tool: string;
             /** @constant */
             type: "tool_call_proposed";
         } | {
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
+            attempt_id: components["schemas"]["__schema384"];
             call_id: string;
-            dedup_key: components["schemas"]["__schema385"];
-            local_seq: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
+            local_seq: components["schemas"]["__schema385"];
             ok: boolean;
             result: components["schemas"]["__schema221"];
             /** @constant */
@@ -11838,17 +11841,17 @@ export interface components {
         } | {
             action_id: string;
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            dedup_key: components["schemas"]["__schema385"];
+            attempt_id: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
             kind: string;
-            local_seq: components["schemas"]["__schema384"];
+            local_seq: components["schemas"]["__schema385"];
             /** @constant */
             type: "action_requested";
         } | {
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            dedup_key: components["schemas"]["__schema385"];
-            local_seq: components["schemas"]["__schema384"];
+            attempt_id: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
+            local_seq: components["schemas"]["__schema385"];
             outcome: {
                 evidence: ({
                     artifact_id: string;
@@ -11872,7 +11875,7 @@ export interface components {
                 kind: "waiting_for_input";
                 question: string;
             } | {
-                action_ids: components["schemas"]["__schema393"][];
+                action_ids: components["schemas"]["__schema394"][];
                 /** @constant */
                 kind: "waiting_for_approval";
             } | {
@@ -11903,9 +11906,9 @@ export interface components {
         } | {
             after_seq: number;
             at: components["schemas"]["__schema96"];
-            attempt_id: components["schemas"]["__schema383"];
-            dedup_key: components["schemas"]["__schema385"];
-            local_seq: components["schemas"]["__schema384"];
+            attempt_id: components["schemas"]["__schema384"];
+            dedup_key: components["schemas"]["__schema386"];
+            local_seq: components["schemas"]["__schema385"];
             reason: string;
             /** @constant */
             type: "gap";

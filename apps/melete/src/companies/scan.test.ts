@@ -5,7 +5,7 @@ import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fix
 import { fixtureMailbox } from './mailbox.ts';
 import { messageText } from './messages.ts';
 import { MemoryCompanyStore, type Owner } from './repository.ts';
-import { runScan } from './scan.ts';
+import { runScan, SCAN_FAILED } from './scan.ts';
 import { scriptedExtractor } from './scripted.ts';
 
 const owner: Owner = {
@@ -342,9 +342,31 @@ describe('a scan whose mailbox will not answer', () => {
       now,
     });
     expect(outcome.status).toBe('failed');
-    expect(outcome.error).toBe('mail connection unavailable');
+    expect(outcome.error).toBe(SCAN_FAILED.mailbox);
     expect((await store.map(owner, now)).items).toEqual([]);
     expect((await store.scan(owner, outcome.id))?.status).toBe('failed');
+  });
+
+  test('keeps a fixed reason, never the words the failure carried', async () => {
+    const store = new MemoryCompanyStore();
+    // What a transport or a store throws can carry a server's reply, an account
+    // name or a line of somebody's mail. None of it belongs on the scan.
+    const said = 'IMAP said: login failed for billing@acme.test (Subject: your code is 482913)';
+    const failing = await runScan({
+      // The real store in every respect but one: saving a company throws.
+      store: Object.assign(Object.create(store) as MemoryCompanyStore, {
+        saveCompany: async () => {
+          throw new Error(said);
+        },
+      }),
+      mailbox: fixtureMailbox(fixtureMessages()),
+      extractor: scriptedExtractor(),
+      owner,
+      now,
+    });
+    expect(failing.status).toBe('failed');
+    expect(failing.error).toBe(SCAN_FAILED.after);
+    expect(JSON.stringify(await store.scan(owner, failing.id))).not.toContain('IMAP');
   });
 });
 

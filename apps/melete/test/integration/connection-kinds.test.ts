@@ -17,6 +17,7 @@ import {
 } from '../../src/connectors/configured.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { loadEnv } from '../../src/env.ts';
+import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
@@ -815,6 +816,99 @@ withDb('installing each kind of connection through the API', () => {
         await h.sql`select provider from connection where space_id = ${created} and configuration ? 'builtin' order by provider`;
       expect(defaults.map((row) => row.provider)).toEqual(['artifacts', 'files', 'web']);
     }
+  }, 120_000);
+
+  test('an MCP server at a private address is the setup owner’s alone', async () => {
+    if (!h || !fixture) throw new Error('Postgres unavailable');
+    let hits = 0;
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        hits += 1;
+        const message = (await request.json()) as { id?: number; method: string };
+        if (message.id === undefined) return new Response(null, { status: 202 });
+        const result =
+          message.method === 'initialize'
+            ? { protocolVersion: '2025-11-25', capabilities: { tools: {} } }
+            : {
+                tools: [
+                  { name: 'lookup', description: 'Fixture', inputSchema: { type: 'object' } },
+                ],
+              };
+        return Response.json({ jsonrpc: '2.0', id: message.id, result });
+      },
+    });
+    closers.push(() => server.stop(true));
+    const policy = {
+      id: 'inside',
+      allowed_scopes: ['mcp_inside.lookup'],
+      audience: 'owner',
+      tools: [
+        {
+          name: 'lookup',
+          alias: 'lookup',
+          required_scopes: ['mcp_inside.lookup'],
+          effect_class: 'read',
+        },
+      ],
+    };
+    const body = (url: string) => ({
+      provider: 'mcp',
+      label: 'Inside server',
+      mcp: { ...policy, url },
+    });
+
+    const made = await h.app.request(
+      '/principals',
+      h.as(h.cookie, { email: 'kinds-inside@example.test', password: 'kinds-inside-password' }),
+    );
+    expect(made.status).toBe(201);
+    const memberId = ((await made.json()) as { principal: { id: string } }).principal.id;
+    const login = await h.app.request(
+      '/login',
+      h.as('', { email: 'kinds-inside@example.test', password: 'kinds-inside-password' }),
+    );
+    const member = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // Another account's own space is refused a server on this machine, by address or by name.
+    for (const url of [`${server.url}mcp`, `http://localhost:${server.port}/mcp`]) {
+      expect((await h.install(body(url), member)).status).toBe(400);
+    }
+    // A public server with a token endpoint on this machine is refused too, before
+    // anything is opened: the refresh would otherwise post there.
+    expect(
+      (
+        await h.install(
+          {
+            ...body('https://93.184.216.34/mcp'),
+            credentials: {
+              access_token: 'inside-token',
+              refresh_token: 'inside-refresh',
+              token_url: `${server.url}token`,
+            },
+          },
+          member,
+        )
+      ).status,
+    ).toBe(400);
+    expect(hits).toBe(0);
+
+    // A row that already points inside, however it got there, is refused at every connection.
+    const [space] = await fixture.sql`select id from space
+      where kind = 'personal' and owner_principal_id = ${memberId}`;
+    const planted = newId('conn');
+    const configuration = {
+      server: { ...policy, endpoint: { transport: 'http', url: `${server.url}mcp` } },
+    };
+    await fixture.sql`insert into connection (id, space_id, provider, label, scopes, configuration, status, setup_state)
+      values (${planted}, ${String(space?.id)}, 'mcp', 'Planted', '["mcp_inside.lookup"]'::jsonb,
+        ${JSON.stringify(configuration)}::jsonb, 'error', 'error')`;
+    const checked = await h.app.request(`/connections/${planted}/health`, h.as(member, {}));
+    // Nothing reached the server on this machine, whatever the check then said.
+    expect(hits).toBe(0);
+    expect(checked.status).toBe(200);
+    expect(((await checked.json()) as { check: { status: string } }).check.status).toBe('failing');
   }, 120_000);
 
   test('a service without a master key installs nothing that needs sealing, and says why', async () => {
