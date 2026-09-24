@@ -60,6 +60,58 @@ withDb('sandbox reconciliation', () => {
     return { sql: handle.sql, scope, provider, sessions, open, sandbox };
   };
 
+  test('a paused workspace whose resume outlived its lease keeps its sandbox', async () => {
+    const { sql, scope, provider } = await setup();
+    // An id minted long ago, so the margin that spares a session still being
+    // created cannot be what keeps the sandbox.
+    const sessions = new SandboxSessions(sql, {
+      leaseSeconds: 300,
+      workspaceRetentionSeconds: 86_400,
+      ids: () => oldSession(21),
+    });
+    const workspace = await sessions.openWorkspace(
+      {
+        connectionId: scope.connectionId,
+        spaceId: scope.spaceId,
+        jobId: scope.jobId,
+        attemptId: await scope.attempt(),
+        agentId: scope.agentId,
+        persistence: 'pause',
+      },
+      provider,
+      sessionSpec('install-a', scope.spaceId, scope.connectionId),
+      signal(),
+    );
+    const suspended = await sessions.suspendWorkspace(workspace.id, provider, signal());
+    const paused = suspended.resumeRef ?? '';
+    expect(
+      await provider.inspect(
+        { providerSandboxId: paused, imageDigest: null, region: null },
+        signal(),
+      ),
+    ).toBe('paused');
+    // A resume began and the process stopped: the row is opening, has no
+    // sandbox of its own yet, and its lease has run out.
+    await sql`update sandbox_session set status = 'opening',
+        provider_sandbox_id = ${`pending:${workspace.id}`},
+        lease_expires_at = now() - interval '1 hour'
+      where id = ${workspace.id}`;
+    const report = await reconcileSandboxes({
+      sql,
+      provider,
+      project: 'install-a',
+      connectionId: scope.connectionId,
+      signal: signal(),
+    });
+    expect(report.destroyed).toEqual([]);
+    expect(
+      await provider.inspect(
+        { providerSandboxId: paused, imageDigest: null, region: null },
+        signal(),
+      ),
+    ).toBe('paused');
+  });
+
   test('a workspace suspended as a snapshot is not asked about, and is never marked lost', async () => {
     const { sql, scope, provider, sessions } = await setup();
     const workspace = await sessions.openWorkspace(

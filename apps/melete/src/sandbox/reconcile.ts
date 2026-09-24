@@ -52,9 +52,11 @@ export async function reconcileSandboxes(options: {
       provider_sandbox_id: string;
       status: string;
       persistence: string;
+      resume_ref: string | null;
       leased: boolean;
     }[]
-  >`select id, provider_sandbox_id, status, persistence, lease_expires_at > now() as leased
+  >`select id, provider_sandbox_id, status, persistence, resume_ref,
+      lease_expires_at > now() as leased
     from sandbox_session
     where adapter = ${provider.capabilities.adapter}
       and status in ('opening', 'ready', 'paused', 'closing')
@@ -62,6 +64,11 @@ export async function reconcileSandboxes(options: {
   const live = new Set<string>();
   const lost: string[] = [];
   for (const row of rows) {
+    // A pause workspace's sandbox is its resume reference while the row is
+    // paused, being resumed or being closed, whatever its own lease says: the
+    // row still owns it, and destroying it would take the agent's files.
+    if (row.persistence === 'pause' && row.resume_ref && row.status !== 'ready')
+      live.add(row.resume_ref);
     const pending = row.provider_sandbox_id.startsWith(PENDING_SANDBOX);
     if (row.status === 'opening') {
       if (row.leased) {
