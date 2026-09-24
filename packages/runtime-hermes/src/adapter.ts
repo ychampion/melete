@@ -68,6 +68,8 @@ export type HermesAdapterOptions = {
   baseUrl: string;
   /** `API_SERVER_KEY`, when the API server is configured to require one. */
   token?: string;
+  /** The workspace path the launched engine writes to, when it is not the bundle's. */
+  workspace?: string;
   parkedActions: ParkedActions;
   catalogState?: CatalogState;
   /** A typed, service-owned wait record, never inferred from reply text. */
@@ -87,7 +89,11 @@ export class HermesRuntimeAdapter implements RuntimeAdapter {
 
   constructor(options: HermesAdapterOptions) {
     this.options = options;
-    this.client = new HermesClient({ baseUrl: options.baseUrl, token: options.token });
+    this.client = new HermesClient({
+      baseUrl: options.baseUrl,
+      token: options.token,
+      workspace: options.workspace,
+    });
     this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   }
 

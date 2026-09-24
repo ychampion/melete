@@ -14,11 +14,12 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { type AttemptBundle, prefixedId } from '@melete/contracts';
+import { type AttemptBundle, canonicalTimeZone, prefixedId } from '@melete/contracts';
 import {
   engineSettingsFromEnvironment,
   HERMES_PINNED_COMMIT,
   renderEngineConfig,
+  renderSoul,
 } from '@melete/runtime-hermes';
 import { stringify } from 'yaml';
 import { modelApiMode } from '../gateway/providers.ts';
@@ -31,6 +32,12 @@ export type RuntimeInstance = {
   baseUrl: string;
   token: string;
   coldStartMs: number;
+  /**
+   * The workspace as the engine sees it: the job's own directory for a process
+   * engine, `/work` inside a container. For the service's own use; the prompt
+   * never carries a host path (see `promptWorkspace`).
+   */
+  workspace: string;
   stop(): Promise<void>;
 };
 export interface RuntimeSupervisor {
@@ -92,6 +99,9 @@ export function attemptEnvironment(
     MELETE_MODEL_PROVIDER: bundle.model.provider,
     MELETE_MODEL_NAME: bundle.model.model,
     MELETE_MODEL_API_MODE: modelApiMode(bundle.model.provider, bundle.model.model),
+    // The engine dates the conversation in this zone, read before its config.
+    // A space with no profile is UTC, never the host's zone.
+    HERMES_TIMEZONE: canonicalTimeZone(bundle.time_zone),
     PYTHONUNBUFFERED: '1',
     PYTHONDONTWRITEBYTECODE: '1',
   };
@@ -330,6 +340,9 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
         ...engineSettingsFromEnvironment(),
       });
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
+      // Melete's identity takes the engine's identity slot; without it the
+      // engine seeds its own stock persona into the fresh home.
+      await writeFile(join(home, 'SOUL.md'), renderSoul(), { mode: 0o600 });
       signal.throwIfAborted();
       const spawnedAt = Date.now();
       child = spawn(
@@ -384,6 +397,7 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
           baseUrl,
           token,
           coldStartMs: Date.now() - started,
+          workspace,
           stop: async () => {
             signal.removeEventListener('abort', abort);
             await stop();
@@ -568,6 +582,8 @@ export class DockerRuntimeSupervisor implements RuntimeSupervisor {
         baseUrl,
         token,
         coldStartMs: Date.now() - started,
+        // The job's directory is mounted at /work, which is also the workdir.
+        workspace: '/work',
         stop: async () => {
           signal.removeEventListener('abort', abort);
           await stop();

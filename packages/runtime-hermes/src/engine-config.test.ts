@@ -4,6 +4,7 @@ import { join, relative } from 'node:path';
 import { GATEWAY_MAX_REQUEST_BYTES } from '@melete/contracts';
 import { parse } from 'yaml';
 import {
+  API_SERVER_HINT,
   compactionThresholdTokens,
   DEFAULT_COMPACTION_MAX_TOKENS,
   DEFAULT_ENGINE_MAX_TURNS,
@@ -14,6 +15,7 @@ import {
   IMAGE_ENGINE_OPTIONS,
   renderEngineConfig,
 } from './engine-config.ts';
+import { renderSoul } from './instructions.ts';
 
 const base = {
   provider: 'fireworks',
@@ -65,7 +67,15 @@ test('the rendered configuration pins the keys the engine actually reads', () =>
     provider: '',
   });
   expect(config.skills).toBeUndefined();
-  expect(config.agent).toEqual({ max_turns: DEFAULT_ENGINE_MAX_TURNS });
+  // environment_probe is read under `agent:` (agent/agent_init.py:1336);
+  // host_prompt is the checked prompt seam in patches/observer_bridge.py.
+  expect(config.agent).toEqual({
+    max_turns: DEFAULT_ENGINE_MAX_TURNS,
+    environment_probe: false,
+    host_prompt: false,
+  });
+  // platform_hints is read at the top level (agent/agent_init.py:1352).
+  expect(config.platform_hints).toEqual({ api_server: { replace: API_SERVER_HINT } });
   expect(config.tool_loop_guardrails).toEqual({ hard_stop_enabled: true });
   expect(config.checkpoints).toEqual({ enabled: false });
   expect(config.curator).toEqual({ enabled: false });
@@ -207,6 +217,10 @@ test('operator settings are read once and refused when they are not numbers', ()
   expect(() => engineSettingsFromEnvironment({ MELETE_MODEL_CONTEXT_WINDOW: '-1' })).toThrow(
     RangeError,
   );
+});
+
+test('the identity in the image is the one every attempt is given', () => {
+  expect(readFileSync(join(import.meta.dir, '..', 'config', 'SOUL.md'), 'utf8')).toBe(renderSoul());
 });
 
 test('the configuration in the image is what the renderer produces', () => {

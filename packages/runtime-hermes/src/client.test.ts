@@ -16,6 +16,7 @@ import {
   measureRenderedInput,
   renderInput,
   renderInstructions,
+  renderSoul,
 } from './instructions.ts';
 
 const SUFFIX = '01J8ZP3QWABCDEFGHJKMNPQRST';
@@ -201,6 +202,7 @@ describe('context assembly', () => {
       },
     ];
     const rendered = [
+      renderSoul(),
       renderInstructions(representative),
       renderInput(representative),
       JSON.stringify(representative.tools),
@@ -345,9 +347,20 @@ describe('context assembly', () => {
     expect(IDENTITY).toContain('receipt');
   });
 
-  test('the instructions are identity, then skills, then knowledge', () => {
+  test("the run names the workspace it is given in place of the bundle's", () => {
+    const current = 'the current directory (.)';
+    const placed = new HermesClient({ baseUrl: 'http://127.0.0.1:1', workspace: current });
+    const body = JSON.parse(placed.startRun(bundle).body ?? '{}') as { instructions: string };
+    expect(body.instructions).toContain(`Workspace: ${current}.`);
+    expect(body.instructions).not.toContain('Workspace: /work.');
+    // A container engine is told the bundle's own path.
+    expect(client.renderSystem(bundle)).toContain('Workspace: /work.');
+  });
+
+  test("the identity is the engine home's SOUL.md, whole, and the instructions do not repeat it", () => {
+    expect(renderSoul()).toBe(`${IDENTITY}\n`);
     const system = client.renderSystem(bundle);
-    expect(system.indexOf(IDENTITY)).toBe(0);
+    expect(system).not.toContain(IDENTITY);
     expect(system.indexOf('draft-follow-up')).toBeLessThan(system.indexOf('already knows'));
   });
 
@@ -360,6 +373,16 @@ describe('context assembly', () => {
     expect(system).toContain('- summarize-a-source: Summarise a file or a page.');
     expect(system).toContain('read it with skills.read');
     expect(client.renderSystem(bundle)).not.toContain('Other skills you can read');
+  });
+
+  test("a conversation's persona is layered first in the instructions, never in place of the identity", () => {
+    const persona =
+      "In this conversation you are Nova, one of the person's agents. Tone: Calm. Standing instruction: Keep plans small.";
+    const system = client.renderSystem({ ...bundle, identity: persona });
+    expect(system.startsWith('# Who is speaking')).toBe(true);
+    expect(system).toContain(persona);
+    expect(system).toContain("Everything in Melete's identity above still holds.");
+    expect(system.indexOf(persona)).toBeLessThan(system.indexOf('draft-follow-up'));
   });
 
   test('every knowledge excerpt carries where it came from', () => {

@@ -1,4 +1,5 @@
 import {
+  canonicalTimeZone,
   experienceCalendarEvent,
   experienceConnection,
   experienceSearch,
@@ -70,7 +71,8 @@ export class ExperienceHome {
           row
             ? {
                 name: row.name,
-                time_zone: row.timeZone,
+                // A zone stored before names were required reads as its canonical name, or UTC.
+                time_zone: canonicalTimeZone(row.timeZone),
                 day_hours: { start: row.dayStart, end: row.dayEnd },
               }
             : { name: 'there', time_zone: 'UTC', day_hours: { start: '08:00', end: '22:00' } },
@@ -103,7 +105,7 @@ export class ExperienceHome {
     const values = {
       spaceId,
       name: input.name,
-      timeZone: input.time_zone,
+      timeZone: canonicalTimeZone(input.time_zone),
       dayStart: input.day_hours.start,
       dayEnd: input.day_hours.end,
     };

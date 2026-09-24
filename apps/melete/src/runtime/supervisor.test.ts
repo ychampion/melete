@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AttemptBundle, EMPTY_SINCE_LAST } from '@melete/contracts';
-import { HERMES_PINNED_COMMIT } from '@melete/runtime-hermes';
+import { API_SERVER_HINT, HERMES_PINNED_COMMIT, renderSoul } from '@melete/runtime-hermes';
 import { parse } from 'yaml';
 import { EngineRegistry, type ProcessTable, systemProcesses } from './engines.ts';
 import { resolvePython } from './python.ts';
@@ -80,7 +80,12 @@ describe('runtime launch boundaries', () => {
         `import http.server, json, os, pathlib
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        data = (pathlib.Path(os.environ['HERMES_HOME']) / 'config.yaml').read_bytes()
+        home = pathlib.Path(os.environ['HERMES_HOME'])
+        data = (
+            (home / 'SOUL.md').read_bytes() if self.path == '/soul'
+            else os.environ.get('HERMES_TIMEZONE', '').encode() if self.path == '/timezone'
+            else (home / 'config.yaml').read_bytes()
+        )
         self.send_response(200)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -92,9 +97,18 @@ pathlib.Path(os.environ['MELETE_RUNTIME_ADDRESS_FILE']).write_text(json.dumps({'
 server.serve_forever()
 `,
       );
-      const instance = await supervisor.launch(bundle, new AbortController().signal);
+      const instance = await supervisor.launch(
+        { ...bundle, time_zone: 'Pacific/Chatham' },
+        new AbortController().signal,
+      );
       const response = await fetch(`${instance.baseUrl}/config`);
       const config = parse(await response.text());
+      // The engine's workspace is the job's own directory on this path.
+      expect(instance.workspace).toBe(await realpath(join(root, 'work', bundle.attempt.job_id)));
+      // Melete's identity takes the engine's identity slot, and the engine
+      // dates the conversation in the person's zone.
+      expect(await (await fetch(`${instance.baseUrl}/soul`)).text()).toBe(renderSoul());
+      expect(await (await fetch(`${instance.baseUrl}/timezone`)).text()).toBe('Pacific/Chatham');
       expect(config.provider).toBeUndefined();
       // The capability sits in both places: the main agent reads the provider
       // entry, the compaction summary client reads the model section.
@@ -116,7 +130,12 @@ server.serve_forever()
         user_profile_enabled: false,
         provider: '',
       });
-      expect(config.agent).toEqual({ max_turns: 150 });
+      expect(config.agent).toEqual({
+        max_turns: 150,
+        environment_probe: false,
+        host_prompt: false,
+      });
+      expect(config.platform_hints.api_server.replace).toBe(API_SERVER_HINT);
       expect(config.compression.enabled).toBe(true);
       expect(config.compression.threshold_tokens).toBe(96_000);
     } finally {
@@ -201,6 +220,13 @@ server.serve_forever()
       'api-secret',
     );
     expect(astra.MELETE_MODEL_API_MODE).toBe('codex_responses');
+    // The engine is given a zone name in canonical spelling, never an offset.
+    const zone = (time_zone?: string) =>
+      attemptEnvironment({ ...bundle, time_zone }, options.brokerUrl, 'api-secret').HERMES_TIMEZONE;
+    expect(zone('utc')).toBe('UTC');
+    expect(zone('+05:30')).toBe('UTC');
+    expect(zone(undefined)).toBe('UTC');
+    expect(zone('europe/london')).toBe('Europe/London');
   });
   test('Docker mounts only this job subdirectory and never passes secrets in arguments', () => {
     const env = attemptEnvironment(bundle, options.brokerUrl, 'api-secret');

@@ -226,8 +226,14 @@ export function describeTrigger(spec: TriggerSpec): string {
 export const attemptBundle = z.object({
   principal_id: prefixedId(ID_PREFIXES.owner).optional(),
   membership_generation: z.number().int().nonnegative().optional(),
-  /** Optional personalized identity, still bounded separately from working context. */
+  /**
+   * The persona a conversation's agent speaks as: its name, tone and standing
+   * instruction. It is layered on top of Melete's own identity, which every
+   * attempt carries whole, and never replaces it.
+   */
   identity: z.string().max(1000).optional(),
+  /** The person's IANA time zone, so dates the model reads and writes are theirs. */
+  time_zone: z.string().min(1).max(64).optional(),
   attempt: z.object({
     id: prefixedId(ID_PREFIXES.attempt),
     job_id: prefixedId(ID_PREFIXES.job),

@@ -524,6 +524,21 @@ export const experienceCalendarEvent = z.strictObject({
   connection_id: id,
   url: url.optional(),
 });
+/**
+ * A time zone as the engine and every date on the page read it: an IANA name
+ * in its canonical spelling ('utc' becomes 'UTC'). An offset such as '+05:30'
+ * names no place and follows no daylight rules, so it, and anything else that
+ * is not a zone name, is UTC.
+ */
+export function canonicalTimeZone(zone: string | null | undefined): string {
+  if (!zone || !/^[A-Za-z]/.test(zone)) return 'UTC';
+  try {
+    return new Intl.DateTimeFormat('en', { timeZone: zone }).resolvedOptions().timeZone;
+  } catch {
+    return 'UTC';
+  }
+}
+
 export const profileInput = z.strictObject({
   name: z.string().min(1).max(80),
   time_zone: z
@@ -531,13 +546,15 @@ export const profileInput = z.strictObject({
     .min(1)
     .max(120)
     .refine((value) => {
+      // A zone name, not an offset: '+05:30' is refused, 'Asia/Kolkata' is not.
+      if (!/^[A-Za-z]/.test(value)) return false;
       try {
         new Intl.DateTimeFormat('en', { timeZone: value });
         return true;
       } catch {
         return false;
       }
-    }, 'Choose a time zone.'),
+    }, 'Choose a time zone by its name, for example Europe/London.'),
   day_hours: z.strictObject({
     start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
     end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
