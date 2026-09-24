@@ -99,6 +99,11 @@ export async function sweepOperational(
     await tx`delete from artifact where space_id = ${spaceId}`;
     // A rule names a connection, so it has to go before phase 8 reaches one.
     await tx`delete from experience_rule where space_id = ${spaceId}`;
+    // A sandbox session names its connection too. Its sandbox and snapshot
+    // went in the sandboxes phase, which finished on what the provider still
+    // held rather than on these rows, so the rows can go now; their command
+    // records go with them.
+    await tx`delete from sandbox_session where space_id = ${spaceId}`;
     // A memory question belongs to a space rather than to a job.
     await tx`delete from question where space_id = ${spaceId}`;
     for (const table of SPACE_KEYED_OPERATIONAL)

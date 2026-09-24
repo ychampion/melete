@@ -44,6 +44,11 @@ import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
 import { replayForNewMemory } from '../../src/memory/start.ts';
 import { refusedForRemoval, spaceAuthority } from '../../src/principals/authority.ts';
+import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
+import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
+import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
+import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
+import { sandboxRemovalTeardown } from '../../src/sandbox/wiring.ts';
 import { PathOutsideRoot, removeConfined, sweepMemory } from '../../src/spaces/plan.ts';
 import {
   type BrowserTeardown,
@@ -328,6 +333,7 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   ledger_item: 'operational',
   procedure_candidate: 'operational',
   question: 'operational',
+  sandbox_session: 'operational',
   skill: 'operational',
   task: 'operational',
   // After the jobs and actions that `restrict` them.
@@ -604,6 +610,17 @@ describe.if(handle !== null)('removing a space', () => {
 
   test('every_space_table_is_removed_by_its_named_phase — measured one phase at a time, against the catalog', async () => {
     const seeded = await seed('shared');
+    // A sandbox session already closed at its provider, so the sandboxes phase
+    // has nothing to end and the row is left for the phase that deletes it.
+    await sql`insert into sandbox_session (id, connection_id, space_id, adapter,
+        provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at,
+        closed_at)
+      values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
+        'sbx_provider', 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed', now(), now())`;
+    const sandboxes = sandboxRemovalTeardown(
+      new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
+      () => new FakeSandboxProvider(),
+    );
 
     // The inventory is whatever the live database says points at a space: a
     // foreign key to it, or a `space_id` column with no key behind it. A table
@@ -628,6 +645,7 @@ describe.if(handle !== null)('removing a space', () => {
     for (const phase of SWEEP_ORDER) {
       const halting = new AbortController();
       const removals = await service({
+        sandboxes,
         onPhase: (_id, entered) => {
           if (entered === phase) halting.abort();
         },
@@ -1027,21 +1045,85 @@ describe.if(handle !== null)('removing a space', () => {
   test('removal_never_completes_with_skipped_phase — a capability it needed and could not reach is not a zero', async () => {
     const seeded = await seed('shared');
     // The space has a sandbox session and no provider is wired to clear it.
-    await sql`create table if not exists sandbox_session (
-      id text primary key, space_id text not null, resume_ref text)`;
-    await sql`insert into sandbox_session (id, space_id, resume_ref)
-      values (${`sbx_${seeded.spaceId}`}, ${seeded.spaceId}, 'ref')`;
-    try {
-      const removals = await service();
-      const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
-      const finished = await removals.run(fenced.id);
-      expect(finished.state).toBe('blocked');
-      expect(finished.counts).toMatchObject({ omitted: { sandboxes: 'capability_absent' } });
-      expect(finished.blockedReason).toContain('sandboxes');
-      expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
-    } finally {
-      await sql`drop table if exists sandbox_session`;
-    }
+    await sql`insert into sandbox_session (id, connection_id, space_id, adapter,
+        provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+      values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'e2b',
+        'sbx_provider', 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready', now())`;
+    const removals = await service();
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const finished = await removals.run(fenced.id);
+    expect(finished.state).toBe('blocked');
+    expect(finished.counts).toMatchObject({ omitted: { sandboxes: 'capability_absent' } });
+    expect(finished.blockedReason).toContain('sandboxes');
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
+  });
+
+  test('removal_destroys_sandboxes — a space with a sandbox session ends it at the provider and finishes', async () => {
+    const seeded = await seed('shared');
+    // The fixture's connection, installed as a sandbox connection.
+    await sql`update connection set provider = 'sandbox', secret_ref = ${seeded.secretId},
+        configuration = ${JSON.stringify({
+          kind: 'sandbox',
+          sandbox: {
+            adapter: 'e2b',
+            image: 'base',
+            egress: 'deny_all',
+            persistence: 'pause',
+            lifetime_seconds: 600,
+          },
+        })}::jsonb
+      where id = ${seeded.connectionId}`;
+    const provider = new FakeSandboxProvider({ capabilities: { adapter: 'e2b' } });
+    const sessions = new SandboxSessions(sql, {
+      leaseSeconds: 300,
+      workspaceRetentionSeconds: 3_600,
+    });
+    const spec = sessionSpec('removal-test', seeded.spaceId, seeded.connectionId);
+    const running = await sessions.open(
+      {
+        connectionId: seeded.connectionId,
+        spaceId: seeded.spaceId,
+        jobId: seeded.jobId,
+        attemptId: null,
+        agentId: null,
+      },
+      provider,
+      spec,
+      AbortSignal.timeout(30_000),
+    );
+    const workspace = await sessions.openWorkspace(
+      {
+        connectionId: seeded.connectionId,
+        spaceId: seeded.spaceId,
+        jobId: seeded.jobId,
+        attemptId: null,
+        agentId: seeded.agentId,
+        persistence: 'pause',
+      },
+      provider,
+      spec,
+      AbortSignal.timeout(30_000),
+    );
+    await sessions.suspendWorkspace(workspace.id, provider, AbortSignal.timeout(30_000));
+    // What the service wires: providers built from the connection rows, since
+    // a space under removal serves no connectors.
+    const teardown = sandboxTeardownProviders({
+      sql,
+      secrets: { withSecret: async () => Promise.reject(new Error('no key is read')) },
+      project: 'removal-test',
+      open: () => ({ provider, close: async () => {} }),
+    });
+    const { finished } = await removeCompletely(seeded, {
+      sandboxes: sandboxRemovalTeardown(sessions, teardown.providerFor),
+    });
+    expect(finished.state).toBe('complete');
+    for (const sandbox of [running, workspace])
+      expect(await provider.inspect(sessionHandle(sandbox), AbortSignal.timeout(10_000))).toBe(
+        'gone',
+      );
+    expect(await countOf(sql, 'sandbox_session', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(0);
+    await teardown.close();
   });
 
   test('removal_resumes_after_crash — the phase is committed, so the next run carries on from it', async () => {

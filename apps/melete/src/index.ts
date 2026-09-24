@@ -117,7 +117,12 @@ import {
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
 import { sandboxKeyCheck } from './sandbox/connection.ts';
-import { type SandboxWiring, sandboxKeyChange, startSandboxesFromEnv } from './sandbox/wiring.ts';
+import {
+  type SandboxWiring,
+  sandboxKeyChange,
+  sandboxRemovalTeardown,
+  startSandboxesFromEnv,
+} from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -417,6 +422,7 @@ export async function bootstrap(
   let sandboxes: SandboxWiring | undefined;
   let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
   let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
+  let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
@@ -513,12 +519,14 @@ export async function bootstrap(
       // revocation destroys what the connection holds before the key goes.
       sandboxTeardown = connectors.sandboxTeardownProviders();
       const sandboxSessions = connectors.options.sandbox?.sessions;
-      if (sandboxTeardown && sandboxSessions)
+      if (sandboxTeardown && sandboxSessions) {
         releaseSandboxes = sandboxKeyChange({
           sessions: sandboxSessions,
           providerFor: sandboxTeardown.providerFor,
           withKey: sandboxTeardown.withKey,
         });
+        removeSandboxes = sandboxRemovalTeardown(sandboxSessions, sandboxTeardown.providerFor);
+      }
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {
         await sandboxes.reconcile(AbortSignal.timeout(120_000));
@@ -755,6 +763,10 @@ export async function bootstrap(
           // The registry stops answering for a space's connections before
           // their rows go, and the verification counts what it still holds.
           ...(registry ? { connectors: registry } : {}),
+          // A space's sandboxes and snapshots go through providers built from
+          // its connection rows, and the removal finishes only on what those
+          // providers say they still hold.
+          ...(removeSandboxes ? { sandboxes: removeSandboxes } : {}),
           // The worker stops, the profile goes, and the site rows with it.
           ...(browser ? { browser: browser.sessions } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),

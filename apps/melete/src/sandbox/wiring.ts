@@ -217,6 +217,28 @@ export function sandboxKeyChange(options: {
 }
 
 /**
+ * What a space removal's sandboxes phase is given: providers built from the
+ * connection rows, since a space under removal serves no connectors, the
+ * teardown, and the question the removal finishes on, asked of the providers
+ * rather than of these rows.
+ */
+export function sandboxRemovalTeardown(
+  sessions: SandboxSessions,
+  providerFor: (adapter: string, connectionId: string) => SandboxProvider,
+) {
+  return {
+    providerFor,
+    destroyWorkspacesForSpace: (
+      spaceId: string,
+      provider: typeof providerFor,
+      signal: AbortSignal,
+    ) => sessions.destroyWorkspacesForSpace(spaceId, provider, signal),
+    listWorkspacesForSpace: (spaceId: string, provider: typeof providerFor) =>
+      sessions.listWorkspacesForSpace(spaceId, provider),
+  };
+}
+
+/**
  * What the wiring needs of the connector factory, without depending on it: the
  * sandbox settings it was built with and the providers it has opened.
  */
