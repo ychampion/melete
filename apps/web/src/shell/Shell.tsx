@@ -35,15 +35,7 @@ import {
   Toggle,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import {
-  agentById,
-  lookOf,
-  sendingAddress,
-  useApp,
-  useDecisions,
-  useLoad,
-  useMedia,
-} from '../experience/hooks.ts';
+import { agentById, lookOf, useApp, useDecisions, useLoad, useMedia } from '../experience/hooks.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
@@ -237,11 +229,12 @@ function Sidebar({
   onPalette: () => void;
 }) {
   const route = useRoute();
-  const { conversations, agents } = useApp();
+  const { conversations, agents, profile } = useApp();
   const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
   const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const address = sendingAddress(decisions.permissions);
+  // The address the person sends from: the space's mail connection that can send.
+  const address = profile?.sending_address ?? null;
   return (
     <aside className="sidebar" data-open={open ? 'true' : undefined} aria-label="Sections">
       <div className="sidebar-head">
