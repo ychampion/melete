@@ -937,6 +937,41 @@ export class SandboxSessions {
   }
 
   /**
+   * Whether a provider lent another key sees what this connection holds:
+   * asked about one of its live sandboxes, or failing that one of its
+   * snapshots. False when it sees neither, when there is nothing to ask
+   * about, and when it cannot answer.
+   */
+  async visibleWith(
+    connectionId: string,
+    open: (adapter: string) => { provider: SandboxProvider; close(): Promise<void> },
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const rows = await this.sql`select adapter, provider_sandbox_id, persistence, resume_ref
+      from sandbox_session
+      where connection_id = ${connectionId} and status in ('opening', 'ready', 'paused', 'closing')
+      order by opened_at desc`;
+    for (const row of rows) {
+      const [sandboxId] = recordedSandboxes(row);
+      const snapshot = row.persistence === 'snapshot' ? (row.resume_ref as string | null) : null;
+      if (!sandboxId && !snapshot) continue;
+      const opened = open(row.adapter as string);
+      try {
+        if (sandboxId)
+          return (await opened.provider.inspect(handleOf(sandboxId), signal)) !== 'gone';
+        return snapshot && opened.provider.snapshotHeld
+          ? await opened.provider.snapshotHeld(snapshot, signal)
+          : false;
+      } catch {
+        return false;
+      } finally {
+        await opened.close();
+      }
+    }
+    return false;
+  }
+
+  /**
    * Record, as lost and with the reason, every session of a connection that
    * still holds something. Used when a connection is revoked with its
    * sandboxes not all destroyed, so what is left is stated on its rows and

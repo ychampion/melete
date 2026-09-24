@@ -151,15 +151,38 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
 export function sandboxKeyChange(options: {
   sessions: SandboxSessions;
   providerFor: (adapter: string, connectionId: string) => SandboxProvider | undefined;
+  /** A provider lent a given key, to ask whether a new key reaches the same account. */
+  withKey?: (
+    adapter: string,
+    secretRef: string,
+    spaceId: string,
+  ) => { provider: SandboxProvider; close(): Promise<void> };
   log?: (line: string) => void;
 }) {
   const say = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   return async (
     connection: { id: string; provider: string },
     change: 'revoke' | 'switch' = 'revoke',
+    next?: { secretRef: string; spaceId: string },
     signal: AbortSignal = AbortSignal.timeout(120_000),
   ): Promise<void> => {
     if (connection.provider !== 'sandbox') return;
+    // A new key that sees what the old one made is the same account's key,
+    // rotated: the sandboxes and workspaces carry on under it, since the
+    // connection lends whatever key it holds on each call. Only a key that
+    // cannot see them, another account's, means they must end now.
+    const withKey = options.withKey;
+    if (
+      change === 'switch' &&
+      next &&
+      withKey &&
+      (await options.sessions.visibleWith(
+        connection.id,
+        (adapter) => withKey(adapter, next.secretRef, next.spaceId),
+        signal,
+      ))
+    )
+      return;
     try {
       await options.sessions.destroyWorkspacesForConnection(
         connection.id,

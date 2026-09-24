@@ -26,11 +26,16 @@ import { JobService } from '../../src/jobs/service.ts';
 import { RuntimeCatalog } from '../../src/knowledge/catalog.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
-import { sandboxKeyCheck, sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
+import {
+  type SandboxProviderOptions,
+  sandboxKeyCheck,
+  sandboxTeardownProviders,
+} from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { SandboxRefusal } from '../../src/sandbox/manifest.ts';
 import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
 import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
+import type { SandboxProvider } from '../../src/sandbox/types.ts';
 import { sandboxKeyChange } from '../../src/sandbox/wiring.ts';
 import { testDatabase } from '../helpers/database.ts';
 
@@ -756,6 +761,95 @@ withDb('the sandbox connection kind', () => {
     expect(after).toMatchObject({ status: 'active', secret_ref: before?.secret_ref });
     await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
     await checking.close();
+    await teardown.close();
+  }, 120_000);
+  /**
+   * Two provider accounts behind one adapter, chosen by the key a provider
+   * is lent, the way a real API picks the account.
+   */
+  const byKey =
+    (accounts: Record<string, FakeSandboxProvider>, fallback: FakeSandboxProvider) =>
+    (
+      _config: { adapter: string },
+      options: { credential: SandboxProviderOptions['credential'] },
+    ) => {
+      const provider = new Proxy({} as SandboxProvider, {
+        get(_target, property) {
+          if (property === 'capabilities') return fallback.capabilities;
+          return async (...args: unknown[]) => {
+            const key = await options.credential(async (value) =>
+              'api_key' in value ? value.api_key : '',
+            );
+            const account = (accounts[key] ?? fallback) as unknown as Record<
+              string | symbol,
+              (...inner: unknown[]) => unknown
+            >;
+            return account[property]?.(...args);
+          };
+        },
+      });
+      return { provider, close: async () => {} };
+    };
+
+  const switchSetup = async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, opened, provider: accountA } = await revocationSetup();
+    const accountB = new FakeSandboxProvider({ capabilities: { adapter: 'e2b' } });
+    const other = 'e2b_account_b_not_a_credential_0000000';
+    const teardown = sandboxTeardownProviders({
+      sql: h.sql,
+      secrets: h.secrets,
+      project: PROJECT,
+      open: byKey({ [AUTHORING_KEY]: accountA, [other]: accountB }, accountB),
+    });
+    const policy = new PolicyService(h.jobs, undefined, {
+      beforeKeyChange: sandboxKeyChange({
+        sessions: h.sessions,
+        providerFor: teardown.providerFor,
+        withKey: teardown.withKey,
+        log: () => {},
+      }),
+    });
+    const switchTo = async (key: string) => {
+      const secretRef = await h.secrets.put(h.spaceId, JSON.stringify({ api_key: key }));
+      const [row] = await h.sql`select generation from connection where id = ${id}`;
+      await policy.changeConnection(id, {
+        kind: 'switch',
+        secret_ref: secretRef,
+        expected_generation: Number(row?.generation),
+      });
+      return secretRef;
+    };
+    return { id, opened, accountA, other, teardown, switchTo };
+  };
+
+  test('a new key for the same account keeps the sandboxes it can see', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, opened, accountA, teardown, switchTo } = await switchSetup();
+    const replacement = await switchTo(AUTHORING_KEY);
+    for (const session of opened) {
+      expect((await h.sessions.get(session.id))?.status).toBe('ready');
+      expect(await accountA.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'running',
+      );
+    }
+    const [after] = await h.sql`select secret_ref from connection where id = ${id}`;
+    expect(after?.secret_ref).toBe(replacement);
+    await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
+    await teardown.close();
+  }, 120_000);
+
+  test("a new key for another account ends the old account's sandboxes through the old key", async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    const { id, opened, accountA, other, teardown, switchTo } = await switchSetup();
+    await switchTo(other);
+    for (const session of opened) {
+      expect((await h.sessions.get(session.id))?.status).toBe('closed');
+      expect(await accountA.inspect(sessionHandle(session), AbortSignal.timeout(10_000))).toBe(
+        'gone',
+      );
+    }
+    await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
     await teardown.close();
   }, 120_000);
 });

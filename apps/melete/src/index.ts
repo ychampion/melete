@@ -517,6 +517,7 @@ export async function bootstrap(
         releaseSandboxes = sandboxKeyChange({
           sessions: sandboxSessions,
           providerFor: sandboxTeardown.providerFor,
+          withKey: sandboxTeardown.withKey,
         });
       // Boot reconciliation, before any attempt can open a session of its own.
       if (sandboxes) {

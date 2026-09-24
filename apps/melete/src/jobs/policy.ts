@@ -41,6 +41,7 @@ export class PolicyService {
       beforeKeyChange?: (
         connection: { id: string; provider: string },
         change: 'revoke' | 'switch',
+        next?: { secretRef: string; spaceId: string },
       ) => Promise<void>;
       /**
        * Asked before a switch, and before anything is torn down: the reason
@@ -269,6 +270,9 @@ export class PolicyService {
         await this.options.beforeKeyChange?.(
           { id: source.id, provider: source.provider },
           request.kind,
+          request.kind === 'switch'
+            ? { secretRef: request.secret_ref, spaceId: source.spaceId }
+            : undefined,
         );
       const [parent] = await tx
         .update(space)
