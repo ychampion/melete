@@ -512,12 +512,16 @@ withDb('each account acts only inside its own space', () => {
       const stream = await json<{
         events: { item: { type: string; decision?: { id: string; outcome: string } } }[];
       }>(await call(actor.cookie, `/conversations/${actor.conversationId}/events?limit=200`));
+      // The setup's own allowed calendar event is decided earlier on the same stream,
+      // so these two are the last decisions on it, in the order they were made.
       expect(
-        stream.events.flatMap((event) =>
-          event.item.type === 'decision' && event.item.decision
-            ? [[event.item.decision.id, event.item.decision.outcome]]
-            : [],
-        ),
+        stream.events
+          .flatMap((event) =>
+            event.item.type === 'decision' && event.item.decision
+              ? [[event.item.decision.id, event.item.decision.outcome]]
+              : [],
+          )
+          .slice(-2),
       ).toEqual([
         [actor.permissionId, 'deny'],
         [sentBody.permission?.id ?? '', 'allow_once'],
