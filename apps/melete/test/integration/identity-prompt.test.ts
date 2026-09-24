@@ -30,14 +30,14 @@ afterAll(async () => {
   await handle?.close();
 }, 30_000);
 
-/** A zone that is not this machine's, so the prompt can only have it from the profile. */
-const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const profileZone = hostZone === 'Pacific/Chatham' ? 'Pacific/Kiritimati' : 'Pacific/Chatham';
-/** How the engine names the host's zone when it has none of its own, e.g. "India Standard Time". */
-const hostZoneName =
-  new Intl.DateTimeFormat('en-US', { timeZoneName: 'long' })
-    .formatToParts(new Date())
-    .find((part) => part.type === 'timeZoneName')?.value ?? hostZone;
+/**
+ * A zone that is not this machine's, so the prompt can only have it from the
+ * profile. The test process may run in UTC, so the machine's own zone is not
+ * read from here: the engine names it as the operating system does ("India
+ * Standard Time" on the machine this was recorded on), which the assertions
+ * below rule out by that form.
+ */
+const profileZone = 'Pacific/Chatham';
 
 type Body = { messages?: { role: string; content: unknown }[] };
 const text = (content: unknown): string =>
@@ -131,10 +131,11 @@ const text = (content: unknown): string =>
       // The engine's own persona and its product pointers never reach the model.
       for (const stock of ['Hermes Agent', 'Nous Research', 'nousresearch.com'])
         expect(prompt).not.toContain(stock);
-      // The person's zone, not this machine's.
-      expect(prompt).toContain(profileZone);
-      expect(prompt).not.toContain(hostZone);
-      expect(prompt).not.toContain(hostZoneName);
+      // The person's zone, not this machine's: the date line is theirs, and no
+      // operating-system zone name such as "India Standard Time" appears.
+      expect(prompt).toMatch(/Conversation started: [^\n]*\(Pacific\/Chatham/);
+      expect(prompt).not.toMatch(/(Standard|Daylight) Time/);
+      expect(prompt).not.toContain('India Standard Time');
       // Host details that are not true for the attempt: no terminal is offered,
       // no media path convention applies, and neither the engine's home nor the
       // job's working directory on this machine is the person's business.
