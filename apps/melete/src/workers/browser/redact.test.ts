@@ -221,9 +221,7 @@ test('a code of letters alone is caught in a control name, and ordinary names ar
     ['Your PIN is', 'Your PIN is'],
     ['OTP HJKLMN', `OTP ${REDACTED}`],
     ['Token=ZXCVBN', `Token=${REDACTED}`],
-    // Any case, and five letters or nine and more, right after the word.
-    ['Use code kxqpmz', `Use code ${REDACTED}`],
-    ['Use code Kxqpmz', `Use code ${REDACTED}`],
+    // Five capitals, or nine and more, right after the word.
     ['Code KXQPM', `Code ${REDACTED}`],
     ['Copy key ABCDE', `Copy key ${REDACTED}`],
     ['Token ABCDEFGHIJKL', `Token ${REDACTED}`],
@@ -232,7 +230,18 @@ test('a code of letters alone is caught in a control name, and ordinary names ar
     ['Codes KXQPMZ, WQERTY; ZXCVBN', `Codes ${REDACTED}, ${REDACTED}; ${REDACTED}`],
   ] as const)
     expect([label, handbackLabel(label)]).toEqual([label, seen]);
-  for (const kept of ['Enter code', 'Code of CONDUCT', 'Keyboard SHORTCUTS', 'Continue'])
+  // Ordinary words after the trigger stay, so a sign-in page's own buttons can still be pressed.
+  for (const kept of [
+    'Enter code',
+    'Code of CONDUCT',
+    'Keyboard SHORTCUTS',
+    'Continue',
+    'Send code again',
+    'Use a recovery code instead',
+    'Enter code manually',
+    'Scan QR code instead',
+    'Key features',
+  ])
     expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
 });
 

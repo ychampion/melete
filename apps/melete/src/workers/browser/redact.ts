@@ -21,7 +21,7 @@ const DIGIT_RUN = /\d(?:[\s-]?\d){3,}/g;
  * The word itself is matched in the usual cases, so `Keyboard` and `Keynote` are not triggers.
  */
 const LETTER_CODE =
-  /\b((?:[Cc]odes?|CODES?|[Tt]okens?|TOKENS?|[Kk]eys?|KEYS?|PIN|[Pp]in|[Pp]asscodes?|PASSCODES?|OTP|[Oo]tp)\b[\s:=#-]*)[A-Za-z]{5,}\b((?:[\s,;]+[A-Z]{5,}\b)*)/g;
+  /\b((?:[Cc]odes?|CODES?|[Tt]okens?|TOKENS?|[Kk]eys?|KEYS?|PIN|[Pp]in|[Pp]asscodes?|PASSCODES?|OTP|[Oo]tp)\b[\s:=#-]*)[A-Z]{5,}\b((?:[\s,;]+[A-Z]{5,}\b)*)/g;
 /** A word of a control's name, with dash-joined groups kept together as one token. */
 const WORD = /[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g;
 /**
