@@ -147,3 +147,57 @@ databaseTest(
   },
   120_000,
 );
+
+/** The current migrations, stopped before the named one. */
+async function currentFolderBefore(tag: string) {
+  const journal = JSON.parse(await readFile(join(current, 'meta', '_journal.json'), 'utf8')) as {
+    version: string;
+    dialect: string;
+    entries: { idx: number; when: number; tag: string }[];
+  };
+  const entries = journal.entries.slice(
+    0,
+    journal.entries.findIndex((entry) => entry.tag === tag),
+  );
+  const folder = await mkdtemp(join(tmpdir(), 'melete-earlier-journal-'));
+  folders.push(folder);
+  await mkdir(join(folder, 'meta'));
+  for (const entry of entries)
+    await copyFile(join(current, `${entry.tag}.sql`), join(folder, `${entry.tag}.sql`));
+  await writeFile(join(folder, 'meta', '_journal.json'), JSON.stringify({ ...journal, entries }));
+  return folder;
+}
+
+databaseTest(
+  "a personal space's agents reach every connection after the upgrade; a shared space's keep none",
+  async () => {
+    const fixture = await createPostgresFixture({
+      migrationsFolder: await currentFolderBefore('0043_agent_all_connections'),
+    });
+    if (!fixture) throw new Error('Postgres fixture unavailable');
+    try {
+      await fixture.sql`insert into space (id, name, git_path, kind) values
+        ('spc_personal', 'Personal', 'spaces/personal', 'personal'),
+        ('spc_shared', 'Family', 'spaces/shared', 'shared')`;
+      const agent = (id: string, spaceId: string, allowed: string[]) =>
+        fixture.sql`insert into agent (id, space_id, name, role, colour, surface, eye_colour, tone,
+          standing_instruction, allowed_connection_ids)
+          values (${id}, ${spaceId}, 'Planner', 'Plans', '#123456', 'blob', '#ffffff', 'Warm', '',
+          ${JSON.stringify(allowed)}::jsonb)`;
+      await agent('agt_personal', 'spc_personal', []);
+      await agent('agt_narrowed', 'spc_personal', ['conn_mail']);
+      await agent('agt_shared', 'spc_shared', []);
+
+      await migrateDatabase(fixture);
+      const rows = await fixture.sql`select id, allowed_connection_ids from agent order by id`;
+      expect(Object.fromEntries(rows.map((row) => [row.id, row.allowed_connection_ids]))).toEqual({
+        agt_narrowed: ['conn_mail'],
+        agt_personal: null,
+        agt_shared: [],
+      });
+    } finally {
+      await fixture.close();
+    }
+  },
+  120_000,
+);
