@@ -491,4 +491,44 @@ withDb('the sandbox wiring', () => {
     expect(await provider.inspect(probe, signal())).toBe('running');
     await teardown.close();
   }, 60_000);
+  test('reconciliation runs again while the service runs, not only at boot', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const scope = await seedSessionScope(handle.sql);
+    const provider = new FakeSandboxProvider();
+    const sessions = new SandboxSessions(handle.sql, {
+      leaseSeconds: 900,
+      workspaceRetentionSeconds: 3_600,
+    });
+    const wiring = startSandboxes({
+      sql: handle.sql,
+      sessions,
+      providers: () => new Map([[scope.connectionId, { adapter: 'fake', provider }]]),
+      project: PROJECT,
+      sweepMs: 60_000,
+      reconcileMs: 200,
+      log: () => {},
+    });
+    wiring.start();
+    // An orphan that appears after boot, labelled for this connection.
+    const orphan = (
+      await provider.create(
+        {
+          ...sessionSpec(PROJECT, scope.spaceId)('sbx_LATEORPHAN0000000000000'),
+          labels: sandboxLabels({
+            project: PROJECT,
+            connection: scope.connectionId,
+            space: scope.spaceId,
+            session: 'sbx_LATEORPHAN0000000000000',
+          }),
+        },
+        signal(),
+      )
+    ).providerSandboxId;
+    const handleOf = { providerSandboxId: orphan, imageDigest: null, region: null };
+    const deadline = Date.now() + 20_000;
+    while ((await provider.inspect(handleOf, signal())) !== 'gone' && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    wiring.stop();
+    expect(await provider.inspect(handleOf, signal())).toBe('gone');
+  }, 60_000);
 });

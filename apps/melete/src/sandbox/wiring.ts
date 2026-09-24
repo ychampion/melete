@@ -2,8 +2,8 @@
  * What the service does about sandboxes besides running commands in them.
  *
  * Three things, all of them the service's own business rather than a job's: at
- * boot it asks each provider what it still holds and brings that into
- * agreement with the session table; on a timer it sweeps leases that ran out,
+ * boot and every hour after it asks each provider what it still holds and
+ * brings that into agreement with the session table; on a timer it sweeps leases that ran out,
  * suspends workspaces whose attempt stopped renewing them and forgets
  * workspaces nobody resumed; and when an attempt ends it suspends that
  * attempt's workspace, or closes its sandbox when there is nothing to keep.
@@ -32,6 +32,11 @@ export type SandboxWiringOptions = {
   project: string;
   /** How often the sweep runs. */
   sweepMs: number;
+  /**
+   * How often reconciliation runs again after boot, so an orphan left while
+   * the service ran is found without waiting for a restart. An hour unless set.
+   */
+  reconcileMs?: number;
   log?: (line: string) => void;
 };
 
@@ -68,6 +73,7 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
     return held?.provider;
   };
   let timer: ReturnType<typeof setInterval> | undefined;
+  let reconcileTimer: ReturnType<typeof setInterval> | undefined;
   const pending = new Set<Promise<void>>();
 
   const wiring: SandboxWiring = {
@@ -129,11 +135,19 @@ export function startSandboxes(options: SandboxWiringOptions): SandboxWiring {
         });
       }, options.sweepMs);
       timer.unref?.();
+      reconcileTimer ??= setInterval(() => {
+        void wiring.reconcile(AbortSignal.timeout(120_000)).catch(() => {
+          say('sandbox reconciliation failed');
+        });
+      }, options.reconcileMs ?? 3_600_000);
+      reconcileTimer.unref?.();
     },
 
     stop() {
       clearInterval(timer);
+      clearInterval(reconcileTimer);
       timer = undefined;
+      reconcileTimer = undefined;
     },
   };
   return wiring;
