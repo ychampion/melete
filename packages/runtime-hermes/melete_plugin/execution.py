@@ -73,18 +73,15 @@ class ExecRefused(ValueError):
 def workspace_root() -> Path:
     """The directory every execution is confined to.
 
-    In the container `/work` is the whole work volume, one directory per job,
-    and this container is one attempt of one job, so the workspace is
-    `/work/<job>` and not `/work`. That is also exactly what the broker resolves
-    when it checks the record, so the two sides agree by construction rather
-    than by coincidence. `MELETE_WORK_DIR` overrides it for the local runs,
-    where the workspace is a temporary directory rather than a mount.
+    In the container `/work` is the job's own directory: every launch mounts
+    only that job's subpath of the work volume there, and makes it the working
+    directory. The service reads the same directory as `<workRoot>/<job>` when
+    it checks the record, and a record's paths are relative to it, so the two
+    sides agree. `MELETE_WORK_DIR` overrides it for the local runs, where the
+    workspace is a temporary directory rather than a mount.
     """
     override = os.environ.get(WORK_DIR_ENV)
-    if override:
-        return Path(override)
-    job = os.environ.get("MELETE_JOB_ID")
-    return Path(DEFAULT_WORK_DIR, job) if job else Path(DEFAULT_WORK_DIR)
+    return Path(override) if override else Path(DEFAULT_WORK_DIR)
 
 
 def resolve_in_workspace(root: Path, relative: str) -> Path:

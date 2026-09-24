@@ -3,7 +3,8 @@
  *
  * The cell has no route out and every external effect is brokered, so running
  * code inside it is not a new kind of power: whatever a command does lands in
- * `/work/<job>`, which the owner can read, diff and delete. What running code
+ * the job's own directory (`/work` inside the cell, `<workRoot>/<job>` on the
+ * host), which the owner can read, diff and delete. What running code
  * does add is a record, and this file is the shape of that record.
  *
  * The execution intent is admitted before the cell starts; its result is settled afterwards,
