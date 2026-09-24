@@ -172,7 +172,7 @@ img {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-button);
   font-family: var(--font-body);
   font-weight: 500;
   line-height: 1;
@@ -263,6 +263,43 @@ img {
 .btn-block {
   width: 100%;
 }
+/* Inside a card a button sits a little lower. */
+.btn.btn-card {
+  height: 34px;
+}
+.btn.btn-hinted {
+  padding-right: 8px;
+}
+.key-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+/* A phone has no keys to press. */
+@media (max-width: 767px) {
+  .key-hint {
+    display: none;
+  }
+  .btn.btn-hinted {
+    padding-right: 14px;
+  }
+}
+.btn-primary .key-hint {
+  background: color-mix(in srgb, var(--primary-fg) 18%, transparent);
+  border-color: transparent;
+  color: var(--primary-fg);
+}
 
 .icon-btn {
   display: inline-flex;
@@ -319,6 +356,106 @@ img {
 }
 .icon-outline:hover:not(:disabled) {
   background: var(--soft);
+}
+
+/* ---------- the voice, sheets, status ---------- */
+
+/* What Melete says is set in the voice face; what a person operates is not. */
+.voice {
+  font-family: var(--font-voice);
+  font-weight: 400;
+  letter-spacing: -0.012em;
+}
+.figure {
+  font-family: var(--font-voice);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.sheet {
+  background: var(--surface);
+  border-radius: var(--radius-sheet);
+  box-shadow: var(--shadow-sheet);
+  overflow: hidden;
+}
+.lifted {
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-lift);
+}
+
+.status-pill,
+.status-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+}
+.status-pill {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  background: var(--status-bg);
+  color: var(--status-ink);
+}
+.status-quiet {
+  font-weight: 500;
+  color: var(--status-ink);
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--status-dot);
+}
+[data-tone="working"] {
+  --status-bg: var(--blue-soft);
+  --status-ink: var(--blue-ink);
+  --status-dot: var(--primary);
+}
+[data-tone="working"] > .status-dot,
+.dot-live {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+[data-tone="needs"] {
+  --status-bg: var(--sand);
+  --status-ink: var(--sand-ink);
+  --status-dot: var(--rating);
+}
+[data-tone="waiting"] {
+  --status-bg: var(--chip-bg);
+  --status-ink: var(--secondary);
+  --status-dot: var(--control);
+}
+[data-tone="late"] {
+  --status-bg: var(--danger-soft);
+  --status-ink: var(--danger);
+  --status-dot: var(--danger);
+}
+[data-tone="settled"] {
+  --status-bg: var(--success-soft);
+  --status-ink: var(--success);
+  --status-dot: var(--success);
+}
+[data-tone="kind"] {
+  --status-bg: var(--chip-bg);
+  --status-ink: var(--secondary);
+}
+.status-pill[data-tone="kind"] {
+  font-weight: 500;
+}
+
+.company-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-weight: 600;
+  line-height: 1;
 }
 
 /* ---------- small pieces ---------- */
@@ -579,17 +716,18 @@ img {
   align-items: center;
   gap: 2px;
   padding: 3px;
-  border-radius: 9px;
-  background: var(--canvas);
-  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .segmented > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
+  height: 30px;
   padding: 0 12px;
-  border-radius: 6px;
+  border-radius: 8px;
   font-family: var(--font-body);
   font-size: 13px;
   font-weight: 500;
@@ -599,10 +737,7 @@ img {
 .segmented > button[aria-pressed="true"] {
   color: var(--heading);
   background: var(--surface);
-  box-shadow: 0 1px 2px #24365a14;
-}
-:root[data-theme="dark"] .segmented > button[aria-pressed="true"] {
-  box-shadow: 0 1px 2px #00000066;
+  box-shadow: var(--shadow-pill);
 }
 
 .tabs {
@@ -990,7 +1125,19 @@ img {
   .af *,
   .af,
   .pop,
-  .slidein {
+  .slidein,
+  .dot-live,
+  [data-tone="working"] > .status-dot {
+    animation: none;
+  }
+  /*
+   * A face's states animate its parts through selectors like
+   * `.af-idle .af-eyes`, which outrank `.af *`; these match them part for part
+   * so the face holds still too.
+   */
+  .af .af-eyes,
+  .af .af-body,
+  .af .af-facets {
     animation: none;
   }
 }

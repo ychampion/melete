@@ -11,9 +11,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import type { Filter } from '../companies/format.ts';
-import { byCompany, inOrder, matches } from '../companies/format.ts';
+import { byCompany, inOrder, matches, sameFilter } from '../companies/format.ts';
 import { CompanyHeader, EmptyLedger, LedgerDetailPanel, LedgerRow } from '../companies/Ledger.tsx';
-import { TotalsRow } from '../companies/Totals.tsx';
+import { TotalsRow, totalsOf } from '../companies/Totals.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Segmented } from '../design/primitives.tsx';
 import { useMedia, useNow } from '../experience/hooks.ts';
@@ -154,6 +154,17 @@ export function CompaniesScreen() {
   const flat = useMemo(() => inOrder(items, now), [items, now]);
   const companyOf = (id: string) => map?.companies.find((company) => company.id === id);
   const nothingFound = map !== null && map.companies.length === 0 && map.items.length === 0;
+  const flatView = !grouped || phone;
+  // A money figure pressed in reading order: say what the rows add up to.
+  const pressed = map
+    ? totalsOf(map.totals, map.companies.length, map.currency).find(
+        (total) => total.filter !== null && sameFilter(total.filter, filter),
+      )
+    : undefined;
+  const caption =
+    pressed && flatView && (pressed.key === 'owed' || pressed.key === 'spend')
+      ? `The rows that make ${pressed.figure}, most urgent first`
+      : null;
 
   const rowOf = (item: (typeof flat)[number], showCompany: boolean) => (
     <div key={item.id}>
@@ -184,7 +195,7 @@ export function CompaniesScreen() {
   return (
     <Shell title="Companies" rail={false}>
       <div className="page">
-        <div className="page-head">
+        <div className="page-head" style={{ alignItems: 'flex-end' }}>
           <div className="col" style={{ gap: 6 }}>
             <h1>Companies</h1>
             <div style={{ fontSize: 14, color: 'var(--muted)' }}>
@@ -219,19 +230,21 @@ export function CompaniesScreen() {
               }}
             />
             {filter !== null ? (
-              <button
-                type="button"
-                className="chip"
-                data-on="true"
-                onClick={() => setFilter(null)}
-                style={{ alignSelf: 'flex-start' }}
-              >
-                {items.length} of {map.items.length} shown
-                <Icon name="x" size={13} />
-              </button>
+              <div className="filter-line">
+                <button
+                  type="button"
+                  className="filter-chip"
+                  aria-label={`${items.length} of ${map.items.length} shown. Show everything`}
+                  onClick={() => setFilter(null)}
+                >
+                  {items.length} of {map.items.length} shown
+                  <Icon name="x" size={13} />
+                </button>
+                {caption ? <span className="filter-caption">{caption}</span> : null}
+              </div>
             ) : null}
             <div className="ledger">
-              {grouped && !phone
+              {!flatView
                 ? groups.map((group) => (
                     <div key={group.company.id}>
                       <CompanyHeader

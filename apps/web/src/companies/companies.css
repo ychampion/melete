@@ -1,10 +1,10 @@
 /*
  * The companies screen. Two ideas carry it.
  *
- * The totals are one band rather than a row of cards: cells separated by the
- * grid's own gap showing through as a hairline, so the figures read across as
- * a single sentence about money and no cell looks more important than the one
- * beside it. They are buttons, and a pressed one keeps a rule under it.
+ * The totals are one band rather than a row of cards: the three money figures
+ * over the six counts, cells separated by hairlines, so the figures read as a
+ * single sentence about money. They are buttons, and a pressed one keeps a
+ * rule under it.
  *
  * The ledger is a table on a desktop and a stack on a phone, from one grid
  * whose columns collapse. The evidence sits inside the row it explains rather
@@ -21,73 +21,104 @@
 /* ---------- the totals band ---------- */
 
 /*
- * The hairlines are the cells' own outlines rather than a coloured background
- * showing through the gap: a row that does not fill then ends in paper rather
- * than in a grey block, at every width, whether or not the promise figures
- * are served.
+ * Three money figures over six counts, in one frame. The hairlines are the
+ * frame's colour showing through a 1px gap, and each row is its own grid, so
+ * both rows always fill the frame edge to edge.
  */
 .totals {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 1px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  background: var(--line);
+  box-shadow: 0 0 0 1px var(--line);
+  border-radius: var(--radius-sheet);
   overflow: hidden;
+  flex-shrink: 0;
+}
+.totals-money,
+.totals-counts {
+  display: grid;
+  gap: 1px;
+}
+.totals-money {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.totals-counts {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 .total {
-  outline: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-end;
   gap: 4px;
-  padding: 16px 16px 14px;
-  min-height: 92px;
+  min-width: 0;
+  padding: 14px 18px;
   background: var(--surface);
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-radius: 0;
   text-align: left;
-  cursor: pointer;
   color: var(--text);
   font: inherit;
-  transition: background 120ms ease;
+  transition:
+    background 120ms ease,
+    box-shadow 120ms ease;
 }
-.total:hover {
+.totals-money .total {
+  padding: 18px 22px;
+}
+button.total {
+  cursor: pointer;
+}
+button.total:hover {
   background: var(--row-hover);
 }
 .total[data-on="true"] {
-  background: var(--soft);
-  border-bottom-color: var(--primary);
+  box-shadow: inset 0 -2px 0 var(--heading);
+}
+.total:focus-visible {
+  border-radius: 0;
+  box-shadow: inset 0 0 0 2px var(--primary);
 }
 .total-figure {
-  font-family: var(--font-head);
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 34px;
-  letter-spacing: -0.025em;
-  font-variant-numeric: tabular-nums;
+  font-size: 28px;
+  line-height: 32px;
   color: var(--heading);
+}
+.totals-money .total-figure {
+  font-size: 40px;
+  line-height: 44px;
 }
 .total[data-tone="owed"] .total-figure {
   color: var(--success);
 }
 .total-label {
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 13px;
+  line-height: 18px;
   color: var(--muted);
+}
+.total[data-on="true"] .total-label {
+  font-weight: 600;
+  color: var(--heading);
+}
+
+@media (max-width: 1023px) {
+  .totals-counts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 767px) {
-  .totals {
-    grid-template-columns: repeat(3, 1fr);
+  .totals-money .total,
+  .totals-counts .total {
+    padding: 10px 12px;
   }
-  .total {
-    min-height: 72px;
-    padding: 10px 10px 9px;
+  .totals-money .total-figure {
+    font-size: 24px;
+    line-height: 28px;
   }
-  .total-figure {
-    font-size: 19px;
+  .totals-counts .total-figure {
+    font-size: 20px;
     line-height: 24px;
   }
   .total-label {
@@ -96,20 +127,49 @@
   }
 }
 
+/* ---------- the filter ---------- */
+
+.filter-line {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 -8px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 12px;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+.filter-caption {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* ---------- the ledger ---------- */
 
 .ledger {
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-sheet);
+  box-shadow: 0 0 0 1px var(--line);
   background: var(--surface);
   overflow: hidden;
+  flex-shrink: 0;
 }
 .ledger-group {
   display: flex;
   flex-direction: row;
-  align-items: baseline;
-  gap: 8px;
-  padding: 14px 16px 8px;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 20px;
   border-top: 1px solid var(--line);
   background: var(--soft);
 }
@@ -117,7 +177,6 @@
   border-top: 0;
 }
 .ledger-group-name {
-  font-family: var(--font-head);
   font-size: 14px;
   font-weight: 600;
   color: var(--heading);
@@ -128,20 +187,21 @@
 }
 .ledger-group-owed {
   margin-left: auto;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--success);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ledger-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 118px 96px 152px;
+  grid-template-columns: 16px minmax(0, 1fr) 112px 104px 164px;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   width: 100%;
-  padding: 10px 16px;
-  min-height: 56px;
+  padding: 10px 20px;
+  min-height: 60px;
   border: 0;
   border-top: 1px solid var(--line);
   background: var(--surface);
@@ -150,7 +210,7 @@
   color: var(--text);
   cursor: pointer;
 }
-.ledger-row:first-child {
+.ledger > div:first-child > .ledger-row {
   border-top: 0;
 }
 .ledger-row:hover {
@@ -159,41 +219,49 @@
 .ledger-row[data-open="true"] {
   background: var(--soft);
 }
+.ledger-row:focus-visible {
+  border-radius: 0;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
 .ledger-caret {
   display: flex;
-  color: var(--muted);
+  color: var(--placeholder);
+}
+.ledger-row[data-open="true"] .ledger-caret {
+  color: var(--heading);
 }
 .ledger-what {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
-}
-.ledger-company {
-  font-size: 12px;
-  color: var(--muted);
-}
-.ledger-summary {
   font-size: 14px;
   color: var(--heading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ledger-company {
+  font-weight: 600;
+}
+.ledger-sep {
+  color: var(--muted);
+}
 .ledger-amount,
 .ledger-due {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   align-items: flex-end;
   min-width: 0;
 }
-.ledger-figure,
-.ledger-day {
+.ledger-figure {
   font-size: 15px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  color: var(--heading);
+}
+.ledger-day {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--heading);
 }
 .ledger-amount[data-direction="owed_to_you"] .ledger-figure {
@@ -203,16 +271,20 @@
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ledger-due[data-late="true"] .ledger-when {
+  color: var(--danger);
 }
 .ledger-status {
   display: flex;
   flex-direction: row;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
 }
 /* A row that is settled or off the list stays readable and stops competing. */
-.ledger-row[data-faded="true"] .ledger-summary,
+.ledger-row[data-faded="true"] .ledger-what,
 .ledger-row[data-faded="true"] .ledger-figure {
   color: var(--muted);
 }
@@ -231,24 +303,30 @@
   background: linear-gradient(to right, var(--control) 50%, transparent 50%);
 }
 
+/* Beside a sidebar at laptop widths the summary keeps most of the row. */
+@media (max-width: 1179px) {
+  .ledger-row {
+    grid-template-columns: 16px minmax(0, 1fr) 88px 84px 148px;
+    gap: 12px;
+  }
+}
+
 /* ---------- the evidence ---------- */
 
 .ledger-detail {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 4px 16px 20px 48px;
+  padding: 16px 20px 20px 52px;
   border-top: 1px solid var(--line);
   background: var(--soft);
 }
 .ledger-detail-head {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding-top: 12px;
+  gap: 2px;
 }
 .ledger-detail-summary {
-  font-family: var(--font-head);
   font-size: 16px;
   font-weight: 600;
   color: var(--heading);
@@ -260,25 +338,24 @@
 .ledger-detail-gone {
   margin: 0;
   padding: 12px;
-  border: 1px dashed var(--line);
-  border-radius: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-block);
   font-size: 13px;
   color: var(--muted);
 }
 .evidence-mail {
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-block);
+  box-shadow: 0 0 0 1px var(--line);
   background: var(--surface);
   overflow: hidden;
-  max-width: 68ch;
+  max-width: 640px;
 }
 .evidence-head {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--canvas);
 }
 .evidence-subject {
   font-size: 13px;
@@ -292,20 +369,20 @@
 .evidence-text {
   margin: 0;
   padding: 14px 16px 16px;
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 22px;
-  color: var(--secondary);
+  color: var(--muted);
   white-space: pre-wrap;
   max-height: 340px;
   overflow-y: auto;
 }
 .evidence-mark {
   background: var(--sand);
-  color: var(--sand-ink);
-  border-radius: 3px;
-  padding: 1px 0;
-  box-shadow: 0 0 0 3px var(--sand);
-  font-weight: 500;
+  color: var(--heading);
+  border-radius: 4px;
+  padding: 2px 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .ledger-actions {
   display: flex;
@@ -325,7 +402,6 @@
   max-width: 60ch;
 }
 .ledger-empty-title {
-  font-family: var(--font-head);
   font-size: 18px;
   font-weight: 600;
   color: var(--heading);
@@ -381,8 +457,6 @@
   }
   .ledger-what {
     grid-area: what;
-  }
-  .ledger-summary {
     white-space: normal;
   }
   .ledger-amount {
@@ -396,8 +470,11 @@
     grid-area: status;
     justify-content: flex-start;
   }
+  .ledger-group {
+    padding: 0 12px;
+  }
   .ledger-detail {
-    padding: 4px 12px 16px;
+    padding: 12px 12px 16px;
   }
   .evidence-text {
     max-height: 260px;

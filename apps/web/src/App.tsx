@@ -4,7 +4,13 @@ import { MeleteMark } from './design/mark.tsx';
 import { Button } from './design/primitives.tsx';
 import { Sheet } from './design/Sheet.tsx';
 import { adapter } from './experience/adapter.ts';
-import { AppContext, type AppContextValue, useLoad } from './experience/hooks.ts';
+import {
+  AppContext,
+  type AppContextValue,
+  type Decisions,
+  NO_DECISIONS,
+  useLoad,
+} from './experience/hooks.ts';
 import type { Agent, Capabilities, Conversation } from './experience/types.ts';
 import { navigate, useRoute } from './router.ts';
 import { AgentsScreen } from './screens/Agents.tsx';
@@ -68,6 +74,7 @@ export function App() {
   }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [decisions, setDecisions] = useState<Decisions>(NO_DECISIONS);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [onboardedStored, setOnboardedStored] = useState<boolean | null>(readOnboarded);
   const [capabilities, setCapabilities] = useState<Capabilities>({
@@ -84,10 +91,28 @@ export function App() {
       setAgentsLoaded(true);
     });
   }, []);
+  // One refresh reads the conversations and what waits on the person, so the
+  // sidebar's dots, Home's count and the queue always agree.
   const refreshConversations = useCallback(() => {
-    void adapter.conversations().then((result) => {
-      if (result.data) setConversations(result.data.conversations);
-    });
+    void Promise.all([adapter.conversations(), adapter.permissions(), adapter.questions()]).then(
+      ([listed, permissions, questions]) => {
+        if (listed.data) setConversations(listed.data.conversations);
+        setDecisions((previous) => ({
+          permissions: permissions.data
+            ? permissions.data.permissions
+            : permissions.unavailable !== null
+              ? []
+              : previous.permissions,
+          questions: questions.data
+            ? questions.data.questions
+            : questions.unavailable !== null
+              ? []
+              : previous.questions,
+          loaded: true,
+          error: permissions.error ?? questions.error ?? null,
+        }));
+      },
+    );
   }, []);
 
   const signedIn = profile.data !== null && !signedOut;
@@ -137,6 +162,7 @@ export function App() {
     }
     setAgents([]);
     setConversations([]);
+    setDecisions(NO_DECISIONS);
     setAgentsLoaded(false);
     setSignedOut(true);
     navigate('/welcome');
@@ -154,6 +180,7 @@ export function App() {
       setOnboarded,
       agents,
       conversations,
+      decisions,
       refreshProfile,
       refreshConversations,
       refreshAgents,
@@ -169,6 +196,7 @@ export function App() {
       setOnboarded,
       agents,
       conversations,
+      decisions,
       refreshConversations,
       refreshAgents,
     ],

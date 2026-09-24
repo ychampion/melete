@@ -6,11 +6,21 @@
  * gap marker says where streamed text may be missing.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { amountWords } from '../companies/format.ts';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
-import { Menu, MenuItem, MenuSep, Overline, Popover } from '../design/primitives.tsx';
+import {
+  Button,
+  IconButton,
+  Menu,
+  MenuItem,
+  MenuSep,
+  Overline,
+  Popover,
+} from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
+import { useInFlight } from '../experience/decide.ts';
 import {
   agentById,
   lookOf,
@@ -34,13 +44,15 @@ import {
 import type {
   ActionResolution,
   LedgerAction,
+  Permission,
   PermissionOption,
   Reaction,
   RuleBounds,
   TurnStatus,
 } from '../experience/types.ts';
 import { navigate } from '../router.ts';
-import { Shell, toast } from '../shell/Shell.tsx';
+import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
+import { CasePanel, useCase } from './CasePanel.tsx';
 import { Composer } from './Composer.tsx';
 import {
   ActionBar,
@@ -147,6 +159,13 @@ function AgentChip({
   );
 }
 
+/**
+ * On the phone the decision moves to a bar at the bottom of the screen. A
+ * permission that also offers "Always allow" keeps its card footer, because
+ * that choice opens its own dialog from the card.
+ */
+const barePermission = (permission: Permission) => !permission.options.includes('always');
+
 function TurnView({
   turn,
   now,
@@ -161,6 +180,7 @@ function TurnView({
   onResolve,
   reactions = [],
   onReact,
+  busy,
 }: {
   turn: TranscriptTurn;
   now: number;
@@ -178,6 +198,8 @@ function TurnView({
   reactions?: Reaction[];
   /** Absent when the agent's bubble cannot be reacted to. */
   onReact?: (emoji: string) => void;
+  /** Whether a decision's request is in flight. */
+  busy: (id: string) => boolean;
 }) {
   const { agents } = useApp();
   const { transcript } = useTranscript();
@@ -222,6 +244,8 @@ function TurnView({
             permission={block.permission}
             decided={block.decided}
             touch={touch}
+            bare={touch && barePermission(block.permission)}
+            busy={busy(block.permission.id)}
             onDecide={(option, bounds) =>
               onDecide(block.permission.id, option, block.permission.version, bounds)
             }
@@ -233,6 +257,7 @@ function TurnView({
             key={block.question.id}
             question={block.question}
             answered={block.answered}
+            busy={busy(block.question.id)}
             active={latest && open?.id === block.question.id}
             onAnswer={(optionId) => onAnswer(block.question.id, optionId)}
             onOwn={onOwn}
@@ -322,6 +347,10 @@ export function ChatScreen({ id }: { id: string | null }) {
   const [unreactable, setUnreactable] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const touch = useMedia('(max-width: 767px)');
+  const flight = useInFlight();
+  const wide = useMedia('(min-width: 1180px)');
+  // The case panel follows the width until the person opens or closes it.
+  const [caseChoice, setCaseChoice] = useState<boolean | null>(null);
 
   const last = latestTurn(transcript);
   const composerState = transcript.composer;
@@ -487,21 +516,28 @@ export function ChatScreen({ id }: { id: string | null }) {
     [conversationId, agentId, agents, state, refreshConversations],
   );
 
-  const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) => {
-    const call =
-      option === 'always' && bounds
-        ? adapter.decideAlways(id, version, bounds)
-        : adapter.decide(id, option === 'always' ? 'allow_once' : option, version);
-    void call.then((result) => {
+  // One request per decision: a second press while the first is in flight is refused.
+  const decide = (id: string, option: PermissionOption, version: string, bounds?: RuleBounds) =>
+    void flight.run(id, async () => {
+      const result =
+        option === 'always' && bounds
+          ? await adapter.decideAlways(id, version, bounds)
+          : await adapter.decide(id, option === 'always' ? 'allow_once' : option, version);
       if (result.data === null) {
         toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t decide' });
         return;
       }
       setTranscript((previous) => markPermission(previous, id, result.data.option));
+      // Home's count and the sidebar read the same lists; refresh them together.
+      refreshConversations();
+      // The draft behind the decision has moved on; read where it stands now.
+      if (conversationId)
+        void adapter.drafts(conversationId).then((drafts) => {
+          if (drafts.data) setTranscript((previous) => setDrafts(previous, drafts.data.drafts));
+        });
       if (result.data.rule)
         toast({ kind: 'ok', title: 'Rule created', sub: result.data.rule.text });
     });
-  };
 
   const sendDraft = (handle: string) =>
     void adapter.sendDraft(handle).then((result) => {
@@ -538,32 +574,14 @@ export function ChatScreen({ id }: { id: string | null }) {
 
   const answer = useCallback(
     (questionId: string, optionId: string) =>
-      void adapter.answer(questionId, optionId).then((result) => {
+      void flight.run(questionId, async () => {
+        const result = await adapter.answer(questionId, optionId);
         if (result.data === null)
           toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t answer' });
         else setTranscript((previous) => markQuestion(previous, questionId, optionId));
       }),
-    [setTranscript],
+    [flight, setTranscript],
   );
-
-  // The newest open question in the newest turn listens to the number keys.
-  const open = openQuestion(transcript);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-      const n = Number(event.key);
-      const options = open.options.slice(0, 4);
-      if (!Number.isInteger(n) || n < 1 || n > options.length + 1) return;
-      event.preventDefault();
-      const option = options[n - 1];
-      if (option) answer(open.id, option.id);
-      else document.getElementById(`own-${open.id}`)?.focus();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, answer]);
 
   const setConversationAgent = (next: string) => {
     setAgentId(next);
@@ -576,17 +594,65 @@ export function ChatScreen({ id }: { id: string | null }) {
   };
 
   const title = conversation?.title ?? 'New chat';
+  const found = useCase(conversationId, transcript.status);
+  const pending = touch
+    ? transcript.turns
+        .flatMap((turn) => turn.blocks)
+        .find(
+          (block): block is Extract<typeof block, { type: 'permission' }> =>
+            block.type === 'permission' &&
+            block.decided === null &&
+            barePermission(block.permission),
+        )
+    : undefined;
+  const amount = found ? amountWords(found.item) : null;
+  const caseOpen = Boolean(found) && !touch && (caseChoice ?? wide);
   const agent = agentById(agents, agentId);
   const lastId = last?.id ?? null;
 
   return (
-    <Shell title={title} agentId={agentId}>
+    <Shell
+      title={title}
+      agentId={agentId}
+      phoneBack={() => (window.history.length > 1 ? window.history.back() : navigate('/'))}
+      phoneSub={
+        agent ? (
+          <>
+            <AgentFace look={lookOf(agent)} size={14} />
+            {agent.name}
+            {amount ? ` · ${amount.figure} ${amount.direction}` : ''}
+          </>
+        ) : undefined
+      }
+      rail={!found}
+      panel={
+        found && caseOpen ? (
+          <CasePanel
+            found={found}
+            transcript={transcript}
+            now={now}
+            onClose={() => setCaseChoice(false)}
+          />
+        ) : undefined
+      }
+    >
       <TranscriptContext.Provider value={{ transcript }}>
         <div className="chat">
           <div className="chat-head">
             <h1 className="clamp1">{title}</h1>
             <AgentChip agentId={agentId} onChange={setConversationAgent} />
             <div className="grow" />
+            {found ? (
+              <IconButton
+                name="panelRight"
+                label={caseOpen ? 'Hide the case' : 'Show the case'}
+                on={caseOpen}
+                aria-expanded={caseOpen}
+                onClick={() => setCaseChoice(!caseOpen)}
+              />
+            ) : (
+              <RailToggle />
+            )}
           </div>
           <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
             <div className="chat-messages">
@@ -647,6 +713,7 @@ export function ChatScreen({ id }: { id: string | null }) {
                   onOwn={(own) => void send(own)}
                   unknown={turn.id === lastId ? unknown : undefined}
                   onResolve={resolve}
+                  busy={(id) => flight.has(id)}
                   reactions={reactions.filter((r) => turnIndexForReaction(transcript, r) === index)}
                   onReact={
                     reactionMessageSeq(turn) !== null && !unreactable.has(turn.id)
@@ -664,7 +731,38 @@ export function ChatScreen({ id }: { id: string | null }) {
               ))}
             </div>
           </div>
-          <div className="chat-foot">
+          {pending ? (
+            <div className="decide-bar">
+              <span className="decide-caption">
+                <Icon name="lock" size={13} />
+                This request can be allowed once or denied.
+              </span>
+              {pending.permission.options.includes('allow_once') ? (
+                <Button
+                  block
+                  className="btn-tall"
+                  disabled={flight.has(pending.permission.id)}
+                  onClick={() =>
+                    decide(pending.permission.id, 'allow_once', pending.permission.version)
+                  }
+                >
+                  Allow once
+                </Button>
+              ) : null}
+              {pending.permission.options.includes('deny') ? (
+                <Button
+                  block
+                  variant="ghost"
+                  className="btn-tall"
+                  disabled={flight.has(pending.permission.id)}
+                  onClick={() => decide(pending.permission.id, 'deny', pending.permission.version)}
+                >
+                  Deny
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="chat-foot" hidden={Boolean(pending)}>
             <div className="chat-foot-inner">
               {!stuck ? (
                 <button

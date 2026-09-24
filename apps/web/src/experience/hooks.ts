@@ -4,6 +4,7 @@
  * conversations, and which capabilities this instance has).
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import type { FaceState } from '../design/face.tsx';
 import { adapter, type Result, subscribeConversation } from './adapter.ts';
 import {
   acceptLocalTurn,
@@ -18,7 +19,16 @@ import {
   setDrafts,
   type Transcript,
 } from './reduce.ts';
-import type { Agent, Capabilities, Conversation, Profile, Turn } from './types.ts';
+import type {
+  Agent,
+  Capabilities,
+  Conversation,
+  Permission,
+  Profile,
+  Question,
+  Turn,
+  TurnStatus,
+} from './types.ts';
 
 export type Loaded<T> = {
   data: T | null;
@@ -78,7 +88,10 @@ export type AppContextValue = {
   setOnboarded: (next: boolean) => void;
   agents: Agent[];
   conversations: Conversation[];
+  /** What waits on the person, read in the same refresh as the conversations. */
+  decisions: Decisions;
   refreshProfile: () => void;
+  /** Reads the conversations, the open permissions and the open questions together. */
   refreshConversations: () => void;
   refreshAgents: () => void;
   /** Ends the session on the service and returns to sign-in. */
@@ -95,6 +108,58 @@ export function useApp(): AppContextValue {
 
 export const agentById = (agents: Agent[], id: string | null | undefined): Agent | null =>
   (id ? agents.find((agent) => agent.id === id) : null) ?? null;
+
+/**
+ * What waits on the person: open permissions and open questions. `error` is
+ * the service's sentence when either list could not be read; the lists keep
+ * what was last read.
+ */
+export type Decisions = {
+  permissions: Permission[];
+  questions: Question[];
+  loaded: boolean;
+  error: string | null;
+};
+
+export const NO_DECISIONS: Decisions = {
+  permissions: [],
+  questions: [],
+  loaded: false,
+  error: null,
+};
+
+/** The open decisions, read once per refresh for the whole app. */
+export function useDecisions(): Decisions & { count: number } {
+  const { decisions } = useApp();
+  return { ...decisions, count: decisions.permissions.length + decisions.questions.length };
+}
+
+/** The address a company job sends from, when a permission names it. */
+export function sendingAddress(permissions: Permission[]): string | null {
+  for (const permission of permissions)
+    for (const line of permission.why)
+      if (line.startsWith('From: ')) return line.slice('From: '.length).trim() || null;
+  return null;
+}
+
+/** The face an agent wears for a conversation's status. */
+export function faceOf(status: TurnStatus | undefined): FaceState {
+  switch (status) {
+    case 'queued':
+    case 'working':
+    case 'streaming':
+      return 'working';
+    case 'done':
+      return 'done';
+    case 'failed':
+      return 'failed';
+    case 'paused':
+    case 'stopped':
+      return 'inactive';
+    default:
+      return 'idle';
+  }
+}
 
 /* ---------- conversations ---------- */
 

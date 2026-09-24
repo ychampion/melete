@@ -1,10 +1,21 @@
 /**
- * The frame every signed-in screen sits in: sidebar, topbar, the day panel on
- * the right, and the phone layout with a drawer and a bottom sheet. Every
+ * The frame every signed-in screen sits in: the sidebar on the paper, the page
+ * on a sheet beside it, the day panel as a second sheet on the right, and the
+ * phone layout with a drawer and a bottom sheet. Every
  * section reads from the experience contract; a section whose call answers
  * not_available is not drawn.
  */
-import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  type Ref,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { AgentFace } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
@@ -24,7 +35,15 @@ import {
   Toggle,
 } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, lookOf, useApp, useLoad, useMedia } from '../experience/hooks.ts';
+import {
+  agentById,
+  lookOf,
+  sendingAddress,
+  useApp,
+  useDecisions,
+  useLoad,
+  useMedia,
+} from '../experience/hooks.ts';
 import type { CalendarEvent, Conversation } from '../experience/types.ts';
 import { href, navigate, useRoute } from '../router.ts';
 import { useTheme } from '../theme.ts';
@@ -85,14 +104,14 @@ function ToastStack() {
 const NAV: { icon: IconName; label: string; path: string; match: (path: string) => boolean }[] = [
   { icon: 'home', label: 'Home', path: '/', match: (p) => p === '/' },
   { icon: 'chat', label: 'Chat', path: '/chat', match: (p) => p.startsWith('/chat') },
-  { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
-  { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
   {
     icon: 'piggy',
     label: 'Companies',
     path: '/companies',
     match: (p) => p.startsWith('/companies'),
   },
+  { icon: 'plans', label: 'Plans', path: '/plans', match: (p) => p.startsWith('/plans') },
+  { icon: 'smile', label: 'Agents', path: '/agents', match: (p) => p.startsWith('/agents') },
   {
     icon: 'automations',
     label: 'Automations',
@@ -101,23 +120,41 @@ const NAV: { icon: IconName; label: string; path: string; match: (path: string) 
   },
 ];
 
-function groupChats(chats: Conversation[]): [string, Conversation[]][] {
-  const today = new Date().toDateString();
-  const yesterday = new Date(Date.now() - 86_400_000).toDateString();
-  const groups = new Map<string, Conversation[]>();
-  const sorted = [...chats].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  for (const chat of sorted) {
-    const day = new Date(chat.updated_at).toDateString();
-    const label = day === today ? 'Today' : day === yesterday ? 'Yesterday' : 'Earlier';
-    groups.set(label, [...(groups.get(label) ?? []), chat]);
-  }
-  return ['Today', 'Yesterday', 'Earlier']
-    .filter((key) => groups.has(key))
-    .map((key) => [key, groups.get(key) ?? []]);
+const LIVE = new Set<Conversation['status']>(['queued', 'working', 'streaming']);
+
+function SpaceSwitcher() {
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="space-switch"
+        aria-label="Personal, switch space"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <MeleteAvatar size={22} />
+        <span>Personal</span>
+        <span className="row" style={{ color: 'var(--muted)' }}>
+          <Icon name="chevronsUpDown" size={14} />
+        </span>
+      </button>
+      <Popover open={open} onClose={close} offset={4}>
+        <Menu label="Spaces" width={208}>
+          <MenuItem icon="user" on onSelect={close}>
+            Personal
+          </MenuItem>
+        </Menu>
+      </Popover>
+    </div>
+  );
 }
 
-function AccountMenu() {
+function AccountMenu({ address }: { address: string | null }) {
   const { profile } = useApp();
+  const route = useRoute();
   const [open, setOpen] = useState(false);
   const [theme, setTheme, dark] = useTheme();
   const close = useCallback(() => setOpen(false), []);
@@ -128,83 +165,87 @@ function AccountMenu() {
     .join('')
     .slice(0, 2)
     .toUpperCase();
+  const inSettings = route.parts[0] === 'settings';
   return (
-    <div style={{ position: 'relative' }}>
-      <button
-        type="button"
-        className="account-row"
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        <Avatar initials={initials} size={32} />
-        <span className="col grow" style={{ gap: 2 }}>
-          <span
-            className="clamp1"
-            style={{ fontSize: 14, fontWeight: 500, color: 'var(--heading)' }}
-          >
-            {name}
+    <div className="account-row">
+      <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+        <button
+          type="button"
+          className="account-button"
+          onClick={() => setOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          <Avatar initials={initials} size={28} />
+          <span className="col grow">
+            <span className="clamp1 account-name">{name}</span>
+            {address ? <span className="clamp1 account-address">{address}</span> : null}
           </span>
-          <span className="clamp1" style={{ fontSize: 12, color: 'var(--muted)' }}>
-            Personal workspace
-          </span>
-        </span>
-        <span style={{ color: 'var(--muted)', display: 'flex' }}>
-          <Icon name="chevronsUpDown" size={16} />
-        </span>
-      </button>
-      <Popover open={open} onClose={close} side="top" offset={4}>
-        <Menu label="Account" width={232}>
-          <Overline style={{ padding: '6px 8px 2px' }}>{name}</Overline>
-          <div style={{ padding: '0 8px 6px', fontSize: 12, color: 'var(--muted)' }}>
-            {profile?.time_zone ?? ''}
-          </div>
-          <MenuSep />
-          <MenuItem icon="user" on>
-            Personal
-          </MenuItem>
-          <MenuSep />
-          <MenuItem
-            icon="sliders"
-            kbd="⌘,"
-            onSelect={() => {
-              close();
-              navigate('/settings/memory');
-            }}
-          >
-            Settings
-          </MenuItem>
-          <div className="menu-item" style={{ cursor: 'default' }}>
-            <Icon name="moon" size={16} />
-            <span className="grow">Dark appearance</span>
-            <Toggle
-              on={dark}
-              label="Dark appearance"
-              onChange={(next) => setTheme(next ? 'dark' : 'light')}
-            />
-          </div>
-          {theme !== 'system' ? (
-            <MenuItem icon="refresh" onSelect={() => setTheme('system')}>
-              Follow the system
+        </button>
+        <Popover open={open} onClose={close} side="top" offset={4}>
+          <Menu label="Account" width={232}>
+            <Overline style={{ padding: '6px 8px 2px' }}>{name}</Overline>
+            <div style={{ padding: '0 8px 6px', fontSize: 12, color: 'var(--muted)' }}>
+              {profile?.time_zone ?? ''}
+            </div>
+            <MenuSep />
+            <MenuItem
+              icon="sliders"
+              kbd="⌘,"
+              onSelect={() => {
+                close();
+                navigate('/settings/memory');
+              }}
+            >
+              Settings
             </MenuItem>
-          ) : null}
-        </Menu>
-      </Popover>
+            <div className="menu-item" style={{ cursor: 'default' }}>
+              <Icon name="moon" size={16} />
+              <span className="grow">Dark appearance</span>
+              <Toggle
+                on={dark}
+                label="Dark appearance"
+                onChange={(next) => setTheme(next ? 'dark' : 'light')}
+              />
+            </div>
+            {theme !== 'system' ? (
+              <MenuItem icon="refresh" onSelect={() => setTheme('system')}>
+                Follow the system
+              </MenuItem>
+            ) : null}
+          </Menu>
+        </Popover>
+      </div>
+      <IconButton
+        name="sliders"
+        label="Settings"
+        on={inSettings}
+        aria-current={inSettings ? 'page' : undefined}
+        onClick={() => navigate('/settings/memory')}
+      />
     </div>
   );
 }
 
-function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+function Sidebar({
+  open,
+  onClose,
+  onPalette,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onPalette: () => void;
+}) {
   const route = useRoute();
-  const { conversations } = useApp();
-  const [recentsOpen, setRecentsOpen] = useState(true);
+  const { conversations, agents } = useApp();
+  const decisions = useDecisions();
   const activeChat = route.parts[0] === 'chat' ? (route.parts[1] ?? null) : null;
+  const chats = [...conversations].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const address = sendingAddress(decisions.permissions);
   return (
     <aside className="sidebar" data-open={open ? 'true' : undefined} aria-label="Sections">
       <div className="sidebar-head">
-        <a href={href('/')} aria-label="Home">
-          <MeleteAvatar size={28} />
-        </a>
+        <SpaceSwitcher />
         <div className="grow" />
         <IconButton
           name="panelLeft"
@@ -215,14 +256,25 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         <IconButton
           name="compose"
           label="New chat"
-          variant="soft"
           onClick={() => {
             onClose();
             navigate('/chat/new');
           }}
         />
       </div>
-      <nav className="sidebar-nav">
+      <nav className="sidebar-nav" aria-label="Pages">
+        <button
+          type="button"
+          className="nav-item"
+          onClick={() => {
+            onClose();
+            onPalette();
+          }}
+        >
+          <Icon name="search" size={18} />
+          <span>Search</span>
+          <Kbd>⌘K</Kbd>
+        </button>
         {NAV.map((item) => (
           <a
             key={item.path}
@@ -233,136 +285,73 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           >
             <Icon name={item.icon} size={18} />
             <span>{item.label}</span>
+            {item.path === '/' && decisions.count > 0 ? (
+              <span className="nav-count">
+                {decisions.count}
+                <span className="sr-only"> waiting on you</span>
+              </span>
+            ) : null}
           </a>
         ))}
       </nav>
       <div className="sidebar-recent">
-        <button
-          type="button"
-          className="recent-head"
-          aria-expanded={recentsOpen}
-          onClick={() => setRecentsOpen((o) => !o)}
-        >
-          <Overline>Recent chats</Overline>
-          <span style={{ color: 'var(--muted)', display: 'flex' }}>
-            <Icon name={recentsOpen ? 'chevronDown' : 'chevronRight'} size={14} />
-          </span>
-        </button>
-        {recentsOpen
-          ? groupChats(conversations).map(([label, chats]) => (
-              <div key={label} className="col" style={{ marginTop: label === 'Today' ? 4 : 8 }}>
-                <div className="group-label">{label}</div>
-                {chats.map((chat) => (
-                  <a
-                    key={chat.id}
-                    className="chat-row"
-                    href={href(`/chat/${chat.id}`)}
-                    aria-current={chat.id === activeChat ? 'page' : undefined}
-                    onClick={onClose}
-                  >
-                    <span className="chat-dot">
-                      {chat.id === activeChat ? (
-                        <span
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: 999,
-                            background: 'var(--primary)',
-                          }}
-                        />
-                      ) : null}
-                    </span>
-                    <span className="clamp1 grow">{chat.title}</span>
-                    {chat.status === 'needs_you' ? (
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 999,
-                          background: 'var(--sand-ink)',
-                        }}
-                        title="Waiting for you"
-                      />
-                    ) : null}
-                  </a>
-                ))}
-              </div>
-            ))
-          : null}
-        {recentsOpen && conversations.length === 0 ? (
-          <div className="group-label" style={{ marginTop: 4 }}>
-            Nothing yet
-          </div>
-        ) : null}
+        <div className="recent-label">Chats</div>
+        {chats.map((chat) => {
+          const agent = agentById(agents, chat.agent_id);
+          const live = LIVE.has(chat.status);
+          return (
+            <a
+              key={chat.id}
+              className="chat-row"
+              href={href(`/chat/${chat.id}`)}
+              aria-current={chat.id === activeChat ? 'page' : undefined}
+              onClick={onClose}
+            >
+              <span className="chat-face">
+                {agent ? (
+                  <AgentFace look={lookOf(agent)} size={16} state={live ? 'working' : 'idle'} />
+                ) : null}
+              </span>
+              <span className="clamp1 grow">{chat.title}</span>
+              {chat.status === 'needs_you' ? (
+                <span className="chat-dot" data-tone="needs" title="Waiting for you">
+                  <span className="sr-only">, waiting for you</span>
+                </span>
+              ) : live ? (
+                <span className="chat-dot dot-live" data-tone="working" title="Working">
+                  <span className="sr-only">, working</span>
+                </span>
+              ) : null}
+            </a>
+          );
+        })}
+        {conversations.length === 0 ? <div className="recent-empty">Nothing yet</div> : null}
       </div>
-      <div className="grow" />
-      <nav className="sidebar-foot">
-        <a
-          className="nav-item"
-          href={href('/settings/memory')}
-          aria-current={route.parts[0] === 'settings' ? 'page' : undefined}
-          onClick={onClose}
-        >
-          <Icon name="sliders" size={18} />
-          <span>Settings</span>
-        </a>
-      </nav>
-      <AccountMenu />
+      <AccountMenu address={address} />
     </aside>
   );
 }
 
-function Topbar({
-  railOn,
-  onRail,
-  onPalette,
-  railAvailable,
-}: {
-  railOn: boolean;
-  onRail: () => void;
-  onPalette: () => void;
-  railAvailable: boolean;
-}) {
+/**
+ * The day panel's state, shared with the page header that carries its toggle.
+ * `available` is false on pages without a rail and on the phone, where the
+ * phone head carries the toggle.
+ */
+type RailState = { available: boolean; on: boolean; toggle: () => void };
+const RailContext = createContext<RailState>({ available: false, on: false, toggle: () => {} });
+
+/** The day-panel toggle, drawn at the right end of a page header that has a rail. */
+export function RailToggle() {
+  const rail = useContext(RailContext);
+  if (!rail.available) return null;
   return (
-    <header className="topbar">
-      <button
-        type="button"
-        className="btn btn-sm btn-ghost"
-        style={{ paddingLeft: 10, paddingRight: 8, color: 'var(--text)' }}
-      >
-        Personal
-        <Icon name="chevronDown" size={14} />
-      </button>
-      <div className="topbar-search">
-        <button
-          type="button"
-          className="input"
-          onClick={onPalette}
-          aria-label="Search your workspace"
-          style={{ cursor: 'pointer' }}
-        >
-          <span className="input-icon">
-            <Icon name="search" size={16} />
-          </span>
-          <span
-            className="grow"
-            style={{ fontSize: 14, color: 'var(--placeholder)', textAlign: 'left' }}
-          >
-            Search your workspace
-          </span>
-          <Kbd>⌘K</Kbd>
-        </button>
-      </div>
-      <div className="grow" />
-      {railAvailable ? (
-        <IconButton
-          name="panelRight"
-          label={railOn ? 'Hide your day' : 'Show your day'}
-          on={railOn}
-          onClick={onRail}
-        />
-      ) : null}
-    </header>
+    <IconButton
+      name="panelRight"
+      label={rail.on ? 'Hide your day' : 'Show your day'}
+      on={rail.on}
+      aria-expanded={rail.on}
+      onClick={rail.toggle}
+    />
   );
 }
 
@@ -380,7 +369,16 @@ const durationLabel = (event: CalendarEvent) => {
   return `${hours} hour${minutes > 60 ? 's' : ''}`;
 };
 
-export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?: boolean }) {
+export function Rail({
+  onClose,
+  sheet = false,
+  panelRef,
+}: {
+  onClose?: () => void;
+  sheet?: boolean;
+  /** The panel itself, so an overlay can take focus when it opens. */
+  panelRef?: Ref<HTMLElement>;
+}) {
   const home = useLoad(() => adapter.home(), []);
   const tasks = useLoad(() => adapter.tasks(), []);
   const connections = useLoad(() => adapter.connections(), []);
@@ -410,7 +408,7 @@ export function Rail({ onClose, sheet = false }: { onClose?: () => void; sheet?:
     connections.data?.connections.filter((c) => c.status === 'connected').length ?? 0;
   let lastDay = '';
   return (
-    <aside className="rail" aria-label="Your day">
+    <aside className="rail" aria-label="Your day" ref={panelRef} tabIndex={-1}>
       <div className="col" style={{ gap: 10 }}>
         <div className="row" style={{ justifyContent: 'space-between', height: 28 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Your day</h2>
@@ -629,13 +627,28 @@ export type ShellProps = {
   panel?: ReactNode;
   rail?: boolean;
   phoneActions?: ReactNode;
+  /** On the phone, a back button in place of the drawer. */
+  phoneBack?: () => void;
+  /** On the phone, a second line under the title. */
+  phoneSub?: ReactNode;
 };
 
-export function Shell({ children, title, agentId, panel, rail = true, phoneActions }: ShellProps) {
+export function Shell({
+  children,
+  title,
+  agentId,
+  panel,
+  rail = true,
+  phoneActions,
+  phoneBack,
+  phoneSub,
+}: ShellProps) {
   const phone = useMedia('(max-width: 767px)');
   const narrow = useMedia('(max-width: 1279px)');
   const [drawer, setDrawer] = useState(false);
-  const [railOn, setRailOn] = useState(false);
+  // Wide screens show the day unless it is hidden; narrow ones open it over the page.
+  const [railOpen, setRailOpen] = useState(false);
+  const [railHidden, setRailHidden] = useState(false);
   const [palette, setPalette] = useState(false);
   const { agents } = useApp();
   const route = useRoute();
@@ -658,76 +671,123 @@ export function Shell({ children, title, agentId, panel, rail = true, phoneActio
   }, [route.path]);
 
   const showRail = rail && !panel;
-  const railVisible = showRail && (narrow ? railOn : true);
+  const railVisible = showRail && (narrow ? railOpen : !railHidden);
+  // Over the page (under 1280px) the day is an overlay: it takes focus when it
+  // opens, Escape closes it, and focus goes back to what opened it.
+  const railRef = useRef<HTMLElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const closeRail = useCallback(() => {
+    setRailOpen(false);
+    openerRef.current?.focus();
+  }, []);
+  const overlay = narrow && railOpen && rail && !panel;
+  useEffect(() => {
+    if (!overlay) return;
+    railRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const active = document.activeElement;
+      const ours =
+        !active ||
+        active === document.body ||
+        active === openerRef.current ||
+        railRef.current?.contains(active);
+      if (!ours) return;
+      event.preventDefault();
+      closeRail();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [overlay, closeRail]);
+  const toggleRail = useCallback(() => {
+    if (narrow) {
+      if (!railOpen) openerRef.current = document.activeElement as HTMLElement | null;
+      setRailOpen(!railOpen);
+      return;
+    }
+    setRailHidden((h) => !h);
+  }, [narrow, railOpen]);
+  const railState = useMemo<RailState>(
+    () => ({ available: showRail && !phone, on: railVisible, toggle: toggleRail }),
+    [showRail, phone, railVisible, toggleRail],
+  );
   const closeDrawer = useCallback(() => setDrawer(false), []);
+  const openPalette = useCallback(() => setPalette(true), []);
 
   return (
-    <div className="shell">
-      {phone && drawer ? (
-        // biome-ignore lint/a11y/noStaticElementInteractions: the scrim closes the drawer; the close button does the same for the keyboard
-        <div className="drawer-scrim" onMouseDown={closeDrawer} />
-      ) : null}
-      <Sidebar open={drawer} onClose={closeDrawer} />
-      <div className="shell-main">
-        {phone ? (
-          <header className="phone-head">
-            <IconButton
-              name="menu"
-              label="Open the sidebar"
-              size={44}
-              iconSize={20}
-              onClick={() => setDrawer(true)}
-            />
-            <div className="col grow" style={{ alignItems: 'center', minWidth: 0 }}>
-              <span
-                className="row clamp1"
-                style={{
-                  gap: 6,
-                  fontFamily: 'var(--font-head)',
-                  fontSize: 15,
-                  fontWeight: 600,
-                  color: 'var(--heading)',
-                }}
-              >
-                {agent ? <AgentFace look={lookOf(agent)} size={18} /> : null}
-                {title ?? 'Melete'}
-              </span>
-            </div>
-            {phoneActions}
-            {showRail ? (
+    <RailContext.Provider value={railState}>
+      <div className="shell">
+        {phone && drawer ? (
+          // biome-ignore lint/a11y/noStaticElementInteractions: the scrim closes the drawer; the close button does the same for the keyboard
+          <div className="drawer-scrim" onMouseDown={closeDrawer} />
+        ) : null}
+        <Sidebar open={drawer} onClose={closeDrawer} onPalette={openPalette} />
+        <div className="shell-main">
+          {phone ? (
+            <header className="phone-head">
+              {phoneBack ? (
+                <IconButton
+                  name="chevronLeft"
+                  label="Back"
+                  size={44}
+                  iconSize={20}
+                  onClick={phoneBack}
+                />
+              ) : (
+                <IconButton
+                  name="menu"
+                  label="Open the sidebar"
+                  size={44}
+                  iconSize={20}
+                  onClick={() => setDrawer(true)}
+                />
+              )}
+              <div className="col grow" style={{ alignItems: 'center', minWidth: 0 }}>
+                <span
+                  className="row clamp1"
+                  style={{
+                    gap: 6,
+                    fontSize: 15,
+                    fontWeight: 600,
+                    lineHeight: '20px',
+                    color: 'var(--heading)',
+                    maxWidth: '100%',
+                  }}
+                >
+                  {agent && !phoneSub ? <AgentFace look={lookOf(agent)} size={18} /> : null}
+                  <span className="clamp1">{title ?? 'Melete'}</span>
+                </span>
+                {phoneSub ? <span className="phone-sub clamp1">{phoneSub}</span> : null}
+              </div>
+              {phoneActions}
+              {showRail ? (
+                <IconButton
+                  name="calendar"
+                  label="Your day"
+                  size={44}
+                  iconSize={20}
+                  on={railOpen}
+                  onClick={toggleRail}
+                />
+              ) : null}
               <IconButton
-                name="calendar"
-                label="Your day"
+                name="search"
+                label="Search"
                 size={44}
                 iconSize={20}
-                on={railOn}
-                onClick={() => setRailOn((o) => !o)}
+                onClick={openPalette}
               />
-            ) : null}
-            <IconButton
-              name="search"
-              label="Search"
-              size={44}
-              iconSize={20}
-              onClick={() => setPalette(true)}
-            />
-          </header>
-        ) : (
-          <Topbar
-            railOn={railVisible}
-            onRail={() => setRailOn((o) => !o)}
-            onPalette={() => setPalette(true)}
-            railAvailable={showRail}
-          />
-        )}
-        <div className="shell-body">
-          <main className="shell-content">{children}</main>
-          {panel}
-          {railVisible ? <Rail sheet={narrow} onClose={() => setRailOn(false)} /> : null}
+            </header>
+          ) : null}
+          <div className="shell-body">
+            <main className="shell-content">{children}</main>
+            {panel}
+            {railVisible ? <Rail sheet={narrow} onClose={closeRail} panelRef={railRef} /> : null}
+          </div>
         </div>
+        <CommandPalette open={palette} onClose={() => setPalette(false)} />
+        <ToastStack />
       </div>
-      <CommandPalette open={palette} onClose={() => setPalette(false)} />
-      <ToastStack />
-    </div>
+    </RailContext.Provider>
   );
 }

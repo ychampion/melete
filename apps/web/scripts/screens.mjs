@@ -490,7 +490,8 @@ await surface('phone-drawer', 'The phone layout with the sidebar drawer open.', 
     await page.waitForTimeout(400);
   },
 });
-await surface('phone-day', 'The phone layout with the day panel sheet open.', '/', {
+// Home carries the day in the page, so the sheet is opened from a page with a rail.
+await surface('phone-day', 'The phone layout with the day panel sheet open.', '/automations', {
   only: [WIDTHS[2]],
   prepare: async (page) => {
     await page.getByRole('button', { name: 'Your day' }).click();

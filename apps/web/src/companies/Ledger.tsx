@@ -5,7 +5,7 @@
  * there, and the three things a person can do about it.
  */
 import { Icon } from '../design/icons.tsx';
-import { Badge, Button, Skeleton } from '../design/primitives.tsx';
+import { Button, CompanyTile, Skeleton, Status, type StatusTone } from '../design/primitives.tsx';
 import type {
   Company,
   Confidence,
@@ -30,15 +30,21 @@ const CONFIDENCE_WORDS: Record<Confidence, string> = {
   low: 'Read with low confidence',
 };
 
-function StatusChip({ item, now }: { item: LedgerItem; now: number }) {
-  if (item.status === 'settled') return <Badge tone="success">Settled</Badge>;
-  if (item.status === 'dropped') return <Badge tone="outline">Not this</Badge>;
+/** A row's state in the status vocabulary. */
+export function statusOf(item: LedgerItem, now: number): { tone: StatusTone; words: string } {
+  if (item.status === 'settled') return { tone: 'settled', words: 'Settled' };
+  if (item.status === 'dropped') return { tone: 'kind', words: 'Not this' };
   if (item.status === 'handling' || item.status === 'waiting')
-    return <Badge tone="blue">{STATUS_WORDS[item.status]}</Badge>;
+    return { tone: 'working', words: STATUS_WORDS[item.status] };
   // A promise past its date has lapsed; money past its date is overdue.
   if (isOverdue(item, now))
-    return <Badge tone="danger">{item.kind === 'promise' ? 'Lapsed' : 'Overdue'}</Badge>;
-  return <Badge tone="chip">{KIND_WORDS[item.kind]}</Badge>;
+    return { tone: 'late', words: item.kind === 'promise' ? 'Lapsed' : 'Overdue' };
+  return { tone: 'kind', words: KIND_WORDS[item.kind] };
+}
+
+function StatusChip({ item, now }: { item: LedgerItem; now: number }) {
+  const { tone, words } = statusOf(item, now);
+  return <Status tone={tone}>{words}</Status>;
 }
 
 /** Confidence, said quietly: a mark a person can hover, and a sentence in the detail. */
@@ -67,6 +73,7 @@ export function LedgerRow({
 }) {
   const amount = amountWords(item);
   const faded = item.status === 'settled' || item.status === 'dropped';
+  const late = !faded && isOverdue(item, now);
   return (
     <button
       type="button"
@@ -81,7 +88,12 @@ export function LedgerRow({
       </span>
       <span className="ledger-what">
         {showCompany ? (
-          <span className="ledger-company">{company?.name ?? 'A company'}</span>
+          <>
+            <span className="ledger-company">{company?.name ?? 'A company'}</span>
+            <span className="ledger-sep" aria-hidden="true">
+              {' · '}
+            </span>
+          </>
         ) : null}
         <span className="ledger-summary">{item.summary}</span>
       </span>
@@ -95,11 +107,11 @@ export function LedgerRow({
           <span className="ledger-direction">—</span>
         )}
       </span>
-      <span className="ledger-due">
+      <span className="ledger-due" data-late={late ? 'true' : undefined}>
         {item.due_at ? (
           <>
             <span className="ledger-day">{dayOf(item.due_at)}</span>
-            <span className="ledger-direction">{whenDue(item.due_at, now)}</span>
+            <span className="ledger-direction ledger-when">{whenDue(item.due_at, now)}</span>
           </>
         ) : (
           <span className="ledger-direction">no date</span>
@@ -157,18 +169,18 @@ export function LedgerDetailPanel({
       )}
       <div className="ledger-actions">
         {item.job_id ? (
-          <Button icon="arrowUpRight" onClick={onHandle}>
+          <Button icon="arrowUpRight" className="btn-card" onClick={onHandle}>
             Open the job
           </Button>
         ) : (
-          <Button icon="send" disabled={busy || done} onClick={onHandle}>
+          <Button icon="send" className="btn-card" disabled={busy || done} onClick={onHandle}>
             Handle it
           </Button>
         )}
-        <Button variant="outline" disabled={busy || done} onClick={onSettled}>
+        <Button variant="outline" className="btn-card" disabled={busy || done} onClick={onSettled}>
           Settled
         </Button>
-        <Button variant="ghost" disabled={busy || done} onClick={onDrop}>
+        <Button variant="ghost" className="btn-card" disabled={busy || done} onClick={onDrop}>
           Not this
         </Button>
       </div>
@@ -190,6 +202,7 @@ export function CompanyHeader({
     .reduce((sum, item) => sum + (item.amount_minor ?? 0), 0);
   return (
     <div className="ledger-group">
+      <CompanyTile id={company.id} name={company.name} size={24} />
       <span className="ledger-group-name">{company.name}</span>
       <span className="ledger-group-meta">
         {company.monthly_spend_minor
