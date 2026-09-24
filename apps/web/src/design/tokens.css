@@ -4,6 +4,10 @@
  *
  * Three theme states: an explicit choice stamps data-theme on the root, and
  * the default follows the system preference.
+ *
+ * Light --muted, --success and --danger are set just dark enough to read at
+ * 4.5:1 on every surface they sit on: the sheet, --soft, --canvas, --chip-bg
+ * and their own soft tints.
  */
 
 :root {
@@ -17,7 +21,7 @@
 
   --text: #2a2d34;
   --heading: #17191d;
-  --muted: #6b7080;
+  --muted: #676c7c;
   --secondary: #5c6170;
   --placeholder: #6f7481;
 
@@ -46,9 +50,9 @@
   --lilac: #eee8f6;
   --lilac-ink: #5f4a7c;
 
-  --success: #2e8a5a;
+  --success: #297c51;
   --success-soft: #e6f4ea;
-  --danger: #d24b4b;
+  --danger: #c73232;
   --danger-soft: #fbe9e9;
   --rating: #b8801a;
   --chip-bg: #f1efea;
