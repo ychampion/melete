@@ -46,7 +46,7 @@ const RULES: readonly Rule[] = [
   },
   {
     pattern:
-      /\b(?:charged (?:you )?twice|duplicate charge|incorrect(?:ly)? charged|billed twice|charged in error)\b/i,
+      /\b(?:charged (?:you )?twice|duplicate charge|incorrect(?:ly)? charged|billed twice|charged in error|over-?charg(?:e|es|ed|ing)|charged too much)\b/i,
     kind: 'wrong_charge',
     direction: 'owed_to_you',
     playbook: 'wrong-charge',
