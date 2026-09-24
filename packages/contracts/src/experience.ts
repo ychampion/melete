@@ -305,6 +305,22 @@ export const trailStep = z.discriminatedUnion('type', [
 ]);
 export type TrailStep = z.infer<typeof trailStep>;
 
+/**
+ * How a permission or a question in the conversation was decided. It follows
+ * the item it decides on the same stream, so a reloaded conversation shows the
+ * decision rather than an open card.
+ */
+export const experienceDecision = z.strictObject({
+  kind: z.enum(['permission', 'question']),
+  /** The permission's or the question's id. */
+  id,
+  outcome: z.enum(['allow_once', 'always', 'deny', 'answered', 'withdrawn']),
+  /** The chosen answer, for an answered question. */
+  answer: z.string().max(4000).nullable(),
+  decided_at: date,
+});
+export type ExperienceDecision = z.infer<typeof experienceDecision>;
+
 export const experienceEvent = z.strictObject({
   seq: count,
   conversation_id: id,
@@ -317,6 +333,7 @@ export const experienceEvent = z.strictObject({
     z.strictObject({ type: z.literal('receipt'), receipt: experienceReceipt }),
     z.strictObject({ type: z.literal('permission'), permission: permissionCard }),
     z.strictObject({ type: z.literal('question'), question: experienceQuestion }),
+    z.strictObject({ type: z.literal('decision'), decision: experienceDecision }),
     z.strictObject({ type: z.literal('status'), status: turnStatus, composer: composerState }),
     z.strictObject({ type: z.literal('tool'), tool: toolCall }),
   ]),

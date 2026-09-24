@@ -1,5 +1,7 @@
 import {
+  type ExperienceDecision,
   type ExperienceSource,
+  experienceDecision,
   experienceDraft,
   experienceReceipt,
   permissionCard,
@@ -348,6 +350,42 @@ export function senderAddress(configuration: unknown): string | null {
   // Held to the same bar as the recipients beside it: shown exactly, or not at
   // all. A fallback string in this row would read as an address and not be one.
   return plainText(value, '', 4000) === value.trim() ? value.trim() : null;
+}
+
+/**
+ * A decided permission as the conversation shows it. An approval that saved a
+ * standing rule was "always"; any other approval was this once.
+ */
+export function projectPermissionDecision(input: {
+  approvalId: string;
+  decision: unknown;
+  ruleSaved: boolean;
+  at: Date;
+}): ExperienceDecision {
+  return experienceDecision.parse({
+    kind: 'permission',
+    id: input.approvalId,
+    outcome: input.decision === 'denied' ? 'deny' : input.ruleSaved ? 'always' : 'allow_once',
+    answer: null,
+    decided_at: input.at.toISOString(),
+  });
+}
+
+/** A closed question: answered with the chosen text, or withdrawn by another input. */
+export function projectQuestionDecision(input: {
+  questionId: string;
+  state: unknown;
+  answer: string | null;
+  at: Date;
+}): ExperienceDecision {
+  const answered = input.state === 'answered';
+  return experienceDecision.parse({
+    kind: 'question',
+    id: input.questionId,
+    outcome: answered ? 'answered' : 'withdrawn',
+    answer: answered && input.answer ? plainText(input.answer, '', 4000) || null : null,
+    decided_at: input.at.toISOString(),
+  });
 }
 
 export function projectPermission(input: {

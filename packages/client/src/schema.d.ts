@@ -2329,6 +2329,18 @@ export interface paths {
                                     /** @constant */
                                     type: "question";
                                 } | {
+                                    decision: {
+                                        answer: string | null;
+                                        decided_at: components["schemas"]["__schema153"];
+                                        id: components["schemas"]["__schema149"];
+                                        /** @enum {string} */
+                                        kind: "permission" | "question";
+                                        /** @enum {string} */
+                                        outcome: "allow_once" | "always" | "deny" | "answered" | "withdrawn";
+                                    };
+                                    /** @constant */
+                                    type: "decision";
+                                } | {
                                     composer: components["schemas"]["__schema152"];
                                     status: components["schemas"]["__schema151"];
                                     /** @constant */

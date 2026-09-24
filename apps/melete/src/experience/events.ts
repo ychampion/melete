@@ -11,7 +11,17 @@ import {
 } from '@melete/contracts';
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/client.ts';
-import { action, approval, artifact, attempt, connection, event, job } from '../db/schema.ts';
+import {
+  action,
+  approval,
+  artifact,
+  attempt,
+  connection,
+  event,
+  experienceRule,
+  job,
+  question,
+} from '../db/schema.ts';
 import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
 import { ownJob, requestPrincipal } from '../principals/authority.ts';
@@ -22,6 +32,8 @@ import {
   projectActionGroup,
   projectArtifact,
   projectCards,
+  projectPermissionDecision,
+  projectQuestionDecision,
   projectReceipt,
 } from './projectors.ts';
 import {
@@ -342,9 +354,47 @@ export class ExperienceEvents {
           ) {
             const permission = await this.projections?.permission(spaceId, payload.approval_id);
             if (permission) await emit(source, { type: 'permission', permission });
+          } else if (
+            source.type === 'approval_decided' &&
+            typeof payload.approval_id === 'string'
+          ) {
+            // "Always" is the approval that saved its standing rule in the same decision.
+            const [rule] = await tx
+              .select({ id: experienceRule.id })
+              .from(experienceRule)
+              .where(
+                and(
+                  eq(experienceRule.id, `rule_${payload.approval_id}`),
+                  eq(experienceRule.spaceId, spaceId),
+                ),
+              );
+            const decision = projectPermissionDecision({
+              approvalId: payload.approval_id,
+              decision: payload.decision,
+              ruleSaved: Boolean(rule),
+              at: source.createdAt,
+            });
+            await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
           } else if (payload.kind === 'question_asked' && typeof payload.question_id === 'string') {
             const question = await this.projections?.question(spaceId, payload.question_id);
             if (question) await emit(source, { type: 'question', question });
+          } else if (
+            payload.kind === 'question_closed' &&
+            typeof payload.question_id === 'string'
+          ) {
+            const [closed] = await tx
+              .select({ id: question.id, state: question.state, answer: question.answer })
+              .from(question)
+              .where(and(eq(question.id, payload.question_id), inArray(question.jobId, jobs)));
+            if (closed) {
+              const decision = projectQuestionDecision({
+                questionId: closed.id,
+                state: closed.state,
+                answer: closed.answer,
+                at: source.createdAt,
+              });
+              await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);
+            }
           } else if (source.type === 'text_delta') {
             await emit(source, { type: 'text_delta', text: answerText(payload.text) });
           } else if (

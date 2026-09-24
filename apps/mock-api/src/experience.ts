@@ -254,6 +254,7 @@ export class ExperienceMock {
     }
     proposal.decision = input.option;
     this.permissions.delete(id);
+    this.decided(chat, 'permission', id, input.option);
     if (input.option === 'deny') {
       this.event(chat, { type: 'note', text: 'Nothing was changed.' });
       const target = proposal.onDenied
@@ -264,6 +265,19 @@ export class ExperienceMock {
     this.state(chat, 'working');
     this.schedule(chat);
     return C.permissionOutcome.parse({ status: 'ok', option: input.option, rule });
+  }
+  /** The decision on the same stream as the card it decides, as the service sends it. */
+  decided(
+    chat: Parameters<typeof this.event>[0],
+    kind: C.ExperienceDecision['kind'],
+    id: string,
+    outcome: C.ExperienceDecision['outcome'],
+    answer: string | null = null,
+  ) {
+    this.event(chat, {
+      type: 'decision',
+      decision: C.experienceDecision.parse({ kind, id, outcome, answer, decided_at: this.now() }),
+    });
   }
   /** Start a scripted conversation without an HTTP round trip, for seeding. */
   start(title: string, agentId: string, text: string, planId?: string, scenarioId?: string) {
@@ -1269,6 +1283,7 @@ export class ExperienceMock {
       });
       this.rules.set(rule.id, rule);
     }
+    this.decided(chat, 'permission', id, input.option);
     if (input.option === 'deny') {
       draft.status = 'draft';
       this.event(chat, { type: 'note', text: 'The message was not sent.' });
@@ -1478,6 +1493,8 @@ export class ExperienceMock {
         this.questions.delete(id);
         if (question.conversation_id) {
           const chat = required(this.chats, question.conversation_id);
+          const chosen = question.options.find((choice) => choice.id === input.option_id);
+          this.decided(chat, 'question', id, 'answered', chosen?.label ?? null);
           if (input.option_id === 'stop') {
             chat.stopped = true;
             this.state(chat, 'stopped');

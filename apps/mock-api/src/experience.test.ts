@@ -130,6 +130,15 @@ test('experience scenario drafts first, reviews an explicit send, and replays sa
     },
   });
   expect(C.permissionOutcome.parse(decision.body).rule?.bounds.count_cap).toBe(2);
+  // The decision rides the conversation stream, so a reload shows it decided.
+  const stream = C.experienceEventPage.parse(
+    (await call(mock, `/conversations/${chat.id}/events?limit=200`)).body,
+  );
+  expect(
+    stream.events.flatMap((event) =>
+      event.item.type === 'decision' ? [[event.item.decision.id, event.item.decision.outcome]] : [],
+    ),
+  ).toEqual([[permission.id, 'always']]);
   expect(
     C.experienceDraft.parse(
       C.experienceOperations['GET /conversations/{id}/drafts'].response.parse(

@@ -2449,6 +2449,67 @@
                                     "properties": {
                                       "type": {
                                         "type": "string",
+                                        "const": "decision"
+                                      },
+                                      "decision": {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "permission",
+                                              "question"
+                                            ]
+                                          },
+                                          "id": {
+                                            "$ref": "#/components/schemas/__schema149"
+                                          },
+                                          "outcome": {
+                                            "type": "string",
+                                            "enum": [
+                                              "allow_once",
+                                              "always",
+                                              "deny",
+                                              "answered",
+                                              "withdrawn"
+                                            ]
+                                          },
+                                          "answer": {
+                                            "anyOf": [
+                                              {
+                                                "type": "string",
+                                                "maxLength": 4000
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "decided_at": {
+                                            "$ref": "#/components/schemas/__schema153"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "id",
+                                          "outcome",
+                                          "answer",
+                                          "decided_at"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "decision"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
                                         "const": "status"
                                       },
                                       "status": {

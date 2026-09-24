@@ -508,6 +508,20 @@ withDb('each account acts only inside its own space', () => {
       });
       expect(allowed.status).toBe(200);
       expect(calls.filter((entry) => entry.kind === 'email.send')).toHaveLength(sendsBefore + 1);
+      // Each decision rides the conversation's stream, so a reload shows it decided.
+      const stream = await json<{
+        events: { item: { type: string; decision?: { id: string; outcome: string } } }[];
+      }>(await call(actor.cookie, `/conversations/${actor.conversationId}/events?limit=200`));
+      expect(
+        stream.events.flatMap((event) =>
+          event.item.type === 'decision' && event.item.decision
+            ? [[event.item.decision.id, event.item.decision.outcome]]
+            : [],
+        ),
+      ).toEqual([
+        [actor.permissionId, 'deny'],
+        [sentBody.permission?.id ?? '', 'allow_once'],
+      ]);
       const undone = await call(actor.cookie, `/receipts/${actor.undoHandle}/undo`, 'POST');
       expect(undone.status).toBe(200);
       expect(await undone.text()).toContain('Removed an event');

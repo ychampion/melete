@@ -432,6 +432,18 @@ withDb('experience rows and authenticated scope', () => {
       await (await request(`/conversations/${chat.id}/messages`)).json(),
     );
     expect(turns.turns.filter((turn) => turn.text === 'Cook at home')).toHaveLength(1);
+    // The answer rides the conversation stream once, so a reload shows it answered.
+    const page = await new ExperienceEvents(required(handle).db).page(spaceId, 0, chat.id, 200);
+    expect(
+      page.events.flatMap((event) => (event.item.type === 'decision' ? [event.item.decision] : [])),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'question',
+        id: question.id,
+        outcome: 'answered',
+        answer: 'Cook at home',
+      }),
+    ]);
   });
   test('saved details use plain keys, correction history, dependency explanations and durable forgetting', async () => {
     const sql = required(handle).sql;
