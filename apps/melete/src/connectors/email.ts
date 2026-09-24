@@ -115,6 +115,20 @@ export const emailManifest: ConnectorManifest = {
       requires_approval: false,
     },
     {
+      name: 'email.discard',
+      description: 'Discard a local draft this connection prepared.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['draft_id'],
+        properties: { draft_id: { type: 'string', minLength: 1, maxLength: 64 } },
+      },
+      effect_class: 'write_reversible',
+      required_scopes: ['email.discard'],
+      verify: false,
+      requires_approval: false,
+    },
+    {
       name: 'email.send',
       description: 'Send one approved email with a stable Message-ID; never retry an unknown send.',
       input_schema: outgoingSchema,
@@ -261,6 +275,8 @@ export class EmailConnector implements Connector {
     let dispatched = false;
     try {
       this.assertContext(action, ctx);
+      // A draft lives only in its action record, so discarding it touches no mailbox.
+      if (action.kind === 'email.discard') return this.success(action, { discarded: true });
       if (action.kind === 'email.draft' || action.kind === 'email.send') {
         const payload = outgoing.parse(action.canonical_payload);
         if (action.kind === 'email.draft') return this.success(action, { draft: payload });

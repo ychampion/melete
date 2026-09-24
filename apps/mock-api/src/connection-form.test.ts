@@ -99,6 +99,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
         'email.search',
         'email.read',
         'email.draft',
+        'email.discard',
         'email.send',
       ]);
     }
@@ -130,7 +131,12 @@ test('a form drawn only from the served descriptors installs every kind', async 
   for (const [path, value] of Object.entries(TYPED))
     if (path in narrowed.fields) narrowed.fields[path] = value;
   narrowed.scopes['email.send'] = false;
-  expect(requestBody(mail, narrowed).scopes).toEqual(['email.search', 'email.read', 'email.draft']);
+  expect(requestBody(mail, narrowed).scopes).toEqual([
+    'email.search',
+    'email.read',
+    'email.draft',
+    'email.discard',
+  ]);
   for (const scope of Object.keys(narrowed.scopes)) narrowed.scopes[scope] = false;
   expect(missing(mail, narrowed)).toBe('Choose at least one thing this connection may do.');
 });

@@ -321,6 +321,21 @@ databaseTest(
   },
 );
 
+databaseTest('undo on a draft discards it, once, with a receipt', async () => {
+  const s = await setup();
+  const id = await s.draft();
+  const source = await loadAction(s.sql, id);
+  const receipt = await s.effects.receipt(s.claims.space_id, source);
+  expect(receipt?.undo?.handle).toBeTruthy();
+  const undone = await s.effects.undo(s.claims.space_id, receipt?.undo?.handle ?? '');
+  if ('reason' in undone) throw new Error(undone.reason);
+  expect(s.calls.filter((call) => call.kind === 'email.discard')).toHaveLength(1);
+  expect(await s.effects.undo(s.claims.space_id, id)).toEqual(undone);
+  expect(s.calls.filter((call) => call.kind === 'email.discard')).toHaveLength(1);
+  const draft = await s.effects.draft(s.claims.space_id, id);
+  expect('status' in draft && draft.status).toBe('discarded');
+});
+
 databaseTest('revoking an admitted standing permission prevents dispatch', async () => {
   const s = await setup();
   const initial = await s.permissions.send(s.claims.space_id, await s.draft());

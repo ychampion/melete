@@ -439,7 +439,8 @@ export class BrokerService implements BrokerOperations {
         access.agentId &&
           access.asksBeforeActing &&
           tool.effect_class !== 'read' &&
-          tool.name !== 'email.draft',
+          tool.name !== 'email.draft' &&
+          tool.name !== 'email.discard',
       );
     const gated = isTrustGatedEffect(tool.effect_class);
     const fields = gated ? collectOriginFields(action.canonical_payload, action.kind) : [];
