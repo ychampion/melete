@@ -617,7 +617,8 @@ describe.if(handle !== null)('removing a space', () => {
         provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at,
         closed_at)
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'fake',
-        'sbx_provider', 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed', now(), now())`;
+        ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'closed',
+        now(), now())`;
     const sandboxes = sandboxRemovalTeardown(
       new SandboxSessions(sql, { leaseSeconds: 300, workspaceRetentionSeconds: 3_600 }),
       () => new FakeSandboxProvider(),
@@ -1043,13 +1044,39 @@ describe.if(handle !== null)('removing a space', () => {
     expect(finished.finishedAt).toBeNull();
   });
 
+  test('removal_blocks_on_what_is_still_held — a provider listing a sandbox stops the removal with its rows intact', async () => {
+    const seeded = await seed('shared');
+    await sql`insert into sandbox_session (id, connection_id, space_id, adapter,
+        provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
+      values (${`sbx_held_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'e2b',
+        ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready', now())`;
+    // The teardown reports success, and the provider still lists the sandbox.
+    const stillHeld: SandboxTeardown = {
+      providerFor: () => ({}),
+      destroyWorkspacesForSpace: async () => ({ closed: [], snapshotsDeleted: [] }),
+      listWorkspacesForSpace: async () => ({
+        sessions: [`sbx_held_${seeded.spaceId}`],
+        snapshots: [],
+      }),
+    };
+    const removals = await service({ sandboxes: stillHeld });
+    const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
+    const finished = await removals.run(fenced.id);
+    expect(finished.state).toBe('blocked');
+    expect(finished.blockedReason).toContain('sandbox_sessions 1');
+    // The rows that record what is left, and the connection that reaches it, stay.
+    expect(await countOf(sql, 'sandbox_session', sql`space_id = ${seeded.spaceId}`)).toBe(1);
+    expect(await countOf(sql, 'connection', sql`id = ${seeded.connectionId}`)).toBe(1);
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(1);
+  });
+
   test('removal_never_completes_with_skipped_phase — a capability it needed and could not reach is not a zero', async () => {
     const seeded = await seed('shared');
     // The space has a sandbox session and no provider is wired to clear it.
     await sql`insert into sandbox_session (id, connection_id, space_id, adapter,
         provider_sandbox_id, image_ref, egress_policy, persistence, status, lease_expires_at)
       values (${`sbx_${seeded.spaceId}`}, ${seeded.connectionId}, ${seeded.spaceId}, 'e2b',
-        'sbx_provider', 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready', now())`;
+        ${`sbx_provider_${seeded.spaceId}`}, 'base', '{"kind":"deny_all"}'::jsonb, 'ephemeral', 'ready', now())`;
     const removals = await service();
     const fenced = await removals.fence(seeded.principalId, seeded.spaceId, 'The Ledger');
     const finished = await removals.run(fenced.id);
