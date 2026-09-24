@@ -159,20 +159,29 @@ const chatOf = (decision: Decision) =>
     ? decision.permission.conversation_id
     : decision.question.conversation_id;
 
-/**
- * The queue, oldest first. Neither a permission nor a question carries a
- * time, so each is dated by its conversation's last change: a conversation
- * waiting on the person stops changing when it starts to wait. Ties keep the
- * order the service listed them in.
- */
-export function queueOrder(decisions: Decision[], conversations: Conversation[]): Decision[] {
-  const since = (decision: Decision) =>
-    conversations.find((conversation) => conversation.id === chatOf(decision))?.updated_at ??
-    '\uffff';
+/** When a decision was asked for. */
+export const askedAt = (decision: Decision): string =>
+  decision.kind === 'permission' ? decision.permission.created_at : decision.question.created_at;
+
+/** The queue, oldest first by when each was asked. Ties keep the order the service listed them in. */
+export function queueOrder(decisions: Decision[]): Decision[] {
   return decisions
-    .map((decision, index) => ({ decision, index, at: since(decision) }))
-    .sort((a, b) => a.at.localeCompare(b.at) || a.index - b.index)
+    .map((decision, index) => ({ decision, index, at: Date.parse(askedAt(decision)) }))
+    .sort((a, b) => a.at - b.at || a.index - b.index)
     .map((entry) => entry.decision);
+}
+
+/** How long the front of the queue has waited, in the words a person would use. */
+export function waitedFor(since: string, now: number): string {
+  const minutes = Math.max(0, Math.floor((now - Date.parse(since)) / 60_000));
+  if (minutes < 1) return 'Just now';
+  if (minutes < 2) return 'About a minute';
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 2) return 'About an hour';
+  if (hours < 24) return `${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return days < 2 ? 'A day' : `${days} days`;
 }
 
 /**
@@ -390,7 +399,6 @@ export function WaitingOnYou({
       ),
       ...questions.map((question): Decision => ({ kind: 'question', id: question.id, question })),
     ].filter((decision) => !gone.has(decision.id)),
-    conversations,
   );
   const { front, next } = frontOf(queue, frontId);
   const frontKey = front?.id ?? null;
@@ -445,6 +453,12 @@ export function WaitingOnYou({
           Waiting on you
           {queue.length ? <span className="nav-count">{queue.length}</span> : null}
         </h2>
+        {front ? (
+          <span className="home-section-meta">
+            <span className="sr-only">The first has waited </span>
+            {waitedFor(askedAt(front), now)}
+          </span>
+        ) : null}
       </div>
       {failed ? (
         <div className="queue-failed" role="status">
@@ -514,6 +528,10 @@ function InMotion({ now }: { now: number }) {
     <section className="home-section" aria-labelledby="home-motion">
       <div className="home-section-head">
         <h2 id="home-motion">In motion</h2>
+        <a className="section-link" href={href('/chats')}>
+          All chats
+          <Icon name="chevronRight" size={14} />
+        </a>
       </div>
       <div className="motion">
         {rows.map((conversation) => {

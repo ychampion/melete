@@ -49,6 +49,8 @@ export type StreamGap = {
   next: number | null;
   reason: 'reconnect' | 'sequence_skip';
 };
+/** Which way a permission or question went, as the stream records it. */
+export type ExperienceDecision = Extract<EventItem, { type: 'decision' }>['decision'];
 export type TrailStep = Extract<EventItem, { type: 'say' | 'action' | 'note' | 'done' }>;
 export type Source = Extract<EventItem, { type: 'action' }>['sources'][number];
 export type ResultCard = Success<Ok<paths['/conversations/{id}/cards'], 'get'>>['cards'][number];

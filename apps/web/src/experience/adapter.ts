@@ -130,6 +130,13 @@ export const adapter = {
 
   /* ---------- conversations ---------- */
   conversations: () => guard<{ conversations: Conversation[] }>(() => api.GET('/conversations')),
+  /** One page of chats, most recently active first; `next_cursor` is null on the last page. */
+  conversationsPage: (limit: number, cursor: string | null) =>
+    guard<{ conversations: Conversation[]; next_cursor: string | null }>(() =>
+      api.GET('/conversations', {
+        params: { query: cursor ? { limit, cursor } : { limit } },
+      }),
+    ),
   conversation: (id: string) =>
     guard<{ conversation: Conversation }>(() => api.GET('/conversations/{id}', path(id))),
   createConversation: (body: ConversationCreate) =>

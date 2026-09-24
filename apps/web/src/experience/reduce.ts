@@ -9,6 +9,7 @@ import type { MeleteEvent } from '@melete/client';
 import type {
   ComposerState,
   Draft,
+  ExperienceDecision,
   ExperienceEvent,
   Permission,
   PermissionOption,
@@ -26,8 +27,8 @@ export type TurnBlock =
   | { type: 'card'; card: ResultCard }
   | { type: 'receipt'; receipt: Receipt; reversed: boolean }
   /**
-   * `decided` is the option this client chose; `closed` means the turn moved on
-   * after a decision made elsewhere (the contract carries no decision event).
+   * `decided` is the option chosen, here or as the stream's decision item says;
+   * `closed` means the turn moved on after a decision the stream did not name.
    */
   | {
       type: 'permission';
@@ -214,10 +215,13 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
     (item.type === 'question' && hasBlock(base, item.question.id))
   )
     return base;
+  // The stream says which way a decision went, so the card shows that outcome,
+  // after a reload too, rather than only that the turn moved on.
+  if (item.type === 'decision') return applyDecision(base, item.decision);
   // While a permission or question waits, the service emits nothing for that
   // turn except the status that says so (or a pause). Any other event means the
-  // person decided somewhere else; the contract has no decision event, so the
-  // block closes without claiming which way it went. Tool entries are background
+  // person decided somewhere else; when no decision item says which way, the
+  // block closes without claiming how it went. Tool entries are background
   // work (memory, the model) that can land while the person decides; the one
   // that settles a permission is the entry that pointed at it moving on.
   if (item.type === 'tool') {
@@ -437,6 +441,32 @@ export function markPermission(
       ),
     })),
   };
+}
+
+/**
+ * Apply a decision from the stream. A permission takes its outcome. A question
+ * takes the option whose words were chosen; a withdrawn question, or an answer
+ * given in the person's own words, closes without naming an option.
+ */
+export function applyDecision(transcript: Transcript, decision: ExperienceDecision): Transcript {
+  if (decision.kind === 'permission') {
+    return decision.outcome === 'allow_once' ||
+      decision.outcome === 'always' ||
+      decision.outcome === 'deny'
+      ? markPermission(transcript, decision.id, decision.outcome)
+      : transcript;
+  }
+  const question = transcript.turns
+    .flatMap((turn) => turn.blocks)
+    .find((block) => block.type === 'question' && block.question.id === decision.id);
+  const chosen =
+    decision.outcome === 'answered' && decision.answer !== null && question?.type === 'question'
+      ? question.question.options.find(
+          (option) =>
+            option.label === decision.answer || option.label.split(' · ')[0] === decision.answer,
+        )
+      : undefined;
+  return markQuestion(transcript, decision.id, chosen?.id ?? 'closed');
 }
 
 export function markQuestion(transcript: Transcript, id: string, optionId: string): Transcript {

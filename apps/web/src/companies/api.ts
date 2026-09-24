@@ -71,4 +71,7 @@ export const companiesApi = {
     call<LedgerItem>(`/ledger/${encodeURIComponent(id)}`, { method: 'PATCH', body: { status } }),
   handle: (id: string) =>
     call<{ job_id: string }>(`/ledger/${encodeURIComponent(id)}/handle`, { method: 'POST' }),
+  /** Stop the job handling an item: the item goes back to found, with no job. */
+  stop: (id: string) =>
+    call<LedgerItem>(`/ledger/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
 };

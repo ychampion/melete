@@ -10,10 +10,12 @@ import { companiesApi, currentSpaceId } from '../companies/api.ts';
 import { amountWords, dayOf, KIND_WORDS } from '../companies/format.ts';
 import { statusOf } from '../companies/Ledger.tsx';
 import { Icon } from '../design/icons.tsx';
-import { CompanyTile, IconButton, Status } from '../design/primitives.tsx';
+import { Button, CompanyTile, IconButton, Status } from '../design/primitives.tsx';
+import { useInFlight } from '../experience/decide.ts';
 import type { Transcript } from '../experience/reduce.ts';
 import type { Company, LedgerDetail, LedgerItem } from '../experience/types.ts';
 import { href } from '../router.ts';
+import { toast } from '../shell/Shell.tsx';
 import { timeOf } from './parts.tsx';
 
 export type Case = { item: LedgerItem; company: Company; detail: LedgerDetail | null };
@@ -147,13 +149,28 @@ export function CasePanel({
   transcript,
   now,
   onClose,
+  onStopped,
 }: {
   found: Case;
   transcript: Transcript;
   now: number;
   onClose: () => void;
+  /** The job stopped handling the item; the case is read again. */
+  onStopped: () => void;
 }) {
   const { item, company } = found;
+  const flight = useInFlight();
+  const handling = item.status !== 'settled' && item.status !== 'dropped' && item.job_id !== null;
+  const stop = () =>
+    void flight.run(item.id, async () => {
+      const result = await companiesApi.stop(item.id);
+      if (result.data === null) {
+        toast({ kind: 'err', title: result.error ?? result.unavailable ?? 'Couldn’t stop it' });
+        return;
+      }
+      toast({ kind: 'ok', title: `Stopped handling ${company.name}` });
+      onStopped();
+    });
   const amount = amountWords(item);
   const status = statusOf(item, now);
   const settled = item.status === 'settled';
@@ -206,6 +223,13 @@ export function CasePanel({
           ))}
         </ol>
       </div>
+      {handling ? (
+        <div className="case-foot">
+          <Button variant="ghost" icon="x" disabled={flight.has(item.id)} onClick={stop}>
+            Stop handling this
+          </Button>
+        </div>
+      ) : null}
     </aside>
   );
 }

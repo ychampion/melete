@@ -135,14 +135,6 @@ export function useDecisions(): Decisions & { count: number } {
   return { ...decisions, count: decisions.permissions.length + decisions.questions.length };
 }
 
-/** The address a company job sends from, when a permission names it. */
-export function sendingAddress(permissions: Permission[]): string | null {
-  for (const permission of permissions)
-    for (const line of permission.why)
-      if (line.startsWith('From: ')) return line.slice('From: '.length).trim() || null;
-  return null;
-}
-
 /** The face an agent wears for a conversation's status. */
 export function faceOf(status: TurnStatus | undefined): FaceState {
   switch (status) {

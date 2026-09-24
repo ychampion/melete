@@ -4,6 +4,8 @@
  * it names happened.
  */
 import { expect, test } from 'bun:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { emptyTranscript, type Transcript, type TranscriptTurn } from '../experience/reduce.ts';
 import type {
   Company,
@@ -13,7 +15,7 @@ import type {
   Receipt,
   ResultCard,
 } from '../experience/types.ts';
-import { type Case, caseSteps } from './CasePanel.tsx';
+import { type Case, CasePanel, caseSteps } from './CasePanel.tsx';
 
 const COMPANY: Company = {
   id: 'co_01M2000000000000000000000A',
@@ -172,4 +174,20 @@ test('a permission carrying the draft is enough to call it written', () => {
     sub: 'The refund',
     state: 'done',
   });
+});
+
+test('a case being handled offers to stop, and a settled one does not', () => {
+  const offers = (item: LedgerItem) =>
+    renderToStaticMarkup(
+      createElement(CasePanel, {
+        found: { item, company: COMPANY, detail: null },
+        transcript: transcript([]),
+        now: Date.parse('2026-09-18T09:00:00.000Z'),
+        onClose: () => {},
+        onStopped: () => {},
+      }),
+    ).includes('Stop handling this');
+  expect(offers(ITEM)).toBe(true);
+  expect(offers({ ...ITEM, status: 'settled' })).toBe(false);
+  expect(offers({ ...ITEM, status: 'found', job_id: null })).toBe(false);
 });
