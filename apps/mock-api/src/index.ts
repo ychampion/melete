@@ -12,7 +12,8 @@ import { loadScenarios } from './scenarios.ts';
 import { seed } from './seed.ts';
 import { Store } from './store.ts';
 
-export const DEFAULT_PORT = 3190;
+// The web app and the screens walk expect the mock here.
+export const DEFAULT_PORT = 3210;
 
 export type MockOptions = {
   /** Multiplies every scripted delay. Set 0 to play a scenario instantly. */
