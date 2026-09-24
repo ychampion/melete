@@ -603,7 +603,9 @@ export function ChatScreen({ id }: { id: string | null }) {
   };
 
   const title = conversation?.title ?? 'New chat';
-  const found = useCase(conversationId, transcript.status);
+  // A stop reads the case again: the item no longer names this job.
+  const [caseRead, setCaseRead] = useState(0);
+  const found = useCase(conversationId, `${transcript.status}:${caseRead}`);
   // A draft waiting on a decision can be changed in one tap before it goes.
   const draftWaiting = transcript.turns.some((turn) =>
     turn.blocks.some(
@@ -649,6 +651,10 @@ export function ChatScreen({ id }: { id: string | null }) {
             transcript={transcript}
             now={now}
             onClose={() => setCaseChoice(false)}
+            onStopped={() => {
+              setCaseRead((n) => n + 1);
+              refreshConversations();
+            }}
           />
         ) : undefined
       }

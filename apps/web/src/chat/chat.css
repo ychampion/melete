@@ -1082,6 +1082,12 @@
 .case-close {
   display: none;
 }
+.case-foot {
+  display: flex;
+  justify-content: center;
+  padding: 12px 20px 16px;
+  flex-shrink: 0;
+}
 .case-body {
   display: flex;
   flex-direction: column;
