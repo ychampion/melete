@@ -67,6 +67,8 @@ export const signedInOwner = z.object({
   created_at: timestamp,
 });
 export const ownerResponse = z.object({ owner: signedInOwner });
+/** Whether this installation still needs its first account: true until an owner exists. */
+export const setupStatusResponse = z.strictObject({ needed: z.boolean() });
 
 // --------------------------------------------------------------------------
 // triggers

@@ -32,6 +32,7 @@ import {
   createConnectionRequest,
   createJobRequest,
   createSpaceRequest,
+  credentialsRequest,
   type EventType,
   type errorResponse,
   eventPage,
@@ -48,6 +49,7 @@ import {
   knowledgeRecordResponse,
   knowledgeSearchQuery,
   knowledgeSearchResponse,
+  ownerResponse,
   personReactionRequest,
   postMessageRequest,
   proposeKnowledgeRequest,
@@ -57,6 +59,7 @@ import {
   resolveActionRequest,
   retractKnowledgeRequest,
   SSE_KEEPALIVE,
+  setupStatusResponse,
   skillListResponse,
   spaceListResponse,
   sseFrame,
@@ -91,6 +94,8 @@ export type AppDeps = {
   experienceSpeed?: number;
   /** Seed conversations, plans, tasks and routines for the web app. Tests leave this off. */
   seedExperience?: boolean;
+  /** Start as a fresh install: no account, and signed out until one is made. */
+  setupNeeded?: boolean;
 };
 
 type ErrorBody = z.infer<typeof errorResponse>;
@@ -172,6 +177,58 @@ export function createMockApp(deps: AppDeps) {
     }
     return { ok: true, value: parsed.data };
   };
+
+  // ------------------------------------------------------------------
+  // the account: the first one, and signing in with a password
+  // ------------------------------------------------------------------
+
+  /** The demo owner, unless the mock starts as a fresh install with none. */
+  let account: { id: string; email: string; password: string; created_at: string } | null =
+    deps.setupNeeded
+      ? null
+      : {
+          id: newId('own'),
+          email: 'jamie.davis@fastmail.example',
+          password: 'melete-demo-password',
+          created_at: store.now().toISOString(),
+        };
+  if (deps.setupNeeded) experience.signedOut = true;
+  const owned = (row: NonNullable<typeof account>) => ({
+    owner: { id: row.id, email: row.email, created_at: row.created_at },
+  });
+
+  app.get('/setup', () => send(setupStatusResponse, { needed: account === null }));
+
+  app.post('/setup', async (c) => {
+    if (account) return c.json(fail('already_setup', 'The owner is already set up.'), 409);
+    const body = await parseBody(c.req.raw, credentialsRequest);
+    if (!body.ok)
+      return c.json(
+        fail('invalid_input', 'Provide an email and a password of 8 characters or more.'),
+        400,
+      );
+    account = {
+      id: newId('own'),
+      email: body.value.email.toLowerCase(),
+      password: body.value.password,
+      created_at: store.now().toISOString(),
+    };
+    experience.signedOut = false;
+    return send(ownerResponse, owned(account), 201);
+  });
+
+  app.post('/login', async (c) => {
+    const body = await parseBody(c.req.raw, credentialsRequest);
+    if (!body.ok) return c.json(fail('invalid_input', 'Provide an email and password.'), 400);
+    if (
+      !account ||
+      body.value.email.toLowerCase() !== account.email ||
+      body.value.password !== account.password
+    )
+      return c.json(fail('invalid_credentials', 'Email or password is wrong.'), 401);
+    experience.signedOut = false;
+    return send(ownerResponse, owned(account));
+  });
 
   // ------------------------------------------------------------------
   // health, spaces

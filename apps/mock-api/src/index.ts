@@ -21,6 +21,8 @@ export type MockOptions = {
   now?: () => Date;
   /** Seed the designed surfaces (conversations, plans, tasks, routines). Tests leave this off. */
   experience?: { seed?: boolean };
+  /** Start as a fresh install: no account yet, and signed out until one is made. */
+  setupNeeded?: boolean;
 };
 
 /** Everything a test or the server needs, already wired together. */
@@ -37,6 +39,7 @@ export function createMock(options: MockOptions = {}) {
     spaceId,
     experienceSpeed: options.speed ?? 1,
     seedExperience: options.experience?.seed ?? false,
+    setupNeeded: options.setupNeeded ?? false,
   });
   return { app, store, runner, scenarios, spaceId, connections };
 }
@@ -45,6 +48,7 @@ if (import.meta.main) {
   const port = Number(process.env.MOCK_PORT ?? DEFAULT_PORT);
   const { app, spaceId, scenarios } = createMock({
     experience: { seed: process.env.MOCK_SEED !== 'off' },
+    setupNeeded: process.env.MELETE_MOCK_SETUP === 'needed',
   });
   Bun.serve({ port, fetch: app.fetch, idleTimeout: 0 });
   process.stdout.write(

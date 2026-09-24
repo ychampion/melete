@@ -8777,6 +8777,44 @@
       }
     },
     "/setup": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Whether the first account still needs to be created",
+        "description": "Public, like setup itself, so a browser with no session can choose between creating the account and signing in. `needed` is true until an owner exists.",
+        "responses": {
+          "200": {
+            "description": "Whether setup is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "needed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "needed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No database is configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema139"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "account"

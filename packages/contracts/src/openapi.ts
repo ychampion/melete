@@ -34,6 +34,7 @@ import {
   proposeKnowledgeResponse,
   resolveActionRequest,
   retractKnowledgeRequest,
+  setupStatusResponse,
   skillListResponse,
   spaceListResponse,
   triggerResponse,
@@ -1088,6 +1089,17 @@ export function buildOpenApiDocument() {
         },
 
         '/setup': {
+          get: {
+            tags: ['account'],
+            summary: 'Whether the first account still needs to be created',
+            description:
+              'Public, like setup itself, so a browser with no session can choose between ' +
+              'creating the account and signing in. `needed` is true until an owner exists.',
+            responses: {
+              '200': jsonResponse('Whether setup is needed', setupStatusResponse),
+              '503': problem('No database is configured'),
+            },
+          },
           post: {
             tags: ['account'],
             summary: 'Create the owner, their personal space and a session, once',
