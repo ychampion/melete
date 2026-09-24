@@ -66,8 +66,8 @@ export class ApprovalService {
         .innerJoin(action, eq(approval.actionId, action.id))
         .where(eq(approval.id, id));
       if (!lookup) throw new ServiceError('not_found', 'Approval not found.', 404);
-      // Only the job's own person decides its approvals, not anyone else in the space.
-      await requireJobAccess(tx, lookup.jobId);
+      // Only the principal whose job asked may answer, whoever else knows the id.
+      await requireJobAccess(tx, lookup.jobId, ownerId);
       const row = await this.jobs.lock(tx, lookup.jobId);
       const [current] = await tx
         .select({ action, approval })

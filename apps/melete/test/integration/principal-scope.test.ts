@@ -19,6 +19,7 @@ import {
   planResponse,
   taskResponse,
 } from '@melete/contracts';
+import { ServiceError } from '../../src/api/errors.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver, type TrustTableEntry } from '../../src/broker/trust.ts';
@@ -32,6 +33,7 @@ import { ExperienceEffects } from '../../src/experience/effects.ts';
 import { ExperiencePermissions } from '../../src/experience/permissions.ts';
 import { resolveExperienceGrant } from '../../src/experience/rules.ts';
 import { createApp } from '../../src/index.ts';
+import { ApprovalService } from '../../src/jobs/approvals.ts';
 import { startQueue } from '../../src/jobs/queue.ts';
 import { AttemptRunner } from '../../src/jobs/runner.ts';
 import { JobService } from '../../src/jobs/service.ts';
@@ -494,6 +496,30 @@ withDb('each account acts only inside its own space', () => {
     await isolated(second.cookie, first, second.agentId);
     await isolated(first.cookie, second, first.agentId);
   }, 120_000);
+
+  test('an approval is decided only by the principal whose job asked for it', async () => {
+    const { sql } = database();
+    if (!jobs || !runner) throw new Error('Postgres unavailable');
+    // The service hooks the shared runner; the tests after this one run without it.
+    const hook = runner.onApprovalWait;
+    const approvals = new ApprovalService(jobs, runner);
+    runner.onApprovalWait = hook;
+    const [pending] = await sql`select payload_hash, decision from approval
+      where id = ${first.permissionId}`;
+    expect(pending?.decision).toBeNull();
+    const answer = { decision: 'approved' as const, payload_hash: String(pending?.payload_hash) };
+    // Another account holds the right id and the right bytes, and is still refused.
+    let refused: unknown;
+    try {
+      await approvals.decide(first.permissionId, answer, second.principalId);
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(ServiceError);
+    expect((refused as ServiceError).code).toBe('scope_denied');
+    const [after] = await sql`select decision from approval where id = ${first.permissionId}`;
+    expect(after?.decision).toBeNull();
+  }, 60_000);
 
   test('each account fully works inside its own space', async () => {
     const { sql } = database();
