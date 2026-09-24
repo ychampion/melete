@@ -183,9 +183,11 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
    * attempt therefore reuses the sandbox rather than opening a second.
    */
   const sessionFor = async (action: Action, ctx: ConnectorContext, signal: AbortSignal) => {
+    // Only this connection's own session: another connection's is another
+    // account's sandbox, even under the same adapter.
     const [existing] = await sql`select * from sandbox_session
       where attempt_id = ${action.attempt_id} and adapter = ${provider.capabilities.adapter}
-        and status = 'ready'
+        and connection_id = ${options.connectionId} and status = 'ready'
       limit 1`;
     if (existing) {
       const row = await sessions.get(existing.id as string);

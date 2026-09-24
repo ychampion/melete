@@ -400,6 +400,22 @@ withDb('a command in a remote sandbox', () => {
     expect(second.provider.calls.create).toBe(1);
   }, 60_000);
 
+  test("a command never runs in another connection's session, even in the same attempt", async () => {
+    const engine = new FakeSandboxEngine();
+    const first = await setup({ engine });
+    const second = await setup({ engine });
+    expect((await first.run({ command: 'printf first' })).result.outcome).toBe('succeeded');
+    const sandboxes = engine.sandboxes.size;
+    // The second connection's command, in the attempt the first one's session serves.
+    const stray = await second.action({ command: 'printf second' }, first.attemptId);
+    const outcome = await second.connector.execute(stray, second.context(stray));
+    if (outcome.outcome !== 'failed') throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toContain('session_exists');
+    expect(second.provider.calls.exec).toBe(0);
+    // Nothing ran through the second connection, and nothing new was created.
+    expect(engine.sandboxes.size).toBe(sandboxes);
+  }, 60_000);
+
   test('the installation ceiling refuses a sandbox a connection still had room for', async () => {
     // Two apiece, but only two in the whole service.
     const engine = new FakeSandboxEngine();
