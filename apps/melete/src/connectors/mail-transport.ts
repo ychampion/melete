@@ -47,7 +47,12 @@ export function toMailMessage(uid: number, parsed: ParsedMail): MailMessage {
     uid,
     message_id: parsed.messageId ?? null,
     from: parsed.from?.text ?? '',
-    from_addresses: addressesOf(parsed.from),
+    // A message with two From headers names two senders, and the parser keeps
+    // only one of them. Which one is not something to decide on, so it has none.
+    from_addresses:
+      parsed.headerLines.filter((line) => line.key === 'from').length > 1
+        ? []
+        : addressesOf(parsed.from),
     to,
     subject: parsed.subject ?? '',
     text: parsed.text ?? '',

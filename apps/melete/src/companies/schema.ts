@@ -112,6 +112,8 @@ export const ledgerItem = pgTable(
     evidence: jsonb('evidence').$type<LedgerEvidence[]>().notNull(),
     suggestedPlaybook: text('suggested_playbook'),
     jobId: text('job_id'),
+    /** The chase that last handled it and stopped, once it is open again. */
+    lastJobId: text('last_job_id'),
     summary: text('summary').notNull(),
     /** The scan that found it, so a re-scan can replace its own findings. */
     scanId: text('scan_id').notNull(),
@@ -122,6 +124,8 @@ export const ledgerItem = pgTable(
   (table) => [
     index('ledger_item_owner_idx').on(table.spaceId, table.principalId, table.status),
     uniqueIndex('ledger_item_dedupe_idx').on(table.spaceId, table.principalId, table.dedupeKey),
+    // A finishing chase finds the item it was handling by this.
+    index('ledger_item_job_idx').on(table.jobId).where(sql`${table.jobId} is not null`),
     check(
       'ledger_item_amount_nonnegative',
       sql`${table.amountMinor} is null or ${table.amountMinor} >= 0`,

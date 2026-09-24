@@ -26,6 +26,8 @@ export type ScanOptions = {
   mailbox: ScanMailbox;
   extractor: CompanyExtractor;
   owner: Owner;
+  /** The person's time zone, from their profile; a period in an email counts from their day. */
+  timeZone?: string;
   now?: Date;
   windowDays?: number;
   /** How many messages to read from the mailbox before the window is applied. */
@@ -168,6 +170,7 @@ export async function runScan(options: ScanOptions): Promise<ScanOutcome> {
             subject: message.subject,
             receivedAt: message.receivedAt,
             text,
+            ...(options.timeZone ? { timeZone: options.timeZone } : {}),
           });
         } catch {
           counts.extractor_failed = (counts.extractor_failed ?? 0) + 1;

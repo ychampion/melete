@@ -16,6 +16,7 @@
  */
 
 import type { LedgerDirection, LedgerItemKind } from '@melete/contracts';
+import { calendarDay } from '../dates.ts';
 import { tier0Values } from '../memory/tier0.ts';
 import type { CompanyExtractor, ExtractedItem, ExtractionRequest } from './extract.ts';
 
@@ -46,7 +47,7 @@ const RULES: readonly Rule[] = [
   },
   {
     pattern:
-      /\b(?:charged (?:you )?twice|duplicate charge|incorrect(?:ly)? charged|billed twice|charged in error)\b/i,
+      /\b(?:charged (?:you )?twice|duplicate charge|incorrect(?:ly)? charged|billed twice|charged in error|over-?charg(?:e|es|ed|ing)|charged too much)\b/i,
     kind: 'wrong_charge',
     direction: 'owed_to_you',
     playbook: 'wrong-charge',
@@ -185,6 +186,67 @@ export function scriptedExtractor(): CompanyExtractor {
   };
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  fourteen: 14,
+  twenty: 20,
+  thirty: 30,
+};
+
+/**
+ * "within 5 working days", "within 5-7 working days", "within 14 days": the
+ * day that period ends, counted from the day the email came, as a bare date.
+ * A range is kept to its far end, since the company said it could take that
+ * long. Working and business days skip Saturday and Sunday; bank holidays are
+ * not known here, so a working-day date can be a day or two early.
+ */
+/** The calendar day an instant falls on where the person lives, or in UTC if the zone is unknown. */
+function localDay(at: Date, timeZone = 'UTC'): string {
+  try {
+    return calendarDay(at, timeZone);
+  } catch {
+    return calendarDay(at, 'UTC');
+  }
+}
+
+export function dueFromPeriod(text: string, receivedAt: string, timeZone = 'UTC'): string | null {
+  const match =
+    /\bwithin (\d{1,3}|[a-z]+)(?:\s*(?:-|–|to)\s*(\d{1,3}|[a-z]+))? (working |business )?days?\b/i.exec(
+      text,
+    );
+  if (!match) return null;
+  const count = (value: string | undefined) =>
+    value === undefined
+      ? null
+      : /^\d+$/.test(value)
+        ? Number(value)
+        : (NUMBER_WORDS[value.toLowerCase()] ?? null);
+  const days = count(match[2]) ?? count(match[1]);
+  const start = Date.parse(receivedAt);
+  if (!days || days > 366 || !Number.isFinite(start)) return null;
+  // The day it came is the person's own calendar day, not the day in UTC.
+  const day = new Date(`${localDay(new Date(start), timeZone)}T00:00:00.000Z`);
+  if (!match[3]) {
+    day.setUTCDate(day.getUTCDate() + days);
+    return day.toISOString().slice(0, 10);
+  }
+  for (let left = days; left > 0; ) {
+    day.setUTCDate(day.getUTCDate() + 1);
+    const weekday = day.getUTCDay();
+    if (weekday !== 0 && weekday !== 6) left--;
+  }
+  return day.toISOString().slice(0, 10);
+}
+
 /** A sentence that states the figure beats one that only names the subject. */
 const sharper = (item: ExtractedItem): number =>
   (item.amount_minor === null ? 0 : 2) + (item.due_at === null ? 0 : 1);
@@ -199,7 +261,11 @@ export function scriptedItems(request: ExtractionRequest): ExtractedItem[] {
   for (const segment of segments(request.text)) {
     const rule = RULES.find((entry) => entry.pattern.test(segment.text));
     if (!rule) continue;
-    const values = tier0Values(segment.text, { eventAt: request.receivedAt }, segment.start);
+    const values = tier0Values(
+      segment.text,
+      { eventAt: request.receivedAt, ...(request.timeZone ? { timeZone: request.timeZone } : {}) },
+      segment.start,
+    );
     const amount = values.find((value) => value.type === 'amount');
     const date = values.find((value) => value.type === 'date');
     const minor = amount ? minorUnits(amount.value) : null;
@@ -213,12 +279,15 @@ export function scriptedItems(request: ExtractionRequest): ExtractedItem[] {
       // sentence beside it is the renewal, and the renewal is its own item.
       // A date stated only to the day is given as a day, the way the model is
       // asked to give one, so it is admitted as a date rather than an instant.
+      // With no date stated, a period the email gives ends on a day too.
       due_at:
-        rule.kind === 'subscription' || !date
+        rule.kind === 'subscription'
           ? null
-          : date.granularity === 'day'
-            ? date.value.slice(0, 10)
-            : date.value,
+          : !date
+            ? dueFromPeriod(segment.text, request.receivedAt, request.timeZone)
+            : date.granularity === 'day'
+              ? localDay(new Date(date.value), request.timeZone)
+              : date.value,
       confidence: rule.confidence ?? (money || date ? 'high' : 'medium'),
       suggested_playbook: rule.playbook,
       summary: `${rule.summary} — ${request.companyName}`,

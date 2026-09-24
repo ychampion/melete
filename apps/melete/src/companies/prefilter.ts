@@ -33,6 +33,7 @@ export const CANDIDATE_PATTERNS: readonly RegExp[] = [
   /\btrials?\b/i,
   /\bpric(?:e|es|ing)\b/i,
   /\bcharg(?:e|es|ed)\b/i,
+  /\bover-?charg(?:e|es|ed|ing)\b|\bcharged too much\b/i,
   /\brefunds?\b/i,
   /\bcredits?\b/i,
   /\bcancel(?:s|led|ling|lation)?\b/i,

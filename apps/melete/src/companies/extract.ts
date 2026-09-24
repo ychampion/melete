@@ -32,6 +32,8 @@ export type ExtractionRequest = {
   receivedAt: string;
   /** Exactly the stored text. Spans in the reply are offsets into this string. */
   text: string;
+  /** The person's time zone, so "within 14 days" counts from their own calendar day. */
+  timeZone?: string;
 };
 
 /**
