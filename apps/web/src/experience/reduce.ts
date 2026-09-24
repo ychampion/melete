@@ -27,13 +27,14 @@ export type TurnBlock =
   | { type: 'card'; card: ResultCard }
   | { type: 'receipt'; receipt: Receipt; reversed: boolean }
   /**
-   * `decided` is the option chosen, here or as the stream's decision item says;
-   * `closed` means the turn moved on after a decision the stream did not name.
+   * `decided` is the option chosen, here or as the stream's decision reports
+   * it; `replaced` means a later message made the request stale; `closed`
+   * means the turn moved on after a decision this client has not seen.
    */
   | {
       type: 'permission';
       permission: Permission;
-      decided: PermissionOption | 'closed' | null;
+      decided: PermissionOption | 'replaced' | 'closed' | null;
     }
   /** `answered` is the option id, or `closed` when the turn moved on after an answer given elsewhere. */
   | { type: 'question'; question: Question; answered: string | null };
@@ -428,7 +429,7 @@ export function setDelivery(
 export function markPermission(
   transcript: Transcript,
   id: string,
-  option: PermissionOption,
+  option: PermissionOption | 'replaced',
 ): Transcript {
   return {
     ...transcript,
@@ -452,7 +453,8 @@ export function applyDecision(transcript: Transcript, decision: ExperienceDecisi
   if (decision.kind === 'permission') {
     return decision.outcome === 'allow_once' ||
       decision.outcome === 'always' ||
-      decision.outcome === 'deny'
+      decision.outcome === 'deny' ||
+      decision.outcome === 'replaced'
       ? markPermission(transcript, decision.id, decision.outcome)
       : transcript;
   }

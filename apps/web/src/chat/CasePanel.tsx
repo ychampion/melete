@@ -116,7 +116,9 @@ export function caseSteps(found: Case, transcript: Transcript): Step[] {
       sub:
         permission.decided === 'deny'
           ? 'You said not to send it'
-          : `Asked once for ${company.name}`,
+          : permission.decided === 'replaced'
+            ? 'Replaced by your new message'
+            : `Asked once for ${company.name}`,
       state: allowed ? 'done' : 'now',
     });
   }

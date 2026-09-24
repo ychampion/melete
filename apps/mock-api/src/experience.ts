@@ -1010,6 +1010,18 @@ export class ExperienceMock {
     }
     if (['queued', 'working', 'streaming', 'paused'].includes(chat.view.status))
       throw new MockExperienceError(409, 'Finish the current request first.');
+    // A new message makes every permission still waiting in this conversation
+    // stale, as the service does: it is replaced, and can never be allowed.
+    for (const permission of [...this.permissions.values()]) {
+      if (permission.conversation_id !== chat.view.id) continue;
+      this.permissions.delete(permission.id);
+      this.replaced.add(permission.id);
+      if (permission.draft) {
+        const { draft } = this.findDraft(required(this.permissionDrafts, permission.id));
+        draft.status = 'draft';
+      }
+      this.decided(chat, 'permission', permission.id, 'replaced');
+    }
     const turn = C.conversationTurn.parse({
       id: newId('turn'),
       conversation_id: chat.view.id,
@@ -1245,8 +1257,16 @@ export class ExperienceMock {
     this.event(chat, { type: 'permission', permission });
     return { draft, permission, receipt: null };
   }
+  /** Permissions a later message made stale; none of them can be decided again. */
+  readonly replaced = new Set<string>();
   decide(id: string, raw: unknown) {
     const input = C.permissionDecision.parse(raw);
+    if (this.replaced.has(id))
+      throw new MockExperienceError(
+        409,
+        'Your new message replaced this request.',
+        'permission_replaced',
+      );
     if (this.permissionProposals.has(id)) {
       const permission = this.permissions.get(id);
       if (!permission) throw new MockExperienceError(409, 'This request was already answered.');

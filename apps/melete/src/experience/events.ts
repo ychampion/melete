@@ -372,6 +372,7 @@ export class ExperienceEvents {
               approvalId: payload.approval_id,
               decision: payload.decision,
               ruleSaved: Boolean(rule),
+              note: payload.note,
               at: source.createdAt,
             });
             await emit(source, { type: 'decision', decision }, `decision:${decision.id}`);

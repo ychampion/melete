@@ -246,6 +246,14 @@ async function seed(cookie: string, label: string) {
       payload: { to: 'alex@example.test', subject: `${label} dinner`, body: 'Dinner at seven?' },
     })
   ).action_id;
+  // A second draft, for the conversation to move past before it is sent.
+  const staleDraft = (
+    await broker.propose(claims, {
+      connection_id: mail,
+      kind: 'email.draft',
+      payload: { to: 'alex@example.test', subject: `${label} lunch`, body: 'Lunch at one?' },
+    })
+  ).action_id;
   const event = (summary: string) =>
     broker.propose(claims, {
       connection_id: calendar,
@@ -315,6 +323,7 @@ async function seed(cookie: string, label: string) {
     agentId: persona.id,
     conversationId: conversation.id,
     draftId: draft,
+    staleDraftId: staleDraft,
     permissionId: pending.approval_id ?? '',
     receiptId: receipt?.id ?? '',
     undoHandle: receipt?.undo?.handle ?? '',
@@ -570,6 +579,57 @@ withDb('each account acts only inside its own space', () => {
       expect(await json(takeover)).toMatchObject({ control: 'human' });
     }
   }, 120_000);
+
+  test('a new message makes a pending draft send stale, and it can never be allowed', async () => {
+    const { sql } = database();
+    const actor = first;
+    const sent = await call(actor.cookie, `/drafts/${actor.staleDraftId}/send`, 'POST');
+    expect(sent.status).toBe(200);
+    const pending = (await json<{ permission: { id: string; version: string } | null }>(sent))
+      .permission;
+    if (!pending) throw new Error('Expected a send permission');
+    // The turn that wrote the draft is over; the person asks for a firmer one.
+    await sql`update job set state = 'waiting_for_input' where id = ${actor.conversationId}`;
+    const firmer = await call(
+      actor.cookie,
+      `/conversations/${actor.conversationId}/messages`,
+      'POST',
+      { text: 'Make it firmer' },
+    );
+    expect(firmer.status).toBe(200);
+    const listed = await json<{ permissions: { id: string }[] }>(
+      await call(actor.cookie, '/permissions'),
+    );
+    expect(listed.permissions.map((entry) => entry.id)).not.toContain(pending.id);
+    const sendsBefore = calls.filter((entry) => entry.kind === 'email.send').length;
+    const allowed = await call(actor.cookie, `/permissions/${pending.id}`, 'POST', {
+      option: 'allow_once',
+      version: pending.version,
+    });
+    expect(allowed.status).toBe(409);
+    expect(await json<unknown>(allowed)).toEqual({
+      error: { code: 'permission_replaced', message: 'Your new message replaced this request.' },
+    });
+    expect(calls.filter((entry) => entry.kind === 'email.send')).toHaveLength(sendsBefore);
+    const [row] = await sql`select a.status, p.decision, p.decided_by from approval p
+      join action a on a.id = p.action_id where p.id = ${pending.id}`;
+    expect(row).toMatchObject({ status: 'denied', decision: 'denied', decided_by: 'replaced' });
+    // The action's move is on the record the broker keeps for every status change.
+    const moved = await sql`select payload from event
+      where type = 'action_status_changed' and payload->>'to' = 'denied'
+        and payload->>'action_id' = (select action_id from approval where id = ${pending.id})`;
+    expect(moved).toHaveLength(1);
+    const stream = await json<{
+      events: { item: { type: string; decision?: { id: string; outcome: string } } }[];
+    }>(await call(actor.cookie, `/conversations/${actor.conversationId}/events?limit=200`));
+    expect(
+      stream.events.flatMap((event) =>
+        event.item.type === 'decision' && event.item.decision?.id === pending.id
+          ? [event.item.decision.outcome]
+          : [],
+      ),
+    ).toEqual(['replaced']);
+  }, 60_000);
 
   test('an account without a personal space receives exactly one, also under concurrent requests', async () => {
     const { sql } = database();

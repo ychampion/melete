@@ -134,6 +134,20 @@ test('a denied send is never shown as allowed', () => {
   expect(keys(steps)).toContain('sent:later');
 });
 
+test('a send a later message replaced says so, and is not shown as allowed', () => {
+  const steps = caseSteps(
+    found,
+    transcript([{ type: 'permission', permission: PERMISSION, decided: 'replaced' }], [DRAFT]),
+  );
+  const ok = steps.find((step) => step.key === 'ok');
+  expect([ok?.label, ok?.sub, ok?.state]).toEqual([
+    'Your OK',
+    'Replaced by your new message',
+    'now',
+  ]);
+  expect(keys(steps)).toContain('sent:later');
+});
+
 test('a settled item settles the case', () => {
   const steps = caseSteps(
     { ...found, item: { ...ITEM, status: 'settled' } },

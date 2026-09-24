@@ -640,6 +640,23 @@ export function ReceiptRow({
 
 const DAYS = [1, 7, 14, 30] as const;
 
+/** What a decided permission card says it came to; null while it waits. */
+export function permissionOutcome(
+  decided: PermissionOption | 'replaced' | 'closed' | null,
+): string | null {
+  return decided === 'allow_once'
+    ? 'Allowed once'
+    : decided === 'always'
+      ? 'Always allowed'
+      : decided === 'deny'
+        ? 'Denied'
+        : decided === 'replaced'
+          ? 'Replaced by your new message'
+          : decided === 'closed'
+            ? 'Decided'
+            : null;
+}
+
 export function PermissionCard({
   permission,
   decided,
@@ -649,7 +666,7 @@ export function PermissionCard({
   busy = false,
 }: {
   permission: Permission;
-  decided: PermissionOption | 'closed' | null;
+  decided: PermissionOption | 'replaced' | 'closed' | null;
   onDecide: (option: PermissionOption, bounds?: RuleBounds) => void;
   touch?: boolean;
   /** Drawn without its footer, when the phone carries the decision in a bottom bar. */
@@ -662,16 +679,7 @@ export function PermissionCard({
   const [days, setDays] = useState('30');
   const [reconsent, setReconsent] = useState('7');
   const pending = decided === null;
-  const outcome =
-    decided === 'allow_once'
-      ? 'Allowed once'
-      : decided === 'always'
-        ? 'Always allowed'
-        : decided === 'deny'
-          ? 'Denied'
-          : decided === 'closed'
-            ? 'Decided'
-            : null;
+  const outcome = permissionOutcome(decided);
   const can = (option: PermissionOption) => permission.options.includes(option);
   // When a decision made here collapses the card, focus stays on it rather
   // than falling to the page with the buttons that were pressed.
