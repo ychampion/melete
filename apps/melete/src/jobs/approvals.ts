@@ -10,7 +10,7 @@ import { ServiceError } from '../api/errors.ts';
 import { action, approval } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import { appendEvent } from '../events/store.ts';
-import { visibleJob } from '../principals/authority.ts';
+import { requireJobAccess, visibleJob } from '../principals/authority.ts';
 import type { AttemptRunner } from './runner.ts';
 import type { JobRow, JobService } from './service.ts';
 
@@ -66,6 +66,8 @@ export class ApprovalService {
         .innerJoin(action, eq(approval.actionId, action.id))
         .where(eq(approval.id, id));
       if (!lookup) throw new ServiceError('not_found', 'Approval not found.', 404);
+      // Only the job's own person decides its approvals, not anyone else in the space.
+      await requireJobAccess(tx, lookup.jobId);
       const row = await this.jobs.lock(tx, lookup.jobId);
       const [current] = await tx
         .select({ action, approval })
