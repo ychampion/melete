@@ -218,4 +218,35 @@ withDb('two presses at once', () => {
       for (const work of heldScans.splice(0)) await work();
     }
   }, 60_000);
+
+  test('a section held elsewhere for too long is given up on, not waited for', async () => {
+    if (!handle || !otherPool) throw new Error('Postgres unavailable');
+    // Another process holds the section and does not let go.
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = () => {};
+    const holding = new Promise<void>((resolve) => {
+      held = resolve;
+    });
+    const holder = otherPool.sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtext(${'companies:ledger:stuck'}))`;
+      held();
+      await released;
+    });
+    await holding;
+    const started = Date.now();
+    try {
+      await expect(
+        new PostgresCompanyStore(handle.db).exclusive('ledger:stuck', async () => 'ran'),
+      ).rejects.toBeDefined();
+      const waited = Date.now() - started;
+      expect(waited).toBeGreaterThanOrEqual(14_000);
+      expect(waited).toBeLessThan(30_000);
+    } finally {
+      release();
+      await holder;
+    }
+  }, 60_000);
 });

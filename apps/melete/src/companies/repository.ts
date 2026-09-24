@@ -216,6 +216,9 @@ export class PostgresCompanyStore implements CompanyStore {
   /** A transaction-scoped advisory lock on the key, released when the work commits or fails. */
   async exclusive<T>(key: string, work: (store: CompanyStore) => Promise<T>): Promise<T> {
     return this.db.transaction(async (tx) => {
+      // A section held too long, by a stalled process or a lost connection, fails
+      // this request rather than queueing every press behind it indefinitely.
+      await tx.execute(sql`set local lock_timeout = '15s'`);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`companies:${key}`}))`);
       return work(new PostgresCompanyStore(tx as unknown as Database));
     });
