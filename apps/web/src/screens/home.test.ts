@@ -44,21 +44,37 @@ test('a trail step carries a tool entry only when the service sends one', () => 
       kind: 'web',
       title: 'Read a web page',
       status: 'done',
+      started_at: '2026-09-24T19:00:04.000Z',
+      ended_at: '2026-09-24T19:00:05.000Z',
       input_summary: { text: 'On bistro.example' },
       output_summary: { text: 'Page read', quote: { text: 'Book a table', from: 'page' } },
+      detail: null,
+      parent: null,
     },
   });
   expect(tool?.title).toBe('Read a web page');
   expect(tool?.output_summary?.quote).toEqual({ text: 'Book a table', from: 'page' });
 });
 
+const conversation = (progress?: Conversation['progress']): Conversation => ({
+  id: 'job_1',
+  title: 'Book dinner with Sam',
+  agent_id: 'nova',
+  status: 'working',
+  composer: 'pause',
+  created_at: '2026-09-24T19:00:00.000Z',
+  updated_at: '2026-09-24T19:00:07.000Z',
+  plan_id: null,
+  ...(progress ? { progress } : {}),
+});
+
 test('progress is read only when present, as steps and never a percentage', () => {
-  expect(progressOf({ id: 'job_1', status: 'working' })).toBeNull();
-  expect(progressOf({ progress: { steps_done: 3, current: 'Sending the email' } })).toEqual({
+  expect(progressOf(conversation())).toBeNull();
+  expect(progressOf(conversation({ steps_done: 3, current: 'Sending the email' }))).toEqual({
     steps_done: 3,
     current: 'Sending the email',
   });
-  expect(progressOf({ progress: { steps_done: 2, current: null } })?.current).toBeNull();
+  expect(progressOf(conversation({ steps_done: 2, current: null }))?.current).toBeNull();
 });
 
 const chat = (id: string, updated_at: string) => ({ id, updated_at }) as unknown as Conversation;
