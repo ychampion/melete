@@ -29,6 +29,16 @@ export function shareTestServer(): () => Promise<void> {
   return stopTestServer;
 }
 
+/**
+ * Follow an external server to a new address. A Compose stack that restarts can
+ * bring its database back on another address on the same network; the server,
+ * its databases and its templates are unchanged, so only the address moves.
+ */
+export function repointTestServer(url: string): void {
+  process.env.DATABASE_URL = url;
+  server = Promise.resolve({ url, mode: 'external', stop: async () => {} });
+}
+
 /** Borrow only when the preload owns shutdown; scripts retain their own server lifetime. */
 export async function sharedTestServerUrl(): Promise<string | null | undefined> {
   if (!globalCleanup) return undefined;

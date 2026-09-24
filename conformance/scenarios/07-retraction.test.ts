@@ -4,12 +4,12 @@ import { newId } from '../../apps/melete/src/ids.ts';
 import {
   api,
   approveJob,
-  compose,
   composeEnabled,
   createApprovalJob,
   docker,
   ensureTestConnection,
   ownerSpace,
+  restartStack,
   serviceId,
   sql,
   waitForStack,
@@ -127,9 +127,11 @@ withCompose(`conformance 7: ${s.title}`, () => {
     afterHits = await search();
     after = await physical();
     const started = performance.now();
-    await compose('restart');
-    await waitForStack();
+    await restartStack();
     restartMs = Math.round(performance.now() - started);
+    // The old pool knows the database at the address it had before the restart.
+    await database?.end();
+    database = await sql();
     restartHits = await search();
     afterRestart = await physical();
     const [parked] = await database`select state from job where id = ${jobId}`;
