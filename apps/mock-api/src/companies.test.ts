@@ -197,6 +197,7 @@ test('an unknown ledger id stays a 404, on every route that takes one', async ()
   for (const [path, method] of [
     ['/ledger/li_01M2000000000000000000000A', 'GET'],
     ['/ledger/li_01M2000000000000000000000A/handle', 'POST'],
+    ['/ledger/li_01M2000000000000000000000A/stop', 'POST'],
   ] as const) {
     const { response, body } = await call(mock, path, method);
     expect(response.status).toBe(404);
@@ -247,6 +248,25 @@ test('a promise being chased is still counted; handling one does not tick the fi
   // Settling it is what takes it out of the count.
   await call(mock, `/ledger/${promise.id}`, 'PATCH', { status: 'settled' });
   expect(counts(await mapOf(mock)).promises_lapsed).toBe(first.promises_lapsed - 1);
+});
+
+test('stopping hands the item back open, and it can be handled again', async () => {
+  const mock = createMock({ speed: 0, experience: { seed: true } });
+  const item = (await mapOf(mock)).items.find((row) => row.kind === 'refund_owed');
+  if (!item) throw new Error('the fixture has no refund');
+  const first = (await call(mock, `/ledger/${item.id}/handle`, 'POST')).body as { job_id: string };
+  const stopped = await call(mock, `/ledger/${item.id}/stop`, 'POST');
+  expect(stopped.response.status).toBe(200);
+  expect(C.ledgerItem.parse(stopped.body)).toMatchObject({ job_id: null, status: 'found' });
+  const chase = C.experienceOperations['GET /conversations/{id}'].response.parse(
+    (await call(mock, `/conversations/${first.job_id}`)).body,
+  ).conversation;
+  expect(chase.status).toBe('stopped');
+  const again = await call(mock, `/ledger/${item.id}/handle`, 'POST');
+  expect(again.response.status).toBe(201);
+  expect((again.body as { job_id: string }).job_id).not.toBe(first.job_id);
+  await call(mock, `/ledger/${item.id}`, 'PATCH', { status: 'settled' });
+  expect((await call(mock, `/ledger/${item.id}/stop`, 'POST')).response.status).toBe(409);
 });
 
 test('handling an item starts one job, and asking again returns the same one', async () => {

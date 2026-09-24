@@ -107,6 +107,26 @@ withDb('pressing “Handle it” on a real item', () => {
     refundItem = found?.id ?? '';
   }, 120_000);
 
+  test('stopping cancels the chase and hands the item back open', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const started = await call(cookie, `/ledger/${refundItem}/handle`, 'POST');
+    const { job_id } = await json<{ job_id: string }>(started);
+    const stopped = await call(cookie, `/ledger/${refundItem}/stop`, 'POST');
+    expect(stopped.status).toBe(200);
+    expect(ledgerItemContract.parse(await stopped.json())).toMatchObject({
+      id: refundItem,
+      job_id: null,
+      status: 'found',
+    });
+    const [row] = await handle.db.select().from(job).where(eq(job.id, job_id));
+    expect(row?.state).toBe('cancelled');
+    // Stopping twice is the same answer, and nothing is cancelled again.
+    expect((await call(cookie, `/ledger/${refundItem}/stop`, 'POST')).status).toBe(200);
+    // Another person's session cannot stop it.
+    const other = await app?.request(`/ledger/${refundItem}/stop`, { method: 'POST' });
+    expect(other?.status).toBe(401);
+  }, 60_000);
+
   test('the job it starts is the item’s own playbook, and the item says so', async () => {
     if (!handle) throw new Error('Postgres unavailable');
     const response = await call(cookie, `/ledger/${refundItem}/handle`, 'POST');

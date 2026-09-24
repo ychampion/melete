@@ -12819,6 +12819,76 @@
         }
       }
     },
+    "/ledger/{id}/stop": {
+      "post": {
+        "tags": [
+          "companies"
+        ],
+        "summary": "Stop handling this item",
+        "description": "Cancels the job chasing the item, if one still runs, and returns the item to open so it can be handled again later.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "string",
+              "description": "Ledger item id"
+            },
+            "required": true,
+            "description": "Ledger item id"
+          },
+          {
+            "in": "query",
+            "name": "space_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The item, open again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema377"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such item for this person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema121"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The item is already settled or dropped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema121"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Stopping is not connected yet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema121"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/model-providers/sign-in": {
       "get": {
         "tags": [

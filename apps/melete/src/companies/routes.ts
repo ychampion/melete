@@ -46,6 +46,11 @@ export type CompaniesDeps = {
    */
   sendConnection?: (owner: Owner) => Promise<string | null> | string | null;
   /**
+   * Cancel the job chasing an item. A job that has already finished has
+   * nothing left to cancel, and that is not an error here.
+   */
+  cancelJob?: (jobId: string, reason: string) => Promise<void>;
+  /**
    * How the scan runs once the route has answered. The default detaches it, so
    * the person gets a scan id straight away; a test passes one that runs the
    * work to completion first.
@@ -193,6 +198,21 @@ export function mountCompanies(app: Hono, deps: CompaniesDeps) {
     const updated = await deps.store.setStatus(found.owner, found.item.id, change.status);
     if (!updated) throw new ServiceError('not_found', 'Not found.', 404);
     return c.json(ledgerItemContract.parse(updated));
+  });
+
+  // Stopping hands the item back: the chase ends, and it can be handled again later.
+  app.post('/ledger/:id/stop', async (c) => {
+    const found = await findItem(deps, c.req.param('id'), c.req.query('space_id'));
+    if (found.item.status === 'settled' || found.item.status === 'dropped')
+      throw new ServiceError('not_handling', 'This item is already closed.', 409);
+    if (found.item.job_id) {
+      if (!deps.cancelJob)
+        throw new ServiceError('not_connected', 'Stopping is not connected yet.', 503);
+      await deps.cancelJob(found.item.job_id, 'The owner stopped handling this item.');
+    }
+    const released = await deps.store.release(found.owner, found.item.id);
+    if (!released) throw new ServiceError('not_found', 'Not found.', 404);
+    return c.json(ledgerItemContract.parse(released));
   });
 
   app.post('/ledger/:id/handle', async (c) => {

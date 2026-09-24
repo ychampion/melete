@@ -5323,6 +5323,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ledger/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop handling this item
+         * @description Cancels the job chasing the item, if one still runs, and returns the item to open so it can be handled again later.
+         */
+        post: {
+            parameters: {
+                query?: {
+                    space_id?: string;
+                };
+                header?: never;
+                path: {
+                    /** @description Ledger item id */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The item, open again */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema377"];
+                    };
+                };
+                /** @description No such item for this person */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema121"];
+                    };
+                };
+                /** @description The item is already settled or dropped */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema121"];
+                    };
+                };
+                /** @description Stopping is not connected yet */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema121"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/login": {
         parameters: {
             query?: never;
