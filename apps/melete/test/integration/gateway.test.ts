@@ -358,6 +358,8 @@ Use the scoped receipt procedure.
           { name: 'load_tool', connection_id: null },
           { name: 'react', connection_id: null },
           { name: 'search_tools', connection_id: null },
+          // Pinned because the space has skills the attempt can read by name.
+          { name: 'skills.read', connection_id: null },
           { name: 'test.send', connection_id: seed.connectionId },
         ],
       });
