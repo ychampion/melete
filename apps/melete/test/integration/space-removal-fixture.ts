@@ -355,6 +355,11 @@ async function seedMemory(
   await sql`insert into memory_rejections
     (id, space_id, work_id, proposal_index, reason, detail)
     values (${newId('mrj')}, ${spaceId}, ${newId('mw')}, 0, 'malformed', 'no key')`;
+  // What chat capture decided about a message, and a read the memory model made.
+  await sql`insert into memory_capture (event_seq, space_id, outcome)
+    values ((select coalesce(max(event_seq), 0) + 1 from memory_capture), ${spaceId}, 'skipped:asked')`;
+  await sql`insert into memory_model_calls (id, owner_id, space_id, work_id, provider, model, reserved_tokens)
+    values (${newId('mmc')}, 'own_removal', ${spaceId}, ${newId('mw')}, 'fake', 'fake-scripted-v1', 100)`;
 }
 
 /** The directories a space uses, each with something in it, and one job workspace. */

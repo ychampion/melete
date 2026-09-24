@@ -12,6 +12,7 @@ import type { SpaceResolver } from '../knowledge/spaces.ts';
 import { withMemoryRuntime } from '../memory/context.ts';
 import { lockSpace, MemoryError, type MemoryScope, type MemorySql } from '../memory/db.ts';
 import { lockEventOrder } from '../memory/invalidate.ts';
+import { knowledgeTokens } from '../memory/recall.ts';
 
 type ContextOptions = {
   sql: MemorySql;
@@ -75,7 +76,7 @@ async function legacyKnowledge(
         },
       });
       if (
-        Buffer.byteLength(JSON.stringify([...bundle.knowledge, ...selected, excerpt]), 'utf8') >
+        knowledgeTokens([...bundle.knowledge, ...selected, excerpt]) >
         CONTEXT_LIMITS.knowledge_tokens
       )
         continue;

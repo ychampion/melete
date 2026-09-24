@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AttemptBundle,
+  CONTEXT_LIMITS,
   EMPTY_SINCE_LAST,
   type EventSink,
   type KnowledgeExcerpt,
@@ -20,6 +21,7 @@ import { listClaims } from '../memory/claims.ts';
 import { MemoryError } from '../memory/db.ts';
 import { ingest } from '../memory/evidence.ts';
 import { forgetMemory } from '../memory/forget.ts';
+import { knowledgeTokens } from '../memory/recall.ts';
 import { runExtractionWork } from '../memory/service.ts';
 import { buildViews } from '../memory/views.ts';
 import { withDeploymentContext } from './context.ts';
@@ -298,14 +300,15 @@ withDb('deployment attempt context', () => {
   test('context is byte-bounded and stale caller epochs cannot launch or create a selection audit', async () => {
     const f = await fixture();
     try {
-      for (let index = 0; index < 10; index++)
-        await f.record(`bounded ${'description '.repeat(12)}${index}`);
+      for (let index = 0; index < 20; index++)
+        await f.record(`bounded ${'description '.repeat(15)}${index}`);
       const longObjective = 'bounded '.repeat(400);
       const bundle = await f.makeAttempt(longObjective);
       await f.adapter.start(bundle, f.sink, new AbortController().signal);
-      expect(Buffer.byteLength(JSON.stringify(f.snapshots[0]))).toBeLessThanOrEqual(2000);
+      // The knowledge budget is in tokens, estimated as a quarter of the bytes.
+      expect(knowledgeTokens(f.snapshots[0])).toBeLessThanOrEqual(CONTEXT_LIMITS.knowledge_tokens);
       expect(f.snapshots[0]?.length).toBeGreaterThan(0);
-      expect(f.snapshots[0]?.length).toBeLessThan(10);
+      expect(f.snapshots[0]?.length).toBeLessThan(20);
       const stale = await f.makeAttempt('bounded');
       stale.attempt.epoch += 1;
       await expectMemoryRefusal(

@@ -1,0 +1,90 @@
+{
+  "id": "changes-replace-the-old-value",
+  "family": "corrections-and-time",
+  "title": "A change of mind and an explicit correction each replace the old value",
+  "narrative": "A preference changes in conversation and a contact is corrected; the next requests use the new values and nothing asks which is right.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "seat",
+      "event_time": "2026-08-02T09:00:00Z",
+      "text": "I prefer an aisle seat.",
+      "claim": {
+        "key": "pref.travel.seat",
+        "content": "aisle seat",
+        "kind": "preference",
+        "quote": "aisle seat"
+      }
+    },
+    {
+      "step": "say",
+      "name": "ana-email",
+      "event_time": "2026-08-02T09:05:00Z",
+      "text": "Ana's email is ana@studio.example.",
+      "claim": {
+        "key": "contact.ana.email",
+        "content": "ana@studio.example",
+        "kind": "user_statement",
+        "quote": "ana@studio.example"
+      }
+    },
+    {
+      "step": "say",
+      "name": "seat-change",
+      "event_time": "2026-08-12T09:00:00Z",
+      "text": "Actually, I prefer a window seat now.",
+      "claim": {
+        "key": "pref.travel.seat",
+        "content": "window seat",
+        "kind": "preference",
+        "quote": "window seat",
+        "update": true
+      }
+    },
+    {
+      "step": "correct",
+      "name": "ana-new",
+      "key": "contact.ana.email",
+      "text": "Ana's email is now ana@atlas.example",
+      "content": "ana@atlas.example",
+      "valid_from": "2026-08-13T09:00:00Z"
+    },
+    {
+      "step": "expect_stored",
+      "key": "pref.travel.seat",
+      "content": "window seat"
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.ana.email",
+      "content": "ana@atlas.example"
+    },
+    {
+      "step": "ask",
+      "name": "flight",
+      "query": "Book my flight to Porto next Friday",
+      "key": "pref.travel.seat",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "window seat"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "email",
+      "query": "Email Ana the flight details",
+      "key": "contact.ana.email",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "ana@atlas.example"
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

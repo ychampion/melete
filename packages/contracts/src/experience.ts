@@ -418,7 +418,16 @@ export const memoryItemCreate = z.strictObject({
   statement: z.string().min(1).max(16000).optional(),
 });
 export const memoryItemResponse = z.strictObject({ item: memoryItem });
-export const memoryItemList = z.strictObject({ items: z.array(memoryItem) });
+/** `next`, when present and not null, is the `after` value for the following page. */
+export const memoryItemList = z.strictObject({
+  items: z.array(memoryItem),
+  next: id.nullable().optional(),
+});
+/**
+ * A person's own memory settings. Memory is on unless they turn it off; off,
+ * nothing new they say in chat is kept, and "forget ..." still works.
+ */
+export const memorySettings = z.strictObject({ capture: z.boolean() });
 export const memoryExplanation = z.strictObject({
   reasons: z.array(text),
   output: z.string().nullable(),
@@ -619,11 +628,16 @@ export const experienceOperations = {
   'POST /agents': { request: agentInput, response: agentResponse },
   'GET /agents/templates': { response: agentTemplateList },
   'PATCH /agents/{id}': { request: agentInput, response: agentResponse },
-  'GET /memory/items': { response: memoryItemList },
+  'GET /memory/items': {
+    query: z.strictObject({ after: id.optional() }),
+    response: memoryItemList,
+  },
   'POST /memory/items': { request: memoryItemCreate, response: memoryItemResponse },
   'PATCH /memory/items/{id}': { request: memoryItemEdit, response: experienceOk },
   'DELETE /memory/items/{id}': { response: experienceOk },
   'GET /memory/items/{id}/why': { response: memoryExplanation },
+  'GET /memory/settings': { response: memorySettings },
+  'PUT /memory/settings': { request: memorySettings, response: memorySettings },
   'GET /plans': { response: planList },
   'POST /plans': { request: planCreate, response: planResponse },
   'GET /plans/{id}': { response: planResponse },

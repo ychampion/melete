@@ -212,7 +212,7 @@ export function createMemoryRouter(options: MemoryRouteOptions) {
     return c.json({ repair_briefs: await pendingRepairBriefs(options.sql, scope, jobId) });
   });
   app.get('/memory/claims', async (c) =>
-    c.json(await listClaims(options.sql, c.get('memoryScope'))),
+    c.json({ claims: (await listClaims(options.sql, c.get('memoryScope'))).claims }),
   );
   app.get('/memory/claims/:id/history', async (c) =>
     c.json(await claimHistory(options.sql, c.get('memoryScope'), claimId.parse(c.req.param('id')))),

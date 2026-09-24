@@ -126,18 +126,30 @@ export async function eligibleRevision(
       )`;
   return Boolean(eligible);
 }
-export async function listClaims(sql: MemorySql, scope: MemoryScope) {
+export const CLAIM_PAGE = 200;
+/**
+ * One page of eligible heads in claim-id order. `next` is the id to pass as
+ * `after` for the following page, or null on the last one.
+ */
+export async function listClaims(
+  sql: MemorySql,
+  scope: MemoryScope,
+  page: { after?: string | null } = {},
+) {
   return sql.begin(async (tx) => {
     await lockSpace(tx, scope, false);
+    const after = page.after ?? null;
     const rows =
-      await tx`select id from memory_claims where space_id = ${scope.spaceId} and not hidden order by id limit 200`;
+      await tx`select id from memory_claims where space_id = ${scope.spaceId} and not hidden
+      and (${after}::text is null or id > ${after}) order by id limit ${CLAIM_PAGE}`;
     const claims: ClaimHead[] = [];
     for (const row of rows) {
       const head = await getHead(tx, scope, row.id);
       if (head && (await eligibleRevision(tx, scope, head.id, head.head_revision)))
         claims.push(head);
     }
-    return { claims };
+    const next = rows.length === CLAIM_PAGE ? (rows.at(-1)?.id as string) : null;
+    return { claims, next };
   });
 }
 export async function claimHistory(sql: MemorySql, scope: MemoryScope, id: string) {

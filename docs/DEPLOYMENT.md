@@ -659,6 +659,25 @@ After changing provider settings, recreate Melete and the warm runtime:
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
 ```
 
+### Memory model
+
+Melete reads what each person says in chat and keeps what matters in their
+memory. It uses the default provider and model through the same gateway, so the
+provider key stays in the gateway. `MELETE_MEMORY_MODEL` names a different model
+for this (a smaller one is usually enough), with `MELETE_MEMORY_PROVIDER` when it
+is served by another provider; `MELETE_MEMORY_MODEL=off` stops model reads and
+keeps structured observations only. `MELETE_MEMORY_DAILY_CALLS` (default `200`)
+is how many reads one person's memory may make in a day; raise or lower it for
+your provider's cost. A call the provider answers with an error does not count;
+a call that was sent and timed out does. When the budget is spent, or the
+provider fails, limits or times out, the conversation carries on and the message
+waits unread: it is tried again 30 seconds later, then after a gap that doubles
+each time, up to 30 minutes, for at most 8 tries or a day. A call that asking
+again cannot fix (too large for the model, or a request the provider refuses,
+such as a model name it does not serve) ends the message at once. The service
+log records each of these as `memory: <reason>`, and `/health` reports
+`memory.waiting` and `memory.failed` (messages given up in the last day).
+
 ## Engine limits
 
 Three settings bound what one attempt's engine may do. All have working

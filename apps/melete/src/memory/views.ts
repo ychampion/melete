@@ -8,6 +8,7 @@ import {
   type MemorySql,
   type MemoryTx,
 } from './db.ts';
+import { profileCandidates } from './recall.ts';
 
 export const LEXICAL_RECIPE = 'simple-lexical-v1';
 export const MAX_INDEX_ROWS = 2000;
@@ -116,10 +117,10 @@ export async function buildViews(
       : null;
     await tx`update memory_index_manifest set generation = ${nextGeneration}, coverage_revision = ${space.data_revision}, method = 'lexical',
       recipe = ${LEXICAL_RECIPE}, embedding = ${embeddingInfo ? JSON.stringify(embeddingInfo) : null}::text::jsonb where space_id = ${scope.spaceId}`;
-    const profile = snapshot.rows
-      .filter((row) => row.kind === 'preference' && ['active', 'disputed'].includes(row.status))
-      .slice(0, 8)
-      .map((row) => ({ claim_id: row.claim_id, revision: row.revision }));
+    // The inspection copy of what recall reads from the claims themselves.
+    const profile = (await profileCandidates(tx, scope, ['private', 'space', 'public'])).map(
+      ({ claim_id, revision }) => ({ claim_id, revision }),
+    );
     // Drizzle makes JSON serializers transparent on a shared postgres.js handle.
     // Passing text explicitly works with both a raw pool and that shared handle.
     await tx`insert into memory_profile (space_id, data_revision, items, stale) values (${scope.spaceId}, ${space.data_revision}, ${JSON.stringify(profile)}::text::jsonb, false)

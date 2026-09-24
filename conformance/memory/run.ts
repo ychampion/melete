@@ -18,7 +18,10 @@ import { FAMILIES, type Family, parseScenario, type Scenario } from './schema.ts
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = (line = '') => process.stdout.write(`${line}\n`);
 
-export async function loadScenarios(root = `${here}scenarios`): Promise<Scenario[]> {
+export async function loadScenarios(
+  root = `${here}scenarios`,
+  options: { requireEveryFamily?: boolean } = {},
+): Promise<Scenario[]> {
   const scenarios: Scenario[] = [];
   for await (const relative of new Glob('**/*.json').scan({ cwd: root })) {
     const path = `${root}/${relative}`;
@@ -30,7 +33,8 @@ export async function loadScenarios(root = `${here}scenarios`): Promise<Scenario
     seen.add(scenario.id);
   }
   const missing = FAMILIES.filter((family) => !scenarios.some((s) => s.family === family));
-  if (missing.length) throw new Error(`families with no scenario: ${missing.join(', ')}`);
+  if (missing.length && options.requireEveryFamily !== false)
+    throw new Error(`families with no scenario: ${missing.join(', ')}`);
   return scenarios.sort((a, b) => a.family.localeCompare(b.family) || a.id.localeCompare(b.id));
 }
 

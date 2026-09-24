@@ -268,6 +268,7 @@ const SWEEP_ORDER: readonly RemovalPhase[] = [
 ];
 
 const MEMORY: readonly string[] = [
+  'memory_capture',
   'memory_claims',
   'memory_contexts',
   'memory_contradictions',
@@ -276,6 +277,7 @@ const MEMORY: readonly string[] = [
   'memory_index_entries',
   'memory_index_manifest',
   'memory_invalidations',
+  'memory_model_calls',
   'memory_outbox',
   'memory_outputs',
   'memory_prepared',

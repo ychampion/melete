@@ -1,0 +1,122 @@
+{
+  "id": "people-and-projects-by-request",
+  "family": "relationships",
+  "title": "Facts about people and projects reach the request that needs them",
+  "narrative": "Contacts, a launch date and a project owner are mentioned in passing; later requests phrased as a person would ask must be handed the right one.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "ana-email",
+      "event_time": "2026-08-02T09:00:00Z",
+      "text": "Ana's email is ana@studio.example if you need to reach her.",
+      "claim": {
+        "key": "contact.ana.email",
+        "content": "ana@studio.example",
+        "kind": "user_statement",
+        "quote": "ana@studio.example"
+      }
+    },
+    {
+      "step": "say",
+      "name": "maya-phone",
+      "event_time": "2026-08-03T09:00:00Z",
+      "text": "My sister Maya's number is +351 912 345 678.",
+      "claim": {
+        "key": "contact.maya.phone",
+        "content": "+351 912 345 678",
+        "kind": "user_statement",
+        "quote": "+351 912 345 678"
+      }
+    },
+    {
+      "step": "say",
+      "name": "launch-date",
+      "event_time": "2026-08-04T09:00:00Z",
+      "text": "The Lisbon launch is on 25 September 2026.",
+      "claim": {
+        "key": "event.lisbon-launch.date",
+        "content": "25 September 2026",
+        "kind": "user_statement",
+        "quote": "25 September 2026"
+      }
+    },
+    {
+      "step": "say",
+      "name": "atlas-owner",
+      "event_time": "2026-08-05T09:00:00Z",
+      "text": "Priya owns the Atlas project.",
+      "claim": {
+        "key": "project.atlas.owner",
+        "content": "Priya owns the Atlas project",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.ana.email",
+      "content": "ana@studio.example"
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.maya.phone",
+      "content": "+351 912 345 678"
+    },
+    {
+      "step": "expect_stored",
+      "key": "event.lisbon-launch.date",
+      "content": "25 September 2026"
+    },
+    {
+      "step": "expect_stored",
+      "key": "project.atlas.owner",
+      "content": "Priya owns the Atlas project"
+    },
+    {
+      "step": "ask",
+      "name": "email-ana",
+      "query": "Email Ana the agenda for Thursday's meeting",
+      "key": "contact.ana.email",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "ana@studio.example",
+        "not_delivered": ["contact.maya.phone"]
+      }
+    },
+    {
+      "step": "ask",
+      "name": "text-maya",
+      "query": "Text Maya that I am running late tonight",
+      "key": "contact.maya.phone",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "+351 912 345 678",
+        "not_delivered": ["contact.ana.email"]
+      }
+    },
+    {
+      "step": "ask",
+      "name": "launch",
+      "query": "What do I still need to prepare before the Lisbon launch?",
+      "key": "event.lisbon-launch.date",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "25 September 2026"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "atlas",
+      "query": "Who should review the Atlas designs this week?",
+      "key": "project.atlas.owner",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "Priya owns the Atlas project"
+      }
+    }
+  ]
+}

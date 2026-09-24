@@ -351,7 +351,13 @@ export const recallResult = z.strictObject({
   token_budget: z.strictObject({
     limit: positive,
     used: counter,
-    counter: z.literal('utf8-bytes-upper-bound-v1'),
+    /**
+     * `utf8-bytes-upper-bound-v1` charged one token per byte, about four times
+     * what a model counts. Recall now charges a quarter of the bytes, the same
+     * estimate the model gateway uses for input; the old value stays readable
+     * on recorded contexts.
+     */
+    counter: z.enum(['utf8-bytes-upper-bound-v1', 'utf8-bytes-quarter-v1']),
   }),
 });
 export type RecallResult = z.infer<typeof recallResult>;

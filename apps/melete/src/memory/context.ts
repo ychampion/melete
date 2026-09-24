@@ -18,7 +18,13 @@ import { eligibleRevision } from './claims.ts';
 import { iso, lockSpace, MemoryError, type MemoryScope, type MemorySql, newId } from './db.ts';
 import { notifyInvalidated, registerMemoryAttempt } from './invalidate.ts';
 import { markRepairBriefsDelivered, pendingRepairBriefs } from './outputs.ts';
-import { asKnowledge, effectiveAudience, type RecallOptions, recall } from './recall.ts';
+import {
+  asKnowledge,
+  attemptRecallQuery,
+  effectiveAudience,
+  type RecallOptions,
+  recall,
+} from './recall.ts';
 
 export async function recordAttemptContext(
   sql: MemorySql,
@@ -252,7 +258,7 @@ export function withMemoryRuntime(
             scope,
             bundle.attempt.id,
             bundle.attempt.job_id,
-            bundle.job.objective,
+            attemptRecallQuery(bundle),
             options,
           );
         for (let retry = 0; retry < 3; retry++) {

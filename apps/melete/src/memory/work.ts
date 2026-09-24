@@ -16,6 +16,7 @@ import {
   type MemoryTx,
 } from './db.ts';
 import { stageSegment, toSource, visibleSourceText } from './evidence.ts';
+import { lexicalQuery } from './recall.ts';
 
 export const EXTRACTION_LIMITS = {
   messages: 1,
@@ -64,6 +65,7 @@ export async function claimWork(
       where w.space_id = ${scope.spaceId} and s.state = 'active'
         and (${options.workId ?? null}::text is null or w.id = ${options.workId ?? null})
         and (w.status = 'pending' or (w.status = 'leased' and w.lease_until <= clock_timestamp()))
+        and (w.retry_at is null or w.retry_at <= clock_timestamp())
       order by w.created_at, w.id for update of w skip locked limit 1`;
     if (!row) return null;
     const [leased] = await tx`update memory_work set status = 'leased', fence = fence + 1,
@@ -76,8 +78,23 @@ export async function claimWork(
     const text = (
       await visibleSourceText(tx, toSource(evidence), evidence.content as string)
     ).slice(row.segment_start, row.segment_end);
-    const candidates =
+    // The claims this evidence is most likely about come first, so an update to
+    // something said weeks ago can name the claim it replaces; the newest fill
+    // the rest of the snapshot.
+    const query = lexicalQuery(text);
+    const related = query
+      ? await tx`select i.claim_id as id, max(ts_rank_cd(i.tokens, to_tsquery('simple', ${query}))) as score
+          from memory_index_entries i join memory_claims c on c.id = i.claim_id
+          join memory_index_manifest m on m.space_id = i.space_id and m.generation = i.generation
+          where i.space_id = ${scope.spaceId} and c.audience = ${evidence.audience} and not c.hidden
+            and i.revision = c.head_revision and i.tokens @@ to_tsquery('simple', ${query})
+          group by i.claim_id order by score desc, i.claim_id desc limit ${EXTRACTION_LIMITS.claims - 8}`
+      : [];
+    const newest =
       await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${evidence.audience} and not hidden order by id desc limit ${EXTRACTION_LIMITS.claims}`;
+    const candidates = [...new Set([...related, ...newest].map((row) => row.id as string))]
+      .slice(0, EXTRACTION_LIMITS.claims)
+      .map((id) => ({ id }));
     const claims: ClaimHead[] = [];
     let remaining = EXTRACTION_LIMITS.context_characters - text.length;
     for (const candidate of candidates) {
@@ -126,6 +143,70 @@ export async function reserveExtractionCall(
     await tx`update memory_work set calls = calls + 1, reserved_usd = (reserved_usd::numeric + ${EXTRACTION_LIMITS.call_usd})::text where id = ${work.id}`;
   });
 }
+/** Give back a call reservation that no answer came back for. */
+export async function refundExtractionCall(
+  sql: MemorySql,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+) {
+  await sql`update memory_work set calls = greatest(calls - 1, 0),
+    reserved_usd = greatest(reserved_usd::numeric - ${EXTRACTION_LIMITS.call_usd}, 0)::text
+    where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+}
+/**
+ * How a message waits while the model provider is failing: 30 s after the first
+ * failure, doubling, never more than 30 min apart, and at most 8 tries or a day,
+ * after which it is given up with a recorded fault. Spent daily reads are not a
+ * failure: that wait has no limit.
+ */
+export const PROVIDER_BACKOFF = {
+  first_seconds: 30,
+  max_seconds: 1800,
+  max_failures: 8,
+  max_hours: 24,
+} as const;
+/** Put work back unread until the provider is likely to answer again, or give it up. */
+export async function deferWork(
+  sql: MemorySql,
+  scope: MemoryScope,
+  batch: ExtractionBatch,
+  code: string,
+): Promise<'deferred' | 'given_up'> {
+  return sql.begin(async (tx) => {
+    await lockSpace(tx, scope);
+    if (code === 'memory_daily_budget') {
+      // Spent reads are not a failure and are never given up on: the message
+      // waits until the person's oldest counted read leaves the day's window,
+      // checking again at least every 30 minutes.
+      await tx`update memory_work set status = 'pending', lease_until = null, error_code = ${code},
+        retry_at = least(
+          clock_timestamp() + ${PROVIDER_BACKOFF.max_seconds} * interval '1 second',
+          coalesce((select min(created_at) + interval '1 day' from memory_model_calls
+            where owner_id = ${scope.ownerId} and created_at > clock_timestamp() - interval '1 day'
+              and coalesce(settlement->>'status', '') <> 'failed'),
+            clock_timestamp() + ${PROVIDER_BACKOFF.first_seconds} * interval '1 second'))
+        where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+      return 'deferred';
+    }
+    const [work] = await tx`select provider_failures,
+        created_at < clock_timestamp() - ${PROVIDER_BACKOFF.max_hours} * interval '1 hour' as stale
+      from memory_work where id = ${batch.work.id} and space_id = ${scope.spaceId}
+        and fence = ${batch.work.fence} and status = 'leased'`;
+    if (!work) return 'deferred';
+    if (work.stale || Number(work.provider_failures) + 1 >= PROVIDER_BACKOFF.max_failures) {
+      await tx`update memory_work set provider_failures = provider_failures + 1 where id = ${batch.work.id}`;
+      await finishWork(tx, batch, 'rejected', `${code}:given_up`);
+      return 'given_up';
+    }
+    await tx`update memory_work set status = 'pending', lease_until = null, error_code = ${code},
+      provider_failures = provider_failures + 1,
+      retry_at = clock_timestamp() + least(
+        ${PROVIDER_BACKOFF.max_seconds} * interval '1 second',
+        ${PROVIDER_BACKOFF.first_seconds} * power(2, least(provider_failures, 16)) * interval '1 second')
+      where id = ${batch.work.id} and space_id = ${scope.spaceId} and fence = ${batch.work.fence} and status = 'leased'`;
+    return 'deferred';
+  });
+}
 /** Only committed terminal segments count toward the independently locked stream cursor. */
 export async function advanceConsumed(tx: MemoryTx, source: SourceEvent) {
   await tx`select committed_sequence from memory_streams where space_id = ${source.space_id} and publisher = ${source.publisher} and stream = ${source.stream} for update`;
@@ -172,7 +253,8 @@ export async function repairQueue(sql: MemorySql, boss: PgBoss) {
   const rows =
     await sql`select w.id, w.space_id from memory_work w join memory_spaces p on p.space_id = w.space_id join memory_sources s on s.id = w.source_id
     where p.restore_ready and not p.revoked and s.state = 'active'
-      and (w.status = 'pending' or (w.status = 'leased' and w.lease_until <= clock_timestamp())) order by w.created_at limit 100`;
+      and (w.status = 'pending' or (w.status = 'leased' and w.lease_until <= clock_timestamp()))
+      and (w.retry_at is null or w.retry_at <= clock_timestamp()) order by w.created_at limit 100`;
   for (const row of rows) {
     await boss.send(
       MEMORY_EXTRACT_QUEUE,

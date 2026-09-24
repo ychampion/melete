@@ -1,6 +1,7 @@
 /** New tables only. Content can be erased without destroying operational envelopes. */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   check,
   customType,
@@ -13,7 +14,7 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { owner, space } from '../db/schema.ts';
+import { owner, principal, space } from '../db/schema.ts';
 
 const instant = (name: string) => timestamp(name, { withTimezone: true, mode: 'string' });
 const created = () => instant('created_at').notNull().defaultNow();
@@ -115,6 +116,10 @@ export const memoryWorkTable = pgTable(
     calls: integer('calls').notNull().default(0),
     reservedUsd: text('reserved_usd').notNull().default('0'),
     errorCode: text('error_code'),
+    /** Consecutive calls the model provider did not answer; sets the backoff. */
+    providerFailures: integer('provider_failures').notNull().default(0),
+    /** Not offered to a worker before this, while the provider is failing. */
+    retryAt: instant('retry_at'),
     createdAt: created(),
   },
   (t) => [index('memory_work_pending').on(t.spaceId, t.status, t.leaseUntil)],
@@ -514,4 +519,47 @@ export const memoryDenseEntries = pgTable(
     vector: jsonb('vector').notNull(),
   },
   (t) => [primaryKey({ columns: [t.spaceId, t.generation, t.claimId, t.revision] })],
+);
+
+/**
+ * One row per chat message the capture loop has looked at, whatever it decided:
+ * remembered, skipped, or acted on as a request to forget. The first row is a
+ * watermark written by the migration, so history from before automatic memory
+ * existed is never read back into it.
+ */
+export const memoryCapture = pgTable(
+  'memory_capture',
+  {
+    eventSeq: bigint('event_seq', { mode: 'number' }).primaryKey(),
+    jobId: text('job_id'),
+    spaceId: text('space_id'),
+    outcome: text('outcome').notNull(),
+    sourceId: text('source_id'),
+    createdAt: created(),
+  },
+  (t) => [index('memory_capture_source').on(t.sourceId)],
+);
+/** A person's own memory settings. No row means the defaults: memory on. */
+export const memorySettings = pgTable('memory_settings', {
+  principalId: text('principal_id')
+    .primaryKey()
+    .references(() => principal.id, { onDelete: 'cascade' }),
+  capture: boolean('capture').notNull().default(true),
+  updatedAt: instant('updated_at').notNull().defaultNow(),
+});
+/** Every extraction call the memory gateway admitted, for the per-person daily budget. */
+export const memoryModelCalls = pgTable(
+  'memory_model_calls',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id').notNull(),
+    spaceId: text('space_id').notNull(),
+    workId: text('work_id').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    reservedTokens: integer('reserved_tokens').notNull(),
+    settlement: jsonb('settlement'),
+    createdAt: created(),
+  },
+  (t) => [index('memory_model_calls_owner').on(t.ownerId, t.createdAt)],
 );

@@ -1,0 +1,428 @@
+{
+  "id": "an-old-fact-is-updated",
+  "family": "corrections-and-time",
+  "title": "Updating something said weeks ago replaces it rather than raising a question",
+  "narrative": "After many other things were said, a person updates a contact from weeks ago; the new value replaces the old one without a dispute.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "ana-email",
+      "event_time": "2026-08-01T09:00:00Z",
+      "text": "Ana's email is ana@studio.example.",
+      "claim": {
+        "key": "contact.ana.email",
+        "content": "ana@studio.example",
+        "kind": "user_statement",
+        "quote": "ana@studio.example"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-stamps",
+      "event_time": "2026-08-02T09:00:00Z",
+      "text": "Buy stamps for the invitations.",
+      "claim": {
+        "key": "errand.stamps",
+        "content": "Buy stamps for the invitations",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-plants",
+      "event_time": "2026-08-02T09:01:00Z",
+      "text": "Water the plants on the balcony.",
+      "claim": {
+        "key": "errand.plants",
+        "content": "Water the plants on the balcony",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-dentist",
+      "event_time": "2026-08-02T09:02:00Z",
+      "text": "Book the dentist for the kids.",
+      "claim": {
+        "key": "errand.dentist",
+        "content": "Book the dentist for the kids",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-bike",
+      "event_time": "2026-08-02T09:03:00Z",
+      "text": "Get the bike serviced.",
+      "claim": {
+        "key": "errand.bike",
+        "content": "Get the bike serviced",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-library",
+      "event_time": "2026-08-02T09:04:00Z",
+      "text": "Return the library books.",
+      "claim": {
+        "key": "errand.library",
+        "content": "Return the library books",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-gift",
+      "event_time": "2026-08-02T09:05:00Z",
+      "text": "Find a gift for Tomas.",
+      "claim": {
+        "key": "errand.gift",
+        "content": "Find a gift for Tomas",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-insurance",
+      "event_time": "2026-08-02T09:06:00Z",
+      "text": "Renew the car insurance.",
+      "claim": {
+        "key": "errand.insurance",
+        "content": "Renew the car insurance",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-boiler",
+      "event_time": "2026-08-02T09:07:00Z",
+      "text": "Call someone about the boiler.",
+      "claim": {
+        "key": "errand.boiler",
+        "content": "Call someone about the boiler",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-passport",
+      "event_time": "2026-08-02T09:08:00Z",
+      "text": "Check the passport expiry.",
+      "claim": {
+        "key": "errand.passport",
+        "content": "Check the passport expiry",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-recipe",
+      "event_time": "2026-08-02T09:09:00Z",
+      "text": "Try the new lentil recipe.",
+      "claim": {
+        "key": "errand.recipe",
+        "content": "Try the new lentil recipe",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-tickets",
+      "event_time": "2026-08-02T09:10:00Z",
+      "text": "Look at concert tickets.",
+      "claim": {
+        "key": "errand.tickets",
+        "content": "Look at concert tickets",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-shelf",
+      "event_time": "2026-08-02T09:11:00Z",
+      "text": "Put up the kitchen shelf.",
+      "claim": {
+        "key": "errand.shelf",
+        "content": "Put up the kitchen shelf",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-photos",
+      "event_time": "2026-08-03T09:12:00Z",
+      "text": "Print the holiday photos.",
+      "claim": {
+        "key": "errand.photos",
+        "content": "Print the holiday photos",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-taxes",
+      "event_time": "2026-08-03T09:13:00Z",
+      "text": "Gather the tax receipts.",
+      "claim": {
+        "key": "errand.taxes",
+        "content": "Gather the tax receipts",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-shoes",
+      "event_time": "2026-08-03T09:14:00Z",
+      "text": "Take the shoes for repair.",
+      "claim": {
+        "key": "errand.shoes",
+        "content": "Take the shoes for repair",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-blinds",
+      "event_time": "2026-08-03T09:15:00Z",
+      "text": "Measure the bedroom blinds.",
+      "claim": {
+        "key": "errand.blinds",
+        "content": "Measure the bedroom blinds",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-vet",
+      "event_time": "2026-08-03T09:16:00Z",
+      "text": "Book the cat's vaccination.",
+      "claim": {
+        "key": "errand.vet",
+        "content": "Book the cat's vaccination",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-paint",
+      "event_time": "2026-08-03T09:17:00Z",
+      "text": "Choose paint for the hallway.",
+      "claim": {
+        "key": "errand.paint",
+        "content": "Choose paint for the hallway",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-courses",
+      "event_time": "2026-08-03T09:18:00Z",
+      "text": "Look into a Portuguese course.",
+      "claim": {
+        "key": "errand.courses",
+        "content": "Look into a Portuguese course",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-router",
+      "event_time": "2026-08-03T09:19:00Z",
+      "text": "Restart the router remotely.",
+      "claim": {
+        "key": "errand.router",
+        "content": "Restart the router remotely",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-jars",
+      "event_time": "2026-08-03T09:20:00Z",
+      "text": "Recycle the glass jars.",
+      "claim": {
+        "key": "errand.jars",
+        "content": "Recycle the glass jars",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-coat",
+      "event_time": "2026-08-03T09:21:00Z",
+      "text": "Collect the coat from the cleaner.",
+      "claim": {
+        "key": "errand.coat",
+        "content": "Collect the coat from the cleaner",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-keys",
+      "event_time": "2026-08-03T09:22:00Z",
+      "text": "Copy the spare keys.",
+      "claim": {
+        "key": "errand.keys",
+        "content": "Copy the spare keys",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-battery",
+      "event_time": "2026-08-03T09:23:00Z",
+      "text": "Replace the smoke alarm battery.",
+      "claim": {
+        "key": "errand.battery",
+        "content": "Replace the smoke alarm battery",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-frame",
+      "event_time": "2026-08-04T09:24:00Z",
+      "text": "Frame the poster from Porto.",
+      "claim": {
+        "key": "errand.frame",
+        "content": "Frame the poster from Porto",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-seeds",
+      "event_time": "2026-08-04T09:25:00Z",
+      "text": "Plant the basil seeds.",
+      "claim": {
+        "key": "errand.seeds",
+        "content": "Plant the basil seeds",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-playlist",
+      "event_time": "2026-08-04T09:26:00Z",
+      "text": "Make a playlist for the drive.",
+      "claim": {
+        "key": "errand.playlist",
+        "content": "Make a playlist for the drive",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-chairs",
+      "event_time": "2026-08-04T09:27:00Z",
+      "text": "Fix the wobbly chairs.",
+      "claim": {
+        "key": "errand.chairs",
+        "content": "Fix the wobbly chairs",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-mail",
+      "event_time": "2026-08-04T09:28:00Z",
+      "text": "Forward the post to the new flat.",
+      "claim": {
+        "key": "errand.mail",
+        "content": "Forward the post to the new flat",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-bank",
+      "event_time": "2026-08-04T09:29:00Z",
+      "text": "Set up the savings transfer.",
+      "claim": {
+        "key": "errand.bank",
+        "content": "Set up the savings transfer",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-oven",
+      "event_time": "2026-08-04T09:30:00Z",
+      "text": "Clean the oven before the party.",
+      "claim": {
+        "key": "errand.oven",
+        "content": "Clean the oven before the party",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-tent",
+      "event_time": "2026-08-04T09:31:00Z",
+      "text": "Check the tent for holes.",
+      "claim": {
+        "key": "errand.tent",
+        "content": "Check the tent for holes",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-candles",
+      "event_time": "2026-08-04T09:32:00Z",
+      "text": "Buy candles for the dinner.",
+      "claim": {
+        "key": "errand.candles",
+        "content": "Buy candles for the dinner",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "errand-maps",
+      "event_time": "2026-08-04T09:33:00Z",
+      "text": "Download offline maps for Madeira.",
+      "claim": {
+        "key": "errand.maps",
+        "content": "Download offline maps for Madeira",
+        "kind": "user_statement"
+      }
+    },
+    {
+      "step": "say",
+      "name": "ana-new",
+      "event_time": "2026-08-20T09:00:00Z",
+      "text": "Ana changed jobs, her email is now ana@atlas.example.",
+      "claim": {
+        "key": "contact.ana.email",
+        "content": "ana@atlas.example",
+        "kind": "user_statement",
+        "quote": "ana@atlas.example",
+        "update": true
+      }
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.ana.email",
+      "content": "ana@atlas.example"
+    },
+    {
+      "step": "ask",
+      "name": "email",
+      "query": "Email Ana about Saturday",
+      "key": "contact.ana.email",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "ana@atlas.example"
+      }
+    },
+    {
+      "step": "expect_question",
+      "count": 0
+    }
+  ]
+}

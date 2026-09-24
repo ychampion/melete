@@ -149,7 +149,7 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       memory?.create(spaceId, c.get('owner').id, input) ??
       unavailable('Your saved details are not connected yet.'),
     'GET /memory/items': (spaceId, c) =>
-      memory?.list(spaceId, c.get('owner').id) ??
+      memory?.list(spaceId, c.get('owner').id, c.req.query('after') ?? null) ??
       unavailable('Your saved details are not connected yet.'),
     'PATCH /memory/items/{id}': (spaceId, c, input) =>
       memory?.edit(spaceId, c.get('owner').id, c.req.param('id') ?? '', input) ??
@@ -159,6 +159,12 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
       unavailable('Your saved details are not connected yet.'),
     'GET /memory/items/{id}/why': (spaceId, c) =>
       memory?.why(spaceId, c.get('owner').id, c.req.param('id') ?? '') ??
+      unavailable('Your saved details are not connected yet.'),
+    'GET /memory/settings': (_spaceId, c) =>
+      memory?.settings(c.get('owner').id) ??
+      unavailable('Your saved details are not connected yet.'),
+    'PUT /memory/settings': (_spaceId, c, input) =>
+      memory?.saveSettings(c.get('owner').id, input) ??
       unavailable('Your saved details are not connected yet.'),
     'GET /permissions': (spaceId) =>
       permissions?.list(spaceId) ?? unavailable('Permissions are not connected yet.'),

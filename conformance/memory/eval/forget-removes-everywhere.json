@@ -1,0 +1,71 @@
+{
+  "id": "forget-removes-everywhere",
+  "family": "forgetting-and-access",
+  "title": "Forgetting a detail removes it from recall and from every stored copy",
+  "narrative": "A contact and a preference are saved; the contact is forgotten; later requests do not get it and no memory table still holds its text.",
+  "memory_required": true,
+  "steps": [
+    {
+      "step": "say",
+      "name": "home-city",
+      "event_time": "2026-08-01T09:00:00Z",
+      "text": "My home city is Lisbon.",
+      "claim": {
+        "key": "pref.home.city",
+        "content": "Lisbon",
+        "kind": "preference"
+      }
+    },
+    {
+      "step": "say",
+      "name": "ana-email",
+      "event_time": "2026-08-02T09:00:00Z",
+      "text": "Ana's email is ana@studio.example.",
+      "claim": {
+        "key": "contact.ana.email",
+        "content": "ana@studio.example",
+        "kind": "user_statement",
+        "quote": "ana@studio.example"
+      }
+    },
+    {
+      "step": "forget",
+      "key": "contact.ana.email"
+    },
+    {
+      "step": "expect_stored",
+      "key": "contact.ana.email",
+      "absent": true
+    },
+    {
+      "step": "expect_stored",
+      "key": "pref.home.city",
+      "content": "Lisbon"
+    },
+    {
+      "step": "ask",
+      "name": "email",
+      "query": "Email Ana the agenda",
+      "key": "contact.ana.email",
+      "attempt": true,
+      "expect": {
+        "kind": "absent"
+      }
+    },
+    {
+      "step": "ask",
+      "name": "city",
+      "query": "Plan my weekend",
+      "key": "pref.home.city",
+      "attempt": true,
+      "expect": {
+        "kind": "answer",
+        "content": "Lisbon"
+      }
+    },
+    {
+      "step": "expect_erased",
+      "text": "ana@studio.example"
+    }
+  ]
+}

@@ -75,9 +75,15 @@ async function validateProposal(
           await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and key = ${key} and not hidden`;
         if (occupant) head = await getHead(tx, scope, occupant.id as string);
       } else {
+        // Saying something already recorded is the commonest thing a person
+        // does. The existing claim is loaded so meaning resolution can attach,
+        // ignore or update it, rather than failing the whole change set.
         const [existing] =
           await tx`select id from memory_claims where space_id = ${scope.spaceId} and audience = ${batch.source.audience} and domain_key = ${proposal.domain_key} and not hidden`;
-        if (existing) throw new MemoryError('stale_revision');
+        if (existing) {
+          head = await getHead(tx, scope, existing.id as string);
+          if (!head) throw new MemoryError('stale_revision');
+        }
       }
     }
   }

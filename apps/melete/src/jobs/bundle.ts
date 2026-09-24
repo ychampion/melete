@@ -47,7 +47,7 @@ import { agentIdentity, agentView } from '../experience/agents.ts';
 import { procedureReach, selectProcedureSkills } from '../learning/selection.ts';
 import type { MemoryScope, MemorySql } from '../memory/db.ts';
 import { pendingRepairBriefs } from '../memory/outputs.ts';
-import { asKnowledge, recall } from '../memory/recall.ts';
+import { asKnowledge, attemptRecallQuery, recall } from '../memory/recall.ts';
 import { spaceAuthority } from '../principals/authority.ts';
 import { selectedContext } from '../principals/context.ts';
 import { readGenerations, requireGenerations } from './generations.ts';
@@ -547,7 +547,7 @@ export async function buildBundle(
     scope,
     {
       job_id: jobId,
-      query: skeleton.job.objective.slice(0, 2000),
+      query: attemptRecallQuery(skeleton),
       mode: 'current',
       max_tokens: CONTEXT_LIMITS.knowledge_tokens,
     },
