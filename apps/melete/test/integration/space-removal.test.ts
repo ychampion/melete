@@ -38,6 +38,7 @@ import { job, space } from '../../src/db/schema.ts';
 import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
+import { PolicyService } from '../../src/jobs/policy.ts';
 import { JobService } from '../../src/jobs/service.ts';
 import { standingProhibition, standingProhibitions } from '../../src/learning/engine-skills.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
@@ -48,7 +49,7 @@ import { sandboxTeardownProviders } from '../../src/sandbox/connection.ts';
 import { FakeSandboxProvider } from '../../src/sandbox/fake.ts';
 import { sessionSpec } from '../../src/sandbox/session-fixtures.ts';
 import { SandboxSessions, sessionHandle } from '../../src/sandbox/sessions.ts';
-import { sandboxRemovalTeardown } from '../../src/sandbox/wiring.ts';
+import { sandboxKeyChange, sandboxRemovalTeardown } from '../../src/sandbox/wiring.ts';
 import { PathOutsideRoot, removeConfined, sweepMemory } from '../../src/spaces/plan.ts';
 import {
   type BrowserTeardown,
@@ -1122,6 +1123,71 @@ describe.if(handle !== null)('removing a space', () => {
         'gone',
       );
     expect(await countOf(sql, 'sandbox_session', sql`space_id = ${seeded.spaceId}`)).toBe(0);
+    expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(0);
+    await teardown.close();
+  });
+
+  test("removal_after_revocation — a revoked connection's deleted snapshots do not hold the removal", async () => {
+    const seeded = await seed('shared');
+    await sql`update connection set provider = 'sandbox', secret_ref = ${seeded.secretId},
+        configuration = ${JSON.stringify({
+          kind: 'sandbox',
+          sandbox: {
+            adapter: 'modal',
+            image: 'debian:bookworm-slim',
+            egress: 'deny_all',
+            persistence: 'snapshot',
+            lifetime_seconds: 600,
+          },
+        })}::jsonb
+      where id = ${seeded.connectionId}`;
+    const provider = new FakeSandboxProvider({ capabilities: { adapter: 'modal' } });
+    const sessions = new SandboxSessions(sql, {
+      leaseSeconds: 300,
+      workspaceRetentionSeconds: 3_600,
+    });
+    const workspace = await sessions.openWorkspace(
+      {
+        connectionId: seeded.connectionId,
+        spaceId: seeded.spaceId,
+        jobId: seeded.jobId,
+        attemptId: null,
+        agentId: seeded.agentId,
+        persistence: 'snapshot',
+      },
+      provider,
+      sessionSpec('removal-test', seeded.spaceId, seeded.connectionId),
+      AbortSignal.timeout(30_000),
+    );
+    const snapshot =
+      (await sessions.suspendWorkspace(workspace.id, provider, AbortSignal.timeout(30_000)))
+        .resumeRef ?? '';
+    expect(provider.engine.snapshots.has(snapshot)).toBe(true);
+    const teardown = sandboxTeardownProviders({
+      sql,
+      secrets: { withSecret: async () => Promise.reject(new Error('no key is read')) },
+      project: 'removal-test',
+      open: () => ({ provider, close: async () => {} }),
+    });
+    // The revocation deletes the snapshot while the key is still held, then
+    // drops the key: nothing can ask Modal about this connection afterwards.
+    const [row] = await sql`select generation from connection where id = ${seeded.connectionId}`;
+    await new PolicyService(new JobService(db, {} as PgBoss), undefined, {
+      beforeKeyChange: sandboxKeyChange({
+        sessions,
+        providerFor: teardown.providerFor,
+        log: () => {},
+      }),
+    }).changeConnection(seeded.connectionId, {
+      kind: 'revoke',
+      expected_generation: Number(row?.generation),
+    });
+    expect(provider.engine.snapshots.has(snapshot)).toBe(false);
+
+    const { finished } = await removeCompletely(seeded, {
+      sandboxes: sandboxRemovalTeardown(sessions, teardown.providerFor),
+    });
+    expect(finished.state).toBe('complete');
     expect(await countOf(sql, 'space', sql`id = ${seeded.spaceId}`)).toBe(0);
     await teardown.close();
   });

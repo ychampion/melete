@@ -632,7 +632,10 @@ export class SandboxSessions {
     const superseded = row.resumeRef;
     if (!superseded || superseded === snapshotRef) return suspended;
     try {
-      await provider.deleteSnapshot?.(superseded, signal);
+      if (provider.deleteSnapshot) {
+        await provider.deleteSnapshot(superseded, signal);
+        await this.snapshotDeleted(superseded);
+      }
       return suspended;
     } catch (error) {
       const reason = `the superseded snapshot could not be deleted and is left to expire: ${message(error)}`;
@@ -743,7 +746,14 @@ export class SandboxSessions {
           else extract(epoch from now() - opened_at) end
       where id = ${row.id} and status = 'closing'
       returning *`;
-    return closed ? toRow(closed) : row;
+    if (!closed) return row;
+    // A snapshot workspace's snapshot was deleted above, so the row, closed
+    // now, keeps no reference to it: nothing is left to ask a provider about.
+    if (row.resumeRef && row.persistence === 'snapshot') {
+      await this.snapshotDeleted(row.resumeRef);
+      return (await this.get(row.id)) ?? toRow(closed);
+    }
+    return toRow(closed);
   }
 
   /**
@@ -805,6 +815,16 @@ export class SandboxSessions {
         set last_error = ${`no ${row.adapter} provider is available for this session's connection right now, so the session is left as it is until one is`}
         where id = ${row.id}`;
     return provider ?? null;
+  }
+
+  /**
+   * A snapshot the provider has deleted is no longer referred to by any
+   * finished session. Recorded this way, the removal check stops asking about
+   * it, which it could not do anyway once the connection's key is gone.
+   */
+  private async snapshotDeleted(ref: string): Promise<void> {
+    await this.sql`update sandbox_session set resume_ref = null
+      where resume_ref = ${ref} and persistence = 'snapshot' and status in ('closed', 'lost')`;
   }
 
   /** The provider no longer has the sandbox. Time is charged as last metered. */
@@ -997,6 +1017,7 @@ export class SandboxSessions {
         : this.sql`connection_id = ${scope.connectionId}`;
     const failures: string[] = [];
     const closed: string[] = [];
+    const snapshotsDeleted: string[] = [];
     const live = await this.sql`select id, adapter, connection_id from sandbox_session
       where ${within} and status in ('opening', 'ready', 'paused', 'closing')`;
     for (const candidate of live) {
@@ -1018,8 +1039,14 @@ export class SandboxSessions {
       if (!claimed) continue;
       try {
         const finished = await this.finish(claimed.row, claimed.from, provider, signal);
-        if (finished.status === 'closed') closed.push(finished.id);
-        else failures.push(`${finished.id}: ${finished.lastError ?? 'not closed'}`);
+        if (finished.status !== 'closed') {
+          failures.push(`${finished.id}: ${finished.lastError ?? 'not closed'}`);
+          continue;
+        }
+        closed.push(finished.id);
+        // Closing a snapshot workspace deleted its snapshot.
+        if (claimed.row.persistence === 'snapshot' && claimed.row.resumeRef)
+          snapshotsDeleted.push(claimed.row.resumeRef);
       } catch (error) {
         failures.push(`${claimed.row.id}: ${message(error)}`);
       }
@@ -1045,7 +1072,6 @@ export class SandboxSessions {
     const snapshots = await this.sql`select distinct adapter, connection_id, resume_ref
       from sandbox_session
       where ${within} and persistence = 'snapshot' and resume_ref is not null`;
-    const snapshotsDeleted: string[] = [];
     for (const snapshot of snapshots) {
       const ref = snapshot.resume_ref as string;
       try {
@@ -1053,6 +1079,7 @@ export class SandboxSessions {
         if (!provider?.deleteSnapshot)
           throw new Error(`no ${snapshot.adapter as string} adapter can delete snapshots`);
         await provider.deleteSnapshot(ref, signal);
+        await this.snapshotDeleted(ref);
         snapshotsDeleted.push(ref);
       } catch (error) {
         failures.push(`snapshot ${ref}: ${message(error)}`);
