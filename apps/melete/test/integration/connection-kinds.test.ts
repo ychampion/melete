@@ -314,6 +314,7 @@ withDb('installing each kind of connection through the API', () => {
       'ics',
       'mail',
       'mcp',
+      'sandbox',
     ]);
     expect(kinds.map((kind) => kind.id)).toContain('gmail');
     expect((await h.app.request('/connections', h.as('', { provider: 'imap' }))).status).toBe(401);

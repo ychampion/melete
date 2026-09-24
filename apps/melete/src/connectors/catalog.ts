@@ -14,6 +14,18 @@ export const REACT_TOOL: ToolSpec = {
 export type ConnectionGrant = { id: string; provider: string; scopes: readonly string[] };
 export type ConnectorLookup = { get(id: string): Connector | undefined };
 
+/**
+ * One execution backend per space. A space with an active sandbox connection
+ * runs its commands there, so the cell's own exec connection is neither
+ * offered nor admitted beside it: an agent that picked `exec.run` would
+ * otherwise bypass the sandbox the owner configured.
+ */
+export function supersededExecution(provider: string, activeProviders: Iterable<string>): boolean {
+  if (provider !== 'exec') return false;
+  for (const active of activeProviders) if (active === 'sandbox') return true;
+  return false;
+}
+
 /** Only active connection rows enter here; job scopes further narrow their grants. */
 export function grantedToolCatalog(
   connections: readonly ConnectionGrant[],
@@ -21,9 +33,11 @@ export function grantedToolCatalog(
   scopes?: readonly string[],
 ): ToolSpec[] {
   const tools: ToolSpec[] = [structuredClone(REACT_TOOL)];
+  const providers = connections.map((connection) => connection.provider);
   for (const connection of connections) {
     const connector = registry.get(connection.id);
     if (
+      supersededExecution(connection.provider, providers) ||
       !connector ||
       connector.manifest.provider !== connection.provider ||
       connector.capability?.available === false

@@ -45,7 +45,10 @@ import { companiesDeps } from './companies/service.ts';
 import { builtinEnvironment, ensureBuiltinConnections } from './connectors/builtin.ts';
 import {
   type ConfiguredConnection,
+  type ConnectorFactory,
   configuredBrowserSessions,
+  connectorFactoryFor,
+  connectorOptionsFromEnv,
   connectorsFromEnv,
   readConnectionConfig,
 } from './connectors/configured.ts';
@@ -114,6 +117,13 @@ import {
   ProcessRuntimeSupervisor,
   type RuntimeSupervisor,
 } from './runtime/supervisor.ts';
+import { sandboxKeyCheck } from './sandbox/connection.ts';
+import {
+  type SandboxWiring,
+  sandboxKeyChange,
+  sandboxRemovalTeardown,
+  startSandboxesFromEnv,
+} from './sandbox/wiring.ts';
 import { SpaceRemovalService } from './spaces/removal.ts';
 import { mountSpaceRemoval } from './spaces/routes.ts';
 import { mountBrowserLive } from './workers/browser/live-service.ts';
@@ -414,11 +424,16 @@ export async function bootstrap(
   let stdioLauncher: DockerStdioLauncher | undefined;
   let companyReplies: CompanyReplyPoller | undefined;
   let signIn: ProviderSignIn | undefined;
+  let sandboxes: SandboxWiring | undefined;
+  let sandboxTeardown: ReturnType<ConnectorFactory['sandboxTeardownProviders']>;
+  let releaseSandboxes: ReturnType<typeof sandboxKeyChange> | undefined;
+  let removeSandboxes: ReturnType<typeof sandboxRemovalTeardown> | undefined;
   const close = async () => {
     // A wake can still be waiting for capabilities before the runner records
     // it as active. Interrupt that wait before runner.stop drains its wakes.
     supervisedRuntime?.beginShutdown();
     clearInterval(episodeRetention);
+    sandboxes?.stop();
     let failure: unknown;
     for (const stop of [
       () =>
@@ -444,6 +459,7 @@ export async function bootstrap(
       // After the registry: each server's container is removed by its connector first.
       () => stdioLauncher?.close(),
       () => browser?.pool.close(),
+      () => sandboxTeardown?.close(),
       () => queue?.stop(),
       () => handle?.close(),
     ]) {
@@ -498,6 +514,29 @@ export async function bootstrap(
         stdioLauncher,
       });
       catalog = new RuntimeCatalog(handle.db, registry);
+      // Sandboxes are the service's own: their providers come from the same
+      // factory the connectors did, so the key stays with the connection.
+      const connectors = connectorFactoryFor(registry, () =>
+        connectorOptionsFromEnv(handle.sql, env),
+      );
+      sandboxes = startSandboxesFromEnv(handle.sql, env, connectors);
+      // A sandbox connection's key is the only way into its account, so a
+      // revocation destroys what the connection holds before the key goes.
+      sandboxTeardown = connectors.sandboxTeardownProviders();
+      const sandboxSessions = connectors.options.sandbox?.sessions;
+      if (sandboxTeardown && sandboxSessions) {
+        releaseSandboxes = sandboxKeyChange({
+          sessions: sandboxSessions,
+          providerFor: sandboxTeardown.providerFor,
+          withKey: sandboxTeardown.withKey,
+        });
+        removeSandboxes = sandboxRemovalTeardown(sandboxSessions, sandboxTeardown.providerFor);
+      }
+      // Boot reconciliation, before any attempt can open a session of its own.
+      if (sandboxes) {
+        await sandboxes.reconcile(AbortSignal.timeout(120_000));
+        sandboxes.start();
+      }
     }
     if (handle) {
       events = new EventStream(handle);
@@ -672,6 +711,13 @@ export async function bootstrap(
           ].sort();
         },
       });
+      // An attempt that ends leaves no sandbox running: its workspace is
+      // suspended, and an ephemeral session is closed. Off the outcome
+      // transaction, since both are provider calls.
+      if (sandboxes)
+        runner.onFinished.push(async (_tx, _row, _outcome, attemptId) => {
+          sandboxes?.afterAttempt(attemptId);
+        });
       if (browser)
         browser.sessions.onPark = (jobId, attemptIds) => {
           for (const attemptId of attemptIds) runner?.interrupt(jobId, attemptId);
@@ -688,7 +734,10 @@ export async function bootstrap(
       approvals = new ApprovalService(jobs, runner);
       if (submissions) replies = new ReplyService(jobs, submissions, runner);
       operations = new OperationService(jobs, runner);
-      policy = new PolicyService(jobs, runner);
+      policy = new PolicyService(jobs, runner, {
+        beforeKeyChange: releaseSandboxes,
+        ...(sandboxTeardown ? { checkKeyChange: sandboxKeyCheck(sandboxTeardown) } : {}),
+      });
       attention = new AttentionService(jobs, runner);
       // A memory question is answered by settling the key it disputes, which
       // only memory can do, so the queue is handed that one capability.
@@ -725,6 +774,10 @@ export async function bootstrap(
           // The registry stops answering for a space's connections before
           // their rows go, and the verification counts what it still holds.
           ...(registry ? { connectors: registry } : {}),
+          // A space's sandboxes and snapshots go through providers built from
+          // its connection rows, and the removal finishes only on what those
+          // providers say they still hold.
+          ...(removeSandboxes ? { sandboxes: removeSandboxes } : {}),
           // The worker stops, the profile goes, and the site rows with it.
           ...(browser ? { browser: browser.sessions } : {}),
           ...(env.MELETE_BROWSER_SPACE ? { browserSpace: env.MELETE_BROWSER_SPACE } : {}),

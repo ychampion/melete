@@ -13,7 +13,7 @@ import { err, ID_PREFIXES, ok, prefixedId, type Result, timestamp } from './comm
 import { connectionProvider, connectionView } from './entities.ts';
 import { MCP_STDIO_RUNNERS, mcpConnectionConfig, mcpStdioConnectionConfig } from './mcp.ts';
 
-export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio'] as const;
+export const CONNECTION_KINDS = ['mail', 'caldav', 'ics', 'mcp', 'mcp_stdio', 'sandbox'] as const;
 export const connectionKind = z.enum(CONNECTION_KINDS);
 export type ConnectionKind = z.infer<typeof connectionKind>;
 
@@ -118,11 +118,94 @@ export const icsConnectionConfig = z
   .strict();
 export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
+export const SANDBOX_ADAPTERS = ['e2b', 'modal'] as const;
+export const sandboxAdapter = z.enum(SANDBOX_ADAPTERS);
+export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
+
+export const SANDBOX_EGRESS_KINDS = ['deny_all', 'cidr_allowlist', 'open'] as const;
+export const SANDBOX_PERSISTENCE = ['ephemeral', 'pause', 'snapshot'] as const;
+
+/**
+ * One allowed range. Its shape is judged where it is used: the adapter's own
+ * manifest refuses anything that is not a CIDR block, with its own code, so
+ * this stays a plain line of text here.
+ */
+const allowedRange = singleLine(49);
+
+/**
+ * One remote sandbox provider, as the owner configured it. Egress is named here
+ * rather than left to the provider's default, and a configuration the adapter
+ * cannot honour is refused at installation instead of being quietly widened.
+ */
+export const sandboxConnectionConfig = z
+  .object({
+    adapter: sandboxAdapter,
+    /** A registry reference for Modal, a template name for E2B. */
+    image: singleLine(200),
+    egress: z.enum(SANDBOX_EGRESS_KINDS),
+    /** Used only with a CIDR allow-list, which needs at least one. */
+    cidrs: z.array(allowedRange).max(32).optional(),
+    persistence: z.enum(SANDBOX_PERSISTENCE),
+    /** How long one sandbox may run before the provider stops it. */
+    lifetime_seconds: z.number().int().min(60).max(86_400),
+    region: singleLine(40).optional(),
+  })
+  .strict();
+export type SandboxConnectionConfig = z.infer<typeof sandboxConnectionConfig>;
+
+/**
+ * One field for the provider key, sealed and never returned. E2B has a single
+ * API key; Modal has a token id and a token secret, given here as one value
+ * separated by a colon, because a form drawn from this contract offers a kind
+ * one credential field and installs from what it filled in.
+ */
+export const sandboxCredentials = z.object({ api_key: z.string().min(1).max(2048) }).strict();
+export type SandboxCredentials = z.infer<typeof sandboxCredentials>;
+
+/**
+ * Modal's half of that field: `<token id>:<token secret>`. Exactly one colon,
+ * with something on each side. A second colon means the value is not a Modal
+ * token, and splitting it at the first one would quietly keep half of somebody
+ * else's key, so it is refused rather than divided.
+ */
+export function modalTokenParts(key: string): { token_id: string; token_secret: string } | null {
+  const at = key.indexOf(':');
+  if (at <= 0 || at === key.length - 1 || key.lastIndexOf(':') !== at) return null;
+  return { token_id: key.slice(0, at), token_secret: key.slice(at + 1) };
+}
+
+/** What to paste in the one credential field, in the words the form shows. */
+export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
+  e2b: 'the API key on its own, which has no colon in it',
+  modal: 'the token id and the token secret as one value, `token_id:token_secret`',
+};
+
+/** The one code a credential of the wrong shape is refused with. */
+export const SANDBOX_CREDENTIAL_CODE = 'credential_invalid';
+
+/**
+ * Why this key cannot be the named adapter's, or null. One field serves both
+ * adapters, so a value meant for the other one is caught here, while it is
+ * still only a request: before it is sealed, split or sent to a provider.
+ */
+export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): string | null {
+  const wrong =
+    adapter === 'modal'
+      ? !modalTokenParts(key)
+      : // An E2B key carries no colon. One here is a Modal token in the wrong
+        // connection, and E2B would be handed the whole thing as a key.
+        key.includes(':');
+  return wrong
+    ? `${SANDBOX_CREDENTIAL_CODE}: a ${adapter} key is ${SANDBOX_CREDENTIAL_FORMAT[adapter]}.`
+    : null;
+}
+
 /** The grants each kind may receive. MCP grants are declared in its own operator policy. */
 export const CONNECTION_KIND_SCOPES = {
   mail: ['email.search', 'email.read', 'email.draft', 'email.discard', 'email.send'],
   caldav: ['calendar.list', 'calendar.create', 'calendar.update', 'calendar.delete'],
   ics: ['calendar.list'],
+  sandbox: ['terminal.run'],
 } as const satisfies Record<Exclude<ConnectionKind, 'mcp' | 'mcp_stdio'>, readonly string[]>;
 
 export const createConnectionRequest = z.object({
@@ -142,6 +225,7 @@ export const createConnectionRequest = z.object({
   caldav: caldavConnectionRequest.optional(),
   mcp_stdio: mcpStdioConnectionConfig.optional(),
   ics: icsConnectionConfig.optional(),
+  sandbox: sandboxConnectionConfig.optional(),
 });
 export type CreateConnectionRequest = z.infer<typeof createConnectionRequest>;
 
@@ -172,6 +256,13 @@ export type ConnectionInstallation =
       kind: 'mcp_stdio';
       provider: 'mcp';
       config: z.infer<typeof mcpStdioConnectionConfig>;
+    }
+  | {
+      kind: 'sandbox';
+      provider: 'sandbox';
+      config: SandboxConnectionConfig;
+      credentials: SandboxCredentials;
+      scopes: string[];
     };
 
 const KIND_PROVIDER = {
@@ -180,8 +271,9 @@ const KIND_PROVIDER = {
   ics: 'caldav',
   mcp: 'mcp',
   mcp_stdio: 'mcp',
+  sandbox: 'sandbox',
 } as const;
-const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp or mcp_stdio.';
+const EXACTLY_ONE = 'Supply exactly one of mail, caldav, ics, mcp, mcp_stdio or sandbox.';
 
 /** Decide which kind a parsed request installs, or say in plain words why it installs none. */
 export function connectionInstallation(
@@ -210,6 +302,21 @@ export function connectionInstallation(
   )
     return err(`A ${kind} connection grants only: ${allowed.join(', ')}.`);
   const scopes = request.scopes.length ? request.scopes : [...allowed];
+  if (kind === 'sandbox') {
+    if (!request.sandbox) return err('Supply the sandbox configuration in sandbox.');
+    const { cidrs, ...rest } = request.sandbox;
+    // Ranges belong to the allow-list and to nothing else: a list a form left
+    // behind under another policy is dropped rather than stored unused.
+    if (rest.egress === 'cidr_allowlist' && !cidrs?.length)
+      return err('A CIDR allow-list needs at least one range.');
+    const config: SandboxConnectionConfig =
+      rest.egress === 'cidr_allowlist' ? { ...rest, cidrs: cidrs ?? [] } : rest;
+    const credentials = sandboxCredentials.safeParse(request.credentials);
+    if (!credentials.success) return err('A sandbox needs credentials.api_key only.');
+    const malformed = sandboxCredentialRefusal(config.adapter, credentials.data.api_key);
+    if (malformed) return err(malformed);
+    return ok({ kind, provider: 'sandbox', config, credentials: credentials.data, scopes });
+  }
   if (kind === 'ics') {
     if (!request.ics || request.credentials)
       return err('A calendar feed takes its address and no other credential.');
@@ -650,6 +757,74 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
       }),
     ],
     scopes: FEED_SCOPES,
+  },
+  {
+    id: 'sandbox',
+    kind: 'sandbox',
+    title: 'Sandbox (remote execution)',
+    description:
+      'Run commands in a remote sandbox this service owns. The provider key stays here, the sandbox has the egress you choose, and a command never sees a credential.',
+    fixed: [{ path: 'provider', value: 'sandbox' }],
+    fields: [
+      text('sandbox.adapter', 'Provider', {
+        input: 'select',
+        options: [
+          { value: 'e2b', label: 'E2B' },
+          { value: 'modal', label: 'Modal' },
+        ],
+        default: 'e2b',
+      }),
+      text('sandbox.image', 'Image or template', {
+        placeholder: 'base',
+        help: 'A template name on E2B, a registry reference on Modal.',
+      }),
+      text('credentials.api_key', 'Provider key', {
+        input: 'password',
+        secret: true,
+        help: `E2B: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}.`,
+      }),
+      text('sandbox.egress', 'What the sandbox may reach', {
+        input: 'select',
+        options: [
+          { value: 'deny_all', label: 'Nothing at all' },
+          { value: 'cidr_allowlist', label: 'Only the ranges below' },
+          { value: 'open', label: 'Anything (not recommended)' },
+        ],
+        default: 'deny_all',
+      }),
+      text('sandbox.cidrs', 'Allowed ranges', {
+        input: 'string_list',
+        required: false,
+        placeholder: '203.0.113.0/24',
+        help: 'Only with the allow-list policy.',
+      }),
+      text('sandbox.persistence', 'What a sandbox keeps', {
+        input: 'select',
+        options: [
+          { value: 'ephemeral', label: 'Nothing: a fresh sandbox each time' },
+          { value: 'pause', label: 'Files and memory, paused between attempts' },
+          { value: 'snapshot', label: 'Files, snapshotted between attempts' },
+        ],
+        default: 'ephemeral',
+      }),
+      text('sandbox.lifetime_seconds', 'How long one sandbox may run, in seconds', {
+        input: 'number',
+        default: 3600,
+      }),
+      text('sandbox.region', 'Region', {
+        required: false,
+        help: 'Only where the provider offers one.',
+      }),
+    ],
+    scopes: [
+      {
+        scope: 'terminal.run',
+        label: 'Run a command in the sandbox',
+        effect_class: 'write_reversible',
+        asks_first: false,
+        default: true,
+      },
+    ],
   },
   {
     id: 'mcp',

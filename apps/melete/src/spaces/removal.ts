@@ -616,6 +616,13 @@ export class SpaceRemovalService {
     // — what is left, not what the call above says it did — and its answer is
     // carried forward into the counts that decide whether this can finish.
     const left = await sandboxes.listWorkspacesForSpace(row.spaceId, sandboxes.providerFor);
+    // Anything still held stops the removal here, before the operational phase
+    // deletes the session rows and phase 8 the connections: they are the only
+    // record of what is left and the only way to reach it.
+    if (left.sessions.length || left.snapshots.length)
+      throw new Error(
+        `the sandbox providers still hold what this space made: sandbox_sessions ${left.sessions.length}, sandbox_snapshots ${left.snapshots.length}`,
+      );
     const went = cleared(counts, {
       sandbox_sessions_closed: destroyed.closed.length,
       sandbox_snapshots_deleted: destroyed.snapshotsDeleted.length,

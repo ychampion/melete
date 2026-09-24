@@ -32,6 +32,8 @@ const TYPED: Record<string, string> = {
   'mcp_stdio.source': '@example/notes-server@1.0.0',
   'mcp_stdio.args': '/data',
   'mcp_stdio.allowed_scopes': 'mcp_notes.search, mcp_notes.add',
+  'sandbox.image': 'base',
+  'credentials.api_key': 'sandbox-key-value',
 };
 const TOOL_ROWS = [
   { name: 'search', alias: 'search', required_scopes: 'mcp_notes.search', effect_class: 'read' },
@@ -64,6 +66,7 @@ test('a form drawn only from the served descriptors installs every kind', async 
     'mail',
     'mcp',
     'mcp_stdio',
+    'sandbox',
   ]);
 
   for (const kind of kinds) {

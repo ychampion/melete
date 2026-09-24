@@ -45,6 +45,13 @@ import { serviceTransaction, type Transaction } from '../db/transaction.ts';
 import type { Env } from '../env.ts';
 import { newId } from '../ids.ts';
 import { ownedSpace, spaceAuthority } from '../principals/authority.ts';
+import {
+  checkSandboxConfiguration,
+  createSandboxProvider,
+  probeSandboxProvider,
+  sandboxCredentialValue,
+} from '../sandbox/connection.ts';
+import { SandboxRefusal } from '../sandbox/manifest.ts';
 import { ServiceError } from './errors.ts';
 
 export type ConnectionDeps = { db: Database; sql: Sql; registry: ConnectorRegistry; env: Env };
@@ -282,6 +289,27 @@ export function mountConnections(app: Hono, deps: ConnectionDeps) {
 
     const generation = await serviceTransaction(deps.db, async (tx) => {
       await requireInstaller(tx, spaceId, actor, installation.kind, true);
+      if (installation.kind === 'sandbox') {
+        // One execution backend per space, as one browser worker per space:
+        // two would mean two places a command could run, and two answers to
+        // where a workspace is.
+        const existing = await tx
+          .select({ id: connection.id })
+          .from(connection)
+          .where(
+            and(
+              eq(connection.spaceId, spaceId),
+              eq(connection.provider, 'sandbox'),
+              ne(connection.status, 'revoked'),
+            ),
+          );
+        if (existing.length)
+          throw new ServiceError(
+            'conflict',
+            'This space already has an execution backend. Remove it before installing another.',
+            409,
+          );
+      }
       if (installation.kind === 'mcp' || installation.kind === 'mcp_stdio') {
         // A removed installation keeps its row for the ledger but not its short
         // name, so the same server can be installed again with a new credential.
@@ -591,6 +619,58 @@ async function storedShape(
         ? JSON.stringify(Object.fromEntries(secret_env.map((entry) => [entry.name, entry.value])))
         : null,
       configuration: { server: config },
+    };
+  }
+  if (installation.kind === 'sandbox') {
+    const sandbox = factory.options.sandbox;
+    if (!sandbox)
+      throw new ServiceError(
+        'invalid_request',
+        'This service has no sandbox project configured, so it cannot own a sandbox. Set MELETE_SANDBOX_PROJECT and start it again.',
+        409,
+      );
+    if (installation.config.adapter === 'modal' && sandbox.modalRefusal)
+      throw new ServiceError('invalid_request', sandbox.modalRefusal, 409);
+    // The manifest decides first: a configuration the adapter cannot honour is
+    // refused here, with its own code, rather than widened at the provider.
+    try {
+      checkSandboxConfiguration(installation.config, {
+        project: sandbox.project,
+        spaceId,
+        plan: sandbox.e2bPlan,
+      });
+    } catch (error) {
+      if (!(error instanceof SandboxRefusal)) throw error;
+      throw new ServiceError('invalid_request', `${error.code}: ${error.message}`, 400);
+    }
+    // Then the key, while it is still only in memory: a key the provider
+    // refuses never becomes a row or a sealed secret. Only the closed code
+    // crosses back, never the provider's own words.
+    const probe = createSandboxProvider(installation.config, {
+      credential: (use) =>
+        use(
+          sandboxCredentialValue(
+            installation.config.adapter,
+            JSON.stringify(installation.credentials),
+          ),
+        ),
+      project: sandbox.project,
+      e2bPlan: sandbox.e2bPlan,
+      snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
+      ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+    });
+    let answered: 'ok' | 'unavailable';
+    try {
+      answered = await probeSandboxProvider(probe.provider, AbortSignal.timeout(CHECK_TIMEOUT_MS));
+    } finally {
+      await probe.close().catch(() => {});
+    }
+    if (answered !== 'ok')
+      throw new ServiceError('invalid_request', CONNECTION_CHECK_DETAIL.unavailable, 400);
+    return {
+      scopes: installation.scopes,
+      secret: JSON.stringify(installation.credentials),
+      configuration: { kind: 'sandbox', sandbox: installation.config },
     };
   }
   const shape =

@@ -31,6 +31,27 @@ export class PolicyService {
   constructor(
     readonly jobs: JobService,
     readonly runner?: AttemptRunner,
+    readonly options: {
+      /**
+       * Runs inside a revocation, or a switch to another key, after its
+       * authority and generation checks and before the key it replaces is
+       * gone: what that key alone can undo is undone here. It never refuses
+       * the change.
+       */
+      beforeKeyChange?: (
+        connection: { id: string; provider: string },
+        change: 'revoke' | 'switch',
+        next?: { secretRef: string; spaceId: string },
+      ) => Promise<void>;
+      /**
+       * Asked before a switch, and before anything is torn down: the reason
+       * this connection may not take that secret as its key, or null.
+       */
+      checkKeyChange?: (
+        connection: { provider: string; spaceId: string; configuration: unknown },
+        secretRef: string,
+      ) => Promise<string | null>;
+    } = {},
   ) {}
 
   async invalidateInTransaction(
@@ -232,7 +253,27 @@ export class PolicyService {
             'Choose a credential in the same space.',
             400,
           );
+        const refused = await this.options.checkKeyChange?.(
+          {
+            provider: source.provider,
+            spaceId: source.spaceId,
+            configuration: source.configuration,
+          },
+          request.secret_ref,
+        );
+        if (refused) throw new ServiceError('invalid_credential', refused, 400);
       }
+      if (
+        (request.kind === 'revoke' && source.status !== 'revoked') ||
+        (request.kind === 'switch' && request.secret_ref !== source.secretRef)
+      )
+        await this.options.beforeKeyChange?.(
+          { id: source.id, provider: source.provider },
+          request.kind,
+          request.kind === 'switch'
+            ? { secretRef: request.secret_ref, spaceId: source.spaceId }
+            : undefined,
+        );
       const [parent] = await tx
         .update(space)
         .set({ policyGeneration: sql`${space.policyGeneration} + 1` })

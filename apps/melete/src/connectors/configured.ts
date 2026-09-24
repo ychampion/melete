@@ -4,6 +4,15 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { Env } from '../env.ts';
 import { capabilitiesFromEnv } from '../gateway/capabilities.ts';
+import {
+  createSandboxProvider,
+  modalEnvironmentRefusal,
+  sandboxCredentialValue,
+  sandboxTeardownProviders,
+  storedSandboxConnection,
+} from '../sandbox/connection.ts';
+import { SandboxSessions } from '../sandbox/sessions.ts';
+import type { SandboxProvider } from '../sandbox/types.ts';
 import { browserArtifactSink } from '../workers/browser/artifacts.ts';
 import { type BrowserWorkerEndpoint, BrowserWorkerPool } from '../workers/browser/client.ts';
 import { PostgresBrowserRecipeStore } from '../workers/browser/recipes.ts';
@@ -26,6 +35,7 @@ import {
   storedStdioConnection,
 } from './mcp-stdio.ts';
 import { ConnectorRegistry } from './registry.ts';
+import { createSandboxExecConnector } from './sandbox-exec.ts';
 import { PostgresSecretRepository, SealedSecretStore } from './secrets.ts';
 import { createTestConnector, initializeTestLedger } from './test.ts';
 import { createCapabilityConnector } from './tts.ts';
@@ -167,6 +177,28 @@ export type ConnectorOptions = {
   /** Starts stdio MCP servers in isolation; without one, a stdio installation offers nothing. */
   stdioLauncher?: StdioLauncher;
   stdioLifecycle?: StdioLifecycleOptions;
+  /** Everything a sandbox connection needs besides its own row. */
+  sandbox?: SandboxRuntimeOptions;
+};
+
+/**
+ * What the service brings to a sandbox connection: the session table, the
+ * label that says which sandboxes are this installation's, and the settings an
+ * adapter cannot decide for itself.
+ */
+export type SandboxRuntimeOptions = {
+  sessions: SandboxSessions;
+  project: string;
+  e2bPlan: 'hobby' | 'pro';
+  snapshotTtlSeconds: number;
+  /** The whole installation's ceiling, over every connection. */
+  maxConcurrent: number;
+  /** One connection's own allowance, which defaults to that ceiling. */
+  maxPerConnection: number;
+  /** Set when this environment could redirect Modal's traffic; then Modal is refused. */
+  modalRefusal: string | null;
+  /** Replaces E2B's HTTP transport. Only a test fixture passes one. */
+  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 };
 
 /** What a connector is built from: the persisted row, never a request payload. */
@@ -183,6 +215,7 @@ const storedConfiguration = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mail'), mail: mailConnectionConfig }),
   z.object({ kind: z.literal('caldav'), caldav: caldavConnectionConfig }),
   z.object({ kind: z.literal('ics') }),
+  storedSandboxConnection,
 ]);
 
 /**
@@ -204,7 +237,27 @@ function ownerOnly<T extends Connector>(connector: T): T {
 export class ConnectorFactory {
   readonly secrets: SealedSecretStore;
   readonly mailers = new Map<string, ReturnType<EmailConnector['asMailer']>>();
+  /** Each sandbox connection's provider, so boot reconciliation and the sweep use it too. */
+  readonly sandboxProviders = new Map<string, { adapter: string; provider: SandboxProvider }>();
   private readonly overrides: Map<string, ConfiguredConnection>;
+
+  /**
+   * Providers for tearing down the sandboxes of any connection, a space under
+   * removal included, or undefined when this installation owns no sandboxes.
+   */
+  sandboxTeardownProviders() {
+    const sandbox = this.options.sandbox;
+    if (!sandbox) return undefined;
+    return sandboxTeardownProviders({
+      sql: this.options.sql,
+      secrets: this.secrets,
+      project: sandbox.project,
+      e2bPlan: sandbox.e2bPlan,
+      snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
+      modalRefusal: sandbox.modalRefusal,
+      ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+    });
+  }
 
   constructor(readonly options: ConnectorOptions) {
     this.secrets = new SealedSecretStore(
@@ -267,6 +320,51 @@ export class ConnectorFactory {
       });
     }
     if (row.provider === 'web') return createWebConnector();
+    if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
+      const sandbox = options.sandbox;
+      if (!sandbox || !row.secretRef) return undefined;
+      if (stored.sandbox.adapter === 'modal' && sandbox.modalRefusal)
+        throw new Error(sandbox.modalRefusal);
+      const config = stored.sandbox;
+      const opened = createSandboxProvider(config, {
+        // The key is read from the row on every call rather than kept from
+        // when this connector was built: a key switch replaces it in place,
+        // and a revocation removes it, without this connector being rebuilt.
+        credential: async (use) => {
+          const [current] = await options.sql`select status, secret_ref from connection
+            where id = ${row.id}`;
+          if (!current?.secret_ref || current.status === 'revoked')
+            throw new Error('this sandbox connection no longer holds a provider key');
+          return this.secrets.withSecret(String(current.secret_ref), row.spaceId, (sealed) =>
+            use(sandboxCredentialValue(config.adapter, sealed)),
+          );
+        },
+        project: sandbox.project,
+        e2bPlan: sandbox.e2bPlan,
+        snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
+        ...(sandbox.fetch ? { fetch: sandbox.fetch } : {}),
+      });
+      this.sandboxProviders.set(row.id, {
+        adapter: config.adapter,
+        provider: opened.provider,
+      });
+      return ownerOnly(
+        createSandboxExecConnector({
+          sessions: sandbox.sessions,
+          provider: opened.provider,
+          config,
+          connectionId: row.id,
+          spaceId: row.spaceId,
+          project: sandbox.project,
+          workRoot: options.workRoot,
+          sql: options.sql,
+          e2bPlan: sandbox.e2bPlan,
+          maxConcurrent: sandbox.maxConcurrent,
+          maxPerConnection: sandbox.maxPerConnection,
+          close: opened.close,
+        }),
+      );
+    }
     if (row.provider === 'test' && options.enableTestConnector)
       return createTestConnector(options.sql);
     if (row.provider === 'imap' && setting?.kind === 'email' && row.secretRef)
@@ -479,6 +577,26 @@ export function connectorOptionsFromEnv(
     stdioLauncher: extra.stdioLauncher,
     stdioLifecycle: { idleMs: env.MELETE_MCP_IDLE_MS },
     cellIsolated: builtinEnvironment(env).cellIsolated,
+    ...(env.MELETE_SANDBOX_PROJECT
+      ? {
+          sandbox: {
+            sessions: new SandboxSessions(sql, {
+              leaseSeconds: env.MELETE_SANDBOX_LEASE_SECONDS,
+              workspaceRetentionSeconds: env.MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS,
+            }),
+            project: env.MELETE_SANDBOX_PROJECT,
+            e2bPlan: env.MELETE_E2B_PLAN,
+            snapshotTtlSeconds: env.MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS,
+            maxConcurrent: env.MELETE_SANDBOX_MAX_CONCURRENT,
+            maxPerConnection:
+              env.MELETE_SANDBOX_MAX_CONCURRENT_PER_CONNECTION ?? env.MELETE_SANDBOX_MAX_CONCURRENT,
+            modalRefusal: modalEnvironmentRefusal(
+              process.env,
+              env.MELETE_SANDBOX_ALLOW_PROXY_ENVIRONMENT,
+            ),
+          },
+        }
+      : {}),
     env: {
       OPENAI_API_KEY: env.OPENAI_API_KEY,
       OPENAI_COMPAT_BASE_URL: env.OPENAI_COMPAT_BASE_URL,

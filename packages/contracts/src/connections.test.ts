@@ -11,6 +11,8 @@ import {
   connectionRequestProblem,
   connectionResponse,
   createConnectionRequest,
+  modalTokenParts,
+  sandboxCredentialRefusal,
 } from './connections.ts';
 import { connectionView } from './entities.ts';
 
@@ -298,11 +300,13 @@ describe('connection kind descriptors', () => {
       'mail',
       'mcp',
       'mcp_stdio',
+      'sandbox',
     ]);
     const ids = parsed.kinds.map((kind) => kind.id);
     expect(new Set(ids).size).toBe(ids.length);
     // Every kind keeps an entry for a server no provider entry names.
-    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio']) expect(ids).toContain(kind);
+    for (const kind of ['caldav', 'ics', 'mail', 'mcp', 'mcp_stdio', 'sandbox'])
+      expect(ids).toContain(kind);
     for (const kind of parsed.kinds) {
       const secrets = kind.fields.flatMap((field) => [
         ...(field.secret ? [field.path] : []),
@@ -565,5 +569,31 @@ describe('providers whose servers are known', () => {
       server_url: 'https://caldav.icloud.com/',
       username: 'me@example.test',
     });
+  });
+});
+
+describe('the one sandbox credential field', () => {
+  test('is read as the adapter it belongs to, and never split into one', () => {
+    // Modal wants both halves, exactly once.
+    expect(modalTokenParts('ak-token-id:as-token-secret')).toEqual({
+      token_id: 'ak-token-id',
+      token_secret: 'as-token-secret',
+    });
+    for (const key of ['ak-token-id', ':as-token-secret', 'ak-token-id:', 'a:b:c', ''])
+      expect([key, modalTokenParts(key)]).toEqual([key, null]);
+
+    // Each adapter refuses the other's shape, and says what it wants instead.
+    expect(sandboxCredentialRefusal('modal', 'ak-token-id:as-token-secret')).toBeNull();
+    expect(sandboxCredentialRefusal('modal', 'ak-token-id')).toContain('token_id:token_secret');
+    expect(sandboxCredentialRefusal('e2b', 'e2b_0123456789')).toBeNull();
+    expect(sandboxCredentialRefusal('e2b', 'ak-token-id:as-token-secret')).toContain(
+      'has no colon in it',
+    );
+    // One closed code, whichever adapter refused.
+    for (const [adapter, key] of [
+      ['modal', 'ak-token-id'],
+      ['e2b', 'a:b'],
+    ] as const)
+      expect(sandboxCredentialRefusal(adapter, key)).toStartWith('credential_invalid:');
   });
 });
