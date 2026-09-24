@@ -88,8 +88,18 @@ const imageReference = z
   .string()
   .max(512)
   .regex(
-    /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?|localhost(?::\d{1,5})?)\/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$/,
-  );
+    /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d{1,5})?\/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$/,
+  )
+  // The engine pulls from the host's network, so a registry named by address, or as the
+  // host itself, would have it knock on the host's own or private ports.
+  .refine((value) => registryIsNamed(value.slice(0, value.indexOf('/'))));
+
+/** A registry host that is a DNS name, not an address and not the host itself. */
+function registryIsNamed(registry: string): boolean {
+  const host = registry.replace(/:\d+$/, '');
+  const last = host.split('.').at(-1) ?? '';
+  return /[a-z]/.test(last) && host !== 'localhost' && !host.endsWith('.localhost');
+}
 /** A destination the server may open: a DNS name with at least one dot, and an optional port. */
 export const mcpEgressHost = z
   .string()

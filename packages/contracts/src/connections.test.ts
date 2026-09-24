@@ -159,6 +159,24 @@ describe('connection installation requests', () => {
     expect(
       parse({ runner: 'image', source: `registry.local:5000/server@sha256:${'a'.repeat(64)}` }),
     ).toBe(true);
+    // The engine pulls from the host, so a registry given as an address or as the host itself
+    // would point it at the host's own or private ports.
+    for (const registry of [
+      'localhost:5000',
+      'localhost',
+      'registry.localhost:5000',
+      '127.0.0.1:5000',
+      '127.1.2.3',
+      '10.0.0.5:5000',
+      '172.17.0.1:2375',
+      '192.168.1.20',
+      '169.254.169.254',
+      '93.184.216.34',
+    ])
+      expect([
+        registry,
+        parse({ runner: 'image', source: `${registry}/server@sha256:${'a'.repeat(64)}` }),
+      ]).toEqual([registry, false]);
     for (const source of [
       '--registry=https://evil.example',
       'git+https://example.test/repo.git',
