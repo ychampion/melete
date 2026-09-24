@@ -333,19 +333,25 @@ test('once approved the job sends, keeps going, and the sent step can still be u
   expect(receipts[0]?.what).toContain('Sent a message to');
   expect(receipts[0]?.undo).not.toBeNull();
 
-  // The reply, the follow-up and the ending are on the timeline, in order.
-  const said = await until(`the ending on ${jobId}`, async () => {
-    const events = C.experienceEventPage.parse(
+  // The reply, the follow-up and the ending arrive as tool entries, in order,
+  // and the job ends by saying it is settled.
+  const events = await until(`the ending on ${jobId}`, async () => {
+    const page = C.experienceEventPage.parse(
       (await call(mock, `/conversations/${jobId}/events?since=0&limit=200`)).body,
     ).events;
-    const text = events
-      .map((event) =>
-        event.item.type === 'note' || event.item.type === 'say' ? event.item.text : '',
-      )
-      .join('\n');
-    return text.includes('Settled.') ? text : null;
+    return page.some((event) => event.item.type === 'say' && event.item.text.startsWith('Settled.'))
+      ? page
+      : null;
   });
-  expect(said).toContain('they replied');
-  expect(said).toContain('replied again');
-  expect(said).toContain('Settled.');
+  const finished = events.flatMap((event) =>
+    event.item.type === 'tool' && event.item.tool.status === 'done' ? [event.item.tool.title] : [],
+  );
+  const chase = ['Read their reply', 'Followed up with the reference', 'Read their confirmation'];
+  expect(finished.filter((title) => chase.includes(title))).toEqual(chase);
+  // The chase ends when the money is back: the item it was about is settled.
+  const settled = await until(`the settled item for ${jobId}`, async () => {
+    const row = (await mapOf(mock)).items.find((entry) => entry.job_id === jobId);
+    return row?.status === 'settled' ? row : null;
+  });
+  expect(settled.status).toBe('settled');
 });

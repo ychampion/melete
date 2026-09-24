@@ -187,7 +187,14 @@ export function mountCompaniesMock(
       'company-chase',
     );
     const chat = experience.chats.get(conversation.id);
-    if (chat) chat.follow = { from: fixture.from_address };
+    if (chat)
+      chat.follow = {
+        from: fixture.from_address,
+        // The chase ends when the money is back: the item it was about is settled.
+        settle: () => {
+          row.status = 'settled';
+        },
+      };
     row.job_id = conversation.id;
     row.status = 'handling';
     return c.json({ job_id: conversation.id }, 201);
