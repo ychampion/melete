@@ -362,7 +362,6 @@ async function isolated(cookie: string, other: Seeded, ownAgentId = other.agentI
     ['/automations', other.label],
     ['/rules', other.label],
     ['/actions', other.draftId],
-    [`/actions?job_id=${other.conversationId}`, other.draftId],
   ];
   for (const [path, marker] of lists) {
     const response = await call(cookie, path);
@@ -393,6 +392,8 @@ async function isolated(cookie: string, other: Seeded, ownAgentId = other.agentI
     [`/jobs/${other.conversationId}/reactions`, 'GET'],
     [`/jobs/${other.conversationId}`, 'GET'],
     [`/jobs/${other.conversationId}/events`, 'GET'],
+    // Asking about another account's job is refused before its actions are read.
+    [`/actions?job_id=${other.conversationId}`, 'GET'],
     [`/browser/sessions/${other.browserSession}/takeover`, 'POST'],
     [`/browser/sessions/${other.browserSession}/handback`, 'POST'],
   ];
