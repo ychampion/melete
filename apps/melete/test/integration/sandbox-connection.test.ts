@@ -66,8 +66,12 @@ async function harness() {
    * answering false until it sees what it is waiting for.
    */
   let duringHandshake: (() => Promise<boolean>) | null = null;
+  /** Every provider key the stand-in was sent, in order. */
+  const sentKeys: string[] = [];
   const sandboxFetch: SandboxRuntimeOptions['fetch'] = async (input, init) => {
     if (duringHandshake && (await duringHandshake())) duringHandshake = null;
+    const key = new Headers(init?.headers).get('x-api-key');
+    if (key) sentKeys.push(key);
     return standin.fetch(input, init);
   };
   const sandbox: SandboxRuntimeOptions = {
@@ -196,6 +200,8 @@ async function harness() {
     jobs,
     sessions: sandbox.sessions,
     secrets: factory.secrets,
+    served: factory.sandboxProviders,
+    sentKeys,
     onHandshake: (hook: () => Promise<boolean>) => {
       duringHandshake = hook;
     },
@@ -664,5 +670,39 @@ withDb('the sandbox connection kind', () => {
     ]);
     expect(outcome).toEqual(['revoked', 'connection_inactive']);
     expect(await provider.inspect(sessionHandle(opened), AbortSignal.timeout(10_000))).toBe('gone');
+  }, 120_000);
+  test('a key switch reaches the provider the connection already serves', async () => {
+    if (!h) throw new Error('Postgres unavailable');
+    await h.sql`update sandbox_session set status = 'closed', closed_at = now()
+      where space_id = ${h.spaceId} and status not in ('closed', 'lost')`;
+    const created = await h.install(body());
+    expect(created.status).toBe(201);
+    const id = connectionResponse.parse(created.json).connection.id;
+    // Built when the connection was installed, and never rebuilt since.
+    const served = h.served.get(id)?.provider;
+    if (!served) throw new Error('the connection serves no provider');
+    const rotated = 'e2b_rotated_key_not_a_credential_000000';
+    const replacement = await h.secrets.put(h.spaceId, JSON.stringify({ api_key: rotated }));
+    await h.sql`update connection set secret_ref = ${replacement} where id = ${id}`;
+    h.sentKeys.length = 0;
+    await served
+      .inspect(
+        { providerSandboxId: 'sbx_probe_after_switch', imageDigest: null, region: null },
+        AbortSignal.timeout(10_000),
+      )
+      .catch(() => {});
+    expect(h.sentKeys.length).toBeGreaterThan(0);
+    expect(h.sentKeys.every((key) => key === rotated)).toBe(true);
+    // Revoked, the connection lends no key at all.
+    await h.sql`update connection set status = 'revoked', secret_ref = null where id = ${id}`;
+    h.sentKeys.length = 0;
+    const refused = await served
+      .inspect(
+        { providerSandboxId: 'sbx_probe_after_revoke', imageDigest: null, region: null },
+        AbortSignal.timeout(10_000),
+      )
+      .catch((error: unknown) => String(error));
+    expect(String(refused)).toContain('no longer holds a provider key');
+    expect(h.sentKeys).toEqual([]);
   }, 120_000);
 });

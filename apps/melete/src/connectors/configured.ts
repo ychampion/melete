@@ -322,16 +322,23 @@ export class ConnectorFactory {
     if (row.provider === 'web') return createWebConnector();
     if (row.provider === 'sandbox' && stored?.kind === 'sandbox') {
       const sandbox = options.sandbox;
-      const secretRef = row.secretRef;
-      if (!sandbox || !secretRef) return undefined;
+      if (!sandbox || !row.secretRef) return undefined;
       if (stored.sandbox.adapter === 'modal' && sandbox.modalRefusal)
         throw new Error(sandbox.modalRefusal);
       const config = stored.sandbox;
       const opened = createSandboxProvider(config, {
-        credential: (use) =>
-          this.secrets.withSecret(secretRef, row.spaceId, (sealed) =>
+        // The key is read from the row on every call rather than kept from
+        // when this connector was built: a key switch replaces it in place,
+        // and a revocation removes it, without this connector being rebuilt.
+        credential: async (use) => {
+          const [current] = await options.sql`select status, secret_ref from connection
+            where id = ${row.id}`;
+          if (!current?.secret_ref || current.status === 'revoked')
+            throw new Error('this sandbox connection no longer holds a provider key');
+          return this.secrets.withSecret(String(current.secret_ref), row.spaceId, (sealed) =>
             use(sandboxCredentialValue(config.adapter, sealed)),
-          ),
+          );
+        },
         project: sandbox.project,
         e2bPlan: sandbox.e2bPlan,
         snapshotTtlSeconds: sandbox.snapshotTtlSeconds,
