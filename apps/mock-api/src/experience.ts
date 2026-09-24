@@ -1428,8 +1428,27 @@ export class ExperienceMock {
         this.agents.set(agent.id, agent);
         return { agent };
       }
-      case 'GET /conversations':
-        return { conversations: [...this.chats.values()].map((chat) => chat.view) };
+      case 'GET /conversations': {
+        // Most recently active first, a page at a time, as the service answers.
+        const query = C.conversationListQuery.parse(c.req.query());
+        const after = query.cursor ? C.decodeConversationCursor(query.cursor) : null;
+        if (query.cursor && !after)
+          throw new MockExperienceError(400, 'Start the list again from the top.');
+        const position = (view: C.Conversation) => `${view.updated_at}|${view.id}`;
+        const views = [...this.chats.values()]
+          .map((chat) => chat.view)
+          .sort((a, b) => position(b).localeCompare(position(a)))
+          .filter((view) => !after || position(view) < `${after.updated_at}|${after.id}`);
+        const page = views.slice(0, query.limit);
+        const last = page.at(-1);
+        return {
+          conversations: page,
+          next_cursor:
+            views.length > query.limit && last
+              ? C.encodeConversationCursor({ updated_at: last.updated_at, id: last.id })
+              : null,
+        };
+      }
       case 'POST /conversations':
         return this.create(input);
       case 'GET /conversations/{id}':

@@ -388,7 +388,30 @@ export const messageAcceptance = z.strictObject({
   receipt: z.strictObject({ id, status: z.enum(['accepted', 'failed_retry']), received_at: date }),
 });
 export const conversationResponse = z.strictObject({ conversation });
-export const conversationList = z.strictObject({ conversations: z.array(conversation) });
+/**
+ * The chats list, most recently active first. `next_cursor` continues after the
+ * last one returned, and is null when there are no more.
+ */
+export const conversationList = z.strictObject({
+  conversations: z.array(conversation),
+  next_cursor: z.string().max(200).nullable(),
+});
+export const conversationListQuery = z.strictObject({
+  limit: z.coerce.number().int().positive().max(200).default(200),
+  cursor: z.string().max(200).optional(),
+});
+
+/** Where a page of chats ends: the last one's activity time and id, opaque to a client. */
+export type ConversationCursor = { updated_at: string; id: string };
+export function encodeConversationCursor(position: ConversationCursor): string {
+  return Buffer.from(`${position.updated_at}|${position.id}`, 'utf8').toString('base64url');
+}
+/** Null for anything that is not a cursor this list handed out. */
+export function decodeConversationCursor(cursor: string): ConversationCursor | null {
+  const [updatedAt, id, extra] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+  if (extra !== undefined || !updatedAt || !id || !date.safeParse(updatedAt).success) return null;
+  return { updated_at: updatedAt, id };
+}
 export const turnList = z.strictObject({ turns: z.array(conversationTurn) });
 
 export const agentInput = z.strictObject({
@@ -592,7 +615,7 @@ export const magicLinkConsume = z.strictObject({ token: z.string().min(32).max(2
 
 /** Shared operation table makes the mock and OpenAPI cover precisely the same surface. */
 export const experienceOperations = {
-  'GET /conversations': { response: conversationList },
+  'GET /conversations': { query: conversationListQuery, response: conversationList },
   'POST /conversations': { request: conversationCreate, response: conversationResponse },
   'GET /conversations/{id}': { response: conversationResponse },
   'PATCH /conversations/{id}/agent': {

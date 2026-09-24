@@ -5,8 +5,11 @@ import {
   type ConversationProgress,
   conversation,
   conversationCreate,
+  conversationListQuery,
   conversationMessage,
   conversationTurn,
+  decodeConversationCursor,
+  encodeConversationCursor,
   type SubmissionReceipt,
   unavailable,
 } from '@melete/contracts';
@@ -188,16 +191,41 @@ export class ExperienceService {
     );
   }
 
-  async conversations(spaceId: string) {
+  /** The caller's chats, most recently active first, a page at a time. */
+  async conversations(spaceId: string, raw: unknown = {}) {
+    const query = conversationListQuery.parse(raw);
+    const after = query.cursor ? decodeConversationCursor(query.cursor) : null;
+    if (query.cursor && !after)
+      throw new ServiceError('invalid_cursor', 'Start the list again from the top.', 400);
+    // Compared to the millisecond, the precision the cursor carries, with the id
+    // breaking ties, so no chat is skipped or shown twice across pages.
+    const activity = sql`date_trunc('milliseconds', ${job.updatedAt})`;
     const rows = await this.db
       .select()
       .from(job)
-      .where(and(eq(job.spaceId, spaceId), eq(job.kind, 'chat'), ownJob()))
-      .orderBy(desc(job.updatedAt))
-      .limit(200);
+      .where(
+        and(
+          eq(job.spaceId, spaceId),
+          eq(job.kind, 'chat'),
+          ownJob(),
+          after
+            ? sql`(${activity}, ${job.id}) < (${after.updated_at}::timestamptz, ${after.id})`
+            : undefined,
+        ),
+      )
+      .orderBy(desc(activity), desc(job.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
     const result: Conversation[] = [];
-    for (const row of rows) result.push(await this.view(row));
-    return { conversations: result };
+    for (const row of page) result.push(await this.view(row));
+    const last = page.at(-1);
+    return {
+      conversations: result,
+      next_cursor:
+        rows.length > query.limit && last
+          ? encodeConversationCursor({ updated_at: last.updatedAt.toISOString(), id: last.id })
+          : null,
+    };
   }
 
   async createConversation(spaceId: string, raw: unknown) {

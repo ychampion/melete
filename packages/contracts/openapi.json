@@ -1776,7 +1776,26 @@
         ],
         "summary": "GET /conversations",
         "description": "Uses the authenticated session space. Unsupported capabilities return not_available with a plain reason.",
-        "parameters": [],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 200,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Outcome or unavailable capability",
@@ -1792,10 +1811,22 @@
                           "items": {
                             "$ref": "#/components/schemas/__schema148"
                           }
+                        },
+                        "next_cursor": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 200
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
-                        "conversations"
+                        "conversations",
+                        "next_cursor"
                       ],
                       "additionalProperties": false
                     },

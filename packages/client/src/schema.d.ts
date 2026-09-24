@@ -2011,7 +2011,10 @@ export interface paths {
          */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -2026,6 +2029,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             conversations: components["schemas"]["__schema148"][];
+                            next_cursor: string | null;
                         } | components["schemas"]["__schema155"];
                     };
                 };

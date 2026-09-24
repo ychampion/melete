@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   agentResponse,
   automationResponse,
+  conversationList,
   conversationResponse,
   dedupKey,
   experienceOperations,
@@ -326,6 +327,29 @@ withDb('experience rows and authenticated scope', () => {
       (await request('/conversations', 'POST', { title: 'Bad', agent_id: chat.agent_id })).status,
     ).toBe(404);
     expect((await request('/conversations', 'GET')).status).toBe(200);
+  });
+  test('the chats list pages most recent first, without a gap or a repeat', async () => {
+    const made = [
+      await createConversation(),
+      await createConversation(),
+      await createConversation(),
+    ];
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const path = `/conversations?limit=2${cursor ? `&cursor=${cursor}` : ''}`;
+      const page = conversationList.parse(await (await request(path)).json());
+      expect(page.conversations.length).toBeLessThanOrEqual(2);
+      seen.push(...page.conversations.map((entry) => entry.updated_at + entry.id));
+      cursor = page.next_cursor;
+    } while (cursor);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect([...seen].sort().reverse()).toEqual(seen);
+    const everything = conversationList.parse(await (await request('/conversations')).json());
+    expect(everything.next_cursor).toBeNull();
+    expect(seen).toHaveLength(everything.conversations.length);
+    for (const chat of made) expect(seen.some((entry) => entry.endsWith(chat.id))).toBe(true);
+    expect((await request('/conversations?cursor=not-a-cursor')).status).toBe(400);
   });
   test('submissions persist exactly one turn, finish and accept the next message', async () => {
     const chat = await createConversation();
