@@ -184,7 +184,7 @@ async function sharedSpace(withMember = false) {
     await fixture.handle.db
       .update(episode)
       .set({ actor: memberId })
-      .where(eq(episode.id, borrowed.episodeId));
+      .where(eq(episode.id, borrowed.episodeId ?? ''));
     await rejectsWith(
       () => fixture.procedures.startTrial(fixture.ownerId, spaceId, borrowed.id, borrowed.bodyHash),
       'trial_denied',

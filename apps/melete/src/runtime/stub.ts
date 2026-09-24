@@ -127,7 +127,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
   }
 
   async capabilities(): Promise<RuntimeCapabilities> {
-    return { streaming: true, tools: true, interrupt: true, version: 'stub/1' };
+    return { streaming: true, tools: true, interrupt: true, version: 'stub/1', workspace: 'job' };
   }
 
   async start(

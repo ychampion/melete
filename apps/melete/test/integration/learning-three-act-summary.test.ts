@@ -12,8 +12,14 @@ afterAll(async () => {
 
 const OBJECTIVE = 'Summarise the weekly status report for the leadership team';
 const CORRECTION = 'Far too long: leave out the background and keep the summary under 40 words.';
-// An upper bound alone passes an empty answer, so the check also asks for a summary at all.
-const CHECKS = [{ kind: 'word_count', min: 10, max: 40 }] as const;
+/**
+ * A length correction as a model writes it: an upper bound and the request's own
+ * words. Admission adds the floor of one that an upper bound alone leaves out.
+ */
+const CHECKS = [
+  { kind: 'word_count', max: 40 },
+  { kind: 'required_phrase', phrase: 'status report' },
+] as const;
 
 (fixture ? describe : describe.skip)('the three-act summary length scenario', () => {
   test('a summary length correction becomes a delivered procedure and the later summary needs no correction', async () => {
@@ -64,6 +70,10 @@ const CHECKS = [{ kind: 'word_count', min: 10, max: 40 }] as const;
       .from(procedureCandidate)
       .where(eq(procedureCandidate.episodeId, source.id));
     if (!candidate) throw new Error('The drain did not create a candidate');
+    expect(candidate.checks).toEqual([
+      { kind: 'word_count', min: 1, max: 40 },
+      { kind: 'required_phrase', phrase: 'status report' },
+    ]);
     expect(candidate.discrimination?.status).toBe('passed');
     const evaluator = new ProcedureEvaluator(fixture.jobs, fixture.runtime, fixture.runner.options);
     const evaluated = await evaluator.evaluate(fixture.ownerId, spaceId, candidate.id);

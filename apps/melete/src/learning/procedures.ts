@@ -5,9 +5,10 @@ import { job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobService } from '../jobs/service.ts';
 import { newId } from '../memory/db.ts';
-import { spaceAuthority, visibleJob } from '../principals/authority.ts';
+import { ownJob, spaceAuthority, visibleJob } from '../principals/authority.ts';
 import { compileStoredProcedure, verifyStoredEvidence } from './admit.ts';
 import type { ProcedureState } from './contracts.ts';
+import { engineDefinitionIntact, isEngineSkill } from './engine-scan.ts';
 import { KEPT_UNTIL, requireLearningSpace } from './episodes.ts';
 import { compileProcedure, definitionHash } from './procedure.ts';
 import { objectiveIsOwnerText } from './provenance.ts';
@@ -29,6 +30,17 @@ export const isGeneralProcedure = (candidate: Pick<Candidate, 'tests'>) =>
  * is what makes this affordable at every delivery.
  */
 export function verifyDefinition(candidate: Candidate) {
+  // A skill the engine wrote quotes nobody, so the admission rules cannot
+  // recompile it. What binds it is its hash, and that it still carries no
+  // credential material: both are re-checked here, at every use.
+  if (isEngineSkill(candidate)) {
+    if (!engineDefinitionIntact(candidate))
+      throw new ServiceError(
+        'definition_changed',
+        'The skill no longer matches the definition that was decided.',
+      );
+    return;
+  }
   try {
     const compiled = isGeneralProcedure(candidate)
       ? compileStoredProcedure(candidate.change, candidate.triggers)
@@ -54,10 +66,10 @@ export function verifyDefinition(candidate: Candidate) {
  */
 export function verifyEvidence(
   candidate: Candidate,
-  source: { intervention: { text: string } | null },
+  source: { intervention: { text: string } | null } | null,
   objective: string,
 ) {
-  if (!isGeneralProcedure(candidate)) return;
+  if (!source || isEngineSkill(candidate) || !isGeneralProcedure(candidate)) return;
   try {
     verifyStoredEvidence(candidate.evidence, [
       { id: 'intervention', offset: 0, text: source.intervention?.text ?? '' },
@@ -113,6 +125,15 @@ export function requireNotRemoved(candidate: Candidate) {
     throw new ServiceError('procedure_removed', 'This was removed; undo the removal first.', 409);
 }
 
+/** The correction road. A skill the engine wrote is approved through its own surface. */
+function requireCorrection(candidate: Candidate) {
+  if (isEngineSkill(candidate))
+    throw new ServiceError(
+      'invalid_procedure_state',
+      'A skill the engine wrote is approved through the engine-skill surface.',
+    );
+}
+
 export async function transitionProcedure(
   tx: Transaction,
   candidate: Candidate,
@@ -154,6 +175,23 @@ export class ProcedureService {
       .where(and(eq(procedureCandidate.id, id), eq(procedureCandidate.spaceId, spaceId)))
       .for('update');
     if (!candidate) throw new ServiceError('not_found', 'Procedure not found.', 404);
+    // A skill the engine wrote has no correction behind it. The writing job still
+    // has to be this principal's, and the promotion rules below still apply.
+    if (isEngineSkill(candidate) || !candidate.episodeId) {
+      const [writer] = await tx
+        .select({ id: job.id })
+        .from(job)
+        .where(
+          and(
+            eq(job.id, candidate.sourceJobId ?? ''),
+            eq(job.spaceId, spaceId),
+            ownJob(job.principalId, ownerId),
+          ),
+        );
+      if (!writer)
+        throw new ServiceError('evidence_unavailable', 'The procedure evidence is unavailable.');
+      return { candidate, source: null, objective: '' };
+    }
     const [source] = await tx
       .select()
       .from(episode)
@@ -179,6 +217,18 @@ export class ProcedureService {
       .where(eq(job.id, source.jobId));
     const objective = origin && objectiveIsOwnerText(origin, source.actor) ? origin.objective : '';
     return { candidate, source, objective };
+  }
+
+  /**
+   * A procedure learned from a correction, with that correction's episode. A skill
+   * the engine wrote has none, and is managed through its own surface, so here it
+   * reads as absent.
+   */
+  async lockedCorrection(tx: Transaction, ownerId: string, spaceId: string, id: string) {
+    const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
+    if (!source || !candidate.episodeId)
+      throw new ServiceError('not_found', 'Procedure not found.', 404);
+    return { candidate: { ...candidate, episodeId: candidate.episodeId }, source, objective };
   }
 
   async list(ownerId: string, spaceId: string) {
@@ -249,6 +299,7 @@ export class ProcedureService {
     return this.jobs.transaction(async (tx) => {
       const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
       requireNotRemoved(candidate);
+      requireCorrection(candidate);
       verifyDefinition(candidate);
       verifyEvidence(candidate, source, objective);
       if (
@@ -295,7 +346,8 @@ export class ProcedureService {
   ) {
     return this.jobs.transaction(async (tx) => {
       const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
-      if (source.actor !== ownerId)
+      requireCorrection(candidate);
+      if (!source || source.actor !== ownerId)
         throw new ServiceError(
           'trial_denied',
           'Only the owner who made the correction may try what it taught.',
@@ -347,7 +399,12 @@ export class ProcedureService {
   ) {
     const scope = procedurePromotionScope.parse(delivery);
     return this.jobs.transaction(async (tx) => {
-      const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
+      const { candidate, source, objective } = await this.lockedCorrection(
+        tx,
+        ownerId,
+        spaceId,
+        id,
+      );
       const access = await spaceAuthority(tx, spaceId, ownerId, true);
       if (scope === 'space' && access.space.kind !== 'shared')
         throw new ServiceError('scope_denied', 'Space promotion requires a shared space.', 403);

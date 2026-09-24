@@ -18,8 +18,14 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { attempt, job, space } from '../db/schema.ts';
-import type { Intervention, ProcedureScope, ProcedureState, VersionEvidence } from './contracts.ts';
+import { attempt, job, principal, space } from '../db/schema.ts';
+import type {
+  Intervention,
+  ProcedureOrigin,
+  ProcedureScope,
+  ProcedureState,
+  VersionEvidence,
+} from './contracts.ts';
 
 const created = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 export const learningJob = pgTable(
@@ -93,9 +99,22 @@ export const procedureCandidate = pgTable(
     spaceId: text('space_id')
       .notNull()
       .references(() => space.id, { onDelete: 'cascade' }),
-    episodeId: text('episode_id')
-      .notNull()
-      .references(() => episode.id, { onDelete: 'cascade' }),
+    /** Null exactly when the engine wrote this skill: there is no correction behind it. */
+    episodeId: text('episode_id').references(() => episode.id, { onDelete: 'cascade' }),
+    origin: text('origin').$type<ProcedureOrigin>().notNull().default('owner_correction'),
+    /** The job and the attempt whose work wrote an engine skill. */
+    sourceJobId: text('source_job_id').references(() => job.id, { onDelete: 'cascade' }),
+    sourceAttemptId: text('source_attempt_id').references(() => attempt.id, {
+      onDelete: 'cascade',
+    }),
+    /** Which of the attempt's five allowances this skill took; the count lives here. */
+    ordinal: integer('ordinal'),
+    skillName: text('skill_name'),
+    description: text('description'),
+    /** The claim and source versions the writing job read, so forgetting reaches this skill. */
+    inputRefs: jsonb('input_refs').$type<string[]>().notNull().default([]),
+    /** Why the owner has to read this skill before it is delivered; null once live. */
+    holdReason: text('hold_reason'),
     scope: jsonb('scope').$type<ProcedureScope>().notNull(),
     state: text('state').$type<ProcedureState>().notNull().default('candidate'),
     promotion: jsonb('promotion')
@@ -128,11 +147,23 @@ export const procedureCandidate = pgTable(
   (t) => [
     uniqueIndex('procedure_episode_idx').on(t.episodeId),
     index('procedure_scope_idx').on(t.spaceId, t.state),
+    // One decision per skill name per attempt, and five names at most: the
+    // database holds both, so a concurrent intake cannot exceed the allowance.
+    uniqueIndex('procedure_engine_name_idx').on(t.sourceAttemptId, t.skillName),
+    uniqueIndex('procedure_engine_ordinal_idx').on(t.sourceAttemptId, t.ordinal),
     check(
       'procedure_state_check',
       sql`${t.state} in ('candidate','evaluated','enabled_canary','active','superseded','reverted')`,
     ),
     check('procedure_promotion_scope_check', sql`${t.promotion}->>'scope' in ('private', 'space')`),
+    check('procedure_origin_check', sql`${t.origin} in ('owner_correction','engine_staged')`),
+    check(
+      'procedure_engine_shape_check',
+      sql`case when ${t.origin} = 'engine_staged' then ${t.episodeId} is null
+        and ${t.sourceJobId} is not null and ${t.sourceAttemptId} is not null
+        and ${t.skillName} is not null and ${t.ordinal} between 1 and 5
+        else ${t.episodeId} is not null and ${t.sourceAttemptId} is null and ${t.ordinal} is null end`,
+    ),
   ],
 );
 export const procedureTransition = pgTable('procedure_transition', {
@@ -146,6 +177,34 @@ export const procedureTransition = pgTable('procedure_transition', {
   reason: text('reason').notNull(),
   createdAt: created(),
 });
+/**
+ * "Don't do this": a standing prohibition one person placed on an engine skill, by
+ * the skill's name and by the digest of its body. It holds for that person in
+ * every space they belong to, outlives the skill it was placed on, and stands
+ * until they lift it. `space_id` records where it was placed.
+ */
+export const engineSkillProhibition = pgTable(
+  'engine_skill_prohibition',
+  {
+    id: text('id').primaryKey(),
+    spaceId: text('space_id')
+      .notNull()
+      .references(() => space.id, { onDelete: 'cascade' }),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => principal.id, { onDelete: 'cascade' }),
+    skillName: text('skill_name').notNull(),
+    /** Null when the skill's body was already erased before it was stopped. */
+    bodySha256: text('body_sha256'),
+    reason: text('reason').notNull(),
+    sourceCandidateId: text('source_candidate_id').references(() => procedureCandidate.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: created(),
+    liftedAt: timestamp('lifted_at', { withTimezone: true }),
+  },
+  (t) => [index('engine_skill_prohibition_principal_idx').on(t.principalId)],
+);
 export const procedureEvaluation = pgTable(
   'procedure_evaluation',
   {

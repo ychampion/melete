@@ -25,6 +25,9 @@ export const RESERVED_TASK_FAMILIES = [
 /** Delivery authority is separate from the evaluated task applicability above. */
 export const procedurePromotionScope = z.enum(['private', 'space']);
 export type ProcedurePromotionScope = z.infer<typeof procedurePromotionScope>;
+/** Who wrote the definition: the owner's correction, or the engine's own work. */
+export const procedureOrigin = z.enum(['owner_correction', 'engine_staged']);
+export type ProcedureOrigin = z.infer<typeof procedureOrigin>;
 export const procedurePromotion = z.object({
   scope: procedurePromotionScope.default('private'),
   principal_id: prefixedId('own').nullable().default(null),
@@ -33,8 +36,10 @@ export const procedurePromotion = z.object({
    * exact definition by its hash: private to that owner in the origin space, and never
    * enough on its own to share. `owner_confirmed` is that owner answering "yes, keep
    * doing this" after a job used the trial: the same private reach, made lasting.
+   * `engine_live` is a skill the engine wrote for itself, which is bound the same way
+   * as an owner trial and shares its limits.
    */
-  basis: z.enum(['evaluation', 'owner_trial', 'owner_confirmed']).optional(),
+  basis: z.enum(['evaluation', 'owner_trial', 'owner_confirmed', 'engine_live']).optional(),
   definition_hash: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
@@ -236,6 +241,8 @@ export const versionEvidence = z.object({
   model_actual: z.string().nullable(),
   tools: z.array(z.object({ name: z.string(), version: z.string() })),
   skills: z.array(z.object({ name: z.string(), version: z.string() })),
+  /** What the runtime said about the attempt's files; absent when it said nothing. */
+  workspace: z.enum(['job', 'persistent']).optional(),
 });
 export type VersionEvidence = z.infer<typeof versionEvidence>;
 const object = z.record(z.string(), z.unknown());
@@ -265,7 +272,11 @@ export const episodeRecord = z.object({
 export const procedureRecord = z.object({
   id: procedureId,
   spaceId: prefixedId('sp'),
-  episodeId,
+  episodeId: episodeId.nullable(),
+  origin: procedureOrigin.default('owner_correction'),
+  skillName: z.string().nullable().default(null),
+  description: z.string().nullable().default(null),
+  holdReason: z.string().nullable().default(null),
   scope: procedureScope,
   promotion: procedurePromotion.default({ scope: 'private', principal_id: null }),
   state: procedureState,
@@ -301,6 +312,78 @@ export const procedureTrialRequest = learningSpaceRequest.extend({
 export const procedureReasonRequest = learningSpaceRequest.extend({
   reason: z.string().min(1).max(500),
 });
+
+// --------------------------------------------------------------------------
+// Skills the engine writes for itself
+// --------------------------------------------------------------------------
+
+/** Lowercase words joined by single hyphens: what a skill directory may be called. */
+export const engineSkillName = z
+  .string()
+  .min(2)
+  .max(64)
+  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+){0,7}$/);
+export const MAX_ENGINE_SKILL_BODY = 65536;
+/**
+ * Everything the caller may say. The principal, space, job and attempt are read
+ * from the verified attempt capability, never from the request, so this object
+ * carries no identity at all and an extra field is a refusal rather than a hint.
+ */
+export const engineSkillIntakeRequest = z.strictObject({
+  name: engineSkillName,
+  description: z.string().max(400).default(''),
+  body: z.string().min(1).max(MAX_ENGINE_SKILL_BODY),
+});
+export type EngineSkillIntakeRequest = z.infer<typeof engineSkillIntakeRequest>;
+export const engineSkillState = z.enum(['live', 'held', 'rejected']);
+export type EngineSkillState = z.infer<typeof engineSkillState>;
+/** A reason code, never the text it was decided from. */
+export const engineSkillIntakeResponse = z.strictObject({
+  skill_id: procedureId,
+  name: engineSkillName,
+  state: engineSkillState,
+  reason: z.string().max(120).nullable(),
+});
+export type EngineSkillIntakeResponse = z.infer<typeof engineSkillIntakeResponse>;
+/** The owner approves the exact bytes they were shown, as with an owner trial. */
+export const engineSkillApprovalRequest = learningSpaceRequest.extend({
+  definition_hash: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export const engineSkillEditRequest = engineSkillApprovalRequest.extend({
+  body: z.string().min(1).max(MAX_ENGINE_SKILL_BODY),
+});
+export const engineSkillRecord = z.object({
+  id: procedureId,
+  name: z.string(),
+  description: z.string(),
+  body: z.string(),
+  definition_hash: z.string(),
+  state: z.enum(['live', 'held', 'paused', 'rejected', 'reverted']),
+  reason: z.string().nullable(),
+  source_job_id: prefixedId('job').nullable(),
+  created_at: timestamp,
+});
+export const engineSkillListResponse = z.object({ skills: z.array(engineSkillRecord) });
+/**
+ * A standing "don't do this", by name and by body digest, in every space of the
+ * person who placed it, until they lift it. `space_id` is where it was placed.
+ */
+export const engineSkillProhibitionRecord = z.object({
+  id: prefixedId('esp'),
+  space_id: prefixedId('sp'),
+  name: z.string(),
+  body_sha256: z.string().nullable(),
+  reason: z.string(),
+  source_skill_id: procedureId.nullable(),
+  created_at: timestamp,
+});
+export const engineSkillProhibitionListResponse = z.object({
+  prohibitions: z.array(engineSkillProhibitionRecord),
+});
+export const engineSkillProhibitionResponse = z.object({
+  prohibition: engineSkillProhibitionRecord,
+});
+export const engineSkillResponse = z.object({ skill: engineSkillRecord });
 export const episodeListResponse = z.object({ episodes: z.array(episodeRecord) });
 export const interventionResponse = z.object({ episode: episodeRecord });
 export const procedureListResponse = z.object({ procedures: z.array(procedureRecord) });

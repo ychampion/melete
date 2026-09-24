@@ -3,8 +3,10 @@ import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { event, job } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { JobRow } from '../jobs/service.ts';
-import { spaceAuthority } from '../principals/authority.ts';
+import { ownJob, spaceAuthority } from '../principals/authority.ts';
 import type { ProcedureScope } from './contracts.ts';
+import { ENGINE_BASIS, ENGINE_ORIGIN, engineDefinitionIntact } from './engine-scan.ts';
+import { BUILT_IN_SKILL_NAMES, bodyDigest, standingProhibitions } from './engine-skills.ts';
 import { learningTrial } from './evaluation-schema.ts';
 import { isGeneralProcedure, verifyDefinition } from './procedures.ts';
 import { episode, learningJob, procedureCandidate, procedureEvaluation } from './schema.ts';
@@ -14,7 +16,7 @@ import { type ProcedureReach, triggerSpecificity, triggersMatch } from './trigge
 export const MAX_DELIVERED_SKILLS = 3;
 /**
  * What learning never takes: a job whose own words name a catalog skill still gets
- * it, however many procedures were learned for this space.
+ * it, however many procedures were learned or skills the engine wrote for this space.
  */
 export const RESERVED_CATALOG_SLOTS = 1;
 /** How many learned procedures one job may receive. */
@@ -50,27 +52,102 @@ async function latestUserMessage(tx: Transaction, jobId: string) {
  * every delivery. `latestMessage` is optional: a caller that has already read the
  * person's latest message may pass it; otherwise it is read here.
  */
+/** Whose attempt a delivered set of skills belongs to, and where. */
+export type LearnedOwner = { spaceId: string; principalId: string | null };
+
 /**
- * What the delivered procedures cover: their trigger phrases and the objective
- * of the job each was learned on. Nothing when none is delivered.
+ * The engine's own skills that are live for this person in this space, by name.
+ * An engine skill keeps the name the engine gave it, so it is recognised by the
+ * stored row rather than by a prefix.
+ */
+async function liveEngineRows(tx: Transaction, names: readonly string[], owner: LearnedOwner) {
+  if (names.length === 0 || !owner.principalId) return [];
+  return tx
+    .select({
+      name: procedureCandidate.skillName,
+      description: procedureCandidate.description,
+      objective: job.objective,
+    })
+    .from(procedureCandidate)
+    .innerJoin(job, eq(job.id, procedureCandidate.sourceJobId))
+    .where(
+      and(
+        eq(procedureCandidate.spaceId, owner.spaceId),
+        eq(procedureCandidate.origin, ENGINE_ORIGIN),
+        eq(procedureCandidate.state, 'enabled_canary'),
+        eq(procedureCandidate.canarySpaceId, owner.spaceId),
+        isNull(procedureCandidate.rejectionReason),
+        isNull(procedureCandidate.holdReason),
+        isNull(procedureCandidate.pausedAt),
+        inArray(procedureCandidate.skillName, [...names]),
+        ownJob(job.principalId, owner.principalId),
+        sql`${procedureCandidate.promotion}->>'principal_id' = ${owner.principalId}`,
+      ),
+    );
+}
+
+/**
+ * The learned skills in a delivered set: evaluated procedures, named
+ * `procedure:<id>`, and the engine's own live skills. Anything later that
+ * re-selects the catalog keeps these as they were delivered.
+ */
+export async function learnedSkills(
+  tx: Transaction,
+  delivered: AttemptBundle['skills'],
+  owner: LearnedOwner,
+): Promise<AttemptBundle['skills']> {
+  const engine = new Set(
+    (
+      await liveEngineRows(
+        tx,
+        delivered.flatMap((skill) => (skill.name.startsWith('procedure:') ? [] : [skill.name])),
+        owner,
+      )
+    ).map((row) => row.name),
+  );
+  return delivered.filter((skill) => skill.name.startsWith('procedure:') || engine.has(skill.name));
+}
+
+/**
+ * What the delivered learned skills cover, so a built-in doing the same work is
+ * left out beside them. For an evaluated procedure: its trigger phrases and the
+ * objective of the job it was learned on. For an engine skill, which has no
+ * trigger phrases: its name read as words, its description, and the objective of
+ * the job that wrote it. Nothing when no learned skill is delivered.
  */
 export async function procedureReach(
   tx: Transaction,
   delivered: AttemptBundle['skills'],
+  owner?: LearnedOwner,
 ): Promise<ProcedureReach | undefined> {
   const ids = delivered.flatMap((skill) =>
     skill.name.startsWith('procedure:') ? [skill.name.slice('procedure:'.length)] : [],
   );
-  if (ids.length === 0) return undefined;
-  const rows = await tx
-    .select({ triggers: procedureCandidate.triggers, objective: job.objective })
-    .from(procedureCandidate)
-    .innerJoin(episode, eq(episode.id, procedureCandidate.episodeId))
-    .innerJoin(job, eq(job.id, episode.jobId))
-    .where(inArray(procedureCandidate.id, ids));
+  const engine = owner
+    ? await liveEngineRows(
+        tx,
+        delivered.flatMap((skill) => (skill.name.startsWith('procedure:') ? [] : [skill.name])),
+        owner,
+      )
+    : [];
+  if (ids.length === 0 && engine.length === 0) return undefined;
+  const rows = ids.length
+    ? await tx
+        .select({ triggers: procedureCandidate.triggers, objective: job.objective })
+        .from(procedureCandidate)
+        .innerJoin(episode, eq(episode.id, procedureCandidate.episodeId))
+        .innerJoin(job, eq(job.id, episode.jobId))
+        .where(inArray(procedureCandidate.id, ids))
+    : [];
   return {
-    phrases: rows.flatMap((row) => row.triggers.map((trigger) => trigger.phrase)),
-    learnedFrom: rows.map((row) => row.objective),
+    phrases: [
+      ...rows.flatMap((row) => row.triggers.map((trigger) => trigger.phrase)),
+      ...engine.flatMap((row) => [
+        (row.name ?? '').replaceAll('-', ' '),
+        ...(row.description ? [row.description] : []),
+      ]),
+    ],
+    learnedFrom: [...rows.map((row) => row.objective), ...engine.map((row) => row.objective)],
   };
 }
 
@@ -159,6 +236,7 @@ export async function selectProcedureSkills(
     .where(
       and(
         eq(procedureCandidate.spaceId, row.spaceId),
+        eq(procedureCandidate.origin, 'owner_correction'),
         inArray(procedureCandidate.state, ['enabled_canary', 'active']),
         isNull(procedureCandidate.rejectionReason),
         // Paused or removed by the person: kept for resume or undo, never delivered.
@@ -225,10 +303,80 @@ export async function selectProcedureSkills(
       continue;
     deliver(candidate, promotion.data.scope === 'space');
   }
-  // The most specific matches first, at most three; the bundle's own skill cap still applies.
-  return deliverable
+  // The most specific matches first; the bundle's own skill cap still applies.
+  const taught = deliverable
     .map((entry, order) => ({ ...entry, order }))
     .sort((left, right) => right.specificity - left.specificity || left.order - right.order)
     .slice(0, MAX_DELIVERED_PROCEDURES)
     .map((entry) => entry.skill);
+  // A skill the engine wrote for itself is delivered beside the taught procedures,
+  // never instead of one, and never in the slot kept for the catalog skills the
+  // job's own words select.
+  const written = await liveEngineSkills(
+    tx,
+    row,
+    access.principalId,
+    MAX_DELIVERED_SKILLS - taught.length - RESERVED_CATALOG_SLOTS,
+  );
+  return [...taught, ...written];
+}
+
+/**
+ * Skills the engine wrote for itself: live, not paused, approved for these exact
+ * bytes, written by a job of this same principal, and delivered only in the space
+ * they came from. The stored definition is re-verified here, so a body edited in
+ * storage is not delivered even though the row still says it is live.
+ */
+async function liveEngineSkills(
+  tx: Transaction,
+  row: JobRow,
+  principalId: string | null,
+  limit: number,
+): Promise<AttemptBundle['skills']> {
+  if (!principalId || limit <= 0) return [];
+  const rows = await tx
+    .select({ candidate: procedureCandidate })
+    .from(procedureCandidate)
+    .innerJoin(job, eq(job.id, procedureCandidate.sourceJobId))
+    .where(
+      and(
+        eq(procedureCandidate.spaceId, row.spaceId),
+        eq(procedureCandidate.origin, ENGINE_ORIGIN),
+        eq(procedureCandidate.state, 'enabled_canary'),
+        eq(procedureCandidate.canarySpaceId, row.spaceId),
+        isNull(procedureCandidate.rejectionReason),
+        isNull(procedureCandidate.holdReason),
+        isNull(procedureCandidate.pausedAt),
+        ownJob(job.principalId, principalId),
+        sql`${procedureCandidate.promotion}->>'basis' = ${ENGINE_BASIS}`,
+        sql`${procedureCandidate.promotion}->>'scope' = 'private'`,
+        sql`${procedureCandidate.promotion}->>'principal_id' = ${principalId}`,
+      ),
+    )
+    // Newest first: when not everything fits, the skills the engine wrote most
+    // recently are the ones it is working from. Read past the limit, because the
+    // checks below can pass over some.
+    .orderBy(desc(procedureCandidate.createdAt))
+    .limit(50);
+  // What this person said not to do stays undone, in any of their spaces, under the
+  // name they stopped or with the same bytes under another name.
+  const prohibited = await standingProhibitions(tx, principalId);
+  const delivered: AttemptBundle['skills'] = [];
+  for (const { candidate } of rows) {
+    const promotion = procedurePromotion.safeParse(candidate.promotion);
+    if (!promotion.success || promotion.data.definition_hash !== candidate.bodyHash) continue;
+    if (!candidate.skillName || !engineDefinitionIntact(candidate)) continue;
+    // A skill that took a built-in's name before intake refused such names is not
+    // delivered: its name would give it reach over the very built-in it copies,
+    // and that built-in would be left out in its favour.
+    if (BUILT_IN_SKILL_NAMES.has(candidate.skillName)) continue;
+    if (
+      prohibited.names.has(candidate.skillName) ||
+      prohibited.digests.has(bodyDigest(candidate.body))
+    )
+      continue;
+    delivered.push({ name: candidate.skillName, body: candidate.body });
+    if (delivered.length >= limit) break;
+  }
+  return delivered;
 }

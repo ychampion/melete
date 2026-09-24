@@ -101,6 +101,7 @@ describe('scripted stub runtime', () => {
       tools: true,
       interrupt: true,
       version: 'stub/1',
+      workspace: 'job',
     });
   });
 

@@ -7,7 +7,7 @@ import type { Database } from '../db/client.ts';
 import { connection } from '../db/schema.ts';
 import type { Transaction } from '../db/transaction.ts';
 import type { RunnerOptions } from '../jobs/runner.ts';
-import { procedureReach } from '../learning/selection.ts';
+import { learnedSkills, procedureReach } from '../learning/selection.ts';
 import { skillPayloadOf, usableSkills } from '../principals/context.ts';
 
 /**
@@ -49,10 +49,15 @@ export class RuntimeCatalog {
     const reachable = reachableToolNames(granted, claims.scopes);
     // The same selection bundle construction made, with its audience rules, now
     // over only the skills this attempt can use: one it cannot would otherwise
-    // take a place and then be dropped. Evaluated procedures keep their place.
+    // take a place and then be dropped. Learned skills keep their place: the
+    // evaluated procedures and the engine's own live skills. Only a correction
+    // procedure's own trigger words leave a built-in out beside it.
     const objective = bundle.job.objective;
     const latest = bundle.inputs.new_user_messages.at(-1)?.content ?? '';
-    const procedures = bundle.skills.filter((skill) => skill.name.startsWith('procedure:'));
+    const procedures = await learnedSkills(tx, bundle.skills, {
+      spaceId: claims.space_id,
+      principalId: bundle.principal_id ?? null,
+    });
     const usable = await usableSkills(
       tx,
       claims.space_id,

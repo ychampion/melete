@@ -238,7 +238,7 @@ export class AttemptRunner {
         leaseExpiresAt: new Date((await databaseNow(tx)).getTime() + this.leaseMs),
         inputCursor: Number(latest?.seq ?? 0),
       });
-      await captureAttemptVersions(tx, bundle, capabilities.version);
+      await captureAttemptVersions(tx, bundle, capabilities.version, capabilities.workspace);
       // The attempt is told its wait was cancelled; this row is what lets its
       // outcome restore that wait, once, if it finishes without choosing another.
       if (bundle.inputs.cancelled_wait)

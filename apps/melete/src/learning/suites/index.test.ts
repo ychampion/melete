@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { taskObjective } from '../../../../../conformance/learning/records.ts';
+import { caseInput } from '../case-input.ts';
 import {
   assertSuiteModules,
   DEFAULT_SUITES,
@@ -8,6 +10,7 @@ import {
   suiteModules,
 } from './index.ts';
 import { EVALUATED_SCOPE } from './records.ts';
+import { gradeFinished } from './types.ts';
 
 describe('the evaluation suite registry', () => {
   test('the suite hash covers every module the registry supplies', async () => {
@@ -64,5 +67,72 @@ describe('the evaluation suite registry', () => {
     expect(
       resolveSuite({ ...EVALUATED_SCOPE, task_family: 'no-such-family' }, [records]),
     ).toBeNull();
+  });
+});
+
+describe('evaluation cases from the owner history', () => {
+  test("a record-order check with row preservation runs against a history case's own rows", () => {
+    const task = {
+      columns: ['id', 'due'],
+      rows: [
+        {
+          id: 'a',
+          due: '2027-03-20',
+        },
+        {
+          id: 'b',
+          due: '2027-01-03',
+        },
+        {
+          id: 'c',
+          due: '2027-02-11',
+        },
+      ],
+      key: 'due',
+      type: 'date',
+      direction: 'ascending',
+      dateFormat: 'iso',
+    } as const;
+    const objective = taskObjective({ ...task, columns: [...task.columns], rows: [...task.rows] });
+    const input = caseInput(objective);
+    expect(input).toEqual({ columns: [...task.columns], rows: [...task.rows] });
+    const check = {
+      kind: 'records_sorted' as const,
+      key: 'due',
+      type: 'date' as const,
+      direction: 'ascending' as const,
+      preserve_rows: true,
+    };
+    const value = {
+      template: 'history',
+      objective,
+      origin: 'history' as const,
+      ...(input ? { input } : {}),
+    };
+    const sorted = JSON.stringify({
+      columns: [...task.columns],
+      rows: [task.rows[1], task.rows[2], task.rows[0]],
+    });
+    expect(
+      gradeFinished([check], value, { output: sorted, actions: [], state: 'completed' }),
+    ).toMatchObject({ score: 1 });
+    // The rows have to be the case's own rows: dropping one fails, and so does a
+    // case whose objective is not a table, which carries no rows to compare.
+    const dropped = JSON.stringify({
+      columns: [...task.columns],
+      rows: [task.rows[1], task.rows[2]],
+    });
+    expect(
+      gradeFinished([check], value, { output: dropped, actions: [], state: 'completed' }),
+    ).toMatchObject({ score: 0 });
+    expect(caseInput('Summarise the weekly status report')).toBeUndefined();
+    const prose = {
+      template: 'prose',
+      objective: 'Summarise the weekly status report',
+      origin: 'history' as const,
+    };
+    expect(
+      gradeFinished([check], prose, { output: sorted, actions: [], state: 'completed' }),
+    ).toMatchObject({ score: 0 });
   });
 });

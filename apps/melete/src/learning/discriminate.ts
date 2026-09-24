@@ -13,6 +13,7 @@
  * and stores the result on the candidate.
  */
 import type { ProcedureCheck, ProcedureDiscrimination } from '@melete/contracts';
+import type { CaseInput } from './case-input.ts';
 import { type ActionFact, type CheckReport, runChecks } from './checks.ts';
 
 /** Plausible in shape and empty of content: what a lazy answer to anything looks like. */
@@ -23,6 +24,8 @@ export type DiscriminationInput = {
   corrected: string | null;
   priorActions?: readonly ActionFact[];
   correctedActions?: readonly ActionFact[];
+  /** The rows the request carried, when it carried any: part of the request, not of an answer. */
+  input?: CaseInput;
 };
 
 const failed = (report: CheckReport) => report.corrections;
@@ -31,8 +34,11 @@ export function discriminate(
   checks: readonly ProcedureCheck[],
   input: DiscriminationInput,
 ): ProcedureDiscrimination {
-  const empty = failed(runChecks(checks, { output: '' }));
-  const junk = failed(runChecks(checks, { output: JUNK_OUTPUT }));
+  // Every arm answers the same request, so all four answers are graded against
+  // whatever that request carried with it.
+  const carried = input.input ? { input: input.input } : {};
+  const empty = failed(runChecks(checks, { output: '', ...carried }));
+  const junk = failed(runChecks(checks, { output: JUNK_OUTPUT, ...carried }));
   const record = (
     status: ProcedureDiscrimination['status'],
     detail: string,
@@ -50,9 +56,11 @@ export function discriminate(
   if (!checks.length) return record('none', 'no_checks', null, null);
   if (input.prior === null) return record('failed', 'prior_output_unavailable', null, null);
   if (input.corrected === null) return record('failed', 'corrected_output_unavailable', null, null);
-  const prior = failed(runChecks(checks, { output: input.prior, actions: input.priorActions }));
+  const prior = failed(
+    runChecks(checks, { output: input.prior, actions: input.priorActions, ...carried }),
+  );
   const corrected = failed(
-    runChecks(checks, { output: input.corrected, actions: input.correctedActions }),
+    runChecks(checks, { output: input.corrected, actions: input.correctedActions, ...carried }),
   );
   if (prior === 0) return record('failed', 'prior_output_passes', prior, corrected);
   if (corrected > 0) return record('failed', 'corrected_output_fails', prior, corrected);

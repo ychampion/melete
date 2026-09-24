@@ -5,6 +5,7 @@ import {
   AUTHORITY_MESSAGE,
   AUTHORITY_TERMS,
   admitProposal,
+  boundedLength,
   CONTENT_WORD_LENGTH,
   compileStoredProcedure,
   PROCEDURE_PREAMBLE,
@@ -14,6 +15,7 @@ import {
   verbatimStep,
   verifyStoredEvidence,
 } from './admit.ts';
+import { discriminate } from './discriminate.ts';
 
 type Source = 'intervention' | 'objective';
 const span = (source: Source, text: string, quote: string) => {
@@ -972,6 +974,62 @@ describe('recompiling a stored step', () => {
     expect(reasonOf(() => compileStoredProcedure(tampered, admitted.triggers))).toBe(
       'step_not_supported_by_quote',
     );
+  });
+});
+
+describe('length checks', () => {
+  test('a length check with only a maximum is admitted with a floor and discriminates', () => {
+    const intervention = 'Far too long. Keep the summary under 40 words.';
+    const objective = 'Summarise the weekly status report';
+    const admitted = admitProposal(
+      {
+        target: 'skill_body',
+        steps: [
+          {
+            text: 'Keep the summary under 40 words.',
+            evidence: span('intervention', intervention, 'Keep the summary under 40 words'),
+          },
+        ],
+        triggers: [
+          { phrase: 'status report', evidence: span('objective', objective, 'status report') },
+        ],
+        checks: [
+          { kind: 'word_count', max: 40 },
+          { kind: 'required_phrase', phrase: 'status report' },
+        ],
+        variant_objectives: [],
+      },
+      { sources: sourcesOf(intervention, objective), objective },
+    );
+    // Trusted code adds the floor the model left out; a minimum-only check is left alone.
+    expect(admitted.checks).toEqual([
+      { kind: 'word_count', min: 1, max: 40 },
+      { kind: 'required_phrase', phrase: 'status report' },
+    ]);
+    expect(boundedLength({ kind: 'line_count', min: 3 })).toEqual({ kind: 'line_count', min: 3 });
+    expect(boundedLength({ kind: 'required_phrase', phrase: 'invoice' })).toEqual({
+      kind: 'required_phrase',
+      phrase: 'invoice',
+    });
+    const outputs = {
+      prior: `The status report is long. ${'word '.repeat(80)}`,
+      corrected: `The status report in brief. ${'word '.repeat(20)}`,
+    };
+    expect(discriminate(admitted.checks, outputs)).toMatchObject({
+      status: 'passed',
+      detail: 'discriminates',
+    });
+    // Without the floor a length bound passes an empty answer, and the gate refuses it.
+    expect(discriminate([{ kind: 'word_count', max: 40 }], outputs)).toMatchObject({
+      status: 'failed',
+      detail: 'empty_output_passes',
+    });
+    // The floor governs the empty answer only: a length bound alone still cannot
+    // tell a plausible content-free answer from a real one.
+    expect(discriminate([{ kind: 'word_count', min: 1, max: 40 }], outputs)).toMatchObject({
+      status: 'failed',
+      detail: 'junk_output_passes',
+    });
   });
 });
 

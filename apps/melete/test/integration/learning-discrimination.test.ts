@@ -127,6 +127,9 @@ async function storedCandidate(
   return saved;
 }
 
+/** The episode a correction taught; only engine-written skills have none. */
+const learnedFrom = (candidate: { episodeId: string | null }) => candidate.episodeId ?? '';
+
 const verdict = (
   status: ProcedureDiscrimination['status'],
   detail: string,
@@ -204,7 +207,7 @@ const verdict = (
     await fixture.handle.db
       .update(episode)
       .set({ correctedOutput: 'Thank you for the interview. I can share references.' })
-      .where(eq(episode.id, honest.episodeId));
+      .where(eq(episode.id, learnedFrom(honest)));
     await rejectsWith(
       () => evaluator.evaluate(fixture.ownerId, fixture.spaceId, honest.id),
       'discrimination_changed',
@@ -250,12 +253,12 @@ const verdict = (
     const [source] = await fixture.handle.db
       .select()
       .from(episode)
-      .where(eq(episode.id, moved.episodeId));
+      .where(eq(episode.id, learnedFrom(moved)));
     if (!source?.intervention) throw new Error('No intervention');
     await fixture.handle.db
       .update(episode)
       .set({ intervention: { ...source.intervention, text: `Now: ${source.intervention.text}` } })
-      .where(eq(episode.id, moved.episodeId));
+      .where(eq(episode.id, learnedFrom(moved)));
     await rejectsWith(
       () => procedures.enableCanary(fixture.ownerId, fixture.spaceId, moved.id),
       'evidence_changed',
@@ -273,7 +276,7 @@ const verdict = (
     const [origin] = await fixture.handle.db
       .select()
       .from(episode)
-      .where(eq(episode.id, automated.episodeId));
+      .where(eq(episode.id, learnedFrom(automated)));
     if (!origin) throw new Error('No source episode');
     await fixture.handle.db
       .update(job)

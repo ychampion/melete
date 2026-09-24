@@ -75,6 +75,7 @@ import { RuntimeCatalog } from './knowledge/catalog.ts';
 import { type KnowledgeDeps, knowledgeRoutes } from './knowledge/routes.ts';
 import { databaseSpaces, filesystemSpaces } from './knowledge/spaces.ts';
 import { attachConversationCorrections } from './learning/conversation.ts';
+import { EngineSkillService } from './learning/engine-skills.ts';
 import { EpisodeService } from './learning/episodes.ts';
 import { ProcedureEvaluator } from './learning/evaluator.ts';
 import { LearnedService } from './learning/learned.ts';
@@ -220,7 +221,7 @@ export function createApp(deps: AppDeps) {
     const procedures = new ProcedureService(deps.jobs);
     mountLearning(app, episodes);
     if (deps.proposer) mountProposals(app, deps.proposer);
-    mountProcedures(app, procedures, deps.evaluator);
+    mountProcedures(app, procedures, deps.evaluator, new EngineSkillService(deps.jobs));
     mountLearned(app, new LearnedService(deps.jobs, procedures, episodes));
   } else if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);

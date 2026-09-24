@@ -276,7 +276,7 @@ const questionsFor = async (candidateId: string) => {
     const [source] = await fixture.handle.db
       .select()
       .from(episode)
-      .where(eq(episode.id, candidate.episodeId));
+      .where(eq(episode.id, candidate.episodeId ?? ''));
     expect(source).toMatchObject({
       priorOutput: null,
       correctedOutput: null,
@@ -306,7 +306,7 @@ const questionsFor = async (candidateId: string) => {
     await fixture.handle.db
       .update(episode)
       .set({ expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) })
-      .where(eq(episode.id, waiting.episodeId));
+      .where(eq(episode.id, waiting.episodeId ?? ''));
     const before = await call('GET', `/learned?space_id=${spaceId}`);
     const byId = Object.fromEntries((before.body.items ?? []).map((item) => [item.id, item]));
     expect(byId[kept.id]).toMatchObject({
@@ -346,7 +346,7 @@ const questionsFor = async (candidateId: string) => {
     const [original] = await fixture.handle.db
       .select({ expiresAt: episode.expiresAt })
       .from(episode)
-      .where(eq(episode.id, candidate.episodeId));
+      .where(eq(episode.id, candidate.episodeId ?? ''));
     await usedIt(spaceId);
     const [question] = await questionsFor(candidate.id);
     const call = app(fixture.ownerId);
@@ -364,7 +364,7 @@ const questionsFor = async (candidateId: string) => {
     const [restored] = await fixture.handle.db
       .select({ expiresAt: episode.expiresAt })
       .from(episode)
-      .where(eq(episode.id, candidate.episodeId));
+      .where(eq(episode.id, candidate.episodeId ?? ''));
     expect(restored?.expiresAt.toISOString()).toBe(original?.expiresAt.toISOString());
   }, 180000);
 
@@ -791,7 +791,7 @@ async function keptWithYes(spaceId: string, candidateId: string) {
     const [source] = await fixture.handle.db
       .select()
       .from(episode)
-      .where(eq(episode.id, candidate.episodeId));
+      .where(eq(episode.id, candidate.episodeId ?? ''));
     expect(source).toMatchObject({
       priorOutput: null,
       correctedOutput: null,

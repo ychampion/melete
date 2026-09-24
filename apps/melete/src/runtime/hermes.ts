@@ -40,7 +40,14 @@ export class SupervisedHermesRuntime implements RuntimeAdapter {
   async capabilities() {
     // No attempt identity exists at lease reservation time. Validate the live
     // server's capabilities again after launch, before sending it the bundle.
-    return { streaming: true, tools: true, interrupt: true, version: RUNTIME_VERSION };
+    // The engine runs in the job's own directory with a temporary home removed afterwards.
+    return {
+      streaming: true,
+      tools: true,
+      interrupt: true,
+      version: RUNTIME_VERSION,
+      workspace: 'job' as const,
+    };
   }
   async start(
     bundle: AttemptBundle,
