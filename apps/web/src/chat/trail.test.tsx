@@ -79,3 +79,14 @@ test('a chase that keeps going after the send keeps its trail open', () => {
   expect(html).toContain('aria-expanded="true"');
   expect(html).toContain('Read their reply');
 });
+
+test('nothing is under way once the turn stops running, even if its last entry never closed', () => {
+  let transcript = fromTurns([TURN], 'pause', 'working');
+  transcript = applyEvent(transcript, tool('running', 'Reading their reply'));
+  expect(transcript.turns[0]?.live?.title).toBe('Reading their reply');
+  transcript = applyEvent(
+    transcript,
+    event({ type: 'status', status: 'failed', composer: 'send' }),
+  );
+  expect(transcript.turns[0]?.live).toBeNull();
+});

@@ -256,6 +256,9 @@ export function applyEvent(transcript: Transcript, event: ExperienceEvent): Tran
   return applyItem(waited, event);
 }
 
+/** The turn statuses in which a tool entry can still be under way. */
+const UNDER_WAY = new Set<TurnStatus>(['queued', 'working', 'streaming', 'paused']);
+
 function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
   const item = event.item;
   switch (item.type) {
@@ -313,6 +316,8 @@ function applyItem(base: Transcript, event: ExperienceEvent): Transcript {
         ...turn,
         status: item.status,
         streaming: item.status === 'streaming' ? turn.streaming : false,
+        // Nothing is under way once the turn stops running, whatever the last entry said.
+        live: UNDER_WAY.has(item.status) ? turn.live : null,
         turn: { ...turn.turn, status: item.status },
       }));
     }
