@@ -1,4 +1,9 @@
-import { experienceOperations, experienceResult, unavailable } from '@melete/contracts';
+import {
+  type ExperienceDraft,
+  experienceOperations,
+  experienceResult,
+  unavailable,
+} from '@melete/contracts';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Context, Hono } from 'hono';
 import type { Sql } from 'postgres';
@@ -197,12 +202,29 @@ export function mountExperience(app: Hono, deps: ExperienceDeps): ExperienceServ
         .select()
         .from(artifact)
         .where(and(eq(artifact.spaceId, spaceId), eq(artifact.jobId, id)));
-      return {
-        cards: [
-          ...rows.flatMap(({ action, connection }) => projectCards(action, connection)),
-          ...artifacts.map(projectArtifact),
-        ],
-      };
+      // A draft card offers sending only while its draft can still be sent.
+      const cards = [];
+      for (const { action, connection } of rows) {
+        let status: ExperienceDraft['status'] | undefined;
+        if (action.kind === 'email.draft' && action.status === 'succeeded') {
+          if (ownerEffects) {
+            const draft = await ownerEffects.draft(spaceId, action.id);
+            status = 'reason' in draft ? undefined : draft.status;
+          } else {
+            const [send] = await deps.db
+              .select()
+              .from(experienceDraftSend)
+              .where(eq(experienceDraftSend.draftActionId, action.id));
+            status = send?.discardedAt
+              ? 'discarded'
+              : send?.sendActionId
+                ? 'awaiting_permission'
+                : 'draft';
+          }
+        }
+        cards.push(...projectCards(action, connection, status));
+      }
+      return { cards: [...cards, ...artifacts.map(projectArtifact)] };
     },
     'GET /conversations/{id}/receipts': async (spaceId, c) => {
       const receipts = [];

@@ -1,5 +1,6 @@
 import {
   type ExperienceDecision,
+  type ExperienceDraft,
   type ExperienceSource,
   experienceDecision,
   experienceDraft,
@@ -247,7 +248,25 @@ export function projectReceipt(
   });
 }
 
-export function projectCards(row: ActionRow, connection: ConnectionRow): ResultCard[] {
+/**
+ * A prepared draft the person can still send carries the send action, keyed by
+ * the draft's id, which is what the send route takes. One already sent, waiting
+ * on a decision, discarded, or unreadable in full has none.
+ */
+function sendAction(row: ActionRow, draft: ExperienceDraft['status'] | undefined) {
+  if (row.kind !== 'email.draft' || row.status !== 'succeeded') return null;
+  if (draft !== 'draft' && draft !== 'denied') return null;
+  if (!draftForReview(row)) return null;
+  return { kind: 'send' as const, label: 'Review and send', handle: row.id };
+}
+
+/** `draft` is the draft's status when the action prepared one; a fresh draft is `draft`. */
+export function projectCards(
+  row: ActionRow,
+  connection: ConnectionRow,
+  draft?: ExperienceDraft['status'],
+): ResultCard[] {
+  const send = sendAction(row, draft);
   const sources = actionSources(row, connection);
   const payload = object(row.canonicalPayload);
   const detail = object(object(row.receipt).detail);
@@ -271,7 +290,9 @@ export function projectCards(row: ActionRow, connection: ConnectionRow): ResultC
       facts,
       primary_action: source.url
         ? { kind: 'open', label: 'Open', handle: `${row.id}:${index}`, url: source.url }
-        : null,
+        : source.kind === 'draft'
+          ? send
+          : null,
       secondary_actions: [],
       source_connection: connection.id,
     });
