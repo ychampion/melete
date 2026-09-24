@@ -107,7 +107,7 @@ export function handbackUrl(value: string): string {
   const path = url.pathname
     .split('/')
     .map((raw) => {
-      // Matrix parameters (`;jsessionid=…`) go the way of the query string.
+      // Matrix parameters (`;jsessionid=â€¦`) go the way of the query string.
       const segment = raw.split(';')[0] ?? '';
       let decoded: string;
       try {
