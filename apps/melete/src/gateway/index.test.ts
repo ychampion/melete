@@ -180,7 +180,7 @@ describe('model gateway effect boundary', () => {
         { role: 'tool', tool_call_id: 'call_scripted_1', content: '{"receipt":"recorded"}' },
       ],
     });
-    expect(await next.text()).toContain('recorded receipt');
+    expect(await next.text()).toContain('walkthrough answer');
     expect(budget.reservations).toHaveLength(2);
     expect(budget.settlements).toHaveLength(2);
     expect(budget.settlements[0]).toMatchObject({

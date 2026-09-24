@@ -14,7 +14,7 @@ export const fakeProvider: GatewayProvider = {
 
 const defaultScript: FakeTurn[] = [
   { tool: { name: 'test.send', arguments: { message: 'scripted hello' }, id: 'call_scripted_1' } },
-  { text: 'The scripted action has a recorded receipt.' },
+  { text: 'This is a walkthrough answer from the scripted model.' },
 ];
 
 /** Each attempt owns a script cursor; no provider call or API key is involved. */
