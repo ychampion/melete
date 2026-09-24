@@ -40,7 +40,8 @@ export async function requeueSpaceRemoval(
       ${parent.kind === 'personal' ? 'emptied' : 'removed'}, ${record.requested_by ?? record.owner_id},
       'pending', 'fence', ${epoch}
     where not exists (
-      select 1 from space_removal where space_id = ${record.space_id} and state <> 'complete')
+      select 1 from space_removal where space_id = ${record.space_id}
+        and state not in ('complete', 'cleaning'))
     returning id`;
   return queued?.id ?? null;
 }

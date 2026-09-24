@@ -10564,7 +10564,7 @@ export interface components {
         /** @enum {string} */
         __schema133: "removed" | "emptied";
         /** @enum {string} */
-        __schema134: "pending" | "running" | "blocked" | "complete";
+        __schema134: "pending" | "running" | "blocked" | "cleaning" | "complete";
         /** @enum {string} */
         __schema135: "fence" | "sessions" | "journal" | "sandboxes" | "browser" | "runtime" | "files" | "operational" | "principals" | "memory" | "verify" | "space";
         __schema136: {

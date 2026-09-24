@@ -209,6 +209,10 @@ const MEMORY_TABLES = [
  *
  * Each path is resolved before it is removed and asserted to sit under its own
  * root, so a catalog row that names somewhere else removes nothing.
+ *
+ * A job workspace still held open after its retries does not stop the rest:
+ * it is returned, the space directory still goes, and the verification counts
+ * what is left. A held space directory does stop the phase.
  */
 export async function clearSpaceFiles(
   roots: SpaceRoots,
@@ -216,10 +220,29 @@ export async function clearSpaceFiles(
   jobIds: readonly string[],
   emptied: boolean,
   beforeRetry?: () => Promise<void>,
-): Promise<void> {
-  for (const id of jobIds) await removeConfined(roots.workRoot, id, beforeRetry);
+): Promise<string[]> {
+  const held = await clearJobWorkspaces(roots.workRoot, jobIds, beforeRetry);
   await removeConfined(roots.spacesRoot, spaceId, beforeRetry);
   if (emptied) await initSpace(resolve(roots.spacesRoot), spaceId);
+  return held;
+}
+
+/** Each job's workspace, and the ones still held open once their retries are spent. */
+export async function clearJobWorkspaces(
+  workRoot: string,
+  jobIds: readonly string[],
+  beforeRetry?: () => Promise<void>,
+): Promise<string[]> {
+  const held: string[] = [];
+  for (const id of jobIds) {
+    try {
+      await removeConfined(workRoot, id, beforeRetry);
+    } catch (error) {
+      if (!(error instanceof PathHeld)) throw error;
+      held.push(error.path);
+    }
+  }
+  return held;
 }
 
 export class PathHeld extends Error {
@@ -274,9 +297,11 @@ export async function removeConfined(
       return;
     } catch (error) {
       failure = error;
-      // On Windows the usual cause is a worker that still holds the directory
-      // open, so the phase that stops it is run again before the next try.
+      // On Windows the usual cause is a process that still holds the directory
+      // open, so whatever stops it runs again before the next try, after a
+      // pause that grows with each one.
       await beforeRetry?.();
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
     }
   }
   throw new PathHeld(target, failure);

@@ -42,7 +42,12 @@ export const REMOVAL_PHASES = [
 export const removalPhase = z.enum(REMOVAL_PHASES);
 export type RemovalPhase = z.infer<typeof removalPhase>;
 
-export const REMOVAL_STATES = ['pending', 'running', 'blocked', 'complete'] as const;
+/**
+ * `cleaning` is an emptied space that is open again: everything in it has
+ * gone, and files that stopped work still held are being removed in the
+ * background, named in `counts.paths`, until the removal is `complete`.
+ */
+export const REMOVAL_STATES = ['pending', 'running', 'blocked', 'cleaning', 'complete'] as const;
 export const spaceRemovalState = z.enum(REMOVAL_STATES);
 export type SpaceRemovalState = z.infer<typeof spaceRemovalState>;
 

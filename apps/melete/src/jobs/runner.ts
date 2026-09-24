@@ -97,6 +97,8 @@ export class AttemptRunner {
     string,
     { jobId: string; attemptId: string; controller: AbortController; done: Promise<void> }
   >();
+  /** Runtime calls that have not returned yet, by attempt. */
+  private readonly running = new Map<string, { jobId: string; returned: Promise<void> }>();
   private workerStarted = false;
   private stopping = false;
   scheduler = new FairScheduler(2);
@@ -1010,6 +1012,25 @@ export class AttemptRunner {
         active.controller.abort(new Error('Attempt interrupted'));
   }
 
+  /**
+   * Stop these jobs' attempts and wait until the runtime has returned from
+   * them, so a workspace they held open can be removed. Bounded: a runtime that
+   * does not return in time is left to its own teardown, and whoever asked
+   * finds the workspace still held.
+   */
+  async stopJobs(jobIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+    const ids = new Set(jobIds);
+    for (const id of ids) this.interrupt(id);
+    const held = [...this.running.values()].filter((entry) => ids.has(entry.jobId));
+    if (!held.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    });
+    await Promise.race([Promise.all(held.map((entry) => entry.returned)), late]);
+    clearTimeout(timer);
+  }
+
   async invalidateContext(control: ContextInvalidated): Promise<void> {
     const active = this.active.get(control.attempt_id);
     if (active?.jobId === control.job_id) active.controller.abort(control);
@@ -1078,15 +1099,20 @@ export class AttemptRunner {
           });
         }, bundle.budget.max_wall_ms);
       });
-      const result = await Promise.race([
-        this.runtime.start(
-          bundle,
-          { emit: (event) => this.emit(claims, event) },
-          controller.signal,
-        ),
-        wallLimit,
-        interrupted,
-      ]);
+      const call = this.runtime.start(
+        bundle,
+        { emit: (event) => this.emit(claims, event) },
+        controller.signal,
+      );
+      // The attempt ends when the race does; the runtime may still be tearing
+      // down, holding the job's workspace open, until the call itself returns.
+      const returned = call.then(
+        () => undefined,
+        () => undefined,
+      );
+      this.running.set(claims.attempt_id, { jobId: claims.job_id, returned });
+      void returned.finally(() => this.running.delete(claims.attempt_id));
+      const result = await Promise.race([call, wallLimit, interrupted]);
       await this.commitOutcome(claims, result);
     } catch (error) {
       if (error instanceof AttemptBudgetExceeded) {
