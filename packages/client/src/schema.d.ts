@@ -11285,7 +11285,7 @@ export interface components {
             }[];
         };
         __schema129: {
-            actions: ("try" | "pause" | "resume" | "remove" | "share")[];
+            actions: ("try" | "pause" | "resume" | "remove" | "share" | "approve" | "edit" | "stop")[];
             applies_when: string[];
             definition_hash: string;
             does: string[];
@@ -11303,7 +11303,7 @@ export interface components {
             state: "proposed" | "trial" | "active" | "paused" | "reverted";
         };
         /** @enum {string} */
-        __schema130: "correction";
+        __schema130: "correction" | "engine";
         __schema131: {
             /** @enum {string} */
             action: "pause" | "resume" | "remove" | "keep" | "decline";

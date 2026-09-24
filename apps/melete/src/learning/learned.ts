@@ -3,10 +3,9 @@
  * can do about it: try it, pause it, resume it, remove it, and undo the last of
  * those. Also their answers to "keep doing this?".
  *
- * The list is assembled from sources. Corrections are the one source today; a
- * second (skills the engine writes for itself) joins by implementing
- * `LearnedSourceProvider` and registering, without changing the list, the change
- * log or undo. Every change a person makes is logged with the fields it changed
+ * The list is assembled from sources: corrections, and the skills the engine
+ * writes for itself (`learned-engine.ts`). Each implements `LearnedSourceProvider`
+ * and registers, without changing the list, the change log or undo. Every change a person makes is logged with the fields it changed
  * before and after, and undo restores the "before" only while nothing else has
  * touched the item since, so an undo can never overwrite a revert, a newer
  * change or another source's work.
@@ -58,7 +57,8 @@ export type PersonChange = 'pause' | 'resume' | 'remove';
 /** One place taught behaviour comes from. */
 export interface LearnedSourceProvider {
   readonly source: LearnedSource;
-  owns(id: string): boolean;
+  /** Both sources keep their items as procedure candidates, so this reads the row. */
+  owns(tx: Transaction, id: string): Promise<boolean>;
   list(tx: Transaction, principalId: string, spaceId: string): Promise<LearnedItem[]>;
   item(
     tx: Transaction,
@@ -177,8 +177,12 @@ export class CorrectionSource implements LearnedSourceProvider {
   readonly source = 'correction' as const;
   constructor(readonly procedures: ProcedureService) {}
 
-  owns(id: string) {
-    return id.startsWith('pc_');
+  async owns(tx: Transaction, id: string) {
+    const [row] = await tx
+      .select({ origin: procedureCandidate.origin })
+      .from(procedureCandidate)
+      .where(eq(procedureCandidate.id, id));
+    return row?.origin === 'owner_correction';
   }
 
   /** The person's own: delivered to them, from a correction on a job they can see. */
@@ -339,6 +343,17 @@ export class CorrectionSource implements LearnedSourceProvider {
   }
 }
 
+/**
+ * Whether a change can be offered for undo. Removing an engine skill erases its
+ * text, so that removal is never shown as something to undo.
+ */
+export const undoable = (change: { source: string; action: string }) =>
+  !(change.source === 'engine' && change.action === 'remove');
+
+/** A correction is named from its trigger words; an engine skill by the name it was given. */
+const nameOf = (candidate: Candidate) =>
+  candidate.origin === 'engine_staged' ? (candidate.skillName ?? '') : learnedName(candidate);
+
 const changeView = (row: ChangeRow, name: string): LearnedChange =>
   learnedChangeView.parse({
     id: row.id,
@@ -360,10 +375,9 @@ export class LearnedService {
     this.sources = [new CorrectionSource(procedures), ...extra];
   }
 
-  private sourceFor(id: string) {
-    const source = this.sources.find((candidate) => candidate.owns(id));
-    if (!source) throw new ServiceError('not_found', 'Not found.', 404);
-    return source;
+  private async sourceFor(tx: Transaction, id: string) {
+    for (const source of this.sources) if (await source.owns(tx, id)) return source;
+    throw new ServiceError('not_found', 'Not found.', 404);
   }
 
   private async record(
@@ -383,7 +397,7 @@ export class LearnedService {
         principalId,
         source,
         itemId,
-        candidateId: source === 'correction' ? itemId : null,
+        candidateId: itemId,
         action,
         before: change.before,
         after: change.after,
@@ -420,9 +434,10 @@ export class LearnedService {
       const latest = await this.latest(tx, principalId, spaceId);
       return {
         items,
-        last_change: latest
-          ? changeView(latest.change, latest.candidate ? learnedName(latest.candidate) : '')
-          : null,
+        last_change:
+          latest && undoable(latest.change)
+            ? changeView(latest.change, latest.candidate ? nameOf(latest.candidate) : '')
+            : null,
       };
     });
   }
@@ -430,7 +445,7 @@ export class LearnedService {
   async change(principalId: string, spaceId: string, id: string, action: PersonChange) {
     return this.jobs.transaction(async (tx) => {
       await requireLearningSpace(tx, principalId, spaceId);
-      const source = this.sourceFor(id);
+      const source = await this.sourceFor(tx, id);
       const applied = await source.change(tx, principalId, spaceId, id, action);
       const change = await this.record(
         tx,
@@ -441,28 +456,44 @@ export class LearnedService {
         action,
         applied,
       );
-      return { item: await source.item(tx, principalId, spaceId, id), change };
+      return {
+        item: await source.item(tx, principalId, spaceId, id),
+        change: undoable({ source: source.source, action }) ? change : null,
+      };
     });
   }
 
   /** Sharing what the person kept, on the same sealed evidence any sharing needs. */
   async share(principalId: string, spaceId: string, id: string) {
-    if (this.sourceFor(id).source !== 'correction')
-      throw new ServiceError('not_found', 'Not found.', 404);
+    await this.requireCorrection(principalId, spaceId, id);
     await this.procedures.activate(principalId, spaceId, id, 'space');
     return this.jobs.transaction(async (tx) => ({
-      item: await this.sourceFor(id).item(tx, principalId, spaceId, id),
+      item: await (await this.sourceFor(tx, id)).item(tx, principalId, spaceId, id),
       change: null,
     }));
   }
 
+  /** Sharing and trying are the correction road; an engine skill has its own controls. */
+  private async requireCorrection(principalId: string, spaceId: string, id: string) {
+    // The space first: someone outside it learns nothing about what the id names.
+    const source = await this.jobs.transaction(async (tx) => {
+      await requireLearningSpace(tx, principalId, spaceId);
+      return this.sourceFor(tx, id);
+    });
+    if (source.source !== 'correction')
+      throw new ServiceError(
+        'invalid_procedure_state',
+        'A skill the engine wrote is managed through its own surface.',
+        409,
+      );
+  }
+
   /** Trying approves the definition the person was shown, by its hash. */
   async try(principalId: string, spaceId: string, id: string, definitionHash: string) {
-    if (this.sourceFor(id).source !== 'correction')
-      throw new ServiceError('not_found', 'Not found.', 404);
+    await this.requireCorrection(principalId, spaceId, id);
     await this.procedures.startTrial(principalId, spaceId, id, definitionHash);
     return this.jobs.transaction(async (tx) => ({
-      item: await this.sourceFor(id).item(tx, principalId, spaceId, id),
+      item: await (await this.sourceFor(tx, id)).item(tx, principalId, spaceId, id),
       change: null,
     }));
   }
@@ -474,7 +505,7 @@ export class LearnedService {
       // Only the change the person was shown as their latest; never an older one.
       if (!latest || latest.change.id !== changeId)
         throw new ServiceError('undo_stale', 'That is no longer your latest change.', 409);
-      const source = this.sourceFor(latest.change.itemId);
+      const source = await this.sourceFor(tx, latest.change.itemId);
       await source.undo(tx, principalId, spaceId, latest.change);
       await tx
         .update(learnedChange)
@@ -705,7 +736,12 @@ export class LearnedService {
       if (!candidate) throw new ServiceError('not_found', 'Notice not found.', 404);
       return {
         notice: learningNoticeView.parse(noticeView(result.row, candidate)),
-        item: await this.sourceFor(candidate.id).item(tx, principalId, spaceId, candidate.id),
+        item: await (await this.sourceFor(tx, candidate.id)).item(
+          tx,
+          principalId,
+          spaceId,
+          candidate.id,
+        ),
         episode_id: result.episodeId,
       };
     });

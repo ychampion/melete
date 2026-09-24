@@ -130,7 +130,7 @@ function requireCorrection(candidate: Candidate) {
   if (isEngineSkill(candidate))
     throw new ServiceError(
       'invalid_procedure_state',
-      'A skill the engine wrote is approved through the engine-skill surface.',
+      'A skill the engine wrote is managed through its own surface.',
     );
 }
 
@@ -221,11 +221,12 @@ export class ProcedureService {
 
   /**
    * A procedure learned from a correction, with that correction's episode. A skill
-   * the engine wrote has none, and is managed through its own surface, so here it
-   * reads as absent.
+   * the engine wrote has none: it is managed through its own surface, and asking
+   * for it here is told so.
    */
   async lockedCorrection(tx: Transaction, ownerId: string, spaceId: string, id: string) {
     const { candidate, source, objective } = await this.locked(tx, ownerId, spaceId, id);
+    requireCorrection(candidate);
     if (!source || !candidate.episodeId)
       throw new ServiceError('not_found', 'Procedure not found.', 404);
     return { candidate: { ...candidate, episodeId: candidate.episodeId }, source, objective };

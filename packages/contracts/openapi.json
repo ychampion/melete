@@ -17693,7 +17693,10 @@
                 "pause",
                 "resume",
                 "remove",
-                "share"
+                "share",
+                "approve",
+                "edit",
+                "stop"
               ]
             }
           }
@@ -17720,7 +17723,8 @@
       "__schema130": {
         "type": "string",
         "enum": [
-          "correction"
+          "correction",
+          "engine"
         ]
       },
       "__schema131": {

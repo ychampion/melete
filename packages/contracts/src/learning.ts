@@ -429,7 +429,7 @@ export const learningScopeResponse = z.object({
  * model output never appear. Corrections are one source; another source joins
  * the same list with its own `source` value.
  */
-export const learnedSource = z.enum(['correction']);
+export const learnedSource = z.enum(['correction', 'engine']);
 export type LearnedSource = z.infer<typeof learnedSource>;
 /**
  * `proposed`: learned from a correction and waiting for the person to try it.
@@ -439,8 +439,22 @@ export type LearnedSource = z.infer<typeof learnedSource>;
  */
 export const learnedState = z.enum(['proposed', 'trial', 'active', 'paused', 'reverted']);
 export type LearnedState = z.infer<typeof learnedState>;
-/** `share` appears only on something kept that has sealed evidence, in a shared space. */
-export const learnedAction = z.enum(['try', 'pause', 'resume', 'remove', 'share']);
+/**
+ * `share` appears only on something kept that has sealed evidence, in a shared space.
+ * `approve`, `edit` and `stop` belong to a skill the engine wrote, and are taken at its
+ * own routes under `/engine-skills/{id}`: approve the exact text, rewrite it, or say
+ * "don't do this". `pause`, `resume` and `remove` work here for both sources.
+ */
+export const learnedAction = z.enum([
+  'try',
+  'pause',
+  'resume',
+  'remove',
+  'share',
+  'approve',
+  'edit',
+  'stop',
+]);
 export type LearnedAction = z.infer<typeof learnedAction>;
 export const learnedChangeAction = z.enum(['pause', 'resume', 'remove', 'keep', 'decline']);
 export type LearnedChangeAction = z.infer<typeof learnedChangeAction>;
