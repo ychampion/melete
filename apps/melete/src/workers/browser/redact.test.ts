@@ -221,17 +221,35 @@ test('a code of letters alone is caught in a control name, and ordinary names ar
     ['Your PIN is', 'Your PIN is'],
     ['OTP HJKLMN', `OTP ${REDACTED}`],
     ['Token=ZXCVBN', `Token=${REDACTED}`],
+    // Any case, and five letters or nine and more, right after the word.
+    ['Use code kxqpmz', `Use code ${REDACTED}`],
+    ['Use code Kxqpmz', `Use code ${REDACTED}`],
+    ['Code KXQPM', `Code ${REDACTED}`],
+    ['Copy key ABCDE', `Copy key ${REDACTED}`],
+    ['Token ABCDEFGHIJKL', `Token ${REDACTED}`],
+    // Every code in a list, not only the first.
+    ['Backup codes: KXQPMZ WQERTY', `Backup codes: ${REDACTED} ${REDACTED}`],
+    ['Codes KXQPMZ, WQERTY; ZXCVBN', `Codes ${REDACTED}, ${REDACTED}; ${REDACTED}`],
   ] as const)
     expect([label, handbackLabel(label)]).toEqual([label, seen]);
-  for (const kept of [
-    'Enter code',
-    'Code of CONDUCT',
-    'Use code Kxqpmz',
-    'Copy key ABCDE',
-    'Keyboard SHORTCUTS',
-    'Continue',
-  ])
+  for (const kept of ['Enter code', 'Code of CONDUCT', 'Keyboard SHORTCUTS', 'Continue'])
     expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
+});
+
+test('a word mixing letters and digits over six characters is caught in a control name', () => {
+  for (const [label, seen] of [
+    ['Code K7QP2X', `Code ${REDACTED}`],
+    ['Copy K7QP2X9M', `Copy ${REDACTED}`],
+    ['Copy 8f3k-9x2m', `Copy ${REDACTED}`],
+    ['Continue K7QP2X', `Continue ${REDACTED}`],
+    // The accepted cost while a page is handed back.
+    ['Buy iPhone15', `Buy ${REDACTED}`],
+  ] as const)
+    expect([label, handbackLabel(label)]).toEqual([label, seen]);
+  for (const kept of ['Page 2 of 3', 'Open v2 settings', 'Play H264', 'Step 12'])
+    expect([kept, handbackLabel(kept)]).toEqual([kept, kept]);
+  // The tree keeps a button's name only through the same filter.
+  expect(withoutValues('- button "Copy K7QP2X9M"')).toBe(`- button "Copy ${REDACTED}"`);
 });
 
 test('a handed-back URL loses a long unbroken run, even of letters alone', () => {

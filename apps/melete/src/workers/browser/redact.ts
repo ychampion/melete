@@ -15,12 +15,15 @@ const MIXED_SEED = /\b(?=[A-Za-z2-7]*[2-7])(?=[A-Za-z2-7]*[A-Za-z])[A-Za-z2-7]{1
  */
 const DIGIT_RUN = /\d(?:[\s-]?\d){3,}/g;
 /**
- * A code made of letters, named as one: an upper-case run of six to eight letters straight after
- * a code, token, key, PIN, passcode or OTP word (`Use code KXQPMZ`, `Key: QWERTYUI`). The word is
- * matched in the usual cases, not case-blind, so the run itself has to be upper-case.
+ * A code made of letters, named as one: a run of five letters or more straight after a code,
+ * token, key, PIN, passcode or OTP word, in any case (`Use code KXQPMZ`, `Use code kxqpmz`), and
+ * each upper-case run of five or more that follows it in a list (`Backup codes: KXQPMZ WQERTY`).
+ * The word itself is matched in the usual cases, so `Keyboard` and `Keynote` are not triggers.
  */
 const LETTER_CODE =
-  /\b((?:[Cc]odes?|CODES?|[Tt]okens?|TOKENS?|[Kk]eys?|KEYS?|PIN|[Pp]in|[Pp]asscodes?|PASSCODES?|OTP|[Oo]tp)\b[\s:=#-]*)[A-Z]{6,8}\b/g;
+  /\b((?:[Cc]odes?|CODES?|[Tt]okens?|TOKENS?|[Kk]eys?|KEYS?|PIN|[Pp]in|[Pp]asscodes?|PASSCODES?|OTP|[Oo]tp)\b[\s:=#-]*)[A-Za-z]{5,}\b((?:[\s,;]+[A-Z]{5,}\b)*)/g;
+/** A word of a control's name, with dash-joined groups kept together as one token. */
+const WORD = /[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g;
 /**
  * A path segment that may be a token: its letters and digits, with separators taken out, run to
  * six or more and mix both. `7f3k9x`, `zqpath-9f3a` and a long hex id qualify; `page-2`, `v2` and
@@ -98,10 +101,19 @@ const ENTRY = /^(\s*- )('?)([a-z]+)(?: "((?:[^"\\]|\\.)*)")?(.*)$/;
 
 /**
  * A control's name on a handed-back page. Buttons and links are named from what they show, so a
- * code can sit in one; the secret shapes go, and so does any run of four or more digits.
+ * code can sit in one; the secret shapes go, and so does any run of four or more digits, any word
+ * that mixes letters and digits over six characters or more (`K7QP2X`, `8f3k-9x2m`), and a code
+ * named as one. `iPhone15` and `Windows11` go too while the page is handed back; that is the cost.
  */
 export function handbackLabel(label: string): string {
-  return patterns(label).replace(DIGIT_RUN, REDACTED).replace(LETTER_CODE, `$1${REDACTED}`);
+  return patterns(label)
+    .replace(DIGIT_RUN, REDACTED)
+    .replace(
+      LETTER_CODE,
+      (_, lead: string, rest: string) =>
+        `${lead}${REDACTED}${rest.replace(/[A-Z]{5,}/g, REDACTED)}`,
+    )
+    .replace(WORD, (word) => (mixedToken(word) ? REDACTED : word));
 }
 
 /**
