@@ -470,6 +470,23 @@ export class ExperienceEvents {
                 type: 'note',
                 text: 'I stopped before finishing. Your progress is saved.',
               });
+            // The turn settles on the stream as its saved copy does, so a page
+            // that followed it live reads what a reload would.
+            if (
+              source.jobId === id &&
+              typeof outcome.kind === 'string' &&
+              payload.experience_completed !== false
+            )
+              await emit(
+                source,
+                outcome.kind === 'completed'
+                  ? { type: 'status', status: 'done', composer: 'send' }
+                  : outcome.kind === 'failed' || outcome.kind === 'budget_exhausted'
+                    ? { type: 'status', status: 'failed', composer: 'send' }
+                    : { type: 'status', status: 'needs_you', composer: 'send' },
+              );
+          } else if (source.type === 'attempt_started' && source.jobId === id) {
+            await emit(source, { type: 'status', status: 'working', composer: 'pause' });
           } else if (
             payload.kind === 'experience_stopped' ||
             payload.kind === 'experience_paused' ||
