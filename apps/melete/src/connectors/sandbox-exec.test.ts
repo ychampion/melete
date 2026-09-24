@@ -225,6 +225,29 @@ withDb('a command in a remote sandbox', () => {
     expect(second.result.receipt.detail.output_digest).toBe(digest('once'));
   }, 60_000);
 
+  test('a reused session is renewed before its command is sent', async () => {
+    if (!handle) throw new Error('Postgres is unavailable');
+    const { sql } = handle;
+    const { provider, run, sessions } = await setup();
+    const first = await run({ command: 'printf first' });
+    if (first.result.outcome !== 'succeeded') throw new Error(JSON.stringify(first.result));
+    const [session] = await sql`select id from sandbox_session where status = 'ready'`;
+    // A second of lease left: the sweep would take it while the command ran.
+    await sql`update sandbox_session set lease_expires_at = now() + interval '1 second'
+      where id = ${session?.id}`;
+    // The lease as the provider is sent the command.
+    let leaseAtExec = 0;
+    const exec = provider.exec.bind(provider);
+    provider.exec = async (sandbox, spec, signal) => {
+      const row = await sessions.get(String(session?.id));
+      leaseAtExec = row?.leaseExpiresAt.getTime() ?? 0;
+      return exec(sandbox, spec, signal);
+    };
+    const second = await run({ command: 'printf second' });
+    expect(second.result.outcome).toBe('succeeded');
+    expect(leaseAtExec - Date.now()).toBeGreaterThan(60_000);
+  }, 60_000);
+
   test('an unknown outcome is never re-dispatched', async () => {
     if (!handle) throw new Error('Postgres is unavailable');
     const { provider, run, sessions, connector, context } = await setup();

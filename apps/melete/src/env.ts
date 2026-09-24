@@ -5,10 +5,22 @@
  */
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXEC_LIMITS } from '@melete/contracts';
 import { DEFAULT_COMPACTION_MAX_TOKENS, DEFAULT_ENGINE_MAX_TURNS } from '@melete/runtime-hermes';
 import { z } from 'zod';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
+
+/** How long a sandbox command's workspace may take to sync in and out, around the command. */
+export const SANDBOX_SYNC_ALLOWANCE_MS = 120_000;
+
+/**
+ * The shortest lease a sandbox session may have: the longest command it can
+ * be sent and the syncs around it, with a minute to spare, so a lease renewed
+ * as a command is sent cannot run out while that command runs.
+ */
+export const SANDBOX_LEASE_FLOOR_SECONDS =
+  Math.ceil((EXEC_LIMITS.max_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS) / 1000) + 60;
 
 /** `host:port`, with brackets around an IPv6 host. */
 export function parseBrokerBind(bind: string): { hostname: string; port: number } | null {
@@ -280,7 +292,11 @@ const variables = z.object({
     .regex(/^[a-z0-9][a-z0-9-]{2,40}$/)
     .optional(),
   /** How long a sandbox session may go unrenewed before the sweep ends it. */
-  MELETE_SANDBOX_LEASE_SECONDS: z.coerce.number().int().positive().default(900),
+  MELETE_SANDBOX_LEASE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(SANDBOX_LEASE_FLOOR_SECONDS)
+    .default(900),
   /** The most sandboxes this installation may have running at once, over every connection. */
   MELETE_SANDBOX_MAX_CONCURRENT: z.coerce.number().int().positive().default(4),
   /**

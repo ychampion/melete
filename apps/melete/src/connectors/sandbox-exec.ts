@@ -31,6 +31,7 @@ import {
 } from '@melete/contracts';
 import type { Sql } from 'postgres';
 import { validateArtifact } from '../artifact/validate.ts';
+import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import {
   checkSandboxConfiguration,
   probeSandboxProvider,
@@ -342,13 +343,18 @@ export function createSandboxExecConnector(options: SandboxExecOptions): Connect
     async execute(action, ctx) {
       checkIdentity(action, ctx);
       ctx.signal?.throwIfAborted();
-      const signal = ctx.signal ?? AbortSignal.timeout(EXEC_LIMITS.max_timeout_ms + 120_000);
+      const signal =
+        ctx.signal ?? AbortSignal.timeout(EXEC_LIMITS.max_timeout_ms + SANDBOX_SYNC_ALLOWANCE_MS);
       let payload: Payload;
       let session: SessionRow;
       try {
         payload = payloadOf(action);
         const opened = await sessionFor(action, ctx, signal);
-        session = opened.row;
+        // Renewed before anything is sent: a session reused near the end of
+        // its lease would otherwise be swept while this command runs.
+        const renewed = await sessions.renew(opened.row.id);
+        if (!renewed) throw new Error('the sandbox session ended before the command was sent');
+        session = renewed;
         await syncIn({
           provider,
           handle: sessionHandle(session),

@@ -7,7 +7,7 @@
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { ConnectorFactory } from '../../src/connectors/configured.ts';
-import { readEnv } from '../../src/env.ts';
+import { readEnv, SANDBOX_LEASE_FLOOR_SECONDS } from '../../src/env.ts';
 import { AUTHORING_KEY, createE2bStandin } from '../../src/sandbox/adapters/e2b-standin.ts';
 import {
   createSandboxProvider,
@@ -70,6 +70,20 @@ test('a snapshot TTL shorter than the retention is refused at boot', () => {
     }).ok,
   ).toBe(true);
   expect(readEnv({ NODE_ENV: 'test' }).ok).toBe(true);
+});
+
+test('a sandbox lease too short for the longest command and its syncs is refused at boot', () => {
+  const short = readEnv({
+    NODE_ENV: 'test',
+    MELETE_SANDBOX_LEASE_SECONDS: String(SANDBOX_LEASE_FLOOR_SECONDS - 1),
+  });
+  expect(short.ok).toBe(false);
+  if (short.ok) throw new Error('unreachable');
+  expect(short.issues.join('\n')).toContain('MELETE_SANDBOX_LEASE_SECONDS');
+  expect(
+    readEnv({ NODE_ENV: 'test', MELETE_SANDBOX_LEASE_SECONDS: String(SANDBOX_LEASE_FLOOR_SECONDS) })
+      .ok,
+  ).toBe(true);
 });
 
 test('a proxy or root-certificate setting refuses the Modal adapter unless the opt-in is set', async () => {
