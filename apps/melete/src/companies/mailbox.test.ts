@@ -380,3 +380,25 @@ test('a display name that spells out a known company’s address does not file m
   ]);
   expect(grouped.companies.find((group) => group.domain === 'evil.test')?.messageCount).toBe(1);
 });
+
+test('scanned mail with two From headers is filed under no company', async () => {
+  const doubled = toMailMessage(
+    9,
+    await simpleParser(
+      'From: x@evil.test\r\nFrom: billing@nimbusledger.example\r\nMessage-ID: <9@evil.test>\r\nDate: Tue, 15 Sep 2026 10:00:00 +0000\r\nSubject: Your invoice is overdue\r\n\r\nPay the overdue invoice now.',
+    ),
+  );
+  const transport = new MailDouble();
+  transport.messages = [doubled];
+  const registry = new ConnectorRegistry();
+  registry.register(CONNECTION, new EmailConnector(config, secret, () => transport));
+  const read = await connectorMailbox({
+    registry,
+    connectionId: CONNECTION,
+    spaceId: SPACE,
+    undatedAt: UNDATED,
+  }).recent(50);
+  const grouped = prefilter(read, { now: new Date(UNDATED), windowDays: 90 });
+  expect(grouped.companies).toEqual([]);
+  expect(grouped.counts.noSender).toBe(1);
+});
