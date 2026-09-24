@@ -118,6 +118,15 @@ export type BrokerOptions = {
    * only ever removes the approval when nothing about the payload is in doubt.
    */
   resolveStandingGrant?: StandingGrantResolver;
+  /**
+   * A grant the person gave inside one job, for values they have already seen
+   * and approved there: a chase's follow-ups to the address its first message
+   * went to. It is the only grant asked when a payload carries doubts, and it
+   * is told what they are.
+   */
+  resolveScopedGrant?: StandingGrantResolver;
+  /** Called in the transaction that records an action as succeeded. */
+  recordStandingScope?: (tx: Query, action: Action) => Promise<void>;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -148,6 +157,8 @@ export type StandingGrantInput = {
   action: Action;
   tool: ConnectorTool;
   phase: 'proposal' | 'admission' | 'execution';
+  /** The doubts about the payload's values; only a scoped grant ever sees any. */
+  warnings?: OriginWarning[];
 };
 export type StandingGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<boolean>;
 
@@ -468,11 +479,15 @@ export class BrokerService implements BrokerOperations {
         fields,
       },
     );
-    // A grant is only ever a shortcut past a question nobody needs to ask. It
-    // never covers a value whose origin Melete cannot vouch for.
+    // A grant is only ever a shortcut past a question nobody needs to ask. A
+    // standing grant never covers a value whose origin Melete cannot vouch for;
+    // only a grant scoped to this job, over values the person approved in it,
+    // is asked when there are doubts, and it is told exactly what they are.
+    const resolver =
+      warnings.length === 0 ? this.options.resolveStandingGrant : this.options.resolveScopedGrant;
     const granted =
-      warnings.length === 0 && requiresApproval && this.options.resolveStandingGrant
-        ? await this.options.resolveStandingGrant(tx, { job, action, tool, phase })
+      requiresApproval && resolver
+        ? await resolver(tx, { job, action, tool, phase, warnings })
         : false;
     return {
       warnings,
@@ -1870,6 +1885,7 @@ export class BrokerService implements BrokerOperations {
       from: action.status,
       to: status,
     });
+    if (status === 'succeeded') await this.options.recordStandingScope?.(tx, action);
   }
 
   private async rejectDispatch(

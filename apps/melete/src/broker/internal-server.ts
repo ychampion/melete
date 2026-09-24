@@ -33,6 +33,8 @@ export function createInternalServer(options: {
   catalog?: BrokerOptions['catalog'];
   composeExecutor?: BrokerOptions['composeExecutor'];
   resolveStandingGrant?: BrokerOptions['resolveStandingGrant'];
+  resolveScopedGrant?: BrokerOptions['resolveScopedGrant'];
+  recordStandingScope?: BrokerOptions['recordStandingScope'];
   /** A broker the service already built, shared with its own routes. */
   broker?: BrokerService;
   gatewayFetch?: GatewayOptions['fetch'];
@@ -68,6 +70,8 @@ export function createInternalServer(options: {
       composeExecutor: options.composeExecutor,
       deferApprovalWaitToRunner: options.deferApprovalWaitToRunner,
       resolveStandingGrant: options.resolveStandingGrant,
+      resolveScopedGrant: options.resolveScopedGrant,
+      recordStandingScope: options.recordStandingScope,
     });
   const app = createBrokerApp({
     broker,
