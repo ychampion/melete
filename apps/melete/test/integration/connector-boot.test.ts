@@ -11,9 +11,10 @@ import { configuredConnectors } from '../../src/connectors/configured.ts';
 import { testDatabase } from '../helpers/database.ts';
 
 const fixture = await testDatabase();
+// Closing the database waits on the embedded server, which takes longer than the default.
 afterAll(async () => {
   await fixture?.close?.();
-});
+}, 60_000);
 
 test('a row that cannot be opened is marked failing and the rest still load', async () => {
   if (!fixture) throw new Error('Postgres unavailable');
