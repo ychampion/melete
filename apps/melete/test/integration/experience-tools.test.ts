@@ -15,7 +15,17 @@ import {
 } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { session } from '../../src/db/auth-schema.ts';
-import { action, approval, connection, event, job, owner, space } from '../../src/db/schema.ts';
+import {
+  action,
+  approval,
+  connection,
+  event,
+  experienceTurn,
+  job,
+  owner,
+  space,
+} from '../../src/db/schema.ts';
+import { EVENT_ORDER_LOCK } from '../../src/db/transaction.ts';
 import { loadEnv } from '../../src/env.ts';
 import { AGENT_TEMPLATES } from '../../src/experience/agents.ts';
 import { ExperienceEvents } from '../../src/experience/events.ts';
@@ -422,5 +432,108 @@ withDb('tool entries in the conversation', () => {
     expect(theirs?.title).toBe('Used 1 thing you told me');
     // The value is never part of a recall entry, for anyone.
     expect(JSON.stringify([own, theirs])).not.toContain('Vegetarian');
+  }, 60000);
+
+  // Runs after the recall test above, which provisioned memory and built its views.
+  test('the recall entry waits for the event order lock', async () => {
+    const sql = required(handle).sql;
+    const scope: MemoryScope = {
+      ownerId,
+      spaceId,
+      publisher: 'job-worker',
+      audience: 'private',
+      role: 'owner',
+    };
+    const { chat, claims } = await conversationWithAttempt('What should we cook tonight?');
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = () => {};
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(${EVENT_ORDER_LOCK})`;
+      locked();
+      await held;
+    });
+    await isLocked;
+    const count = async () =>
+      (
+        await sql`select count(*)::int as n from event where job_id = ${chat.id}
+          and payload->>'kind' = 'memory_tool'`
+      )[0]?.n;
+    let knowledge: ReturnType<typeof assembleAttemptKnowledge> | undefined;
+    let during: unknown;
+    try {
+      knowledge = assembleAttemptKnowledge(
+        sql,
+        scope,
+        claims.attempt_id,
+        chat.id,
+        'cook dinner food',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      during = await count();
+    } finally {
+      // Always let go, so a failure here cannot hold the lock over later tests.
+      release();
+      await holder;
+    }
+    expect(during).toBe(0);
+    expect((await required(knowledge)).context.items.length).toBeGreaterThan(0);
+    expect(await count()).toBe(1);
+  }, 60000);
+
+  test('the current step is the one under way, the approval while waiting, and none once ended', async () => {
+    const db = required(handle).db;
+    const { chat, claims } = await conversationWithAttempt('Send Sam the menu');
+    const attemptId = claims.attempt_id;
+    const raw = async (type: string, payload: Record<string, unknown>) => {
+      await db.insert(event).values({
+        jobId: chat.id,
+        attemptId,
+        type,
+        payload,
+        dedupKey: `tools-fixture:${randomBytes(8).toString('hex')}`,
+      });
+    };
+    const mailId = newId('conn');
+    await db.insert(connection).values({ id: mailId, spaceId, label: 'Mail', provider: 'imap' });
+    const sendId = newId('act');
+    await db.insert(action).values({
+      id: sendId,
+      jobId: chat.id,
+      attemptId,
+      connectionId: mailId,
+      kind: 'email.send',
+      effectClass: 'write_external',
+      canonicalPayload: { to: ['sam@example.test'], subject: 'Menu' },
+      payloadHash: 'c'.repeat(64),
+      idempotencyKey: sendId,
+      status: 'needs_approval',
+    });
+    await db
+      .insert(approval)
+      .values({ id: newId('apr'), actionId: sendId, jobRevision: 1, payloadHash: 'c'.repeat(64) });
+    await raw('action_requested', { action_id: sendId, kind: 'email.send' });
+    await raw('action_status_changed', {
+      action_id: sendId,
+      from: 'proposed',
+      to: 'needs_approval',
+    });
+    // A later call left running, as a stopped or crashed turn leaves one.
+    await raw('tool_call_proposed', { tool: 'vision_analyze', call_id: 'c9', arguments: {} });
+    const turnId = required((await required(jobs).get(chat.id)).currentTurnId);
+    const progress = async (status: 'working' | 'needs_you' | 'done') => {
+      await db.update(experienceTurn).set({ status }).where(eq(experienceTurn.id, turnId));
+      return conversationResponse.parse(await (await request(`/conversations/${chat.id}`)).json())
+        .conversation.progress;
+    };
+    expect(await progress('working')).toEqual({ steps_done: 0, current: 'Looking at an image' });
+    expect(await progress('needs_you')).toEqual({ steps_done: 0, current: 'Sending the email' });
+    // Nothing finished and nothing under way: an ended turn with no steps reports none.
+    expect(await progress('done')).toBeUndefined();
   }, 60000);
 });
