@@ -1030,8 +1030,8 @@ export class SandboxSessions {
 
   /**
    * What the providers still hold for a space, asked of them rather than read
-   * from these rows: every sandbox and every snapshot any of the space's
-   * sessions recorded, whatever its row says became of it. A removal finishes
+   * from these rows: the sandbox of every session not closed, and every
+   * snapshot any of the space's sessions recorded. A removal finishes
    * on this answer, never on what `destroyWorkspacesForSpace` reports it did.
    * Anything no provider answers for is counted as still held.
    */
@@ -1041,7 +1041,7 @@ export class SandboxSessions {
     signal: AbortSignal = AbortSignal.timeout(120_000),
   ): Promise<{ sessions: string[]; snapshots: string[] }> {
     const rows = await this.sql`select id, adapter, connection_id, provider_sandbox_id,
-        persistence, resume_ref
+        persistence, resume_ref, status
       from sandbox_session where space_id = ${spaceId} order by id`;
     const sessions = new Set<string>();
     const snapshots = new Set<string>();
@@ -1054,7 +1054,10 @@ export class SandboxSessions {
       } catch {
         provider = undefined;
       }
-      for (const sandboxId of recordedSandboxes(row)) {
+      // A row is closed only once its sandbox was destroyed, so it is not
+      // asked about again: after a revocation it could not be, and would
+      // read as held forever. A lost row may still have one, so it is asked.
+      for (const sandboxId of row.status === 'closed' ? [] : recordedSandboxes(row)) {
         const key = `${row.connection_id as string}:${sandboxId}`;
         let held = asked.get(key);
         if (held === undefined) {

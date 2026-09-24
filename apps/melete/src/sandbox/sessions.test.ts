@@ -488,6 +488,28 @@ withDb('sandbox sessions', () => {
     expect(await listed()).toEqual({ sessions: [], snapshots: [] });
   });
 
+  test('a session closed through its provider is not asked about again, even once nothing can ask', async () => {
+    const { scope, provider, sessions, spec, base } = await setup();
+    const closed = await sessions.open(
+      { ...base, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sessions.close(closed.id, provider, signal());
+    const stray = await sessions.open(
+      { ...base, attemptId: await scope.attempt() },
+      provider,
+      spec,
+      signal(),
+    );
+    await sessions.markLost(stray.id, 'its connection was revoked');
+    // No provider answers now, as after a revocation: the closed session is
+    // done, and the lost one may still be running.
+    const left = await sessions.listWorkspacesForSpace(scope.spaceId, () => undefined, signal());
+    expect(left.sessions).toEqual([stray.id]);
+  });
+
   test('a workspace whose attempt stopped renewing its lease is suspended, not destroyed', async () => {
     const { sql, scope, provider, sessions, spec, base } = await setup();
     const workspace = {
