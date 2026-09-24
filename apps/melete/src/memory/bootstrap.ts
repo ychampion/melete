@@ -183,6 +183,20 @@ export async function startDeploymentMemory(options: DeploymentMemoryOptions) {
   const routes: MemoryRouteOptions = {
     sql: options.sql,
     journal,
+    // The installation owner holds every space's memory on this path.
+    async provision(spaceId, principalId) {
+      const [row] = await options.sql`select o.id as owner_id, m.owner_id as memory_owner_id
+        from space s cross join owner o left join memory_spaces m on m.space_id = s.id
+        where s.id = ${spaceId}`;
+      if (!row || row.owner_id !== principalId || row.memory_owner_id) return;
+      await provisionNewSpace(options.sql, journal, {
+        ownerId: principalId,
+        spaceId,
+        publisher: 'experience',
+        audience: 'private',
+        role: 'owner',
+      });
+    },
     resolveScope: resolveOwnerScope(options.sql, journal),
   };
   return {

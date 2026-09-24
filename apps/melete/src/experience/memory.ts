@@ -38,10 +38,25 @@ export class ExperienceMemory {
   constructor(
     readonly sql: Sql,
     readonly journal?: RestrictionJournal,
+    readonly provision?: (spaceId: string, principalId: string) => Promise<void>,
   ) {}
+  /**
+   * The person's memory in their space. A space whose memory has never been
+   * used (a fresh account answering its first setup question) is provisioned
+   * here, on first use, rather than waiting for a job to run in it.
+   */
   async scope(spaceId: string, ownerId: string): Promise<MemoryScope | null> {
-    const [row] = await this.sql`select space_id from memory_spaces where space_id = ${spaceId}
+    const find = () => this.sql`select space_id from memory_spaces where space_id = ${spaceId}
       and owner_id = ${ownerId} and restore_ready and not revoked`;
+    let [row] = await find();
+    if (!row && this.provision) {
+      await this.provision(spaceId, ownerId).catch((error: unknown) => {
+        process.stderr.write(
+          `memory: provision_failed ${error instanceof Error ? error.message : 'unknown'}\n`,
+        );
+      });
+      [row] = await find();
+    }
     return row
       ? { spaceId, ownerId, publisher: 'experience', audience: 'private', role: 'owner' }
       : null;

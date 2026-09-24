@@ -249,6 +249,7 @@ export function createApp(deps: AppDeps) {
       registry: deps.registry,
       questions,
       memoryJournal: deps.memory?.journal,
+      memoryProvision: deps.memory?.provision,
       triggers: deps.triggers,
     });
   if (deps.db)
