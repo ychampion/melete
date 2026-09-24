@@ -5,6 +5,7 @@
  * as memory before opening a conversation that refers to one of them.
  */
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { CONNECT_INBOX, MAIL_KINDS } from '../copy/money-back.ts';
 import { AgentFace } from '../design/face.tsx';
 import { Icon } from '../design/icons.tsx';
 import { Logo } from '../design/logos.tsx';
@@ -16,6 +17,7 @@ import type { AgentInput, MemoryItem, TourStage } from '../experience/types.ts';
 import { navigate, useRoute } from '../router.ts';
 import { toast } from '../shell/Shell.tsx';
 import { blankAgent, LookFields } from './Agents.tsx';
+import { KindForm } from './ConnectionInstall.tsx';
 import { ConnectionCard } from './Settings.tsx';
 
 const studio = {
@@ -934,6 +936,13 @@ export function OnboardingScreen() {
           : true,
   );
   const connections = useLoad(() => adapter.connections(), []);
+  const kinds = useLoad(() => adapter.connectionKinds(), []);
+  // The inbox is the first thing to connect: the first scan reads it for money owed back.
+  const mailKinds = MAIL_KINDS.flatMap(
+    (id) => kinds.data?.kinds.filter((kind) => kind.id === id) ?? [],
+  );
+  const [mailKind, setMailKind] = useState<string | null>(null);
+  const [inboxAdded, setInboxAdded] = useState(false);
   const [step, setStep] = useState(1);
   const [stage, setStage] = useState(0);
   const [name, setName] = useState(profile?.name ?? '');
@@ -1053,7 +1062,14 @@ export function OnboardingScreen() {
     refreshProfile();
     refreshAgents();
     setOnboarded(true);
-    navigate(completed.current.chatId ? `/chat/${completed.current.chatId}` : '/');
+    // With an inbox connected, the first thing to see is what companies owe back.
+    navigate(
+      inboxAdded
+        ? '/companies?first=1'
+        : completed.current.chatId
+          ? `/chat/${completed.current.chatId}`
+          : '/',
+    );
   };
 
   const stepLabel = (
@@ -1272,6 +1288,54 @@ export function OnboardingScreen() {
           </>
         }
       >
+        {/* The inbox comes first: it is what the first scan reads. */}
+        {mailKinds.length ? (
+          <section className="col" style={{ gap: 10 }} aria-labelledby="connect-inbox">
+            <div className="col" style={{ gap: 2 }}>
+              <span
+                id="connect-inbox"
+                style={{ fontSize: 14, fontWeight: 600, color: 'var(--heading)' }}
+              >
+                {CONNECT_INBOX.title}
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--muted)' }}>{CONNECT_INBOX.line}</span>
+            </div>
+            {inboxAdded ? (
+              <span className="row" style={{ gap: 8, fontSize: 13, color: 'var(--success)' }}>
+                <Icon name="circleCheck" size={16} />
+                {CONNECT_INBOX.connected}
+              </span>
+            ) : mailKind ? (
+              mailKinds
+                .filter((kind) => kind.id === mailKind)
+                .map((kind) => (
+                  <KindForm
+                    key={kind.id}
+                    kind={kind}
+                    onInstalled={() => {
+                      setInboxAdded(true);
+                      connections.reload();
+                    }}
+                    onDone={() => setMailKind(null)}
+                  />
+                ))
+            ) : (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                {mailKinds.map((kind) => (
+                  <Button
+                    key={kind.id}
+                    variant="outline"
+                    icon="mail"
+                    title={kind.description}
+                    onClick={() => setMailKind(kind.id)}
+                  >
+                    {kind.title}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
         <div
           style={{
             display: 'grid',
