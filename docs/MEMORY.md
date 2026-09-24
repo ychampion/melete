@@ -43,11 +43,16 @@ A person can say these in plain words:
 
 | They say | What memory does |
 | --- | --- |
-| "Remember that ..." | Keeps it as their own statement, at owner trust |
+| "Remember that ..." or "Keep in mind ..." in their own words | Keeps it as their own statement, at owner trust; quoted or forwarded text is not their statement |
 | "That's wrong, it's ..." or "Actually, ... now" | Supersedes the claim it corrects |
 | "Forget that" or "Don't remember that" | Removes what their previous kept message in the conversation taught, through the restriction journal |
-| "Forget &lt;something&gt;" | Removes the saved details that name it, through the restriction journal |
-| "Don't remember this: ..." | Does not keep that message |
+| "Forget Maya's number" | Removes the one saved detail that names Maya and that field, through the restriction journal |
+| "Forget my number", or a request several details match | Asks which detail they mean and removes nothing |
+| "Forget Carol's number" with nothing saved about Carol | Says nothing saved matched |
+| "Don't remember this" or "Off the record" | Does not keep that message |
+
+A request to forget is never itself kept. The first objective of a job the
+person typed themselves is read the same way as a message.
 
 Each change is shown in the conversation as a tool entry ("Remembered",
 "Updated", "Forgot"). It is written as a
@@ -56,6 +61,10 @@ Each change is shown in the conversation as a tool entry ("Remembered",
 person's own message; a forget names the detail without its value. The notice
 goes only on the conversation the message came from. What an attempt was handed
 is read from its context record.
+
+The service's `/health` reports `memory` with the number of messages waiting
+to be read and whether the memory model's provider or the daily reads are the
+reason; it holds counts only.
 
 `GET /memory/settings` and `PUT /memory/settings` (`{ "capture": boolean }`)
 read and change whether new messages are kept for the signed-in person. Capture

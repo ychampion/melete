@@ -14,7 +14,11 @@
  * runner fails the suite rather than reporting a green row nobody earned.
  */
 import { CONTEXT_LIMITS, type RecallResult } from '@melete/contracts';
+import { openDatabase } from '../../apps/melete/src/db/client.ts';
 import { newId } from '../../apps/melete/src/ids.ts';
+import { QUEUES } from '../../apps/melete/src/jobs/queue.ts';
+import { JobService } from '../../apps/melete/src/jobs/service.ts';
+import { SubmissionService } from '../../apps/melete/src/jobs/submissions.ts';
 import { captureChat } from '../../apps/melete/src/memory/capture.ts';
 import { claimHistory, correctClaim } from '../../apps/melete/src/memory/claims.ts';
 import { commitExtraction } from '../../apps/melete/src/memory/commit.ts';
@@ -34,6 +38,7 @@ import {
 } from '../../apps/melete/src/memory/service.ts';
 import { runViewWork } from '../../apps/melete/src/memory/views.ts';
 import { claimWork } from '../../apps/melete/src/memory/work.ts';
+import { principalContext } from '../../apps/melete/src/principals/authority.ts';
 import { tripProposal } from '../../apps/melete/test/integration/fake-provider.ts';
 import { killAt } from '../../apps/melete/test/integration/fault-fixtures.ts';
 import {
@@ -124,23 +129,30 @@ export async function openHarness(options: { databasePort?: number; providerPort
   });
   if (!db) return null;
   const provider = await startScriptedProvider(options.providerPort ?? 3124);
+  // Chat steps go through the chat surface's own writer, which records the speaker.
+  const handle = openDatabase(db.url, 2);
+  for (const queue of Object.values(QUEUES)) await db.boss.createQueue(queue);
+  const chat: ChatSurface = new SubmissionService(new JobService(handle.db, db.boss));
   return {
     db,
     provider,
     run: (scenario: Scenario, arm: 'memory' | 'withheld') =>
-      runScenario(db, provider, scenario, arm),
+      runScenario(db, provider, scenario, arm, chat),
     async close() {
       provider.close();
+      await handle.sql.end({ timeout: 2 });
       await db.close();
     },
   };
 }
+type ChatSurface = SubmissionService;
 
 async function runScenario(
   db: TestDatabase,
   provider: ScriptedProvider,
   scenario: Scenario,
   arm: 'memory' | 'withheld',
+  chat?: ChatSurface,
 ): Promise<ScenarioRun> {
   const started = performance.now();
   const checks: Check[] = [];
@@ -578,15 +590,31 @@ async function runScenario(
         const space = state(step.space);
         const key = `${step.space}:${step.conversation}`;
         let jobId = conversations.get(key);
+        if (!chat) throw new Error('chat steps need the chat surface');
+        const surface = chat;
+        const person = space.scope.ownerId;
         if (!jobId) {
-          jobId = newId('job');
-          await sql`insert into job (id, space_id, title, objective, kind, state, revision, lease_epoch)
-            values (${jobId}, ${space.scope.spaceId}, 'New chat', 'New chat', 'chat', 'completed', 1, 1)`;
+          const created = await principalContext.run(person, () =>
+            surface.jobs.transaction((tx) =>
+              surface.jobs.createInTransaction(
+                tx,
+                { space_id: space.scope.spaceId, title: 'New chat', objective: 'New chat' },
+                { kind: 'chat' },
+                'owner_request',
+              ),
+            ),
+          );
+          jobId = created.id;
           conversations.set(key, jobId);
         }
-        const [event] = await sql`insert into event (job_id, type, payload, dedup_key)
-          values (${jobId}, 'notice', ${JSON.stringify({ kind: 'user_message', text: step.text, principal_id: space.scope.ownerId })}::text::jsonb,
-            ${`${scenario.id}:${label}:${jobId}`}) returning seq`;
+        const conversation = jobId;
+        await principalContext.run(person, () =>
+          surface.input(conversation, { text: step.text }, `sub_${newId('turn')}`),
+        );
+        // The turn ends, as a runner would end it, so the next message is accepted.
+        await sql`update job set state = 'waiting_for_input', current_turn_id = null where id = ${conversation}`;
+        const [event] = await sql`select max(seq) as seq from event
+          where job_id = ${conversation} and type = 'notice' and payload->>'kind' = 'user_message'`;
         const owner = { ...space.scope, principalId: space.scope.ownerId };
         await captureChat({
           sql,
@@ -687,7 +715,11 @@ async function runScenario(
           (select count(*)::int from question
             where space_id = ${spaceId} and text like ${pattern}) as questions,
           (select count(*)::int from memory_proposals
-            where space_id = ${spaceId} and payload::text like ${pattern}) as proposals`;
+            where space_id = ${spaceId} and payload::text like ${pattern}) as proposals,
+          (select count(*)::int from event e join job j on j.id = e.job_id
+            where j.space_id = ${spaceId} and e.type = 'notice'
+              and e.payload->>'kind' in ('memory_tool', 'tool_trace')
+              and e.payload::text like ${pattern}) as notices`;
         const left = Object.entries(found ?? {}).filter(([, count]) => Number(count) > 0);
         check(
           `${label} "${step.text}" is erased`,
