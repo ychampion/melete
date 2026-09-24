@@ -620,7 +620,9 @@ export function ChatScreen({ id }: { id: string | null }) {
           <>
             <AgentFace look={lookOf(agent)} size={14} />
             {agent.name}
-            {amount ? ` · ${amount.figure} ${amount.direction}` : ''}
+            {amount
+              ? ` · ${amount.figure} ${found?.item.status === 'settled' ? 'settled' : amount.direction}`
+              : ''}
           </>
         ) : undefined
       }
