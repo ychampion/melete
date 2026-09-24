@@ -14,6 +14,7 @@ import {
   applyGap,
   applyMessageEvent,
   emptyTranscript,
+  fillTurns,
   fromTurns,
   setDelivery,
   setDrafts,
@@ -244,6 +245,19 @@ export function useConversation(id: string | null): ConversationState {
         }
       })();
 
+      // A turn started elsewhere arrives as events first; its saved text is read once.
+      const reading = new Set<string>();
+      const readTurn = (turnId: string | null) => {
+        if (!turnId || reading.has(turnId) || turnId.startsWith('local_')) return;
+        reading.add(turnId);
+        void adapter.turns(id).then((saved) => {
+          if (controller.signal.aborted || !saved.data) return;
+          const turns = saved.data.turns;
+          // Not saved yet: the next event for this turn reads it again.
+          if (!turns.some((turn) => turn.id === turnId)) reading.delete(turnId);
+          setTranscriptState((previous) => fillTurns(previous, turns));
+        });
+      };
       for await (const item of subscribeConversation(id, {
         after: initial.lastSeq,
         signal: controller.signal,
@@ -254,7 +268,13 @@ export function useConversation(id: string | null): ConversationState {
           setLive(false);
           setTranscriptState((previous) => applyGap(previous, item.gap));
         } else {
-          setTranscriptState((previous) => applyEvent(previous, item.event));
+          const event = item.event;
+          setTranscriptState((previous) => {
+            const next = applyEvent(previous, event);
+            if (next.turns.some((turn) => turn.unread && turn.id === event.turn_id))
+              queueMicrotask(() => readTurn(event.turn_id));
+            return next;
+          });
           if (item.event.item.type === 'status') {
             const { status, composer } = item.event.item;
             setConversation((previous) =>

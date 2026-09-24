@@ -93,6 +93,8 @@ export function UserBubble({
   onRetry?: () => void;
 }) {
   const delivery = turn.delivery;
+  // A turn started elsewhere is drawn from its events before its message is read.
+  if (!turn.turn.text) return null;
   return (
     <div className="bubble-wrap">
       <div className="bubble" data-pending={delivery ? 'true' : undefined}>
