@@ -26,8 +26,11 @@
  * function over rows so the integrator can swap in a ledger-scoped query without
  * touching anything else here.
  */
+
+import { domainToASCII } from 'node:url';
 import { canonicalizePayload, jobConstraints } from '@melete/contracts';
 import type { Sql } from 'postgres';
+import { ServiceError } from '../api/errors.ts';
 import { EmailConnector } from '../connectors/email.ts';
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import { newId } from '../ids.ts';
@@ -47,6 +50,11 @@ export const REPLY_READ_LIMIT = 50;
 export type ReplyMessage = {
   messageId: string;
   from: string;
+  /**
+   * The addresses the mail parser read from the header. When present they are
+   * the only thing that decides who sent it; `from` is only for showing.
+   */
+  fromAddresses?: string[];
   subject: string;
   receivedAt: string;
 };
@@ -72,11 +80,53 @@ export interface ReplyMailbox {
 // who sent it
 // --------------------------------------------------------------------------
 
-/** The address inside `Acme Billing <billing@acme.test>`, lowercased. */
-export function fromAddress(from: string): string | null {
-  const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(from);
-  const bare = angled?.[1] ?? (/^[^<>@\s]+@[^<>@\s]+$/.test(from.trim()) ? from.trim() : null);
-  return bare ? bare.toLowerCase() : null;
+/**
+ * Every address in a From header, lowercased. Quoted display names and
+ * comments are set aside first, so `"Acme, Inc." <a@acme.test>` is one address
+ * and `billing@acme.test (Acme Billing)` is `billing@acme.test`. A part that is
+ * not an address makes the whole header unreadable, which reads as nobody.
+ */
+export function fromAddresses(from: string): string[] {
+  let text = from.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  for (let previous = ''; previous !== text; ) {
+    previous = text;
+    text = text.replace(/\([^()]*\)/g, ' ');
+  }
+  const addresses: string[] = [];
+  for (const part of text.split(',')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(trimmed);
+    // One angle-address per part, and no address outside it: a part that holds
+    // two is a display name pretending to be a sender, and reads as nobody.
+    const outside = angled ? trimmed.replace(angled[0], '') : '';
+    if (angled && /[<>@]/.test(outside)) return [];
+    const address = angled?.[1] ?? (/^[^<>@\s"]+@[^<>@\s"]+$/.test(trimmed) ? trimmed : null);
+    if (!address) return [];
+    addresses.push(address.toLowerCase());
+  }
+  return addresses;
+}
+
+/**
+ * The one company a From header speaks for: the registrable domain every
+ * address in it shares, or nothing. A header naming two companies is not a
+ * reply from either, whichever of them comes last.
+ */
+export function senderDomain(from: string): string | null {
+  return sharedDomain(fromAddresses(from));
+}
+
+function sharedDomain(addresses: readonly string[]): string | null {
+  const domains = new Set(addresses.map((address) => registrableDomain(address)));
+  if (domains.size !== 1) return null;
+  const [domain] = domains;
+  return domain ?? null;
+}
+
+/** Who a message is from: the parsed addresses when the mailbox gave them. */
+export function messageSenderDomain(message: ReplyMessage): string | null {
+  return message.fromAddresses ? sharedDomain(message.fromAddresses) : senderDomain(message.from);
 }
 
 /**
@@ -111,7 +161,10 @@ const MULTI_LABEL_SUFFIXES = new Set([
 /** The registrable domain of an address or host: the company's identity. */
 export function registrableDomain(value: string): string | null {
   const at = value.lastIndexOf('@');
-  const host = (at < 0 ? value : value.slice(at + 1)).trim().toLowerCase().replace(/\.$/, '');
+  // An internationalised name and its ASCII spelling are one company.
+  const host = domainToASCII(
+    (at < 0 ? value : value.slice(at + 1)).trim().toLowerCase().replace(/\.$/, ''),
+  );
   if (!host || !/^[a-z0-9.-]+$/.test(host) || host.startsWith('.') || host.includes('..'))
     return null;
   const labels = host.split('.');
@@ -137,8 +190,7 @@ export function isReplyFrom(
   message: ReplyMessage,
 ): boolean {
   if (!message.messageId) return false;
-  const sender = fromAddress(message.from);
-  if (!sender || registrableDomain(sender) !== candidate.domain) return false;
+  if (messageSenderDomain(message) !== candidate.domain) return false;
   const at = Date.parse(message.receivedAt);
   const since = Date.parse(candidate.since);
   if (!Number.isFinite(at) || !Number.isFinite(since)) return false;
@@ -290,6 +342,13 @@ export function connectorReplyMailbox(options: {
         read.push({
           messageId,
           from: String(record.from ?? ''),
+          ...(Array.isArray(record.from_addresses)
+            ? {
+                fromAddresses: record.from_addresses.filter(
+                  (entry): entry is string => typeof entry === 'string',
+                ),
+              }
+            : {}),
           subject: String(record.subject ?? ''),
           receivedAt: typeof record.date === 'string' ? record.date : readAt,
         });
@@ -309,6 +368,21 @@ export type ReplyPollerDeps = {
   /** How to read one candidate's mailbox. Production reads the connector. */
   mailboxFor: (candidate: ReplyCandidate) => ReplyMailbox;
 };
+
+/**
+ * The observation a reply is delivered as. `sender_domain` is what a chase's
+ * watch compares, so the judgement of who sent it is made once, here, from the
+ * parsed header rather than by a pattern over its text.
+ */
+export function replyPayload(message: ReplyMessage) {
+  return {
+    message_id: message.messageId,
+    from: message.from,
+    sender_domain: messageSenderDomain(message),
+    subject: message.subject,
+    received_at: message.receivedAt,
+  };
+}
 
 /**
  * Hand one candidate's replies to the trigger service. Returns how many events
@@ -333,16 +407,22 @@ export async function deliverReplies(
       // the cursor and the key that makes a second sighting a duplicate.
       cursor: message.messageId,
       dedup_key: message.messageId,
-      payload: {
-        message_id: message.messageId,
-        from: message.from,
-        subject: message.subject,
-        received_at: message.receivedAt,
-      },
+      payload: replyPayload(message),
     });
     if (!received.duplicate) delivered += 1;
   }
   return delivered;
+}
+
+/**
+ * Why a delivery failed, as a code an operator can act on. A service error
+ * already names its reason in a fixed code; anything else can carry a mail
+ * server's words or an address, so it is logged as one fixed code instead.
+ */
+export function deliveryFailureCode(error: unknown): string {
+  return error instanceof ServiceError && /^[a-z_]{1,64}$/.test(error.code)
+    ? error.code
+    : 'internal_error';
 }
 
 /**
@@ -365,8 +445,10 @@ export class CompanyReplyPoller {
       // succeeds delivers it once.
       try {
         delivered += await deliverReplies(this.deps, candidate);
-      } catch {
-        process.stderr.write(`company replies: delivery_failed ${candidate.jobId}\n`);
+      } catch (error) {
+        process.stderr.write(
+          `company replies: delivery_failed ${deliveryFailureCode(error)} ${candidate.jobId}\n`,
+        );
       }
     }
     return delivered;

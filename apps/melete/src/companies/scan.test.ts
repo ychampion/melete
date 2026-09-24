@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { evidenceHolds, LEDGER_ITEM_KINDS, type LedgerItem } from '@melete/contracts';
-import type { CompanyExtractor } from './extract.ts';
+import { type CompanyExtractor, EXTRACTION_INSTRUCTIONS } from './extract.ts';
 import { FIXTURE_MESSAGE_COUNT, FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { fixtureMailbox } from './mailbox.ts';
 import { messageText } from './messages.ts';
@@ -97,6 +97,16 @@ describe('a scan of the demonstration mailbox', () => {
     expect(inGbp.reduce((sum, company) => sum + (company.monthly_spend_minor ?? 0), 0)).toBe(
       map.totals.monthly_spend_minor,
     );
+  });
+
+  test('a date the email gave without a time is stored as a date', async () => {
+    const { map } = await scanFixtures();
+    const dated = map.items.filter((item) => item.due_at !== null);
+    expect(dated.length).toBeGreaterThan(0);
+    // "renews on 1 October 2026" names a day; the map keeps it as one.
+    expect(dated.some((item) => item.due_date_only === true)).toBe(true);
+    for (const item of dated.filter((entry) => entry.due_date_only))
+      expect(item.due_at?.endsWith('T00:00:00.000Z')).toBe(true);
   });
 
   test('covers the kinds the map is made of, including promises', async () => {
@@ -368,4 +378,8 @@ describe('one person’s map is one person’s', () => {
     if (!first) return;
     expect(await store.item(elsewhere, first.id)).toBe(null);
   });
+});
+
+test('the extractor is asked for a date with no time as a bare date', () => {
+  expect(EXTRACTION_INSTRUCTIONS).toContain('YYYY-MM-DD');
 });

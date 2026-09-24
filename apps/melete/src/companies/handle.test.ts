@@ -7,8 +7,9 @@ import {
   oneLine,
   PLAYBOOK_FOR_KIND,
   playbookFor,
-  senderPattern,
+  replyWatch,
 } from './handle.ts';
+import { replyPayload } from './replies.ts';
 
 test('an amount is written the way its own currency is written', () => {
   expect(formatAmount(4999, 'GBP')).toBe('49.99 GBP');
@@ -90,14 +91,21 @@ test('outside text cannot open a second line in the instructions', () => {
 });
 
 test('a reply watch hears the company and its subdomains, and nobody else', () => {
-  const watch = {
-    all: [{ field: 'from', op: 'matches' as const, value: senderPattern('acme.co.uk') }],
-  };
-  const heard = (from: string) => evaluateWatch(watch, { from });
+  const heard = (from: string) =>
+    evaluateWatch(
+      replyWatch('acme.co.uk'),
+      replyPayload({
+        messageId: '<r@acme.co.uk>',
+        from,
+        subject: 'Re: Refund',
+        receivedAt: '2026-09-18T11:00:00.000Z',
+      }),
+    );
   expect(heard('support@acme.co.uk')).toBe(true);
   expect(heard('Acme <Billing@MAIL.Acme.co.uk>')).toBe(true);
+  expect(heard('billing@acme.co.uk (Acme Billing)')).toBe(true);
   expect(heard('x@acme.co.uk.evil.test')).toBe(false);
   expect(heard('x@notacme.co.uk')).toBe(false);
-  expect(heard('x@acmeXco.uk')).toBe(false);
   expect(heard('acme.co.uk <x@evil.test>')).toBe(false);
+  expect(heard('x@evil.test, Acme <billing@acme.co.uk>')).toBe(false);
 });

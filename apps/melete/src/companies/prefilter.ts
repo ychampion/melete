@@ -14,9 +14,8 @@
 import {
   displayName,
   nameFromDomain,
-  registrableDomain,
   type ScanMessage,
-  senderAddress,
+  scanSenderDomain,
   withheldFromScan,
 } from './messages.ts';
 
@@ -120,8 +119,7 @@ export function prefilter(
       counts.withheld++;
       continue;
     }
-    const address = senderAddress(message.from);
-    const domain = address ? registrableDomain(address) : null;
+    const domain = scanSenderDomain(message);
     if (!domain) {
       counts.noSender++;
       continue;

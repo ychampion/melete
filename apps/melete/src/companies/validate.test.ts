@@ -31,6 +31,19 @@ const candidate = (over: Partial<ExtractedItem> = {}): ExtractedItem => ({
 });
 
 describe('the admission gate', () => {
+  test('a due date given without a time is admitted as a date, and says so', () => {
+    const dated = admit(candidate({ due_at: '2026-09-25' }), context);
+    const timed = admit(candidate({ due_at: '2026-09-25T00:00:00Z' }), context);
+    const none = admit(candidate(), context);
+    expect(dated.admitted && dated.item).toMatchObject({
+      due_at: '2026-09-25T00:00:00.000Z',
+      due_date_only: true,
+    });
+    // Midnight stated as a time is still a time.
+    expect(timed.admitted && timed.item.due_date_only).toBe(false);
+    expect(none.admitted && none.item.due_date_only).toBe(false);
+  });
+
   test('admits a claim whose quote sits exactly where it says it does', () => {
     const result = admit(candidate(), context);
     expect(result.admitted).toBe(true);
@@ -229,7 +242,7 @@ describe('the totals', () => {
       amount_minor: null,
       currency: null,
     });
-    const onThe25th = { due_at: '2026-09-25T00:00:00.000Z' };
+    const onThe25th = { due_at: '2026-09-25T00:00:00.000Z', due_date_only: true };
     const at = (iso: string, timeZone: string) => ({ now: new Date(iso), timeZone });
 
     // 15:30 on the 25th in Kolkata: in force, and the renewal is today.
@@ -255,12 +268,15 @@ describe('the totals', () => {
     );
     expect(after.promises_lapsed).toBe(1);
 
-    // A stated time is an instant, and lapses at that instant.
+    // A stated time is an instant, and lapses at that instant, midnight included.
     const instant = computeTotals(
-      [{ ...promise, due_at: '2026-09-25T09:00:00.000Z' }],
+      [
+        { ...promise, due_at: '2026-09-25T09:00:00.000Z' },
+        { ...promise, due_at: '2026-09-25T00:00:00.000Z', due_date_only: false },
+      ],
       at('2026-09-25T10:00:00.000Z', 'Asia/Kolkata'),
     );
-    expect(instant.promises_lapsed).toBe(1);
+    expect(instant.promises_lapsed).toBe(2);
   });
 
   test('counts a renewal only when it falls inside the next thirty days', () => {

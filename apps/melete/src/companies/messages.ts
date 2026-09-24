@@ -7,14 +7,19 @@
  * call it rather than each building their own.
  */
 
+import { domainToASCII } from 'node:url';
 import { sensitiveInboxMessage } from '../connectors/email.ts';
 import type { MailMessage } from '../connectors/mail-transport.ts';
+import { fromAddresses } from './replies.ts';
 
 /** One message as the scan sees it: headers it groups by, and the body it reads. */
 export type ScanMessage = {
   /** The RFC 5322 Message-ID. The scan keys stored text by it, so it must exist. */
   messageId: string;
+  /** The header as rendered, for people. It never decides who sent the message. */
   from: string;
+  /** The sender's addresses as the mail parser read them, when the mailbox gave them. */
+  fromAddresses?: string[];
   to: string;
   subject: string;
   text: string;
@@ -32,11 +37,29 @@ export function messageText(message: Pick<ScanMessage, 'subject' | 'text'>): str
   return `Subject: ${message.subject}\n\n${message.text}`;
 }
 
-/** The address inside `Display Name <someone@example.com>`, lowercased. */
+/**
+ * The one address a rendered From header holds, lowercased, or nothing. It is
+ * read with the reply side's guarded parser, so a display name that spells out
+ * another address is not taken for the sender.
+ */
 export function senderAddress(from: string): string | null {
-  const angled = /<([^<>@\s]+@[^<>@\s]+)>/.exec(from);
-  const bare = angled?.[1] ?? (/^[^<>@\s]+@[^<>@\s]+$/.test(from.trim()) ? from.trim() : null);
-  return bare ? bare.toLowerCase() : null;
+  const [only, ...rest] = fromAddresses(from);
+  return only && rest.length === 0 ? only : null;
+}
+
+/**
+ * The company a message is from: the registrable domain every sender address
+ * shares. The parser's addresses decide it when the mailbox gave them; the
+ * rendered header is only read, guarded, when it did not.
+ */
+export function scanSenderDomain(
+  message: Pick<ScanMessage, 'from' | 'fromAddresses'>,
+): string | null {
+  const addresses = message.fromAddresses ?? fromAddresses(message.from);
+  const domains = new Set(addresses.map((address) => registrableDomain(address)));
+  if (domains.size !== 1) return null;
+  const [domain] = domains;
+  return domain ?? null;
 }
 
 /** `Acme Billing <billing@acme.com>` becomes `Acme Billing`, or nothing. */
@@ -78,7 +101,10 @@ const MULTI_LABEL_SUFFIXES = new Set([
 /** The registrable domain of an address: the company's identity for this scan. */
 export function registrableDomain(address: string): string | null {
   const at = address.lastIndexOf('@');
-  const host = (at < 0 ? address : address.slice(at + 1)).trim().toLowerCase().replace(/\.$/, '');
+  // An internationalised name and its ASCII spelling are one company.
+  const host = domainToASCII(
+    (at < 0 ? address : address.slice(at + 1)).trim().toLowerCase().replace(/\.$/, ''),
+  );
   if (!host || !/^[a-z0-9.-]+$/.test(host) || host.startsWith('.') || host.includes('..'))
     return null;
   const labels = host.split('.');
@@ -128,6 +154,7 @@ export function fromMailMessage(
   return {
     messageId: message.message_id,
     from: message.from,
+    ...(message.from_addresses ? { fromAddresses: message.from_addresses } : {}),
     to: message.to,
     subject: message.subject,
     text: message.text,

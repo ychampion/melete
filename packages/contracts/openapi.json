@@ -21338,6 +21338,9 @@
               }
             ]
           },
+          "due_date_only": {
+            "type": "boolean"
+          },
           "status": {
             "type": "string",
             "enum": [

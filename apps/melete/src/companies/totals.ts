@@ -27,13 +27,6 @@ export type CompanyTotals = CompanyMapTotals;
 
 export const RENEWAL_WINDOW_DAYS = 30;
 
-/**
- * A due date the email gave without a time is admitted as midnight UTC. It
- * names a whole day, and the day it names is the person's own: a promise "by
- * 25 September" is kept while it is still the 25th where they live.
- */
-const DATE_ONLY = /T00:00:00(?:\.000)?Z$/;
-
 function zoneOrUtc(timeZone: string | undefined): string {
   try {
     if (timeZone) new Intl.DateTimeFormat('en-GB', { timeZone });
@@ -78,7 +71,9 @@ export function computeTotals(
     if (item.direction === 'you_pay' && item.kind === 'subscription')
       totals.monthly_spend_minor += money;
     const due = item.due_at ? Date.parse(item.due_at) : Number.NaN;
-    const day = item.due_at && DATE_ONLY.test(item.due_at) ? item.due_at.slice(0, 10) : null;
+    // A day with no time is a whole day where the person lives: a promise "by
+    // 25 September" is kept while it is still the 25th there.
+    const day = item.due_at && item.due_date_only ? item.due_at.slice(0, 10) : null;
     const soon = day
       ? day >= today && day <= lastDay
       : Number.isFinite(due) && due >= options.now.getTime() && due <= horizon;

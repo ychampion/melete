@@ -71,6 +71,9 @@ export function admit(candidate: ExtractedItem, context: AdmissionContext): Admi
     return { admitted: false, reason: 'info_with_amount' };
   const dueAt = normalizeDueAt(candidate.due_at);
   if (dueAt === 'invalid') return { admitted: false, reason: 'bad_due_date' };
+  // A bare calendar date names a day, not an instant; the flag keeps that fact,
+  // because midnight UTC alone cannot tell the two apart.
+  const dateOnly = dueAt !== null && /^\d{4}-\d{2}-\d{2}$/.test(candidate.due_at?.trim() ?? '');
   return {
     admitted: true,
     item: {
@@ -83,6 +86,7 @@ export function admit(candidate: ExtractedItem, context: AdmissionContext): Admi
       amount_minor: candidate.amount_minor,
       currency: candidate.currency,
       due_at: dueAt,
+      due_date_only: dateOnly,
       status: 'found',
       confidence: candidate.confidence,
       evidence: candidate.evidence.map((entry) => ({

@@ -13,12 +13,14 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { simpleParser } from 'mailparser';
 import { EmailConnector } from '../connectors/email.ts';
-import type {
-  EmailConnection,
-  MailMessage,
-  MailTransport,
-  OutgoingMail,
+import {
+  type EmailConnection,
+  type MailMessage,
+  type MailTransport,
+  type OutgoingMail,
+  toMailMessage,
 } from '../connectors/mail-transport.ts';
 import { ConnectorRegistry } from '../connectors/registry.ts';
 import type { SecretAccess } from '../connectors/secrets.ts';
@@ -349,4 +351,32 @@ describe('reading a mailbox through the installed connector', () => {
     });
     await expect(reader.recent(50)).rejects.toThrow(/^I couldn't read your mailbox: /);
   });
+});
+
+test('a display name that spells out a known company’s address does not file mail under it', async () => {
+  // The name decodes to `Nimbus Ledger" <billing@nimbusledger.example> "`; the
+  // message is from someone else entirely.
+  const name = Buffer.from('Nimbus Ledger" <billing@nimbusledger.example> "').toString('base64');
+  const crafted = toMailMessage(
+    9,
+    await simpleParser(
+      `From: =?UTF-8?B?${name}?= <x@evil.test>\r\nMessage-ID: <9@evil.test>\r\nDate: Tue, 15 Sep 2026 10:00:00 +0000\r\nSubject: Your invoice is overdue\r\n\r\nPay the overdue invoice now.`,
+    ),
+  );
+  const transport = new MailDouble();
+  transport.messages = [transport.messages[0] as MailMessage, crafted];
+  const registry = new ConnectorRegistry();
+  registry.register(CONNECTION, new EmailConnector(config, secret, () => transport));
+  const read = await connectorMailbox({
+    registry,
+    connectionId: CONNECTION,
+    spaceId: SPACE,
+    undatedAt: UNDATED,
+  }).recent(50);
+  const grouped = prefilter(read, { now: new Date(UNDATED), windowDays: 90 });
+  const nimbus = grouped.companies.find((group) => group.domain === 'nimbusledger.example');
+  expect(nimbus?.candidates.map((message) => message.messageId)).toEqual([
+    '<1@nimbusledger.example>',
+  ]);
+  expect(grouped.companies.find((group) => group.domain === 'evil.test')?.messageCount).toBe(1);
 });

@@ -1,5 +1,5 @@
 import { ImapFlow } from 'imapflow';
-import { simpleParser } from 'mailparser';
+import { type AddressObject, type EmailAddress, type ParsedMail, simpleParser } from 'mailparser';
 import nodemailer from 'nodemailer';
 
 export type EmailConnection = {
@@ -20,6 +20,8 @@ export type MailMessage = {
   uid: number;
   message_id: string | null;
   from: string;
+  /** The sender's addresses as the parser read them; see `toMailMessage`. */
+  from_addresses?: string[];
   to: string;
   subject: string;
   text: string;
@@ -27,6 +29,51 @@ export type MailMessage = {
   /** The Date header as an ISO instant, when the message carried a usable one. */
   date?: string | null;
 };
+
+/**
+ * A parsed message in the shape the connector hands out. `from` is mailparser's
+ * rendering of the header, for people; `from_addresses` is its parsed address
+ * list, for code. A decoded display name can hold anything, including text
+ * that looks like another address, and the rendering does not escape it, so
+ * nothing that decides who sent a message may re-parse `from`.
+ */
+export function toMailMessage(uid: number, parsed: ParsedMail): MailMessage {
+  const to = parsed.to
+    ? Array.isArray(parsed.to)
+      ? parsed.to.map((v) => v.text).join(', ')
+      : parsed.to.text
+    : '';
+  return {
+    uid,
+    message_id: parsed.messageId ?? null,
+    from: parsed.from?.text ?? '',
+    from_addresses: addressesOf(parsed.from),
+    to,
+    subject: parsed.subject ?? '',
+    text: parsed.text ?? '',
+    html: typeof parsed.html === 'string' ? parsed.html : '',
+    // A message nobody can date cannot be placed in a time window, so an
+    // unparseable Date header is absent rather than guessed at.
+    date:
+      parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime())
+        ? parsed.date.toISOString()
+        : null,
+  };
+}
+
+/** Every address in a parsed header, groups included, lowercased. */
+function addressesOf(header: AddressObject | AddressObject[] | undefined): string[] {
+  const out: string[] = [];
+  const walk = (entries: EmailAddress[]) => {
+    for (const entry of entries) {
+      if (entry.group) walk(entry.group);
+      else if (entry.address) out.push(entry.address.toLowerCase());
+    }
+  };
+  for (const object of header ? (Array.isArray(header) ? header : [header]) : [])
+    walk(object.value);
+  return out;
+}
 
 /**
  * One attachment, already read by trusted service code from a recorded
@@ -139,27 +186,7 @@ export class ImapSmtpTransport implements MailTransport {
     const item = await client.fetchOne(uid, { source: true }, { uid: true });
     if (!item) return null;
     if (!item.source || item.source.length > MAX_MESSAGE_BYTES) return null;
-    const parsed = await simpleParser(item.source, { skipImageLinks: true });
-    const to = parsed.to
-      ? Array.isArray(parsed.to)
-        ? parsed.to.map((v) => v.text).join(', ')
-        : parsed.to.text
-      : '';
-    return {
-      uid,
-      message_id: parsed.messageId ?? null,
-      from: parsed.from?.text ?? '',
-      to,
-      subject: parsed.subject ?? '',
-      text: parsed.text ?? '',
-      html: typeof parsed.html === 'string' ? parsed.html : '',
-      // A message nobody can date cannot be placed in a time window, so an
-      // unparseable Date header is absent rather than guessed at.
-      date:
-        parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime())
-          ? parsed.date.toISOString()
-          : null,
-    };
+    return toMailMessage(uid, await simpleParser(item.source, { skipImageLinks: true }));
   }
 
   async search(query: string, limit: number): Promise<MailMessage[]> {

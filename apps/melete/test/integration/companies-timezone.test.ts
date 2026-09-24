@@ -84,6 +84,8 @@ withDb('a promise due today where the person lives is still in force', async () 
       amount_minor: null,
       currency: null,
       due_at: '2026-09-25T00:00:00.000Z',
+      // Stored and read back: the flag, not the hour, says it is a date.
+      due_date_only: true,
       status: 'found',
       confidence: 'high',
       evidence: [{ message_id: '<p1@acme.test>', quote: 'by 25 September', start: 0, end: 15 }],
