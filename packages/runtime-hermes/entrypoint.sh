@@ -35,6 +35,9 @@ set -eu
 mkdir -p "$HERMES_HOME/plugins"
 rm -rf "$HERMES_HOME/plugins/melete"
 cp -R /opt/melete-runtime/melete_plugin "$HERMES_HOME/plugins/melete"
+# Melete's identity is the engine's identity slot. Written on every start, so
+# the engine never seeds its own stock persona into a fresh home.
+cp /opt/melete-runtime/SOUL.md "$HERMES_HOME/SOUL.md"
 
 python - "$HERMES_HOME/config.yaml" <<'PY'
 import os, sys, yaml

@@ -65,6 +65,7 @@ COPY runtime_support/ /opt/melete-runtime/runtime_support/
 COPY patches/ /opt/melete-runtime/patches/
 RUN python /opt/melete-runtime/patches/observer_bridge.py /opt/hermes
 COPY config/config.yaml /opt/melete-runtime/config.yaml
+COPY config/SOUL.md /opt/melete-runtime/SOUL.md
 COPY entrypoint.sh /usr/local/bin/melete-runtime-entrypoint
 COPY build-metadata.py /opt/melete-runtime/build-metadata.py
 COPY healthcheck.py /opt/melete-runtime/healthcheck.py

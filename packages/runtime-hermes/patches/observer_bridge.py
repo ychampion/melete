@@ -1,6 +1,11 @@
-"""Apply only the reviewed observer seams to Hermes v2026.9.7.
+"""Apply only the reviewed seams to Hermes v2026.9.7.
 
-All three original source hashes are checked before any write. A subsequent
+Three observer seams, and one prompt seam: `agent.host_prompt: false` leaves out
+the engine's own product pointer, its profile line and its host runtime block,
+which describe the engine's install rather than the attempt. The prompt seam is
+inert unless that key is set.
+
+All four original source hashes are checked before any write. A subsequent
 run accepts only the same patch, never an arbitrary nearby upstream version.
 The support module is copied into the runtime's import root so plugin loading
 and the HTTP executor share one context variable, independent of plugin aliases.
@@ -35,6 +40,35 @@ PATCHES = {
 
     # Rotation-independent flag: the gateway uses it (not an id diff) to re-baseline
 """)],
+    ),
+    "agent/system_prompt.py": (
+        "0ed123e2360daab3c3fe839624c971a132b8ba56ee30c602a00c77d5828a621f",
+        [
+            ("def _join_tier(parts: List[Optional[str]]) -> str:\n",
+             """def _host_prompt(agent: Any) -> bool:  # Melete prompt seam
+    \"\"\"``agent.host_prompt`` (default true). False leaves out the blocks that
+    describe the engine's own install rather than the run: the product pointer,
+    the profile line and the host runtime environment.\"\"\"
+    try:
+        from hermes_cli.config import load_config_readonly
+        section = load_config_readonly().get("agent") or {}
+    except Exception:
+        return True
+    return bool(section.get("host_prompt", True)) if isinstance(section, dict) else True
+
+
+def _join_tier(parts: List[Optional[str]]) -> str:
+"""),
+            ("    parts += [_active_profile_line(agent), _platform_hint(agent)]\n",
+             "    parts += [_active_profile_line(agent) if _host_prompt(agent) else \"\", _platform_hint(agent)]  # Melete prompt seam\n"),
+            ("    stable_parts.extend(_alibaba_identity_part(agent))\n",
+             """    if not _host_prompt(agent):  # Melete prompt seam
+        stable_parts[_help_guidance_slot] = ""
+    stable_parts.extend(_alibaba_identity_part(agent))
+"""),
+            ("    environment_hints = _pb.build_environment_hints()\n",
+             "    environment_hints = _pb.build_environment_hints() if _host_prompt(agent) else \"\"  # Melete prompt seam\n"),
+        ],
     ),
     "gateway/platforms/api_server_runs.py": (
         "270f7e221b5486a6ac499732d0f5471f3f48dc0c0a0633186bc762bcb1345a39",
@@ -112,7 +146,7 @@ def main() -> None:
     prepared.append((root / "melete_runtime_hooks.py", support.read_text(encoding="utf-8")))
     for target, content in prepared:
         target.write_text(content, encoding="utf-8", newline="\n")
-    print("Melete observer bridge applied: 3 checked source files and 1 support module")
+    print("Melete observer bridge applied: 4 checked source files and 1 support module")
 
 
 if __name__ == "__main__":

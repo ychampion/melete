@@ -37,6 +37,7 @@ import {
   attempt,
   connection,
   event,
+  experienceProfile,
   experienceTurn,
   knowledgeRecord,
   question,
@@ -491,8 +492,13 @@ export async function buildAttemptSkeleton(
         .from(agent)
         .where(and(eq(agent.id, personaId), eq(agent.spaceId, row.spaceId)))
     : [];
+  const [profile] = await tx
+    .select({ timeZone: experienceProfile.timeZone })
+    .from(experienceProfile)
+    .where(eq(experienceProfile.spaceId, row.spaceId));
   return responsibilityAttemptBundle.parse({
     ...(persona ? { identity: agentIdentity(agentView(persona)) } : {}),
+    ...(profile?.timeZone ? { time_zone: profile.timeZone } : {}),
     ...(access.principalId
       ? { principal_id: access.principalId, membership_generation: access.generation }
       : {}),

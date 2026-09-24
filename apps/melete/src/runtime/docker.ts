@@ -341,6 +341,7 @@ export class DockerHermesRuntimeAdapter implements RuntimeAdapter {
             `MELETE_MODEL_PROVIDER=${bundle.model.provider}`,
             `MELETE_MODEL_NAME=${bundle.model.model}`,
             `MELETE_MODEL_API_MODE=${modelApiMode(bundle.model.provider, bundle.model.model)}`,
+            `HERMES_TIMEZONE=${bundle.time_zone ?? 'UTC'}`,
             // The image carries the rendered configuration; these are the parts
             // of it that follow the model this attempt was granted, worked out
             // by the same renderer and applied by the entrypoint at boot.

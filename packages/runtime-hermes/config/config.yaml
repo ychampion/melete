@@ -63,6 +63,19 @@ agent:
   # means a looping run is bounded only by wall time. What an attempt may spend
   # is decided by the job's accounting, not here.
   max_turns: 150
+  # Read under `agent:`. The probe describes the host's Python toolchain, which
+  # no tool offered to an attempt uses.
+  environment_probe: false
+  # The prompt seam in patches/observer_bridge.py: leaves out the engine's
+  # product pointer, its profile line and its host runtime block, which
+  # describe the engine's install rather than the attempt.
+  host_prompt: false
+
+# Read at the top level, not under `agent:`. Replaces the engine's api_server
+# hint, which describes MEDIA: file tags no Melete surface renders.
+platform_hints:
+  api_server:
+    replace: Replies are shown to the person as chat text. Keep them brief and natural. Files you make reach them as artifacts, never as paths in the reply.
 
 tool_loop_guardrails:
   # The engine counts this platform as attended, so its non-interactive hard stop

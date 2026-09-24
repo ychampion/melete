@@ -171,6 +171,13 @@ export function compactionThresholdTokens(options: {
 export type EngineConfig = Record<string, unknown>;
 
 /** The engine configuration these options describe, secrets included only if given. */
+/**
+ * What the engine tells the model about the surface its reply reaches. Melete
+ * shows replies as chat text, and files the model makes arrive as artifacts.
+ */
+export const API_SERVER_HINT =
+  'Replies are shown to the person as chat text. Keep them brief and natural. Files you make reach them as artifacts, never as paths in the reply.';
+
 export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
   const features = { ...DEFAULT_FEATURES, ...options.features };
   const contextWindow =
@@ -199,7 +206,19 @@ export function renderEngineConfig(options: EngineConfigOptions): EngineConfig {
     memory: { memory_enabled: false, user_profile_enabled: false, provider: '' },
     curator: { enabled: false },
     checkpoints: { enabled: false },
-    agent: { max_turns: options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS },
+    agent: {
+      max_turns: options.maxTurns ?? DEFAULT_ENGINE_MAX_TURNS,
+      // Read under `agent:` (agent/agent_init.py:1336). The probe describes the
+      // host's Python toolchain, which no tool offered to an attempt uses.
+      environment_probe: false,
+      // The prompt seam in patches/observer_bridge.py: leaves out the engine's
+      // product pointer, its profile line and its host runtime block.
+      host_prompt: false,
+    },
+    // Read at the top level, not under `agent:` (agent/agent_init.py:1352).
+    // Replaces the engine's api_server hint, which describes MEDIA: file tags
+    // no Melete surface renders.
+    platform_hints: { api_server: { replace: API_SERVER_HINT } },
     tool_loop_guardrails: { hard_stop_enabled: true },
     compression: {
       enabled: true,

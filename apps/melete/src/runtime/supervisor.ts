@@ -19,6 +19,7 @@ import {
   engineSettingsFromEnvironment,
   HERMES_PINNED_COMMIT,
   renderEngineConfig,
+  renderSoul,
 } from '@melete/runtime-hermes';
 import { stringify } from 'yaml';
 import { modelApiMode } from '../gateway/providers.ts';
@@ -92,6 +93,9 @@ export function attemptEnvironment(
     MELETE_MODEL_PROVIDER: bundle.model.provider,
     MELETE_MODEL_NAME: bundle.model.model,
     MELETE_MODEL_API_MODE: modelApiMode(bundle.model.provider, bundle.model.model),
+    // The engine dates the conversation in this zone, read before its config.
+    // A space with no profile is UTC, never the host's zone.
+    HERMES_TIMEZONE: bundle.time_zone ?? 'UTC',
     PYTHONUNBUFFERED: '1',
     PYTHONDONTWRITEBYTECODE: '1',
   };
@@ -330,6 +334,9 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
         ...engineSettingsFromEnvironment(),
       });
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
+      // Melete's identity takes the engine's identity slot; without it the
+      // engine seeds its own stock persona into the fresh home.
+      await writeFile(join(home, 'SOUL.md'), renderSoul(), { mode: 0o600 });
       signal.throwIfAborted();
       const spawnedAt = Date.now();
       child = spawn(

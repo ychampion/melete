@@ -1,10 +1,12 @@
 /**
  * What one attempt is told, and in what order.
  *
- * Hermes appends the run's `instructions` into the context tier of its own
- * system prompt rather than replacing it (`agent/system_prompt.py:638`), so
- * everything here is additive: the engine's preamble is underneath, and this is
- * the part Melete owns. The engine contributes its own preamble in addition to
+ * Melete's identity is the engine's own identity slot: it is written as
+ * `SOUL.md` in the engine home, which the pinned engine puts first in its system
+ * prompt in place of its stock persona (`agent/system_prompt.py:487`). The run's
+ * `instructions` then follow the engine's preamble, so everything here is
+ * additive: a conversation's persona on top of that identity, then the part of
+ * the attempt Melete owns. The engine contributes its own preamble in addition to
  * the bounded skills and recalled knowledge supplied by the service. The
  * representative Melete scaffolding must remain below 4,000 estimated tokens;
  * its tripwire includes both rendered halves and tool definitions, excluding
@@ -29,12 +31,23 @@ import { estimateTokens, indexLine, loadIdentity } from '@melete/skills';
  */
 export const IDENTITY: string = loadIdentity();
 
-/** A run's `instructions`: identity, then procedure, then what is already known. */
+/**
+ * The engine home's `SOUL.md`: Melete's identity, whole, and nothing else. It is
+ * the same for every attempt, so it stays in the longest cached prefix.
+ */
+export const renderSoul = (): string => `${IDENTITY}\n`;
+
+/** A run's `instructions`: persona, then procedure, then what is already known. */
 export function renderInstructions(bundle: AttemptBundle): string {
-  const identity = bundle.identity ?? IDENTITY;
-  if (estimateTokens(identity) > 250)
-    throw new Error('The agent identity exceeds its 250-token cap.');
-  const parts = [identity];
+  const parts: string[] = [];
+  if (bundle.identity) {
+    if (estimateTokens(bundle.identity) > 250)
+      throw new Error("The conversation's persona exceeds its 250-token cap.");
+    // Layered on top of the identity in SOUL.md, never instead of it.
+    parts.push(
+      `# Who is speaking\n\n${bundle.identity}\n\nEverything in Melete's identity above still holds.`,
+    );
+  }
 
   if (bundle.skills.length > 0) {
     // The service has already applied the at-most-three rule; this only renders.
@@ -215,6 +228,7 @@ function renderDecision(approval: AttemptBundle['inputs']['approval_results'][nu
  */
 export function measureRenderedInput(bundle: AttemptBundle) {
   const rendered = [
+    renderSoul(),
     renderInstructions(bundle),
     renderInput(bundle),
     JSON.stringify(bundle.tools),
