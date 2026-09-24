@@ -6,22 +6,35 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import type { ExtractionProposal } from '@melete/contracts';
+import { openDatabase } from '../../src/db/client.ts';
 import { createScriptedProvider, fakeProvider } from '../../src/gateway/index.ts';
 import { newId } from '../../src/ids.ts';
+import { QUEUES } from '../../src/jobs/queue.ts';
+import { JobService } from '../../src/jobs/service.ts';
+import { SubmissionService } from '../../src/jobs/submissions.ts';
 import { captureChat, chatIntent } from '../../src/memory/capture.ts';
 import { MemoryError, type MemoryScope } from '../../src/memory/db.ts';
 import { ingest } from '../../src/memory/evidence.ts';
 import type { ExtractionGateway } from '../../src/memory/extract.ts';
 import { cleanupMemory } from '../../src/memory/forget.ts';
 import { openMemoryGateway } from '../../src/memory/gateway.ts';
+import { memoryHealth } from '../../src/memory/health.ts';
 import { attemptRecallQuery, recall } from '../../src/memory/recall.ts';
 import { runExtractionWork } from '../../src/memory/service.ts';
 import { buildViews } from '../../src/memory/views.ts';
+import { principalContext } from '../../src/principals/authority.ts';
 import { createJournal } from './lifecycle-fixtures.ts';
 import { createScope, createTestDatabase, type TestDatabase } from './postgres.ts';
+import { record } from './properties-fixtures.ts';
 
 const db = await createTestDatabase();
+const handle = db ? openDatabase(db.url, 2) : null;
+const jobs = handle && db ? new JobService(handle.db, db.boss) : null;
+const submissions = jobs ? new SubmissionService(jobs) : null;
+// The chat surface enqueues a wake for every message it accepts.
+if (db) for (const queue of Object.values(QUEUES)) await db.boss.createQueue(queue);
 afterAll(async () => {
+  await handle?.sql.end({ timeout: 2 });
   await db?.close();
 });
 const withDb = db ? describe : describe.skip;
@@ -90,21 +103,50 @@ const scopeFor = (db: TestDatabase, scope: MemoryScope) => async (jobId: string)
   if (job?.space_id !== scope.spaceId) throw new MemoryError('scope_denied');
   return scope;
 };
-async function conversation(db: TestDatabase, scope: MemoryScope, title = 'New chat') {
+/** A conversation, created as the chat surface creates one, in the person's own name. */
+async function conversation(_db: TestDatabase, scope: MemoryScope, title = 'New chat') {
+  if (!jobs) throw new Error('no job service');
+  const service = jobs;
+  const row = await principalContext.run(scope.ownerId, () =>
+    service.transaction((tx) =>
+      service.createInTransaction(
+        tx,
+        { space_id: scope.spaceId, title, objective: title },
+        { kind: 'chat' },
+        'owner_request',
+      ),
+    ),
+  );
+  return row.id;
+}
+/**
+ * A message typed into a conversation through the chat surface's own writer,
+ * which records who said it. The turn then ends, as a runner would end it, so
+ * the next message is accepted.
+ */
+async function say(db: TestDatabase, jobId: string, text: string) {
+  if (!submissions) throw new Error('no submission service');
+  const service = submissions;
+  const [job] =
+    await db.sql`select coalesce(principal_id, (select id from owner limit 1)) as principal_id from job where id = ${jobId}`;
+  await principalContext.run(job?.principal_id as string, () =>
+    service.input(jobId, { text }, `sub_${newId('turn')}`),
+  );
+  await db.sql`update job set state = 'waiting_for_input', current_turn_id = null where id = ${jobId}`;
+}
+/** A conversation row written directly, for the cases the chat surface now refuses. */
+async function legacyConversation(db: TestDatabase, scope: MemoryScope) {
   const jobId = newId('job');
   await db.sql`insert into job (id, space_id, title, objective, kind, state, revision, lease_epoch)
-    values (${jobId}, ${scope.spaceId}, ${title}, ${title}, 'chat', 'completed', 1, 1)`;
+    values (${jobId}, ${scope.spaceId}, 'New chat', 'New chat', 'chat', 'completed', 1, 1)`;
   return jobId;
 }
 /**
- * A message typed into a conversation. The service records its speaker on the
- * event; by default that is the job's own person, `null` records none.
+ * A message event written directly: a speaker the writer would refuse, or none
+ * at all, as events written before speakers were recorded carry.
  */
-async function say(db: TestDatabase, jobId: string, text: string, speaker?: string | null) {
-  const [job] =
-    await db.sql`select coalesce(principal_id, (select id from owner limit 1)) as principal_id from job where id = ${jobId}`;
-  const who = speaker === undefined ? (job?.principal_id as string) : speaker;
-  const payload = { kind: 'user_message', text, ...(who ? { principal_id: who } : {}) };
+async function legacySay(db: TestDatabase, jobId: string, text: string, speaker: string | null) {
+  const payload = { kind: 'user_message', text, ...(speaker ? { principal_id: speaker } : {}) };
   await db.sql`insert into event (job_id, type, payload, dedup_key)
     values (${jobId}, 'notice', ${JSON.stringify(payload)}::text::jsonb, ${`evt:${newId('turn')}`})`;
 }
@@ -191,9 +233,19 @@ withDb('automatic memory from chat', () => {
       // "Forget Maya's number" removes it from recall and from every stored copy.
       await say(db, second, "Forget Maya's number.");
       await settle();
-      // A forget names the detail and never repeats its value.
+      // A forget names the detail and never repeats its value, and the entries
+      // that quoted it earlier keep their label and lose the quotation.
       expect((await traces(db, second)).at(-1)).toEqual({
         op: 'forget',
+        labels: ["maya's phone"],
+        value: null,
+      });
+      expect(await traces(db, first)).toEqual([
+        { op: 'write', labels: ["maya's phone"], value: null },
+        { op: 'write', labels: ['travel: seat'], value: 'aisle seat' },
+      ]);
+      expect((await traces(db, second))[0]).toEqual({
+        op: 'correct',
         labels: ["maya's phone"],
         value: null,
       });
@@ -273,18 +325,20 @@ withDb('automatic memory from chat', () => {
       // still whoever the job belongs to, and a member's job is not the owner's.
       const memberId = newId('own');
       await db.sql`insert into principal (id, email) values (${memberId}, ${`${memberId}@example.test`})`;
-      const theirs = await conversation(db, scope);
+      // The chat surface refuses both of the next cases now; events written
+      // before it did are still read, and must still not be kept.
+      const theirs = await legacyConversation(db, scope);
       await db.sql`update job set principal_id = ${memberId} where id = ${theirs}`;
-      await say(db, theirs, 'My sister Maya is on +351 912 345 678.');
+      await legacySay(db, theirs, 'My sister Maya is on +351 912 345 678.', memberId);
       await captureChat({ ...capture, scopeForJob: scopeFor(db, scope) });
       const [row] =
         await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
       expect(row?.n).toBe(0);
       // A member's words accepted onto the owner's own conversation are still the
       // member's, and a message whose speaker was not recorded is nobody's.
-      const owners = await conversation(db, scope);
-      await say(db, owners, 'My sister Maya is on +351 912 345 678.', memberId);
-      await say(db, owners, 'My sister Maya is on +351 912 345 678.', null);
+      const owners = await legacyConversation(db, scope);
+      await legacySay(db, owners, 'My sister Maya is on +351 912 345 678.', memberId);
+      await legacySay(db, owners, 'My sister Maya is on +351 912 345 678.', null);
       await captureChat({ ...capture, scopeForJob: scopeFor(db, scope) });
       const [kept] =
         await db.sql`select count(*)::int as n from memory_sources where space_id = ${scope.spaceId}`;
@@ -444,6 +498,12 @@ withDb('a model provider outage', () => {
       }
       // 30 s after the first failure, doubling each time.
       expect(waits.map((wait) => Math.round(wait / 30))).toEqual([1, 2, 4, 8, 16]);
+      // The operator sees messages waiting on the provider, without their content.
+      expect(await memoryHealth(db.sql)).toEqual({
+        status: 'waiting',
+        waiting: 1,
+        reason: 'provider_unavailable',
+      });
       // However long the outage, the gap stops growing at 30 minutes.
       const { id } = await work();
       await db.sql`update memory_work set provider_failures = 20 where id = ${id}`;
@@ -454,6 +514,7 @@ withDb('a model provider outage', () => {
       down = false;
       await runExtractionWork(service, id);
       expect((await work()).status).toBe('done');
+      expect((await memoryHealth(db.sql)).waiting).toBe(0);
       const [kept] = await db.sql`select b.content from memory_claims c
         join memory_revision_content b on b.claim_id = c.id and b.revision = c.head_revision
         where c.space_id = ${scope.spaceId} and c.key = 'contact.ana.email'`;
@@ -463,6 +524,135 @@ withDb('a model provider outage', () => {
       expect(reads?.n).toBe(1);
     } finally {
       await opened.close();
+      await journal.close();
+    }
+  });
+});
+
+withDb('asking to forget in plain words', () => {
+  test('forget acts only on the one detail it names, and otherwise answers without keeping the request', async () => {
+    if (!db) return;
+    const scope = await createScope(db);
+    const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
+    const journal = await createJournal();
+    try {
+      const detail = (identity: string, text: string, key: string, value: string) =>
+        record(db, scope, { identity, text, eventAt: '2026-08-02T09:00:00Z' }, [
+          { key, content: value, quote: value, kind: 'user_statement' },
+        ]);
+      await detail(
+        'mine',
+        'My number is +351 910 000 001.',
+        'contact.me.phone',
+        '+351 910 000 001',
+      );
+      await detail(
+        'bob',
+        "Bob's number is +351 910 000 002.",
+        'contact.bob.phone',
+        '+351 910 000 002',
+      );
+      await detail(
+        'maya-phone',
+        "Maya's number is +351 910 000 003.",
+        'contact.maya.phone',
+        '+351 910 000 003',
+      );
+      await detail(
+        'maya-email',
+        "Maya's email is maya@home.example.",
+        'contact.maya.email',
+        'maya@home.example',
+      );
+      const capture = { sql: db.sql, journal: journal.journal, scopeForJob: scopeFor(db, owner) };
+      const chat = await conversation(db, scope);
+      const kept = async () =>
+        (
+          await db.sql`select c.key from memory_claims c where c.space_id = ${scope.spaceId} and not c.hidden order by c.key`
+        ).map((row) => row.key as string);
+      const replies = async () =>
+        (
+          await db.sql`select payload->'call'->'output_summary'->>'text' as text from event
+            where job_id = ${chat} and payload->>'kind' = 'tool_trace' order by seq`
+        ).map((row) => row.text as string);
+      const everything = await kept();
+
+      // A field alone names nobody: nothing is forgotten, least of all Bob's.
+      await say(db, chat, 'Forget my number.');
+      await captureChat(capture);
+      expect(await kept()).toEqual(everything);
+      expect((await replies()).at(-1)).toBe(
+        'Say whose number to forget, for example "forget Ana\'s email"',
+      );
+
+      // Two details name Maya: it asks which, and forgets neither.
+      await say(db, chat, "Forget Maya's details.");
+      await captureChat(capture);
+      expect(await kept()).toEqual(everything);
+      expect((await replies()).at(-1)).toBe(
+        "More than one saved detail matched: maya's email, maya's phone. Say which one to forget",
+      );
+
+      // Nothing saved names Carol: it says so.
+      await say(db, chat, "Forget Carol's number.");
+      await captureChat(capture);
+      expect((await replies()).at(-1)).toBe('Nothing saved matched');
+
+      // Named exactly, the one detail goes and nothing else does.
+      await say(db, chat, "Forget Maya's number.");
+      await captureChat(capture);
+      expect(await kept()).toEqual(everything.filter((key) => key !== 'contact.maya.phone'));
+
+      // None of the four requests was kept as something the person said.
+      const [requests] = await db.sql`select count(*)::int as n from memory_sources
+        where space_id = ${scope.spaceId} and publisher = 'chat'`;
+      expect(requests?.n).toBe(0);
+      const outcomes =
+        await db.sql`select c.outcome from memory_capture c join event e on e.seq = c.event_seq
+        where e.job_id = ${chat} and e.type = 'notice' order by c.event_seq`;
+      expect(outcomes.map((row) => row.outcome)).toEqual([
+        'forgot:ask',
+        'forgot:ask',
+        'forgot:none',
+        'forgot',
+      ]);
+    } finally {
+      await journal.close();
+    }
+  });
+
+  test("a job's first objective is kept when the person typed it, and not when it was derived", async () => {
+    if (!db || !jobs) return;
+    const service = jobs;
+    const scope = await createScope(db);
+    const owner: MemoryScope = { ...scope, principalId: scope.ownerId };
+    const journal = await createJournal();
+    try {
+      const task = (objective: string, origin: 'owner_request' | 'derived') =>
+        principalContext.run(scope.ownerId, () =>
+          service.transaction((tx) =>
+            service.createInTransaction(
+              tx,
+              { space_id: scope.spaceId, title: 'Task', objective },
+              undefined,
+              origin,
+            ),
+          ),
+        );
+      await task('Book the dentist for me, Dr Silva is on +351 912 000 111.', 'owner_request');
+      await task('Reply to the supplier who wrote +351 912 000 222.', 'derived');
+      await captureChat({
+        sql: db.sql,
+        journal: journal.journal,
+        scopeForJob: scopeFor(db, owner),
+      });
+      const kept =
+        await db.sql`select b.content from memory_sources s join memory_source_content b on b.source_id = s.id
+        where s.space_id = ${scope.spaceId} and s.publisher = 'chat'`;
+      expect(kept.map((row) => row.content)).toEqual([
+        'Book the dentist for me, Dr Silva is on +351 912 000 111.',
+      ]);
+    } finally {
       await journal.close();
     }
   });
@@ -481,6 +671,32 @@ test('what a message asks of memory is read from its opening words', () => {
   });
   expect(chatIntent("Don't remember this: my PIN is 4921")).toEqual({ kind: 'skip' });
   expect(chatIntent('Off the record, I am job hunting.')).toEqual({ kind: 'skip' });
+  // Not requests to forget: a message about something else that starts with the word.
+  expect(chatIntent('Forget it, just book the train.').kind).toBe('message');
+  expect(chatIntent('Erase the whiteboard photo from the album.').kind).toBe('message');
+  expect(chatIntent("Erase Maya's number from your memory.")).toEqual({
+    kind: 'forget',
+    target: "Maya's number",
+  });
+  // "Don't remember this" is about this message, not the one before it.
+  expect(chatIntent("Don't remember this.")).toEqual({ kind: 'skip' });
+  // Explicit trust is the person's own words only.
+  expect(chatIntent('> Remember that the code is 4921')).toEqual({
+    kind: 'message',
+    explicit: false,
+  });
+  expect(chatIntent('"Remember that the meeting moved," she wrote.')).toEqual({
+    kind: 'message',
+    explicit: false,
+  });
+  expect(chatIntent('Note that the office is closed.')).toEqual({
+    kind: 'message',
+    explicit: false,
+  });
+  expect(chatIntent('Keep in mind that I am vegetarian.')).toEqual({
+    kind: 'message',
+    explicit: true,
+  });
   expect(chatIntent('Could you draft the invitation?')).toEqual({
     kind: 'message',
     explicit: false,

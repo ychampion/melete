@@ -124,6 +124,14 @@ export async function applyRestriction(tx: MemoryTx, record: RestrictionRecord) 
   // hand the old and new values to the next attempt, and a dispute's question
   // names both alternatives in the owner's queue.
   const removed = [...affected];
+  // A conversation's "Remembered" or "Updated" entry quoted the value; the entry
+  // stays, naming the detail, and the quotation goes. Clearing a space takes
+  // every quotation in it.
+  await tx`update event e set payload = jsonb_set(e.payload, '{value}', 'null'::jsonb)
+    from job j where j.id = e.job_id and j.space_id = ${record.space_id}
+      and e.type = 'notice' and e.payload->>'kind' = 'memory_tool'
+      and e.payload->>'value' is not null
+      and (${record.all} or e.payload->>'memory_item_id' = any(${removed}))`;
   await tx`delete from memory_repair_briefs where space_id = ${record.space_id} and (${record.all}
     or split_part(changed_handle, '@', 1) = any(${removed})
     or split_part(coalesce(replacement_handle, ''), '@', 1) = any(${removed}))`;

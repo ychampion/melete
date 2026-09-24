@@ -3,37 +3,45 @@
  *
  * What a person types into a conversation or a job is evidence about them, and
  * it is the only chat text that is: assistant answers, pages, mail and tool
- * output never become facts about the person here. Each message is offered to
- * memory once, in the speaker's own memory for that space, and nothing else is
- * asked of the person. Three things they can say in plain words are acted on
+ * output never become facts about the person here. The first objective of a
+ * job the person typed themselves counts the same way. Each piece is offered
+ * to memory once, in the speaker's own memory for that space, and nothing else
+ * is asked of the person. What they can say in plain words is acted on
  * directly:
  *
- * - "remember that ..." is kept as the person's own statement, at owner trust;
- * - "forget that" / "don't remember that" removes what was learned from their
- *   previous message, and "forget <something>" removes the saved details that
- *   name it, through the same removal path and journal as every other forget;
- * - "don't remember this: ..." is simply not kept.
+ * - "remember that …" / "keep in mind …", at the start of their own words, is
+ *   kept as their own statement at owner trust; quoted or forwarded text never is;
+ * - "forget that" / "don't remember that" removes what their previous kept
+ *   message in the conversation taught memory;
+ * - "forget <someone's something>" removes the one saved detail that names that
+ *   subject. With no subject named, or several details matching, it asks which
+ *   one instead, and when nothing matches it says so. A request to forget is
+ *   never itself kept;
+ * - "don't remember this" and "off the record" keep that one message out.
  *
- * Every message the loop looks at leaves one `memory_capture` row, so a restart
+ * Every piece the loop looks at leaves one `memory_capture` row, so a restart
  * neither repeats nor loses one. A message from a member of a shared space is
  * not kept: memory in a space belongs to its owner, and a member's words are
  * never written into it.
  */
 import type { PgBoss } from 'pg-boss';
+import { memoryKeyLabel } from '../experience/evidence.ts';
 import { MemoryError, type MemoryScope, type MemorySql } from './db.ts';
 import { persistEvidence } from './evidence.ts';
 import { deleteMemorySource, forgetMemory } from './forget.ts';
 import { lexicalTerms, tsqueryTerm } from './recall.ts';
 import type { RestrictionJournal } from './restore.ts';
-import { appendMemoryNotices, memoryNotice } from './trace.ts';
+import { appendMemoryNotices, memoryNotice, memoryReply } from './trace.ts';
 import { MEMORY_EXTRACT_QUEUE } from './work.ts';
 
 export const CHAT_PUBLISHER = 'chat';
 export const CHAT_STREAM = 'chat';
 /** A request to forget is short; a long message that starts with "forget" is ordinary text. */
 const COMMAND_LIMIT = 300;
-/** Saved details one "forget <something>" may remove, so a vague request cannot empty memory. */
-const FORGET_LIMIT = 5;
+/** A forget request names one thing; more words than this is a sentence about something else. */
+const TARGET_WORDS = 8;
+/** Details one reply may name when asking which one to forget. */
+const ASK_LIMIT = 4;
 /** A claim left pending this long by a stopped process is picked up again. */
 const PENDING_LEASE = '5 minutes';
 
@@ -43,48 +51,68 @@ export type ChatIntent =
   | { kind: 'skip' };
 
 /**
- * The words people use for a detail, against the words its saved key uses:
- * "Maya's number" is the claim on `contact.maya.phone`.
+ * The words people use for the field of a detail, against the words its saved
+ * key uses: "Maya's number" is the claim on `contact.maya.phone`. A field word
+ * alone never names whose detail it is.
  */
-const SAME_THING: Record<string, string[]> = {
-  number: ['phone'],
-  mobile: ['phone'],
-  cell: ['phone'],
-  phone: ['number'],
-  mail: ['email'],
-  address: ['email', 'location'],
-  birthday: ['date'],
-  place: ['location'],
+const FIELD_WORDS: Record<string, string[]> = {
+  number: ['phone', 'number'],
+  mobile: ['phone', 'mobile'],
+  cell: ['phone', 'cell'],
+  phone: ['phone', 'number'],
+  email: ['email'],
+  mail: ['email', 'mail'],
+  address: ['email', 'location', 'address'],
+  birthday: ['date', 'birthday'],
+  date: ['date'],
+  place: ['location', 'place'],
+  location: ['location'],
+  contact: ['contact'],
+  details: [],
+  detail: [],
+  info: [],
 };
-const REFERS_BACK = /^(?:that|this|it|what i (?:just )?(?:said|told you|wrote))[\s.!]*$/i;
+const REFERS_BACK = /^(?:that|it|what i (?:just )?(?:said|told you|wrote))$/i;
+/** Text the person pasted or passed on, not said: a quotation, a forward, a reply chain. */
+const QUOTED = /^\s*(?:>|["“‘'`]|-{3,}|fwd?:|forwarded message|begin forwarded)/i;
+const FORWARDED = /^-{2,}\s*forwarded message|^on .{3,80} wrote:$/im;
 
 /** What a message asks of memory, read from its opening words alone. */
 export function chatIntent(text: string): ChatIntent {
   const trimmed = text.trim();
-  if (trimmed.length <= COMMAND_LIMIT) {
-    const dont =
-      /^(?:please\s+)?(?:don'?t|do not|never)\s+(?:remember|keep|save|store)\s+(that|this|it)\b\s*([,:;-]\s*)?(.*)$/is.exec(
+  const quoted = QUOTED.test(trimmed) || FORWARDED.test(trimmed);
+  if (trimmed.length <= COMMAND_LIMIT && !quoted) {
+    // "Don't remember this" keeps this one message out, whatever follows it.
+    if (
+      /^(?:please\s+)?(?:don'?t|do not|never)\s+(?:remember|keep|save|store)\s+this\b/i.test(
         trimmed,
-      );
-    if (dont) {
-      // "Don't remember this: ..." says what follows is not to be kept;
-      // "don't remember that" on its own reaches back to the previous message.
-      if ((dont[3] ?? '').trim()) return { kind: 'skip' };
-      return { kind: 'forget', target: null };
-    }
+      )
+    )
+      return { kind: 'skip' };
     if (/^off the record\b/i.test(trimmed)) return { kind: 'skip' };
-    const forget =
-      /^(?:please\s+)?(?:forget|erase|stop remembering)\s+(?:about\s+)?(.+?)\s*[.!]*$/is.exec(
+    // "Don't remember that" on its own reaches back to the previous message.
+    if (/^(?:please\s+)?(?:don'?t|do not)\s+(?:remember|keep)\s+(?:that|it)[\s.!]*$/i.test(trimmed))
+      return { kind: 'forget', target: null };
+    const target =
+      /^(?:please\s+)?(?:forget|stop remembering)\s+(?:about\s+)?(.+?)[\s.!]*$/is.exec(
         trimmed,
-      );
-    if (forget) {
-      const target = (forget[1] ?? '').trim();
-      return { kind: 'forget', target: REFERS_BACK.test(target) ? null : target };
+      )?.[1] ??
+      /^(?:please\s+)?(?:erase|delete|remove)\s+(.+?)\s+from\s+(?:your\s+)?memory[\s.!]*$/is.exec(
+        trimmed,
+      )?.[1];
+    if (target !== undefined) {
+      const named = target.trim();
+      if (REFERS_BACK.test(named)) return { kind: 'forget', target: null };
+      // "Forget it, just book the train" is about the train. A request to forget
+      // names one thing and says nothing else.
+      if (!/[,;:?]/.test(named) && named.split(/\s+/).length <= TARGET_WORDS)
+        return { kind: 'forget', target: named };
     }
   }
   return {
     kind: 'message',
-    explicit: /^(?:please\s+)?(?:remember|keep in mind|note)\b/i.test(trimmed),
+    explicit:
+      !quoted && /^(?:please\s+)?(?:remember(?:\s+that)?|keep\s+in\s+mind)\b/i.test(trimmed),
   };
 }
 
@@ -102,28 +130,34 @@ type Pending = {
   job_id: string;
   space_id: string;
   principal_id: string;
-  /** Who typed the message, as the service recorded it on the event; absent on older events. */
+  /** Who said it, as the service recorded it; absent on older events. */
   speaker_id: string | null;
   text: string;
   created_at: Date;
 };
 
-/** Offer every new chat message to memory once. Returns how many were looked at. */
+/**
+ * Offer every new message, and every new job objective the person typed, to
+ * memory once. Returns how many were looked at.
+ */
 export async function captureChat(options: CaptureOptions, limit = 50): Promise<number> {
   const { sql } = options;
-  const rows =
-    await sql`select e.seq, e.job_id, e.created_at, e.payload->>'text' as text, e.payload->>'principal_id' as speaker_id, j.space_id,
-      coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
-    from event e join job j on j.id = e.job_id
-    where e.seq > (select coalesce(max(event_seq), 0) from memory_capture where outcome <> 'pending')
-      and e.type = 'notice' and e.payload->>'kind' = 'user_message'
-      and not exists (select 1 from memory_capture c where c.event_seq = e.seq)
-    union all
-    select e.seq, e.job_id, e.created_at, e.payload->>'text' as text, e.payload->>'principal_id' as speaker_id, j.space_id,
-      coalesce(j.principal_id, (select id from owner limit 1)) as principal_id
-    from memory_capture c join event e on e.seq = c.event_seq join job j on j.id = e.job_id
-    where c.outcome = 'pending' and c.created_at < clock_timestamp() - ${PENDING_LEASE}::interval
-    order by seq limit ${limit}`;
+  const rows = await sql`with fresh as (
+      select e.seq from event e
+      where e.seq > (select coalesce(max(event_seq), 0) from memory_capture where outcome <> 'pending')
+        and not exists (select 1 from memory_capture c where c.event_seq = e.seq)
+      union all
+      select c.event_seq from memory_capture c
+      where c.outcome = 'pending' and c.created_at < clock_timestamp() - ${PENDING_LEASE}::interval)
+    select e.seq, e.job_id, e.created_at, j.space_id,
+      coalesce(j.principal_id, (select id from owner limit 1)) as principal_id,
+      case when e.type = 'job_created' then j.objective else e.payload->>'text' end as text,
+      case when e.type = 'job_created' then j.principal_id else e.payload->>'principal_id' end as speaker_id
+    from fresh f join event e on e.seq = f.seq join job j on j.id = e.job_id
+    where (e.type = 'notice' and e.payload->>'kind' = 'user_message')
+      -- A job's first objective is the person's own words only when they typed it.
+      or (e.type = 'job_created' and j.kind <> 'chat' and j.objective_origin = 'owner_request')
+    order by e.seq limit ${limit}`;
   let seen = 0;
   for (const row of rows as unknown as Pending[]) {
     // Claiming the row first keeps two service processes from acting on one message twice.
@@ -184,10 +218,9 @@ async function captureOne(
     return { outcome: 'skipped:member', sourceId: null };
   const intent = chatIntent(text);
   if (intent.kind === 'skip') return { outcome: 'skipped:asked', sourceId: null };
-  // A message that only looks like a request to forget, and names nothing
-  // saved, is an ordinary message and is kept like one.
-  if (intent.kind === 'forget' && (await forgetFromChat(options, scope, row, intent.target)))
-    return { outcome: 'forgot', sourceId: null };
+  // A request to forget is acted on, or answered, and is never itself kept.
+  if (intent.kind === 'forget')
+    return { outcome: await forgetFromChat(options, scope, row, intent.target), sourceId: null };
   const [settings] =
     await sql`select capture from memory_settings where principal_id = ${row.principal_id}`;
   if (settings && !settings.capture) return { outcome: 'skipped:off', sourceId: null };
@@ -204,8 +237,8 @@ async function captureOne(
         event_at: new Date(row.created_at).toISOString(),
         text: text.slice(0, 64000),
       },
-      // "Remember that ..." is the person's own statement, kept at owner trust.
-      intent.kind === 'message' && intent.explicit,
+      // "Remember that …" in the person's own words is kept at owner trust.
+      intent.explicit,
     ),
   );
   if (evidence.source.state !== 'active')
@@ -224,64 +257,111 @@ async function captureOne(
 }
 
 /**
+ * The saved details a "forget …" names. Every subject word must appear, and
+ * when a field is named ("number", "email") the detail must be that field. A
+ * request that names only a field ("forget my number") names no subject.
+ */
+async function namedDetails(sql: MemorySql, scope: MemoryScope, target: string) {
+  const terms = lexicalTerms(target);
+  const subject = terms.filter((term) => !(term in FIELD_WORDS));
+  if (!subject.length) return null;
+  const fields = terms.filter((term) => term in FIELD_WORDS && FIELD_WORDS[term]?.length);
+  const query = [
+    ...subject.map(tsqueryTerm),
+    ...fields.map((term) => `(${(FIELD_WORDS[term] ?? []).map(tsqueryTerm).join(' | ')})`),
+  ].join(' & ');
+  return sql`select c.id, c.key from memory_claims c
+    join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
+    join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
+    where c.space_id = ${scope.spaceId} and not c.hidden
+      and to_tsvector('simple', replace(replace(c.domain_key, '.', ' '), ':', ' ') || ' ' || b.content)
+        @@ to_tsquery('simple', ${query})
+    order by r.data_revision desc limit ${ASK_LIMIT + 1}`;
+}
+
+/**
  * "Forget that" removes what the previous kept message in this conversation
- * taught memory, source and all. "Forget <something>" removes the saved details
- * in this space whose words include every meaningful word of <something>, and
- * returns false when nothing saved matched, so the message is kept as ordinary
- * text instead.
+ * taught memory, source and all. "Forget <something>" removes the one saved
+ * detail it names. Anything less certain is answered in the conversation
+ * rather than guessed at. Returns the capture outcome.
  */
 async function forgetFromChat(
   options: CaptureOptions,
   scope: MemoryScope,
   row: Pending,
   target: string | null,
-): Promise<boolean> {
+): Promise<string> {
   const { sql } = options;
-  // The keys of the details removed, for the notice that names them.
-  const removed: (string | null)[] = [];
+  const at = new Date();
+  const tell = (reply: Parameters<typeof memoryReply>[0]) =>
+    appendMemoryNotices(sql, row.job_id, [memoryReply(reply)]).catch(() =>
+      options.onError?.('memory_trace_failed'),
+    );
   if (target === null) {
     const [previous] = await sql`select source_id from memory_capture
       where job_id = ${row.job_id} and event_seq < ${row.seq} and outcome = 'remembered' and source_id is not null
       order by event_seq desc limit 1`;
-    if (previous) {
-      const named = await sql`select distinct c.id, c.key from memory_references ref
-        join memory_claims c on c.id = ref.claim_id
-        where ref.source_id = ${previous.source_id} and c.space_id = ${scope.spaceId} and not c.hidden`;
-      await deleteMemorySource(sql, scope, previous.source_id as string, options.journal);
-      for (const claim of named) removed.push((claim.key as string | null) ?? null);
+    if (!previous) {
+      await tell({ id: `forget:${row.seq}`, text: 'Nothing was saved from your last message', at });
+      return 'forgot:none';
     }
-  } else {
-    const terms = lexicalTerms(target);
-    const query = terms
-      .map((term) => `(${[term, ...(SAME_THING[term] ?? [])].map(tsqueryTerm).join(' | ')})`)
-      .join(' & ');
-    const matches = terms.length
-      ? await sql`select c.id, c.key from memory_claims c
-          join memory_revisions r on r.claim_id = c.id and r.revision = c.head_revision
-          join memory_revision_content b on b.claim_id = r.claim_id and b.revision = r.revision
-          where c.space_id = ${scope.spaceId} and not c.hidden
-            and to_tsvector('simple', replace(replace(c.domain_key, '.', ' '), ':', ' ') || ' ' || b.content)
-              @@ to_tsquery('simple', ${query})
-          order by r.data_revision desc limit ${FORGET_LIMIT}`
-      : [];
-    if (!matches.length) return false;
-    for (const claim of matches) {
-      await forgetMemory(sql, scope, { claim_id: claim.id }, options.journal);
-      removed.push((claim.key as string | null) ?? null);
-    }
+    const named = await sql`select distinct c.id, c.key from memory_references ref
+      join memory_claims c on c.id = ref.claim_id
+      where ref.source_id = ${previous.source_id} and c.space_id = ${scope.spaceId} and not c.hidden`;
+    await deleteMemorySource(sql, scope, previous.source_id as string, options.journal);
+    await notifyForgotten(options, row, named, at);
+    return 'forgot';
   }
-  if (removed.length)
-    await appendMemoryNotices(sql, row.job_id, [
-      memoryNotice({
-        op: 'forget',
-        id: `forget:${row.seq}`,
-        keys: removed,
-        value: null,
-        claimId: null,
-        at: new Date(),
-      }),
-    ]);
-  return true;
+  const matches = await namedDetails(sql, scope, target);
+  if (matches === null) {
+    await tell({
+      id: `forget:${row.seq}`,
+      text: `Say whose ${target.replace(/^my\s+/i, '')} to forget, for example "forget Ana's email"`,
+      quote: target,
+      at,
+    });
+    return 'forgot:ask';
+  }
+  if (!matches.length) {
+    await tell({ id: `forget:${row.seq}`, text: 'Nothing saved matched', quote: target, at });
+    return 'forgot:none';
+  }
+  if (matches.length > 1) {
+    const labels = matches
+      .slice(0, ASK_LIMIT)
+      .map((claim) => memoryKeyLabel(claim.key as string | null));
+    await tell({
+      id: `forget:${row.seq}`,
+      text: `More than one saved detail matched: ${labels.join(', ')}. Say which one to forget`,
+      quote: target,
+      at,
+    });
+    return 'forgot:ask';
+  }
+  const [only] = matches;
+  if (!only) return 'forgot:none';
+  await forgetMemory(sql, scope, { claim_id: only.id }, options.journal);
+  await notifyForgotten(options, row, [only], at);
+  return 'forgot';
+}
+
+async function notifyForgotten(
+  options: CaptureOptions,
+  row: Pending,
+  claims: readonly Record<string, unknown>[],
+  at: Date,
+) {
+  if (!claims.length) return;
+  await appendMemoryNotices(options.sql, row.job_id, [
+    memoryNotice({
+      op: 'forget',
+      id: `forget:${row.seq}`,
+      keys: claims.map((claim) => (claim.key as string | null) ?? null),
+      value: null,
+      claimId: null,
+      at,
+    }),
+  ]).catch(() => options.onError?.('memory_trace_failed'));
 }
 
 /**
