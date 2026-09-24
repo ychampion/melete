@@ -11,11 +11,14 @@
  *
  * Every operation is a command. A process starts through a small launcher that
  * enters the working directory — exiting 112, before any marker exists, when
- * it cannot — removes the `MODAL_*` variables Modal puts in the sandbox, and
- * runs the command under `timeout -s KILL`, which kills the whole process
+ * it cannot — removes the `MODAL_*` variables Modal puts in the sandbox from
+ * the command's environment, and runs the command under `timeout -s KILL`,
+ * which kills the whole process
  * group; Modal's own exec timeout is only a backstop. Which variables to remove
  * is learnt once per sandbox, by a separate command sent before the first
- * admitted one: if that fails, the admitted command was never sent. Files are
+ * admitted one: if that fails, the admitted command was never sent. They are
+ * identifiers, not credentials, and they stay visible inside the sandbox:
+ * the sandbox's first process still has them, in `/proc/1/environ`. Files are
  * listed with `find`, read with `head -c` and written with `cat`, so recursion,
  * symbolic links and byte limits are decided here rather than by an SDK helper.
  *
