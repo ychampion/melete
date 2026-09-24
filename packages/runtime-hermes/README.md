@@ -148,7 +148,7 @@ captures stay in its temporary directory because they include local capabilities
 ## Running code inside the cell
 
 The cell has no route out and every external effect is brokered, so a command's
-effects are confined to `/work/<job>` and can be read, diffed and deleted like
+effects are confined to the job's own directory and can be read, diffed and deleted like
 any other file. Execution is therefore enabled, and it needs no approval: there
 is no recipient, no destination and no money in it. It is `write_reversible`,
 which auto-admits within budget, exactly like `files.write`.
@@ -162,7 +162,7 @@ tool, and carried out here:
 
 ```
 exec.python(code)     the catalog entry, filtered by the job's scopes
-  -> melete_plugin.execution.run_in_cell   a subprocess in /work/<job>
+  -> melete_plugin.execution.run_in_cell   a subprocess in /work
   -> POST /actions     the RECORD: command, cwd, exit code, duration,
                        output digest, whether it was truncated and killed
   -> receipt           on the ledger and in the event stream
@@ -173,9 +173,10 @@ shapes: the model asks for a command, the ledger receives a command that has
 already finished. `connectorTool.record_schema` declares the second one and
 `connectorTool.execution: 'in_cell'` tells the cell which tools work this way.
 
-The workspace is `/work/<job>`, not `/work`: the volume holds one directory per
-job and this container is one attempt of one job. `MELETE_WORK_DIR` overrides it
-for local runs. What the plugin enforces is the arguments, the caps and the
+The workspace is `/work`: every launch mounts only this job's directory of the
+work volume there and makes it the working directory, so `/work` is the job's
+own directory, which the service reads as `<workRoot>/<job>`. `MELETE_WORK_DIR`
+overrides it for local runs. What the plugin enforces is the arguments, the caps and the
 environment:
 
 - a working directory or stored-output path outside the workspace is refused

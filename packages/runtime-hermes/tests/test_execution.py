@@ -49,11 +49,12 @@ def workspace(tmp_path, monkeypatch):
     return root
 
 
-def test_the_workspace_is_the_jobs_directory_under_the_mount(monkeypatch):
-    """`/work` holds one directory per job, and this cell is one job."""
+def test_the_workspace_is_the_mount_itself(monkeypatch):
+    """Every launch mounts only this job's subpath at `/work`, so `/work` is the
+    job's directory; a `/work/<job>` beneath it does not exist in the cell."""
     monkeypatch.delenv(WORK_DIR_ENV, raising=False)
     monkeypatch.setenv("MELETE_JOB_ID", "job_01J00000000000000000000000")
-    assert workspace_root().as_posix().endswith("/work/job_01J00000000000000000000000")
+    assert workspace_root().as_posix() == "/work"
     monkeypatch.setenv(WORK_DIR_ENV, "/somewhere/else")
     assert workspace_root().as_posix() == "/somewhere/else"
 
