@@ -11370,7 +11370,7 @@ export interface components {
             name: string;
             reason: string;
             source_skill_id: components["schemas"]["__schema113"] | null;
-            space_id: string;
+            space_id: string | null;
         };
         __schema138: {
             skill: components["schemas"]["__schema136"];

@@ -370,7 +370,8 @@ export const engineSkillListResponse = z.object({ skills: z.array(engineSkillRec
  */
 export const engineSkillProhibitionRecord = z.object({
   id: prefixedId('esp'),
-  space_id: prefixedId('sp'),
+  /** Null once the space it was placed in has been removed; it stands all the same. */
+  space_id: prefixedId('sp').nullable(),
   name: z.string(),
   body_sha256: z.string().nullable(),
   reason: z.string(),

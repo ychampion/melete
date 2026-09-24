@@ -187,9 +187,11 @@ export const engineSkillProhibition = pgTable(
   'engine_skill_prohibition',
   {
     id: text('id').primaryKey(),
-    spaceId: text('space_id')
-      .notNull()
-      .references(() => space.id, { onDelete: 'cascade' }),
+    /**
+     * Where it was said, for display. It holds in every space of its person, so a
+     * removed space takes only this record of where, never the prohibition.
+     */
+    spaceId: text('space_id').references(() => space.id, { onDelete: 'set null' }),
     principalId: text('principal_id')
       .notNull()
       .references(() => principal.id, { onDelete: 'cascade' }),

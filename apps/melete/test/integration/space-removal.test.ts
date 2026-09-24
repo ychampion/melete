@@ -39,6 +39,7 @@ import { loadEnv } from '../../src/env.ts';
 import { newId } from '../../src/ids.ts';
 import { createApp } from '../../src/index.ts';
 import { JobService } from '../../src/jobs/service.ts';
+import { standingProhibition, standingProhibitions } from '../../src/learning/engine-skills.ts';
 import { provisionMemorySpace } from '../../src/memory/db.ts';
 import { FileRestrictionJournal, restoreMemory } from '../../src/memory/restore.ts';
 import { replayForNewMemory } from '../../src/memory/start.ts';
@@ -322,6 +323,8 @@ const REMOVED_BY: Record<string, RemovalPhase> = {
   learning_job: 'operational',
   learning_notice: 'operational',
   learned_change: 'operational',
+  // Not removed: its record of where it was said is cleared, and it stands on.
+  engine_skill_prohibition: 'operational',
   ledger_item: 'operational',
   procedure_candidate: 'operational',
   question: 'operational',
@@ -537,6 +540,40 @@ describe.if(handle !== null)('removing a space', () => {
 
     for (const [table, where] of byKey) expect(await countOf(sql, table, where)).toBe(0);
     expect(await countOf(sql, 'artifact', sql`source_job_id = ${seeded.jobId}`)).toBe(0);
+  });
+
+  test('a_prohibition_outlives_its_space — removal completes, and the person’s "don’t do this" stands on', async () => {
+    if (!handle) throw new Error('Postgres unavailable');
+    const seeded = await seed('shared');
+    const [placed] = await sql<{ id: string }[]>`select id from engine_skill_prohibition
+      where space_id = ${seeded.spaceId}`;
+    if (!placed) throw new Error('No prohibition was seeded');
+
+    const { finished } = await removeCompletely(seeded);
+    expect(outcome(finished)).toBe('complete');
+
+    // Only the record of where it was said went with the space.
+    const [row] = await sql`select space_id, principal_id, skill_name, lifted_at
+      from engine_skill_prohibition where id = ${placed.id}`;
+    expect(row).toMatchObject({
+      space_id: null,
+      principal_id: seeded.principalId,
+      skill_name: 'weekly-digest',
+      lifted_at: null,
+    });
+    // A prohibition is checked by person, not by space, so it still refuses that
+    // skill at intake and keeps it out of delivery in every other space of theirs.
+    await handle.db.transaction(async (tx) => {
+      expect(
+        await standingProhibition(tx, seeded.principalId, {
+          name: 'weekly-digest',
+          body: 'Other.',
+        }),
+      ).toMatchObject({ id: placed.id });
+      expect((await standingProhibitions(tx, seeded.principalId)).names.has('weekly-digest')).toBe(
+        true,
+      );
+    });
   });
 
   test('sweep_order_satisfies_restrict_constraints — the three that refuse a plain delete', async () => {

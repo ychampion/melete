@@ -9,23 +9,25 @@
  *     experience layer composed it from what the owner typed there (a routine's
  *     instruction, a plan's milestone, a chat). A job built from a company's mail,
  *     or one that copied another job's objective, is not.
- *  2. The memory context of every attempt. Only `owner` items are clean.
- *  3. The files every attempt could read. Only a runtime that recorded a
+ *  2. The messages on the job. Each must be recorded as said by the job's own
+ *     person; one in another member's name, or in nobody's, is outside words.
+ *  3. The memory context of every attempt. Only `owner` items are clean.
+ *  4. The files every attempt could read. Only a runtime that recorded a
  *     workspace belonging to this job alone is clean: until the lineage of a
  *     shared or persistent workspace is recorded, a file there may have been
  *     written by an earlier job from anything that job read.
- *  4. What woke the job. A schedule is Melete's own clock; a connector event (mail,
+ *  5. What woke the job. A schedule is Melete's own clock; a connector event (mail,
  *     a calendar feed, a webhook, a company's reply) or an operation's result is
  *     outside content.
- *  5. Legacy knowledge excerpts, and the knowledge records a later attempt is
+ *  6. Legacy knowledge excerpts, and the knowledge records a later attempt is
  *     told have changed.
- *  6. Tools. A broker tool leaves an action, and the model reads its receipt. The
+ *  7. Tools. A broker tool leaves an action, and the model reads its receipt. The
  *     receipt's `detail` is written by the connector, sometimes from what a
  *     remote server sent back, so a trust value found there proves nothing: until
  *     the broker records where a receipt came from itself, every action taints.
  *     A tool the broker never served to the attempt is the engine's own and
  *     leaves no receipt at all.
- *  7. A hole in the recorded history.
+ *  8. A hole in the recorded history.
  *
  * A missing record is not a clean one: if the service cannot say what an
  * attempt read, the skill is tainted and the owner decides, so losing a record
@@ -87,6 +89,16 @@ export async function originTaint(
     !OWNER_COMPOSED_KINDS.includes(String(writer.kind))
   )
     return tainted('external_origin:objective');
+
+  const voices = await tx.execute(
+    sql`select 1 from event e join job j on j.id = e.job_id
+      where e.job_id = ${input.jobId} and e.type = 'notice'
+        and e.payload->>'kind' = 'user_message'
+        and (e.payload->>'principal_id') is distinct from
+          coalesce(j.principal_id, (select id from owner limit 1))
+      limit 1`,
+  );
+  if (voices.length) return tainted('external_origin:other_principal');
 
   const attempts = await tx.execute(
     sql`select a.id, c.items, l.versions->>'workspace' as workspace from attempt a

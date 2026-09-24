@@ -18038,8 +18038,15 @@
             "pattern": "^esp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
           },
           "space_id": {
-            "type": "string",
-            "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sp_[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"

@@ -405,6 +405,21 @@ async function liveSkill(
     expect(
       await fixture.engine.intake(there.claims, skill('elsewhere-digest', DIGEST_BODY)),
     ).toMatchObject({ state: 'rejected', reason: 'owner_prohibited' });
+    // Nor can a rewrap of the same instructions pass for new ones: a trailing
+    // newline, doubled spaces, Windows line endings, a trailing space, or case.
+    const rewrites: [string, string][] = [
+      ['newline-digest', `${DIGEST_BODY}\n`],
+      ['spaced-digest', DIGEST_BODY.replaceAll(' ', '  ')],
+      ['crlf-digest', DIGEST_BODY.replaceAll('\n', '\r\n')],
+      ['trailing-digest', `${DIGEST_BODY} `],
+      ['shouted-digest', DIGEST_BODY.toUpperCase()],
+    ];
+    const rewritten = await fixture.writing(shared, { items: [ownerItem()] });
+    for (const [name, body] of rewrites)
+      expect(await fixture.engine.intake(rewritten.claims, skill(name, body))).toMatchObject({
+        state: 'rejected',
+        reason: 'owner_prohibited',
+      });
     // It is that person's alone: another member of the space is not bound by it and
     // cannot lift it.
     const theirs = await fixture.writing(shared, { items: [ownerItem()], principal: memberId });

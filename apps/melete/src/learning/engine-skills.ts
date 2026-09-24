@@ -76,8 +76,17 @@ const engineChange = (name: string, description: string) => ({
   description,
 });
 
-/** The digest a prohibition keeps of a body, so the same bytes are recognised under any name. */
-export const bodyDigest = (body: string) => createHash('sha256').update(body, 'utf8').digest('hex');
+/**
+ * A body as a prohibition compares it: line endings unified, every run of whitespace
+ * one space, the ends trimmed and case folded. A rewrap, a trailing newline or a
+ * doubled space does not make stopped instructions new ones.
+ */
+export const normalizedBody = (body: string) =>
+  body.replace(/\r\n?/g, '\n').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** The digest a prohibition keeps of a body, so the same instructions are recognised under any name. */
+export const bodyDigest = (body: string) =>
+  createHash('sha256').update(normalizedBody(body), 'utf8').digest('hex');
 
 /**
  * Names the engine may not take. A skill Melete ships, or one the owner added to
@@ -263,7 +272,7 @@ export async function admitEngineSkill(
  * exact bytes under any name. It holds in every space they belong to, wherever it
  * was placed: "don't do this" is said about the skill, not about one room.
  */
-async function standingProhibition(
+export async function standingProhibition(
   tx: Transaction,
   principalId: string,
   skill: { name: string; body: string },
@@ -398,7 +407,7 @@ export function engineSkillView(candidate: Candidate): EngineSkillView {
 
 export type EngineSkillProhibitionView = {
   id: string;
-  space_id: string;
+  space_id: string | null;
   name: string;
   body_sha256: string | null;
   reason: string;
