@@ -144,15 +144,11 @@ export class ExperienceMock {
     day_hours: { start: '08:00', end: '22:00' },
   });
   constructor(readonly deps: AppDeps & { experienceSpeed?: number }) {
-    const allowed = [...deps.store.connections.values()]
-      .filter((row) => row.space_id === deps.spaceId)
-      .map((row) => row.id);
     for (const template of AGENT_TEMPLATES.templates) {
       const agent = C.experienceAgent.parse({
         ...template.agent,
         id: newId('agent'),
         space_id: deps.spaceId,
-        allowed_connection_ids: allowed,
         usage: { conversations: 0, last_used: null },
       });
       this.agents.set(agent.id, agent);
@@ -1399,7 +1395,7 @@ export class ExperienceMock {
       case 'POST /agents':
       case 'PATCH /agents/{id}': {
         if (id) required(this.agents, id);
-        const allowed = C.agentInput.parse(input).allowed_connection_ids;
+        const allowed = C.agentInput.parse(input).allowed_connection_ids ?? [];
         if (allowed.some((id) => !this.connections().some((connection) => connection.id === id)))
           throw new MockExperienceError(400, 'Choose connections from this space.');
         const agent = C.experienceAgent.parse({

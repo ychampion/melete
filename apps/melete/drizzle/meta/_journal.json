@@ -330,6 +330,13 @@
       "when": 1789232400026,
       "tag": "0046_memory_work_backoff",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789232400023,
+      "tag": "0043_agent_all_connections",
+      "breakpoints": true
     }
   ]
 }

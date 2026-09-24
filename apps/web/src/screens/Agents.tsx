@@ -61,9 +61,19 @@ export const blankAgent = (): AgentInput => ({
   eye_colour: WHITE,
   tone: 'Warm',
   standing_instruction: '',
-  allowed_connection_ids: [],
+  allowed_connection_ids: null,
   asks_before_acting: true,
 });
+
+/** Null reaches every connection, including ones connected later. */
+export const reaches = (ids: string[] | null, id: string) => ids === null || ids.includes(id);
+
+/** Ticking the last one back returns to every connection, so later ones are included again. */
+export function toggleReach(ids: string[] | null, id: string, on: boolean, all: string[]) {
+  const current = ids ?? all;
+  const next = on ? [...current, id] : current.filter((item) => item !== id);
+  return all.every((item) => next.includes(item)) ? null : next;
+}
 
 const toSurface = (shape: FaceShape): AgentInput['surface'] =>
   shape === 'square' ? 'rounded' : shape;
@@ -438,11 +448,12 @@ function AgentEditor({
         ) : (
           <>
             <p style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Access is per agent. Tick what this one may look at.
+              Access is per agent. Tick what this one may look at; with everything ticked, it also
+              reaches what you connect later.
             </p>
             <div className="col" style={{ gap: 6 }}>
               {connections.map((connection) => {
-                const on = draft.allowed_connection_ids.includes(connection.id);
+                const on = reaches(draft.allowed_connection_ids, connection.id);
                 const logo = logoFor(connection.app);
                 return (
                   <div
@@ -492,9 +503,12 @@ function AgentEditor({
                       onChange={(next) =>
                         setDraft({
                           ...draft,
-                          allowed_connection_ids: next
-                            ? [...draft.allowed_connection_ids, connection.id]
-                            : draft.allowed_connection_ids.filter((id) => id !== connection.id),
+                          allowed_connection_ids: toggleReach(
+                            draft.allowed_connection_ids,
+                            connection.id,
+                            next,
+                            connections.map((item) => item.id),
+                          ),
                         })
                       }
                     />
@@ -642,7 +656,7 @@ export function AgentsScreen({ selected }: { selected: string | null }) {
           {agents.map((agent) => {
             const on = agent.id === selected;
             const allowed = (connections.data?.connections ?? []).filter((c) =>
-              agent.allowed_connection_ids.includes(c.id),
+              reaches(agent.allowed_connection_ids, c.id),
             );
             return (
               <a

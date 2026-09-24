@@ -177,7 +177,8 @@ export const agent = pgTable('agent', {
   eyeColour: text('eye_colour').notNull(),
   tone: text('tone').notNull(),
   standingInstruction: text('standing_instruction').notNull(),
-  allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[]>().notNull().default([]),
+  /** Null reaches every connection in the space, including ones added later; a list narrows it. */
+  allowedConnectionIds: jsonb('allowed_connection_ids').$type<string[] | null>(),
   asksBeforeActing: boolean('asks_before_acting').notNull().default(true),
   faceImage: text('face_image'),
   createdAt: created(),
