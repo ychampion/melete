@@ -47,15 +47,18 @@ function bodyBytes(body: RequestInit['body']): Uint8Array {
 }
 
 /**
- * Replay a fixture, answering each request no sooner than it was answered when
- * recorded. A toolbox command answers only when it has finished, so without
- * this a replayed command would take no time at all, and a timeout would come
- * back before its deadline.
+ * Replay a fixture on its recorded timeline: each answer comes no sooner after
+ * the first request than it came when recorded, and never sooner than its own
+ * recorded latency. A command's duration is the time its polls take, so without
+ * this a replay would run as fast as the replaying machine's timers allow, and
+ * a timeout recorded at its deadline could come back before it.
  */
 export async function latencyReplay(file: string) {
   const fixture = JSON.parse(await readFile(file, 'utf8')) as FixtureFile;
   const replay = new ReplayFetch(fixture);
   const used = fixture.exchanges.map(() => false);
+  /** When the first request was made, here and in the recording. */
+  let origin: { here: number; recorded: number } | null = null;
   const fetch: Fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     const method = (init.method ?? 'GET').toUpperCase();
@@ -74,8 +77,14 @@ export async function latencyReplay(file: string) {
     const { request, response: recorded } = fixture.exchanges[
       index
     ] as FixtureFile['exchanges'][number];
+    origin ??= { here: performance.now(), recorded: request.atMs ?? 0 };
     const latency =
-      request.atMs !== undefined && recorded.atMs !== undefined ? recorded.atMs - request.atMs : 0;
+      request.atMs !== undefined && recorded.atMs !== undefined
+        ? Math.max(
+            recorded.atMs - request.atMs,
+            origin.here + (recorded.atMs - origin.recorded) - performance.now(),
+          )
+        : 0;
     if (latency > 0)
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, latency);
