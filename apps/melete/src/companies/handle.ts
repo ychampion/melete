@@ -80,8 +80,8 @@ export type HandleDeps = {
    */
   createTrigger?: (jobId: string, spec: TriggerSpec) => Promise<{ id: string }>;
   /**
-   * Write the item's new status and job back where the item lives. The core
-   * lane owns those tables, so this module only says what changed.
+   * Write the item's new status and job back where the item lives. Those
+   * tables belong to the ledger, so this module only says what changed.
    */
   onStatusChange?: (change: LedgerStatusChange) => Promise<void>;
 };

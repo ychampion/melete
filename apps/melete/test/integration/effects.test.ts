@@ -238,7 +238,7 @@ describe('E4: trust-class admission', () => {
     });
     expect((await loadAction(s.sql, proposal.action_id)).status).toBe('approved');
 
-    // The memory lane learns where that address actually came from.
+    // Memory learns where that address actually came from.
     table.set('zara@example.com', friday);
 
     const refusal = await rejectionOf(

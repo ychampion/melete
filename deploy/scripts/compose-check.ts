@@ -133,13 +133,13 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
   }
 
   const networks = networkNames(runtime);
-  // The wiring lane's checks, kept where the deploy lane's verified topology
+  // The runtime wiring checks, kept where the verified deployment topology
   // allows: the service must own the Docker socket group explicitly and must
-  // supervise attempts itself (the deploy lane's docker adapter, or the wiring
-  // lane's hermes adapter with its docker supervisor). Its development-profile
+  // supervise attempts itself (the docker adapter, or the hermes adapter with
+  // its docker supervisor). Their development-profile
   // check is not needed here: the static cell is a warm probe that the adapter
   // check keeps from ever running a job, and the authority check below keeps
-  // credential-free. Its build-only image check is restored further down.
+  // credential-free. Their build-only image check is restored further down.
   const service = compose.services?.melete;
   say(
     'the Docker socket group is explicitly required',

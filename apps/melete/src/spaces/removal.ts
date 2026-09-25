@@ -57,13 +57,13 @@ import { verifyRemoval, verifySpaceGone } from './verify.ts';
 /**
  * A provider is reached for an adapter and the connection whose account holds
  * it: one space can hold sandboxes in more than one account, so an adapter
- * alone would reach into the wrong one. The provider type is the sandbox lane's
- * and is carried opaquely, because nothing here looks inside it.
+ * alone would reach into the wrong one. The provider type belongs to the sandbox
+ * module and is carried opaquely, because nothing here looks inside it.
  */
 export type SandboxProviderFor = (adapter: string, connectionId: string) => unknown;
 
 /**
- * The sandbox lane owns live workspaces and the snapshots a provider keeps for
+ * The sandbox module owns live workspaces and the snapshots a provider keeps for
  * them. This module never reaches into a provider itself; it asks for the two
  * things a removal needs, and believes the first only because of the second.
  */

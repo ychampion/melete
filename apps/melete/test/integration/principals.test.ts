@@ -31,7 +31,7 @@ import { resolveTrustIn } from '../../src/memory/trust.ts';
 import { StubRuntimeAdapter } from '../../src/runtime/stub.ts';
 import { testDatabase } from '../helpers/database.ts';
 
-/** Migrations are named through the journal; a lane's index changes when it lands. */
+/** Migrations are named through the journal; a migration's index changes when others land before it. */
 function journalTags(): string[] {
   const journal = JSON.parse(
     readFileSync(new URL('../../drizzle/meta/_journal.json', import.meta.url), 'utf8'),
@@ -113,7 +113,7 @@ withDb('principal and shared-space authority', () => {
     url.pathname = `/${name}`;
     const upgrade = openDatabase(url.toString(), 2);
     try {
-      // The state immediately before this lane's migration, in journal order.
+      // The state immediately before the principals migration, in journal order.
       const before = journalTags()[journalTags().indexOf(migrationTag('petite_demogoblin')) - 1];
       if (!before) throw new Error('Missing pre-principal schema');
       await migrateThrough(upgrade, before);

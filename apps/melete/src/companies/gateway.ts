@@ -1,6 +1,6 @@
 /**
  * The live extractor. It is the service's own model gateway with a scan-sized
- * ledger, exactly as the learning lane's proposal gateway is the same gateway
+ * ledger, exactly as the learning loop's proposal gateway is the same gateway
  * with an episode-sized one.
  *
  * The point of going through the gateway rather than calling a provider is that

@@ -291,7 +291,7 @@ describe('the totals', () => {
   });
 
   test('a promise being chased is still a promise, until it is settled', () => {
-    // The screen lane found this one against their own implementation: counting
+    // Found while building the screen: counting
     // only `found` promises made the total tick down the moment somebody
     // pressed "Handle it", which tells a person the problem went away at the
     // exact moment work started on it. A number must not say that.

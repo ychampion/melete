@@ -607,7 +607,7 @@ export async function bootstrap(
       let hermesRuntime: RuntimeAdapter | undefined;
       if (handle && queue && env.MELETE_RUNTIME_ADAPTER !== 'docker') {
         // Memory is part of every Postgres-backed service, whichever runtime
-        // carries the attempt; the deploy lane's docker path starts its own.
+        // carries the attempt; the docker runtime path starts its own.
         memory = await startServiceMemory(
           handle.sql,
           queue.boss,

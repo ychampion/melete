@@ -214,12 +214,12 @@ server.serve_forever()
     const environment = attemptEnvironment(bundle, options.brokerUrl, 'api-secret');
     expect(environment.MELETE_ATTEMPT_TOKEN).toBe('attempt-secret');
     expect(environment.MELETE_MODEL_KEY).toStartWith('melete-surrogate-');
-    const astra = attemptEnvironment(
+    const responses = attemptEnvironment(
       { ...bundle, model: { provider: 'openai', model: 'gpt-6-astra', fallback: null } },
       options.brokerUrl,
       'api-secret',
     );
-    expect(astra.MELETE_MODEL_API_MODE).toBe('codex_responses');
+    expect(responses.MELETE_MODEL_API_MODE).toBe('codex_responses');
     // The engine is given a zone name in canonical spelling, never an offset.
     const zone = (time_zone?: string) =>
       attemptEnvironment({ ...bundle, time_zone }, options.brokerUrl, 'api-secret').HERMES_TIMEZONE;
