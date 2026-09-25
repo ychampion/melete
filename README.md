@@ -159,15 +159,6 @@ Melete can also run code in a cloud sandbox. Connect an [E2B](https://e2b.dev)
 or [Modal](https://modal.com) account as a **Sandbox** connection and your jobs
 can use it.
 
-## More it does for you
-
-**Your day.** Home opens with a short morning brief and the decisions waiting on
-you, next to your calendar.
-
-**Memory.** Tell it once how you like things done and it does them that way next
-time. You can see everything it remembers and change any of it. Something you
-ask it to forget stays forgotten, even after you restore a backup.
-
 ## Security
 
 - Every message it sends waits for your approval, or falls under a limit you set for someone you trust.
@@ -176,6 +167,22 @@ ask it to forget stays forgotten, even after you restore a backup.
 - Each person on an installation has their own space, and their jobs, drafts and receipts stay private to them.
 - Every action it takes leaves a receipt, and one that can be reversed shows an Undo button while it still works.
 - To report a vulnerability, follow [SECURITY.md](SECURITY.md). The [threat model](docs/THREAT-MODEL.md) has the details.
+
+## More it can do
+
+- Sign in with your ChatGPT account, or use Anthropic, OpenAI, Google, Fireworks or a local model behind an OpenAI-compatible endpoint.
+- Share a space with your household or a small team, while each person's jobs and messages stay private to them.
+- Add tools over MCP from a URL or a package, and a packaged server runs in its own container.
+- Teach it by correcting it, and it keeps each lesson as a skill you can list, pause or remove at `/learned`.
+- Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
+- See a receipt for each action and undo what can be undone. Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
+
+## Coming soon
+
+- Hosted Melete and our website, so you can try it in your browser.
+- One approval that covers a whole chase, follow-ups included.
+- A terminal in your cloud sandbox.
+- Daytona as a sandbox, alongside E2B and Modal.
 
 ## Documentation
 
