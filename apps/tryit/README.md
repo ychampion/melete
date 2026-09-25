@@ -101,7 +101,7 @@ curl -s https://melete-tryit.<subdomain>.workers.dev/healthz
 To set the secret from a file without it appearing anywhere:
 
 ```sh
-grep -h '^OPENAI_API_KEY=' ~/.config/melete/openai.env | cut -d= -f2- \
+grep -h '^OPENAI_API_KEY=' path/to/openai.env | cut -d= -f2- \
   | bunx wrangler secret put OPENAI_API_KEY --name melete-tryit
 ```
 
