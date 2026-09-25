@@ -240,7 +240,8 @@ beside the database volume, rather than on a Windows drive.
 ## Configuration and browser access
 
 Configuration lives in `deploy/.env`, generated once by
-`bun run deploy/scripts/configure.ts`, or with `--fake` for a demo that needs no
+`bun run deploy/scripts/configure.ts`, which configures a real model provider as
+[Providers](#providers) describes, or with `--fake` for a demo that needs no
 model key. The file is private and is not
 committed. Its default Compose project is `melete`; change `COMPOSE_PROJECT_NAME`
 before first startup when using another project. Use that value consistently
@@ -355,7 +356,9 @@ is given through `TS_EXTRA_ARGS`, for example
 bun run deploy/scripts/configure.ts --tailscale
 ```
 
-That writes `TS_HOSTNAME=melete` and leaves `TS_AUTHKEY` empty for you to fill
+With the provider's key in the environment as [Providers](#providers) describes,
+or with `--fake` beside `--tailscale` for the demonstration, that writes
+`TS_HOSTNAME=melete` and leaves `TS_AUTHKEY` empty for you to fill
 in. Pass `--tailscale-hostname` to choose another name; it becomes the node's
 name and so the host part of the address. On an installation that already has a
 `deploy/.env`, set `TS_HOSTNAME` and `TS_AUTHKEY` in that file by hand instead —
@@ -601,11 +604,33 @@ have accounts.
 
 ## Providers
 
-The `--fake` configuration is the reproducible local demonstration: no provider
-key is required, and sends go to the test destination. To configure a real
-provider, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL`, and the matching
-credential in `deploy/.env`. Disable `MELETE_ENABLE_FAKE_PROVIDER` and
-`MELETE_ENABLE_TEST_CONNECTOR` when those fixtures are no longer wanted.
+`configure.ts` writes a production configuration by default: a real provider,
+with its key read from the command's environment and written into `deploy/.env`
+without being printed. With nothing named it is the default provider below and
+its default model, so only the key is needed:
+
+```bash
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY
+bun run deploy/scripts/configure.ts
+```
+
+`--provider` picks another provider and `--model` names its model, which is
+required for every provider but the default. Each reads its own variable from
+the table below, for example
+`bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
+with `ANTHROPIC_API_KEY` exported. An OpenAI-compatible endpoint needs
+`OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`. The `chatgpt` provider
+needs no key: the owner signs in once the stack is running. A run whose key is
+missing is refused, and nothing is written.
+
+The `--fake` configuration is the reproducible local demonstration, and only it
+turns on the scripted provider and the test connector: no provider key is
+required, and sends go to the test destination. To change provider later, edit
+`MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL`, and the matching credential in
+`deploy/.env`, and set `MELETE_ENABLE_FAKE_PROVIDER` and
+`MELETE_ENABLE_TEST_CONNECTOR` to `false` when those fixtures are no longer
+wanted. The service warns at start-up while the test connector is on beside a
+real provider.
 
 `MELETE_DEFAULT_PROVIDER` is one of exactly these names:
 
@@ -624,9 +649,7 @@ OpenAI-compatible endpoint is always selected as `openai-compatible`, whatever
 software serves it; the name of that software is not a provider name. A selected
 provider with an empty key starts with a warning on the service log, and the
 gateway refuses each model call with `provider_key_unavailable` until the key is
-set. `configure.ts` without `--fake` prints the same warning when it writes
-`deploy/.env`, because the file it writes selects a real provider with its key
-still empty.
+set.
 
 `MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
 its API expects it. Fireworks identifiers are full account paths; the default is

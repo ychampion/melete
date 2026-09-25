@@ -3,9 +3,10 @@
 Use the [install procedure](../docs/DEPLOYMENT.md#install-on-a-linux-docker-host)
 from the repository root. It requires Docker Engine 28 or newer for the isolated
 bridge gateway and Compose 2.33.1 or newer for volume subpaths and gateway
-priority. `bun run deploy/scripts/configure.ts` generates `deploy/.env`,
-including independent secrets and the socket group, and `--fake` adds a scripted
-provider for a demo that needs no model key. It refuses to overwrite an
+priority. `bun run deploy/scripts/configure.ts` generates `deploy/.env` for a
+real model provider whose key is in the environment, including independent
+secrets and the socket group, and `--fake` configures a scripted provider for a
+demo that needs no model key instead. It refuses to overwrite an
 existing file. Start with
 `docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180`.
 The README explains provider configuration and the first sign-in.
