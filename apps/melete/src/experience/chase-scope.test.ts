@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { followUpRefusal } from './chase-scope.ts';
+import { CHASE_NUDGES, chaseFollowUp, followUpRefusal } from './chase-scope.ts';
 import { ruleView } from './rules.ts';
 
 /** The first message the person allowed, once. */
@@ -9,78 +9,79 @@ const approved = {
   body: 'Your payment of GBP 534.50 was to be refunded within 5 working days. Please confirm the date.',
 };
 
-const followUp = (over: Record<string, unknown> = {}) => ({
-  to: 'orders@thornfieldprint.example',
-  subject: 'Re: Refund for order TP-5521',
-  body: 'Following up on the GBP 534.50 refund. Please confirm the date it will be paid.',
-  ...over,
-});
-
-test('a follow-up to the same person, in the same thread, saying nothing new is covered', () => {
-  expect(followUpRefusal(approved, followUp())).toBeNull();
+test('each covered follow-up is a fixed line from the service, then the approved message', () => {
+  for (let n = 1; n <= CHASE_NUDGES.length; n++) {
+    const follow = chaseFollowUp(approved, n);
+    expect(follow.subject).toBe('Re: Refund for order TP-5521');
+    expect(follow.body).toBe(`${CHASE_NUDGES[n - 1]}\n\n${approved.body}`);
+    expect(followUpRefusal(approved, follow)).toBeNull();
+  }
   // The address is compared as an address, and a one-item list is the address.
   expect(
-    followUpRefusal(approved, followUp({ to: ['Orders@ThornfieldPrint.example'] })),
+    followUpRefusal(approved, {
+      ...chaseFollowUp(approved, 1),
+      to: ['Orders@ThornfieldPrint.example'],
+    }),
   ).toBeNull();
-  // The same amount written another way is the same amount.
-  expect(
-    followUpRefusal(approved, followUp({ body: 'Still waiting on £534.50. Please confirm.' })),
-  ).toBeNull();
+  // A subject that was already a reply keeps one `Re:`.
+  const reply = { ...approved, subject: 'Re: Refund for order TP-5521' };
+  expect(chaseFollowUp(reply, 1).subject).toBe('Re: Refund for order TP-5521');
+  expect(() => chaseFollowUp(approved, CHASE_NUDGES.length + 1)).toThrow();
+});
+
+test('any other words ask again', () => {
+  const follow = chaseFollowUp(approved, 1);
+  for (const body of [
+    // A line the model wrote itself.
+    `Just checking in on this.\n\n${approved.body}`,
+    // The approved message, changed in the smallest way.
+    `${CHASE_NUDGES[0]}\n\n${approved.body.replace('534.50', '600.00')}`,
+    // Something added after it.
+    `${follow.body}\n\nI agree to your offer.`,
+    // The approved message alone, which is the first message again.
+    approved.body,
+  ])
+    expect(followUpRefusal(approved, { ...follow, body })).toBe('not_the_approved_message');
 });
 
 test('a new recipient asks again', () => {
-  expect(followUpRefusal(approved, followUp({ to: 'complaints@thornfieldprint.example' }))).toBe(
+  const follow = chaseFollowUp(approved, 1);
+  expect(followUpRefusal(approved, { ...follow, to: 'complaints@thornfieldprint.example' })).toBe(
     'new_recipient',
   );
   expect(
-    followUpRefusal(
-      approved,
-      followUp({ to: ['orders@thornfieldprint.example', 'manager@thornfieldprint.example'] }),
-    ),
+    followUpRefusal(approved, {
+      ...follow,
+      to: ['orders@thornfieldprint.example', 'manager@thornfieldprint.example'],
+    }),
   ).toBe('new_recipient');
 });
 
 test('anyone copied in asks again', () => {
-  expect(followUpRefusal(approved, followUp({ cc: 'me@example.test' }))).toBe('copied_recipient');
-  expect(followUpRefusal(approved, followUp({ bcc: ['me@example.test'] }))).toBe(
+  const follow = chaseFollowUp(approved, 1);
+  expect(followUpRefusal(approved, { ...follow, cc: 'me@example.test' })).toBe('copied_recipient');
+  expect(followUpRefusal(approved, { ...follow, bcc: ['me@example.test'] })).toBe(
     'copied_recipient',
   );
 });
 
 test('a new thread asks again', () => {
-  expect(followUpRefusal(approved, followUp({ subject: 'Complaint about order TP-5521' }))).toBe(
-    'new_thread',
-  );
-  expect(followUpRefusal(approved, followUp({ subject: 'Fwd: Refund for order TP-5521' }))).toBe(
-    'new_thread',
-  );
+  const follow = chaseFollowUp(approved, 1);
+  for (const subject of [
+    'Complaint about order TP-5521',
+    'Fwd: Refund for order TP-5521',
+    approved.subject,
+  ])
+    expect(followUpRefusal(approved, { ...follow, subject })).toBe('new_thread');
 });
 
 test('anything beyond a message, such as an attachment, asks again', () => {
   expect(
-    followUpRefusal(approved, followUp({ attachments: ['art_01J0000000000000000000000A'] })),
+    followUpRefusal(approved, {
+      ...chaseFollowUp(approved, 1),
+      attachments: ['art_01J0000000000000000000000A'],
+    }),
   ).toBe('unexpected_field');
-});
-
-test('an amount the person did not approve asks again', () => {
-  expect(
-    followUpRefusal(approved, followUp({ body: 'Please refund GBP 600.00 including costs.' })),
-  ).toBe('new_amount');
-  expect(
-    followUpRefusal(approved, followUp({ body: 'I would accept $50 as a goodwill gesture.' })),
-  ).toBe('new_amount');
-});
-
-test('wording that commits the person asks again', () => {
-  for (const body of [
-    'I agree to your offer.',
-    'We accept a partial refund.',
-    'I will pay the remaining balance.',
-    'Please treat this as full and final settlement.',
-    'I authorise you to charge my card.',
-    'I waive any further claim.',
-  ])
-    expect(followUpRefusal(approved, followUp({ body }))).toBe('commitment');
 });
 
 test('the scope reads, in the person’s rules, as a chase’s follow-ups', () => {

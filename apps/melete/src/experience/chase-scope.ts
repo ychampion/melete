@@ -2,15 +2,17 @@
  * What one "Allow once" on a chase covers.
  *
  * A chase is a job handling a ledger item: it writes to one company and waits
- * for the answer. The person is asked once, on the first message. That answer
- * also covers the chase's follow-ups, and only those that could not surprise
- * them: the same job, the same address they approved, the same thread, nothing
- * but a message, no amount they did not see, and no wording that commits them
- * to anything. Anything else is asked again.
+ * for the answer. The person is asked once, on the first message, and it must
+ * be the person the job belongs to. That answer also covers the chase's
+ * follow-ups, and only follow-ups that cannot say anything new: the approved
+ * message, word for word, under one of a few fixed lines this service writes,
+ * to the same address, as a reply in the same thread. Anything else asks again,
+ * and so does anything after the job is corrected.
  *
  * The scope is a standing rule tied to the job, so it is listed with the
  * person's other rules, capped, and ended by revoking it. Each follow-up it
- * covers is still an action with its own receipt.
+ * covers is still an action with its own receipt, and the scope is checked
+ * again at the moment of sending.
  */
 
 import { type Action, hashOriginWarnings, originWarnings } from '@melete/contracts';
@@ -30,6 +32,16 @@ export const CHASE_SCOPE_DAYS = 30;
 /** The standing-rule origin that marks a scope granted by a person's approval in one job. */
 export const CHASE_SCOPE_ORIGIN = 'person_approved';
 
+/**
+ * The only lines a covered follow-up may add above the approved message, one
+ * per follow-up. They are the service's words, not the model's.
+ */
+export const CHASE_NUDGES = [
+  'Following up on my message below.',
+  'Following up again on my message below.',
+  'A last follow-up on my message below.',
+] as const;
+
 type Payload = Record<string, unknown>;
 
 const SEND_FIELDS = new Set(['to', 'cc', 'bcc', 'subject', 'body']);
@@ -40,35 +52,26 @@ const addressesOf = (value: unknown): string[] =>
     .filter(Boolean)
     .sort();
 
-/** A reply keeps its thread; a forward or a new subject starts another. */
-const threadOf = (subject: unknown) => {
-  let text = String(subject ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+/** The approved subject without any `Re:` it already carried. */
+const baseSubject = (subject: unknown) => {
+  let text = String(subject ?? '').trim();
   for (let previous = ''; previous !== text; ) {
     previous = text;
-    text = text.replace(/^re\s*:\s*/, '');
+    text = text.replace(/^re\s*:\s*/i, '');
   }
   return text;
 };
 
-/** Every money amount in a text, as a plain number: `£1,234.50`, `GBP 1234.5`, `1234.50 GBP`. */
-const amountsIn = (text: unknown): Set<string> => {
-  const found = new Set<string>();
-  const pattern =
-    /(?:[£$€¥₹]\s?|\b[A-Z]{3}\s?)(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s?(?:[A-Z]{3}\b|pounds\b|euros\b|dollars\b)/g;
-  for (const match of String(text ?? '').matchAll(pattern)) {
-    const raw = (match[1] ?? match[2] ?? '').replaceAll(',', '');
-    const value = Number(raw);
-    if (Number.isFinite(value)) found.add(value.toFixed(2));
-  }
-  return found;
-};
-
-/** First-person wording that binds the person to something they did not approve. */
-const COMMITMENT =
-  /\b(?:i|we) (?:(?:hereby|do) )?(?:agree|accept|consent|authori[sz]e|promise|undertake|waive|withdraw|will pay|shall pay)\b|\b(?:full and final|in full settlement|settle for|sign(?:ed)? (?:the|this|your) (?:agreement|contract))\b/i;
+/** The one shape a covered follow-up can take: the nth nudge, then the approved message. */
+export function chaseFollowUp(approved: Payload, n: number) {
+  const nudge = CHASE_NUDGES[n - 1];
+  if (!nudge) throw new Error(`A chase has ${CHASE_NUDGES.length} covered follow-ups`);
+  return {
+    to: approved.to,
+    subject: `Re: ${baseSubject(approved.subject)}`,
+    body: `${nudge}\n\n${String(approved.body ?? '')}`,
+  };
+}
 
 /**
  * Why a follow-up is not covered by the first message's approval, or null
@@ -82,28 +85,30 @@ export function followUpRefusal(approved: Payload, candidate: Payload): string |
   const allowed = addressesOf(approved.to);
   if (!to.length || to.length !== allowed.length || to.some((entry, i) => entry !== allowed[i]))
     return 'new_recipient';
-  if (threadOf(candidate.subject) !== threadOf(approved.subject)) return 'new_thread';
-  const seen = new Set([...amountsIn(approved.body), ...amountsIn(approved.subject)]);
-  for (const amount of [...amountsIn(candidate.body), ...amountsIn(candidate.subject)])
-    if (!seen.has(amount)) return 'new_amount';
-  if (COMMITMENT.test(`${String(candidate.subject ?? '')}\n${String(candidate.body ?? '')}`))
-    return 'commitment';
+  if (candidate.subject !== `Re: ${baseSubject(approved.subject)}`) return 'new_thread';
+  const body = String(candidate.body ?? '');
+  const message = String(approved.body ?? '');
+  if (!CHASE_NUDGES.some((nudge) => body === `${nudge}\n\n${message}`))
+    return 'not_the_approved_message';
   return null;
 }
 
 /**
- * Called when an action succeeds. The first message of a chase that a person
- * approved opens the scope for that chase's follow-ups. One scope per job: a
- * second approved send in the same chase opens nothing new.
+ * Called when an action succeeds. The first message of a chase, approved by
+ * the person the chase belongs to, opens the scope for its follow-ups. One
+ * scope per job: a second approved send in the same chase opens nothing new.
  */
 export async function recordChaseScope(tx: Query, action: Action): Promise<void> {
   if (ruleKinds[action.kind] !== 'send_message') return;
   const [decision] = await tx`select decision, decided_by from approval
     where action_id = ${action.id} limit 1`;
   if (decision?.decision !== 'approved' || !decision.decided_by) return;
-  const [chase] = await tx`select j.space_id from job j where j.id = ${action.job_id}
+  const [chase] = await tx`select j.space_id, coalesce(j.principal_id,
+      (select s.owner_principal_id from space s where s.id = j.space_id),
+      (select o.id from owner o limit 1)) as principal_id
+    from job j where j.id = ${action.job_id}
     and exists (select 1 from ledger_item l where l.job_id = j.id)`;
-  if (!chase) return;
+  if (!chase || chase.principal_id !== decision.decided_by) return;
   await tx`insert into experience_rule (id, space_id, connection_id, tool_kind, recipient,
       recipient_class, origin_trust, count_cap, expires_at, reconsent_after_days, job_id, source_action_id)
     values (${`rule_${action.id}`}, ${chase.space_id}, ${action.connection_id}, ${action.kind},
@@ -136,10 +141,13 @@ async function chaseCover(tx: Query, input: StandingGrantInput): Promise<string 
   if (!rule) return null;
   const [used] = await tx`select rule_id from experience_rule_use where action_id = ${action.id}`;
   if (used ? used.rule_id !== rule.id : Number(rule.used) >= Number(rule.count_cap)) return null;
-  const [source] = await tx`select a.canonical_payload, p.id as approval_id, p.origin_warnings
+  const [source] = await tx`select a.canonical_payload, p.id as approval_id, p.origin_warnings,
+      p.job_revision
     from action a join approval p on p.action_id = a.id and p.decision = 'approved'
     where a.id = ${rule.source_action_id}`;
   if (!source) return null;
+  // A correction changes what the chase is for; the approval was for the old one.
+  if (Number(source.job_revision) !== Number(job.revision)) return null;
   if (followUpRefusal(source.canonical_payload, action.canonical_payload) !== null) return null;
   if (
     warnings.length > 0 &&

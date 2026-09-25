@@ -1086,8 +1086,19 @@ export class BrokerService implements BrokerOperations {
         'The standing permission no longer covers this action.',
       );
     const [authorizing] = action.authorization_ref
-      ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
+      ? await tx`select origin_warnings, action_id from approval where id = ${action.authorization_ref}`
       : [];
+    // An approval lent by a scope, rather than given to this action, holds only
+    // while the scope still lends that same approval now.
+    if (
+      authorizing &&
+      authorizing.action_id !== action.id &&
+      classified.authorized_by !== action.authorization_ref
+    )
+      throw new BrokerFault(
+        'approval_required',
+        'The standing permission no longer covers this action.',
+      );
     const authorized = originWarnings.parse(authorizing?.origin_warnings ?? []);
     if (hashOriginWarnings(authorized) !== classified.warnings_hash) {
       throw new BrokerFault(

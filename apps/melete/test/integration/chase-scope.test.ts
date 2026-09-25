@@ -1,23 +1,29 @@
 /**
  * One "Allow once" on a chase's first message, and what it covers after.
  *
- * The rule under test: the person's approval of a chase's first message also
- * covers that same chase's follow-ups to the address they approved, in the
- * same thread, up to three of them. Anything else asks again, and revoking the
- * scope ends it. Each covered follow-up is still an action with a receipt.
+ * The rule under test: the approval of a chase's first message, by the person
+ * the chase belongs to, also covers up to three follow-ups in that same chase,
+ * each a fixed line from the service above the approved message word for word,
+ * to the same address, in the same thread. Anything else asks again. Revoking
+ * the scope ends it, even between admission and sending, and so does
+ * correcting the job. Each covered follow-up is still an action with a receipt.
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import type { JsonValue } from '@melete/contracts';
+import type { Action, JsonValue } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { handleLedgerItem } from '../../src/companies/handle.ts';
 import { type Owner, PostgresCompanyStore } from '../../src/companies/repository.ts';
+import { ConnectorFaultError } from '../../src/connectors/faults.ts';
 import { ConnectorRegistry } from '../../src/connectors/registry.ts';
 import { createTestConnector, initializeTestLedger } from '../../src/connectors/test.ts';
+import type { Connector } from '../../src/connectors/types.ts';
 import { connection, experienceRule, owner, space } from '../../src/db/schema.ts';
 import {
   CHASE_FOLLOW_UP_CAP,
+  CHASE_NUDGES,
+  chaseFollowUp,
   recordChaseScope,
   resolveChaseScopedGrant,
   resolvePersonGrant,
@@ -41,6 +47,7 @@ const TO = 'orders@thornfieldprint.example';
 const SUBJECT = 'Refund for order TP-5521';
 const FIRST =
   'Your payment of GBP 534.50 was to be refunded within 5 working days. Please confirm the date.';
+const APPROVED = { to: TO, subject: SUBJECT, body: FIRST };
 
 let runner: AttemptRunner;
 let triggers: TriggerService;
@@ -51,6 +58,8 @@ let scanOwner: Owner;
 let spaceId = '';
 let ownerId = '';
 let connectionId = '';
+/** What the destination does when a follow-up reaches it, before it sends. */
+let meetFollowUp: ((action: Action) => Promise<void>) | null = null;
 
 function fixture() {
   if (!handle || !queue || !jobs) throw new Error('Postgres unavailable');
@@ -74,13 +83,35 @@ async function claim(jobId: string): Promise<ClaimedAttempt> {
 const send = (claimed: ClaimedAttempt, payload: Record<string, JsonValue>) =>
   broker.propose(claimed.claims, { connection_id: connectionId, kind: 'test.send', payload });
 
+const followUp = (n: number, over: Record<string, JsonValue> = {}) => ({
+  ...(chaseFollowUp(APPROVED, n) as Record<string, JsonValue>),
+  ...over,
+});
+
+/** The test destination, with a hook on the way to any follow-up. */
+function destination(inner: Connector): Connector {
+  return {
+    ...inner,
+    async execute(action, ctx) {
+      const body = String(action.canonical_payload.body ?? '');
+      if (meetFollowUp && CHASE_NUDGES.some((nudge) => body.startsWith(nudge)))
+        await meetFollowUp(action);
+      return inner.execute(action, ctx);
+    },
+  };
+}
+
 /** The person answers "Allow once", and the message goes out. */
-async function allowOnce(jobId: string, proposal: Awaited<ReturnType<typeof send>>) {
+async function allowOnce(
+  jobId: string,
+  proposal: Awaited<ReturnType<typeof send>>,
+  decidedBy = ownerId,
+) {
   expect(proposal.status).toBe('needs_approval');
   await approvals.decide(
     String(proposal.approval_id),
     { decision: 'approved', payload_hash: proposal.payload_hash },
-    ownerId,
+    decidedBy,
   );
   const carrying = await claim(jobId);
   await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
@@ -145,23 +176,21 @@ async function chase(domain = 'thornfieldprint.example') {
 /** A chase whose first message the person allowed once, with the attempt that sent it. */
 async function allowedChase() {
   const jobId = await chase();
-  const carrying = await allowOnce(
-    jobId,
-    await send(await claim(jobId), { to: TO, subject: SUBJECT, body: FIRST }),
-  );
+  const carrying = await allowOnce(jobId, await send(await claim(jobId), APPROVED));
   return { jobId, carrying };
 }
-
-const followUp = (n: number, over: Record<string, JsonValue> = {}) => ({
-  to: TO,
-  subject: `Re: ${SUBJECT}`,
-  body: `Following up (${n}) on the GBP 534.50 refund. Please confirm the date it will be paid.`,
-  ...over,
-});
 
 async function sent() {
   const { handle } = fixture();
   return handle.sql`select action_id from test_destination_ledger`;
+}
+
+async function revoke(jobId: string) {
+  const { handle } = fixture();
+  await handle.db
+    .update(experienceRule)
+    .set({ revokedAt: new Date() })
+    .where(eq(experienceRule.jobId, jobId));
 }
 
 withDb('what one "Allow once" on a chase covers', () => {
@@ -172,6 +201,7 @@ withDb('what one "Allow once" on a chase covers', () => {
     await resetTestRows(handle.sql);
     await initializeTestLedger(handle.sql);
     await handle.sql`delete from test_destination_ledger`;
+    meetFollowUp = null;
     spaceId = newId('sp');
     ownerId = newId('own');
     connectionId = newId('conn');
@@ -190,7 +220,10 @@ withDb('what one "Allow once" on a chase covers', () => {
     approvals = new ApprovalService(jobs, runner);
     broker = new BrokerService({
       sql: handle.sql,
-      connectors: new ConnectorRegistry().register(connectionId, createTestConnector(handle.sql)),
+      connectors: new ConnectorRegistry().register(
+        connectionId,
+        destination(createTestConnector(handle.sql)),
+      ),
       // Nothing is vouched for: a company's address came out of its own email.
       resolveTrust: createTableTrustResolver({}),
       resolveStandingGrant: resolvePersonGrant,
@@ -216,44 +249,43 @@ withDb('what one "Allow once" on a chase covers', () => {
     expect(rules[0]).toMatchObject({ jobId, countCap: CHASE_FOLLOW_UP_CAP, used: 0 });
   });
 
-  test('a follow-up to the same address in the same thread goes out without asking, as an action', async () => {
+  test('each fixed follow-up goes out without asking, as an action with a receipt', async () => {
     const { handle } = fixture();
     const { carrying } = await allowedChase();
-    const covered = await send(carrying, followUp(1));
-    expect(covered.status).toBe('succeeded');
-    expect(covered.approval_id).toBeNull();
-    // It is still an effect with a receipt, not something done quietly.
-    const [row] =
-      await handle.sql`select status, receipt from action where id = ${covered.action_id}`;
-    expect(row?.status).toBe('succeeded');
-    expect(row?.receipt).not.toBeNull();
-    expect(await sent()).toHaveLength(2);
+    for (let n = 1; n <= CHASE_FOLLOW_UP_CAP; n++) {
+      const covered = await send(carrying, followUp(n));
+      expect(covered.status).toBe('succeeded');
+      expect(covered.approval_id).toBeNull();
+      const [row] =
+        await handle.sql`select status, receipt from action where id = ${covered.action_id}`;
+      expect(row?.status).toBe('succeeded');
+      expect(row?.receipt).not.toBeNull();
+    }
+    expect(await sent()).toHaveLength(1 + CHASE_FOLLOW_UP_CAP);
   });
 
-  test('someone copied in asks again', async () => {
-    const { carrying } = await allowedChase();
-    expect((await send(carrying, followUp(1, { cc: 'me@example.test' }))).status).toBe(
-      'needs_approval',
-    );
-  });
-
-  test('a new recipient, a new thread, a new amount or a commitment asks again', async () => {
+  test('anything but the fixed shape asks again', async () => {
     const { carrying } = await allowedChase();
     const changes: Record<string, JsonValue>[] = [
+      { cc: 'me@example.test' },
       { to: 'complaints@thornfieldprint.example' },
       { subject: 'Complaint about order TP-5521' },
-      { body: 'Please refund GBP 600.00 including costs.' },
-      { body: 'I agree to your offer of a partial refund.' },
+      { body: `Just checking in.\n\n${FIRST}` },
+      { body: `${CHASE_NUDGES[0]}\n\n${FIRST}\n\nI agree to a partial refund.` },
     ];
     for (const over of changes)
-      expect((await send(carrying, followUp(9, over))).status).toBe('needs_approval');
+      expect((await send(carrying, followUp(1, over))).status).toBe('needs_approval');
   });
 
-  test(`it covers ${CHASE_FOLLOW_UP_CAP} follow-ups, and the next one asks`, async () => {
-    const { carrying } = await allowedChase();
-    for (let n = 1; n <= CHASE_FOLLOW_UP_CAP; n++)
-      expect((await send(carrying, followUp(n))).status).toBe('succeeded');
-    expect((await send(carrying, followUp(CHASE_FOLLOW_UP_CAP + 1))).status).toBe('needs_approval');
+  test('the cap is the cap', async () => {
+    const { handle } = fixture();
+    const { jobId, carrying } = await allowedChase();
+    await handle.db
+      .update(experienceRule)
+      .set({ countCap: 1 })
+      .where(eq(experienceRule.jobId, jobId));
+    expect((await send(carrying, followUp(1))).status).toBe('succeeded');
+    expect((await send(carrying, followUp(2))).status).toBe('needs_approval');
   });
 
   test('another chase to the same address is not covered', async () => {
@@ -263,12 +295,82 @@ withDb('what one "Allow once" on a chase covers', () => {
   });
 
   test('revoking the scope ends it', async () => {
-    const { handle } = fixture();
     const { jobId, carrying } = await allowedChase();
-    await handle.db
-      .update(experienceRule)
-      .set({ revokedAt: new Date() })
-      .where(eq(experienceRule.jobId, jobId));
+    await revoke(jobId);
+    expect((await send(carrying, followUp(1))).status).toBe('needs_approval');
+  });
+
+  test('a follow-up held back by the destination is refused if the scope is revoked meanwhile', async () => {
+    const { jobId, carrying } = await allowedChase();
+    // The destination asks to be left alone, so the admitted follow-up waits.
+    let parked = false;
+    meetFollowUp = async () => {
+      if (parked) return;
+      parked = true;
+      throw new ConnectorFaultError({
+        kind: 'rate_limited',
+        detail: 'the destination asked to be left alone for a while',
+        retry_after: 60,
+      });
+    };
+    const held = await send(carrying, followUp(1));
+    expect(held.status).not.toBe('succeeded');
+    await revoke(jobId);
+    const later = await broker.dispatch(held.action_id, Date.now() + 120_000);
+    expect(later.status).not.toBe('succeeded');
+    expect(await sent()).toHaveLength(1);
+  });
+
+  test('a follow-up whose first try failed is not retried once the scope is revoked', async () => {
+    const { jobId, carrying } = await allowedChase();
+    let tries = 0;
+    meetFollowUp = async () => {
+      tries += 1;
+      if (tries > 1) return;
+      // The person revokes while the first try is on the wire, and it fails.
+      await revoke(jobId);
+      throw new ConnectorFaultError({
+        kind: 'transient_before_dispatch',
+        detail: 'the socket closed before the send',
+      });
+    };
+    const attempt = await send(carrying, followUp(1));
+    expect(attempt.status).not.toBe('succeeded');
+    expect(tries).toBe(1);
+    expect(await sent()).toHaveLength(1);
+  });
+
+  test('correcting the chase ends the scope', async () => {
+    const { jobs } = fixture();
+    const { jobId, carrying } = await allowedChase();
+    // The chase goes quiet, and the person corrects what it is for.
+    await runner.commitOutcome(carrying.claims, {
+      kind: 'waiting_for_event_or_time',
+      wait: { kind: 'timer', wake_at: new Date(Date.now() - 1000).toISOString() },
+    });
+    await jobs.revise(jobId, { objective: 'Ask for the refund to go to a different card.' });
+    const next = await claim(jobId);
+    expect((await send(next, followUp(1))).status).toBe('needs_approval');
+  });
+
+  test('an approval given by anyone but the chase’s own person opens nothing', async () => {
+    const { handle } = fixture();
+    const jobId = await chase();
+    const proposal = await send(await claim(jobId), APPROVED);
+    await approvals.decide(
+      String(proposal.approval_id),
+      { decision: 'approved', payload_hash: proposal.payload_hash },
+      ownerId,
+    );
+    // Recorded as decided by someone else, however that came to be.
+    const stranger = newId('own');
+    await handle.sql`insert into principal (id, email, password_hash)
+      values (${stranger}, 'stranger@example.test', 'fixture')`;
+    await handle.sql`update approval set decided_by = ${stranger} where id = ${proposal.approval_id}`;
+    const carrying = await claim(jobId);
+    await broker.admit(carrying.claims, proposal.action_id, proposal.payload_hash);
+    expect((await broker.dispatch(proposal.action_id)).status).toBe('succeeded');
+    expect(await handle.db.select().from(experienceRule)).toHaveLength(0);
     expect((await send(carrying, followUp(1))).status).toBe('needs_approval');
   });
 
@@ -279,10 +381,7 @@ withDb('what one "Allow once" on a chase covers', () => {
       title: 'Write to Thornfield',
       objective: 'Ask',
     });
-    const carrying = await allowOnce(
-      plain.id,
-      await send(await claim(plain.id), { to: TO, subject: SUBJECT, body: FIRST }),
-    );
+    const carrying = await allowOnce(plain.id, await send(await claim(plain.id), APPROVED));
     expect(await handle.db.select().from(experienceRule)).toHaveLength(0);
     expect((await send(carrying, followUp(1))).status).toBe('needs_approval');
   });
