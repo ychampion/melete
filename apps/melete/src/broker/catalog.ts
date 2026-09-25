@@ -20,6 +20,7 @@ import { appendToolTrace } from '../experience/tools.ts';
 import { plainSkillTitle } from '../jobs/skill-trace.ts';
 import { spaceRole } from '../principals/authority.ts';
 import { audienceVisible } from '../principals/context.ts';
+import { CHASE_FOLLOW_UP_TOOL } from './chase.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
 import { gist, relevance, terms, words } from './lexical.ts';
@@ -179,6 +180,8 @@ export type CoreSelectionContext = {
   conversational?: boolean;
   /** An approved action is waiting to be carried out, so resuming it comes first. */
   resumable?: boolean;
+  /** A chase's scope covers a follow-up, so its tool comes first beside resuming. */
+  followable?: boolean;
   /** The attempt may read skills it was not given in full, so the reader must be on offer. */
   readable?: boolean;
 };
@@ -222,7 +225,8 @@ export function selectCore(
       pinned:
         item.tool.connection_id !== null
           ? 0
-          : context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name
+          : (context.resumable === true && item.tool.name === RESUME_ACTION_TOOL.name) ||
+              (context.followable === true && item.tool.name === CHASE_FOLLOW_UP_TOOL.name)
             ? 2
             : (context.waitable === true && item.tool.name === RUNTIME_WAIT_TOOL.name) ||
                 (context.conversational === true && item.tool.name === REACT_TOOL_NAME) ||
@@ -319,6 +323,8 @@ export type CatalogOptions = {
   /** This loader is service-owned and already selects the job's space. */
   skills?: (spaceId: string) => Promise<readonly SourcedSkill[]>;
   nativeTools?: readonly ToolSpec[];
+  /** Whether a chase's scope still covers a follow-up, so its tool is offered. */
+  followable?: (tx: Query, job: LockedJob) => Promise<boolean>;
 };
 
 /**
@@ -341,6 +347,10 @@ export function readableSkills(
 /** The context is durable, but possession of a schema never becomes authority. */
 export class ToolCatalog {
   constructor(private readonly options: CatalogOptions) {}
+
+  private followable(tx: Query, job: LockedJob): Promise<boolean> {
+    return this.options.followable?.(tx, job) ?? Promise.resolve(false);
+  }
 
   /**
    * The skills this attempt may read: its granted scopes cover every tool one
@@ -509,9 +519,11 @@ export class ToolCatalog {
       if (tool.name === SKILL_READ_TOOL.name && skills.length === 0) continue;
       // Offered only while the owner's approval is waiting to be carried out.
       if (tool.name === RESUME_ACTION_TOOL.name && !resumable) continue;
+      // Offered only while a chase's scope still covers a follow-up.
+      if (tool.name === CHASE_FOLLOW_UP_TOOL.name && !(await this.followable(tx, job))) continue;
       if (
         !(await accept(tool.name, tool.connection_id, () => {
-          const lifecycle = [RUNTIME_WAIT_TOOL, RESUME_ACTION_TOOL].some(
+          const lifecycle = [RUNTIME_WAIT_TOOL, RESUME_ACTION_TOOL, CHASE_FOLLOW_UP_TOOL].some(
             (typed) =>
               tool.name === typed.name &&
               schemaFingerprint(tool.input_schema) === schemaFingerprint(typed.input_schema) &&
@@ -574,6 +586,7 @@ export class ToolCatalog {
       text: [job.objective, row?.message].filter(Boolean).join(' '),
       waitable: row?.waitable === true,
       resumable: await hasResumableAction(tx, job),
+      followable: await this.followable(tx, job),
       readable: (await this.skills(tx, job, claims)).length > 0,
       conversational:
         access.chat || first || Number(row?.message_seq ?? 0) > Number(row?.prior_cursor ?? 0),

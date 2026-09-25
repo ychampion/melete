@@ -7,10 +7,12 @@
  * to the same address, in the same thread. Anything else asks again. Revoking
  * the scope ends it, even between admission and sending, and so does
  * correcting the job. Each covered follow-up is still an action with a receipt.
+ * The model sends one through `chase.follow_up`, which the service writes.
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import type { Action, JsonValue } from '@melete/contracts';
 import { eq } from 'drizzle-orm';
+import { CHASE_FOLLOW_UP_TOOL } from '../../src/broker/chase.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createTableTrustResolver } from '../../src/broker/trust.ts';
 import { handleLedgerItem } from '../../src/companies/handle.ts';
@@ -24,10 +26,13 @@ import {
   CHASE_FOLLOW_UP_CAP,
   CHASE_NUDGES,
   chaseFollowUp,
+  chaseFollowUpPort,
   recordChaseScope,
   resolveChaseScopedGrant,
   resolvePersonGrant,
 } from '../../src/experience/chase-scope.ts';
+import { ExperienceEvents } from '../../src/experience/events.ts';
+import { toolId } from '../../src/experience/tools.ts';
 import { newId } from '../../src/ids.ts';
 import { ApprovalService } from '../../src/jobs/approvals.ts';
 import { type AttemptWake, QUEUES, startQueue } from '../../src/jobs/queue.ts';
@@ -185,6 +190,13 @@ async function sent() {
   return handle.sql`select action_id from test_destination_ledger`;
 }
 
+/** Whether the attempt is offered the follow-up tool. */
+async function offered(claimed: ClaimedAttempt) {
+  return (await broker.catalog(claimed.claims)).some(
+    (tool) => tool.name === CHASE_FOLLOW_UP_TOOL.name,
+  );
+}
+
 async function revoke(jobId: string) {
   const { handle } = fixture();
   await handle.db
@@ -229,6 +241,7 @@ withDb('what one "Allow once" on a chase covers', () => {
       resolveStandingGrant: resolvePersonGrant,
       resolveScopedGrant: resolveChaseScopedGrant,
       recordStandingScope: recordChaseScope,
+      chaseFollowUp: chaseFollowUpPort,
     });
     store = new PostgresCompanyStore(handle.db);
     scanOwner = { spaceId, principalId: ownerId };
@@ -384,5 +397,71 @@ withDb('what one "Allow once" on a chase covers', () => {
     const carrying = await allowOnce(plain.id, await send(await claim(plain.id), APPROVED));
     expect(await handle.db.select().from(experienceRule)).toHaveLength(0);
     expect((await send(carrying, followUp(1))).status).toBe('needs_approval');
+  });
+
+  test('a follow-up through the tool goes out without asking and shows as a tool entry', async () => {
+    const { handle, jobs } = fixture();
+    const { jobId, carrying } = await allowedChase();
+    // The chase is shown in a conversation, as its tool entries are.
+    const chat = await jobs.create({ space_id: spaceId, title: 'Refunds', objective: 'Chat' });
+    await handle.sql`update job set kind = 'chat' where id = ${chat.id}`;
+    await handle.sql`update job set experience_parent_id = ${chat.id} where id = ${jobId}`;
+    expect(await offered(carrying)).toBe(true);
+    for (let n = 1; n <= CHASE_FOLLOW_UP_CAP; n++) {
+      const covered = await broker.followUp(carrying.claims);
+      expect(covered.status).toBe('succeeded');
+      expect(covered.approval_id).toBeNull();
+      const [row] = await handle.sql`select kind, canonical_payload, receipt from action
+        where id = ${covered.action_id}`;
+      expect(row?.kind).toBe('test.send');
+      expect(row?.canonical_payload).toEqual(chaseFollowUp(APPROVED, n));
+      expect(row?.receipt).not.toBeNull();
+      const page = await new ExperienceEvents(handle.db).page(spaceId, 0, chat.id, 200, ownerId);
+      const entry = page.events
+        .flatMap((event) => (event.item.type === 'tool' ? [event.item.tool] : []))
+        .filter((tool) => tool.id === toolId('action', covered.action_id))
+        .at(-1);
+      expect(entry?.status).toBe('done');
+    }
+    expect(await sent()).toHaveLength(1 + CHASE_FOLLOW_UP_CAP);
+    // Every covered follow-up is used, so the tool is gone and asking for one is refused.
+    expect(await offered(carrying)).toBe(false);
+    const refused = await broker.followUp(carrying.claims).catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: 'unknown_tool' });
+  });
+
+  test('a follow-up the model writes itself still asks', async () => {
+    const { carrying } = await allowedChase();
+    const written = await send(carrying, {
+      to: TO,
+      subject: `Re: ${SUBJECT}`,
+      body: `Hello again. Any news on the refund?
+
+${FIRST}`,
+    });
+    expect(written.status).toBe('needs_approval');
+    expect(await sent()).toHaveLength(1);
+  });
+
+  test('the tool is offered only while the chase has a scope open', async () => {
+    const { jobs } = fixture();
+    const unasked = await chase('quillmark.example');
+    const first = await claim(unasked);
+    expect(await offered(first)).toBe(false);
+    expect(await broker.followUp(first.claims).catch((error: unknown) => error)).toMatchObject({
+      code: 'unknown_tool',
+    });
+
+    const { jobId, carrying } = await allowedChase();
+    expect(await offered(carrying)).toBe(true);
+    await revoke(jobId);
+    expect(await offered(carrying)).toBe(false);
+    expect(await broker.followUp(carrying.claims).catch((error: unknown) => error)).toMatchObject({
+      code: 'unknown_tool',
+    });
+
+    const plain = await jobs.create({ space_id: spaceId, title: 'Write', objective: 'Ask' });
+    const allowed = await allowOnce(plain.id, await send(await claim(plain.id), APPROVED));
+    expect(await offered(allowed)).toBe(false);
   });
 });

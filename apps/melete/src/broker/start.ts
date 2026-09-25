@@ -12,6 +12,7 @@ import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
 import {
+  chaseFollowUpPort,
   recordChaseScope,
   resolveChaseScopedGrant,
   resolvePersonGrant,
@@ -114,6 +115,7 @@ export async function startEffectBoundary(
       resolveStandingGrant: resolvePersonGrant,
       resolveScopedGrant: resolveChaseScopedGrant,
       recordStandingScope: recordChaseScope,
+      chaseFollowUp: chaseFollowUpPort,
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,
       catalog: {

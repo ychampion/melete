@@ -15,8 +15,14 @@
  * again at the moment of sending.
  */
 
-import { type Action, hashOriginWarnings, originWarnings } from '@melete/contracts';
-import type { Query } from '../broker/records.ts';
+import {
+  type Action,
+  hashOriginWarnings,
+  type JsonObject,
+  originWarnings,
+} from '@melete/contracts';
+import type { ChaseFollowUpPort } from '../broker/chase.ts';
+import type { LockedJob, Query } from '../broker/records.ts';
 import type {
   ScopedGrantResolver,
   StandingGrantInput,
@@ -173,3 +179,36 @@ export const resolveChaseScopedGrant: ScopedGrantResolver = chaseCover;
 /** A person's standing rules first, then the chase scope of the job. */
 export const resolvePersonGrant: StandingGrantResolver = async (tx, input) =>
   (await resolveExperienceGrant(tx, input)) || resolveChaseGrant(tx, input);
+
+/** The job's open chase scope and the approved message it rests on, or null. */
+async function openScope(tx: Query, job: LockedJob) {
+  const [scope] = await tx`select r.connection_id, r.tool_kind, r.used, a.canonical_payload
+    from experience_rule r
+    join action a on a.id = r.source_action_id
+    join approval p on p.action_id = a.id and p.decision = 'approved'
+    where r.job_id = ${job.id} and r.origin_trust = ${CHASE_SCOPE_ORIGIN}
+    and r.revoked_at is null and r.expires_at > now()
+    and r.created_at + r.reconsent_after_days * interval '1 day' > now()
+    and r.used < r.count_cap and p.job_revision = ${job.revision}
+    and exists (select 1 from ledger_item l where l.job_id = r.job_id)`;
+  return scope && Number(scope.used) < CHASE_NUDGES.length ? scope : null;
+}
+
+/**
+ * The `chase.follow_up` tool's side: whether a job has a follow-up its scope
+ * covers, and that follow-up, written here from the approved message. The
+ * broker still admits it like any other send, so the scope is checked again.
+ */
+export const chaseFollowUpPort: ChaseFollowUpPort = {
+  available: async (tx, job) => (await openScope(tx, job)) !== null,
+  next: async (tx, job) => {
+    const scope = await openScope(tx, job);
+    if (!scope) return null;
+    return {
+      connection_id: String(scope.connection_id),
+      kind: String(scope.tool_kind),
+      // The approved payload is stored JSON, so its recipient is JSON too.
+      payload: chaseFollowUp(scope.canonical_payload, Number(scope.used) + 1) as JsonObject,
+    };
+  },
+};

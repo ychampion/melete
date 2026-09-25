@@ -25,7 +25,7 @@ and the ask — hold the rate or say what else there is. Mention leaving only if
 the person said they would. No threat.
 
 Ask once per company before the first message. Never send the same message
-twice. Afterwards follow up only inside the bounds that approval set.
+twice. Follow up only with `chase.follow_up`.
 
 Wait on the reply trigger, deadline three days out, never past the date the
 rise starts. Nothing by then, send one follow-up; two at most.

@@ -63,6 +63,7 @@ import {
 } from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } from './catalog.ts';
+import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -127,6 +128,8 @@ export type BrokerOptions = {
   resolveScopedGrant?: ScopedGrantResolver;
   /** Called in the transaction that records an action as succeeded. */
   recordStandingScope?: (tx: Query, action: Action) => Promise<void>;
+  /** A chase's covered follow-up, offered as `chase.follow_up` while its scope holds. */
+  chaseFollowUp?: ChaseFollowUpPort;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -251,7 +254,9 @@ export class BrokerService implements BrokerOperations {
         RESUME_ACTION_TOOL,
         SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
+        ...(options.chaseFollowUp ? [CHASE_FOLLOW_UP_TOOL] : []),
       ],
+      ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
     });
     if (options.composeExecutor) {
       this.compose = new ComposeService({
@@ -362,6 +367,24 @@ export class BrokerService implements BrokerOperations {
 
   requestWait(claims: CapabilityClaims, input: unknown) {
     return requestRuntimeWait(this.sql, claims, input);
+  }
+
+  /**
+   * Send the chase's next covered follow-up. The service builds the message;
+   * it is proposed like any other send, so admission, the scope and the
+   * execution fence all decide it the same way, and it is a tool entry.
+   */
+  async followUp(claims: CapabilityClaims): Promise<EffectProposalResponse> {
+    const port = this.options.chaseFollowUp;
+    const next = port
+      ? await this.sql.begin(async (tx) => {
+          const job = await lockJob(tx, claims.job_id);
+          await checkAttempt(tx, job, claims);
+          return port.next(tx, job);
+        })
+      : null;
+    if (!next) throw new BrokerFault('unknown_tool', 'This chase has no follow-up to send.');
+    return this.propose(claims, next);
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
