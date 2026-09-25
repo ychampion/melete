@@ -513,16 +513,56 @@ const STATUS_LINE: Partial<Record<Conversation['status'], string>> = {
   done: 'Done',
 };
 
-function InMotion({ now }: { now: number }) {
-  const { agents, conversations } = useApp();
-  const rows = conversations
+/** The conversations an open permission or question belongs to. */
+export function waitingOn(decisions: {
+  permissions: { conversation_id: string | null }[];
+  questions: { conversation_id: string | null }[];
+}): Set<string> {
+  const ids = new Set<string>();
+  for (const decision of [...decisions.permissions, ...decisions.questions])
+    if (decision.conversation_id) ids.add(decision.conversation_id);
+  return ids;
+}
+
+/**
+ * What In motion lists: work that is moving, waiting on the person, or finished
+ * in the last day. A conversation with an open decision is waiting on the
+ * person whatever its turn says, since its job cannot go on without them.
+ */
+export function motionRows(
+  conversations: Conversation[],
+  waiting: ReadonlySet<string>,
+  now: number,
+): Conversation[] {
+  return conversations
     .filter(
       (conversation) =>
         MOVING.has(conversation.status) ||
+        conversation.status === 'needs_you' ||
+        waiting.has(conversation.id) ||
         (conversation.status === 'done' && now - Date.parse(conversation.updated_at) < 86_400_000),
     )
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .slice(0, 3);
+}
+
+/** The line under a row's title; an open decision outranks the turn's own status. */
+export function motionLine(
+  conversation: Conversation,
+  waiting: ReadonlySet<string>,
+  agentName: string,
+): string {
+  if (waiting.has(conversation.id) || conversation.status === 'needs_you') return 'Waiting on you';
+  return (
+    progressOf(conversation)?.current ?? STATUS_LINE[conversation.status] ?? `${agentName} is on it`
+  );
+}
+
+function InMotion({ now }: { now: number }) {
+  const { agents, conversations } = useApp();
+  const decisions = useDecisions();
+  const waiting = waitingOn(decisions);
+  const rows = motionRows(conversations, waiting, now);
   if (rows.length === 0) return null;
   return (
     <section className="home-section" aria-labelledby="home-motion">
@@ -543,16 +583,18 @@ function InMotion({ now }: { now: number }) {
           return (
             <a key={conversation.id} className="motion-row" href={href(`/chat/${conversation.id}`)}>
               {agent ? (
-                <AgentFace look={lookOf(agent)} size={28} state={faceOf(conversation.status)} />
+                <AgentFace
+                  look={lookOf(agent)}
+                  size={28}
+                  state={faceOf(waiting.has(conversation.id) ? 'needs_you' : conversation.status)}
+                />
               ) : (
                 <MeleteAvatar size={28} />
               )}
               <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
                 <span className="clamp1 motion-title">{conversation.title}</span>
                 <span className="clamp1 motion-line">
-                  {progress?.current ??
-                    STATUS_LINE[conversation.status] ??
-                    `${agent?.name ?? 'Melete'} is on it`}
+                  {motionLine(conversation, waiting, agent?.name ?? 'Melete')}
                 </span>
               </span>
               {progress && segments > 0 ? (
