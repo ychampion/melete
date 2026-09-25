@@ -1,6 +1,6 @@
 # Docker deployment
 
-Use the [root README install procedure](../README.md#install-on-a-linux-docker-host)
+Use the [install procedure](../docs/DEPLOYMENT.md#install-on-a-linux-docker-host)
 from the repository root. It requires Docker Engine 28 or newer for the isolated
 bridge gateway and Compose 2.33.1 or newer for volume subpaths and gateway
 priority. `bun run deploy/scripts/configure.ts --fake` generates `deploy/.env`,

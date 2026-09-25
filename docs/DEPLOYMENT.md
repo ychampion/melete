@@ -1,6 +1,6 @@
 # Deployment operations
 
-Start with the [README install procedure](../README.md#install-on-a-linux-docker-host),
+Start with [Install on a Linux Docker host](#install-on-a-linux-docker-host),
 or on a Windows machine with [Windows (Docker Desktop)](#windows-docker-desktop).
 [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md) records image
 sizes, build and startup times, conformance results and clean-host timing from a
@@ -45,6 +45,60 @@ The three places then name that machine in one line. Compose mounts that
 machine's `/var/run/docker.sock` and resolves bind mounts such as
 `deploy/config` on it, so `configure.ts` measures the socket's group from a
 container there, and the upgrade measures free space there.
+
+## Install on a Linux Docker host
+
+Use Docker Engine **28 or newer** and Docker Compose **2.33.1 or newer**, with
+the local Docker socket at `/var/run/docker.sock`. Engine 28 introduced the
+[isolated bridge gateway mode](https://docs.docker.com/engine/release-notes/28/)
+that removes host-network reachability from the sandbox. If Docker is absent,
+follow the [Docker Engine installation instructions](https://docs.docker.com/engine/install/)
+for your distribution, including the Buildx and Compose plugins.
+
+Run the following in Bash on the Docker host, from an account that can reach
+that socket; a root shell works. Have Git, curl and unzip available: as root,
+`apt-get update && apt-get install -y git curl unzip ca-certificates` on a
+minimal Debian or Ubuntu host, or
+`apk add --no-cache bash git curl unzip ca-certificates libstdc++ libgcc` on a
+minimal Alpine host, where the Bun binary needs the C++ runtime libraries.
+
+```bash
+df -h /
+docker version
+docker compose version
+docker info --format '{{.DockerRootDir}}'
+```
+
+Start with at least **10 GB free** on the filesystem holding Docker's data;
+20 GB gives room for rebuilds. Ports 3100 and 3101 must be free. Image pulls and
+the first build need outbound network access.
+
+Install Bun, clone the repository, and generate the local configuration:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+export PATH="$HOME/.bun/bin:$PATH"
+bun --version
+git clone https://github.com/ychampion/melete.git
+cd melete
+bun install --frozen-lockfile
+bun run deploy/scripts/configure.ts --fake
+bun run compose:check
+docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180
+docker compose -f deploy/docker-compose.yml ps
+```
+
+`configure.ts --fake` writes `deploy/.env` from `deploy/.env.example` with
+private permissions, generates independent local secrets, records the Docker
+socket group, and turns on the scripted provider and test connector; it refuses
+to replace an existing `.env`. Compose reads `deploy/.env`; keep it with your
+backups.
+
+All four services — `postgres`, `melete`, `runtime` and `web` — come up healthy.
+If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
+names the reason.
+
+Then open **http://localhost:3101** and create the owner account.
 
 ## Windows (Docker Desktop)
 
@@ -114,7 +168,7 @@ docker compose -f deploy/docker-compose.yml ps
 ```
 
 Then open **http://localhost:3101** on the Windows machine and continue with the
-README's [first run](../README.md#first-run).
+README's [Run it](../README.md#run-it).
 
 `bun run doctor --docker` names anything on the list above that is missing:
 Docker Desktop not running (nothing answers on its named pipe,
@@ -166,8 +220,8 @@ default backup parent, `C:\Users\<you>\melete-backups`, in Git Bash as on Linux;
 `--backup-dir` also takes a Windows path such as `C:/melete-backups`. Docker Desktop keeps images and
 volumes on its VM's disk, so the upgrade measures the free space there, from
 beside the database volume, rather than on a Windows drive.
-[Backup and restore](#backup-and-restore) and the README's
-[removal](../README.md#remove-it-completely) run as written in Git Bash.
+[Backup and restore](#backup-and-restore) and
+[Remove it completely](#remove-it-completely) run as written in Git Bash.
 
 ## Configuration and browser access
 
@@ -197,7 +251,14 @@ Sign-in and setup attempts are limited per client address, per account and per
 known device; [Sign-in limits](#sign-in-limits) gives the exact rules, the one
 header the API believes and from whom, and what a restart clears.
 
-Use the SSH tunnel in the README for a remote host. For a public hostname,
+On a remote Linux host, tunnel from your own computer and open the same address
+there:
+
+```bash
+ssh -N -L 3101:127.0.0.1:3101 user@your-linux-host
+```
+
+For a public hostname,
 terminate TLS in your reverse proxy and forward the whole site to
 `http://127.0.0.1:3101`, preserving the request Host and Origin headers. Preserve
 streaming responses without buffering or a short idle timeout. Set the exact
@@ -233,7 +294,7 @@ tailnet and nothing else.
 The base Compose file is unchanged and the loopback ports stay published. The
 tailnet address does replace the one you sign in at, though: a browser is
 accepted at the address `MELETE_WEB_ORIGIN` names and at no other, so once that
-holds the tailnet address, `http://localhost:3101` and the README's SSH tunnel
+holds the tailnet address, `http://localhost:3101` and the SSH tunnel
 answer the sign-in page but refuse the requests behind it with 403
 `origin_rejected`. One address at a time, and the step below chooses it. To go
 back to the tunnel, empty `MELETE_WEB_ORIGIN` and recreate the web service with
@@ -479,7 +540,7 @@ is ignored and the socket source is used; no other forwarding header is read.
 Left unset, as in local development, no peer is believed. A spoofed header
 therefore cannot mint fresh buckets.
 
-With the default loopback ports, the README SSH tunnel, or a TLS reverse proxy
+With the default loopback ports, the SSH tunnel, or a TLS reverse proxy
 on the host, the web server's socket peer is the Docker gateway, so all browsers
 still arrive as one address and the per-address limit below is shared between
 them. The known-device rule is what keeps a sign-in available in that case.
@@ -862,6 +923,45 @@ Each run writes a private directory under `/tmp/melete-compose-restore` containi
 `database.dump` and `evidence.json`. Use `--output-dir /path/to/private-backups`
 to choose another parent directory. [Deployment note 0020](../.agents/notes/0020-deployment-evidence.md)
 records a measured run and its evidence.
+
+## Remove it completely
+
+Everything Melete keeps lives in Docker volumes and one configuration file, so
+taking it off the machine is one command, a sweep and one deletion. Give the
+first command the same `-f` files you started the stack with, so it reaches the
+browser worker and the Tailscale node when you use them. It stops the stack and
+removes its containers and named volumes: the database, your spaces, artifacts,
+the work directory, the removal journal and, with the Tailscale file, the node
+key. The sweep catches the per-attempt containers, networks and volumes the
+service creates while it runs: those carry Melete's own labels rather than
+Compose's, so they are matched by label and by the Compose project name, which
+the sweep reads from `deploy/.env`. Delete `deploy/.env` last, because it holds
+the master key that unseals anything you backed up.
+
+```bash
+docker compose -f deploy/docker-compose.yml down -v --rmi local --remove-orphans
+# Started it with the browser worker or Tailscale? Add the same -f files to that line.
+owned=label=com.melete.attempt-supervisor=v1
+name=$(tr -d '\r' < deploy/.env | sed -n 's/^COMPOSE_PROJECT_NAME=//p')
+project=label=com.melete.project=${name:-melete}
+docker ps -aq --filter "$owned" --filter "$project" | xargs -r docker rm -f
+docker network ls -q --filter "$owned" --filter "$project" | xargs -r docker network rm
+docker volume ls -q --filter "$owned" --filter "$project" | xargs -r docker volume rm
+rm -f deploy/.env
+```
+
+What is left afterwards is the source directory you cloned and the images:
+`melete-service:local`, `melete-runtime:local` and `melete-web:local`, which
+Docker built, and `postgres:17-alpine`, plus `tailscale/tailscale` with
+Tailscale, which it pulled. Every installation on a host shares these images,
+so remove them only when this was the last one:
+
+```bash
+docker image rm melete-service:local melete-runtime:local melete-web:local \
+  postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+# With Tailscale, also remove:
+#   tailscale/tailscale@sha256:8c42c4574ab066384fcb72f69e086a2ff1dd3652eb6f56856cee34bcf0d2f680
+```
 
 ## Removing a space
 

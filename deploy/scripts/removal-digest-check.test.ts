@@ -3,14 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  checkReadmeDigests,
+  checkRemovalDigests,
   compareDigests,
   composeFiles,
   pinnedImages,
   quotedImages,
+  REMOVAL_HEADING,
   removalSection,
   unreadablePins,
-} from './readme-digest-check.ts';
+} from './removal-digest-check.ts';
 
 const root = join(import.meta.dir, '..', '..');
 const PINNED = 'a'.repeat(64);
@@ -23,11 +24,11 @@ const compose = (image: string) => [
   },
 ];
 
-const readme = (commands: string) =>
+const page = (commands: string) =>
   [
     '## Run it yourself',
     '',
-    '### Remove it completely',
+    REMOVAL_HEADING,
     '',
     '```bash',
     '# A shell comment is not a heading.',
@@ -40,11 +41,11 @@ const readme = (commands: string) =>
   ].join('\n');
 
 describe('the repository', () => {
-  test('README quotes every pulled image at the digest the Compose files pin', () => {
-    const results = checkReadmeDigests(root);
+  test('the removal section quotes every pulled image at the digest the Compose files pin', () => {
+    const results = checkRemovalDigests(root);
     expect(results.filter((result) => !result.ok)).toEqual([]);
     expect(results.map((result) => result.name)).toContain(
-      'README.md quotes postgres at the digest deploy/docker-compose.yml service postgres pins',
+      'docs/DEPLOYMENT.md quotes postgres at the digest deploy/docker-compose.yml service postgres pins',
     );
   });
 
@@ -86,18 +87,19 @@ describe('reading the pins', () => {
     expect(results[0]?.detail).toContain(interpolated);
   });
 
-  test('the check over a tree reports an unreadable pin beside the README comparison', () => {
-    const tree = mkdtempSync(join(tmpdir(), 'melete-readme-digest-'));
+  test('the check over a tree reports an unreadable pin beside the comparison', () => {
+    const tree = mkdtempSync(join(tmpdir(), 'melete-removal-digest-'));
     try {
       mkdirSync(join(tree, 'deploy'));
       writeFileSync(
         join(tree, 'deploy', 'docker-compose.yml'),
         compose(`"\${PG_IMAGE:-postgres@sha256:${PINNED}}"`)[0]?.text ?? '',
       );
-      writeFileSync(join(tree, 'README.md'), readme('docker image rm melete-web:local'));
-      const failed = checkReadmeDigests(tree).filter((result) => !result.ok);
+      mkdirSync(join(tree, 'docs'));
+      writeFileSync(join(tree, 'docs', 'DEPLOYMENT.md'), page('docker image rm melete-web:local'));
+      const failed = checkRemovalDigests(tree).filter((result) => !result.ok);
       expect(failed.map((result) => result.name)).toEqual([
-        'deploy/docker-compose.yml service postgres pins its image in a form the README check can read',
+        'deploy/docker-compose.yml service postgres pins its image in a form the removal check can read',
       ]);
     } finally {
       rmSync(tree, { recursive: true, force: true });
@@ -121,21 +123,31 @@ describe('reading the pins', () => {
   });
 
   test('the section ends at the next heading, not at a shell comment', () => {
-    const section = removalSection(readme(`docker image rm postgres@sha256:${PINNED}`));
+    const section = removalSection(page(`docker image rm postgres@sha256:${PINNED}`));
     expect(quotedImages(section?.text ?? '').references).toEqual([
       { repository: 'postgres', digest: PINNED },
     ]);
   });
 
   const lines = (...body: string[]) =>
-    [
-      '### Remove it completely',
-      '',
-      ...body,
-      '',
-      `postgres@sha256:${BUMPED} is past the end.`,
-    ].join('\n');
+    [REMOVAL_HEADING, '', ...body, '', `postgres@sha256:${BUMPED} is past the end.`].join('\n');
   const read = (text: string) => quotedImages(removalSection(text)?.text ?? '').references;
+
+  test('a subsection of lower rank stays inside; the next heading of its rank ends it', () => {
+    expect(
+      read(
+        lines(
+          `postgres@sha256:${PINNED}`,
+          '### If you used Tailscale',
+          `tailscale@sha256:${PINNED}`,
+          '## Next',
+        ),
+      ),
+    ).toEqual([
+      { repository: 'postgres', digest: PINNED },
+      { repository: 'tailscale', digest: PINNED },
+    ]);
+  });
 
   test('a fence closes only on the marker that opened it', () => {
     const section = removalSection(
@@ -230,15 +242,15 @@ describe('comparing them', () => {
   test('the quoted digest matches the pin', () => {
     const results = compareDigests(
       pins,
-      removalSection(readme(`docker image rm postgres@sha256:${PINNED}`)),
+      removalSection(page(`docker image rm postgres@sha256:${PINNED}`)),
     );
     expect(results.map((result) => result.ok)).toEqual([true]);
   });
 
-  test('the tagged form README could quote matches the pin as well', () => {
+  test('the tagged form the section could quote matches the pin as well', () => {
     const results = compareDigests(
       pins,
-      removalSection(readme(`docker image rm postgres:17-alpine@sha256:${PINNED}`)),
+      removalSection(page(`docker image rm postgres:17-alpine@sha256:${PINNED}`)),
     );
     expect(results.map((result) => result.ok)).toEqual([true]);
   });
@@ -248,12 +260,12 @@ describe('comparing them', () => {
     expect(local[0]?.repository).toBe('localhost:5000/pg');
     const ok = compareDigests(
       local,
-      removalSection(readme(`docker image rm localhost:5000/pg:16@sha256:${PINNED}`)),
+      removalSection(page(`docker image rm localhost:5000/pg:16@sha256:${PINNED}`)),
     );
     expect(ok.map((result) => result.ok)).toEqual([true]);
     const elsewhere = compareDigests(
       local,
-      removalSection(readme(`docker image rm pg@sha256:${PINNED}`)),
+      removalSection(page(`docker image rm pg@sha256:${PINNED}`)),
     );
     expect(elsewhere.map((result) => result.ok)).toEqual([false, false]);
   });
@@ -261,19 +273,17 @@ describe('comparing them', () => {
   test('an unreadable digest reference fails rather than being skipped', () => {
     const results = compareDigests(
       pins,
-      removalSection(
-        readme(`docker image rm postgres@sha256:${PINNED} pg@sha256:${'A'.repeat(64)}`),
-      ),
+      removalSection(page(`docker image rm postgres@sha256:${PINNED} pg@sha256:${'A'.repeat(64)}`)),
     );
     expect(results.map((result) => result.ok)).toEqual([true, false]);
     expect(results[1]?.detail).toContain('64 lower-case hex');
   });
 
-  test('a pin bumped in Compose and not in README fails twice, naming both digests', () => {
+  test('a pin bumped in Compose and not in the section fails twice, naming both digests', () => {
     const bumped = pinnedImages(compose(`postgres:17-alpine@sha256:${BUMPED}`)).pins;
     const results = compareDigests(
       bumped,
-      removalSection(readme(`docker image rm postgres@sha256:${PINNED}`)),
+      removalSection(page(`docker image rm postgres@sha256:${PINNED}`)),
     );
     expect(results.map((result) => result.ok)).toEqual([false, false]);
     expect(results[0]?.detail).toContain(`postgres@sha256:${BUMPED}`);
@@ -281,25 +291,22 @@ describe('comparing them', () => {
     expect(results[1]?.detail).toContain(`postgres@sha256:${PINNED} is pinned by no`);
   });
 
-  test('a pinned image README does not mention fails', () => {
-    const results = compareDigests(
-      pins,
-      removalSection(readme('docker image rm melete-web:local')),
-    );
+  test('a pinned image the section does not mention fails', () => {
+    const results = compareDigests(pins, removalSection(page('docker image rm melete-web:local')));
     expect(results.map((result) => result.ok)).toEqual([false]);
     expect(results[0]?.detail).toContain('quoted: nothing');
   });
 
-  test('a README digest for an image no Compose file pins fails', () => {
+  test('a digest in the section for an image no Compose file pins fails', () => {
     const results = compareDigests(
       pins,
-      removalSection(readme(`docker image rm postgres@sha256:${PINNED} redis@sha256:${BUMPED}`)),
+      removalSection(page(`docker image rm postgres@sha256:${PINNED} redis@sha256:${BUMPED}`)),
     );
     expect(results.map((result) => result.ok)).toEqual([true, false]);
     expect(results[1]?.detail).toContain(`redis@sha256:${BUMPED}`);
   });
 
-  test('a README that lost the section fails rather than passing on nothing', () => {
+  test('a document that lost the section fails rather than passing on nothing', () => {
     const results = compareDigests(pins, removalSection('# Melete\n'));
     expect(results.map((result) => result.ok)).toEqual([false]);
     expect(results[0]?.detail).toContain('Remove it completely');

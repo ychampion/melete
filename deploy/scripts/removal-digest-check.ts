@@ -1,9 +1,10 @@
 /**
- * README's "Remove it completely" section tells the last installation on a host
- * to remove the images Docker pulled, by digest, because a pull by
- * `name:tag@digest` need not leave the tag behind. Those digests are copied from
- * the Compose files, so a pin bump that left README behind would hand the
- * reader a command that removes nothing. This compares the two without Docker.
+ * The "Remove it completely" section of docs/DEPLOYMENT.md tells the last
+ * installation on a host to remove the images Docker pulled, by digest, because
+ * a pull by `name:tag@digest` need not leave the tag behind. Those digests are
+ * copied from the Compose files, so a pin bump that left the section behind
+ * would hand the reader a command that removes nothing. This compares the two
+ * without Docker.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,8 +15,8 @@ import type { CheckResult } from './plugin-pin-check.ts';
 /** An image pinned by digest: its repository without the tag, and the digest. */
 export type PinnedImage = { repository: string; digest: string; source: string };
 
-export const README = 'README.md';
-export const REMOVAL_HEADING = '### Remove it completely';
+export const REMOVAL_DOCUMENT = 'docs/DEPLOYMENT.md';
+export const REMOVAL_HEADING = '## Remove it completely';
 
 /**
  * `repository[:tag]@sha256:digest`. A tag cannot hold a `/`, so the port in
@@ -56,7 +57,7 @@ export function pinnedImages(files: { file: string; text: string }[]): {
 /** One failure for each Compose image whose digest pin the check cannot read. */
 export function unreadablePins(unreadable: UnreadablePin[]): CheckResult[] {
   return unreadable.map(({ image, source }) => ({
-    name: `${source} pins its image in a form the README check can read`,
+    name: `${source} pins its image in a form the removal check can read`,
     ok: false,
     detail: `${image} is not repository[:tag]@sha256:<64 lower-case hex digits>`,
   }));
@@ -66,22 +67,24 @@ export function unreadablePins(unreadable: UnreadablePin[]): CheckResult[] {
 export type Section = { text: string; unclosedFence: boolean };
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-const ATX_HEADING = /^ {0,3}#{1,3}(?:\s|$)/;
 const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)\s*$/;
 
 /**
- * The removal section of README, from its heading to the next heading of its
- * rank or above, read as Markdown reads it. A fence closes only on the marker
+ * The removal section, from its heading to the next heading of its rank or
+ * above, read as Markdown reads it: a subsection of lower rank stays inside, an
+ * underlined heading (always rank one or two) ends it. A fence closes only on the marker
  * that opened it, at least as long, so a `~~~` line inside a backtick block is
  * content; a `#` inside a fence is a shell comment, not a heading. Outside a
  * fence, an `=` or `-` line under a paragraph line makes that line a heading,
  * which ends the section. A fence still open at the end of the file swallows
  * everything after it, so it is reported rather than read.
  */
-export function removalSection(readme: string): Section | undefined {
-  const lines = readme.split('\n');
+export function removalSection(document: string): Section | undefined {
+  const lines = document.split('\n');
   const start = lines.findIndex((line) => line.trim() === REMOVAL_HEADING);
   if (start === -1) return undefined;
+  const rank = REMOVAL_HEADING.indexOf(' ');
+  const sameRankOrAbove = new RegExp(`^ {0,3}#{1,${rank}}(?:\\s|$)`);
   let fence: string | undefined;
   let paragraph = false;
   let end = lines.length;
@@ -103,7 +106,7 @@ export function removalSection(readme: string): Section | undefined {
       paragraph = false;
       continue;
     }
-    if (ATX_HEADING.test(line)) {
+    if (sameRankOrAbove.test(line)) {
       end = index;
       break;
     }
@@ -143,19 +146,19 @@ export function quotedImages(text: string): {
 }
 
 /**
- * One result per pinned image, which README must quote at exactly that digest,
- * and one per README reference that no Compose file pins, which is what a pin
- * bump leaves behind.
+ * One result per pinned image, which the section must quote at exactly that
+ * digest, and one per reference in it that no Compose file pins, which is what
+ * a pin bump leaves behind.
  */
 export function compareDigests(
   pins: PinnedImage[],
   section: Section | undefined,
-  readme = README,
+  document = REMOVAL_DOCUMENT,
 ): CheckResult[] {
   if (section === undefined)
     return [
       {
-        name: `${readme} has the section that removes pulled images by digest`,
+        name: `${document} has the section that removes pulled images by digest`,
         ok: false,
         detail: `no "${REMOVAL_HEADING}" heading`,
       },
@@ -163,7 +166,7 @@ export function compareDigests(
   if (section.unclosedFence)
     return [
       {
-        name: `${readme} closes every code fence in the section that removes pulled images`,
+        name: `${document} closes every code fence in the section that removes pulled images`,
         ok: false,
         detail: `a fence opened after "${REMOVAL_HEADING}" never closes, so the rest of the file reads as code`,
       },
@@ -172,7 +175,7 @@ export function compareDigests(
   const results: CheckResult[] = pins.map((pin) => {
     const seen = quoted.filter((reference) => reference.repository === pin.repository);
     return {
-      name: `${readme} quotes ${pin.repository} at the digest ${pin.source} pins`,
+      name: `${document} quotes ${pin.repository} at the digest ${pin.source} pins`,
       ok: seen.some((reference) => reference.digest === pin.digest),
       detail: `quote ${pin.repository}@sha256:${pin.digest} (quoted: ${
         seen.map((reference) => reference.digest).join(', ') || 'nothing'
@@ -186,13 +189,13 @@ export function compareDigests(
       )
     )
       results.push({
-        name: `${readme} quotes only digests the Compose files pin`,
+        name: `${document} quotes only digests the Compose files pin`,
         ok: false,
         detail: `${reference.repository}@sha256:${reference.digest} is pinned by no deploy/docker-compose*.yml`,
       });
   for (const token of unreadable)
     results.push({
-      name: `${readme} quotes only digest references the check can read`,
+      name: `${document} quotes only digest references the check can read`,
       ok: false,
       detail: `${token} is not repository[:tag]@sha256:<64 lower-case hex digits>`,
     });
@@ -210,11 +213,11 @@ export function composeFiles(root: string): { file: string; text: string }[] {
     }));
 }
 
-/** Whether README's removal commands still name the images the Compose files pull. */
-export function checkReadmeDigests(root: string): CheckResult[] {
+/** Whether the removal commands still name the images the Compose files pull. */
+export function checkRemovalDigests(root: string): CheckResult[] {
   const { pins, unreadable } = pinnedImages(composeFiles(root));
   return [
     ...unreadablePins(unreadable),
-    ...compareDigests(pins, removalSection(readFileSync(join(root, README), 'utf8'))),
+    ...compareDigests(pins, removalSection(readFileSync(join(root, REMOVAL_DOCUMENT), 'utf8'))),
   ];
 }
