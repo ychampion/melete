@@ -723,6 +723,24 @@ its server and removes what it kept` in
 same restrictions are observed from inside real containers by
 [conformance 10](../conformance/README.md), which CI runs on every pull request.
 
+## Remote sandboxes (optional plugins)
+
+A space's owner can install a `sandbox` connection so the agent's
+`terminal.run` commands run on a remote machine from E2B or Modal. Each
+provider is an optional plugin: an adapter in
+[`sandbox/adapters/`](../apps/melete/src/sandbox/adapters/) and one entry in
+[`registry.ts`](../apps/melete/src/sandbox/adapters/registry.ts), beside its
+name in the connection contract. A new provider is its adapter file and that
+entry.
+
+Nothing provider-specific is loaded until a connection that selects the
+provider is used. E2B is reached over its HTTP API with no SDK. The Modal SDK
+is the optional `modal` dependency, imported on the first use of a Modal
+connection; a normal install includes it, and an installation that removes it
+is told plainly when a Modal connection needs it. A deployment with no sandbox
+connection runs without either. Setting `MELETE_SANDBOX_PROJECT` is what lets a
+sandbox connection be installed at all.
+
 ## Composing read results
 
 `compose` accepts a list of named reads and a JavaScript function body operating
