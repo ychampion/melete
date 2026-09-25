@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { checkDockerfileWorkspaces } from './dockerfile-check.ts';
 import { checkRuntimePluginPin } from './plugin-pin-check.ts';
-import { checkReadmeDigests } from './readme-digest-check.ts';
+import { checkRemovalDigests } from './removal-digest-check.ts';
 
 export type ComposeFile = {
   networks?: Record<
@@ -434,7 +434,7 @@ if (import.meta.main) {
     // The images this file builds are read from the repository, not from `path`.
     ...checkDockerfileWorkspaces(root),
     ...checkRuntimePluginPin(root),
-    ...checkReadmeDigests(root),
+    ...checkRemovalDigests(root),
     ...checkCellConfig(root),
   ];
   for (const result of results) {

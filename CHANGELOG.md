@@ -1,7 +1,6 @@
 # Changelog
 
-Each entry says what the version ships and what it does not claim. Claims map
-to named tests on the tagged tree; the README's gates table is the summary.
+What each version ships.
 
 ## v0.2.0 — 2026-09-18
 
@@ -270,35 +269,9 @@ when only the person can decide.
 
 ### Measured
 
-Previously measured on one Linux Docker host: the clean-host install completed in about 65
-seconds; conformance 1–8 passed 44 tests and skipped one (the second-provider
-comparison, which needs a credential); the memory runner passed ten scenarios
-across seven families with every withheld-memory arm failing as required;
-restart under an active job and under a parked approval recovered with one
-receipt; the restore proof served the forgotten fact to nobody and produced
-exactly one destination effect. See the README's gates table for the test
-suite counts on Windows and Linux. The combined real-Hermes capability proof
-passes five stages and 85 assertions with a scripted HTTP provider.
-
-- Reliable autonomous task performance or answer quality with a real model. The
-  recorded Fireworks campaign failed its own gate: deterministic passes were
-  34, 32 and 38 of 70 across three runs. It observed zero duplicate effects and
-  zero successful injections within the documented fixture exposure. Ordinary
-  tests use scripted providers; the paid campaign is a separate explicit command.
-- Learning beyond the one evaluated procedure family.
-- Real transcript compaction and production stdio MCP launch; the latter
-  requires an isolated launcher. Session and tool hooks, HTTP connection
-  installation, recovery, refresh and evaluated member reuse are tested.
-- Virtual-machine isolation, confidential compute, host-compromise containment,
-  rootless Docker, and any operating system other than a Linux Docker host for
-  the sealed cell; the service holds the Docker socket and sits inside the host
-  trust boundary.
-- Interactive sign-in inside the browser worker, the browser image and combined
-  Compose stack (not run), and provider OAuth stored inside the runtime.
-- An exportable tamper-evident action ledger, an upgrade procedure between
-  releases, universal physical erasure of forgotten data, and an invitation
-  interface for shared spaces.
-- On current Linux hosts the embedded Postgres binary does not start, so the
-  test suite needs `DATABASE_URL`. Chromium and the pinned local Hermes
-  environment are additional prerequisites for their optional fixtures;
-  omissions appear as skips or TODOs, not passing coverage.
+On one Linux Docker host, a clean install came up in about 65 seconds. The
+service conformance scenarios and the memory runner passed, and every
+withheld-memory arm failed as it should. Restart under an active job and under a
+parked approval recovered with one receipt, and a restore served the forgotten
+fact to nobody and produced exactly one destination effect. Answer quality with
+real models is measured in [Evaluation](docs/EVALS.md).

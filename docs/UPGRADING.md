@@ -49,7 +49,7 @@ narrows it. The upgrade applies this to the agents already there:
 
 ## Before you start
 
-You need what the [install](../README.md#install-on-a-linux-docker-host) needs:
+You need what the [install](DEPLOYMENT.md#install-on-a-linux-docker-host) needs:
 Docker Engine 28.0 or newer, Docker Compose 2.33.1 or newer, Bun, and an account
 that can use the Docker socket. The stack must be running and healthy, because
 the database is dumped from the running `postgres` service.

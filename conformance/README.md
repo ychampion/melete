@@ -49,7 +49,7 @@ non-durable.
 ## Deployment scenarios (Compose opt-in)
 
 These run against a disposable Compose installation on a Linux Docker host, as
-the [README](../README.md#install-on-a-linux-docker-host) describes. They
+the [install procedure](../docs/DEPLOYMENT.md#install-on-a-linux-docker-host) describes. They
 restart shared services, so run them sequentially, and use a fresh installation
 **before creating an owner account in the browser**: the runner creates its own
 account and test data, kills test processes, and restarts the stack.

@@ -5,11 +5,11 @@ import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dir, '../..');
 
-/** The README removal's line that reads the Compose project name from deploy/.env. */
+/** The removal section's line that reads the Compose project name from deploy/.env. */
 async function projectNameLine() {
-  const readme = await readFile(join(root, 'README.md'), 'utf8');
+  const readme = await readFile(join(root, 'docs/DEPLOYMENT.md'), 'utf8');
   const line = readme.split(/\r?\n/).find((text) => /^name=\$\(.*COMPOSE_PROJECT_NAME/.test(text));
-  if (!line) throw new Error('README has no project-name line in its removal block');
+  if (!line) throw new Error('docs/DEPLOYMENT.md has no project-name line in its removal block');
   return line;
 }
 
