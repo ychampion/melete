@@ -748,6 +748,8 @@ img {
   border-bottom: 1px solid var(--line);
   overflow-x: auto;
   scrollbar-width: none;
+  /* A scroll container may shrink to nothing in a height-bound column; the tabs keep their height. */
+  flex-shrink: 0;
 }
 .tabs > button {
   display: inline-flex;
