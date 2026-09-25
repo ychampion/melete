@@ -751,18 +751,25 @@ adapter cannot enforce is refused when the connection is installed.
 
 - `adapter: daytona`; `image` is a Daytona snapshot name; `credentials.api_key`
   is the Daytona API key on its own.
-- Daytona sets a sandbox's egress only for organisations on Tier 3 or Tier 4;
-  on Tier 1 or Tier 2 a sandbox connection cannot be created. Its allow-list
+- Daytona sets a sandbox's egress only for organisations on Tier 3 or Tier 4.
+  This adapter has not yet been run against a lower tier. Daytona's allow-list
   takes IPv4 ranges only, at most ten.
 - The adapter reads Daytona's record of each sandbox back before using it, and
   a sandbox whose recorded egress differs from the connection's is destroyed.
 - With `persistence: pause`, a workspace is a stopped sandbox between attempts:
   its files are kept and its processes end. Daytona keeps a stopped workspace
   for at most `MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS`.
+- A sandbox's lifetime is set as Daytona's `autoStopInterval`, which counts idle
+  minutes rather than a hard lifetime: a sandbox this service no longer holds is
+  stopped once idle, and deleted by reconciliation or after
+  `MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS`.
 - Each command runs in a toolbox session of its own and is polled to its end,
   so a long command does not depend on one request staying open. A command
   whose outcome is lost after it started is recorded as unknown and never run
   again.
+- Commands run without the `DAYTONA_*` variables the daemon passes on. Those
+  are identifiers, not credentials, and as with Modal's they stay readable
+  inside the sandbox from `/proc/1/environ`.
 - Evidence: [daytona.test.ts](../apps/melete/src/sandbox/adapters/daytona.test.ts)
   runs the provider-neutral conformance and workspace suites over the adapter,
   replaying fixtures written from Daytona's published REST and toolbox APIs and

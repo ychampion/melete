@@ -7,9 +7,9 @@
  * `MELETE_SANDBOX_RECORD=1` each conformance scenario re-records its fixture
  * from Daytona, marked `recorded`; run `bun run format` afterwards.
  *
- * The organisation must be allowed to set a sandbox's egress: Daytona documents
- * that Tier 1 and Tier 2 organisations cannot, and there the deny-all create is
- * expected to fail rather than run without its policy.
+ * Daytona sets a sandbox's egress only for organisations on Tier 3 or Tier 4.
+ * This adapter has not yet been run against a lower tier; run this with a
+ * Tier 3 or Tier 4 organisation's key.
  */
 import { expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
