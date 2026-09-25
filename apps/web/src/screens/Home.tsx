@@ -43,6 +43,7 @@ import type {
   Permission,
   Question,
 } from '../experience/types.ts';
+import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { Shell, toast } from '../shell/Shell.tsx';
 import './home.css';
@@ -513,17 +514,6 @@ const STATUS_LINE: Partial<Record<Conversation['status'], string>> = {
   done: 'Done',
 };
 
-/** The conversations an open permission or question belongs to. */
-export function waitingOn(decisions: {
-  permissions: { conversation_id: string | null }[];
-  questions: { conversation_id: string | null }[];
-}): Set<string> {
-  const ids = new Set<string>();
-  for (const decision of [...decisions.permissions, ...decisions.questions])
-    if (decision.conversation_id) ids.add(decision.conversation_id);
-  return ids;
-}
-
 /**
  * What In motion lists: work that is moving, waiting on the person, or finished
  * in the last day. A conversation with an open decision is waiting on the
@@ -538,8 +528,7 @@ export function motionRows(
     .filter(
       (conversation) =>
         MOVING.has(conversation.status) ||
-        conversation.status === 'needs_you' ||
-        waiting.has(conversation.id) ||
+        isWaiting(conversation, waiting) ||
         (conversation.status === 'done' && now - Date.parse(conversation.updated_at) < 86_400_000),
     )
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
@@ -552,7 +541,7 @@ export function motionLine(
   waiting: ReadonlySet<string>,
   agentName: string,
 ): string {
-  if (waiting.has(conversation.id) || conversation.status === 'needs_you') return 'Waiting on you';
+  if (isWaiting(conversation, waiting)) return 'Waiting on you';
   return (
     progressOf(conversation)?.current ?? STATUS_LINE[conversation.status] ?? `${agentName} is on it`
   );
@@ -586,7 +575,9 @@ function InMotion({ now }: { now: number }) {
                 <AgentFace
                   look={lookOf(agent)}
                   size={28}
-                  state={faceOf(waiting.has(conversation.id) ? 'needs_you' : conversation.status)}
+                  state={faceOf(
+                    isWaiting(conversation, waiting) ? 'needs_you' : conversation.status,
+                  )}
                 />
               ) : (
                 <MeleteAvatar size={28} />

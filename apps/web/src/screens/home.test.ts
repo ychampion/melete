@@ -6,6 +6,8 @@
 import { expect, test } from 'bun:test';
 import { progressOf, toolOf } from '../experience/trace.ts';
 import type { Conversation, Permission, Question } from '../experience/types.ts';
+import { waitingOn } from '../experience/waiting.ts';
+import { statusWord } from './Chats.tsx';
 import {
   briefLine,
   type Decision,
@@ -14,7 +16,6 @@ import {
   motionRows,
   queueOrder,
   waitedFor,
-  waitingOn,
 } from './Home.tsx';
 
 test('both clauses, spelled out, with the money the map totals', () => {
@@ -174,4 +175,10 @@ test('a conversation waiting on the person stays in the list, whatever its age',
   expect(motionRows([stale], new Set(['job_old']), now).map((row) => row.id)).toEqual(['job_old']);
   expect(motionRows([asking], new Set(), now).map((row) => row.id)).toEqual(['job_ask']);
   expect(motionLine(asking, new Set(), 'Nova')).toBe('Waiting on you');
+});
+
+test('Chats says a chat held up by a decision is waiting, not done', () => {
+  const chase: Conversation = { ...conversation(), id: 'job_chase', status: 'done' };
+  expect(statusWord(chase, new Set(['job_chase']))).toBe('Waiting for you');
+  expect(statusWord(chase, new Set())).toBe('Done');
 });
