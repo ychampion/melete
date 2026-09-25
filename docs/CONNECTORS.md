@@ -331,40 +331,6 @@ it through the authenticated routes. File-view tests and authoritative memory
 tests are described in [MEMORY](MEMORY.md); a SQLite search hit is a view, not
 authority to disclose memory.
 
-### Remote sandboxes
-
-A `sandbox` connection runs an agent's `terminal.run` commands on a remote
-machine the service creates, watches and removes, from E2B, Daytona or Modal.
-The provider key is sealed with the connection and lent to the adapter one
-request at a time, and a sandbox's environment carries no Melete or provider
-credential. Egress is fixed when the sandbox is created and comes only from the
-connection: `deny_all`, a CIDR allow-list, or `open`. A configuration the
-adapter cannot enforce is refused when the connection is installed.
-
-Daytona:
-
-- `adapter: daytona`; `image` is a Daytona snapshot name; `credentials.api_key`
-  is the Daytona API key on its own.
-- Daytona sets a sandbox's egress only for organisations on Tier 3 or Tier 4;
-  on Tier 1 or Tier 2 a sandbox connection cannot be created. Its allow-list
-  takes IPv4 ranges only, at most ten.
-- The adapter reads Daytona's record of each sandbox back before using it, and
-  a sandbox whose recorded egress differs from the connection's is destroyed.
-- With `persistence: pause`, a workspace is a stopped sandbox between attempts:
-  its files are kept and its processes end. Daytona keeps a stopped workspace
-  for at most `MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS`.
-- Each command runs in a toolbox session of its own and is polled to its end,
-  so a long command does not depend on one request staying open. A command
-  whose outcome is lost after it started is recorded as unknown and never run
-  again.
-- Evidence: [daytona.test.ts](../apps/melete/src/sandbox/adapters/daytona.test.ts)
-  runs the provider-neutral conformance and workspace suites over the adapter,
-  replaying fixtures written from Daytona's published REST and toolbox APIs and
-  its v0.190.0 source; a missing, extra or different request fails the run.
-  [daytona.live.test.ts](../apps/melete/src/sandbox/adapters/daytona.live.test.ts)
-  runs the same suites against Daytona with `MELETE_SANDBOX_LIVE=daytona` and
-  `DAYTONA_API_KEY`.
-
 ## Credentials and verification
 
 Sealed secret storage is tested by `stores randomized sealed boxes and only
@@ -760,7 +726,7 @@ same restrictions are observed from inside real containers by
 ## Remote sandboxes (optional plugins)
 
 A space's owner can install a `sandbox` connection so the agent's
-`terminal.run` commands run on a remote machine from E2B or Modal. Each
+`terminal.run` commands run on a remote machine from E2B, Daytona or Modal. Each
 provider is an optional plugin: an adapter in
 [`sandbox/adapters/`](../apps/melete/src/sandbox/adapters/) and one entry in
 [`registry.ts`](../apps/melete/src/sandbox/adapters/registry.ts), beside its
@@ -768,12 +734,42 @@ name in the connection contract. A new provider is its adapter file and that
 entry.
 
 Nothing provider-specific is loaded until a connection that selects the
-provider is used. E2B is reached over its HTTP API with no SDK. The Modal SDK
-is the optional `modal` dependency, imported on the first use of a Modal
-connection; a normal install includes it, and an installation that removes it
-is told plainly when a Modal connection needs it. A deployment with no sandbox
-connection runs without either. Setting `MELETE_SANDBOX_PROJECT` is what lets a
-sandbox connection be installed at all.
+provider is used. E2B and Daytona are reached over their HTTP APIs with no
+SDK. The Modal SDK is the optional `modal` dependency, imported on the first
+use of a Modal connection; a normal install includes it, and an installation
+that removes it is told plainly when a Modal connection needs it. A deployment
+with no sandbox connection runs without any of them. Setting
+`MELETE_SANDBOX_PROJECT` is what lets a sandbox connection be installed at all.
+
+The provider key is sealed with the connection and lent to the adapter one
+request at a time, and a sandbox's environment carries no Melete or provider
+credential. Egress is fixed when the sandbox is created and comes only from the
+connection: `deny_all`, a CIDR allow-list, or `open`. A configuration the
+adapter cannot enforce is refused when the connection is installed.
+
+### Daytona
+
+- `adapter: daytona`; `image` is a Daytona snapshot name; `credentials.api_key`
+  is the Daytona API key on its own.
+- Daytona sets a sandbox's egress only for organisations on Tier 3 or Tier 4;
+  on Tier 1 or Tier 2 a sandbox connection cannot be created. Its allow-list
+  takes IPv4 ranges only, at most ten.
+- The adapter reads Daytona's record of each sandbox back before using it, and
+  a sandbox whose recorded egress differs from the connection's is destroyed.
+- With `persistence: pause`, a workspace is a stopped sandbox between attempts:
+  its files are kept and its processes end. Daytona keeps a stopped workspace
+  for at most `MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS`.
+- Each command runs in a toolbox session of its own and is polled to its end,
+  so a long command does not depend on one request staying open. A command
+  whose outcome is lost after it started is recorded as unknown and never run
+  again.
+- Evidence: [daytona.test.ts](../apps/melete/src/sandbox/adapters/daytona.test.ts)
+  runs the provider-neutral conformance and workspace suites over the adapter,
+  replaying fixtures written from Daytona's published REST and toolbox APIs and
+  its v0.190.0 source; a missing, extra or different request fails the run.
+  [daytona.live.test.ts](../apps/melete/src/sandbox/adapters/daytona.live.test.ts)
+  runs the same suites against Daytona with `MELETE_SANDBOX_LIVE=daytona` and
+  `DAYTONA_API_KEY`.
 
 ## Composing read results
 
