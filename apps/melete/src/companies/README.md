@@ -58,12 +58,15 @@ Postgres instead, against `--space` and `--principal`.
 
 ## The extractor
 
-`MELETE_COMPANIES_MODEL` is the switch. Unset, `scriptedExtractor()` runs: a
-rule table over the message text, with amounts and dates from the Tier 0 grammar
-in `memory/tier0.ts`. It is deliberately literal and understates rather than
-invents, which is what makes a demonstration and a test reproducible.
+`companiesExtraction` in `service.ts` decides. `MELETE_COMPANIES_MODEL` names a
+model outright (`default` is `gpt-6-astra`). Unset, an installation whose
+default provider is real and has its key extracts with `MELETE_DEFAULT_MODEL`.
+Otherwise, in the demonstration and without a key, `scriptedExtractor()` runs:
+a rule table over the message text, with amounts and dates from the Tier 0
+grammar in `memory/tier0.ts`. It is deliberately literal and understates rather
+than invents, which is what makes a demonstration and a test reproducible.
 
-Set, `openExtractionGateway` runs the call through the service's own model
+With a model, `openExtractionGateway` runs the call through the service's own model
 gateway, the way `learning/proposal-gateway.ts` does, so the provider credential
 stays in the gateway. `gpt-6-astra` is served over the Responses protocol, which
 `requiresResponsesProtocol` already decides for every `gpt-6` model.

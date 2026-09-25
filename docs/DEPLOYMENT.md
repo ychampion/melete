@@ -777,6 +777,20 @@ such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
 
+## Company map
+
+A scan reads the connected mailbox with the installation's own model, once the
+default provider is a real one with its key: the model named by
+`MELETE_DEFAULT_MODEL`. `MELETE_COMPANIES_MODEL` names another model for scans
+alone, and `MELETE_COMPANIES_PROVIDER` another provider for it. The
+demonstration, and an installation whose provider has no key yet, read mail with
+the built-in rules instead, which find less and cost nothing.
+
+Model calls are bounded per person: across all their spaces, one person's scans
+make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it is
+unset, and each scan reads at most fifty messages. A message past the allowance
+is read on a later scan. Set these in `deploy/.env` and recreate the service.
+
 ## Engine limits
 
 Three settings bound what one attempt's engine may do. All have working
