@@ -305,6 +305,14 @@ describe('demonstration settings beside a real provider', () => {
     expect(warnings[0]).toContain('anthropic');
   });
 
+  test('the scripted provider on beside a real provider is warned about too', () => {
+    const warnings = demonstrationWarnings(
+      loadEnv({ MELETE_ENABLE_FAKE_PROVIDER: 'true', MELETE_DEFAULT_PROVIDER: 'anthropic' }),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('MELETE_ENABLE_FAKE_PROVIDER=true');
+  });
+
   test('the demonstration itself, and a production configuration, are quiet', () => {
     expect(
       demonstrationWarnings(

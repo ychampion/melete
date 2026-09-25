@@ -386,13 +386,23 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
 /**
  * Settings that belong to the scripted demonstration, left on beside a real
  * model provider. The test connector accepts sends to a fixture destination,
- * so on a production installation it is a way for work to look delivered
- * when nothing left the machine.
+ * and the scripted provider answers without a model, so on a production
+ * installation either is a way for work to look done when nothing was.
  */
 export function demonstrationWarnings(env: Env): string[] {
-  if (!env.MELETE_ENABLE_TEST_CONNECTOR || env.MELETE_DEFAULT_PROVIDER === 'fake') return [];
+  if (env.MELETE_DEFAULT_PROVIDER === 'fake') return [];
+  const provider = env.MELETE_DEFAULT_PROVIDER;
   return [
-    `MELETE_ENABLE_TEST_CONNECTOR=true is set beside the real provider ${env.MELETE_DEFAULT_PROVIDER}. The test connector is for the scripted demonstration; set it to false in deploy/.env unless you mean to keep a test destination.`,
+    ...(env.MELETE_ENABLE_TEST_CONNECTOR
+      ? [
+          `MELETE_ENABLE_TEST_CONNECTOR=true is set beside the real provider ${provider}. The test connector is for the scripted demonstration; set it to false in deploy/.env unless you mean to keep a test destination.`,
+        ]
+      : []),
+    ...(env.MELETE_ENABLE_FAKE_PROVIDER
+      ? [
+          `MELETE_ENABLE_FAKE_PROVIDER=true is set beside the real provider ${provider}. The scripted provider is for the demonstration; set it to false in deploy/.env so no job can be served by it.`,
+        ]
+      : []),
   ];
 }
 
