@@ -781,6 +781,17 @@ test('with no Modal environment and no config file, the SDK client takes everyth
   }
 }, 60_000);
 
+test('a Modal connection without the optional modal package is refused in one plain sentence', async () => {
+  const transport = createModalSdkTransport({
+    credential: (use) => use(TOKEN),
+    load: () => Promise.reject(new Error("Cannot find package 'modal'")),
+  });
+  const refused = await transport.poll('sb-missing', signal()).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(SandboxAdapterRefusal);
+  expect(String((refused as Error).message)).toContain('optional `modal` package');
+  transport.close();
+});
+
 test('a key switch reaches the Modal client: the next request goes with the new token', async () => {
   const double = sdkDouble({});
   const rotated: ModalToken = {

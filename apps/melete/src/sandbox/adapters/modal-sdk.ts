@@ -166,7 +166,18 @@ async function drain(stream: ReadableStream<Uint8Array>, max: number) {
 export async function openModalClient(
   options: ModalSdkOptions,
 ): Promise<{ client: ModalClient; secrets: string[] }> {
-  const { ModalClient: Client } = await (options.load ?? (() => import('modal')))();
+  // Imported only now, when a Modal connection is first used: the package is
+  // an optional dependency, and an installation with no Modal connection never
+  // loads it.
+  let sdk: Awaited<ReturnType<NonNullable<ModalSdkOptions['load']>>>;
+  try {
+    sdk = await (options.load ?? (() => import('modal')))();
+  } catch {
+    throw new SandboxAdapterRefusal(
+      'the Modal adapter needs the optional `modal` package: install it with `bun add modal` in apps/melete',
+    );
+  }
+  const { ModalClient: Client } = sdk;
   return options.credential(async (token) => {
     if (!token.tokenId || !token.tokenSecret)
       throw new SandboxAdapterRefusal('the Modal token is incomplete');
