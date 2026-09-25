@@ -8,8 +8,8 @@ A personal assistant that follows through: it writes the email, waits, follows u
 ![Melete chasing a £64 refund: the draft, the one approval, then the replies and follow-up until it's settled.](docs/assets/readme/demo.gif)
 
 Hand it a loose end, like a refund you were promised or a reply you're still
-waiting for. Melete writes from your own address, and you see each message
-before it goes out.
+waiting for. Melete writes from your own address, and you approve what it
+sends before it goes out.
 
 ## Try it
 
@@ -169,7 +169,7 @@ each command.
 
 ## Security
 
-- Every message it sends waits for your approval, or falls under a limit you set for someone you trust.
+- Every message it sends waits for your approval, or falls under a limit you set for someone you trust. Approving a chase's first message also covers up to three follow-ups that repeat it to the same person.
 - The passwords and sign-in tokens it stores are sealed with your installation's master key.
 - The agent's code runs in an isolated container that can reach only Melete's own service, which checks each action against what you allowed.
 - Each person on an installation has their own space, and their jobs, drafts and receipts stay private to them.
@@ -188,7 +188,6 @@ each command.
 ## Coming soon
 
 - Hosted Melete and our website, so you can try it in your browser.
-- One approval that covers a whole chase, follow-ups included.
 
 ## Documentation
 
