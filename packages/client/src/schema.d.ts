@@ -1810,7 +1810,7 @@ export interface paths {
                         provider: "imap" | "smtp" | "caldav" | "web" | "files" | "test" | "exec" | "artifacts" | "generation" | "mcp" | "sandbox";
                         sandbox?: {
                             /** @enum {string} */
-                            adapter: "e2b" | "modal";
+                            adapter: "e2b" | "daytona" | "modal";
                             cidrs?: components["schemas"]["__schema81"][];
                             /** @enum {string} */
                             egress: "deny_all" | "cidr_allowlist" | "open";

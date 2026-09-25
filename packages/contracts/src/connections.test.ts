@@ -589,10 +589,15 @@ describe('the one sandbox credential field', () => {
     expect(sandboxCredentialRefusal('e2b', 'ak-token-id:as-token-secret')).toContain(
       'has no colon in it',
     );
+    expect(sandboxCredentialRefusal('daytona', 'dtn_0123456789')).toBeNull();
+    expect(sandboxCredentialRefusal('daytona', 'ak-token-id:as-token-secret')).toContain(
+      'has no colon in it',
+    );
     // One closed code, whichever adapter refused.
     for (const [adapter, key] of [
       ['modal', 'ak-token-id'],
       ['e2b', 'a:b'],
+      ['daytona', 'a:b'],
     ] as const)
       expect(sandboxCredentialRefusal(adapter, key)).toStartWith('credential_invalid:');
   });

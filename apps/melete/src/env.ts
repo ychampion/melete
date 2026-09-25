@@ -313,7 +313,8 @@ const variables = z.object({
     .positive()
     .default(7 * 24 * 3600),
   /**
-   * How long Modal keeps a workspace snapshot this service never deletes. It
+   * How long Modal keeps a workspace snapshot, and Daytona a stopped
+   * workspace, that this service never deletes. It
    * must outlast the retention period, or a workspace would be offered a
    * snapshot the provider has already collected. A snapshot deletion the
    * provider acknowledged is not re-checked; anything it missed expires with

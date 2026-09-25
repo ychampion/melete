@@ -1,0 +1,11 @@
+{
+  "fixture": "daytona",
+  "source": "authored-from-documented-api",
+  "note": "Authored from the published Daytona API and source before an account was available, not recorded from Daytona. Re-record with MELETE_SANDBOX_LIVE=daytona, DAYTONA_API_KEY and MELETE_SANDBOX_RECORD=1.",
+  "api": {
+    "control": "Daytona REST API, libs/api-client-go/api/openapi.yaml, daytonaio/daytona v0.190.0 (01c502b)",
+    "toolbox": "Daytona toolbox API, libs/toolbox-api-client-go/api/openapi.yaml, daytonaio/daytona v0.190.0 (01c502b)",
+    "source": "apps/daemon/pkg/toolbox and apps/runner/pkg at v0.190.0, read for behaviour the specification leaves open"
+  },
+  "exchanges": []
+}

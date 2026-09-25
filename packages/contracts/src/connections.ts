@@ -118,7 +118,7 @@ export const icsConnectionConfig = z
   .strict();
 export type IcsConnectionConfig = z.infer<typeof icsConnectionConfig>;
 
-export const SANDBOX_ADAPTERS = ['e2b', 'modal'] as const;
+export const SANDBOX_ADAPTERS = ['e2b', 'daytona', 'modal'] as const;
 export const sandboxAdapter = z.enum(SANDBOX_ADAPTERS);
 export type SandboxAdapter = z.infer<typeof sandboxAdapter>;
 
@@ -140,7 +140,7 @@ const allowedRange = singleLine(49);
 export const sandboxConnectionConfig = z
   .object({
     adapter: sandboxAdapter,
-    /** A registry reference for Modal, a template name for E2B. */
+    /** A registry reference for Modal, a template name for E2B, a snapshot name for Daytona. */
     image: singleLine(200),
     egress: z.enum(SANDBOX_EGRESS_KINDS),
     /** Used only with a CIDR allow-list, which needs at least one. */
@@ -177,6 +177,7 @@ export function modalTokenParts(key: string): { token_id: string; token_secret: 
 /** What to paste in the one credential field, in the words the form shows. */
 export const SANDBOX_CREDENTIAL_FORMAT: Record<SandboxAdapter, string> = {
   e2b: 'the API key on its own, which has no colon in it',
+  daytona: 'the API key on its own, which has no colon in it',
   modal: 'the token id and the token secret as one value, `token_id:token_secret`',
 };
 
@@ -192,8 +193,8 @@ export function sandboxCredentialRefusal(adapter: SandboxAdapter, key: string): 
   const wrong =
     adapter === 'modal'
       ? !modalTokenParts(key)
-      : // An E2B key carries no colon. One here is a Modal token in the wrong
-        // connection, and E2B would be handed the whole thing as a key.
+      : // An E2B or Daytona key carries no colon. One here is a Modal token in
+        // the wrong connection, and the provider would be handed it as a key.
         key.includes(':');
   return wrong
     ? `${SANDBOX_CREDENTIAL_CODE}: a ${adapter} key is ${SANDBOX_CREDENTIAL_FORMAT[adapter]}.`
@@ -770,18 +771,19 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         input: 'select',
         options: [
           { value: 'e2b', label: 'E2B' },
+          { value: 'daytona', label: 'Daytona' },
           { value: 'modal', label: 'Modal' },
         ],
         default: 'e2b',
       }),
       text('sandbox.image', 'Image or template', {
         placeholder: 'base',
-        help: 'A template name on E2B, a registry reference on Modal.',
+        help: 'A template name on E2B, a snapshot name on Daytona, a registry reference on Modal.',
       }),
       text('credentials.api_key', 'Provider key', {
         input: 'password',
         secret: true,
-        help: `E2B: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}.`,
+        help: `E2B: ${SANDBOX_CREDENTIAL_FORMAT.e2b}. Daytona: ${SANDBOX_CREDENTIAL_FORMAT.daytona}. Modal: ${SANDBOX_CREDENTIAL_FORMAT.modal}.`,
       }),
       text('sandbox.egress', 'What the sandbox may reach', {
         input: 'select',
@@ -802,10 +804,11 @@ export const CONNECTION_KIND_DESCRIPTORS: ConnectionKindDescriptor[] = [
         input: 'select',
         options: [
           { value: 'ephemeral', label: 'Nothing: a fresh sandbox each time' },
-          { value: 'pause', label: 'Files and memory, paused between attempts' },
+          { value: 'pause', label: 'Files kept between attempts' },
           { value: 'snapshot', label: 'Files, snapshotted between attempts' },
         ],
         default: 'ephemeral',
+        help: 'E2B also keeps running processes; on Daytona they end. An unused workspace goes after MELETE_SANDBOX_WORKSPACE_RETENTION_SECONDS; Daytona and Modal keep one at most MELETE_SANDBOX_SNAPSHOT_TTL_SECONDS.',
       }),
       text('sandbox.lifetime_seconds', 'How long one sandbox may run, in seconds', {
         input: 'number',

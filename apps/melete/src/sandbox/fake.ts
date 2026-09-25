@@ -351,7 +351,7 @@ type Part = { text: string; quoted: 'single' | 'double' | 'none' };
 type Token = { type: 'word'; parts: Part[] } | { type: 'op'; value: string };
 type Word = Part[];
 type Redirect =
-  | { kind: 'file'; stream: 'out' | 'append' | 'err' | 'errAppend'; target: Word }
+  | { kind: 'file'; stream: 'out' | 'append' | 'err' | 'errAppend' | 'in'; target: Word }
   | { kind: 'errToOut' }
   | { kind: 'outToErr' };
 type Command =
@@ -419,6 +419,9 @@ function tokenize(script: string): Token[] {
     } else if (char === '(' || char === ')') {
       endWord();
       tokens.push({ type: 'op', value: char });
+    } else if (char === '<') {
+      endWord();
+      tokens.push({ type: 'op', value: '<' });
     } else if (char === '>') {
       // `2>` only when the 2 is a whole word of its own so far.
       let descriptor = '';
@@ -462,11 +465,19 @@ function parse(tokens: Token[]): List {
       const value = token.value;
       if (value === '2>&1') found.push({ kind: 'errToOut' });
       else if (value === '>&2') found.push({ kind: 'outToErr' });
-      else if (['>', '>>', '2>', '2>>'].includes(value)) {
+      else if (['>', '>>', '2>', '2>>', '<'].includes(value)) {
         const target = tokens[position + 1];
         if (target?.type !== 'word') throw new ShellSyntaxError('a redirect needs a target');
         const stream =
-          value === '>' ? 'out' : value === '>>' ? 'append' : value === '2>' ? 'err' : 'errAppend';
+          value === '<'
+            ? 'in'
+            : value === '>'
+              ? 'out'
+              : value === '>>'
+                ? 'append'
+                : value === '2>'
+                  ? 'err'
+                  : 'errAppend';
         found.push({ kind: 'file', stream, target: target.parts });
         position += 1;
       } else return found;
@@ -502,7 +513,7 @@ function parse(tokens: Token[]): List {
         position += 1;
         continue;
       }
-      if (['>', '>>', '2>', '2>>', '2>&1', '>&2'].includes(current.value)) {
+      if (['>', '>>', '2>', '2>>', '2>&1', '>&2', '<'].includes(current.value)) {
         found.push(...redirects());
         continue;
       }
@@ -545,7 +556,8 @@ class ExitSignal {
 export class KilledSignal extends Error {}
 
 type Sink = (bytes: Uint8Array) => void;
-type Io = { out: Sink; err: Sink };
+/** `in` is set by a `<` redirection; without one a command reads the process's stdin. */
+type Io = { out: Sink; err: Sink; in?: () => Promise<Uint8Array> };
 
 type Shell = {
   sandbox: FakeSandbox;
@@ -756,7 +768,7 @@ async function program(argv: string[], shell: Shell, io: Io): Promise<number> {
     }
     case 'cat': {
       if (!args.length) {
-        io.out(await shell.process.readStdin());
+        io.out(await (io.in ? io.in() : shell.process.readStdin()));
         return 0;
       }
       for (const file of args) {
@@ -900,6 +912,20 @@ async function runCommand(command: Command, shell: Shell, io: Io): Promise<numbe
     else if (redirect.kind === 'outToErr') current = { ...current, out: current.err };
     else {
       const target = expand(redirect.target, shell);
+      if (redirect.stream === 'in') {
+        let bytes: Uint8Array;
+        try {
+          bytes =
+            target === '/dev/null'
+              ? EMPTY
+              : shell.sandbox.fs.readFile(shell.sandbox.fs.absolute(shell.cwd, target));
+        } catch {
+          io.err(encode(`sh: 1: cannot open ${target}: No such file\n`));
+          return 2;
+        }
+        current = { ...current, in: async () => bytes };
+        continue;
+      }
       let sink: Sink;
       if (target === '/dev/null') sink = () => {};
       else {

@@ -24,7 +24,7 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { SecretAccess } from '../connectors/secrets.ts';
 import { SANDBOX_ADAPTER_PLUGINS } from './adapters/registry.ts';
-import { checkSpec, sandboxLabels } from './manifest.ts';
+import { checkSpec, SandboxRefusal, sandboxLabels } from './manifest.ts';
 import type { EgressPolicy, SandboxCapabilities, SandboxProvider, SandboxSpec } from './types.ts';
 
 /** What `POST /connections` stores for a sandbox: never the key. */
@@ -46,9 +46,12 @@ export type SandboxProviderOptions = {
   project: string;
   /** E2B's lifetime maximum follows the account's plan. */
   e2bPlan?: 'hobby' | 'pro';
-  /** How long Modal keeps a workspace snapshot this service never deletes. */
+  /**
+   * How long Modal keeps a workspace snapshot, and Daytona a stopped sandbox,
+   * that this service never deletes.
+   */
   snapshotTtlSeconds?: number | null;
-  /** Replaces E2B's HTTP transport. Only a test fixture passes one. */
+  /** Replaces the E2B and Daytona HTTP transport. Only a test fixture passes one. */
   fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 };
 
@@ -124,6 +127,10 @@ export function checkSandboxConfiguration(
     }),
     config.persistence,
   );
+  const refusal = SANDBOX_ADAPTER_PLUGINS[config.adapter].egressRefusal?.(
+    sandboxEgressPolicy(config),
+  );
+  if (refusal) throw new SandboxRefusal('egress_invalid', refusal);
 }
 
 export type OpenedSandboxProvider = { provider: SandboxProvider; close(): Promise<void> };
@@ -280,7 +287,7 @@ export function sandboxCredentialValue(
     throw new Error(NOT_A_SANDBOX_KEY);
   }
   if (sandboxCredentialRefusal(adapter, api_key)) throw new Error(NOT_A_SANDBOX_KEY);
-  if (adapter === 'e2b') return { api_key };
+  if (adapter === 'e2b' || adapter === 'daytona') return { api_key };
   const parts = modalTokenParts(api_key);
   if (!parts) throw new Error(NOT_A_SANDBOX_KEY);
   return parts;

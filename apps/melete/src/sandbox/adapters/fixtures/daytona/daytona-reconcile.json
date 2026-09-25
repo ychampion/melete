@@ -1,0 +1,282 @@
+{
+  "fixture": "daytona",
+  "source": "authored-from-documented-api",
+  "note": "Authored from the published Daytona API and source before an account was available, not recorded from Daytona. Re-record with MELETE_SANDBOX_LIVE=daytona, DAYTONA_API_KEY and MELETE_SANDBOX_RECORD=1.",
+  "api": {
+    "control": "Daytona REST API, libs/api-client-go/api/openapi.yaml, daytonaio/daytona v0.190.0 (01c502b)",
+    "toolbox": "Daytona toolbox API, libs/toolbox-api-client-go/api/openapi.yaml, daytonaio/daytona v0.190.0 (01c502b)",
+    "source": "apps/daemon/pkg/toolbox and apps/runner/pkg at v0.190.0, read for behaviour the specification leaves open"
+  },
+  "exchanges": [
+    {
+      "request": {
+        "atMs": 3,
+        "method": "GET",
+        "url": "https://app.daytona.io/api/sandbox",
+        "path": "/api/sandbox?labels=%7B%22melete.owner%22%3A%22v1%22%2C%22melete.project%22%3A%22install-a%22%7D&limit=100",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJpdGVtcyI6W3siaWQiOiJmYWtlLXNieC0wMDAxIiwib3JnYW5pemF0aW9uSWQiOiJvcmdfYXV0aG9yaW5nIiwibmFtZSI6ImZha2Utc2J4LTAwMDEiLCJzbmFwc2hvdCI6ImRheXRvbmEtc21hbGwiLCJ1c2VyIjoiZGF5dG9uYSIsImVudiI6e30sImxhYmVscyI6eyJtZWxldGUub3duZXIiOiJ2MSIsIm1lbGV0ZS5wcm9qZWN0IjoiaW5zdGFsbC1hIiwibWVsZXRlLnNwYWNlIjoic3BfQSIsIm1lbGV0ZS5zZXNzaW9uIjoic2J4X09ORSJ9LCJwdWJsaWMiOmZhbHNlLCJuZXR3b3JrQmxvY2tBbGwiOnRydWUsInRhcmdldCI6InVzIiwiY3B1IjoxLCJncHUiOjAsIm1lbW9yeSI6MSwiZGlzayI6Mywic3RhdGUiOiJjcmVhdGluZyIsImRlc2lyZWRTdGF0ZSI6InN0YXJ0ZWQiLCJiYWNrdXBTdGF0ZSI6Ik5vbmUiLCJhdXRvU3RvcEludGVydmFsIjoxNSwiYXV0b0FyY2hpdmVJbnRlcnZhbCI6MTAwODAsImF1dG9EZWxldGVJbnRlcnZhbCI6LTEsImNyZWF0ZWRBdCI6IjIwMjYtMDktMjNUMDA6MDA6MDAuMDAwWiIsInVwZGF0ZWRBdCI6IjIwMjYtMDktMjNUMDA6MDA6MDAuMDAwWiIsInNhbmRib3hDbGFzcyI6ImNvbnRhaW5lciIsImRhZW1vblZlcnNpb24iOiIwLjE5MC4wIiwidG9vbGJveFByb3h5VXJsIjoiaHR0cHM6Ly9wcm94eS5hcHAuZGF5dG9uYS5pby90b29sYm94In0seyJpZCI6ImZha2Utc2J4LTAwMDIiLCJvcmdhbml6YXRpb25JZCI6Im9yZ19hdXRob3JpbmciLCJuYW1lIjoiZmFrZS1zYngtMDAwMiIsInNuYXBzaG90IjoiZGF5dG9uYS1zbWFsbCIsInVzZXIiOiJkYXl0b25hIiwiZW52Ijp7fSwibGFiZWxzIjp7Im1lbGV0ZS5vd25lciI6InYxIiwibWVsZXRlLnByb2plY3QiOiJpbnN0YWxsLWEiLCJtZWxldGUuc3BhY2UiOiJzcF9BIiwibWVsZXRlLnNlc3Npb24iOiJzYnhfT1JQSEFOIn0sInB1YmxpYyI6ZmFsc2UsIm5ldHdvcmtCbG9ja0FsbCI6dHJ1ZSwidGFyZ2V0IjoidXMiLCJjcHUiOjEsImdwdSI6MCwibWVtb3J5IjoxLCJkaXNrIjozLCJzdGF0ZSI6ImNyZWF0aW5nIiwiZGVzaXJlZFN0YXRlIjoic3RhcnRlZCIsImJhY2t1cFN0YXRlIjoiTm9uZSIsImF1dG9TdG9wSW50ZXJ2YWwiOjE1LCJhdXRvQXJjaGl2ZUludGVydmFsIjoxMDA4MCwiYXV0b0RlbGV0ZUludGVydmFsIjotMSwiY3JlYXRlZEF0IjoiMjAyNi0wOS0yM1QwMDowMDowMC4wMDBaIiwidXBkYXRlZEF0IjoiMjAyNi0wOS0yM1QwMDowMDowMC4wMDBaIiwic2FuZGJveENsYXNzIjoiY29udGFpbmVyIiwiZGFlbW9uVmVyc2lvbiI6IjAuMTkwLjAiLCJ0b29sYm94UHJveHlVcmwiOiJodHRwczovL3Byb3h5LmFwcC5kYXl0b25hLmlvL3Rvb2xib3gifSx7ImlkIjoiZmFrZS1zYngtMDAwMyIsIm9yZ2FuaXphdGlvbklkIjoib3JnX2F1dGhvcmluZyIsIm5hbWUiOiJmYWtlLXNieC0wMDAzIiwic25hcHNob3QiOiJkYXl0b25hLXNtYWxsIiwidXNlciI6ImRheXRvbmEiLCJlbnYiOnt9LCJsYWJlbHMiOnsibWVsZXRlLm93bmVyIjoidjEiLCJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYSIsIm1lbGV0ZS5zcGFjZSI6InNwX0EiLCJtZWxldGUuc2Vzc2lvbiI6InNieF9MSVZFIn0sInB1YmxpYyI6ZmFsc2UsIm5ldHdvcmtCbG9ja0FsbCI6dHJ1ZSwidGFyZ2V0IjoidXMiLCJjcHUiOjEsImdwdSI6MCwibWVtb3J5IjoxLCJkaXNrIjozLCJzdGF0ZSI6ImNyZWF0aW5nIiwiZGVzaXJlZFN0YXRlIjoic3RhcnRlZCIsImJhY2t1cFN0YXRlIjoiTm9uZSIsImF1dG9TdG9wSW50ZXJ2YWwiOjE1LCJhdXRvQXJjaGl2ZUludGVydmFsIjoxMDA4MCwiYXV0b0RlbGV0ZUludGVydmFsIjotMSwiY3JlYXRlZEF0IjoiMjAyNi0wOS0yM1QwMDowMDowMC4wMDBaIiwidXBkYXRlZEF0IjoiMjAyNi0wOS0yM1QwMDowMDowMC4wMDBaIiwic2FuZGJveENsYXNzIjoiY29udGFpbmVyIiwiZGFlbW9uVmVyc2lvbiI6IjAuMTkwLjAiLCJ0b29sYm94UHJveHlVcmwiOiJodHRwczovL3Byb3h5LmFwcC5kYXl0b25hLmlvL3Rvb2xib3gifSx7ImlkIjoiZmFrZS1zYngtMDAwNCIsIm9yZ2FuaXphdGlvbklkIjoib3JnX2F1dGhvcmluZyIsIm5hbWUiOiJmYWtlLXNieC0wMDA0Iiwic25hcHNob3QiOiJkYXl0b25hLXNtYWxsIiwidXNlciI6ImRheXRvbmEiLCJlbnYiOnt9LCJsYWJlbHMiOnsibWVsZXRlLm93bmVyIjoidjEiLCJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYiIsIm1lbGV0ZS5zcGFjZSI6InNwX0IiLCJtZWxldGUuc2Vzc2lvbiI6InNieF9PVEhFUiJ9LCJwdWJsaWMiOmZhbHNlLCJuZXR3b3JrQmxvY2tBbGwiOnRydWUsInRhcmdldCI6InVzIiwiY3B1IjoxLCJncHUiOjAsIm1lbW9yeSI6MSwiZGlzayI6Mywic3RhdGUiOiJjcmVhdGluZyIsImRlc2lyZWRTdGF0ZSI6InN0YXJ0ZWQiLCJiYWNrdXBTdGF0ZSI6Ik5vbmUiLCJhdXRvU3RvcEludGVydmFsIjoxNSwiYXV0b0FyY2hpdmVJbnRlcnZhbCI6MTAwODAsImF1dG9EZWxldGVJbnRlcnZhbCI6LTEsImNyZWF0ZWRBdCI6IjIwMjYtMDktMjNUMDA6MDA6MDAuMDAwWiIsInVwZGF0ZWRBdCI6IjIwMjYtMDktMjNUMDA6MDA6MDAuMDAwWiIsInNhbmRib3hDbGFzcyI6ImNvbnRhaW5lciIsImRhZW1vblZlcnNpb24iOiIwLjE5MC4wIiwidG9vbGJveFByb3h5VXJsIjoiaHR0cHM6Ly9wcm94eS5hcHAuZGF5dG9uYS5pby90b29sYm94In0seyJpZCI6ImZha2Utc2J4LTAwMDUiLCJvcmdhbml6YXRpb25JZCI6Im9yZ19hdXRob3JpbmciLCJuYW1lIjoiZmFrZS1zYngtMDAwNSIsInNuYXBzaG90IjoiZGF5dG9uYS1zbWFsbCIsInVzZXIiOiJkYXl0b25hIiwiZW52Ijp7fSwibGFiZWxzIjp7fSwicHVibGljIjpmYWxzZSwibmV0d29ya0Jsb2NrQWxsIjp0cnVlLCJ0YXJnZXQiOiJ1cyIsImNwdSI6MSwiZ3B1IjowLCJtZW1vcnkiOjEsImRpc2siOjMsInN0YXRlIjoiY3JlYXRpbmciLCJkZXNpcmVkU3RhdGUiOiJzdGFydGVkIiwiYmFja3VwU3RhdGUiOiJOb25lIiwiYXV0b1N0b3BJbnRlcnZhbCI6MTUsImF1dG9BcmNoaXZlSW50ZXJ2YWwiOjEwMDgwLCJhdXRvRGVsZXRlSW50ZXJ2YWwiOi0xLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTIzVDAwOjAwOjAwLjAwMFoiLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTIzVDAwOjAwOjAwLjAwMFoiLCJzYW5kYm94Q2xhc3MiOiJjb250YWluZXIiLCJkYWVtb25WZXJzaW9uIjoiMC4xOTAuMCIsInRvb2xib3hQcm94eVVybCI6Imh0dHBzOi8vcHJveHkuYXBwLmRheXRvbmEuaW8vdG9vbGJveCJ9LHsiaWQiOiJmYWtlLXNieC0wMDA2Iiwib3JnYW5pemF0aW9uSWQiOiJvcmdfYXV0aG9yaW5nIiwibmFtZSI6ImZha2Utc2J4LTAwMDYiLCJzbmFwc2hvdCI6ImRheXRvbmEtc21hbGwiLCJ1c2VyIjoiZGF5dG9uYSIsImVudiI6e30sImxhYmVscyI6eyJtZWxldGUucHJvamVjdCI6Imluc3RhbGwtYSIsIm1lbGV0ZS5zZXNzaW9uIjoic2J4X05PT1dORVIifSwicHVibGljIjpmYWxzZSwibmV0d29ya0Jsb2NrQWxsIjp0cnVlLCJ0YXJnZXQiOiJ1cyIsImNwdSI6MSwiZ3B1IjowLCJtZW1vcnkiOjEsImRpc2siOjMsInN0YXRlIjoiY3JlYXRpbmciLCJkZXNpcmVkU3RhdGUiOiJzdGFydGVkIiwiYmFja3VwU3RhdGUiOiJOb25lIiwiYXV0b1N0b3BJbnRlcnZhbCI6MTUsImF1dG9BcmNoaXZlSW50ZXJ2YWwiOjEwMDgwLCJhdXRvRGVsZXRlSW50ZXJ2YWwiOi0xLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTIzVDAwOjAwOjAwLjAwMFoiLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTIzVDAwOjAwOjAwLjAwMFoiLCJzYW5kYm94Q2xhc3MiOiJjb250YWluZXIiLCJkYWVtb25WZXJzaW9uIjoiMC4xOTAuMCIsInRvb2xib3hQcm94eVVybCI6Imh0dHBzOi8vcHJveHkuYXBwLmRheXRvbmEuaW8vdG9vbGJveCJ9XSwibmV4dEN1cnNvciI6bnVsbH0="
+          }
+        ],
+        "end": "complete",
+        "atMs": 5,
+        "body": {
+          "items": [
+            {
+              "id": "fake-sbx-0001",
+              "organizationId": "org_authoring",
+              "name": "fake-sbx-0001",
+              "snapshot": "daytona-small",
+              "user": "daytona",
+              "env": {},
+              "labels": {
+                "melete.owner": "v1",
+                "melete.project": "install-a",
+                "melete.space": "sp_A",
+                "melete.session": "sbx_ONE"
+              },
+              "public": false,
+              "networkBlockAll": true,
+              "target": "us",
+              "cpu": 1,
+              "gpu": 0,
+              "memory": 1,
+              "disk": 3,
+              "state": "creating",
+              "desiredState": "started",
+              "backupState": "None",
+              "autoStopInterval": 15,
+              "autoArchiveInterval": 10080,
+              "autoDeleteInterval": -1,
+              "createdAt": "2026-09-23T00:00:00.000Z",
+              "updatedAt": "2026-09-23T00:00:00.000Z",
+              "sandboxClass": "container",
+              "daemonVersion": "0.190.0",
+              "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+            },
+            {
+              "id": "fake-sbx-0002",
+              "organizationId": "org_authoring",
+              "name": "fake-sbx-0002",
+              "snapshot": "daytona-small",
+              "user": "daytona",
+              "env": {},
+              "labels": {
+                "melete.owner": "v1",
+                "melete.project": "install-a",
+                "melete.space": "sp_A",
+                "melete.session": "sbx_ORPHAN"
+              },
+              "public": false,
+              "networkBlockAll": true,
+              "target": "us",
+              "cpu": 1,
+              "gpu": 0,
+              "memory": 1,
+              "disk": 3,
+              "state": "creating",
+              "desiredState": "started",
+              "backupState": "None",
+              "autoStopInterval": 15,
+              "autoArchiveInterval": 10080,
+              "autoDeleteInterval": -1,
+              "createdAt": "2026-09-23T00:00:00.000Z",
+              "updatedAt": "2026-09-23T00:00:00.000Z",
+              "sandboxClass": "container",
+              "daemonVersion": "0.190.0",
+              "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+            },
+            {
+              "id": "fake-sbx-0003",
+              "organizationId": "org_authoring",
+              "name": "fake-sbx-0003",
+              "snapshot": "daytona-small",
+              "user": "daytona",
+              "env": {},
+              "labels": {
+                "melete.owner": "v1",
+                "melete.project": "install-a",
+                "melete.space": "sp_A",
+                "melete.session": "sbx_LIVE"
+              },
+              "public": false,
+              "networkBlockAll": true,
+              "target": "us",
+              "cpu": 1,
+              "gpu": 0,
+              "memory": 1,
+              "disk": 3,
+              "state": "creating",
+              "desiredState": "started",
+              "backupState": "None",
+              "autoStopInterval": 15,
+              "autoArchiveInterval": 10080,
+              "autoDeleteInterval": -1,
+              "createdAt": "2026-09-23T00:00:00.000Z",
+              "updatedAt": "2026-09-23T00:00:00.000Z",
+              "sandboxClass": "container",
+              "daemonVersion": "0.190.0",
+              "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+            },
+            {
+              "id": "fake-sbx-0004",
+              "organizationId": "org_authoring",
+              "name": "fake-sbx-0004",
+              "snapshot": "daytona-small",
+              "user": "daytona",
+              "env": {},
+              "labels": {
+                "melete.owner": "v1",
+                "melete.project": "install-b",
+                "melete.space": "sp_B",
+                "melete.session": "sbx_OTHER"
+              },
+              "public": false,
+              "networkBlockAll": true,
+              "target": "us",
+              "cpu": 1,
+              "gpu": 0,
+              "memory": 1,
+              "disk": 3,
+              "state": "creating",
+              "desiredState": "started",
+              "backupState": "None",
+              "autoStopInterval": 15,
+              "autoArchiveInterval": 10080,
+              "autoDeleteInterval": -1,
+              "createdAt": "2026-09-23T00:00:00.000Z",
+              "updatedAt": "2026-09-23T00:00:00.000Z",
+              "sandboxClass": "container",
+              "daemonVersion": "0.190.0",
+              "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+            },
+            {
+              "id": "fake-sbx-0005",
+              "organizationId": "org_authoring",
+              "name": "fake-sbx-0005",
+              "snapshot": "daytona-small",
+              "user": "daytona",
+              "env": {},
+              "labels": {},
+              "public": false,
+              "networkBlockAll": true,
+              "target": "us",
+              "cpu": 1,
+              "gpu": 0,
+              "memory": 1,
+              "disk": 3,
+              "state": "creating",
+              "desiredState": "started",
+              "backupState": "None",
+              "autoStopInterval": 15,
+              "autoArchiveInterval": 10080,
+              "autoDeleteInterval": -1,
+              "createdAt": "2026-09-23T00:00:00.000Z",
+              "updatedAt": "2026-09-23T00:00:00.000Z",
+              "sandboxClass": "container",
+              "daemonVersion": "0.190.0",
+              "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+            },
+            {
+              "id": "fake-sbx-0006",
+              "organizationId": "org_authoring",
+              "name": "fake-sbx-0006",
+              "snapshot": "daytona-small",
+              "user": "daytona",
+              "env": {},
+              "labels": {
+                "melete.project": "install-a",
+                "melete.session": "sbx_NOOWNER"
+              },
+              "public": false,
+              "networkBlockAll": true,
+              "target": "us",
+              "cpu": 1,
+              "gpu": 0,
+              "memory": 1,
+              "disk": 3,
+              "state": "creating",
+              "desiredState": "started",
+              "backupState": "None",
+              "autoStopInterval": 15,
+              "autoArchiveInterval": 10080,
+              "autoDeleteInterval": -1,
+              "createdAt": "2026-09-23T00:00:00.000Z",
+              "updatedAt": "2026-09-23T00:00:00.000Z",
+              "sandboxClass": "container",
+              "daemonVersion": "0.190.0",
+              "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "request": {
+        "atMs": 6,
+        "method": "DELETE",
+        "url": "https://app.daytona.io/api/sandbox/fake-sbx-0002",
+        "path": "/api/sandbox/fake-sbx-0002",
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "headers": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "chunks": [
+          {
+            "atMs": 0,
+            "base64": "eyJpZCI6ImZha2Utc2J4LTAwMDIiLCJvcmdhbml6YXRpb25JZCI6Im9yZ19hdXRob3JpbmciLCJuYW1lIjoiZmFrZS1zYngtMDAwMiIsInNuYXBzaG90IjoiZGF5dG9uYS1zbWFsbCIsInVzZXIiOiJkYXl0b25hIiwiZW52Ijp7fSwibGFiZWxzIjp7Im1lbGV0ZS5vd25lciI6InYxIiwibWVsZXRlLnByb2plY3QiOiJpbnN0YWxsLWEiLCJtZWxldGUuc3BhY2UiOiJzcF9BIiwibWVsZXRlLnNlc3Npb24iOiJzYnhfT1JQSEFOIn0sInB1YmxpYyI6ZmFsc2UsIm5ldHdvcmtCbG9ja0FsbCI6dHJ1ZSwidGFyZ2V0IjoidXMiLCJjcHUiOjEsImdwdSI6MCwibWVtb3J5IjoxLCJkaXNrIjozLCJzdGF0ZSI6ImRlc3Ryb3lpbmciLCJkZXNpcmVkU3RhdGUiOiJkZXN0cm95aW5nIiwiYmFja3VwU3RhdGUiOiJOb25lIiwiYXV0b1N0b3BJbnRlcnZhbCI6MTUsImF1dG9BcmNoaXZlSW50ZXJ2YWwiOjEwMDgwLCJhdXRvRGVsZXRlSW50ZXJ2YWwiOi0xLCJjcmVhdGVkQXQiOiIyMDI2LTA5LTIzVDAwOjAwOjAwLjAwMFoiLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTIzVDAwOjAwOjAwLjAwMFoiLCJzYW5kYm94Q2xhc3MiOiJjb250YWluZXIiLCJkYWVtb25WZXJzaW9uIjoiMC4xOTAuMCIsInRvb2xib3hQcm94eVVybCI6Imh0dHBzOi8vcHJveHkuYXBwLmRheXRvbmEuaW8vdG9vbGJveCJ9"
+          }
+        ],
+        "end": "complete",
+        "atMs": 6,
+        "body": {
+          "id": "fake-sbx-0002",
+          "organizationId": "org_authoring",
+          "name": "fake-sbx-0002",
+          "snapshot": "daytona-small",
+          "user": "daytona",
+          "env": {},
+          "labels": {
+            "melete.owner": "v1",
+            "melete.project": "install-a",
+            "melete.space": "sp_A",
+            "melete.session": "sbx_ORPHAN"
+          },
+          "public": false,
+          "networkBlockAll": true,
+          "target": "us",
+          "cpu": 1,
+          "gpu": 0,
+          "memory": 1,
+          "disk": 3,
+          "state": "destroying",
+          "desiredState": "destroying",
+          "backupState": "None",
+          "autoStopInterval": 15,
+          "autoArchiveInterval": 10080,
+          "autoDeleteInterval": -1,
+          "createdAt": "2026-09-23T00:00:00.000Z",
+          "updatedAt": "2026-09-23T00:00:00.000Z",
+          "sandboxClass": "container",
+          "daemonVersion": "0.190.0",
+          "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+        }
+      }
+    }
+  ]
+}
