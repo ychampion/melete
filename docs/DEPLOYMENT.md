@@ -82,17 +82,26 @@ bun --version
 git clone https://github.com/ychampion/melete.git
 cd melete
 bun install --frozen-lockfile
-bun run deploy/scripts/configure.ts --fake
+bun run deploy/scripts/configure.ts
+```
+
+`configure.ts` writes `deploy/.env` from `deploy/.env.example` with private
+permissions, generates independent local secrets and records the Docker socket
+group; it refuses to replace an existing `.env`. Compose reads `deploy/.env`;
+keep it with your backups.
+
+Set your model in `deploy/.env` now: `MELETE_DEFAULT_PROVIDER`,
+`MELETE_DEFAULT_MODEL` and the provider's key, as [Providers](#providers)
+lists. `configure.ts` warns that the key is empty until you do. For a demo that
+needs no key, run `configure.ts --fake` instead: it turns on a scripted provider
+and a test connector, which you switch off later as [Providers](#providers)
+describes. Then check the configuration and start the stack:
+
+```bash
 bun run compose:check
 docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180
 docker compose -f deploy/docker-compose.yml ps
 ```
-
-`configure.ts --fake` writes `deploy/.env` from `deploy/.env.example` with
-private permissions, generates independent local secrets, records the Docker
-socket group, and turns on the scripted provider and test connector; it refuses
-to replace an existing `.env`. Compose reads `deploy/.env`; keep it with your
-backups.
 
 All four services — `postgres`, `melete`, `runtime` and `web` — come up healthy.
 If startup fails, `docker compose -f deploy/docker-compose.yml logs --tail=100`
@@ -165,7 +174,8 @@ git clone https://github.com/ychampion/melete.git /c/melete
 cd /c/melete
 bun install --frozen-lockfile
 bun run doctor --docker
-bun run deploy/scripts/configure.ts --fake
+bun run deploy/scripts/configure.ts
+# Set your model in deploy/.env now, as Providers lists, or use --fake above for a demo.
 bun run compose:check
 docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
 docker compose -f deploy/docker-compose.yml ps
@@ -230,7 +240,8 @@ beside the database volume, rather than on a Windows drive.
 ## Configuration and browser access
 
 Configuration lives in `deploy/.env`, generated once by
-`bun run deploy/scripts/configure.ts --fake`. The file is private and is not
+`bun run deploy/scripts/configure.ts`, or with `--fake` for a demo that needs no
+model key. The file is private and is not
 committed. Its default Compose project is `melete`; change `COMPOSE_PROJECT_NAME`
 before first startup when using another project. Use that value consistently
 so the supervisor finds the project's networks and work volume.
