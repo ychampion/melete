@@ -100,6 +100,10 @@ names the reason.
 
 Then open **http://localhost:3101** and create the owner account.
 
+Add mail and calendars in **Settings → Connections**. Gmail and iCloud connect
+with an app password, and other IMAP and CalDAV accounts with their password.
+Outlook.com accepts only its own sign-in, so it cannot be connected.
+
 ## Windows (Docker Desktop)
 
 A Windows machine running Docker Desktop hosts Melete with the same Compose
@@ -168,7 +172,7 @@ docker compose -f deploy/docker-compose.yml ps
 ```
 
 Then open **http://localhost:3101** on the Windows machine and continue with the
-README's [Run it](../README.md#run-it).
+README's [Run it yourself](../README.md#run-it-yourself).
 
 `bun run doctor --docker` names anything on the list above that is missing:
 Docker Desktop not running (nothing answers on its named pipe,

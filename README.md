@@ -1,84 +1,96 @@
 # Melete
 
-**A personal assistant that follows through.**
+A personal assistant that follows through: it writes the email, waits, follows up, and tells you when it's done.
 
-![Melete chasing a refund: it reads the thread, writes to the company from your address, follows up when the date passes, and reports the refund settled eight days later](docs/assets/readme/01-hero.jpg)
+![Melete chasing a £64 refund: the draft, the one approval, then the replies and follow-up until it's settled.](docs/assets/readme/demo.gif)
 
-<!-- DEMO SLOT: when docs/assets/readme/demo.gif exists, embed it here as an
-     image with the alt text "Melete taking a loose end from inbox to settled". -->
+Hand it a loose end, like a refund you were promised or a reply you're still
+waiting for. Melete writes from your own address, and you see each message
+before it goes out.
 
-Hand Melete anything with a loose end: a reply you're owed, a refund, a booking
-to move, a bill to query. It writes the email from your own address, waits,
-follows up when a date passes, and tells you when it's settled. You see every
-message before it goes out, and it never sends the same one twice.
+## See it work
 
-## What it does
+1. **Connect your inbox.** Gmail and iCloud take an app password, and most other
+   mailboxes connect over IMAP.
 
-### Finds every loose end in your inbox
+   ![The Gmail connection form in Settings, asking for an email address and an app password](docs/assets/readme/walkthrough/01-connect.png)
 
-![The Companies screen: twelve companies found, what you pay each month, what is owed to you, and each open item with its amount, date and status](docs/assets/readme/02-companies.png)
+2. **See what's open.** Melete reads your mail and lists what each company owes
+   you and what is overdue.
 
-Connect a mailbox and Melete lists every company in your life: what you pay
-each month, what you're owed, what renews next, whose trial ends this week.
-Every figure opens the sentence in the email it came from. Pick one item, or
-hand it the lot, and Melete takes it from there, quoting the company's own
-words back to it.
+   ![The Companies screen listing money owed, overdue invoices and a deposit five days late](docs/assets/readme/walkthrough/02-whats-open.png)
 
-### Shows you every word first
+3. **Hand it one.** Ask it to chase the refund, and it drafts an email that
+   quotes the date the company gave you.
 
-![An approval card showing the full draft to Customer Care, with Allow once and Deny](docs/assets/readme/03-approval.png)
+   ![A chat asking Melete to chase Tern & Co for a £64 refund, with the drafted email and a Review and send button](docs/assets/readme/walkthrough/03-hand-it-one.png)
 
-Each message waits for your yes, with the full text in front of you. Your yes
-covers exactly those words; change the recipient or the amount and it asks
-again. For someone you trust, allow a set number of messages until a date you
-choose.
+4. **Approve the exact email.** You see who it's from, who it's to and every
+   word, and nothing goes until you allow it.
 
-### Sorts your day before you wake up
+   ![The approval card showing From, To and the full email, with Deny and Allow once](docs/assets/readme/walkthrough/04-approve.png)
 
-![The home screen: a morning brief, suggested next steps, the decisions waiting on you, and today's calendar and tasks](docs/assets/readme/04-your-day.png)
+5. **It follows up until it's settled.** When the money doesn't arrive, it
+   writes again with the reference, and tells you when the refund is back.
 
-A morning brief, the few decisions that need you, and your calendar and tasks
-beside them. Answer with one tap and it carries on.
+   ![The finished case: their reply, the follow-up, their confirmation, and Settled with £64 back on the card](docs/assets/readme/walkthrough/05-settled.png)
 
-### Remembers, and learns your way
+## Run it yourself
 
-![Memory: three things Melete learned, each with where it came from and a Why link](docs/assets/readme/05-memory.png)
-
-Tell it once how you like things done and it does them that way next time.
-Everything it remembers is listed with where it came from; change it or forget
-it whenever you like.
-
-## Run it
-
-![Open source. Your machine, your model. Melete on a phone, asking to send a refund request](docs/assets/readme/06-open-source.png)
-
-Melete runs on your own machine with Docker. You need Docker Engine 28 or newer
-with Docker Compose 2.33.1 or newer, [Bun](https://bun.sh), Git, about 10 GB of
-free disk, and ports 3100 and 3101 free. On Windows, follow
-[Windows (Docker Desktop)](docs/DEPLOYMENT.md#windows-docker-desktop) instead.
+Needs Docker and Bun.
 
 ```bash
-git clone https://github.com/ychampion/melete.git
-cd melete
-bun install --frozen-lockfile
-bun run deploy/scripts/configure.ts --fake
-docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 180
+git clone https://github.com/ychampion/melete.git && cd melete
+bun install --frozen-lockfile && bun run deploy/scripts/configure.ts --fake
+docker compose -f deploy/docker-compose.yml up -d --build --wait
 ```
 
-Open **http://localhost:3101** and create your account.
+Then open http://localhost:3101 and create your account. It starts with a
+practice model that plays one job from start to finish, so you can try Melete
+before you connect your own.
 
-`configure.ts --fake` writes your private settings to `deploy/.env` and starts
-Melete in walkthrough mode: a scripted model plays one job end to end, so you
-can watch a request become a message, an approval and a receipt before you
-connect a model of your own. Keep `deploy/.env` with your backups; it holds the
-key that unseals your stored passwords.
+[Deployment](docs/DEPLOYMENT.md) has the version requirements, Windows, remote
+hosts, HTTPS, Tailscale, backups and how to remove Melete.
 
-Add your mail and calendar in **Settings → Connections**. Gmail and iCloud
-connect with an app password, and any IMAP or CalDAV account with its password.
-Outlook.com accepts only its own sign-in, so it cannot be connected.
+## Set it up with your coding agent
 
-[Deployment](docs/DEPLOYMENT.md) covers remote hosts, HTTPS, reaching Melete
-from your phone over Tailscale, backups, upgrades and removing it completely.
+Paste one of these into Claude Code, Codex or Cursor.
+
+To run it:
+
+```text
+Clone https://github.com/ychampion/melete and run it on this machine with
+Docker, following its README. First check that Docker Engine is 28 or newer and
+Docker Compose is 2.33.1 or newer. docs/DEPLOYMENT.md has the requirements, and
+a Windows section if this machine runs Windows. Then run the three commands
+under "Run it yourself". When `docker compose -f deploy/docker-compose.yml ps`
+shows the services running and healthy, tell me the address to open.
+```
+
+To connect Gmail:
+
+```text
+Help me connect my Gmail to Melete, which is running at http://localhost:3101.
+Walk me through turning on 2-Step Verification for my Google account and
+creating an app password named Melete at https://myaccount.google.com/apppasswords.
+Then tell me to open Settings, then Connections, choose Gmail, and enter my
+address and the 16-character app password there. Don't ask me to paste the
+password into this chat.
+```
+
+To use your own model:
+
+```text
+Switch my Melete install to my own model. My API key is in my environment as
+ANTHROPIC_API_KEY. In deploy/.env, set MELETE_DEFAULT_PROVIDER=anthropic, set
+MELETE_DEFAULT_MODEL to the model I name, copy the key into ANTHROPIC_API_KEY
+without printing it, and set MELETE_ENABLE_FAKE_PROVIDER=false and
+MELETE_ENABLE_TEST_CONNECTOR=false. Then run
+`docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime`
+and check `docker compose -f deploy/docker-compose.yml logs --tail=50 melete`
+for a warning about the provider key. If my key is for another provider, use
+the matching name and key from the Providers section of docs/DEPLOYMENT.md.
+```
 
 ## Connect your model
 
@@ -91,36 +103,45 @@ Melete works with the model you choose. Set these in `deploy/.env`:
 | `chatgpt` | Your ChatGPT sign-in, using your plan |
 | `google` | `GOOGLE_API_KEY` |
 | `fireworks` | `FIREWORKS_API_KEY` |
-| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and a key, including a model server on your own network |
+| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and a key, which can be a model server on your own network |
 
-Set `MELETE_DEFAULT_MODEL` to the model's name as the provider writes it, set
-`MELETE_ENABLE_FAKE_PROVIDER=false`, and restart the two services that use it:
+Set `MELETE_DEFAULT_MODEL` to the model's name as the provider writes it and
+`MELETE_ENABLE_FAKE_PROVIDER` to `false`, then restart the two services that
+use them:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
 ```
 
-[Providers](docs/DEPLOYMENT.md#providers) has the details, including signing in
-with ChatGPT.
+[Providers](docs/DEPLOYMENT.md#providers) explains each one, including signing
+in with ChatGPT.
 
 ## Plugins
 
-Plugins give Melete new tools. Add any MCP server in
-**Settings → Connections**, over HTTP or from a package or image; a packaged
-server runs in its own locked-down container. A starter set (files, fetch, time
-and GitHub) is listed at `GET /plugins`, and each one installs with a single
-request that asks only for the values it needs.
+Plugins give Melete new tools. You can add any MCP server in
+**Settings → Connections**, over HTTP or from a package or image, and a packaged
+server runs in its own locked-down container. There is also a starter set of
+files, fetch, time and GitHub, listed at `GET /plugins`, and each one installs
+with a single request.
 
 Melete can also run code in a cloud sandbox. Connect an [E2B](https://e2b.dev)
 or [Modal](https://modal.com) account as a **Sandbox** connection and your jobs
 can use it.
 
+## More it does for you
+
+**Your day.** Home opens with a short morning brief and the decisions waiting on
+you, next to your calendar.
+
+**Memory.** Tell it once how you like things done and it does them that way next
+time. You can see everything it remembers, and change or forget any of it.
+
 ## How it keeps you in control
 
-- **Approvals.** Every message waits for your yes, or for a limit you set for someone you trust.
-- **Receipts.** Every message, event and file it produces is recorded: what, where and when.
-- **Undo.** Anything that can be taken back carries an undo you can use while it is still valid.
-- **Memory you can see.** Change or forget anything it knows; a forgotten fact stays forgotten, even after a restore.
+- **Approvals.** Each message waits for your OK. For someone you trust, you can allow a set number of messages instead.
+- **Receipts.** Everything it sends or creates is recorded with when and where it went.
+- **Undo.** An action that can be reversed shows an Undo button for as long as it still works.
+- **Forgetting.** Something you ask it to forget stays forgotten, even after you restore a backup.
 
 ## Documentation
 
@@ -135,8 +156,8 @@ can use it.
 
 ## Licence and credits
 
-Melete is Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Report a
-security issue through the [security policy](SECURITY.md).
+Melete is Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). To report a
+security issue, follow the [security policy](SECURITY.md).
 
 Melete's agent runtime is built on
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
