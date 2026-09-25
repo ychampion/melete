@@ -82,6 +82,30 @@ describe('the provider the configuration is written for', () => {
     ).toThrow('Name the model with --model');
   });
 
+  test('a key with a space or a line break is refused, naming only its variable', () => {
+    const lineBreak = String.fromCharCode(10);
+    const tab = String.fromCharCode(9);
+    for (const key of [
+      'fw-secret part',
+      `fw-secret${lineBreak}MELETE_ENABLE_TEST_CONNECTOR=true`,
+      `fw${tab}secret`,
+    ]) {
+      const refusal = (() => {
+        try {
+          providerSettings({ fake: false }, example, { FIREWORKS_API_KEY: key });
+          return null;
+        } catch (error) {
+          return error;
+        }
+      })();
+      expect(refusal).toBeInstanceOf(ConfigureRefusal);
+      expect((refusal as Error).message).toContain(
+        'FIREWORKS_API_KEY contains a space or a line break',
+      );
+      expect((refusal as Error).message).not.toContain('secret');
+    }
+  });
+
   test('only the demonstration turns on the scripted provider and the test connector', () => {
     expect(providerSettings({ fake: true }, example, {})).toMatchObject({
       MELETE_DEFAULT_PROVIDER: 'fake',

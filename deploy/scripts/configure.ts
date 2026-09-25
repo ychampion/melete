@@ -140,7 +140,15 @@ export function providerSettings(
   const keys = Object.fromEntries(
     variables.flatMap((name) => {
       const value = environment[name]?.trim();
-      return value ? [[name, value]] : [];
+      if (!value) return [];
+      // A key never contains whitespace; one that does was pasted wrong, and a
+      // line break would write a second setting into deploy/.env. Only the
+      // variable is named, never what it holds.
+      if (/\s/.test(value))
+        throw new ConfigureRefusal(
+          `${name} contains a space or a line break, so it is not a key as written. Set it again and run this again.`,
+        );
+      return [[name, value]];
     }),
   );
   const providers = providersFromEnv({ ...keys, OPENAI_COMPAT_BASE_URL: baseUrl });
