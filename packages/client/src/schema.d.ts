@@ -245,6 +245,15 @@ export interface paths {
                         "application/json": components["schemas"]["__schema321"];
                     };
                 };
+                /** @description No signed-in person to record the answer for */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema140"];
+                    };
+                };
                 /** @description No such action among the caller's own */
                 404: {
                     headers: {

@@ -51,6 +51,7 @@ import {
 import { agentAccess, directSend } from '../experience/access.ts';
 import { plainText } from '../experience/projectors.ts';
 import { type AttemptWake, attemptQueue } from '../jobs/queue.ts';
+import { jobVisibleTo } from '../principals/authority.ts';
 import { recordGeneratedArtifact } from './artifacts.ts';
 import {
   bindEffect,
@@ -161,6 +162,10 @@ type Admissibility = {
 
 const question =
   'Melete cannot confirm whether this was sent. Check the destination, then mark it.';
+/** Settled by the owner's answer rather than by evidence, so later evidence still counts. */
+const ownerAnswered = (action: Action) =>
+  ['succeeded', 'failed'].includes(action.status) &&
+  (action.reconciliation as Record<string, unknown> | null)?.decided_by === 'owner';
 const needsApproval = (tool: ConnectorTool) =>
   tool.requires_approval || tool.effect_class === 'write_external' || tool.effect_class === 'spend';
 
@@ -1532,9 +1537,33 @@ export class BrokerService implements BrokerOperations {
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, original.job_id);
       const action = await loadAction(tx, id, true);
-      if (!['dispatched', 'unknown', 'unresolved'].includes(action.status)) return action;
+      const owned = ownerAnswered(action);
+      if (!owned && !['dispatched', 'unknown', 'unresolved'].includes(action.status)) return action;
       const [attempt] = await tx`select epoch from attempt where id = ${action.attempt_id}`;
       const late = attempt?.epoch !== job.lease_epoch;
+      if (owned) {
+        if (result.outcome === 'failed')
+          return this.landAfterOwner(
+            tx,
+            job,
+            action,
+            { outcome: 'failed', reason: result.reason },
+            late,
+          );
+        if (
+          result.outcome === 'succeeded' &&
+          result.receipt.action_id === id &&
+          result.receipt.connection_id === action.connection_id
+        )
+          return this.landAfterOwner(
+            tx,
+            job,
+            action,
+            { outcome: 'succeeded', receipt: result.receipt },
+            late,
+          );
+        return action;
+      }
       const wasUncertain = action.status === 'unknown' || action.status === 'unresolved';
       let receipt: Receipt | null = null;
       if (result.outcome === 'succeeded') {
@@ -1603,7 +1632,7 @@ export class BrokerService implements BrokerOperations {
 
   async verify(id: string): Promise<Action> {
     const action = await loadAction(this.sql, id);
-    if (!['unknown', 'unresolved'].includes(action.status)) return action;
+    if (!ownerAnswered(action) && !['unknown', 'unresolved'].includes(action.status)) return action;
     const [job] = await this.sql<LockedJob[]>`select * from job where id = ${action.job_id}`;
     if (!job) throw new BrokerFault('action_not_found');
     const connector = this.options.connectors.get(action.connection_id);
@@ -1620,9 +1649,34 @@ export class BrokerService implements BrokerOperations {
     return this.sql.begin(async (tx) => {
       const currentJob = await lockJob(tx, job.id);
       const current = await loadAction(tx, id, true);
-      if (!['unknown', 'unresolved'].includes(current.status)) return current;
+      const owned = ownerAnswered(current);
+      if (!owned && !['unknown', 'unresolved'].includes(current.status)) return current;
       const [attempt] = await tx`select epoch from attempt where id = ${current.attempt_id}`;
       const late = attempt?.epoch !== currentJob.lease_epoch;
+      if (owned) {
+        if (result.decision === 'failed')
+          return this.landAfterOwner(
+            tx,
+            currentJob,
+            current,
+            { outcome: 'failed', reason: 'The provider reported it did not happen.' },
+            late,
+          );
+        if (
+          result.decision === 'succeeded' &&
+          result.receipt &&
+          result.receipt.action_id === id &&
+          result.receipt.connection_id === current.connection_id
+        )
+          return this.landAfterOwner(
+            tx,
+            currentJob,
+            current,
+            { outcome: 'succeeded', receipt: result.receipt },
+            late,
+          );
+        return current;
+      }
       if (
         result.decision === 'succeeded' &&
         result.receipt &&
@@ -1660,38 +1714,103 @@ export class BrokerService implements BrokerOperations {
   /**
    * The owner says what happened to an effect Melete could not confirm. The
    * answer settles it as `verify` would, recorded as the owner's, and the
-   * action is never dispatched again. Null when it is not awaiting an answer.
+   * action is never dispatched again. Only the job's own principal, in a space
+   * they can still see, may answer; authentic provider evidence that arrives
+   * later still lands (see `landAfterOwner`).
    */
   async resolveByOwner(
+    actorId: string,
     id: string,
     input: { resolution: 'succeeded' | 'failed' | 'unresolved'; note?: string },
-  ): Promise<Action | null> {
-    const action = await loadAction(this.sql, id);
+  ): Promise<
+    { status: 'resolved'; action: Action } | { status: 'not_found' } | { status: 'not_awaiting' }
+  > {
+    const action = await loadAction(this.sql, id).catch(() => null);
+    if (!action) return { status: 'not_found' };
     return this.sql.begin(async (tx) => {
       const job = await lockJob(tx, action.job_id);
+      if (!(await jobVisibleTo(tx, job.id, actorId))) return { status: 'not_found' as const };
       const current = await loadAction(tx, id, true);
-      if (!['unknown', 'unresolved'].includes(current.status)) return null;
+      if (!['unknown', 'unresolved'].includes(current.status))
+        return { status: 'not_awaiting' as const };
       const resolved = input.resolution !== 'unresolved';
       const decidedAt = new Date().toISOString();
+      const [attempt] = await tx`select epoch from attempt where id = ${current.attempt_id}`;
+      const late = attempt?.epoch !== job.lease_epoch;
       await this.setStatus(tx, current, input.resolution);
       await tx`update action set reconciliation = ${JSON.stringify({
         decided_by: 'owner',
         decided_at: decidedAt,
         resolution: input.resolution,
         note: input.note ?? '',
+        late,
       })}::jsonb, resolved_at = ${resolved ? decidedAt : null} where id = ${id}`;
+      await appendEvent(tx, job.id, current.attempt_id, 'notice', {
+        action_id: id,
+        phase: 'owner_resolved',
+        resolution: input.resolution,
+        late,
+      });
       if (resolved) {
         await tx`update budget_ledger set settled = reserved where action_id = ${id} and settled is null`;
-        const [attempt] = await tx`select epoch from attempt where id = ${current.attempt_id}`;
-        const late = attempt?.epoch !== job.lease_epoch;
         const [pending] =
           await tx`select count(*)::int as count from action where job_id = ${job.id}
           and status in ('unknown', 'unresolved', 'dispatched')`;
         if (pending?.count === 0 && !late && job.state === 'needs_reconciliation')
           await this.wake(tx, job, 'recovery');
       }
-      return loadAction(tx, id);
+      return { status: 'resolved' as const, action: await loadAction(tx, id) };
     });
+  }
+
+  /**
+   * Evidence a provider sends after the owner answered for it. The owner's
+   * answer stood in for evidence nobody had; authentic evidence is what
+   * happened. A provider success over an owner's "failed" moves the action to
+   * succeeded. A provider failure never undoes a success the owner reported,
+   * since the effect may have happened by another route. Either way the
+   * owner's answer is kept beside the provider's, and a disagreement is told.
+   */
+  private async landAfterOwner(
+    tx: TransactionSql,
+    job: LockedJob,
+    action: Action,
+    evidence: { outcome: 'succeeded'; receipt: Receipt } | { outcome: 'failed'; reason: string },
+    late: boolean,
+  ): Promise<Action> {
+    const owner = (action.reconciliation ?? {}) as Record<string, unknown>;
+    const provider =
+      evidence.outcome === 'succeeded'
+        ? { decision: 'succeeded', source: 'authentic_receipt', late }
+        : { decision: 'failed', reason: evidence.reason, late };
+    const already = (owner.provider_answer ?? {}) as Record<string, unknown>;
+    if (already.decision === provider.decision) return action;
+    const overturned = evidence.outcome === 'succeeded' && action.status === 'failed';
+    const receipt =
+      evidence.outcome === 'succeeded'
+        ? await recordGeneratedArtifact(tx, job, action, { ...evidence.receipt, late })
+        : null;
+    if (overturned) await this.setStatus(tx, action, 'succeeded');
+    await tx`update action set
+      receipt = coalesce(${receipt ? JSON.stringify(receipt) : null}::jsonb, receipt),
+      reconciliation = ${JSON.stringify(
+        overturned
+          ? { ...provider, superseded_owner_answer: owner }
+          : { ...owner, provider_answer: provider },
+      )}::jsonb
+      where id = ${action.id}`;
+    if (receipt && this.options.recordArtifact)
+      await this.options.recordArtifact(tx, { job, action, receipt });
+    if (evidence.outcome !== action.status)
+      await appendEvent(tx, job.id, action.attempt_id, 'notice', {
+        action_id: action.id,
+        phase: 'provider_evidence',
+        outcome: evidence.outcome,
+        owner_answer: action.status,
+        status: overturned ? 'succeeded' : action.status,
+        late,
+      });
+    return loadAction(tx, action.id);
   }
 
   /** Only uncertain dispositions are recovered. This path never invokes execute(). */

@@ -1385,6 +1385,7 @@ export function buildOpenApiDocument() {
             requestBody: json(resolveActionRequest),
             responses: {
               '200': jsonResponse('Resolved', actionResponse),
+              '403': problem('No signed-in person to record the answer for'),
               '404': problem("No such action among the caller's own"),
               '409': problem('Action is not awaiting reconciliation'),
             },

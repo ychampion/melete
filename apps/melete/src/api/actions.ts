@@ -10,7 +10,7 @@ import type { Sql } from 'postgres';
 import { actionFromRow } from '../broker/records.ts';
 import type { BrokerService } from '../broker/service.ts';
 import type { Database } from '../db/client.ts';
-import { visibleJob } from '../principals/authority.ts';
+import { requestPrincipal, visibleJob } from '../principals/authority.ts';
 import { ServiceError } from './errors.ts';
 
 /**
@@ -26,19 +26,20 @@ export function mountActions(app: Hono, db: Database, broker?: BrokerService) {
       const parsed = resolveActionRequest.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success)
         throw new ServiceError('invalid_request', 'Say whether it happened.', 400);
-      // Only the caller's own action: anyone else's reads as not being here at all.
-      const own = visibleJob(query`a.job_id`);
-      const [found] = await db.execute<{ id: string }>(query`select a.id from action a
-        where a.id = ${id} ${own ? query`and ${own}` : query``}`);
-      if (!found) throw new ServiceError('not_found', 'Not found.', 404);
-      const settled = await broker.resolveByOwner(id, parsed.data);
-      if (!settled)
+      // An answer is always someone's: with no signed-in principal there is nobody to record.
+      const principalId = requestPrincipal();
+      if (!principalId) throw new ServiceError('scope_denied', 'Sign in to answer this.', 403);
+      // Only the caller's own action, checked where it is changed: anyone else's
+      // reads as not being here at all.
+      const settled = await broker.resolveByOwner(principalId, id, parsed.data);
+      if (settled.status === 'not_found') throw new ServiceError('not_found', 'Not found.', 404);
+      if (settled.status === 'not_awaiting')
         throw new ServiceError(
           'not_awaiting_reconciliation',
           'This is not waiting for your answer.',
           409,
         );
-      return c.json(actionResponse.parse({ action: settled }));
+      return c.json(actionResponse.parse({ action: settled.action }));
     });
   app.get('/actions', async (c) => {
     const parsed = actionListQuery.safeParse(c.req.query());

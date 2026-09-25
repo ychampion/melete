@@ -10707,6 +10707,16 @@
               }
             }
           },
+          "403": {
+            "description": "No signed-in person to record the answer for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema140"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No such action among the caller's own",
             "content": {

@@ -366,3 +366,194 @@ describe('broker and service share the production contracts', () => {
     expect(rows.map((row) => row.dedup_key)).toEqual([slowKey, fastKey]);
   });
 });
+
+describe('the owner answers for an effect Melete could not confirm', () => {
+  /** A send whose acknowledgement was lost: unknown, its job waiting for reconciliation. */
+  async function unconfirmed() {
+    const s = await setup();
+    await s.handle.sql`insert into owner (id, email)
+      select ${`own_${s.claims.job_id.slice(4)}`}, 'answer@example.test'
+      where not exists (select 1 from owner)`;
+    const [row] = await s.handle.sql`select id from owner limit 1`;
+    const ownerId = String(row?.id);
+    const request = { ...s.request, payload: { ...s.request.payload, drop_ack: true } };
+    const proposal = await s.broker.propose(s.claims, request);
+    await s.broker.decide(proposal.action_id, {
+      decision: 'approved',
+      payload_hash: proposal.payload_hash,
+    });
+    await s.broker.admit(s.claims, proposal.action_id, proposal.payload_hash);
+    const unknown = await s.broker.dispatch(proposal.action_id);
+    expect(unknown.status).toBe('unknown');
+    const [job] = await s.handle.sql`select state from job where id = ${s.claims.job_id}`;
+    expect(job?.state).toBe('needs_reconciliation');
+    const receipt = async () => {
+      const confirmation = await s.connector.verify(unknown, {
+        job_id: s.claims.job_id,
+        space_id: s.claims.space_id,
+        idempotency_key: proposal.action_id,
+        constraints: {
+          deliverable: { kind: 'none' },
+          public_compartment: false,
+          allowed_domains: [],
+        },
+      });
+      if (confirmation.decision !== 'succeeded' || !confirmation.receipt)
+        throw new Error('Test destination did not confirm its one delivery');
+      return confirmation.receipt;
+    };
+    const wakes = async () =>
+      (
+        await s.handle.sql`select data from pgboss.job where data->>'job_id' = ${s.claims.job_id}
+          and data->>'reason' = 'recovery'`
+      ).length;
+    const settled = async () => {
+      const [ledger] = await s.handle.sql`select reserved, settled from budget_ledger
+        where action_id = ${proposal.action_id}`;
+      return ledger;
+    };
+    const notices = async (phase: string) =>
+      (
+        await s.handle.sql`select payload from event where job_id = ${s.claims.job_id}
+          and type = 'notice' and payload->>'phase' = ${phase}
+          and payload->>'action_id' = ${proposal.action_id}`
+      ).map((entry) => entry.payload as Record<string, unknown>);
+    const resolve = async (resolution: 'succeeded' | 'failed' | 'unresolved', actor = ownerId) => {
+      const answered = await s.broker.resolveByOwner(actor, proposal.action_id, {
+        resolution,
+        note: 'Checked the destination.',
+      });
+      if (answered.status !== 'resolved') throw new Error(`Not resolved: ${answered.status}`);
+      return answered.action;
+    };
+    return {
+      ...s,
+      ownerId,
+      actionId: proposal.action_id,
+      receipt,
+      wakes,
+      settled,
+      notices,
+      resolve,
+    };
+  }
+
+  databaseTest('an answer of sent settles it, its budget, and wakes the waiting job', async () => {
+    const s = await unconfirmed();
+    const action = await s.resolve('succeeded');
+    expect(action.status).toBe('succeeded');
+    expect(action.resolved_at).not.toBeNull();
+    expect(action.reconciliation).toMatchObject({
+      decided_by: 'owner',
+      resolution: 'succeeded',
+      late: false,
+    });
+    const ledger = await s.settled();
+    expect(ledger?.settled).toBe(ledger?.reserved);
+    expect(await s.wakes()).toBe(1);
+    expect(await s.notices('owner_resolved')).toEqual([
+      expect.objectContaining({ resolution: 'succeeded', late: false }),
+    ]);
+  });
+
+  databaseTest('an answer of not sent settles it as failed', async () => {
+    const s = await unconfirmed();
+    const action = await s.resolve('failed');
+    expect(action.status).toBe('failed');
+    expect(action.resolved_at).not.toBeNull();
+    const ledger = await s.settled();
+    expect(ledger?.settled).toBe(ledger?.reserved);
+    expect(await s.wakes()).toBe(1);
+  });
+
+  databaseTest('an answer that it cannot be told leaves it open and the job waiting', async () => {
+    const s = await unconfirmed();
+    const action = await s.resolve('unresolved');
+    expect(action.status).toBe('unresolved');
+    expect(action.resolved_at).toBeNull();
+    expect((await s.settled())?.settled).toBeNull();
+    expect(await s.wakes()).toBe(0);
+    // It can still be answered.
+    expect((await s.resolve('succeeded')).status).toBe('succeeded');
+  });
+
+  databaseTest('an answer for an attempt already replaced does not wake the job', async () => {
+    const s = await unconfirmed();
+    await s.handle.sql`update job set lease_epoch = lease_epoch + 1 where id = ${s.claims.job_id}`;
+    const action = await s.resolve('succeeded');
+    expect(action.reconciliation).toMatchObject({ decided_by: 'owner', late: true });
+    expect(await s.wakes()).toBe(0);
+  });
+
+  databaseTest('only the principal the job belongs to can answer', async () => {
+    const s = await unconfirmed();
+    const refused = await s.broker.resolveByOwner('own_01J8ZP3QWABCDEFGHJKMNPQRST', s.actionId, {
+      resolution: 'succeeded',
+    });
+    expect(refused.status).toBe('not_found');
+    const [action] = await s.handle.sql`select status from action where id = ${s.actionId}`;
+    expect(action?.status).toBe('unknown');
+  });
+
+  databaseTest(
+    'a receipt that arrives after the owner said not sent is what happened',
+    async () => {
+      const s = await unconfirmed();
+      await s.resolve('failed');
+      const landed = await s.broker.recordResult(s.actionId, {
+        outcome: 'succeeded',
+        receipt: await s.receipt(),
+      });
+      expect(landed.status).toBe('succeeded');
+      expect(landed.receipt).not.toBeNull();
+      expect(landed.reconciliation).toMatchObject({
+        decision: 'succeeded',
+        source: 'authentic_receipt',
+        superseded_owner_answer: { decided_by: 'owner', resolution: 'failed' },
+      });
+      expect(await s.notices('provider_evidence')).toEqual([
+        expect.objectContaining({
+          outcome: 'succeeded',
+          owner_answer: 'failed',
+          status: 'succeeded',
+        }),
+      ]);
+      // The same evidence again changes nothing and tells nobody twice.
+      await s.broker.recordResult(s.actionId, { outcome: 'succeeded', receipt: await s.receipt() });
+      expect(await s.notices('provider_evidence')).toHaveLength(1);
+    },
+  );
+
+  databaseTest('verification that finds it sent overrides the owner too', async () => {
+    const s = await unconfirmed();
+    await s.resolve('failed');
+    const verified = await s.broker.verify(s.actionId);
+    expect(verified.status).toBe('succeeded');
+    expect(verified.reconciliation).toMatchObject({
+      superseded_owner_answer: { resolution: 'failed' },
+    });
+  });
+
+  databaseTest('a provider failure after the owner said sent is recorded beside it', async () => {
+    const s = await unconfirmed();
+    await s.resolve('succeeded');
+    const landed = await s.broker.recordResult(s.actionId, {
+      outcome: 'failed',
+      reason: 'The destination bounced it.',
+      retryable: false,
+    });
+    expect(landed.status).toBe('succeeded');
+    expect(landed.reconciliation).toMatchObject({
+      decided_by: 'owner',
+      resolution: 'succeeded',
+      provider_answer: { decision: 'failed', reason: 'The destination bounced it.' },
+    });
+    expect(await s.notices('provider_evidence')).toEqual([
+      expect.objectContaining({
+        outcome: 'failed',
+        owner_answer: 'succeeded',
+        status: 'succeeded',
+      }),
+    ]);
+  });
+});
