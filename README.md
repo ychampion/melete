@@ -173,7 +173,7 @@ can use it.
 - Sign in with your ChatGPT account, or use Anthropic, OpenAI, Google, Fireworks or a local model behind an OpenAI-compatible endpoint.
 - Share a space with your household or a small team, while each person's jobs and messages stay private to them.
 - Add tools over MCP from a URL or a package, and a packaged server runs in its own container.
-- Teach it by correcting it, and it keeps each lesson as a skill you can list, pause or remove at `/learned`.
+- Teach it by correcting it, and it does it your way next time.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - See a receipt for each action and undo what can be undone. Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 
@@ -181,6 +181,7 @@ can use it.
 
 - Hosted Melete and our website, so you can try it in your browser.
 - One approval that covers a whole chase, follow-ups included.
+- A place to see, pause or remove what it has learned from you.
 - A terminal in your cloud sandbox.
 - Daytona as a sandbox, alongside E2B and Modal.
 
