@@ -1,6 +1,6 @@
 # Learning loop: scoped procedures from observable corrections
 
-The lane introduces episodes, procedure candidates, evaluation records, and one promotion gate. Facts and permission decisions remain in memory and authority. Learning scope is optional admission metadata and does not authorize an operation.
+This change introduces episodes, procedure candidates, evaluation records, and one promotion gate. Facts and permission decisions remain in memory and authority. Learning scope is optional admission metadata and does not authorize an operation.
 
 An owner intervention is an idempotent episode segment. Running work is fenced and resumed through the existing job state machine. Completion fills that segment with observable artifact/receipt evidence and exact requested model/runtime/tool/skill versions. Actual model identifiers remain nullable when the runtime does not report them. Deletion, expiry, and memory restriction replay remove private episode material and dependent procedures.
 
@@ -10,7 +10,7 @@ Episode inputs union admission handles with claim/source versions from the job's
 
 A terminal job correction creates an idempotently linked corrective job instead of reopening a terminal state. It retains objective, scope, input handles, and completion requirements but has a zero-action budget. The original intervention episode collects both jobs' evidence when the correction completes. This prevents implicit effect replay and makes the completed-job three-act scenario executable without altering the shared state machine.
 
-The proposer gets one bounded call through the existing model gateway, using a separate learning ledger because a completed job's attempt token is no longer usable. Only a finite correction category and audited step vocabulary enter the model request. A strict schema permits `skill_body` and three fixed step identifiers; compiled bodies have no free-form private material, paths, or code. Their hash binds scope, compatible models, change, and tests as well as text. Other candidate target kinds are not implemented by this lane.
+The proposer gets one bounded call through the existing model gateway, using a separate learning ledger because a completed job's attempt token is no longer usable. Only a finite correction category and audited step vocabulary enter the model request. A strict schema permits `skill_body` and three fixed step identifiers; compiled bodies have no free-form private material, paths, or code. Their hash binds scope, compatible models, change, and tests as well as text. `skill_body` is the one candidate target kind produced here.
 
 Hermes uses the existing `api_server: [melete]` configuration to disable built-in toolsets. The plugin's `learning.propose` path can refer only an existing owner intervention associated with its currently authorized job. It accepts neither a skill body nor a destination. There is no upstream engine patch or live skill installation. The existing broker authorizer and operation identity implementation are unchanged.
 
@@ -26,8 +26,8 @@ The gate runs in a separate Node permission process with only its compiled modul
 
 The service keeps rejected candidates as qualified history. Every lifecycle transition records actor and reason. Canary and active delivery require the exact origin space, task scope, model/runtime compatibility, live source evidence, unchanged definition hash, and selected final evidence. One procedure is delivered, below the three-skill cap. Activation requires a completed canary without an intervention and supersedes older compatible procedures in that scope. Rollback is idempotent and stops subsequent delivery; it does not interrupt an already running attempt holding the general body.
 
-Additive shared contracts were authorized by the orchestration update. `packages/contracts/src/learning.ts`, the optional `createJobRequest.learning` field, twelve OpenAPI paths, and generated client schemas are documented in `proposed/2026-09-12-w11-contract-additions.md`. No shared job state or capability meaning changes.
+The shared contract changes are additive: `packages/contracts/src/learning.ts`, the optional `createJobRequest.learning` field, twelve OpenAPI paths, and the generated client schemas. No shared job state or capability meaning changes.
 
 W12's in-flight `repair_candidate` remains separate from `procedure_candidate`. Their state machine and evaluation metadata can be unified during integration while preserving their distinct typed payloads. The evaluator should gain explicit, independently reviewed fixture suites before new target types or task families are enabled.
 
-Verification commands and measured results belong to the append-only root `REPORT.md`. User-facing behavior and API operations are in `docs/LEARNING.md`. All lane verification uses scripted providers; no claim of real-model generalization follows from those tests. Compose isolation is checked statically on Windows because this environment has no Docker.
+Verification commands and measured results belong to the append-only root `REPORT.md`. User-facing behavior and API operations are in `docs/LEARNING.md`. All verification here uses scripted providers; no claim of real-model generalization follows from those tests. Compose isolation is checked statically on Windows because this environment has no Docker.

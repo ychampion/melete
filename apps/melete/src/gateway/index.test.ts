@@ -445,7 +445,7 @@ describe('model gateway effect boundary', () => {
     expect(budget.reservations).toHaveLength(0);
   });
 
-  test('Astra requires Responses and Anthropic drops sampling controls without rewriting history', async () => {
+  test('gpt-6-astra requires Responses and Anthropic drops sampling controls without rewriting history', async () => {
     const seen: Record<string, unknown>[] = [];
     const { post } = await start({
       fetch: async (request) => {

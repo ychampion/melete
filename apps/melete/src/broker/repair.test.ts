@@ -78,7 +78,7 @@ test('revocation during reconnect prevents the next execution', async () => {
   ]);
 });
 
-/** The eleven reference cases, plus the two the lane brief adds. */
+/** The eleven reference cases, plus two more. */
 const CASES = {
   healthy: 'completed',
   transient_before_dispatch: 'completed',

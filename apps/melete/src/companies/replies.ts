@@ -21,7 +21,7 @@
  *    message went out. Everything else in the mailbox is somebody else's business.
  *
  * It finds its work from the job rather than from the ledger tables, which
- * another lane owns: a job holding a `mail.new` trigger, with a message already
+ * another module owns: a job holding a `mail.new` trigger, with a message already
  * sent, is exactly a ledger item being handled. `candidatesFrom` is a plain
  * function over rows so the integrator can swap in a ledger-scoped query without
  * touching anything else here.

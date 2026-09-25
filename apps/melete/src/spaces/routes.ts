@@ -133,8 +133,8 @@ async function previewCounts(sql: Sql, spaceId: string) {
     connections: Number(row?.connections ?? 0),
     companies: Number(row?.companies ?? 0),
     ledger_items: Number(row?.ledger_items ?? 0),
-    // Both live on lanes that have not landed. Counted when their table is
-    // there, and honestly zero when it is not.
+    // Each is counted only when its table is present, and is zero on a
+    // database migrated before that table existed.
     signed_in_sites: await countIfPresent(sql, 'browser_site_profile', spaceId),
     sandboxes: await countIfPresent(sql, 'sandbox_session', spaceId),
   };

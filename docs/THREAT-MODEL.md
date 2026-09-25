@@ -86,7 +86,7 @@ conversation end to end and records actual model and usage` checks recording
 of the response's reported model; the recorded model is the one the provider
 reports.
 
-`Astra requires Responses and Anthropic drops sampling controls without
+`gpt-6-astra requires Responses and Anthropic drops sampling controls without
 rewriting history` tests request handling against a fake transport; the
 supported providers are listed in [DEPLOYMENT](DEPLOYMENT.md#providers).
 Conformance 8 runs against the Linux stack with the scripted provider: a cell

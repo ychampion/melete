@@ -1,8 +1,8 @@
 /**
  * The seam between finding something and doing something about it.
  *
- * Finding items and serving them is one lane's work; writing to a company is
- * another's. The route lives with the first and the message lives with the
+ * Finding items and serving them is one concern; writing to a company is
+ * another. The route lives with the first and the message lives with the
  * second, so the route asks for the work through this interface instead of
  * reaching into it. A reviewer checking that the map itself cannot send has
  * this one file to read: the map calls `handleLedgerItem`, `handleLedgerItem`

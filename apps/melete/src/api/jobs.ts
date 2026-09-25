@@ -34,7 +34,7 @@ export function mountJobs(app: Hono, jobs?: JobService, submissions?: Submission
   app.get('/jobs/:id', async (c) =>
     c.json({ job: jobView(await service().get(c.req.param('id'))) }),
   );
-  // /messages is the frozen API spelling; /input is the lane brief's alias.
+  // /messages is the frozen API spelling; /input is an accepted alias.
   for (const path of ['/jobs/:id/input', '/jobs/:id/messages']) {
     app.post(path, async (c) => {
       const result = await admissions().input(

@@ -46,10 +46,10 @@ newest removal journal, and checks a parked job through one destination effect.
 
 ## Evidence
 
-The campaign used `lane/w6-deploy` from integration revision
+The campaign used integration revision
 `9484023cabd32b786cb4d336dec818f441cd0cc1`. Initial free space was
 14,112,153,600 bytes. The first host ran Linux 6.8.0-138-generic, Docker 29.1.3,
-Compose 2.40.3 and Bun 1.3.13. Only this lane's identified build cache and
+Compose 2.40.3 and Bun 1.3.13. Only the campaign's identified build cache and
 explicitly owned fixtures were eligible for cleanup.
 
 ### Images

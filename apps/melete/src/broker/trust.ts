@@ -8,7 +8,7 @@
  * costs, asks a resolver where each of them came from, and turns anything that
  * is not the owner or a verified connector into a warning in plain words.
  *
- * The resolver is injected. The memory lane owns the real one; what ships here
+ * The resolver is injected. The memory core owns the real one; what ships here
  * is a stub that answers from a table and defaults to `unknown`, because not
  * knowing is the answer that must behave like the dangerous one.
  */
@@ -155,7 +155,7 @@ export type TrustResolutionInput = {
 };
 
 /**
- * Where each value came from. The memory lane implements this against its own
+ * Where each value came from. The memory core implements this against its own
  * records; the broker only ever asks, and treats silence as `unknown`.
  */
 export interface TrustResolver {

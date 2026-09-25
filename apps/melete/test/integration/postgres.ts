@@ -13,7 +13,7 @@ export async function createTestDatabase(
   databaseUrl = process.env.DATABASE_URL,
   _options: { port?: number } = {},
 ) {
-  // The shared throwaway server allocates a loopback port, avoiding other lanes' fixtures.
+  // The shared throwaway server allocates a loopback port, avoiding other test runs' fixtures.
   const shared = databaseUrl ? null : await acquireTestServer();
   const baseUrl = databaseUrl ?? shared?.url;
   if (!baseUrl) return null;

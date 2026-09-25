@@ -1,5 +1,5 @@
 /**
- * The seam the two lanes met at, over the real route.
+ * The join between the companies route and its handler, over the real route.
  *
  * `companies-surface.test.ts` proves the route's scoping with a handler that
  * only records what it was asked. `companies-handle.test.ts` proves the handler

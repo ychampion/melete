@@ -13,7 +13,7 @@ Named tests in `index.test.ts` cover:
 | Fake HTTP/SSE conversation and reported usage | `streams the fake tool conversation end to end and records actual model and usage` |
 | Reserve before forwarding | `reserves before injecting credentials and strips capability and caller headers` |
 | Epoch and concurrent budget checks | `stale epoch and concurrent budget exhaustion stop requests before transport` |
-| Provider request handling | `Astra requires Responses and Anthropic drops sampling controls without rewriting history` |
+| Provider request handling | `gpt-6-astra requires Responses and Anthropic drops sampling controls without rewriting history` |
 | Metered local TLS CONNECT | `allowed TLS CONNECT injects a key, meters each inner request, and rejects a different Host` |
 | Incomplete usage | `a truncated SSE stream stays unknown and keeps the reservation charged` |
 | Response redaction | `redacts a known key even if split between chunks` |

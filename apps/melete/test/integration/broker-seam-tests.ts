@@ -1,5 +1,5 @@
 /**
- * The seam between the two lanes, end to end and with nothing stubbed.
+ * The seam between the broker and memory, end to end and with nothing stubbed.
  *
  * Everywhere else the broker's admission rule is tested against a table that
  * says what an address is. Here memory is the one answering: an address is read
@@ -7,8 +7,8 @@
  * declared by the job as something it used. The broker then proposes a send to
  * that address and is refused, having asked memory rather than a fixture.
  *
- * If this passes and the table-driven tests pass, the interface both lanes
- * wrote against is the same interface.
+ * If this passes and the table-driven tests pass, the interface both sides
+ * were written against is the same interface.
  */
 import { describe, expect, test } from 'bun:test';
 import { PgBoss } from 'pg-boss';

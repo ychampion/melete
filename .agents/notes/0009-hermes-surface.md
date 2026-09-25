@@ -16,7 +16,7 @@ virtualenv at `.hermes-venv/`; both are gitignored and neither is vendored.
 
 The tripwire does not fire. Built-in toolsets can be disabled, every route
 Melete needs exists, and the thin scaffolding measures **3,304 tokens**, under
-the 4,000 budget. The lane continues on Hermes.
+the 4,000 budget. Work continues on Hermes.
 
 ## The plugin surface
 
@@ -254,7 +254,7 @@ That matters for how the identity is delivered. `ephemeral_system_prompt` is
 **appended** into the context tier (`agent/system_prompt.py:638`), not
 substituted for the preamble. Melete's identity is additive, and a run always
 carries roughly 2,700 tokens of Hermes voice underneath it. Inside the 4,000
-budget, so the lane proceeds, but it is the honest reason the scaffolding cannot
+budget, so the work proceeds, but it is the honest reason the scaffolding cannot
 go much below 3,000 on this engine, and it is the first thing a native loop
 would recover.
 

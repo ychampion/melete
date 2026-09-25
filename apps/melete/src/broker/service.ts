@@ -107,9 +107,8 @@ export type BrokerOptions = {
     input: { job: LockedJob; action: Action; receipt: Receipt },
   ) => Promise<void>;
   /**
-   * Where the values in a payload came from. The memory lane supplies the real
-   * resolver; without one the broker asks nobody and warns about nothing, which
-   * is what v0.1 ships until that lane lands.
+   * Where the values in a payload came from. Start-up passes the memory core's
+   * resolver; without one the broker asks nobody and warns about nothing.
    */
   resolveTrust?: TrustResolver;
   /**
@@ -993,7 +992,7 @@ export class BrokerService implements BrokerOperations {
   }
 
   private async checkAuthority(tx: Query, job: LockedJob, action: Action): Promise<string | null> {
-    // The experience lane's agent binding: a paused conversation, a persona
+    // The agent binding: a paused conversation, a persona
     // whose allowed connections exclude this one, a missing persona, or a chat
     // turn without an agent sends nothing; a chat never sends directly.
     const access = await agentAccess(tx, job.id);

@@ -1,7 +1,7 @@
 /**
  * The seam where the scan meets a real mailbox.
  *
- * This is the part of the lane that has no live inbox to prove itself against,
+ * This is the part of the company map that has no live inbox to prove itself against,
  * so it is proved against a real `EmailConnector` holding a transport double.
  * Everything between the scan and the transport is the shipping code: the
  * connector, its sealed-credential wrapper, its action context check and its
