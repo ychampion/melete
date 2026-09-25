@@ -5,8 +5,7 @@ Date: 2026-09-12
 
 ## Evidence and scope
 
-Melete revision `9484023cabd32b786cb4d336dec818f441cd0cc1` was inspected in
-`lane/w14-capabilities`. A fresh `.hermes-src` checkout of `v2026.9.7` resolves to
+Melete revision `9484023cabd32b786cb4d336dec818f441cd0cc1` was inspected. A fresh `.hermes-src` checkout of `v2026.9.7` resolves to
 `2237be355906fbe6065ce1815711eee52b2d646e`. Every upstream `file:line` below refers
 to that commit, not current upstream HEAD. Source inspection establishes an
 offered interface; only an executed Melete test establishes a Melete capability.
@@ -111,7 +110,7 @@ cannot capture compaction on `/v1/runs`.
 **Decision: needs a narrow patch** exposing a genuine compaction observer on
 the HTTP/plugin path, or an explicitly reviewed adapter for the existing
 context-engine boundary. Do not monkeypatch the agent or infer compaction from
-text. The upstream source is unmodified in this lane.
+text. The upstream source is unmodified.
 
 ### Failure isolation and durability
 
@@ -263,8 +262,8 @@ treat upstream provider availability as a delivered Melete memory feature.
 
 ## W14 implementation after the additive-contract authorization
 
-The base-revision gaps above are historical audit findings. The resumed brief
-permits additive contracts and supersedes the original freeze stop. W14 adds
+The base-revision gaps above are historical audit findings. Additive contracts
+were then permitted, superseding the original contract freeze. W14 adds
 typed `hook_event` and `hook_error`, plugin observers, the hash-checked HTTP and
 compaction patch, and adapter deduplication into the durable event stream.
 Enforcement stays in the broker. Recorded-stream and observer tests pass; the
@@ -324,8 +323,7 @@ The single strict test is `real Hermes capability chain: discovery, hooks,
 learning, teammate context and revocation` in `capability-proof.test.ts`.
 Each stage records its own evidence; the test fails for any failed stage or
 missing implementation. The earlier release-gate strict run passed all five stages with
-85 assertions in 208.62 seconds, no failures and no missing entries. Evidence is
-`%TEMP%/melete-w14-capability-JAbcAJ/capability-evidence.json`, SHA-256
+85 assertions in 208.62 seconds, no failures and no missing entries. The evidence file's SHA-256 is
 `899c68b5b6470201ea378e0c2e70306255c499e160a9a317634dfb1aa3e7fa31`.
 
 | Capability | Status | Current evidence and limit |
@@ -407,14 +405,12 @@ route. The proof and jobs/broker source remain unchanged.
 The first unchanged real-engine rerun failed after 67 assertions in 303.09
 seconds. Its sealed evaluation records one `budget_exhausted` candidate attempt,
 with no model result, after the existing 15-second wall-time budget. Another
-lane held the shared test lock during that run. Evidence is retained at
-`%TEMP%/melete-w14-capability-wHcsDT/capability-evidence.json`; no proof assertion,
+test run was using the shared test database at the same time. No proof assertion,
 fixture, model output or attempt budget was changed.
 
 The unchanged proof was then rerun while holding the serialized test guard. It passes
 all 85 assertions in 284.91 seconds, with every stage passed and empty failure
-and missing lists. Evidence is
-`%TEMP%/melete-w14-capability-trNDDu/capability-evidence.json`, SHA-256
+and missing lists. The evidence file's SHA-256 is
 `899e178f4d13e40ff0269176c3e2f5a600de65a6269fe9e6b6596a546c23ca5c`.
 The proof source remains SHA-256
 `50f3ae8adf5b7b5c26dea07dc335a09128853f5481af6f7026bf39eb96b7ba99`.
@@ -424,8 +420,7 @@ under the owned serialized test guard. It completed in 303.62 seconds with 1,560
 29 skips, one failure and 7,318 assertions across 152 files (exit 1). Both new
 review regressions passed in that run. The ownership marker and lock directory
 were removed, and inspection found no tracked test processes still running.
-The result and stdout/stderr logs remain under
-`%TEMP%/melete-w14-pr27-full-20260912.*`; its raw line counters include Bun's
+The raw line counters in its logs include Bun's
 repeated failure/skip summary, while the counts above use Bun's final summary.
 
 The sole failure was `wired-assistant.test.ts:130`: the fixture changed the
