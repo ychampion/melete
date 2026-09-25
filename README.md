@@ -83,10 +83,9 @@ installs Bun. Configure it for my model provider with the key I give you,
 exporting the key before running configure.ts as the Providers section of
 docs/DEPLOYMENT.md shows, so the key is never printed. Melete listens only on
 the VM's own loopback address, so keep ports 3100 and 3101 closed to the
-internet. When it's running, give me the
-SSH tunnel command from docs/DEPLOYMENT.md so I can open http://localhost:3101,
-and summarise what that file says about HTTPS and Tailscale for reaching it from
-my phone.
+internet. When it's running, give me the SSH tunnel command from
+docs/DEPLOYMENT.md so I can open http://localhost:3101, and summarise what that
+file says about HTTPS and Tailscale for reaching it from my phone.
 ```
 
 To run it on this computer:
@@ -163,9 +162,10 @@ server runs in its own locked-down container. There is also a starter set of
 files, fetch, time and GitHub, listed at `GET /plugins`, and each one installs
 with a single request.
 
-Melete can also run code in a cloud sandbox. Connect an [E2B](https://e2b.dev)
-or [Modal](https://modal.com) account as a **Sandbox** connection, and the
-agent's terminal runs there, with a receipt for each command.
+Melete can also run code in a cloud sandbox. Connect an [E2B](https://e2b.dev),
+[Modal](https://modal.com) or [Daytona](https://www.daytona.io) account as a
+**Sandbox** connection, and the agent's terminal runs there, with a receipt for
+each command.
 
 ## Security
 
@@ -181,7 +181,7 @@ agent's terminal runs there, with a receipt for each command.
 - Sign in with your ChatGPT account, or use Anthropic, OpenAI, Google, Fireworks or a local model behind an OpenAI-compatible endpoint.
 - Share a space with your household or a small team, while each person's jobs and messages stay private to them.
 - Add tools over MCP from a URL or a package, and a packaged server runs in its own container.
-- Teach it by correcting it, and it does it your way next time.
+- Teach it by correcting it, then see, pause or remove what it learned in **Settings → What I've learned**.
 - Start your day with a short brief of your calendar, your tasks and the decisions waiting on you.
 - See a receipt for each action and undo what can be undone. Correct or forget anything it remembers, and a forgotten fact stays gone after a restore.
 
@@ -189,8 +189,6 @@ agent's terminal runs there, with a receipt for each command.
 
 - Hosted Melete and our website, so you can try it in your browser.
 - One approval that covers a whole chase, follow-ups included.
-- A place to see, pause or remove what it has learned from you.
-- Daytona as a sandbox, alongside E2B and Modal.
 
 ## Documentation
 
