@@ -29,7 +29,6 @@
         "imapflow": "2.0.2",
         "libsodium-wrappers": "0.8.4",
         "mailparser": "3.9.24",
-        "modal": "0.10.1",
         "nodemailer": "10.0.3",
         "pg-boss": "12.31.0",
         "playwright": "1.63.0",
@@ -45,6 +44,9 @@
         "@types/nodemailer": "8.0.1",
         "drizzle-kit": "0.31.10",
         "embedded-postgres": "17.10.0-beta.17",
+      },
+      "optionalDependencies": {
+        "modal": "0.10.1",
       },
     },
     "apps/mock-api": {
