@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { loadEnv } from '../env.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import { FIXTURE_REFERENCE, fixtureMessages } from './fixtures.ts';
 import { DEFAULT_EXTRACTION_MODEL } from './gateway.ts';
@@ -15,6 +16,7 @@ import { fixtureMailbox } from './mailbox.ts';
 import { MemoryCompanyStore, type Owner } from './repository.ts';
 import { runScan } from './scan.ts';
 import {
+  companiesExtraction,
   configuredDailyCalls,
   DEFAULT_DAILY_SCAN_CALLS,
   gatewayExtractor,
@@ -150,7 +152,7 @@ describe('the daily allowance setting', () => {
     try {
       assign('MELETE_COMPANIES_MODEL', settings.model);
       assign('MELETE_COMPANIES_DAILY_CALLS', settings.calls);
-      return configuredDailyCalls();
+      return configuredDailyCalls(loadEnv({}));
     } finally {
       assign('MELETE_COMPANIES_MODEL', saved.model);
       assign('MELETE_COMPANIES_DAILY_CALLS', saved.calls);
@@ -170,5 +172,50 @@ describe('the daily allowance setting', () => {
 
   test('a scripted scan spends nothing and has no allowance', () => {
     expect(read({ model: undefined, calls: '25' })).toBeUndefined();
+  });
+});
+
+describe('which extractor a scan runs', () => {
+  const none = {};
+  test('a real provider with its key reads mail with the model the installation serves', () => {
+    const env = loadEnv({
+      MELETE_DEFAULT_PROVIDER: 'anthropic',
+      MELETE_DEFAULT_MODEL: 'claude-sonnet-5',
+      ANTHROPIC_API_KEY: 'a-key',
+    });
+    expect(companiesExtraction(env, none)).toEqual({
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+    });
+    expect(configuredDailyCalls(env)).toBe(DEFAULT_DAILY_SCAN_CALLS);
+  });
+
+  test('the demonstration, and a provider without its key, stay scripted', () => {
+    expect(
+      companiesExtraction(
+        loadEnv({
+          MELETE_DEFAULT_PROVIDER: 'fake',
+          MELETE_ENABLE_FAKE_PROVIDER: 'true',
+          ANTHROPIC_API_KEY: 'a-key',
+        }),
+        none,
+      ),
+    ).toBeNull();
+    expect(companiesExtraction(loadEnv({ MELETE_DEFAULT_PROVIDER: 'anthropic' }), none)).toBeNull();
+    expect(companiesExtraction(loadEnv({ ANTHROPIC_API_KEY: 'a-key' }), none)).toBeNull();
+  });
+
+  test('a named model still wins, and default is the measured extraction model', () => {
+    const env = loadEnv({ MELETE_DEFAULT_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: 'a-key' });
+    expect(companiesExtraction(env, { MELETE_COMPANIES_MODEL: 'default' })).toEqual({
+      provider: 'anthropic',
+      model: DEFAULT_EXTRACTION_MODEL,
+    });
+    expect(
+      companiesExtraction(env, {
+        MELETE_COMPANIES_MODEL: 'gpt-6',
+        MELETE_COMPANIES_PROVIDER: 'openai',
+      }),
+    ).toEqual({ provider: 'openai', model: 'gpt-6' });
   });
 });

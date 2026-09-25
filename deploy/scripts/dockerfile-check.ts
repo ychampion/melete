@@ -107,3 +107,42 @@ export function checkDockerfileWorkspaces(root: string): CheckResult[] {
     };
   });
 }
+
+/** Apps that exist for development, a demonstration or their own image, never the service's. */
+export const DEVELOPMENT_APPS = ['apps/mock-api', 'apps/tryit', 'apps/web'] as const;
+
+/**
+ * Sources of a development app the service image copies beyond its manifest.
+ * A manifest is needed for the frozen install; anything else would put mock or
+ * demonstration code into the production image, and so does copying `apps/`
+ * or the whole context.
+ */
+export function developmentSourcesCopied(text: string): string[] {
+  const found = new Set<string>();
+  for (const instruction of instructions(text)) {
+    const [keyword = '', ...rest] = instruction.split(/\s+/);
+    if (!['COPY', 'ADD'].includes(keyword.toUpperCase())) continue;
+    if (rest.some((argument) => argument.startsWith('--from='))) continue;
+    for (const source of rest.filter((argument) => !argument.startsWith('--')).slice(0, -1)) {
+      const path = normalize(source);
+      if (path === '.' || path === 'apps') found.add(path);
+      for (const app of DEVELOPMENT_APPS)
+        if ((path === app || path.startsWith(`${app}/`)) && path !== `${app}/package.json`)
+          found.add(path);
+    }
+  }
+  return [...found].sort();
+}
+
+export function checkServiceImageSources(root: string): CheckResult[] {
+  const copied = developmentSourcesCopied(
+    readFileSync(join(root, 'deploy/Dockerfile.melete'), 'utf8'),
+  );
+  return [
+    {
+      name: 'the service image copies no development app',
+      ok: copied.length === 0,
+      detail: `deploy/Dockerfile.melete copies ${copied.join(', ')}; copy apps/melete alone`,
+    },
+  ];
+}

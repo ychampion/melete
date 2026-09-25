@@ -43,7 +43,9 @@ RUN bun install --frozen-lockfile --production
 
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/ packages/
-COPY apps/ apps/
+# The service and nothing beside it: the mock API, the try-it page and the web
+# client's sources are for development and their own images.
+COPY apps/melete/ apps/melete/
 COPY deploy/scripts/memory-restore-proof.ts deploy/scripts/memory-restore-proof.ts
 COPY conformance/ conformance/
 

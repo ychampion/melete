@@ -6,6 +6,7 @@ import {
   createdMessage,
   dockerSocketGroup,
   failureReport,
+  providerSettings,
 } from './configure.ts';
 import { DEFAULT_NODE_NAME } from './tailscale-origin.ts';
 
@@ -31,6 +32,104 @@ describe('the configuration generator options', () => {
       [['--tailscale', '--tailscale-host', 'desk'], '--tailscale-host'],
     ] as const)
       expect(() => configureOptions(args)).toThrow(`Unknown option ${unknown}.`);
+  });
+});
+
+describe('the provider the configuration is written for', () => {
+  const example = {
+    MELETE_DEFAULT_PROVIDER: 'fireworks',
+    MELETE_DEFAULT_MODEL: 'accounts/fireworks/models/deepseek-v4p1-flash',
+  };
+
+  test('--provider and --model are read, and --fake takes neither', () => {
+    expect(configureOptions(['--provider', 'anthropic', '--model', 'claude-sonnet-5'])).toEqual({
+      fake: false,
+      nodeName: null,
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+    });
+    expect(() => configureOptions(['--provider'])).toThrow('--provider needs a value');
+    expect(() => configureOptions(['--provider', 'ollama'])).toThrow('not a provider');
+    expect(() => configureOptions(['--fake', '--provider', 'anthropic'])).toThrow(
+      '--fake runs the scripted demonstration provider',
+    );
+  });
+
+  test('the default is production: the example provider, with its key from the environment', () => {
+    expect(
+      providerSettings({ fake: false }, example, { FIREWORKS_API_KEY: ' fw-secret ' }),
+    ).toEqual({
+      MELETE_DEFAULT_PROVIDER: 'fireworks',
+      MELETE_DEFAULT_MODEL: 'accounts/fireworks/models/deepseek-v4p1-flash',
+      MELETE_ENABLE_FAKE_PROVIDER: 'false',
+      MELETE_ENABLE_TEST_CONNECTOR: 'false',
+      FIREWORKS_API_KEY: 'fw-secret',
+    });
+  });
+
+  test('a production run without its key is refused, naming the variable to set', () => {
+    expect(() => providerSettings({ fake: false }, example, {})).toThrow(ConfigureRefusal);
+    expect(() => providerSettings({ fake: false }, example, {})).toThrow(
+      'Set FIREWORKS_API_KEY in this command',
+    );
+    expect(() =>
+      providerSettings({ fake: false, provider: 'anthropic', model: 'claude' }, example, {
+        FIREWORKS_API_KEY: 'fw-secret',
+      }),
+    ).toThrow('Set ANTHROPIC_API_KEY');
+    expect(() =>
+      providerSettings({ fake: false, provider: 'anthropic' }, example, { ANTHROPIC_API_KEY: 'a' }),
+    ).toThrow('Name the model with --model');
+  });
+
+  test('a key with a space or a line break is refused, naming only its variable', () => {
+    const lineBreak = String.fromCharCode(10);
+    const tab = String.fromCharCode(9);
+    for (const key of [
+      'fw-secret part',
+      `fw-secret${lineBreak}MELETE_ENABLE_TEST_CONNECTOR=true`,
+      `fw${tab}secret`,
+    ]) {
+      const refusal = (() => {
+        try {
+          providerSettings({ fake: false }, example, { FIREWORKS_API_KEY: key });
+          return null;
+        } catch (error) {
+          return error;
+        }
+      })();
+      expect(refusal).toBeInstanceOf(ConfigureRefusal);
+      expect((refusal as Error).message).toContain(
+        'FIREWORKS_API_KEY contains a space or a line break',
+      );
+      expect((refusal as Error).message).not.toContain('secret');
+    }
+  });
+
+  test('only the demonstration turns on the scripted provider and the test connector', () => {
+    expect(providerSettings({ fake: true }, example, {})).toMatchObject({
+      MELETE_DEFAULT_PROVIDER: 'fake',
+      MELETE_ENABLE_FAKE_PROVIDER: 'true',
+      MELETE_ENABLE_TEST_CONNECTOR: 'true',
+    });
+  });
+
+  test('a sign-in provider needs no key, and an OpenAI-compatible one needs its address', () => {
+    expect(
+      providerSettings({ fake: false, provider: 'chatgpt', model: 'gpt-6' }, example, {}),
+    ).toMatchObject({ MELETE_DEFAULT_PROVIDER: 'chatgpt', MELETE_ENABLE_FAKE_PROVIDER: 'false' });
+    expect(() =>
+      providerSettings({ fake: false, provider: 'openai-compatible', model: 'm' }, example, {}),
+    ).toThrow('Set OPENAI_COMPAT_BASE_URL');
+    expect(
+      providerSettings({ fake: false, provider: 'openai-compatible', model: 'm' }, example, {
+        OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+        OPENAI_COMPAT_API_KEY: 'local',
+      }),
+    ).toMatchObject({
+      OPENAI_COMPAT_BASE_URL: 'http://192.168.1.20:11434/v1',
+      OPENAI_COMPAT_API_KEY: 'local',
+    });
   });
 });
 

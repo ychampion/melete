@@ -3,10 +3,11 @@
  * has: the database it runs on, the connector registry it built at start-up,
  * and the environment that decides whether a real model is available.
  *
- * The extractor is chosen here and nowhere else. Without a configured model and
- * a provider key the scan uses the scripted extractor, which needs no network
- * and returns the same map twice; with them it uses the gateway, which holds the
- * key. Both answer the same interface, so nothing downstream knows which ran.
+ * The extractor is chosen here and nowhere else. A production installation,
+ * whose provider is real and has its key, extracts with the model it serves;
+ * the demonstration and an installation without a key use the scripted
+ * extractor, which needs no network and returns the same map twice. Both answer
+ * the same interface, so nothing downstream knows which ran.
  */
 
 import { isTerminal, jobState } from '@melete/contracts';
@@ -18,6 +19,7 @@ import { job } from '../db/schema.ts';
 import type { Env } from '../env.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
+import { providerKeyVariables } from '../gateway/providers.ts';
 import type { GatewayProvider } from '../gateway/types.ts';
 import type { JobService } from '../jobs/service.ts';
 import type { TriggerService } from '../jobs/triggers.ts';
@@ -75,11 +77,39 @@ export function gatewayExtractor(options: {
 export const DEFAULT_DAILY_SCAN_CALLS = 500;
 
 /**
+ * The model a scan extracts with, or null for the scripted extractor.
+ *
+ * `MELETE_COMPANIES_MODEL` names one outright (`default` is the extraction
+ * model this release was measured with). Left unset, a real provider with its
+ * key extracts with the model the installation serves, so a production map is
+ * read by a model without a setting nobody knew to make. The demonstration,
+ * and a provider still without a key, stay scripted. The daily allowance below
+ * bounds what either model path spends.
+ */
+export function companiesExtraction(
+  env: Env,
+  environment: Record<string, string | undefined> = process.env,
+): { provider: string; model: string } | null {
+  const named = environment.MELETE_COMPANIES_MODEL?.trim();
+  if (named)
+    return {
+      provider: environment.MELETE_COMPANIES_PROVIDER?.trim() || env.MELETE_DEFAULT_PROVIDER,
+      model: named === 'default' ? DEFAULT_EXTRACTION_MODEL : named,
+    };
+  if (env.MELETE_DEFAULT_PROVIDER === 'fake') return null;
+  const settings = env as unknown as Record<string, string | undefined>;
+  const keyed = providerKeyVariables(env.MELETE_DEFAULT_PROVIDER, env.OPENAI_COMPAT_BASE_URL).some(
+    (name) => Boolean(settings[name]?.trim()),
+  );
+  return keyed ? { provider: env.MELETE_DEFAULT_PROVIDER, model: env.MELETE_DEFAULT_MODEL } : null;
+}
+
+/**
  * The daily allowance of model calls per person, when a live model runs.
  * `MELETE_COMPANIES_DAILY_CALLS` sets it; a scripted scan spends nothing and has none.
  */
-export function configuredDailyCalls(): number | undefined {
-  if (!process.env.MELETE_COMPANIES_MODEL?.trim()) return undefined;
+export function configuredDailyCalls(env: Env): number | undefined {
+  if (!companiesExtraction(env)) return undefined;
   // An empty value is an unset one: `Number('')` is 0, which would stop every scan.
   const written = process.env.MELETE_COMPANIES_DAILY_CALLS?.trim();
   if (!written) return DEFAULT_DAILY_SCAN_CALLS;
@@ -87,18 +117,12 @@ export function configuredDailyCalls(): number | undefined {
   return Number.isInteger(raw) && raw >= 0 ? raw : DEFAULT_DAILY_SCAN_CALLS;
 }
 
-/**
- * Which extractor this deployment runs. `MELETE_COMPANIES_MODEL` is the switch:
- * absent, the scan is scripted and deterministic, which is what a demonstration
- * and every test want.
- */
+/** Which extractor this deployment runs, as `companiesExtraction` decides. */
 export function configuredExtractor(env: Env, sql?: Sql): CompanyExtractor {
-  const model = process.env.MELETE_COMPANIES_MODEL?.trim();
-  if (!model) return scriptedExtractor();
-  const provider = process.env.MELETE_COMPANIES_PROVIDER?.trim() ?? env.MELETE_DEFAULT_PROVIDER;
+  const extraction = companiesExtraction(env);
+  if (!extraction) return scriptedExtractor();
   return gatewayExtractor({
-    provider,
-    model: model === 'default' ? DEFAULT_EXTRACTION_MODEL : model,
+    ...extraction,
     providers: configuredProviders(env, () => {}, sql ? providerSignIn(sql, env) : undefined),
   });
 }
@@ -158,7 +182,9 @@ export function companiesDeps(options: {
         ? spaceMailbox({ sql: options.sql, registry: options.registry })
         : () => null,
     extractor: configuredExtractor(options.env, options.sql),
-    ...(configuredDailyCalls() === undefined ? {} : { dailyCalls: configuredDailyCalls() }),
+    ...(configuredDailyCalls(options.env) === undefined
+      ? {}
+      : { dailyCalls: configuredDailyCalls(options.env) }),
     // Without a job service there is nothing to create a job on, and the route's
     // stub refuses. The route records `job_id` and `handling` itself once this
     // returns an id, so the handler is given no `onStatusChange` of its own.

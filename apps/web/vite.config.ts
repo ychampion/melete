@@ -6,5 +6,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react()],
   server: { port: 5180 },
-  build: { outDir: 'dist', sourcemap: true },
+  // A production bundle carries no source maps: the client's sources are not
+  // served beside it. The development server maps as before.
+  build: { outDir: 'dist', sourcemap: false },
 });

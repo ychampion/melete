@@ -60,13 +60,18 @@ export type Result<T> =
   | { data: null; error: string; unavailable: null; unauthorized?: boolean }
   | { data: null; error: null; unavailable: string };
 
-const MOCK_API_BASE = 'http://localhost:3210';
+/**
+ * Where the API is when the build was not told. Development runs against the
+ * local mock on its own port; any other build is served beside the service,
+ * so it uses the same origin's /api. Vite fixes `DEV` at build time, so the
+ * mock's address is left out of a production bundle.
+ */
+const DEVELOPMENT_API = 'http://localhost:3210';
 
-// The typed client and event stream helpers require an absolute URL. Resolve
-// the deployment's /api prefix against the page, including an SSH tunnel port.
 export const API_BASE_URL: string = new URL(
-  (import.meta.env.VITE_MELETE_API as string | undefined) ?? MOCK_API_BASE,
-  typeof window === 'undefined' ? MOCK_API_BASE : window.location.origin,
+  (import.meta.env.VITE_MELETE_API as string | undefined) ??
+    (import.meta.env.DEV ? DEVELOPMENT_API : '/api'),
+  typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
 )
   .toString()
   .replace(/\/+$/, '');

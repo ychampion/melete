@@ -73,7 +73,8 @@ Start with at least **10 GB free** on the filesystem holding Docker's data;
 20 GB gives room for rebuilds. Ports 3100 and 3101 must be free. Image pulls and
 the first build need outbound network access.
 
-Install Bun, clone the repository, and generate the local configuration:
+Install Bun, clone the repository, and generate the local configuration with
+your model provider's key in the environment:
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
@@ -82,20 +83,21 @@ bun --version
 git clone https://github.com/ychampion/melete.git
 cd melete
 bun install --frozen-lockfile
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY
 bun run deploy/scripts/configure.ts
+unset FIREWORKS_API_KEY
 ```
 
 `configure.ts` writes `deploy/.env` from `deploy/.env.example` with private
-permissions, generates independent local secrets and records the Docker socket
-group; it refuses to replace an existing `.env`. Compose reads `deploy/.env`;
-keep it with your backups.
-
-Set your model in `deploy/.env` now: `MELETE_DEFAULT_PROVIDER`,
-`MELETE_DEFAULT_MODEL` and the provider's key, as [Providers](#providers)
-lists. `configure.ts` warns that the key is empty until you do. For a demo that
-needs no key, run `configure.ts --fake` instead: it turns on a scripted provider
-and a test connector, which you switch off later as [Providers](#providers)
-describes. Then check the configuration and start the stack:
+permissions, generates independent local secrets, records the Docker socket
+group, and writes the key it read into the file without printing it; it refuses
+to replace an existing `.env`, and refuses to write one without the key.
+Compose reads `deploy/.env`; keep it with your backups. With nothing named it
+configures the default provider and model; `--provider` and `--model` choose
+another, as [Providers](#providers) lists. For a demo that needs no key, run
+`configure.ts --fake` instead: it turns on a scripted provider and a test
+connector, which you switch off later as [Providers](#providers) describes.
+Then check the configuration and start the stack:
 
 ```bash
 bun run compose:check
@@ -174,8 +176,10 @@ git clone https://github.com/ychampion/melete.git /c/melete
 cd /c/melete
 bun install --frozen-lockfile
 bun run doctor --docker
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY
 bun run deploy/scripts/configure.ts
-# Set your model in deploy/.env now, as Providers lists, or use --fake above for a demo.
+unset FIREWORKS_API_KEY
+# Or --provider and --model with that provider's key, as Providers lists; --fake for a demo.
 bun run compose:check
 docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 300
 docker compose -f deploy/docker-compose.yml ps
@@ -240,7 +244,8 @@ beside the database volume, rather than on a Windows drive.
 ## Configuration and browser access
 
 Configuration lives in `deploy/.env`, generated once by
-`bun run deploy/scripts/configure.ts`, or with `--fake` for a demo that needs no
+`bun run deploy/scripts/configure.ts`, which configures a real model provider as
+[Providers](#providers) describes, or with `--fake` for a demo that needs no
 model key. The file is private and is not
 committed. Its default Compose project is `melete`; change `COMPOSE_PROJECT_NAME`
 before first startup when using another project. Use that value consistently
@@ -355,7 +360,9 @@ is given through `TS_EXTRA_ARGS`, for example
 bun run deploy/scripts/configure.ts --tailscale
 ```
 
-That writes `TS_HOSTNAME=melete` and leaves `TS_AUTHKEY` empty for you to fill
+With the provider's key in the environment as [Providers](#providers) describes,
+or with `--fake` beside `--tailscale` for the demonstration, that writes
+`TS_HOSTNAME=melete` and leaves `TS_AUTHKEY` empty for you to fill
 in. Pass `--tailscale-hostname` to choose another name; it becomes the node's
 name and so the host part of the address. On an installation that already has a
 `deploy/.env`, set `TS_HOSTNAME` and `TS_AUTHKEY` in that file by hand instead —
@@ -601,11 +608,36 @@ have accounts.
 
 ## Providers
 
-The `--fake` configuration is the reproducible local demonstration: no provider
-key is required, and sends go to the test destination. To configure a real
-provider, edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL`, and the matching
-credential in `deploy/.env`. Disable `MELETE_ENABLE_FAKE_PROVIDER` and
-`MELETE_ENABLE_TEST_CONNECTOR` when those fixtures are no longer wanted.
+`configure.ts` writes a production configuration by default: a real provider,
+with its key read from the command's environment and written into `deploy/.env`
+without being printed. With nothing named it is the default provider below and
+its default model, so only the key is needed:
+
+```bash
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY
+bun run deploy/scripts/configure.ts
+unset FIREWORKS_API_KEY
+```
+
+The key is only needed while `configure.ts` runs, so unset it afterwards; it is
+then in `deploy/.env` alone. A key with a space or a line break in it is
+refused as mistyped. `--provider` picks another provider and `--model` names its model, which is
+required for every provider but the default. Each reads its own variable from
+the table below, for example
+`bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
+with `ANTHROPIC_API_KEY` exported. An OpenAI-compatible endpoint needs
+`OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`. The `chatgpt` provider
+needs no key: the owner signs in once the stack is running. A run whose key is
+missing is refused, and nothing is written.
+
+The `--fake` configuration is the reproducible local demonstration, and only it
+turns on the scripted provider and the test connector: no provider key is
+required, and sends go to the test destination. To change provider later, edit
+`MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL`, and the matching credential in
+`deploy/.env`, and set `MELETE_ENABLE_FAKE_PROVIDER` and
+`MELETE_ENABLE_TEST_CONNECTOR` to `false` when those fixtures are no longer
+wanted. The service warns at start-up while either of them is on beside a real
+provider.
 
 `MELETE_DEFAULT_PROVIDER` is one of exactly these names:
 
@@ -624,9 +656,7 @@ OpenAI-compatible endpoint is always selected as `openai-compatible`, whatever
 software serves it; the name of that software is not a provider name. A selected
 provider with an empty key starts with a warning on the service log, and the
 gateway refuses each model call with `provider_key_unavailable` until the key is
-set. `configure.ts` without `--fake` prints the same warning when it writes
-`deploy/.env`, because the file it writes selects a real provider with its key
-still empty.
+set.
 
 `MELETE_DEFAULT_MODEL` is the identifier the provider serves, written exactly as
 its API expects it. Fireworks identifiers are full account paths; the default is
@@ -753,6 +783,20 @@ again cannot fix (too large for the model, or a request the provider refuses,
 such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
+
+## Company map
+
+A scan reads the connected mailbox with the installation's own model, once the
+default provider is a real one with its key: the model named by
+`MELETE_DEFAULT_MODEL`. `MELETE_COMPANIES_MODEL` names another model for scans
+alone, and `MELETE_COMPANIES_PROVIDER` another provider for it. The
+demonstration, and an installation whose provider has no key yet, read mail with
+the built-in rules instead, which find less and cost nothing.
+
+Model calls are bounded per person: across all their spaces, one person's scans
+make at most `MELETE_COMPANIES_DAILY_CALLS` calls in any 24 hours, 500 when it is
+unset, and each scan reads at most fifty messages. A message past the allowance
+is read on a later scan. Set these in `deploy/.env` and recreate the service.
 
 ## Engine limits
 

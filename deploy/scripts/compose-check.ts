@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
-import { checkDockerfileWorkspaces } from './dockerfile-check.ts';
+import { checkDockerfileWorkspaces, checkServiceImageSources } from './dockerfile-check.ts';
 import { checkRuntimePluginPin } from './plugin-pin-check.ts';
 import { checkRemovalDigests } from './removal-digest-check.ts';
 
@@ -448,6 +448,7 @@ if (import.meta.main) {
     ...checkCompose(loadCompose(path)),
     // The images this file builds are read from the repository, not from `path`.
     ...checkDockerfileWorkspaces(root),
+    ...checkServiceImageSources(root),
     ...checkRuntimePluginPin(root),
     ...checkRemovalDigests(root),
     ...checkCellConfig(root),

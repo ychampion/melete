@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import {
   checkDockerfileWorkspaces,
+  checkServiceImageSources,
+  developmentSourcesCopied,
   installingDockerfiles,
   missingWorkspaceManifests,
   workspaceDirectories,
@@ -80,5 +82,26 @@ describe('the check catches the mistakes that would break a build', () => {
       'RUN bun install',
     ].join('\n');
     expect(missingWorkspaceManifests(dockerfile, workspaces)).toEqual([]);
+  });
+});
+
+describe('the service image', () => {
+  test('copies the service, and no mock, try-it or web client sources', () => {
+    expect(checkServiceImageSources(root).filter((result) => !result.ok)).toEqual([]);
+  });
+
+  test('copying apps/ or the whole context is caught, and a manifest alone is not', () => {
+    expect(developmentSourcesCopied('COPY apps/ apps/')).toEqual(['apps']);
+    expect(developmentSourcesCopied('COPY . .')).toEqual(['.']);
+    expect(developmentSourcesCopied('COPY apps/mock-api/src apps/mock-api/src')).toEqual([
+      'apps/mock-api/src',
+    ]);
+    expect(
+      developmentSourcesCopied(
+        ['COPY apps/mock-api/package.json apps/mock-api/', 'COPY apps/melete/ apps/melete/'].join(
+          String.fromCharCode(10),
+        ),
+      ),
+    ).toEqual([]);
   });
 });

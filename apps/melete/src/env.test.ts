@@ -9,7 +9,7 @@ import {
   DEFAULT_ENGINE_MAX_TURNS,
 } from '@melete/runtime-hermes';
 import { parse } from 'yaml';
-import { brokerUrlForBind, envSchema, loadEnv, readEnv } from './env.ts';
+import { brokerUrlForBind, demonstrationWarnings, envSchema, loadEnv, readEnv } from './env.ts';
 
 const bundle: AttemptBundle = {
   attempt: {
@@ -292,5 +292,37 @@ describe('the address the service reads its own tool catalog from', () => {
     const result = readEnv({ MELETE_BROKER_BIND: 'not-an-address' });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.issues.join('\n')).toContain('MELETE_BROKER_BIND');
+  });
+});
+
+describe('demonstration settings beside a real provider', () => {
+  test('the test connector on beside a real provider is warned about at start-up', () => {
+    const warnings = demonstrationWarnings(
+      loadEnv({ MELETE_ENABLE_TEST_CONNECTOR: 'true', MELETE_DEFAULT_PROVIDER: 'anthropic' }),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('MELETE_ENABLE_TEST_CONNECTOR=true');
+    expect(warnings[0]).toContain('anthropic');
+  });
+
+  test('the scripted provider on beside a real provider is warned about too', () => {
+    const warnings = demonstrationWarnings(
+      loadEnv({ MELETE_ENABLE_FAKE_PROVIDER: 'true', MELETE_DEFAULT_PROVIDER: 'anthropic' }),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('MELETE_ENABLE_FAKE_PROVIDER=true');
+  });
+
+  test('the demonstration itself, and a production configuration, are quiet', () => {
+    expect(
+      demonstrationWarnings(
+        loadEnv({
+          MELETE_ENABLE_TEST_CONNECTOR: 'true',
+          MELETE_ENABLE_FAKE_PROVIDER: 'true',
+          MELETE_DEFAULT_PROVIDER: 'fake',
+        }),
+      ),
+    ).toEqual([]);
+    expect(demonstrationWarnings(loadEnv({ MELETE_DEFAULT_PROVIDER: 'anthropic' }))).toEqual([]);
   });
 });
