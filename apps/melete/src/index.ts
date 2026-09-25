@@ -57,7 +57,7 @@ import type { ConnectorRegistry } from './connectors/registry.ts';
 import { type Database, openDatabase, pingDatabase } from './db/client.ts';
 import { migrateDatabase } from './db/migrate.ts';
 import { connection } from './db/schema.ts';
-import { type Env, loadEnv, parseBrokerBind } from './env.ts';
+import { demonstrationWarnings, type Env, loadEnv, parseBrokerBind } from './env.ts';
 import { EventStream } from './events/stream.ts';
 import { mountExperience } from './experience/routes.ts';
 import { providerSignIn } from './gateway/configured.ts';
@@ -386,6 +386,7 @@ export async function bootstrap(
     process.stderr.write(
       "WARNING: Hermes process attempts are not sandboxed and run with the service user's OS access. Use the Docker supervisor for container isolation.\n",
     );
+  for (const warning of demonstrationWarnings(env)) process.stderr.write(`WARNING: ${warning}\n`);
   // An engine the supervisor cannot drive is named here, before the database is
   // opened or migrated, instead of as a Docker 400 on the first attempt.
   if (!options.runtime && env.MELETE_RUNTIME_ADAPTER === 'docker')

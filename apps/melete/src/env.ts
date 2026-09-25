@@ -384,6 +384,19 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
 }
 
 /**
+ * Settings that belong to the scripted demonstration, left on beside a real
+ * model provider. The test connector accepts sends to a fixture destination,
+ * so on a production installation it is a way for work to look delivered
+ * when nothing left the machine.
+ */
+export function demonstrationWarnings(env: Env): string[] {
+  if (!env.MELETE_ENABLE_TEST_CONNECTOR || env.MELETE_DEFAULT_PROVIDER === 'fake') return [];
+  return [
+    `MELETE_ENABLE_TEST_CONNECTOR=true is set beside the real provider ${env.MELETE_DEFAULT_PROVIDER}. The test connector is for the scripted demonstration; set it to false in deploy/.env unless you mean to keep a test destination.`,
+  ];
+}
+
+/**
  * Secret writes require the master key; parsing and decryption stay in the
  * service-owned sealed store.
  */
