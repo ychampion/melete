@@ -201,7 +201,27 @@ async function openScope(tx: Query, job: LockedJob) {
  */
 export const chaseFollowUpPort: ChaseFollowUpPort = {
   available: async (tx, job) => (await openScope(tx, job)) !== null,
-  next: async (tx, job) => {
+  next: async (tx, job, attemptId) => {
+    // One follow-up per attempt: a repeat, however it interleaves, is the same
+    // payload, and the broker's intent key turns that into the same action.
+    const [source] = await tx`select r.connection_id, r.tool_kind, a.canonical_payload
+      from experience_rule r join action a on a.id = r.source_action_id
+      where r.job_id = ${job.id} and r.origin_trust = ${CHASE_SCOPE_ORIGIN}`;
+    if (source) {
+      const made = await tx`select canonical_payload from action
+        where job_id = ${job.id} and attempt_id = ${attemptId}
+        and connection_id = ${source.connection_id} and kind = ${source.tool_kind}
+        order by created_at, id`;
+      const repeat = made.find(
+        (row) => followUpRefusal(source.canonical_payload, row.canonical_payload) === null,
+      );
+      if (repeat)
+        return {
+          connection_id: String(source.connection_id),
+          kind: String(source.tool_kind),
+          payload: repeat.canonical_payload as JsonObject,
+        };
+    }
     const scope = await openScope(tx, job);
     if (!scope) return null;
     return {

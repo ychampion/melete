@@ -190,6 +190,15 @@ async function sent() {
   return handle.sql`select action_id from test_destination_ledger`;
 }
 
+/** The chase waits, its timer passes, and a new attempt picks it up. */
+async function wakeAgain(jobId: string, claimed: ClaimedAttempt) {
+  await runner.commitOutcome(claimed.claims, {
+    kind: 'waiting_for_event_or_time',
+    wait: { kind: 'timer', wake_at: new Date(Date.now() - 1000).toISOString() },
+  });
+  return claim(jobId);
+}
+
 /** Whether the attempt is offered the follow-up tool. */
 async function offered(claimed: ClaimedAttempt) {
   return (await broker.catalog(claimed.claims)).some(
@@ -406,9 +415,12 @@ withDb('what one "Allow once" on a chase covers', () => {
     const chat = await jobs.create({ space_id: spaceId, title: 'Refunds', objective: 'Chat' });
     await handle.sql`update job set kind = 'chat' where id = ${chat.id}`;
     await handle.sql`update job set experience_parent_id = ${chat.id} where id = ${jobId}`;
-    expect(await offered(carrying)).toBe(true);
+    let attempt = carrying;
+    expect(await offered(attempt)).toBe(true);
     for (let n = 1; n <= CHASE_FOLLOW_UP_CAP; n++) {
-      const covered = await broker.followUp(carrying.claims);
+      // One follow-up per wake.
+      if (n > 1) attempt = await wakeAgain(jobId, attempt);
+      const covered = await broker.followUp(attempt.claims);
       expect(covered.status).toBe('succeeded');
       expect(covered.approval_id).toBeNull();
       const [row] = await handle.sql`select kind, canonical_payload, receipt from action
@@ -422,12 +434,33 @@ withDb('what one "Allow once" on a chase covers', () => {
         .filter((tool) => tool.id === toolId('action', covered.action_id))
         .at(-1);
       expect(entry?.status).toBe('done');
+      // Asking again before the next wake is the same follow-up, not another.
+      expect((await broker.followUp(attempt.claims)).action_id).toBe(covered.action_id);
     }
     expect(await sent()).toHaveLength(1 + CHASE_FOLLOW_UP_CAP);
     // Every covered follow-up is used, so the tool is gone and asking for one is refused.
-    expect(await offered(carrying)).toBe(false);
-    const refused = await broker.followUp(carrying.claims).catch((error: unknown) => error);
+    const after = await wakeAgain(jobId, attempt);
+    expect(await offered(after)).toBe(false);
+    const refused = await broker.followUp(after.claims).catch((error: unknown) => error);
     expect(refused).toMatchObject({ code: 'unknown_tool' });
+  });
+
+  test('two follow-ups asked for at once send one', async () => {
+    const { handle } = fixture();
+    const { jobId, carrying } = await allowedChase();
+    const [one, two] = await Promise.all([
+      broker.followUp(carrying.claims),
+      broker.followUp(carrying.claims),
+    ]);
+    expect(one.action_id).toBe(two.action_id);
+    const actions = await handle.sql`select id from action where job_id = ${jobId}`;
+    expect(actions).toHaveLength(2);
+    expect(await sent()).toHaveLength(2);
+    const [rule] = await handle.db
+      .select()
+      .from(experienceRule)
+      .where(eq(experienceRule.jobId, jobId));
+    expect(rule?.used).toBe(1);
   });
 
   test('a follow-up the model writes itself still asks', async () => {

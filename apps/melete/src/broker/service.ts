@@ -380,7 +380,7 @@ export class BrokerService implements BrokerOperations {
       ? await this.sql.begin(async (tx) => {
           const job = await lockJob(tx, claims.job_id);
           await checkAttempt(tx, job, claims);
-          return port.next(tx, job);
+          return port.next(tx, job, claims.attempt_id);
         })
       : null;
     if (!next) throw new BrokerFault('unknown_tool', 'This chase has no follow-up to send.');
