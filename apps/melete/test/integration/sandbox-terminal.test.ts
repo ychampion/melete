@@ -10,12 +10,13 @@
  */
 import { afterAll, expect, test } from 'bun:test';
 import { mkdir, mkdtemp } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { SandboxConnectionConfig } from '@melete/contracts';
 import { attemptEngineFeatures } from '@melete/runtime-hermes';
 import { signCapability } from '../../src/broker/capability.ts';
-import { createBrokerApp } from '../../src/broker/http.ts';
+import { createInternalServer } from '../../src/broker/internal-server.ts';
 import { recordId } from '../../src/broker/records.ts';
 import { BrokerService } from '../../src/broker/service.ts';
 import { createExecConnector } from '../../src/connectors/exec.ts';
@@ -86,25 +87,35 @@ async function setup() {
     workRoot,
     sql: db.sql,
   });
-  const broker = new BrokerService({
+  const registry = new ConnectorRegistry()
+    .register(seed.connectionId, connector)
+    .register(execConnection, createExecConnector({ workRoot }));
+  const broker = new BrokerService({ sql: db.sql, connectors: registry });
+  // The listener the service itself gives the cell: broker routes arrive
+  // through the model gateway's server, with its timeouts, not a test server.
+  const internal = createInternalServer({
     sql: db.sql,
-    connectors: new ConnectorRegistry()
-      .register(seed.connectionId, connector)
-      .register(execConnection, createExecConnector({ workRoot })),
-  });
-  const app = createBrokerApp({
-    broker,
+    connectors: registry,
     capabilityKey: CAPABILITY_KEY,
     approvalKey: 'test-terminal-approval-key-0000000000',
+    broker,
   });
+  await new Promise<void>((ready) => internal.server.listen(0, '127.0.0.1', ready));
+  const listener = `http://127.0.0.1:${(internal.server.address() as AddressInfo).port}`;
   /** Set to lose the next answer after the broker has already run the command. */
   const lose = { next: false };
-  const server = Bun.serve({
+  // Only the lost-answer case goes through this: it forwards to the real
+  // listener and drops one answer the broker already gave.
+  const lossy = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
-    idleTimeout: 0,
     fetch: async (request) => {
-      const answer = await app.fetch(request);
+      const url = new URL(request.url);
+      const answer = await fetch(`${listener}${url.pathname}${url.search}`, {
+        method: request.method,
+        headers: request.headers,
+        body: request.method === 'GET' ? undefined : await request.arrayBuffer(),
+      });
       if (lose.next && request.method === 'POST') {
         lose.next = false;
         return new Response('the connection dropped', { status: 502 });
@@ -112,7 +123,14 @@ async function setup() {
       return answer;
     },
   });
-  const run = async (commands: Command[]): Promise<Result[]> => {
+  const server = {
+    stop: () => {
+      lossy.stop(true);
+      internal.server.closeAllConnections();
+      internal.server.close();
+    },
+  };
+  const run = async (commands: Command[], through = listener): Promise<Result[]> => {
     const child = Bun.spawn([resolvePython(), '-c', SCRIPT], {
       env: {
         ...Bun.env,
@@ -120,7 +138,7 @@ async function setup() {
         CONNECTION: seed.connectionId,
         COMMANDS: JSON.stringify(commands),
         MELETE_JOB_ID: seed.claims.job_id,
-        MELETE_BROKER_URL: `http://127.0.0.1:${server.port}`,
+        MELETE_BROKER_URL: through,
         MELETE_ATTEMPT_TOKEN: signCapability(seed.claims, CAPABILITY_KEY),
       },
       stdout: 'pipe',
@@ -136,7 +154,8 @@ async function setup() {
   const actions = async () =>
     db.sql`select id, status, canonical_payload, receipt from action
       where job_id = ${seed.claims.job_id} and kind = 'terminal.run' order by created_at`;
-  return { ...seed, provider, broker, server, run, actions, lose, workRoot, sql: db.sql };
+  const lossyUrl = `http://127.0.0.1:${lossy.port}`;
+  return { ...seed, provider, broker, server, run, actions, lose, lossyUrl, workRoot, sql: db.sql };
 }
 
 databaseTest(
@@ -178,7 +197,7 @@ databaseTest(
       expect(s.provider.calls.exec).toBe(6);
       expect(s.provider.calls.create).toBe(1);
     } finally {
-      s.server.stop(true);
+      s.server.stop();
     }
   },
   120_000,
@@ -211,7 +230,7 @@ databaseTest(
       expect(recorded[0]?.receipt.detail.timed_out).toBe(true);
       expect(recorded[2]?.receipt.detail.output_binary).toBe(true);
     } finally {
-      s.server.stop(true);
+      s.server.stop();
     }
   },
   120_000,
@@ -224,7 +243,7 @@ databaseTest(
     try {
       // Lost between the broker and the cell, after the broker ran it.
       s.lose.next = true;
-      const [inTransit] = await s.run([{ command: "printf 'ran once'" }]);
+      const [inTransit] = await s.run([{ command: "printf 'ran once'" }], s.lossyUrl);
       expect(inTransit?.output).toStartWith('[outcome unknown]');
       expect(inTransit?.returncode).not.toBe(0);
       expect(s.provider.calls.exec).toBe(1);
@@ -245,7 +264,24 @@ databaseTest(
       const [job] = await s.sql`select state from job where id = ${s.claims.job_id}`;
       expect(job?.state).toBe('needs_reconciliation');
     } finally {
-      s.server.stop(true);
+      s.server.stop();
+    }
+  },
+  120_000,
+);
+
+databaseTest(
+  "a command longer than ten seconds is answered through the service's own listener",
+  async () => {
+    const s = await setup();
+    try {
+      // A build or a test run: longer than an idle timeout would allow.
+      const [long] = await s.run([{ command: 'sleep 12; printf built', timeout: 60 }]);
+      expect(long).toEqual({ output: 'built', returncode: 0 });
+      const recorded = await s.actions();
+      expect(recorded.map((row) => row.status)).toEqual(['succeeded']);
+    } finally {
+      s.server.stop();
     }
   },
   120_000,
