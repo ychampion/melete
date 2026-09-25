@@ -29,6 +29,8 @@ export interface BrokerOperations {
   get(claims: CapabilityClaims, id: string): Promise<Action>;
   /** Carry out an approved action by id; the caller supplies no payload. */
   resume?(claims: CapabilityClaims, id: string): Promise<EffectProposalResponse>;
+  /** Send a chase's covered follow-up; the service writes it, the caller supplies nothing. */
+  followUp?(claims: CapabilityClaims): Promise<EffectProposalResponse>;
   /** Answer a message with a glyph instead of prose. Changes nothing outside. */
   react(
     claims: CapabilityClaims,
@@ -143,6 +145,17 @@ export function createBrokerApp(options: {
       .strict()
       .parse(await c.req.json());
     if (!options.broker.discovery) throw new BrokerFault('unknown_tool');
+    if (body.name === 'chase.follow_up') {
+      const claims = c.get('claims');
+      const catalog = await options.broker.catalog(claims);
+      if (
+        !options.broker.followUp ||
+        !catalog.some((tool) => tool.name === 'chase.follow_up' && tool.connection_id === null)
+      )
+        throw new BrokerFault('unknown_tool');
+      // Whatever the model passed is dropped: the service writes the follow-up.
+      return c.json(await options.broker.followUp(claims));
+    }
     if (body.name === 'compose') {
       const claims = c.get('claims');
       const catalog = await options.broker.catalog(claims);

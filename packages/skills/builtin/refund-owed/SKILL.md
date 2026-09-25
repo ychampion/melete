@@ -23,7 +23,7 @@ sentence quoted from the evidence, the amount, and by when. Cite their
 published policy only from a page you fetched. No legal claim, no threat.
 
 Ask once per company before the first message. Never send the same message
-twice. Afterwards follow up only inside the bounds that approval set.
+twice. Follow up only with `chase.follow_up`.
 
 Wait on the reply trigger, deadline seven days out. Nothing by then, send one
 follow-up; two at most. Then offer the complaints address, and the card issuer

@@ -810,12 +810,23 @@ export const experienceRule = pgTable(
     used: integer('used').notNull().default(0),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: created(),
+    /**
+     * A rule scoped to one job: a chase's follow-ups, covered by the person's
+     * approval of its first message, which `sourceActionId` names.
+     */
+    jobId: text('job_id').references(() => job.id, { onDelete: 'cascade' }),
+    sourceActionId: text('source_action_id').references(() => action.id, { onDelete: 'cascade' }),
   },
   (t) => [
     check(
       'experience_rule_bounds',
       sql`${t.countCap} between 1 and 100 and ${t.reconsentAfterDays} between 1 and 30 and ${t.used} between 0 and ${t.countCap}`,
     ),
+    check(
+      'experience_rule_job_scope',
+      sql`${t.originTrust} <> 'person_approved' or (${t.jobId} is not null and ${t.sourceActionId} is not null)`,
+    ),
+    uniqueIndex('experience_rule_job_idx').on(t.jobId).where(sql`${t.jobId} is not null`),
   ],
 );
 

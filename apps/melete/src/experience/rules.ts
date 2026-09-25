@@ -38,7 +38,10 @@ export function ruleView(row: Record<string, unknown>): StandingRule {
     kind,
     connection_id: row.connection_id,
     recipient_class: recipient,
-    text: `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`,
+    // A rule scoped to one job is a chase's follow-ups, and says so.
+    text: row.job_id
+      ? `Follow-ups in one chase to ${recipient}, up to ${row.count_cap}, until ${numericDate(new Date(String(row.expires_at)))}.`
+      : `${kind.replaceAll('_', ' ')} for ${recipient}, up to ${row.count_cap} times, until ${numericDate(new Date(String(row.expires_at)))}. Ask again after ${row.reconsent_after_days} days.`,
     bounds: {
       count_cap: row.count_cap,
       expires_at: new Date(String(row.expires_at)).toISOString(),
@@ -61,6 +64,7 @@ export const resolveExperienceGrant: StandingGrantResolver = async (tx, input) =
   const rules = await tx`select * from experience_rule where space_id = ${job.space_id}
     and connection_id = ${action.connection_id} and tool_kind = ${action.kind}
     and recipient = ${recipient}::jsonb and origin_trust in ('owner_stated', 'connector_verified')
+    and job_id is null
     and revoked_at is null and expires_at > now()
     and created_at + reconsent_after_days * interval '1 day' > now()
     order by created_at, id for update`;

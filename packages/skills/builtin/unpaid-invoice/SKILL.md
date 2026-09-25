@@ -25,7 +25,7 @@ promised one. No legal claim, no late-fee threat, no interest they never
 agreed to.
 
 Ask once per company before the first message. Never send the same message
-twice. Afterwards follow up only inside the bounds that approval set.
+twice. Follow up only with `chase.follow_up`.
 
 Wait on the reply trigger, deadline seven days out. Nothing by then, send one
 follow-up; two at most. Then ask whether to write to their accounts address.

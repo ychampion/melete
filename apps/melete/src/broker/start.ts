@@ -11,7 +11,12 @@ import {
 import type { ConnectorRegistry } from '../connectors/registry.ts';
 import type { DatabaseHandle } from '../db/client.ts';
 import { type Env, parseBrokerBind } from '../env.ts';
-import { resolveExperienceGrant } from '../experience/rules.ts';
+import {
+  chaseFollowUpPort,
+  recordChaseScope,
+  resolveChaseScopedGrant,
+  resolvePersonGrant,
+} from '../experience/chase-scope.ts';
 import { configuredProviders, providerSignIn } from '../gateway/configured.ts';
 import type { ProviderSignIn } from '../gateway/credentials.ts';
 import type { GatewayOptions } from '../gateway/index.ts';
@@ -107,7 +112,10 @@ export async function startEffectBoundary(
       connectTls: (host) => certificates.get(host),
       resolveAuthority: dependencies.resolveAuthority,
       resolveTrust: dependencies.resolveTrust ?? createMemoryTrustResolver(),
-      resolveStandingGrant: resolveExperienceGrant,
+      resolveStandingGrant: resolvePersonGrant,
+      resolveScopedGrant: resolveChaseScopedGrant,
+      recordStandingScope: recordChaseScope,
+      chaseFollowUp: chaseFollowUpPort,
       broker: dependencies.broker,
       composeExecutor: dependencies.composeExecutor,
       catalog: {

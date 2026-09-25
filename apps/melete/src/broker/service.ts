@@ -63,6 +63,7 @@ import {
 } from './authority.ts';
 import { type ReservationRequest, reserveLocked } from './budget.ts';
 import { type CatalogOptions, resolveToolAlias, SKILL_READ_TOOL, ToolCatalog } from './catalog.ts';
+import { CHASE_FOLLOW_UP_TOOL, type ChaseFollowUpPort } from './chase.ts';
 import { COMPOSE_TOOL, type ComposeExecutor, ComposeService } from './compose.ts';
 import { grantsConnectionScopes } from './connection-scopes.ts';
 import { BrokerFault } from './errors.ts';
@@ -118,6 +119,17 @@ export type BrokerOptions = {
    * only ever removes the approval when nothing about the payload is in doubt.
    */
   resolveStandingGrant?: StandingGrantResolver;
+  /**
+   * A grant the person gave inside one job, for values they have already seen
+   * and approved there: a chase's follow-ups to the address its first message
+   * went to. It is the only grant asked when a payload carries doubts, and it
+   * is told what they are.
+   */
+  resolveScopedGrant?: ScopedGrantResolver;
+  /** Called in the transaction that records an action as succeeded. */
+  recordStandingScope?: (tx: Query, action: Action) => Promise<void>;
+  /** A chase's covered follow-up, offered as `chase.follow_up` while its scope holds. */
+  chaseFollowUp?: ChaseFollowUpPort;
   /** Approval lifetime is service policy, never a value supplied by a tool caller. */
   approvalTtlMs?: number;
   /**
@@ -148,8 +160,16 @@ export type StandingGrantInput = {
   action: Action;
   tool: ConnectorTool;
   phase: 'proposal' | 'admission' | 'execution';
+  /** The doubts about the payload's values; only a scoped grant ever sees any. */
+  warnings?: OriginWarning[];
 };
 export type StandingGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<boolean>;
+/**
+ * A grant scoped to one job answers with the approval that authorizes the
+ * effect: the person's decision on values they already saw, whose recorded
+ * doubts must be exactly this payload's. Null is no grant.
+ */
+export type ScopedGrantResolver = (tx: Query, input: StandingGrantInput) => Promise<string | null>;
 
 /** What admission decided about one action before it reserved anything. */
 type Admissibility = {
@@ -157,6 +177,8 @@ type Admissibility = {
   warnings_hash: string;
   standing_grant: boolean;
   requires_approval: boolean;
+  /** The approval a scoped grant rests on, which admission records as the authorization. */
+  authorized_by: string | null;
 };
 
 const question =
@@ -232,7 +254,9 @@ export class BrokerService implements BrokerOperations {
         RESUME_ACTION_TOOL,
         SKILL_READ_TOOL,
         ...(options.composeExecutor ? [COMPOSE_TOOL] : []),
+        ...(options.chaseFollowUp ? [CHASE_FOLLOW_UP_TOOL] : []),
       ],
+      ...(options.chaseFollowUp ? { followable: options.chaseFollowUp.available } : {}),
     });
     if (options.composeExecutor) {
       this.compose = new ComposeService({
@@ -343,6 +367,24 @@ export class BrokerService implements BrokerOperations {
 
   requestWait(claims: CapabilityClaims, input: unknown) {
     return requestRuntimeWait(this.sql, claims, input);
+  }
+
+  /**
+   * Send the chase's next covered follow-up. The service builds the message;
+   * it is proposed like any other send, so admission, the scope and the
+   * execution fence all decide it the same way, and it is a tool entry.
+   */
+  async followUp(claims: CapabilityClaims): Promise<EffectProposalResponse> {
+    const port = this.options.chaseFollowUp;
+    const next = port
+      ? await this.sql.begin(async (tx) => {
+          const job = await lockJob(tx, claims.job_id);
+          await checkAttempt(tx, job, claims);
+          return port.next(tx, job, claims.attempt_id);
+        })
+      : null;
+    if (!next) throw new BrokerFault('unknown_tool', 'This chase has no follow-up to send.');
+    return this.propose(claims, next);
   }
 
   async catalog(claims: CapabilityClaims): Promise<ToolSpec[]> {
@@ -468,17 +510,27 @@ export class BrokerService implements BrokerOperations {
         fields,
       },
     );
-    // A grant is only ever a shortcut past a question nobody needs to ask. It
-    // never covers a value whose origin Melete cannot vouch for.
+    // A grant is only ever a shortcut past a question nobody needs to ask. A
+    // standing grant never covers a value whose origin Melete cannot vouch for;
+    // only a grant scoped to this job, over values the person approved in it,
+    // is asked when there are doubts, and it is told exactly what they are.
+    const input = { job, action, tool, phase, warnings };
+    const authorizedBy =
+      requiresApproval && warnings.length > 0 && this.options.resolveScopedGrant
+        ? await this.options.resolveScopedGrant(tx, input)
+        : null;
     const granted =
-      warnings.length === 0 && requiresApproval && this.options.resolveStandingGrant
-        ? await this.options.resolveStandingGrant(tx, { job, action, tool, phase })
-        : false;
+      authorizedBy !== null ||
+      (requiresApproval &&
+        warnings.length === 0 &&
+        this.options.resolveStandingGrant !== undefined &&
+        (await this.options.resolveStandingGrant(tx, input)));
     return {
       warnings,
       warnings_hash: hashOriginWarnings(warnings),
       standing_grant: granted,
       requires_approval: requiresApproval && !granted,
+      authorized_by: authorizedBy,
     };
   }
 
@@ -915,7 +967,7 @@ export class BrokerService implements BrokerOperations {
             throw new BrokerFault('approval_required', 'Approval expired');
           authorization = approval.id;
           expiresAt = approval.expires_at ? new Date(approval.expires_at).toISOString() : null;
-        }
+        } else authorization = classified.authorized_by;
         if (!['proposed', 'approved'].includes(action.status))
           throw new BrokerFault('action_not_admissible');
         const authority = await resolveEffectAuthority(
@@ -1057,8 +1109,19 @@ export class BrokerService implements BrokerOperations {
         'The standing permission no longer covers this action.',
       );
     const [authorizing] = action.authorization_ref
-      ? await tx`select origin_warnings from approval where id = ${action.authorization_ref}`
+      ? await tx`select origin_warnings, action_id from approval where id = ${action.authorization_ref}`
       : [];
+    // An approval lent by a scope, rather than given to this action, holds only
+    // while the scope still lends that same approval now.
+    if (
+      authorizing &&
+      authorizing.action_id !== action.id &&
+      classified.authorized_by !== action.authorization_ref
+    )
+      throw new BrokerFault(
+        'approval_required',
+        'The standing permission no longer covers this action.',
+      );
     const authorized = originWarnings.parse(authorizing?.origin_warnings ?? []);
     if (hashOriginWarnings(authorized) !== classified.warnings_hash) {
       throw new BrokerFault(
@@ -1870,6 +1933,7 @@ export class BrokerService implements BrokerOperations {
       from: action.status,
       to: status,
     });
+    if (status === 'succeeded') await this.options.recordStandingScope?.(tx, action);
   }
 
   private async rejectDispatch(

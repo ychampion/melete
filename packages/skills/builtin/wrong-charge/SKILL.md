@@ -24,7 +24,7 @@ that sentence quoted from the evidence, what was expected instead, and the
 correction wanted. Treat it as their error, not fraud. No legal claim.
 
 Ask once per company before the first message. Never send the same message
-twice. Afterwards follow up only inside the bounds that approval set.
+twice. Follow up only with `chase.follow_up`.
 
 Wait on the reply trigger, deadline five days out. Nothing by then, send one
 follow-up; two at most. Then the complaints address, and the card issuer only

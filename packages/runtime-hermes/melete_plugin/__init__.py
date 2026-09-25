@@ -165,7 +165,7 @@ def build_handler(
                     "schema_fingerprint": loaded.get("schema_fingerprint"),
                     "instruction": "The tool is loaded. This run will continue with its schema.",
                 }
-            if connection_id is None and (name.startswith("skills.") or name == "compose"):
+            if connection_id is None and (name.startswith("skills.") or name in ("compose", "chase.follow_up")):
                 return client.call_native(name, arguments)
         except BrokerError as error:
             return refuse(error)

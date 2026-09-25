@@ -276,6 +276,12 @@ def test_compose_is_forwarded_to_the_broker_native_gate(client, broker):
     assert broker.requests[0]["body"] == {"name": "compose", "arguments": arguments}
 
 
+def test_a_chase_follow_up_is_forwarded_to_the_broker_native_gate(client, broker):
+    build_handler(client, {"name": "chase.follow_up", "connection_id": None})({})
+    assert broker.requests[0]["path"] == "/tools/call"
+    assert broker.requests[0]["body"] == {"name": "chase.follow_up", "arguments": {}}
+
+
 # -- calling ------------------------------------------------------------------
 
 
