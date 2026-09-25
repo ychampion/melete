@@ -64,6 +64,12 @@ export type PermissionDecision = Body<paths['/permissions/{id}'], 'post'>;
 export type RuleBounds = Extract<PermissionDecision, { option: 'always' }>['bounds'];
 export type PermissionOutcome = Success<Ok<paths['/permissions/{id}'], 'post'>>;
 export type Rule = Success<Ok<paths['/rules'], 'get'>>['rules'][number];
+/** What Melete learned from the person's corrections, and skills it wrote for itself. */
+export type LearnedList = Ok<paths['/learned'], 'get'>;
+export type LearnedItem = LearnedList['items'][number];
+export type LearnedChange = NonNullable<LearnedList['last_change']>;
+export type LearnedItemResult = Ok<paths['/learned/{id}/pause'], 'post'>;
+export type EngineSkill = Ok<paths['/engine-skills'], 'get'>['skills'][number];
 export type Question = Success<Ok<paths['/quick-answers'], 'get'>>['questions'][number];
 
 /* ---------- agents, memory ---------- */

@@ -1,6 +1,7 @@
 /**
  * Settings: the only place the technology shows. Saved details in plain
- * language with edit, forget and why; connections with their state and what
+ * language with edit, forget and why; what Melete learned, with its state and
+ * what can be done with it; connections with their state and what
  * each may do; standing rules with their limits and revoke.
  */
 import { type ReactNode, useState } from 'react';
@@ -15,6 +16,7 @@ import type { Connection, MemoryItem, Rule } from '../experience/types.ts';
 import { navigate } from '../router.ts';
 import { RailToggle, Shell, toast } from '../shell/Shell.tsx';
 import { AddConnection, ConnectionActions } from './ConnectionInstall.tsx';
+import { LearnedTab } from './Learned.tsx';
 
 const SOURCE_LABEL: Record<MemoryItem['source'], string> = {
   onboarding: 'You told Melete during setup',
@@ -253,7 +255,8 @@ export function SettingsScreen({ tab }: { tab: string }) {
   const memory = useLoad(() => adapter.memory(), []);
   const connections = useLoad(() => adapter.connections(), []);
   const rules = useLoad(() => adapter.rules(), []);
-  const current = tab === 'connections' || tab === 'rules' ? tab : 'memory';
+  const current = tab === 'connections' || tab === 'rules' || tab === 'learned' ? tab : 'memory';
+  const [learnedCount, setLearnedCount] = useState<number | undefined>(undefined);
   const items = memory.data?.items ?? [];
   const list = connections.data?.connections ?? [];
   const byId = new Map(list.map((c) => [c.id, c]));
@@ -298,6 +301,7 @@ export function SettingsScreen({ tab }: { tab: string }) {
           onChange={(next) => navigate(`/settings/${next}`)}
           tabs={[
             { value: 'memory', label: 'Memory', count: items.length },
+            { value: 'learned', label: 'What I’ve learned', count: learnedCount },
             {
               value: 'connections',
               label: 'Connections',
@@ -366,6 +370,8 @@ export function SettingsScreen({ tab }: { tab: string }) {
               ) : null}
             </div>
           </div>
+        ) : current === 'learned' ? (
+          <LearnedTab onCount={setLearnedCount} />
         ) : current === 'connections' ? (
           <div className="col" style={{ gap: 12 }}>
             <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>

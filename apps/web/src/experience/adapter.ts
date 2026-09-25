@@ -24,8 +24,11 @@ import type {
   Conversation,
   ConversationCreate,
   Draft,
+  EngineSkill,
   ExperienceEvent,
   Home,
+  LearnedItemResult,
+  LearnedList,
   LedgerAction,
   MemoryExplanation,
   MemoryItem,
@@ -231,6 +234,58 @@ export const adapter = {
       }),
     ),
   revokeRule: (id: string) => guard<{ status: 'ok' }>(() => api.DELETE('/rules/{id}', path(id))),
+
+  /* ---------- what Melete learned ---------- */
+  learned: (spaceId: string) =>
+    guard<LearnedList>(() => api.GET('/learned', { params: { query: { space_id: spaceId } } })),
+  engineSkills: (spaceId: string) =>
+    guard<{ skills: EngineSkill[] }>(() =>
+      api.GET('/engine-skills', { params: { query: { space_id: spaceId } } }),
+    ),
+  /** Pause, resume, remove or share: the changes that come back with an id to undo. */
+  changeLearned: (id: string, action: 'pause' | 'resume' | 'remove' | 'share', spaceId: string) => {
+    const init = { ...path(id), body: { space_id: spaceId } };
+    return guard<LearnedItemResult>(() =>
+      action === 'pause'
+        ? api.POST('/learned/{id}/pause', init)
+        : action === 'resume'
+          ? api.POST('/learned/{id}/resume', init)
+          : action === 'remove'
+            ? api.POST('/learned/{id}/remove', init)
+            : api.POST('/learned/{id}/share', init),
+    );
+  },
+  /** Trying it approves the exact definition the person was shown. */
+  tryLearned: (id: string, spaceId: string, definitionHash: string) =>
+    guard<LearnedItemResult>(() =>
+      api.POST('/learned/{id}/try', {
+        ...path(id),
+        body: { space_id: spaceId, definition_hash: definitionHash },
+      }),
+    ),
+  undoLearned: (spaceId: string, changeId: string) =>
+    guard<LearnedItemResult>(() =>
+      api.POST('/learned/undo', { body: { space_id: spaceId, change_id: changeId } }),
+    ),
+  approveSkill: (id: string, spaceId: string, definitionHash: string) =>
+    guard<{ skill: EngineSkill }>(() =>
+      api.POST('/engine-skills/{id}/approve', {
+        ...path(id),
+        body: { space_id: spaceId, definition_hash: definitionHash },
+      }),
+    ),
+  /** The person's own text replaces the engine's, against the version they were shown. */
+  editSkill: (id: string, spaceId: string, definitionHash: string, body: string) =>
+    guard<{ skill: EngineSkill }>(() =>
+      api.POST('/engine-skills/{id}/edit', {
+        ...path(id),
+        body: { space_id: spaceId, definition_hash: definitionHash, body },
+      }),
+    ),
+  stopSkill: (id: string, spaceId: string, reason: string) =>
+    guard<{ skill: EngineSkill }>(() =>
+      api.POST('/engine-skills/{id}/stop', { ...path(id), body: { space_id: spaceId, reason } }),
+    ),
 
   /* ---------- agents, memory ---------- */
   agents: () => guard<{ agents: Agent[] }>(() => api.GET('/agents')),
