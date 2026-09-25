@@ -23,9 +23,7 @@ import {
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import type { SecretAccess } from '../connectors/secrets.ts';
-import { createE2bProvider, e2bCapabilities } from './adapters/e2b.ts';
-import { createModalProvider, modalCapabilities } from './adapters/modal.ts';
-import { createModalSdkTransport } from './adapters/modal-sdk.ts';
+import { SANDBOX_ADAPTER_PLUGINS } from './adapters/registry.ts';
 import { checkSpec, sandboxLabels } from './manifest.ts';
 import type { EgressPolicy, SandboxCapabilities, SandboxProvider, SandboxSpec } from './types.ts';
 
@@ -66,10 +64,8 @@ export function sandboxCapabilitiesFor(
   config: SandboxConnectionConfig,
   plan: 'hobby' | 'pro' = 'hobby',
 ): SandboxCapabilities {
-  return config.adapter === 'e2b' ? e2bCapabilities(plan) : modalCapabilities();
+  return SANDBOX_ADAPTER_PLUGINS[config.adapter].capabilities(plan);
 }
-
-export const modalAppNameFor = (project: string) => `melete-${project}`;
 
 /**
  * The spec one session opens with. `session` is the id the sandbox is labelled
@@ -137,35 +133,7 @@ export function createSandboxProvider(
   config: Pick<SandboxConnectionConfig, 'adapter'>,
   options: SandboxProviderOptions,
 ): OpenedSandboxProvider {
-  if (config.adapter === 'e2b') {
-    const provider = createE2bProvider({
-      credential: (use) =>
-        options.credential((value) =>
-          'api_key' in value
-            ? use(value.api_key)
-            : Promise.reject(new Error('this connection holds no E2B key')),
-        ),
-      ...(options.e2bPlan ? { plan: options.e2bPlan } : {}),
-      ...(options.fetch ? { fetch: options.fetch } : {}),
-    });
-    return { provider, close: async () => {} };
-  }
-  const transport = createModalSdkTransport({
-    credential: (use) =>
-      options.credential((value) =>
-        'token_id' in value
-          ? use({ tokenId: value.token_id, tokenSecret: value.token_secret })
-          : Promise.reject(new Error('this connection holds no Modal token')),
-      ),
-  });
-  const provider = createModalProvider({
-    transport,
-    appName: modalAppNameFor(options.project),
-    ...(options.snapshotTtlSeconds === undefined
-      ? {}
-      : { snapshotTtlSeconds: options.snapshotTtlSeconds }),
-  });
-  return { provider, close: async () => provider.close() };
+  return SANDBOX_ADAPTER_PLUGINS[config.adapter].open(options);
 }
 
 export type SandboxTeardownOptions = Omit<SandboxProviderOptions, 'credential'> & {
