@@ -48,18 +48,21 @@ can [run it yourself](#run-it-yourself) on your own computer or a small server.
 Needs Docker, Bun and an API key for your model provider.
 
 ```bash
-git clone https://github.com/ychampion/melete.git && cd melete
-bun install --frozen-lockfile && bun run deploy/scripts/configure.ts
+git clone https://github.com/ychampion/melete.git && cd melete && bun install --frozen-lockfile
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY && bun run deploy/scripts/configure.ts
 docker compose -f deploy/docker-compose.yml up -d --build --wait
 ```
 
-Before the last line, open `deploy/.env` and set `MELETE_DEFAULT_PROVIDER`,
-`MELETE_DEFAULT_MODEL` and your provider's key, as listed under
-[Connect your model](#connect-your-model). Then open http://localhost:3101 and
-create your account.
+The second line waits for you to paste your Fireworks API key and press Enter.
+The key stays hidden, and `configure.ts` writes it into `deploy/.env`. For
+another provider, export its key instead and name the provider and model, for
+example `bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
+with `ANTHROPIC_API_KEY`. [Connect your model](#connect-your-model) lists them
+all. Then open http://localhost:3101 and create your account.
 
-To see a demo with a practice model first, run `configure.ts --fake` instead.
-You can switch to your own model later.
+To see a demo with a practice model first, use
+`bun run deploy/scripts/configure.ts --fake` as the second line. It needs no key,
+and you can switch to your own model later.
 
 [Deployment](docs/DEPLOYMENT.md) has the version requirements, Windows, remote
 servers, HTTPS, Tailscale, backups and how to remove Melete.
@@ -76,9 +79,11 @@ Create a small Linux VM on my cloud provider (Ubuntu 24.04, 2 vCPU, 4 GB RAM,
 the Compose plugin, following Docker's official instructions for Ubuntu. Then
 install Melete from https://github.com/ychampion/melete by following the
 "Install on a Linux Docker host" section of its docs/DEPLOYMENT.md, which also
-installs Bun. Set my model provider in deploy/.env as that section says, using
-the key I give you. Melete listens only on the VM's own loopback address, so
-keep ports 3100 and 3101 closed to the internet. When it's running, give me the
+installs Bun. Configure it for my model provider with the key I give you,
+exporting the key before running configure.ts as the Providers section of
+docs/DEPLOYMENT.md shows, so the key is never printed. Melete listens only on
+the VM's own loopback address, so keep ports 3100 and 3101 closed to the
+internet. When it's running, give me the
 SSH tunnel command from docs/DEPLOYMENT.md so I can open http://localhost:3101,
 and summarise what that file says about HTTPS and Tailscale for reaching it from
 my phone.
@@ -91,8 +96,9 @@ Clone https://github.com/ychampion/melete and run it on this machine with
 Docker, following the "Run it yourself" section of its README. First check that
 Docker Engine is 28 or newer and Docker Compose is 2.33.1 or newer. If this
 machine runs Windows, follow the "Windows (Docker Desktop)" section of
-docs/DEPLOYMENT.md instead. Before starting it, set my model provider in
-deploy/.env using the API key in my environment, without printing the key. When
+docs/DEPLOYMENT.md instead. The API key for my model provider is already in my
+environment, so run configure.ts with --provider and --model for that provider
+as the README shows, and it reads the key from there without printing it. When
 `docker compose -f deploy/docker-compose.yml ps` shows the services running and
 healthy, tell me to open http://localhost:3101.
 ```
@@ -126,19 +132,21 @@ the matching name and key from the Providers section of docs/DEPLOYMENT.md.
 
 ## Connect your model
 
-Melete works with the model you choose. Set these in `deploy/.env`:
+Melete works with the model you choose. Pass the provider to `configure.ts` with
+`--provider` and `--model`, and export the key it reads first:
 
-| `MELETE_DEFAULT_PROVIDER` | What it needs |
+| Provider | Key it reads |
 | --- | --- |
+| `fireworks` (the default) | `FIREWORKS_API_KEY` |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
-| `chatgpt` | Your ChatGPT sign-in, using your plan |
 | `google` | `GOOGLE_API_KEY` |
-| `fireworks` | `FIREWORKS_API_KEY` |
-| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and a key, which can be a model server on your own network |
+| `openai-compatible` | `OPENAI_COMPAT_BASE_URL` and `OPENAI_COMPAT_API_KEY`, which can point at a model server on your own network |
+| `chatgpt` | No key. You sign in with your ChatGPT account once Melete is running. |
 
-Set `MELETE_DEFAULT_MODEL` to the model's name as the provider writes it. To
-change model later, edit the file and restart the two services that use it:
+Write the model's name as the provider does. To change provider or model later,
+edit `MELETE_DEFAULT_PROVIDER`, `MELETE_DEFAULT_MODEL` and the key in
+`deploy/.env`, then restart the two services that use them:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --force-recreate --wait melete runtime
