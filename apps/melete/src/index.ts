@@ -244,7 +244,7 @@ export function createApp(deps: AppDeps) {
     );
   } else if (deps.proposer) mountProposals(app, deps.proposer);
   if (replies) mountReplies(app, replies);
-  if (db) mountActions(app, db);
+  if (db) mountActions(app, db, deps.broker);
   if (deps.jobs) mountOperations(app, deps.operations ?? new OperationService(deps.jobs));
   if (deps.jobs) mountPolicy(app, deps.policy ?? new PolicyService(deps.jobs), deps.registry);
   const attention = deps.attention ?? (deps.jobs ? new AttentionService(deps.jobs) : undefined);

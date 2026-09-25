@@ -524,6 +524,54 @@ withDb('each account acts only inside its own space', () => {
     expect(after?.decision).toBeNull();
   }, 60_000);
 
+  test('only the job’s own principal settles an effect Melete could not confirm', async () => {
+    const { sql } = database();
+    for (const [actor, other] of [
+      [first, second],
+      [second, first],
+    ] as const) {
+      // An effect on the actor's conversation that no connector confirmed.
+      const unconfirmed = recordId('act');
+      await sql`insert into action (id, job_id, attempt_id, connection_id, kind, effect_class,
+        canonical_payload, payload_hash, idempotency_key, status, dispatched_at)
+        select ${unconfirmed}, job_id, attempt_id, connection_id, kind, effect_class,
+          canonical_payload, payload_hash, ${unconfirmed}, 'unknown', now()
+        from action where id = ${actor.draftId}`;
+      const answer = { resolution: 'succeeded', note: 'It arrived.' };
+      // Another account cannot settle it, and learns nothing about it.
+      const refused = await call(other.cookie, `/actions/${unconfirmed}/resolve`, 'POST', answer);
+      expect(refused.status).toBe(404);
+      const [untouched] =
+        await sql`select status, reconciliation from action where id = ${unconfirmed}`;
+      expect(untouched).toMatchObject({ status: 'unknown', reconciliation: null });
+      expect((await call(actor.cookie, `/actions/${unconfirmed}/resolve`, 'POST', {})).status).toBe(
+        400,
+      );
+      const settled = await call(actor.cookie, `/actions/${unconfirmed}/resolve`, 'POST', answer);
+      expect(settled.status).toBe(200);
+      const { action: resolved } = await json<{
+        action: { status: string; resolved_at: string | null; reconciliation: unknown };
+      }>(settled);
+      expect(resolved.status).toBe('succeeded');
+      expect(resolved.resolved_at).not.toBeNull();
+      expect(resolved.reconciliation).toMatchObject({
+        decided_by: 'owner',
+        resolution: 'succeeded',
+        note: 'It arrived.',
+      });
+      // A settled effect is not waiting for an answer any more.
+      const again = await call(actor.cookie, `/actions/${unconfirmed}/resolve`, 'POST', answer);
+      expect(again.status).toBe(409);
+      // Its own ledger read shows the owner's answer, which the chat keeps on screen.
+      const ledger = await json<{ actions: { id: string; reconciliation: unknown }[] }>(
+        await call(actor.cookie, `/actions?job_id=${actor.conversationId}`),
+      );
+      expect(
+        ledger.actions.find((entry) => entry.id === unconfirmed)?.reconciliation,
+      ).toMatchObject({ decided_by: 'owner' });
+    }
+  }, 60_000);
+
   test('each account fully works inside its own space', async () => {
     const { sql } = database();
     for (const actor of [first, second]) {

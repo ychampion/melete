@@ -214,7 +214,7 @@ export interface paths {
         put?: never;
         /**
          * Settle an action Melete could not confirm
-         * @description Used when verify cannot decide. The owner says what really happened; the answer is recorded as a reconciliation, and the action is never re-dispatched.
+         * @description Used when verify cannot decide. The owner says what really happened; the answer is recorded as a reconciliation, and the action is never re-dispatched. It settles only an action on one of the caller's own jobs whose status is unknown or unresolved.
          */
         post: {
             parameters: {
@@ -243,6 +243,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["__schema321"];
+                    };
+                };
+                /** @description No such action among the caller's own */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["__schema140"];
                     };
                 };
                 /** @description Action is not awaiting reconciliation */

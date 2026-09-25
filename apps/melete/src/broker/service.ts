@@ -1657,6 +1657,43 @@ export class BrokerService implements BrokerOperations {
     });
   }
 
+  /**
+   * The owner says what happened to an effect Melete could not confirm. The
+   * answer settles it as `verify` would, recorded as the owner's, and the
+   * action is never dispatched again. Null when it is not awaiting an answer.
+   */
+  async resolveByOwner(
+    id: string,
+    input: { resolution: 'succeeded' | 'failed' | 'unresolved'; note?: string },
+  ): Promise<Action | null> {
+    const action = await loadAction(this.sql, id);
+    return this.sql.begin(async (tx) => {
+      const job = await lockJob(tx, action.job_id);
+      const current = await loadAction(tx, id, true);
+      if (!['unknown', 'unresolved'].includes(current.status)) return null;
+      const resolved = input.resolution !== 'unresolved';
+      const decidedAt = new Date().toISOString();
+      await this.setStatus(tx, current, input.resolution);
+      await tx`update action set reconciliation = ${JSON.stringify({
+        decided_by: 'owner',
+        decided_at: decidedAt,
+        resolution: input.resolution,
+        note: input.note ?? '',
+      })}::jsonb, resolved_at = ${resolved ? decidedAt : null} where id = ${id}`;
+      if (resolved) {
+        await tx`update budget_ledger set settled = reserved where action_id = ${id} and settled is null`;
+        const [attempt] = await tx`select epoch from attempt where id = ${current.attempt_id}`;
+        const late = attempt?.epoch !== job.lease_epoch;
+        const [pending] =
+          await tx`select count(*)::int as count from action where job_id = ${job.id}
+          and status in ('unknown', 'unresolved', 'dispatched')`;
+        if (pending?.count === 0 && !late && job.state === 'needs_reconciliation')
+          await this.wake(tx, job, 'recovery');
+      }
+      return loadAction(tx, id);
+    });
+  }
+
   /** Only uncertain dispositions are recovered. This path never invokes execute(). */
   async recoverDispatched(now = Date.now()): Promise<number> {
     const cutoff = new Date(now - this.dispatchTimeoutMs).toISOString();

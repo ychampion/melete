@@ -1379,11 +1379,13 @@ export function buildOpenApiDocument() {
             summary: 'Settle an action Melete could not confirm',
             description:
               'Used when verify cannot decide. The owner says what really happened; the answer is recorded ' +
-              'as a reconciliation, and the action is never re-dispatched.',
+              'as a reconciliation, and the action is never re-dispatched. It settles only an action on ' +
+              "one of the caller's own jobs whose status is unknown or unresolved.",
             requestParams: idParam('actionId', 'Action id'),
             requestBody: json(resolveActionRequest),
             responses: {
               '200': jsonResponse('Resolved', actionResponse),
+              '404': problem("No such action among the caller's own"),
               '409': problem('Action is not awaiting reconciliation'),
             },
           },
