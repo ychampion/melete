@@ -22,19 +22,19 @@ type SeedRecord = {
 
 const RECORDS: SeedRecord[] = [
   {
-    path: 'knowledge/prefers-bun.md',
-    title: 'Uses bun, not npm',
-    type: 'preference',
+    path: 'knowledge/home-city.md',
+    title: 'Home city',
+    type: 'fact',
     status: 'active',
     confidence: 'high',
     asserted_by: 'user',
-    quote: 'Always bun. npm is for other people.',
-    body: 'Every script in the workspace is run with bun. Install with `bun install`, run with `bun run`.',
-    tags: ['tooling', 'workspace'],
+    quote: 'I live in Bristol.',
+    body: 'Bristol. Times, bookings and directions start from here unless you say otherwise.',
+    tags: ['home'],
   },
   {
     path: 'knowledge/landlord-contact.md',
-    title: 'The landlord answers on email, not the phone',
+    title: 'Landlord contact',
     type: 'fact',
     status: 'active',
     confidence: 'medium',
@@ -45,7 +45,7 @@ const RECORDS: SeedRecord[] = [
   },
   {
     path: 'knowledge/heating-fault.md',
-    title: 'The heating fault was reported on 12 August',
+    title: 'Heating fault',
     type: 'event',
     status: 'active',
     confidence: 'high',
@@ -67,7 +67,7 @@ const RECORDS: SeedRecord[] = [
   },
   {
     path: 'knowledge/reply-tone.md',
-    title: 'Replies to the building manager stay short and dated',
+    title: 'Reply style',
     type: 'procedure',
     status: 'active',
     confidence: 'medium',
