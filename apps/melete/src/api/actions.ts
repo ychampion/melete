@@ -1,18 +1,46 @@
-import { actionListQuery, actionListResponse } from '@melete/contracts';
+import {
+  actionListQuery,
+  actionListResponse,
+  actionResponse,
+  resolveActionRequest,
+} from '@melete/contracts';
 import { sql as query } from 'drizzle-orm';
 import { Hono } from 'hono';
 import type { Sql } from 'postgres';
 import { actionFromRow } from '../broker/records.ts';
+import type { BrokerService } from '../broker/service.ts';
 import type { Database } from '../db/client.ts';
-import { visibleJob } from '../principals/authority.ts';
+import { requestPrincipal, visibleJob } from '../principals/authority.ts';
 import { ServiceError } from './errors.ts';
 
 /**
  * The same ledger read on the owner API, for a conversation's unconfirmed
- * effects. It returns only actions on jobs the caller owns, in spaces they can
- * see; a space member never reads another person's ledger through it.
+ * effects, and the owner's answer to one. Both reach only actions on jobs the
+ * caller owns, in spaces they can see; a space member never reads or settles
+ * another person's ledger through them.
  */
-export function mountActions(app: Hono, db: Database) {
+export function mountActions(app: Hono, db: Database, broker?: BrokerService) {
+  if (broker)
+    app.post('/actions/:actionId/resolve', async (c) => {
+      const id = c.req.param('actionId');
+      const parsed = resolveActionRequest.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success)
+        throw new ServiceError('invalid_request', 'Say whether it happened.', 400);
+      // An answer is always someone's: with no signed-in principal there is nobody to record.
+      const principalId = requestPrincipal();
+      if (!principalId) throw new ServiceError('scope_denied', 'Sign in to answer this.', 403);
+      // Only the caller's own action, checked where it is changed: anyone else's
+      // reads as not being here at all.
+      const settled = await broker.resolveByOwner(principalId, id, parsed.data);
+      if (settled.status === 'not_found') throw new ServiceError('not_found', 'Not found.', 404);
+      if (settled.status === 'not_awaiting')
+        throw new ServiceError(
+          'not_awaiting_reconciliation',
+          'This is not waiting for your answer.',
+          409,
+        );
+      return c.json(actionResponse.parse({ action: settled.action }));
+    });
   app.get('/actions', async (c) => {
     const parsed = actionListQuery.safeParse(c.req.query());
     if (!parsed.success) throw new ServiceError('invalid_query', 'Invalid action query', 400);

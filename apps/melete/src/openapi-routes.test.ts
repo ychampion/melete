@@ -13,13 +13,13 @@ import { eventDelivery } from './jobs/triggers.ts';
 
 /**
  * Documented, but not served by the owner API on port 8787. The owner API lists
- * a person's own actions; reading one, resolving one and the execution claims
- * are answered on the effect listener, which only the runtime network reaches;
- * the attempt reads and space creation have no route.
+ * a person's own actions and takes their answer to one it could not confirm;
+ * reading one and the execution claims are answered on the effect listener,
+ * which only the runtime network reaches; the attempt reads and space creation
+ * have no route.
  */
 const DOCUMENTED_ELSEWHERE = [
   'GET /actions/{}',
-  'POST /actions/{}/resolve',
   'POST /actions/{}/execution/start',
   'POST /actions/{}/execution/settle',
   'GET /attempts/{}',
@@ -45,6 +45,7 @@ function servedRoutes(): string[] {
     browserSessions: stub,
     memory: stub,
     removals: stub,
+    broker: stub,
   };
   const routes = createApp(deps)
     .routes.filter((route) => route.method !== 'ALL')

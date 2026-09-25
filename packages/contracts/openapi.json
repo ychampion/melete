@@ -10657,7 +10657,7 @@
           "actions"
         ],
         "summary": "Settle an action Melete could not confirm",
-        "description": "Used when verify cannot decide. The owner says what really happened; the answer is recorded as a reconciliation, and the action is never re-dispatched.",
+        "description": "Used when verify cannot decide. The owner says what really happened; the answer is recorded as a reconciliation, and the action is never re-dispatched. It settles only an action on one of the caller's own jobs whose status is unknown or unresolved.",
         "parameters": [
           {
             "in": "path",
@@ -10703,6 +10703,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/__schema321"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No signed-in person to record the answer for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema140"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such action among the caller's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/__schema140"
                 }
               }
             }

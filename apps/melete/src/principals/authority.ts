@@ -53,6 +53,25 @@ export function ownJobClause(
     : query``;
 }
 
+/**
+ * `visibleJob` for a hand-written transaction: the job is the principal's own,
+ * in a space they can see. Read inside the transaction that acts on the job, so
+ * a revoked membership cannot slip between the check and the change.
+ */
+export async function jobVisibleTo(
+  query: Sql | TransactionSql,
+  jobId: string,
+  principalId: string,
+): Promise<boolean> {
+  const [row] = await query`select 1 from job j join space s on s.id = j.space_id
+    where j.id = ${jobId}
+      and coalesce(j.principal_id, (select id from owner limit 1)) = ${principalId}
+      and ((s.kind = 'personal' and coalesce(s.owner_principal_id, (select id from owner limit 1)) = ${principalId})
+        or (s.kind = 'shared' and exists (select 1 from space_membership m
+          where m.space_id = s.id and m.principal_id = ${principalId} and m.revoked_at is null)))`;
+  return Boolean(row);
+}
+
 /** Private memory questions remain an owner surface inside a shared space. */
 export function ownedSpace(spaceId: SQLWrapper, principalId = requestPrincipal()): SQL | undefined {
   if (!principalId) return undefined;
