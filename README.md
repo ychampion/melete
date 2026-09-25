@@ -164,8 +164,8 @@ files, fetch, time and GitHub, listed at `GET /plugins`, and each one installs
 with a single request.
 
 Melete can also run code in a cloud sandbox. Connect an [E2B](https://e2b.dev)
-or [Modal](https://modal.com) account as a **Sandbox** connection and your jobs
-can use it.
+or [Modal](https://modal.com) account as a **Sandbox** connection, and the
+agent's terminal runs there, with a receipt for each command.
 
 ## Security
 
@@ -190,7 +190,6 @@ can use it.
 - Hosted Melete and our website, so you can try it in your browser.
 - One approval that covers a whole chase, follow-ups included.
 - A place to see, pause or remove what it has learned from you.
-- A terminal in your cloud sandbox.
 - Daytona as a sandbox, alongside E2B and Modal.
 
 ## Documentation
