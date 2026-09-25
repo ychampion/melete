@@ -8,8 +8,9 @@ import { Icon } from '../design/icons.tsx';
 import { MeleteAvatar } from '../design/mark.tsx';
 import { Button } from '../design/primitives.tsx';
 import { adapter } from '../experience/adapter.ts';
-import { agentById, faceOf, lookOf, useApp, useNow } from '../experience/hooks.ts';
+import { agentById, faceOf, lookOf, useApp, useDecisions, useNow } from '../experience/hooks.ts';
 import type { Conversation } from '../experience/types.ts';
+import { isWaiting, waitingOn } from '../experience/waiting.ts';
 import { href, navigate } from '../router.ts';
 import { RailToggle, Shell } from '../shell/Shell.tsx';
 
@@ -27,6 +28,11 @@ const STATUS_WORDS: Record<Conversation['status'], string> = {
   stopped: 'Stopped',
 };
 
+/** A chat's state in words; one held up by an open decision waits for the person. */
+export function statusWord(chat: Conversation, waiting: ReadonlySet<string>): string {
+  return STATUS_WORDS[isWaiting(chat, waiting) ? 'needs_you' : chat.status];
+}
+
 function when(iso: string, now: number): string {
   const date = new Date(iso);
   if (date.toDateString() === new Date(now).toDateString())
@@ -37,6 +43,7 @@ function when(iso: string, now: number): string {
 
 export function ChatsScreen() {
   const { agents } = useApp();
+  const waiting = waitingOn(useDecisions());
   const now = useNow(true, 60_000);
   const [chats, setChats] = useState<Conversation[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -100,7 +107,11 @@ export function ChatsScreen() {
                 style={index === 0 ? { borderTop: 0 } : undefined}
               >
                 {agent ? (
-                  <AgentFace look={lookOf(agent)} size={28} state={faceOf(chat.status)} />
+                  <AgentFace
+                    look={lookOf(agent)}
+                    size={28}
+                    state={faceOf(isWaiting(chat, waiting) ? 'needs_you' : chat.status)}
+                  />
                 ) : (
                   <MeleteAvatar size={28} />
                 )}
@@ -112,7 +123,7 @@ export function ChatsScreen() {
                     {chat.title}
                   </span>
                   <span className="clamp1" style={{ fontSize: 13, color: 'var(--muted)' }}>
-                    {agent?.name ?? 'Melete'} · {STATUS_WORDS[chat.status]}
+                    {agent?.name ?? 'Melete'} · {statusWord(chat, waiting)}
                   </span>
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>

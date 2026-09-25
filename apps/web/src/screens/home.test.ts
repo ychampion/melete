@@ -6,7 +6,17 @@
 import { expect, test } from 'bun:test';
 import { progressOf, toolOf } from '../experience/trace.ts';
 import type { Conversation, Permission, Question } from '../experience/types.ts';
-import { briefLine, type Decision, frontOf, queueOrder, waitedFor } from './Home.tsx';
+import { waitingOn } from '../experience/waiting.ts';
+import { statusWord } from './Chats.tsx';
+import {
+  briefLine,
+  type Decision,
+  frontOf,
+  motionLine,
+  motionRows,
+  queueOrder,
+  waitedFor,
+} from './Home.tsx';
 
 test('both clauses, spelled out, with the money the map totals', () => {
   expect(briefLine(2, 6, 481_100, 'GBP')).toBe(
@@ -131,4 +141,44 @@ test('how long the front has waited reads the way a person would say it', () => 
   expect(waitedFor(asked, after(5 * 60))).toBe('5 hours');
   expect(waitedFor(asked, after(26 * 60))).toBe('A day');
   expect(waitedFor(asked, after(3 * 24 * 60))).toBe('3 days');
+});
+
+test('In motion reads waiting on you while a job has an open decision, not Done', () => {
+  const chase: Conversation = {
+    ...conversation(),
+    id: 'job_chase',
+    title: 'Tern & Co',
+    status: 'done',
+  };
+  const other: Conversation = {
+    ...conversation(),
+    id: 'job_other',
+    title: 'Kyoto',
+    status: 'done',
+  };
+  const waiting = waitingOn({
+    permissions: [{ conversation_id: 'job_chase' }],
+    questions: [{ conversation_id: null }],
+  });
+  expect([...waiting]).toEqual(['job_chase']);
+  expect(motionLine(chase, waiting, 'Nova')).toBe('Waiting on you');
+  expect(motionLine(other, waiting, 'Nova')).toBe('Done');
+  // Once the decision is made the turn's own status reads again.
+  expect(motionLine(chase, new Set(), 'Nova')).toBe('Done');
+});
+
+test('a conversation waiting on the person stays in the list, whatever its age', () => {
+  const now = Date.parse('2026-09-30T19:05:00.000Z');
+  const stale: Conversation = { ...conversation(), id: 'job_old', status: 'done' };
+  const asking: Conversation = { ...conversation(), id: 'job_ask', status: 'needs_you' };
+  expect(motionRows([stale], new Set(), now)).toEqual([]);
+  expect(motionRows([stale], new Set(['job_old']), now).map((row) => row.id)).toEqual(['job_old']);
+  expect(motionRows([asking], new Set(), now).map((row) => row.id)).toEqual(['job_ask']);
+  expect(motionLine(asking, new Set(), 'Nova')).toBe('Waiting on you');
+});
+
+test('Chats says a chat held up by a decision is waiting, not done', () => {
+  const chase: Conversation = { ...conversation(), id: 'job_chase', status: 'done' };
+  expect(statusWord(chase, new Set(['job_chase']))).toBe('Waiting for you');
+  expect(statusWord(chase, new Set())).toBe('Done');
 });
