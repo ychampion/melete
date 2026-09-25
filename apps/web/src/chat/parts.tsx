@@ -4,7 +4,7 @@
  * Each renders from the contract's typed data and calls back with the one
  * thing a person can do to it.
  */
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { AgentFace, faceStateFor } from '../design/face.tsx';
 import { Icon, type IconName } from '../design/icons.tsx';
 import { Logo, type LogoName } from '../design/logos.tsx';
@@ -1027,6 +1027,9 @@ export function describeAction(action: LedgerAction): string {
   return 'the change';
 }
 
+/** What "It did not" leads to: the effect is open to another attempt. */
+export const RETRY_HINT = 'Melete may try again, and asks you first.';
+
 export function UnknownCard({
   action,
   onResolve,
@@ -1037,6 +1040,7 @@ export function UnknownCard({
   const settled =
     action.status === 'succeeded' || action.status === 'failed' ? action.status : null;
   const unsure = action.status === 'unresolved';
+  const retryHint = useId();
   return (
     <div className="card-pad">
       <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
@@ -1062,6 +1066,9 @@ export function UnknownCard({
             It may or may not have arrived. I have not sent it again. What I tried:{' '}
             {describeAction(action)}.
           </span>
+          {settled === 'failed' ? (
+            <span style={{ fontSize: 13, color: 'var(--secondary)' }}>{RETRY_HINT}</span>
+          ) : null}
         </div>
         {settled ? (
           <Badge tone={settled === 'succeeded' ? 'success' : 'neutral'}>
@@ -1076,7 +1083,12 @@ export function UnknownCard({
           <Button size="sm" onClick={() => onResolve('succeeded')}>
             It arrived
           </Button>
-          <Button size="sm" variant="outline" onClick={() => onResolve('failed')}>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-describedby={retryHint}
+            onClick={() => onResolve('failed')}
+          >
             It did not
           </Button>
           {unsure ? null : (
@@ -1084,6 +1096,9 @@ export function UnknownCard({
               I can’t tell yet
             </Button>
           )}
+          <span id={retryHint} style={{ fontSize: 12, color: 'var(--muted)' }}>
+            If it did not, Melete may try again, and asks you first.
+          </span>
         </div>
       ) : null}
     </div>
