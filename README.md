@@ -49,14 +49,15 @@ Needs Docker, Bun and an API key for your model provider.
 
 ```bash
 git clone https://github.com/ychampion/melete.git && cd melete && bun install --frozen-lockfile
-read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY && bun run deploy/scripts/configure.ts
+read -rs FIREWORKS_API_KEY && export FIREWORKS_API_KEY && bun run deploy/scripts/configure.ts && unset FIREWORKS_API_KEY
 docker compose -f deploy/docker-compose.yml up -d --build --wait
 ```
 
 The second line waits for you to paste your Fireworks API key and press Enter.
-The key stays hidden, and `configure.ts` writes it into `deploy/.env`. For
-another provider, export its key instead and name the provider and model, for
-example `bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
+The key stays hidden, `configure.ts` writes it into `deploy/.env`, and the
+line then clears it from your shell. For another provider, export its key
+instead and name the provider and model, for example
+`bun run deploy/scripts/configure.ts --provider anthropic --model <model id>`
 with `ANTHROPIC_API_KEY`. [Connect your model](#connect-your-model) lists them
 all. Then open http://localhost:3101 and create your account.
 
@@ -169,7 +170,7 @@ each command.
 
 ## Security
 
-- Every message it sends waits for your approval, or falls under a limit you set for someone you trust. Approving a chase's first message also covers up to three follow-ups that repeat it to the same person.
+- Every message it sends waits for your approval, or falls under a limit you set for someone you trust. Approving a chase's first message also covers up to three follow-ups that repeat it to the same person, which you can withdraw in **Settings → Rules**.
 - The passwords and sign-in tokens it stores are sealed with your installation's master key.
 - The agent's code runs in an isolated container that can reach only Melete's own service, which checks each action against what you allowed.
 - Each person on an installation has their own space, and their jobs, drafts and receipts stay private to them.
