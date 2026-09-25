@@ -10,11 +10,17 @@ import path from 'node:path';
 import type { SandboxConnectionConfig } from '@melete/contracts';
 import { type Action, canonicalizePayload, connectorManifest } from '@melete/contracts';
 import { testDatabase } from '../../test/helpers/database.ts';
+import { SANDBOX_SYNC_ALLOWANCE_MS } from '../env.ts';
 import { FakeSandboxEngine, FakeSandboxProvider } from '../sandbox/fake.ts';
 import { seedSessionScope } from '../sandbox/session-fixtures.ts';
 import { SandboxSessions } from '../sandbox/sessions.ts';
 import { ConnectorRegistry } from './registry.ts';
-import { createSandboxExecConnector, sandboxExecManifest } from './sandbox-exec.ts';
+import {
+  createSandboxExecConnector,
+  outputText,
+  sandboxDispatchBudgetMs,
+  sandboxExecManifest,
+} from './sandbox-exec.ts';
 import type { ConnectorContext } from './types.ts';
 
 const handle = await testDatabase();
@@ -72,6 +78,42 @@ test('the terminal manifest parses, is brokered, and registers', () => {
       }),
     ),
   ).not.toThrow();
+});
+
+test('a dispatch may take the command timeout and the session margin, never less', () => {
+  expect(
+    sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: 90_000 } }),
+  ).toBe(90_000 + SANDBOX_SYNC_ALLOWANCE_MS);
+  expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true' } })).toBe(
+    120_000 + SANDBOX_SYNC_ALLOWANCE_MS,
+  );
+  // A payload the connector refuses still gets a bounded budget.
+  expect(sandboxDispatchBudgetMs({ canonical_payload: { command: 'true', timeout_ms: -1 } })).toBe(
+    120_000 + SANDBOX_SYNC_ALLOWANCE_MS,
+  );
+});
+
+test('a run name is a short token', () => {
+  const schema = sandboxExecManifest.tools[0]?.input_schema as {
+    properties: { run: { pattern: string } };
+  };
+  const pattern = new RegExp(schema.properties.run.pattern);
+  expect(pattern.test('0123456789abcdef')).toBe(true);
+  expect(pattern.test('short')).toBe(false);
+  expect(pattern.test('has a space in it')).toBe(false);
+});
+
+test('output text keeps a character the cap cut, and marks what is not text', () => {
+  const bytes = new TextEncoder().encode('ok é');
+  expect(outputText(bytes, false)).toEqual({ text: 'ok é', binary: false });
+  // The cap fell inside the last character: not binary.
+  expect(outputText(bytes.slice(0, -1), true)).toEqual({ text: 'ok ', binary: false });
+  // The command itself ended inside one: that is not text.
+  expect(outputText(bytes.slice(0, -1), false).binary).toBe(true);
+  expect(outputText(new Uint8Array([0x61, 0x00]), false)).toEqual({
+    text: 'a�',
+    binary: true,
+  });
 });
 
 withDb('a command in a remote sandbox', () => {
@@ -182,6 +224,9 @@ withDb('a command in a remote sandbox', () => {
 
   test("a remote command's digest is verified because the service wrote the file", async () => {
     const { scope, run } = await setup();
+    const slow = await run({ command: 'printf started; sleep 5; printf never', timeout_ms: 1_000 });
+    if (slow.result.outcome !== 'succeeded') throw new Error(JSON.stringify(slow.result));
+    expect(slow.result.receipt.detail).toMatchObject({ timed_out: true, output: 'started' });
     const size = 70_000;
     const { action, result } = await run({ command: `head -c ${size} /dev/zero` });
     if (result.outcome !== 'succeeded') throw new Error(JSON.stringify(result));
@@ -210,6 +255,46 @@ withDb('a command in a remote sandbox', () => {
       digest_verified: true,
       output_path: null,
     });
+  }, 60_000);
+
+  test('the output travels back on the receipt, as text or marked binary', async () => {
+    const { scope, run } = await setup();
+    const text = await run({ command: "printf 'line one\\nline two'" });
+    if (text.result.outcome !== 'succeeded') throw new Error(JSON.stringify(text.result));
+    expect(text.result.receipt.detail).toMatchObject({
+      output: 'line one\nline two',
+      output_binary: false,
+    });
+
+    // Bytes that are not UTF-8 are marked, and a NUL never reaches the receipt,
+    // since Postgres cannot store one inside a JSON string.
+    const work = path.join(workRoot, scope.jobId);
+    await Bun.write(path.join(work, 'blob.bin'), new Uint8Array([0x41, 0x00, 0xff, 0xfe, 0x42]));
+    const binary = await run({ command: 'cat /work/blob.bin' });
+    if (binary.result.outcome !== 'succeeded') throw new Error(JSON.stringify(binary.result));
+    const detail = binary.result.receipt.detail as Record<string, unknown>;
+    expect(detail.output_binary).toBe(true);
+    expect(String(detail.output)).not.toContain('\0');
+    expect(String(detail.output)).toStartWith('A');
+    // The digest names the real bytes, not the text shown.
+    expect(detail.output_digest).toBe(digest(new Uint8Array([0x41, 0x00, 0xff, 0xfe, 0x42])));
+
+    // A preview cut at the cap inside a character is still text.
+    await Bun.write(path.join(work, 'accents.txt'), `a${'é'.repeat(9_000)}`);
+    const accents = await run({ command: 'cat /work/accents.txt' });
+    if (accents.result.outcome !== 'succeeded') throw new Error(JSON.stringify(accents.result));
+    const cut = accents.result.receipt.detail as Record<string, unknown>;
+    expect(cut.truncated).toBe(true);
+    expect(cut.output_binary).toBe(false);
+    expect(String(cut.output)).toBe(`a${'é'.repeat(8_191)}`);
+  }, 60_000);
+
+  test('a malformed run name is refused before a sandbox opens', async () => {
+    const { provider, run } = await setup();
+    const { result } = await run({ command: 'true', run: 'not a run name' });
+    expect(result).toMatchObject({ outcome: 'failed', retryable: true });
+    expect(provider.calls.create).toBe(0);
+    expect(provider.calls.exec).toBe(0);
   }, 60_000);
 
   test('a second command in one attempt reuses the session', async () => {

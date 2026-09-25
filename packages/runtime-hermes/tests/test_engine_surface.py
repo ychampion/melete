@@ -872,3 +872,139 @@ def test_conversation_history_in_the_request_body_strips_tool_calls():
     assert [sorted(m) for m in history] == [["content", "role"]] * 3
     assert all("tool_calls" not in m and "tool_call_id" not in m for m in history)
     assert history[1]["content"] == ""
+
+
+# --- The sandbox terminal backend through the engine's own seam --------------
+# agent/terminal_env_registry.py:26-29 reserves the built-in backend names and
+# the registry refuses them (:32-34). tools/terminal_tool_backends.py:183-192
+# builds any other `TERMINAL_ENV` from the registered provider, and
+# tools/terminal_tool.py `_run_foreground` retries a raising `env.execute` up to
+# three times. These probes register the Melete backend in that registry, reach
+# it through the engine's factory and its terminal tool, and count what arrives
+# at a loopback broker.
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+class _Broker(http.server.BaseHTTPRequestHandler):
+    def _answer(self, status: int, body: dict) -> None:
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self):  # noqa: N802 - http.server's name
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.server.proposals.append(json.loads(raw))
+        self._answer(*self.server.propose)
+
+    def do_GET(self):  # noqa: N802
+        self._answer(200, {"action": {"id": "act_probe", "receipt": {"detail": {
+            "output": "from the sandbox\n", "output_binary": False, "exit_code": 7,
+            "timed_out": False, "truncated": False, "capture_limited": False}}}})
+
+    def log_message(self, *args):
+        return
+
+
+@contextlib.contextmanager
+def _sandbox_backend(propose: tuple):
+    from agent import terminal_env_registry
+    from melete_plugin.broker import BrokerClient
+    from melete_plugin.terminal_backend import register_terminal_backend
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Broker)
+    server.proposals = []
+    server.propose = propose
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class _Ctx:
+        def register_terminal_environment_provider(self, provider):
+            terminal_env_registry.register_provider(provider)
+            return provider
+
+    client = BrokerClient(base_url=f"http://127.0.0.1:{server.server_port}", token="cap", timeout=5)
+    catalog = [{"name": "terminal.run", "connection_id": "conn_probe"}]
+    provider = register_terminal_backend(_Ctx(), client, catalog)
+    try:
+        yield provider, server
+    finally:
+        terminal_env_registry._registry.reset_for_tests()
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_engine_refuses_a_plugin_backend_with_a_builtin_name():
+    from agent import terminal_env_registry
+    from melete_plugin.broker import BrokerClient
+    from melete_plugin.terminal_backend import SandboxTerminal, engine_classes
+
+    provider_cls, _env, _hooks = engine_classes()
+
+    class Local(provider_cls):
+        @property
+        def name(self) -> str:
+            return "local"
+
+    with pytest.raises(ValueError):
+        terminal_env_registry.register_provider(Local(SandboxTerminal(BrokerClient("http://x", "t"), "c")))
+    terminal_env_registry._registry.reset_for_tests()
+
+
+def test_the_engine_factory_builds_the_sandbox_backend_and_one_command_is_one_action(hermes_home):
+    from tools.terminal_tool_backends import _create_environment
+
+    ok = (201, {"action_id": "act_probe", "status": "succeeded", "message": "ran"})
+    with _sandbox_backend(ok) as (provider, server):
+        assert provider is not None and provider.name == "melete_sandbox"
+        env = _create_environment("melete_sandbox", image="", cwd="/work", timeout=30, task_id="probe")
+        assert env._hermes_backend_name == "melete_sandbox"
+        result = env.execute("ls", cwd="/work/src", timeout=10)
+        assert result == {"output": "from the sandbox\n", "returncode": 7}
+        [proposal] = server.proposals
+        assert proposal["kind"] == "terminal.run" and proposal["connection_id"] == "conn_probe"
+        assert proposal["payload"]["command"] == "ls" and proposal["payload"]["cwd"] == "src"
+
+
+def test_the_engines_terminal_tool_sends_a_lost_command_once(hermes_home, monkeypatch):
+    """A broker failure after sending would be retried three times by the
+    engine if execute() raised; it returns instead, so one proposal arrives."""
+    from tools import terminal_tool
+
+    monkeypatch.setenv("TERMINAL_ENV", "melete_sandbox")
+    monkeypatch.setenv("TERMINAL_CWD", "/work")
+    lost = (500, {"error": {"code": "internal_error", "message": "Broker request failed"}})
+    with _sandbox_backend(lost) as (_provider, server):
+        answer = json.loads(terminal_tool.terminal_tool("make deploy", task_id="probe-lost"))
+        assert len(server.proposals) == 1
+        assert "[outcome unknown]" in answer["output"]
+        assert answer["exit_code"] != 0
+
+
+def test_the_sandbox_toolset_gives_the_terminal_and_no_background_processes(hermes_home, monkeypatch):
+    """`terminal_tools` is what the boot script and engine-config.ts add for a
+    sandbox space (SANDBOX_TERMINAL_TOOLSET). The `terminal` toolset would also
+    select process_manage, whose background polls each become a broker action."""
+    import model_tools
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import discover_builtin_tools
+
+    discover_builtin_tools()
+    monkeypatch.setenv("TERMINAL_ENV", "melete_sandbox")
+    monkeypatch.setenv("TERMINAL_CWD", "/work")
+    ok = (201, {"action_id": "act_probe", "status": "succeeded", "message": "ran"})
+    with _sandbox_backend(ok):
+        config = {"platform_toolsets": {"api_server": ["melete", "terminal_tools"]},
+                  "tools": {"tool_search": {"enabled": "off"}}}
+        write_config(hermes_home, config)
+        enabled = sorted(_get_platform_tools(config, "api_server"))
+        names = {d["function"]["name"] for d in
+                 model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)}
+        assert "terminal" in names
+        assert "process_manage" not in names
+        assert "process_manage" not in model_tools._select_tool_names(enabled, None, True)
+        # The spelling not used would have asked for it.
+        assert "process_manage" in model_tools._select_tool_names(["terminal"], None, True)

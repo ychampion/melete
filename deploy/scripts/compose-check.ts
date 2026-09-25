@@ -384,8 +384,10 @@ export function checkCompose(compose: ComposeFile): CheckResult[] {
  * grows until the provider refuses it.
  *
  * This reads the file the image copies in, so it fails in CI on any machine
- * rather than on someone else's installation. Toolsets and the terminal backend
- * are checked where they are turned on.
+ * rather than on someone else's installation. The image selects no terminal:
+ * the boot script adds one, pinned to the sandbox backend, only for a space
+ * that has a sandbox, and refuses any other backend
+ * (packages/runtime-hermes/tests/test_entrypoint.py).
  */
 export function checkCellConfig(root: string): CheckResult[] {
   const path = join(root, 'packages', 'runtime-hermes', 'config', 'config.yaml');
@@ -394,6 +396,8 @@ export function checkCellConfig(root: string): CheckResult[] {
     agent?: { max_turns?: unknown };
     compression?: Record<string, unknown>;
     checkpoints?: { enabled?: unknown };
+    terminal?: unknown;
+    platform_toolsets?: { api_server?: unknown };
   };
   const memory = config.memory ?? {};
   const compression = config.compression ?? {};
@@ -415,6 +419,17 @@ export function checkCellConfig(root: string): CheckResult[] {
         threshold > 0,
       detail:
         'memory.memory_enabled and memory.user_profile_enabled must both be false (memory.enabled is not a key the engine reads), checkpoints must be off, agent.max_turns must be a positive ceiling, and compression must be on in place with a threshold in tokens',
+    },
+    {
+      name: 'the cell config selects no terminal backend of its own',
+      ok:
+        config.terminal === undefined &&
+        Array.isArray(config.platform_toolsets?.api_server) &&
+        !config.platform_toolsets.api_server.some((name) =>
+          ['terminal', 'terminal_tools'].includes(String(name)),
+        ),
+      detail:
+        'the image copy must carry no terminal section and no terminal toolset; the boot script pins TERMINAL_ENV to the sandbox backend when a space has one',
     },
   ];
 }

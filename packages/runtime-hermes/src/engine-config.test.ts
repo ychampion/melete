@@ -5,6 +5,7 @@ import { GATEWAY_MAX_REQUEST_BYTES } from '@melete/contracts';
 import { parse } from 'yaml';
 import {
   API_SERVER_HINT,
+  attemptEngineFeatures,
   compactionThresholdTokens,
   DEFAULT_COMPACTION_MAX_TOKENS,
   DEFAULT_ENGINE_MAX_TURNS,
@@ -267,4 +268,38 @@ test('nothing that starts an engine spells its configuration by hand', () => {
   for (const directory of ['apps', 'conformance', 'deploy', 'evals', 'packages'])
     walk(join(root, directory));
   expect(spelled.sort()).toEqual(SPELLED_BY_HAND);
+});
+
+test('a catalog with one sandbox terminal pins the engine terminal to the sandbox', () => {
+  const sandbox = { name: 'terminal.run', connection_id: 'conn_sandbox' };
+  const features = attemptEngineFeatures([{ name: 'react', connection_id: null }, sandbox]);
+  expect(features).toEqual({
+    toolsets: ['melete', 'terminal_tools'],
+    terminalBackend: 'melete_sandbox',
+  });
+  const config = renderEngineConfig({ ...base, features }) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  expect(config.platform_toolsets).toEqual({ api_server: ['melete', 'terminal_tools'] });
+  expect(config.terminal).toEqual({ backend: 'melete_sandbox', cwd: '/work' });
+  expect(engineConfigEnvironment({ ...base, features }).TERMINAL_ENV).toBe('melete_sandbox');
+});
+
+test('no sandbox, or two, leaves the engine without a terminal', () => {
+  for (const tools of [
+    [],
+    [{ name: 'exec.run', connection_id: 'conn_exec' }],
+    [{ name: 'terminal.run', connection_id: null }],
+    [
+      { name: 'terminal.run', connection_id: 'conn_a' },
+      { name: 'terminal.run', connection_id: 'conn_b' },
+    ],
+  ]) {
+    const features = attemptEngineFeatures(tools);
+    expect(features).toEqual({});
+    const config = renderEngineConfig({ ...base, features }) as Record<string, unknown>;
+    expect(config.terminal).toBeUndefined();
+    expect(engineConfigEnvironment({ ...base, features }).TERMINAL_ENV).toBeUndefined();
+  }
 });

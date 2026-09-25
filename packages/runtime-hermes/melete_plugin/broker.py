@@ -68,12 +68,18 @@ class BrokerClient:
         # container this stays None and urllib's default opener is used.
         self._opener = opener
 
-    def _open(self, request: "urllib.request.Request") -> Any:
+    def _open(self, request: "urllib.request.Request", timeout: float) -> Any:
         if self._opener is not None:
-            return self._opener(request, timeout=self.timeout)
-        return urllib.request.urlopen(request, timeout=self.timeout)  # noqa: S310
+            return self._opener(request, timeout=timeout)
+        return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
 
-    def _call(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+    def _call(
+        self,
+        method: str,
+        path: str,
+        payload: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
         if not self.base_url:
             raise BrokerError("not_configured", f"{BROKER_URL_ENV} is not set")
         if not self.token:
@@ -87,7 +93,7 @@ class BrokerClient:
             f"{self.base_url}{path}", data=body, method=method, headers=headers
         )
         try:
-            with self._open(request) as response:
+            with self._open(request, timeout or self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             raise BrokerError(*_error_from_body(error), status=error.code) from error
@@ -109,16 +115,25 @@ class BrokerClient:
         return [tool for tool in tools if isinstance(tool, dict)] if isinstance(tools, list) else []
 
     def propose(
-        self, kind: str, connection_id: str, payload: Dict[str, Any], client_ref: str
+        self,
+        kind: str,
+        connection_id: str,
+        payload: Dict[str, Any],
+        client_ref: str,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Propose one action. The broker's answer is the whole of the outcome."""
+        """Propose one action. The broker's answer is the whole of the outcome.
+
+        `timeout` is for an action the broker is allowed to run for longer than
+        an ordinary round trip, such as a sandbox command.
+        """
         body: Dict[str, Any] = {
             "kind": kind,
             "connection_id": connection_id,
             "payload": payload,
             "client_ref": client_ref,
         }
-        return self._call("POST", "/actions", body)
+        return self._call("POST", "/actions", body, timeout)
 
     def resume(self, action_id: str) -> Dict[str, Any]:
         """Carry out an approved action by id. No payload travels: the broker

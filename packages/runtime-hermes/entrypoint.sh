@@ -24,6 +24,11 @@
 #    granted, which the image cannot know. Whatever starts the container works
 #    them out from the one configuration renderer and passes them in.
 #
+# 4. A space with a sandbox runs the engine's terminal there. Whatever starts
+#    the container pins TERMINAL_ENV to the sandbox backend, from the same
+#    renderer, and this writes the terminal section and toolset that go with
+#    it. No other backend is accepted: a cell never runs a local terminal.
+#
 # Everything else the engine is configured to do is in the image's own copy of
 # the rendered configuration. This script adds the attempt to it and nothing more.
 set -eu
@@ -76,6 +81,17 @@ max_turns = whole("MELETE_ENGINE_MAX_TURNS")
 if max_turns:
     config.setdefault("agent", {})["max_turns"] = max_turns
 config["model"] = model_section
+terminal = os.environ.get("TERMINAL_ENV", "")
+config.pop("terminal", None)
+if terminal:
+    if terminal != "melete_sandbox":
+        raise SystemExit("TERMINAL_ENV may only name the sandbox backend")
+    toolsets = config.setdefault("platform_toolsets", {}).setdefault("api_server", [])
+    # The terminal alone: the `terminal` toolset would add process_manage,
+    # and background processes in a remote sandbox are not offered.
+    if "terminal_tools" not in toolsets:
+        toolsets.append("terminal_tools")
+    config["terminal"] = {"backend": terminal, "cwd": "/work"}
 provider["default_model"] = model
 provider["base_url"] = os.environ["MELETE_BROKER_URL"].rstrip("/") + "/providers/" + name + "/v1"
 api_mode = os.environ.get("MELETE_MODEL_API_MODE")

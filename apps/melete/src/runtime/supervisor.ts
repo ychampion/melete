@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { type AttemptBundle, canonicalTimeZone, prefixedId } from '@melete/contracts';
 import {
+  attemptEngineFeatures,
   engineSettingsFromEnvironment,
   HERMES_PINNED_COMMIT,
   renderEngineConfig,
@@ -338,6 +339,8 @@ export class ProcessRuntimeSupervisor implements RuntimeSupervisor {
         modelApiMode: environment.MELETE_MODEL_API_MODE,
         capability: bundle.attempt.token,
         ...engineSettingsFromEnvironment(),
+        // A space with a sandbox runs the engine's terminal there, and only there.
+        features: attemptEngineFeatures(bundle.tools),
       });
       await writeFile(join(home, 'config.yaml'), stringify(config), { mode: 0o600 });
       // Melete's identity takes the engine's identity slot; without it the
