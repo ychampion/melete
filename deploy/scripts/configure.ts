@@ -198,6 +198,11 @@ export async function dockerSocketGroup(host: DockerHostFacts, access: SocketAcc
   return probe.gid;
 }
 
+/** A label for this installation's sandboxes, unique enough to share a provider account. */
+export function sandboxProject(): string {
+  return `melete-${randomBytes(4).toString('hex')}`;
+}
+
 /** A reason to stop that the operator acts on; printed as one line, without a stack. */
 export class ConfigureRefusal extends Error {}
 
@@ -256,6 +261,8 @@ async function configure(root: string) {
   const values: Record<string, string> = {
     MELETE_MASTER_KEY: randomBytes(32).toString('base64'),
     MELETE_CAPABILITY_KEY: randomBytes(32).toString('hex'),
+    // Labels this installation's sandboxes at a provider; written once, kept after.
+    MELETE_SANDBOX_PROJECT: sandboxProject(),
     MELETE_APPROVAL_KEY: randomBytes(32).toString('hex'),
     MELETE_RUNTIME_KEY: randomBytes(32).toString('hex'),
     POSTGRES_PASSWORD: password,

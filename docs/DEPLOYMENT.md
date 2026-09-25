@@ -784,6 +784,15 @@ such as a model name it does not serve) ends the message at once. The service
 log records each of these as `memory: <reason>`, and `/health` reports
 `memory.waiting` and `memory.failed` (messages given up in the last day).
 
+## Sandboxes
+
+Sandboxes: connect E2B, Modal or Daytona in Settings → Connections → Sandbox.
+The provider's key is entered there and sealed with `MELETE_MASTER_KEY`.
+`configure.ts` writes `MELETE_SANDBOX_PROJECT`, the label that marks this
+installation's sandboxes at the provider; keep it. The other `MELETE_SANDBOX_*`
+settings and `MELETE_E2B_PLAN` are optional, with their defaults listed in
+`deploy/.env.example`. Set them in `deploy/.env` and recreate the service.
+
 ## Company map
 
 A scan reads the connected mailbox with the installation's own model, once the
